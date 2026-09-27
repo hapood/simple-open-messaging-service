@@ -1,8 +1,7 @@
-# Profile Resolution Refactor Plan
+# Profile Resolution Refactor Record
 
-Status: active implementation plan. Execute one item at a time and stop for
-review after each item. This plan covers the backend contract first, then the
-client request migration.
+Status: implemented backend contract. This document records the exact-profile
+resolution shape and the migration checkpoints that produced it.
 
 ## Final contract
 

@@ -162,24 +162,6 @@ export class FederationMessageFeedService {
     return page;
   }
 
-  async resolveAuthorProfileReference(
-    peerDomain: string,
-    namespaceId: number,
-    selector: FederationThreadQuery,
-    seq: number,
-  ) {
-    const { authorReferences } = await this.readPage(
-      peerDomain,
-      namespaceId,
-      selector,
-      seq - 1,
-      1,
-      seq,
-      true,
-    );
-    return authorReferences.find((reference) => reference.seq === seq) ?? null;
-  }
-
   private async readPage(
     peerDomain: string,
     namespaceId: number,

@@ -37,20 +37,11 @@ function target() {
       bio: '',
       avatar: null,
     }),
-    getStoredProfile: vi.fn().mockResolvedValue({
-      account: 'alice',
-      domain: 'member.example',
-      profileRev: 4,
-      displayName: 'Alice',
-      bio: 'Member biography',
-      avatar: null,
-    }),
   };
   const messageFeedPull = { advertise: vi.fn() };
   const tombstonePull = { advertise: vi.fn() };
   const roundScheduler = { wakeStateFeed: vi.fn() };
   const messageFeed = {
-    resolveAuthorProfileReference: vi.fn(),
     query: vi
       .fn()
       .mockResolvedValue({ messages: [], scannedThrough: 1, hasMore: false }),
@@ -84,12 +75,6 @@ function target() {
   };
   const groupMeta = {
     serve: vi.fn().mockResolvedValue({}),
-    resolveProfileReference: vi.fn().mockResolvedValue({
-      account: 'alice',
-      domain: 'member.example',
-      namespaceId: 3,
-      profileRev: 4,
-    }),
   };
   const controller = new S2sController(
     federation as never,
@@ -617,134 +602,6 @@ describe('S2sController group-meta modes', () => {
   });
 });
 
-describe('S2sController message author profiles', () => {
-  it('keeps requester authorization separate from a third-party author namespace', async () => {
-    const { controller, federation, messageFeed } = target();
-    messageFeed.resolveAuthorProfileReference.mockResolvedValueOnce({
-      account: 'carol',
-      domain: 'charlie.test',
-      namespaceId: 3,
-      profileRev: 7,
-    });
-    const req = {
-      query: { account: '!group', messageSeq: '12' },
-      peer: { domain: 'bravo.test', namespaceId: 2 },
-    } as unknown as FastifyRequest;
-    await controller.getMessageAuthorProfile(req, '!group', undefined, '12');
-    expect(messageFeed.resolveAuthorProfileReference).toHaveBeenCalledWith(
-      'bravo.test',
-      2,
-      { type: 'GROUP', account: '!group' },
-      12,
-    );
-    expect(federation.getStoredProfile).toHaveBeenCalledWith(
-      'carol',
-      'charlie.test',
-      3,
-      7,
-    );
-  });
-
-  it('does not read profiles when message authorization fails', async () => {
-    const { controller, federation, messageFeed } = target();
-    const refusal = Object.assign(new Error('forbidden'), {
-      bizCode: BusinessCode.FORBIDDEN,
-    });
-    messageFeed.resolveAuthorProfileReference.mockRejectedValueOnce(refusal);
-    const req = {
-      query: { account: '!group', messageSeq: '12' },
-      peer: { domain: 'bravo.test', namespaceId: 2 },
-    } as unknown as FastifyRequest;
-    await expect(
-      controller.getMessageAuthorProfile(req, '!group', undefined, '12'),
-    ).rejects.toBe(refusal);
-    expect(federation.getStoredProfile).not.toHaveBeenCalled();
-  });
-
-  it('reads a locally authored message profile from namespace zero', async () => {
-    const { controller, federation, messageFeed } = target();
-    messageFeed.resolveAuthorProfileReference.mockResolvedValueOnce({
-      account: 'alice',
-      domain: 'local.example',
-      namespaceId: 0,
-      profileRev: 4,
-    });
-    federation.getStoredProfile.mockResolvedValueOnce({
-      account: 'alice',
-      domain: 'local.example',
-      profileRev: 4,
-      displayName: 'Alice',
-      bio: '',
-      avatar: null,
-    });
-    const req = {
-      method: 'GET',
-      url: '/s2s/v1/message-author-profile?account=alice&peerAccount=bob&messageSeq=12',
-      query: { account: 'alice', peerAccount: 'bob', messageSeq: '12' },
-      peer: { domain: 'peer.example', namespaceId: 7 },
-    } as unknown as FastifyRequest;
-
-    await controller.getMessageAuthorProfile(req, 'alice', 'bob', '12');
-
-    expect(federation.getStoredProfile).toHaveBeenCalledWith(
-      'alice',
-      'local.example',
-      0,
-      4,
-    );
-  });
-});
-
-describe('S2sController Group Meta profiles', () => {
-  it('derives the member revision from Group Meta and returns the complete profile', async () => {
-    const { controller, federation, groupMeta } = target();
-    const req = {
-      method: 'GET',
-      url: '/s2s/v1/group-meta-profile?account=%21group&subject=MEMBER&memberAccount=alice&memberDomain=member.example',
-      rawBody: Buffer.alloc(0),
-      headers: {},
-      peer: { domain: 'mirror.example', namespaceId: 7 },
-    } as unknown as FastifyRequest;
-
-    await expect(controller.getGroupMetaProfile(req)).resolves.toEqual({
-      account: 'alice',
-      domain: 'member.example',
-      profileRev: 4,
-      displayName: 'Alice',
-      bio: 'Member biography',
-      avatar: null,
-    });
-    expect(groupMeta.resolveProfileReference).toHaveBeenCalledWith(
-      'mirror.example',
-      7,
-      '!group',
-      { type: 'MEMBER', account: 'alice', domain: 'member.example' },
-    );
-    expect(federation.getStoredProfile).toHaveBeenCalledWith(
-      'alice',
-      'member.example',
-      3,
-      4,
-    );
-  });
-
-  it('rejects a group subject carrying member fields', async () => {
-    const { controller, groupMeta } = target();
-    const req = {
-      method: 'GET',
-      url: '/s2s/v1/group-meta-profile?account=%21group&subject=GROUP&memberAccount=alice&memberDomain=member.example',
-      rawBody: Buffer.alloc(0),
-      headers: {},
-      peer: { domain: 'mirror.example', namespaceId: 7 },
-    } as unknown as FastifyRequest;
-
-    await expect(controller.getGroupMetaProfile(req)).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_MALFORMED,
-      status: 400,
-    });
-    expect(groupMeta.resolveProfileReference).not.toHaveBeenCalled();
-  });
-});
 
 describe('S2sController feed-head recovery', () => {
   it('rejects unknown fields without scheduling work', async () => {

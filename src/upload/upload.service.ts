@@ -1232,10 +1232,7 @@ export class UploadService {
     }
   }
 
-  /**
-   * Federation inbound: validate the strict wire shape, then preserve the authenticated bytes. The
-   * profile service verifies the advertised digest before this method is called.
-   */
+  /** Federation inbound: validate the strict wire shape, then preserve the authenticated bytes. */
   async saveAvatarFromWire(avatar: {
     b64: string;
     w: number;

@@ -29,7 +29,6 @@ import { FederationThreadRoundSchedulerService } from './federation-thread-round
 import {
   parseFederationResourceRequest,
   parseFederationResourcePath,
-  parseFederationFixedResourceRequest,
   parseFederationRange,
   requireAccount,
   requireBundleId,
@@ -323,136 +322,6 @@ export class S2sController {
     );
   }
 
-  @Get('message-author-profile')
-  async getMessageAuthorProfile(
-    @Req() req: FastifyRequest,
-    @Query('account') account?: string,
-    @Query('peerAccount') peerAccount?: string,
-    @Query('messageSeq') messageSeqParam?: string,
-  ) {
-    this.assertQueryShape(req, ['account', 'peerAccount', 'messageSeq']);
-    if (messageSeqParam === undefined) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'messageSeq is required',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    const selector = this.parseThreadQuery(account, peerAccount);
-    const messageSeq = this.parseThreadSequence(messageSeqParam, 'messageSeq');
-    if (messageSeq < 1) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'messageSeq must be positive',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    const peerDomain = this.signerDomain(req);
-    const reference = await this.messageFeed.resolveAuthorProfileReference(
-      peerDomain,
-      req.peer!.namespaceId,
-      selector,
-      messageSeq,
-    );
-    if (!reference) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'message is not available to this peer',
-      );
-    }
-    const profile = await this.federation.getStoredProfile(
-      reference.account,
-      reference.domain,
-      reference.namespaceId,
-      reference.profileRev,
-    );
-    if (!profile) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'referenced profile revision is unavailable',
-      );
-    }
-    return {
-      account: profile.account,
-      domain: profile.domain,
-      profileRev: profile.profileRev,
-      displayName: profile.displayName,
-      bio: profile.bio,
-      avatar: profile.avatar,
-    };
-  }
-
-  @Get('group-meta-profile')
-  async getGroupMetaProfile(@Req() req: FastifyRequest) {
-    const query = parseFederationFixedResourceRequest(req, {
-      path: '/s2s/v1/group-meta-profile',
-      query: [
-        { name: 'account' },
-        { name: 'subject' },
-        { name: 'memberAccount', optional: true },
-        { name: 'memberDomain', optional: true },
-      ],
-    });
-    const account = requireAccount(query.account, 'account');
-    if (!account.startsWith('!')) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'account must be a GroupAccount',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    if (query.subject !== 'GROUP' && query.subject !== 'MEMBER') {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'subject must be GROUP or MEMBER',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    const subject =
-      query.subject === 'GROUP'
-        ? ({ type: 'GROUP' } as const)
-        : ({
-            type: 'MEMBER',
-            account: requireUserAccount(query.memberAccount, 'memberAccount'),
-            domain: requireDomain(query.memberDomain, 'memberDomain'),
-          } as const);
-    if (
-      query.subject === 'GROUP' &&
-      (query.memberAccount !== undefined || query.memberDomain !== undefined)
-    )
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'group subject must not include member address',
-        HttpStatus.BAD_REQUEST,
-      );
-    const peerDomain = this.signerDomain(req);
-    const reference = await this.groupMeta.resolveProfileReference(
-      peerDomain,
-      req.peer!.namespaceId,
-      account,
-      subject,
-    );
-    if (reference === null) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
-        'Group Meta profile is not disclosed to this peer',
-      );
-    }
-    const profile = await this.federation.getStoredProfile(
-      reference.account,
-      reference.domain,
-      reference.namespaceId,
-      reference.profileRev,
-    );
-    if (!profile) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'Group Meta profile revision is unavailable',
-      );
-    }
-    return profile;
-  }
-
   @Get('state-feed')
   async getStateFeed(
     @Req() req: FastifyRequest,
@@ -633,32 +502,6 @@ export class S2sController {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
     const { account, domain, displayName, bio, avatar } = profile;
     return { account, domain, displayName, bio, avatar };
-  }
-
-  @Get('profiles/:account')
-  async getAuthorizedProfile(@Req() req: FastifyRequest) {
-    const parsed = parseFederationResourceRequest(req, {
-      pathPrefix: '/s2s/v1/profiles/',
-      pathName: 'account',
-      query: [{ name: 'rev' }],
-    });
-    const account = requireAccount(parsed.pathValue, 'account');
-    const rev = requireSafeDecimal(parsed.query.rev, 'rev');
-    const profile = await this.resourceOperation(() =>
-      this.federation.getAuthorizedLocalProfile(
-        account,
-        rev,
-        this.signerDomain(req),
-        req.peer!.namespaceId,
-      ),
-    );
-    if (!profile) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        `profile ${account} revision ${rev} not found`,
-      );
-    }
-    return profile;
   }
 
   /** The verified signer domain (set by S2sSignatureGuard as req.peer.domain). */

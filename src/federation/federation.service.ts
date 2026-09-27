@@ -446,20 +446,6 @@ export class FederationService {
     return this.profiles.getLocalAccountProfile(address);
   }
 
-  async getAuthorizedLocalProfile(
-    account: string,
-    rev: number,
-    peerDomain: string,
-    namespaceId: number,
-  ): Promise<S2SProfile | null> {
-    return this.profiles.getAuthorizedLocalProfile(
-      account,
-      rev,
-      peerDomain,
-      namespaceId,
-    );
-  }
-
   async getAuthorizedIntentProfile(
     account: string,
     peerAccount: string,

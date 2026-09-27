@@ -5,7 +5,6 @@ import {
   groupStateFields,
 } from '../group/shared/group-state.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { createHash } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { writeProfileSnapshotInTx } from '../user/profile-store.js';
 import { normalizeAccount } from '../common/account.js';
@@ -54,9 +53,6 @@ export class FederationProfileService {
       : null;
     const avatar = wire
       ? {
-          digest: createHash('sha256')
-            .update(Buffer.from(wire.b64, 'base64'))
-            .digest('hex'),
           mimeType: wire.mimeType,
           base64: wire.b64,
           width: wire.w,
@@ -167,178 +163,6 @@ export class FederationProfileService {
       0,
       user.defaultProfileRev,
     );
-  }
-
-  /** Resolve one exact locally-owned revision after applying this server's disclosure policy. */
-  async getAuthorizedLocalProfile(
-    account: string,
-    rev: number,
-    peerDomain: string,
-    namespaceId: number,
-  ): Promise<S2SProfile | null> {
-    if (rev < 1) return null;
-    if (account.startsWith('!')) {
-      let row;
-      try {
-        row = await this.database.db.transaction(
-          async (tx) => {
-            const authorized = await resolveAuthorizedFederationThreadInTx(
-              tx,
-              peerDomain,
-              namespaceId,
-              { type: 'GROUP', account },
-            );
-            if (authorized.groupQueryDirection !== 'ORIGIN_DISTRIBUTION')
-              this.profileNotDisclosed();
-            const [value] = await tx
-              .select({
-                groupId: groupStateTable.id,
-                account: groupStateFields.account,
-                displayName: tables.profileTable.displayName,
-                avatar: tables.profileTable.avatar,
-                bio: tables.profileTable.bio,
-                profileRev: tables.profileTable.profileRev,
-              })
-              .from(groupStateTable)
-              .innerJoin(
-                tables.profileTable,
-                and(
-                  eq(tables.profileTable.account, groupStateFields.account),
-                  eq(tables.profileTable.domain, groupStateFields.domain),
-                  eq(
-                    tables.profileTable.namespaceId,
-                    groupStateFields.namespaceId,
-                  ),
-                  eq(tables.profileTable.profileRev, rev),
-                ),
-              )
-              .leftJoin(
-                tables.groupMeta,
-                and(
-                  eq(tables.groupMeta.threadId, groupStateTable.id),
-                  eq(tables.groupMeta.profileRev, rev),
-                ),
-              )
-              .where(
-                and(
-                  eq(groupStateFields.account, account),
-                  eq(groupStateFields.domain, 'local'),
-                  eq(groupStateFields.namespaceId, 0),
-                  sql`(
-                  ${tables.groupMeta.threadId} IS NOT NULL
-                  OR EXISTS (
-                    SELECT 1
-                    FROM "RelationshipIntent" intent
-                    JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
-                    WHERE intent."profileRev" = ${rev}
-                      AND (intent.status = 'ACCEPTED'
-                        OR (intent.status = 'REQUESTED'
-                          AND intent."expiresAt" > CURRENT_TIMESTAMP))
-                      AND pair."endpointANamespaceId" = ${namespaceId}
-                      AND pair."endpointBNamespaceId" = ${namespaceId}
-                      AND (
-                        (intent."authorSide" = 'A'
-                          AND pair."endpointAType" = 'GROUP'
-                          AND pair."endpointAAccount" = ${groupStateFields.account}
-                          AND pair."endpointADomain" = 'local'
-                          AND pair."endpointBDomain" = ${peerDomain})
-                        OR
-                        (intent."authorSide" = 'B'
-                          AND pair."endpointBType" = 'GROUP'
-                          AND pair."endpointBAccount" = ${groupStateFields.account}
-                          AND pair."endpointBDomain" = 'local'
-                          AND pair."endpointADomain" = ${peerDomain})
-                      )
-                  )
-                )`,
-                ),
-              )
-              .limit(1);
-            return value;
-          },
-          { isolationLevel: 'repeatable read', accessMode: 'read only' },
-        );
-      } catch (error) {
-        if (
-          error instanceof BusinessException &&
-          error.bizCode === BusinessCode.FORBIDDEN
-        )
-          this.profileNotDisclosed();
-        throw error;
-      }
-      if (!row) this.profileNotDisclosed();
-      return this.toS2SProfile({
-        account: row.account,
-        name: row.displayName,
-        avatar: row.avatar,
-        bio: row.bio,
-        profileRev: row.profileRev,
-      });
-    }
-
-    const row = await this.database.db
-      .select({
-        userId: tables.account.id,
-        account: tables.account.account,
-        displayName: tables.profileTable.displayName,
-        avatar: tables.profileTable.avatar,
-        bio: tables.profileTable.bio,
-        profileRev: tables.profileTable.profileRev,
-      })
-      .from(tables.account)
-      .innerJoin(
-        tables.profileTable,
-        and(
-          eq(tables.profileTable.account, tables.account.account),
-          eq(tables.profileTable.domain, tables.account.domain),
-          eq(tables.profileTable.namespaceId, tables.account.namespaceId),
-          eq(tables.profileTable.profileRev, rev),
-        ),
-      )
-      .where(
-        and(
-          eq(tables.account.account, normalizeAccount(account)),
-          eq(tables.account.domain, 'local'),
-          eq(tables.account.namespaceId, 0),
-        ),
-      )
-      .limit(1)
-      .then(([value]) => value);
-    if (!row) return null;
-
-    const authorized = await this.database.db.execute(sql`
-      SELECT 1
-      FROM "RelationshipIntent" intent
-      JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
-      WHERE intent."profileRev" = ${rev}
-        AND (intent.status = 'ACCEPTED'
-          OR (intent.status = 'REQUESTED'
-            AND intent."expiresAt" > CURRENT_TIMESTAMP))
-        AND (
-          (intent."authorSide" = 'A'
-            AND pair."endpointAType" = 'USER'
-            AND pair."endpointAAccount" = ${row.account}
-            AND pair."endpointADomain" = 'local'
-            AND pair."endpointBDomain" = ${peerDomain}
-            AND pair."endpointBNamespaceId" = ${namespaceId})
-          OR
-          (intent."authorSide" = 'B'
-            AND pair."endpointBType" = 'USER'
-            AND pair."endpointBAccount" = ${row.account}
-            AND pair."endpointBDomain" = 'local'
-            AND pair."endpointADomain" = ${peerDomain}
-            AND pair."endpointANamespaceId" = ${namespaceId})
-        )
-      LIMIT 1
-    `);
-    if (authorized.rows.length === 0) this.profileNotDisclosed();
-    return this.toS2SProfile({
-      account: row.account,
-      name: row.displayName,
-      avatar: row.avatar,
-      bio: row.bio,
-      profileRev: row.profileRev,
-    });
   }
 
   /** Exact directed-intent disclosure; an unrelated message or current Meta
@@ -511,7 +335,7 @@ export class FederationProfileService {
           SELECT 1 FROM "Message" m
           JOIN "MessageThread" thread ON thread.id = m."threadId"
           JOIN "RelationshipPair" pair ON pair."threadId" = thread.id
-            AND pair.active AND pair.established
+            AND pair.established
           JOIN "RelationshipIntent" intent ON intent."pairId" = pair.id
           JOIN "PeerStateFeed" head ON head."peerDomain" = ${peerDomain}
             AND head."namespaceId" = ${namespaceId}
@@ -531,10 +355,9 @@ export class FederationProfileService {
             AND audience."targetNamespaceId" = ${namespaceId}
             AND audience."localUserId" IS NULL
           WHERE m."creatorAccount" = profile.account
-            AND m."creatorDomain" = 'local' AND m."creatorNamespaceId" = 0
+            AND m."creatorDomain" = 'local'
             AND m."profileRev" = ${rev} AND m."sourceNamespaceId" = 0
-            AND m."contentType" <> 'SYSTEM' AND m."localState" = 'READY'
-            AND NOT m."isDeleted"
+            AND m."contentType" <> 'SYSTEM'
             AND m.seq > COALESCE(audience."messageAccessAfterSeq", 0)
             AND m.seq::numeric <= CASE
               WHEN (head.body ->> 'messageEndSeq') ~ '^[0-9]{1,10}$'
@@ -560,8 +383,6 @@ export class FederationProfileService {
                     AND pair."endpointANamespaceId" = ${namespaceId}
                     AND intent."authorSide" = 'B')
                 )
-                AND (intent.status = 'ACCEPTED' OR
-                  (intent.status = 'REQUESTED' AND intent."expiresAt" > CURRENT_TIMESTAMP))
               )
               OR
               (thread.type = 'GROUP' AND pair.kind = 'GROUP_MEMBER'
@@ -589,7 +410,6 @@ export class FederationProfileService {
                     AND pair."endpointANamespaceId" = ${namespaceId}
                     AND intent."authorSide" = 'A')
                 )
-                AND intent.status = 'ACCEPTED'
                 AND EXISTS (SELECT 1 FROM "AccountThreadState" state
                   WHERE state."threadId" = thread.id
                     AND state."accountId" = owner.id)
@@ -679,38 +499,33 @@ export class FederationProfileService {
             AND profile.account = ${normalizeAccount(memberAccount)}
             AND profile.domain = ${storedDomain}
             AND profile."profileRev" = ${rev}
-            AND (
-              EXISTS (
-                SELECT 1 FROM "GroupMetaMemberFeed" fact
-                WHERE fact."threadId" = thread.id
-                  AND fact."memberAccount" = profile.account
-                  AND fact."memberDomain" = profile.domain
-                  AND fact.operation = 'MEMBER_UPSERT'
-                  AND (fact.body ->> 'profileRev')::integer = ${rev}
-                  AND (profile.domain <> 'local' OR profile."namespaceId" = 0)
-                  AND (profile.domain = 'local' OR EXISTS (
-                    SELECT 1 FROM "RelationshipPair" pair
-                    WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = thread.id
-                      AND pair.active AND pair.established
-                      AND pair."endpointBType" = 'USER'
-                      AND pair."endpointBAccount" = profile.account
-                      AND pair."endpointBDomain" = profile.domain
-                      AND pair."endpointBNamespaceId" = profile."namespaceId"
-                  ))
-              )
-              OR EXISTS (
-                SELECT 1 FROM "Message" message
-                WHERE message."threadId" = thread.id
-                  AND message.seq > ${authorized.messageAccessAfterSeq}
-                  AND message.seq <= ${messageEnd}
-                  AND message."creatorAccount" = profile.account
-                  AND message."creatorDomain" = profile.domain
-                  AND message."creatorNamespaceId" = profile."namespaceId"
-                  AND message."profileRev" = ${rev}
-                  AND message."contentType" <> 'SYSTEM'
-                  AND message."localState" = 'READY'
-                  AND NOT message."isDeleted"
-              )
+            AND EXISTS (
+              SELECT 1 FROM "GroupMetaMemberFeed" fact
+              WHERE fact."threadId" = thread.id
+                AND fact."memberAccount" = profile.account
+                AND fact."memberDomain" = profile.domain
+                AND fact.operation = 'MEMBER_UPSERT'
+                AND (fact.body ->> 'profileRev')::integer = ${rev}
+                AND (profile.domain <> 'local' OR profile."namespaceId" = 0)
+                AND (profile.domain = 'local' OR EXISTS (
+                  SELECT 1 FROM "RelationshipPair" pair
+                  WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = thread.id
+                    AND pair.established
+                    AND pair."endpointBType" = 'USER'
+                    AND pair."endpointBAccount" = profile.account
+                    AND pair."endpointBDomain" = profile.domain
+                    AND pair."endpointBNamespaceId" = profile."namespaceId"
+                ))
+            )
+            AND EXISTS (
+              SELECT 1 FROM "Message" message
+              WHERE message."threadId" = thread.id
+                AND message.seq > ${authorized.messageAccessAfterSeq}
+                AND message.seq <= ${messageEnd}
+                AND message."creatorAccount" = profile.account
+                AND message."creatorDomain" = profile.domain
+                AND message."profileRev" = ${rev}
+                AND message."contentType" <> 'SYSTEM'
             )
           LIMIT 1
         `);
@@ -862,9 +677,7 @@ export class FederationProfileService {
     const avatar = value as Record<string, unknown>;
     return (
       Object.keys(avatar).sort().join(',') ===
-        'base64,digest,height,mimeType,width' &&
-      typeof avatar.digest === 'string' &&
-      /^[a-f0-9]{64}$/.test(avatar.digest) &&
+        'base64,height,mimeType,width' &&
       typeof avatar.mimeType === 'string' &&
       avatar.mimeType.length > 0 &&
       typeof avatar.base64 === 'string' &&
@@ -894,20 +707,12 @@ export class FederationProfileService {
     if (profile.avatar) {
       try {
         if (
-          !/^[a-f0-9]{64}$/.test(profile.avatar.digest) ||
           typeof profile.avatar.mimeType !== 'string' ||
           profile.avatar.mimeType.length === 0 ||
           typeof profile.avatar.base64 !== 'string' ||
           profile.avatar.base64.length > UploadService.MAX_AVATAR_WIRE_B64_LEN
         ) {
           throw new Error('invalid public profile avatar metadata');
-        }
-        const bytes = Buffer.from(profile.avatar.base64, 'base64');
-        if (
-          createHash('sha256').update(bytes).digest('hex') !==
-          profile.avatar.digest
-        ) {
-          throw new Error('public profile avatar digest mismatch');
         }
         avatar = await this.upload.saveAvatarFromWire({
           b64: profile.avatar.base64,

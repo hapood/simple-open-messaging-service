@@ -78,10 +78,6 @@ export const GLOBAL_PREFIX_EXCLUSIONS = [
     method: RequestMethod.GET,
   },
   {
-    path: `${FEDERATION_API_PREFIX}/profiles/:account`,
-    method: RequestMethod.GET,
-  },
-  {
     path: `${FEDERATION_API_PREFIX}/account-profiles/:account/:profileRev`,
     method: RequestMethod.GET,
   },
@@ -91,14 +87,6 @@ export const GLOBAL_PREFIX_EXCLUSIONS = [
   },
   {
     path: `${FEDERATION_API_PREFIX}/intent-profiles/:account/:peerAccount/:profileRev`,
-    method: RequestMethod.GET,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/message-author-profile`,
-    method: RequestMethod.GET,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/group-meta-profile`,
     method: RequestMethod.GET,
   },
   {

@@ -157,18 +157,26 @@ describe('ProfileResolutionCoordinatorService', () => {
     );
   });
 
-  it('keeps relationship account authorization scoped to the same established thread pair', async () => {
+  it('authorizes account profiles by exact established pair or visible history', async () => {
     const { subject, database } = createSubject();
 
     await subject['authorizeAccountDemand'](3, accountDemand);
 
     const statement = database.db.execute.mock.calls[0][0] as SQL;
     const query = new PgDialect().sqlToQuery(statement).sql;
-    expect(query).toContain('pair."threadId" = thread.id');
-    expect(query).toContain('pair.established');
+    expect(query).toContain("pair.kind = 'P2P'");
+    expect(query).toContain('pair.established = true');
     expect(query).toMatch(
-      /AND \(\s*\(pair\."endpointAAccount" = \$\d+\s+AND pair\."endpointADomain" = \$\d+\s+AND pair\."endpointANamespaceId" = \$\d+\)\s+OR \(pair\."endpointBAccount" = \$\d+\s+AND pair\."endpointBDomain" = \$\d+\s+AND pair\."endpointBNamespaceId" = \$\d+\)\s+\)/,
+      /pair\."endpointAAccount" = self\.account[\s\S]+pair\."endpointBAccount" = \$\d+/,
     );
+    expect(query).toMatch(
+      /pair\."endpointBAccount" = self\.account[\s\S]+pair\."endpointAAccount" = \$\d+/,
+    );
+    expect(query).toContain('message.seq > COALESCE(state."clearedSeq", 0)');
+    expect(query).toContain('message.seq <= state."messageEndSeq"');
+    expect(query).not.toContain('message."creatorNamespaceId"');
+    expect(query).not.toContain('message."localState"');
+    expect(query).not.toContain('message."isDeleted"');
   });
 
   it('registers only the invoking session and deduplicates it per exact key', async () => {

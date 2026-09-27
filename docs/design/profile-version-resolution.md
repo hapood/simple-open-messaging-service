@@ -320,7 +320,7 @@ older cached profile. The cache key remains
 `(namespaceId, account, domain, rev)`. `PROFILE_AVAILABLE` and
 `PROFILE_UNAVAILABLE` wake events carry only that exact key; they do not carry
 or reconstruct evidence.
-Implement the signed federation reads in the profile specification:
+The signed federation profile reads are:
 
 ```text
 GET /s2s/v1/accounts/:account
@@ -329,10 +329,9 @@ GET /s2s/v1/group-member-profiles/:groupAccount/:memberDomain/:memberAccount/:pr
 GET /s2s/v1/intent-profiles/:account/:peerAccount/:profileRev
 ```
 
-Remove the old `/profiles/:account?rev=`, `/message-author-profile`, and
-`/group-meta-profile` implementation/callers, validators, generated client
-contracts, and tests. Respect canonical percent-encoded path segments and
-publisher-origin routing: group/member Meta comes from the group origin;
+These are the only profile-read operations on the federation surface. Respect
+canonical percent-encoded path segments and publisher-origin routing:
+group/member Meta comes from the group origin;
 relation-counterpart account profiles come from the account's home server
 (including the origin's internal request for a remote member's message rev);
 intent profiles come from the intent author. Publisher authorization, current readable
@@ -342,9 +341,9 @@ specification. No federation response may substitute another revision.
 
 Do not reinterpret an absent response as `PROFILE_AVAILABLE` and do not retain
 a negative cache that prevents later retry. Exact-key fetch failures remove the
-pending item; a later demand can retry that four-tuple. Remove tests that assert
-local group-member revision drift and add tests for strict revision equality
-and the group-origin-to-member-home account request.
+pending item; a later demand can retry that four-tuple. Tests cover strict
+revision equality and group-origin-to-member-home account requests rather than
+local group-member revision drift.
 
 ### Internal profile demands
 

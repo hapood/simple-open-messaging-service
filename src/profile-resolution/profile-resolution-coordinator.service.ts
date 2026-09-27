@@ -160,9 +160,10 @@ export class ProfileResolutionCoordinatorService {
     const memberDomain = demand.target.domain;
     const rows = await this.database.db.execute(sql`
       SELECT 1
-      FROM "MessageThread" thread
+      FROM "Account" viewer
+      JOIN "AccountThreadState" state ON state."accountId" = viewer.id
+      JOIN "MessageThread" thread ON thread.id = state."threadId"
       JOIN ${groupStateSql} group_state ON group_state.id = thread.id
-      JOIN "Account" viewer ON viewer.id = ${userId}
       JOIN LATERAL (
         SELECT fact.operation, fact.body
         FROM "GroupMetaMemberFeed" fact
@@ -172,7 +173,8 @@ export class ProfileResolutionCoordinatorService {
         ORDER BY fact."feedId" DESC
         LIMIT 1
       ) latest ON true
-      WHERE thread.type = 'GROUP'
+      WHERE viewer.id = ${userId}
+        AND thread.type = 'GROUP'
         AND group_state.account = ${normalizeAccount(demand.groupAccount)}
         AND group_state.domain = ${publisherDomain}
         AND group_state."namespaceId" = ${demand.namespaceId}
@@ -181,13 +183,26 @@ export class ProfileResolutionCoordinatorService {
         AND EXISTS (
           SELECT 1 FROM "RelationshipPair" pair
           WHERE pair."threadId" = thread.id
-            AND pair.kind = 'GROUP_MEMBER' AND pair.active = true
+            AND pair.kind = 'GROUP_MEMBER'
+            AND pair.established = true
             AND ((pair."endpointAType" = 'USER'
               AND pair."endpointAAccount" = viewer.account
-              AND pair."endpointADomain" = viewer.domain)
+              AND pair."endpointADomain" = viewer.domain
+              AND pair."endpointANamespaceId" = viewer."namespaceId")
               OR (pair."endpointBType" = 'USER'
               AND pair."endpointBAccount" = viewer.account
-              AND pair."endpointBDomain" = viewer.domain))
+              AND pair."endpointBDomain" = viewer.domain
+              AND pair."endpointBNamespaceId" = viewer."namespaceId"))
+        )
+        AND EXISTS (
+          SELECT 1 FROM "Message" message
+          WHERE message."threadId" = thread.id
+            AND message.seq > COALESCE(state."clearedSeq", 0)
+            AND message.seq <= state."messageEndSeq"
+            AND message."creatorAccount" = ${normalizeAccount(demand.target.account)}
+            AND message."creatorDomain" = ${memberDomain}
+            AND message."profileRev" = ${demand.target.rev}
+            AND message."contentType" <> 'SYSTEM'
         )
       LIMIT 1
     `);
@@ -248,40 +263,65 @@ export class ProfileResolutionCoordinatorService {
       FROM "Account" self
       WHERE self.id = ${userId}
         AND (
-          (self.account = ${account} AND ${demand.namespaceId} = 0)
+          (self.account = ${account}
+            AND self.domain = ${demand.target.domain}
+            AND self."namespaceId" = ${demand.namespaceId})
+          OR EXISTS (
+            SELECT 1 FROM "RelationshipPair" pair
+            WHERE pair.kind = 'P2P'
+              AND pair.established = true
+              AND (
+                (pair."endpointAType" = 'USER'
+                  AND pair."endpointAAccount" = self.account
+                  AND pair."endpointADomain" = self.domain
+                  AND pair."endpointANamespaceId" = self."namespaceId"
+                  AND pair."endpointBType" = 'USER'
+                  AND pair."endpointBAccount" = ${account}
+                  AND pair."endpointBDomain" = ${demand.target.domain}
+                  AND pair."endpointBNamespaceId" = ${demand.namespaceId})
+                OR
+                (pair."endpointBType" = 'USER'
+                  AND pair."endpointBAccount" = self.account
+                  AND pair."endpointBDomain" = self.domain
+                  AND pair."endpointBNamespaceId" = self."namespaceId"
+                  AND pair."endpointAType" = 'USER'
+                  AND pair."endpointAAccount" = ${account}
+                  AND pair."endpointADomain" = ${demand.target.domain}
+                  AND pair."endpointANamespaceId" = ${demand.namespaceId})
+              )
+          )
           OR EXISTS (
             SELECT 1
             FROM "AccountThreadState" state
             JOIN "MessageThread" thread ON thread.id = state."threadId"
+            JOIN "Message" message ON message."threadId" = thread.id
             WHERE state."accountId" = self.id
-              AND state."threadProfileRev" = ${demand.target.rev}
-              AND (
-                (thread.type = 'GROUP'
-                  AND thread."groupAccount" = ${account}
-                  AND thread."authorityNamespaceId" = ${demand.namespaceId})
-                OR EXISTS (
-                  SELECT 1 FROM "RelationshipPair" pair
-                  WHERE pair."threadId" = thread.id
-                    AND pair.established
-                    AND (
-                      (pair."endpointAAccount" = ${account}
-                        AND pair."endpointADomain" = ${demand.target.domain}
-                        AND pair."endpointANamespaceId" = ${demand.namespaceId})
-                      OR (pair."endpointBAccount" = ${account}
-                        AND pair."endpointBDomain" = ${demand.target.domain}
-                        AND pair."endpointBNamespaceId" = ${demand.namespaceId})
-                    )
-                )
-              )
+              AND message.seq > COALESCE(state."clearedSeq", 0)
+              AND message.seq <= state."messageEndSeq"
+              AND message."creatorAccount" = ${account}
+              AND message."creatorDomain" = ${demand.target.domain}
+              AND message."profileRev" = ${demand.target.rev}
+              AND message."contentType" <> 'SYSTEM'
           )
           OR EXISTS (
-            SELECT 1 FROM "GroupMetaMemberFeed" fact
-            JOIN "MessageThread" thread ON thread.id = fact."threadId"
-            WHERE thread.type = 'GROUP'
-              AND fact.operation = 'MEMBER_UPSERT'
-              AND fact."memberAccount" = ${account}
-              AND (fact.body ->> 'profileRev')::integer = ${demand.target.rev}
-              AND group_meta_member_namespace(thread.id, fact."memberAccount", fact."memberDomain") = ${demand.namespaceId}
+            SELECT 1
+            FROM "AccountThreadState" state
+            JOIN "MessageThread" thread ON thread.id = state."threadId"
+            JOIN LATERAL (
+              SELECT fact.operation, fact.body
+              FROM "GroupMetaMemberFeed" fact
+              WHERE fact."threadId" = thread.id
+                AND fact.operation = 'GROUP_PROFILE'
+              ORDER BY fact."feedId" DESC
+              LIMIT 1
+            ) latest ON true
+            WHERE state."accountId" = self.id
+              AND thread.type = 'GROUP'
+              AND thread."groupAccount" = ${account}
+              AND thread."groupDomain" = ${demand.target.domain}
+              AND thread."authorityNamespaceId" = ${demand.namespaceId}
+              AND latest.operation = 'GROUP_PROFILE'
+              AND (latest.body ->> 'profileRev')::integer = ${demand.target.rev}
           )
         )
       LIMIT 1

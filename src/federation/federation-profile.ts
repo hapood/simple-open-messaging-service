@@ -1,6 +1,5 @@
 /** Inline profile avatar transmitted over federation. */
 interface InlineProfileAvatar {
-  digest: string;
   mimeType: string;
   base64: string;
   width: number;

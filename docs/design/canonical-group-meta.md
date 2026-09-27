@@ -306,10 +306,11 @@ coordinate — and with it the newest drained GROUP_PROFILE row — reaches ever
 member's thread feed; the per-item and per-batch fan-out admissions already
 carried the intermediate advances.
 A round that advanced the applied profile revision then pulls the exact
-revision's content from the origin (`/s2s/v1/profiles/:account?rev=`), because
-the GROUP_PROFILE feed item carries the revision only; a failed pull degrades
-display until the next head re-admits it. Group Meta item and batch
-transactions publish nothing beyond the fan-out admissions described above.
+revision's content from the origin through
+`/s2s/v1/account-profiles/:account/:profileRev`, because the GROUP_PROFILE feed
+item carries the revision only; a failed pull degrades display until the next
+head re-admits it. Group Meta item and batch transactions publish nothing beyond
+the fan-out admissions described above.
 
 An unknown `MEMBER_DEPART` is a valid current-state removal. Full recovery accumulates
 pages above its scan cursor and replaces the committed replica only after the
@@ -375,7 +376,7 @@ group origin
   -> may warm the revision immediately after REQUESTED commits
   -> publishes the stable reference without waiting for profile bytes
   -> lazily resolves and caches the exact revision through the global coordinator
-  -> serves GET /s2s/v1/group-meta-profile
+  -> serves GET /s2s/v1/group-member-profiles/:groupAccount/:memberDomain/:memberAccount/:profileRev
 
 group mirror
   -> requests only from the group origin
@@ -389,7 +390,7 @@ remote group and never redirects a mirror to the member's home server.
 The application-wide profile coordinator uses the immutable key:
 
 ```text
-(groupOrigin, groupAccount, memberAccount, memberDomain, profileRev)
+(namespaceId, memberAccount, memberDomain, profileRev)
 ```
 
 Equal requests share one in-flight job. In-flight jobs live in a separate

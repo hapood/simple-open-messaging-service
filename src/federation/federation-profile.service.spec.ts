@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { createHash } from 'node:crypto';
 import { BusinessCode } from '../common/business-code.js';
 import type { S2SProfile } from './federation-profile.js';
 import { FederationProfileService } from './federation-profile.service.js';
@@ -143,65 +142,6 @@ describe('FederationProfileService localization', () => {
     );
   });
 
-  it('authorizes an intent author profile for either remote user or group endpoints', async () => {
-    const execute = vi.fn().mockResolvedValue({ rows: [{}] });
-    const limit = vi.fn().mockResolvedValue([
-      {
-        userId: 17,
-        account: 'alice',
-        displayName: 'Alice',
-        avatar: '',
-        bio: 'hello',
-        profileRev: 3,
-      },
-    ]);
-    const where = vi.fn(() => ({ limit }));
-    const innerJoin = vi.fn(() => ({ where }));
-    const from = vi.fn(() => ({ innerJoin }));
-    const database = {
-      db: {
-        select: vi.fn(() => ({ from })),
-        execute,
-      },
-    };
-    const subject = new FederationProfileService(
-      database as never,
-      { readAvatarAsWire: vi.fn().mockResolvedValue(null) } as never,
-      {} as never,
-    );
-
-    await expect(
-      subject.getAuthorizedLocalProfile('alice', 3, 'peer.example', 9),
-    ).resolves.toMatchObject({
-      account: 'alice',
-      domain: loadFederationConfig().domain,
-      profileRev: 3,
-    });
-
-    const authorization = dialect.sqlToQuery(execute.mock.calls[0]![0] as SQL);
-    expect(authorization.sql).toMatch(
-      /intent\."authorSide" = 'A'[\s\S]+pair\."endpointADomain" = 'local'[\s\S]+pair\."endpointBDomain" = \$\d+[\s\S]+pair\."endpointBNamespaceId" = \$\d+/,
-    );
-    expect(authorization.sql).toMatch(
-      /intent\."authorSide" = 'B'[\s\S]+pair\."endpointBDomain" = 'local'[\s\S]+pair\."endpointADomain" = \$\d+[\s\S]+pair\."endpointANamespaceId" = \$\d+/,
-    );
-    expect(authorization.sql).not.toContain('"endpointANamespaceId" = 0');
-    expect(authorization.sql).not.toContain('"endpointBNamespaceId" = 0');
-    expect(authorization.sql).not.toContain('pair.kind =');
-    expect(
-      authorization.sql.match(/pair\."endpointAType" = 'USER'/g),
-    ).toHaveLength(1);
-    expect(
-      authorization.sql.match(/pair\."endpointBType" = 'USER'/g),
-    ).toHaveLength(1);
-    expect(authorization.sql).toContain(
-      'intent."expiresAt" > CURRENT_TIMESTAMP',
-    );
-    expect(authorization.params).toEqual(
-      expect.arrayContaining(['peer.example', 9]),
-    );
-  });
-
   it('stores a referenced third-party snapshot without an Account or a default pointer', async () => {
     const { subject, database, values } = makeSubject();
     await subject.materializeExactForeignProfile(
@@ -234,7 +174,6 @@ describe('FederationProfileService localization', () => {
         displayName: `${'😀'.repeat(31)}tail`,
         bio: `${'界'.repeat(120)}tail`,
         avatar: {
-          digest: createHash('sha256').update(bytes).digest('hex'),
           mimeType: 'image/webp',
           base64: bytes.toString('base64'),
           width: 513,
@@ -255,13 +194,13 @@ describe('FederationProfileService localization', () => {
     });
   });
 
-  it('materializes text when an avatar digest is invalid', async () => {
+  it('materializes text when inline avatar localization fails', async () => {
     const { subject, values, upload } = makeSubject();
+    upload.saveAvatarFromWire.mockRejectedValueOnce(new Error('invalid image'));
     await subject.materializeExactForeignProfile(
       {
         ...profile(9),
         avatar: {
-          digest: 'invalid',
           mimeType: 'image/webp',
           base64: 'AAAA',
           width: 1,
@@ -274,7 +213,12 @@ describe('FederationProfileService localization', () => {
     expect(values).toHaveBeenCalledWith(
       expect.objectContaining({ profileRev: 9, avatar: '' }),
     );
-    expect(upload.saveAvatarFromWire).not.toHaveBeenCalled();
+    expect(upload.saveAvatarFromWire).toHaveBeenCalledWith({
+      mimeType: 'image/webp',
+      b64: 'AAAA',
+      w: 1,
+      h: 1,
+    });
   });
 
   it('rejects revision zero before opening a transaction', async () => {

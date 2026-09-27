@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import type { FastifyRequest } from 'fastify';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq, inArray } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
@@ -24,9 +23,7 @@ import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { GroupMetaFeedService } from '../src/group/meta/group-meta-feed.service.js';
 import { FederationGroupMetaFeedService } from '../src/federation/group-meta-feed.service.js';
 import { seedFederatedPeerNamespace } from './seed.js';
-import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
-import { S2sController } from '../src/federation/s2s.controller.js';
 import { readGroupMetaPageInTx } from '../src/group/meta/group-meta-page.js';
 import { ClientGroupMetaFeedService } from '../src/client-state-feed/client-group-meta-feed.service.js';
 
@@ -109,6 +106,7 @@ describe('canonical Group Meta feed', () => {
       endpointBNamespaceId: 0,
       threadId,
       active: true,
+      established: true,
     });
 
     await authorizePeer(peerDomain, peerNamespaceId, memberAccount);
@@ -159,6 +157,7 @@ describe('canonical Group Meta feed', () => {
         endpointBNamespaceId: namespaceId,
         threadId,
         active: true,
+        established: true,
       })
       .returning({ id: relationshipPair.id });
     await database.db.insert(relationshipIntent).values({
@@ -180,16 +179,7 @@ describe('canonical Group Meta feed', () => {
     });
   }
 
-  it('serves an intent-referenced group revision after the current profile advances', async () => {
-    const [pair] = await database.db
-      .select({ id: relationshipPair.id })
-      .from(relationshipPair)
-      .where(
-        and(
-          eq(relationshipPair.threadId, threadId),
-          eq(relationshipPair.endpointBDomain, peerDomain),
-        ),
-      );
+  it('serves only the current Group Meta profile revision through exact account profiles', async () => {
     const profiles = new FederationProfileService(
       database,
       {} as never,
@@ -211,18 +201,15 @@ describe('canonical Group Meta feed', () => {
         feed.reconcileProfileInTx(tx, groupId, 2),
       );
       await expect(
-        profiles.getAuthorizedLocalProfile(
+        profiles.getAuthorizedAccountProfile(
           groupAccount,
           1,
           peerDomain,
           peerNamespaceId,
         ),
-      ).resolves.toMatchObject({
-        profileRev: 1,
-        displayName: 'Group revision 1',
-      });
+      ).resolves.toBeNull();
       await expect(
-        profiles.getAuthorizedLocalProfile(
+        profiles.getAuthorizedAccountProfile(
           groupAccount,
           2,
           peerDomain,
@@ -230,67 +217,22 @@ describe('canonical Group Meta feed', () => {
         ),
       ).resolves.toMatchObject({ profileRev: 2 });
       await expect(
-        profiles.getAuthorizedLocalProfile(
+        profiles.getAuthorizedAccountProfile(
           groupAccount,
           3,
           peerDomain,
           peerNamespaceId,
         ),
-      ).rejects.toMatchObject({
-        bizCode: BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
-      });
+      ).resolves.toBeNull();
       await expect(
-        profiles.getAuthorizedLocalProfile(
+        profiles.getAuthorizedAccountProfile(
           groupAccount,
-          1,
+          2,
           peerDomain,
           otherPeerNamespaceId,
         ),
-      ).rejects.toMatchObject({
-        bizCode: BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
-      });
-      for (const expired of [false, true]) {
-        await database.db
-          .update(relationshipIntent)
-          .set({
-            status: 'REQUESTED',
-            requestedAt: new Date(Date.now() - 120_000),
-            expiresAt: new Date(Date.now() + (expired ? -60_000 : 60_000)),
-          })
-          .where(eq(relationshipIntent.pairId, pair.id));
-        const result = profiles.getAuthorizedLocalProfile(
-          groupAccount,
-          1,
-          peerDomain,
-          peerNamespaceId,
-        );
-        if (expired) {
-          await expect(result).rejects.toMatchObject({
-            bizCode: BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
-          });
-        } else {
-          await expect(result).resolves.toMatchObject({ profileRev: 1 });
-        }
-      }
-      await database.db
-        .update(relationshipIntent)
-        .set({ status: 'REVOKED', expiresAt: null })
-        .where(eq(relationshipIntent.pairId, pair.id));
-      await expect(
-        profiles.getAuthorizedLocalProfile(
-          groupAccount,
-          1,
-          peerDomain,
-          peerNamespaceId,
-        ),
-      ).rejects.toMatchObject({
-        bizCode: BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
-      });
+      ).resolves.toBeNull();
     } finally {
-      await database.db
-        .update(relationshipIntent)
-        .set({ status: 'ACCEPTED', expiresAt: null })
-        .where(eq(relationshipIntent.pairId, pair.id));
       await database.db
         .delete(profileTable)
         .where(
@@ -300,131 +242,6 @@ describe('canonical Group Meta feed', () => {
             eq(profileTable.namespaceId, 0),
           ),
         );
-    }
-  });
-
-  it('serves a third-party message author profile from its captured namespace, not the requesting peer', async () => {
-    await database.db.insert(profileTable).values({
-      account: memberAccount,
-      domain: peerDomain,
-      namespaceId: peerNamespaceId,
-      profileRev: 7,
-      displayName: 'Historical member',
-    });
-    // The same address through another publisher must not win the exact lookup.
-    await database.db.insert(profileTable).values({
-      account: memberAccount,
-      domain: peerDomain,
-      namespaceId: otherPeerNamespaceId,
-      profileRev: 7,
-      displayName: 'Wrong namespace',
-    });
-    await database.db.insert(message).values({
-      threadId,
-      seq: 7,
-      originSeq: 5,
-      sourceNamespaceId: peerNamespaceId,
-      creatorAccount: memberAccount,
-      creatorDomain: peerDomain,
-      creatorNamespaceId: peerNamespaceId,
-      profileRev: 7,
-      contentType: 'PURE_TEXT',
-      content: JSON.stringify({ text: 'third-party author' }),
-      updatedAt: new Date(),
-    });
-    await database.db.insert(peerStateFeed).values({
-      peerDomain: otherPeerDomain,
-      namespaceId: otherPeerNamespaceId,
-      account: groupAccount,
-      domain: localDomain,
-      eventType: 'THREAD_CONTENT_HEAD',
-      subjectAccount: '',
-      subjectDomain: 'local',
-      feedId: 1n,
-      body: { messageEndSeq: 7, tombstoneEndSeq: 0 },
-    });
-    const profiles = new FederationProfileService(
-      database,
-      {} as never,
-      {} as never,
-    );
-    const controller = new S2sController(
-      {
-        ourDomain: localDomain,
-        getStoredProfile: profiles.getStoredProfile.bind(profiles),
-      } as never,
-      new FederationMessageFeedService(database),
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      feed,
-    );
-    const request = {
-      query: { account: groupAccount, messageSeq: '7' },
-      peer: { domain: otherPeerDomain, namespaceId: otherPeerNamespaceId },
-    } as unknown as FastifyRequest;
-    try {
-      const result = await controller.getMessageAuthorProfile(
-        request,
-        groupAccount,
-        undefined,
-        '7',
-      );
-      expect(result).toMatchObject({
-        account: memberAccount,
-        domain: peerDomain,
-        profileRev: 7,
-        displayName: 'Historical member',
-      });
-      await database.db
-        .delete(profileTable)
-        .where(
-          and(
-            eq(profileTable.account, memberAccount),
-            eq(profileTable.domain, peerDomain),
-            eq(profileTable.namespaceId, otherPeerNamespaceId),
-          ),
-        );
-      await expect(
-        controller.getMessageAuthorProfile(
-          request,
-          groupAccount,
-          undefined,
-          '7',
-        ),
-      ).resolves.toMatchObject({
-        displayName: 'Historical member',
-        profileRev: 7,
-      });
-      const messageFeed = new FederationMessageFeedService(database);
-      const page = await messageFeed.query(
-        otherPeerDomain,
-        otherPeerNamespaceId,
-        { type: 'GROUP', account: groupAccount },
-        6,
-        1,
-        7,
-      );
-      expect(page).not.toHaveProperty('authorReferences');
-      expect(page.messages[0]).not.toHaveProperty('namespaceId');
-      await database.db
-        .update(message)
-        .set({ isDeleted: true })
-        .where(eq(message.threadId, threadId));
-      await expect(
-        controller.getMessageAuthorProfile(
-          request,
-          groupAccount,
-          undefined,
-          '7',
-        ),
-      ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
-    } finally {
-      await database.db.delete(message).where(eq(message.threadId, threadId));
-      await database.db
-        .delete(peerStateFeed)
-        .where(eq(peerStateFeed.account, groupAccount));
     }
   });
 
@@ -839,43 +656,5 @@ describe('canonical Group Meta feed', () => {
 
     expect(initial).toBe(3);
     expect(unchanged).toBe(initial);
-  });
-
-  it('maps a public local-member address back to canonical storage for profile authorization', async () => {
-    await database.db.transaction((tx) =>
-      reconcileDesired(tx, [owner(), member()]),
-    );
-
-    await database.db
-      .update(relationshipPair)
-      .set({ active: false })
-      .where(
-        and(
-          eq(relationshipPair.threadId, threadId),
-          eq(relationshipPair.endpointBAccount, ownerAccount),
-        ),
-      );
-
-    await expect(
-      publisher.resolveProfileReference(peerDomain, peerNamespaceId, groupAccount, {
-        type: 'MEMBER',
-        account: ownerAccount,
-        domain: localDomain,
-      }),
-    ).resolves.toEqual({
-      account: ownerAccount,
-      domain: localDomain,
-      namespaceId: 0,
-      profileRev: 1,
-    });
-    await database.db
-      .update(relationshipPair)
-      .set({ active: true })
-      .where(
-        and(
-          eq(relationshipPair.threadId, threadId),
-          eq(relationshipPair.endpointBAccount, ownerAccount),
-        ),
-      );
   });
 });
