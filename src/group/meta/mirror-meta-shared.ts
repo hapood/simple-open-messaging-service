@@ -47,6 +47,38 @@ export type MirrorMetaReplicatedItem =
       text: string | null;
     };
 
+/** Convert a validated origin wire address into this server's canonical member
+ * address before any mirror fact or profile-demand logic runs. A member whose
+ * wire domain is this server's domain is local here; every other domain remains
+ * remote. */
+export function normalizeMirrorMetaMemberAddress(
+  group: Pick<MirrorGroupAddress, 'namespaceId'>,
+  account: string,
+  domain: string,
+): { account: string; domain: string } {
+  const identity = toClientIdentity(
+    { account, domain, namespaceId: group.namespaceId },
+    loadFederationConfig().domain,
+  );
+  return { account: identity.account, domain: identity.domain };
+}
+
+/** Normalize member addresses at the mirror wire boundary. All downstream
+ * persistence, roster, and profile-demand code consumes this canonical item. */
+export function normalizeMirrorMetaReplicatedItem(
+  group: Pick<MirrorGroupAddress, 'namespaceId'>,
+  item: MirrorMetaReplicatedItem,
+): MirrorMetaReplicatedItem {
+  if (item.operation !== 'MEMBER_UPSERT' && item.operation !== 'MEMBER_DEPART')
+    return item;
+  const member = normalizeMirrorMetaMemberAddress(
+    group,
+    item.account,
+    item.domain,
+  );
+  return { ...item, ...member };
+}
+
 export interface MirrorMetaCursor {
   threadId: number;
   groupAccount: string;

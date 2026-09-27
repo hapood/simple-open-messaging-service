@@ -89,7 +89,8 @@ import { FederationLocalSystemMessagePublisher } from './federation-local-system
 import { FederationStatePullService } from './federation-state-pull.service.js';
 import { FederationPeerResourceService } from './federation-peer-resource.service.js';
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
-import { ProfileResolutionCoordinatorService } from './profile-resolution-coordinator.service.js';
+import { ProfileEvidenceProjectionService } from '../profile-resolution/profile-evidence-projection.service.js';
+import { ProfileResolutionCoordinatorService } from '../profile-resolution/profile-resolution-coordinator.service.js';
 import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 import {
   lockBusinessAccountsInTx,
@@ -173,6 +174,8 @@ export class FederationService {
     private readonly relationshipMutations: GroupRelationshipMutationService,
     @Optional()
     private readonly profileResolutions?: ProfileResolutionCoordinatorService,
+    @Optional()
+    private readonly profileEvidenceProjections?: ProfileEvidenceProjectionService,
   ) {}
 
   /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
@@ -939,25 +942,23 @@ export class FederationService {
           (url) => this.linkPreview.buildCardContent(url),
         );
       }
-      if (
-        this.profileResolutions &&
-        !effect.message.isDeleted &&
-        effect.message.profileRev > 0
-      ) {
-        for (const userId of effect.recipients) {
-          void this.profileResolutions
-            .start(userId, {
-              type: 'MESSAGE_AUTHOR',
-              threadId: effect.threadId,
-              messageSeq: effect.message.seq,
-              rev: effect.message.profileRev,
-            })
-            .catch((error: unknown) =>
-              this.logger.warn(
-                `message profile resolution failed for ${effect.threadId}:${effect.message.seq}: ${(error as Error).message}`,
-              ),
-            );
-        }
+      if (this.profileResolutions && effect.profileDemand) {
+        void this.profileResolutions
+          .resolveDemand(effect.profileDemand)
+          .catch((error: unknown) =>
+            this.logger.warn(
+              `message profile resolution failed for ${effect.threadId}:${effect.message.seq}: ${(error as Error).message}`,
+            ),
+          );
+      }
+      if (this.profileEvidenceProjections && effect.profileEvidenceProjection) {
+        void this.profileEvidenceProjections
+          .resolve(effect.profileEvidenceProjection)
+          .catch((error: unknown) =>
+            this.logger.warn(
+              `message profile evidence projection failed for ${effect.threadId}:${effect.message.seq}: ${(error as Error).message}`,
+            ),
+          );
       }
       if (
         effect.forwardClosure &&

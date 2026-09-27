@@ -4,7 +4,6 @@ import {
   groupState as groupStateTable,
   groupStateFields,
 } from '../group/shared/group-state.js';
-import { localAccountsForTargetsInTx } from '../user/account-address.js';
 import { Injectable, Logger } from '@nestjs/common';
 import { captureThreadStateUpdatesInTx } from '../client-state-feed/capture-thread-state-updates.js';
 
@@ -12,11 +11,13 @@ import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import type { PendingClientStateFeedUpdate } from '../client-state-feed/client-state-feed.service.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
-import { GroupRole } from '../database/enums.js';
 import * as tables from '../database/schema.js';
-import { readCurrentGroupRosterInTx } from '../group/meta/current-group-roster.js';
 import { acquireThreadContentLockInTx } from '../common/locks/thread-content-lock.js';
 import type { FederationThreadAddress } from './federation-message-feed.service.js';
+import {
+  ProfileLookup,
+  type ProfilePrefetchDemand,
+} from '../profile-resolution/profile-resolution-demand.js';
 import {
   type FederationStateEventType,
   isFederationStateEventType,
@@ -51,12 +52,7 @@ export interface StatePageEffect {
     namespaceId: number;
     direction: 'forward' | 'both' | 'meta';
   }>;
-  profileResolutions: Array<{
-    userId: number;
-    account: string;
-    domain: string;
-    rev: number;
-  }>;
+  profileDemands: ProfilePrefetchDemand[];
 }
 
 export type StatePageApplyResult = StatePageEffect;
@@ -110,7 +106,7 @@ export class FederationStateFeedConsumerService {
     const statePushDomains: string[] = [];
     const localSystemMessages: StatePageEffect['localSystemMessages'] = [];
     const threadRoundWakes: StatePageEffect['threadRoundWakes'] = [];
-    const profileResolutions: StatePageEffect['profileResolutions'] = [];
+    const profileDemands: StatePageEffect['profileDemands'] = [];
     // Relationship state creates the authorized group shell before a group-meta revision is applied.
     const applyPriority: Record<FederationStateEventType, number> = {
       RELATIONSHIP_INTENT: 0,
@@ -128,7 +124,7 @@ export class FederationStateFeedConsumerService {
       const statePushLength = statePushDomains.length;
       const systemMessageLength = localSystemMessages.length;
       const threadRoundWakeLength = threadRoundWakes.length;
-      const profileResolutionLength = profileResolutions.length;
+      const profileDemandLength = profileDemands.length;
       await tx.execute(sql.raw(`SAVEPOINT ${savepoint}`));
       try {
         const wireItem = item as unknown as Record<string, unknown>;
@@ -256,11 +252,15 @@ export class FederationStateFeedConsumerService {
           }
           statePushDomains.push(...peers);
           if (body.status !== 'REVOKED' && Number(body.profileRev) > 0) {
-            profileResolutions.push({
-              userId: localUser.id,
-              account: normalizeAccount(item.account),
-              domain: peerDomain,
-              rev: Number(body.profileRev),
+            profileDemands.push({
+              namespaceId,
+              lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
+              target: {
+                account: normalizeAccount(item.account),
+                domain: peerDomain,
+                rev: Number(body.profileRev),
+              },
+              peerAccount: localUser.account,
             });
           }
           if (effect.threadId !== undefined) {
@@ -389,25 +389,16 @@ export class FederationStateFeedConsumerService {
                 peers,
               );
               if (body.status !== 'REVOKED' && Number(body.profileRev) > 0) {
-                const managers = (
-                  await readCurrentGroupRosterInTx(tx, groupState.id)
-                ).filter(
-                  (candidate) =>
-                    candidate.domain === 'local' &&
-                    (candidate.role === GroupRole.OWNER ||
-                      candidate.role === GroupRole.ADMIN),
-                );
-                for (const manager of await localAccountsForTargetsInTx(
-                  tx,
-                  managers,
-                )) {
-                  profileResolutions.push({
-                    userId: manager.id,
+                profileDemands.push({
+                  namespaceId,
+                  lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
+                  target: {
                     account: normalizeAccount(item.account),
                     domain: peerDomain,
                     rev: Number(body.profileRev),
-                  });
-                }
+                  },
+                  peerAccount: normalizeAccount(item.peerAccount),
+                });
               }
             }
           } catch (error) {
@@ -417,29 +408,16 @@ export class FederationStateFeedConsumerService {
           }
           statePushDomains.push(...peers);
           if (inviteDirection && Number(body.profileRev) > 0) {
-            const [localMember] = await tx
-              .select({ id: tables.account.id })
-              .from(tables.account)
-              .where(
-                and(
-                  eq(
-                    tables.account.account,
-                    normalizeAccount(item.peerAccount),
-                  ),
-                  eq(tables.account.domain, 'local'),
-                  eq(tables.account.namespaceId, 0),
-                  eq(tables.account.availability, 'AVAILABLE'),
-                ),
-              )
-              .limit(1);
-            if (localMember) {
-              profileResolutions.push({
-                userId: localMember.id,
+            profileDemands.push({
+              namespaceId,
+              lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
+              target: {
                 account: normalizeAccount(item.account),
                 domain: peerDomain,
                 rev: Number(body.profileRev),
-              });
-            }
+              },
+              peerAccount: normalizeAccount(item.peerAccount),
+            });
           }
           if (effect.threadId !== undefined) {
             threadRoundWakes.push({
@@ -556,7 +534,7 @@ export class FederationStateFeedConsumerService {
         statePushDomains.length = statePushLength;
         localSystemMessages.length = systemMessageLength;
         threadRoundWakes.length = threadRoundWakeLength;
-        profileResolutions.length = profileResolutionLength;
+        profileDemands.length = profileDemandLength;
         if (!(error instanceof PermanentFederationItemError)) throw error;
         this.logger.error(
           `ignored invalid state-feed item from ${peerDomain} at ${item.feedId}: ${error.message}`,
@@ -576,7 +554,7 @@ export class FederationStateFeedConsumerService {
       statePushDomains,
       localSystemMessages,
       threadRoundWakes,
-      profileResolutions,
+      profileDemands,
     };
   }
 

@@ -6,7 +6,7 @@ import * as tables from '../src/database/schema.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
-import { ProfileResolutionCoordinatorService } from '../src/federation/profile-resolution-coordinator.service.js';
+import { ProfileResolutionCoordinatorService } from '../src/profile-resolution/profile-resolution-coordinator.service.js';
 import { BusinessCode } from '../src/common/business-code.js';
 
 describe('local-author profiles referenced by a foreign authoritative group', () => {
@@ -17,16 +17,9 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
   let profiles: FederationProfileService;
   const domain = loadFederationConfig().domain;
   const account = 'local-profile-viewer';
-  const peerHttp = { get: vi.fn() };
   const sse = { onProfileResolved: vi.fn(), onProfileFailed: vi.fn() };
   const coordinator = () =>
-    new ProfileResolutionCoordinatorService(
-      database,
-      peerHttp as never,
-      profiles,
-      {} as never,
-      sse as never,
-    );
+    new ProfileResolutionCoordinatorService(database, profiles, sse as never);
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -147,7 +140,6 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
         status: 'READY',
         profile: { rev: 1, name: 'Local historical' },
       });
-      expect(peerHttp.get).not.toHaveBeenCalled();
     },
   );
 
@@ -165,7 +157,6 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
         status: 'READY',
         profile: { rev: 1, name: 'Local historical' },
       });
-      expect(peerHttp.get).not.toHaveBeenCalled();
     },
   );
 
@@ -178,7 +169,6 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
         rev: 3,
       }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
-    expect(peerHttp.get).not.toHaveBeenCalled();
     expect(sse.onProfileFailed).not.toHaveBeenCalled();
   });
 

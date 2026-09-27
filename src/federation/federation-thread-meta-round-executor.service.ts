@@ -8,11 +8,14 @@ import {
 } from '../group/meta/apply-delta-mirror-meta-item-in-tx.js';
 import { applyFullMirrorMetaBatchInTx } from '../group/meta/apply-full-mirror-meta-batch-in-tx.js';
 import {
+  normalizeMirrorMetaReplicatedItem,
   reopenMirrorMetaRecoveryInTx,
   type MirrorGroupAddress,
   type MirrorMetaReplicatedItem,
 } from '../group/meta/mirror-meta-shared.js';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MessageService } from '../message/message.service.js';
+import { MESSAGE_PROFILE_WORK_COMMITTED } from '../message/message-profile-work.event.js';
 import {
   isValidSomfpDomain,
   isValidSomfpUserAccount,
@@ -24,6 +27,7 @@ import { DatabaseService } from '../database/database.service.js';
 import { GroupRole } from '../database/enums.js';
 import { RemoteGroupMetaCursorUnavailableError } from './federation-feed-cursor-error.js';
 import { FederationGroupMetaClient } from './federation-group-meta-client.service.js';
+import { ProfileResolutionCoordinatorService } from '../profile-resolution/profile-resolution-coordinator.service.js';
 import type { GroupMetaFeedItem } from './group-meta-feed.service.js';
 
 /** Page budget for one scheduler invocation; the scheduler requeues while the
@@ -53,6 +57,8 @@ export class FederationThreadMetaRoundExecutorService {
     private readonly database: DatabaseService,
     private readonly client: FederationGroupMetaClient,
     private readonly messages: MessageService,
+    private readonly profileResolutions: ProfileResolutionCoordinatorService,
+    private readonly events: EventEmitter2,
   ) {}
 
   /** Returns true when another round is needed: the page budget ran out
@@ -142,7 +148,9 @@ export class FederationThreadMetaRoundExecutorService {
       });
       if (fetched.groupMetaFeedEndId < plan.metaTargetId)
         throw new Error('group-meta page did not reach its fixed target');
-      const items = fetched.items.map((item) => validateItem(item, 'delta'));
+      const items = fetched.items
+        .map((item) => validateItem(item, 'delta'))
+        .map((item) => normalizeMirrorMetaReplicatedItem(group, item));
       const reachedBoundary = !fetched.hasMore;
       if (items.length === 0 && reachedBoundary) {
         await this.database.db.transaction(async (tx) =>
@@ -155,7 +163,7 @@ export class FederationThreadMetaRoundExecutorService {
         return false;
       }
       for (const [index, item] of items.entries()) {
-        await this.database.db.transaction(async (tx) =>
+        const effect = await this.database.db.transaction(async (tx) =>
           applyDeltaMirrorMetaItemInTx(tx, {
             group,
             item,
@@ -164,6 +172,14 @@ export class FederationThreadMetaRoundExecutorService {
             messages: this.messages,
           }),
         );
+        await this.prefetchProfiles(
+          effect.profileDemand ? [effect.profileDemand] : [],
+        );
+        if (effect.systemMessageProfileWork)
+          this.events.emit(
+            MESSAGE_PROFILE_WORK_COMMITTED,
+            effect.systemMessageProfileWork,
+          );
       }
       after = fetched.scannedThrough;
       if (!fetched.hasMore) return false;
@@ -187,11 +203,13 @@ export class FederationThreadMetaRoundExecutorService {
         after,
         through,
       });
-      const items = page.items.map((item) => validateItem(item, 'full'));
+      const items = page.items
+        .map((item) => validateItem(item, 'full'))
+        .map((item) => normalizeMirrorMetaReplicatedItem(group, item));
       const reachedBoundary = !page.hasMore;
       snapshot.push(...items);
       if (reachedBoundary) {
-        await this.database.db.transaction(async (tx) =>
+        const effect = await this.database.db.transaction(async (tx) =>
           applyFullMirrorMetaBatchInTx(tx, {
             group,
             items: snapshot,
@@ -200,12 +218,26 @@ export class FederationThreadMetaRoundExecutorService {
             reachedBoundary: true,
           }),
         );
+        await this.prefetchProfiles(effect.profileDemands);
 
         return;
       }
       if (pages >= MAX_FULL_SNAPSHOT_PAGES)
         throw new Error('full group-meta snapshot exceeded the page ceiling');
       after = page.scannedThrough;
+    }
+  }
+
+  private async prefetchProfiles(
+    demands: readonly import('../profile-resolution/profile-resolution-demand.js').ProfilePrefetchDemand[],
+  ): Promise<void> {
+    for (const demand of demands) {
+      try {
+        await this.profileResolutions.resolveDemand(demand);
+      } catch {
+        // Meta is already committed. Snapshot prefetch is opportunistic and
+        // may be retried by a later Meta reference or client demand.
+      }
     }
   }
 }

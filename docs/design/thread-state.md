@@ -1,88 +1,68 @@
 # Account-owned thread state
 
-`THREAD_STATE` is a complete compacted client state-feed snapshot keyed by the
-local account and thread ID. It replaces `THREAD_BLOCK`. Relationship intents
-continue to drive request UI, but clients do not fold them into conversations.
+An `AccountThreadState` row is the authoritative compacted snapshot for an
+established account/thread pair. `POST /api/v1/thread-feed` returns its content
+coordinates, attention state, conversation identity, lifecycle, and exact
+profile reference together. The client state feed still publishes relationship
+and request events, but no longer publishes `THREAD_STATE` projections.
 
-The snapshot contains the thread type and authority namespace, `ACTIVE` or
-`READ_ONLY` lifecycle, establishment time, blocking flag, local group role, and
-an exact default profile reference (`account`, `domain`, `namespaceId`,
-`profileRev`). Profile bytes are resolved separately.
+A snapshot includes `threadId`, `threadFeedId`, `type`,
+`authorityNamespaceId`, `ACTIVE` or `READ_ONLY` `conversationState`, `blocked`,
+nullable group `role`, and `profile: { account, domain, namespaceId,
+profileRev }`. It also carries message and tombstone heads, unread/read state,
+nullable alias, group/request coordinates, `threadProfileRev`, and optionally
+bounded previews. No establishment timestamp is sent: the account/thread
+state row's creation time is not necessarily the time a relationship became
+active, and the list orders by `threadFeedId` rather than a timestamp.
 
 ## Publication and retention
 
-The relationship-establishment transaction publishes the snapshot for each
-local participant. Participant insertion and block/role changes also refresh
-it from authoritative facts. A request shell without an established pair does
-not publish a snapshot. PostgreSQL triggers centralize these writes so local,
-federated, and forced-revocation paths obey the same atomic contract.
+Establishment, revocation, block and role changes publish an updated thread
+snapshot in the same database transaction. A request without an established
+relationship publishes no thread snapshot and creates no local `PENDING`
+conversation. Revocation retains the conversation and its profile reference
+with a `READ_ONLY` lifecycle. Account feed IDs allocate under the account lock;
+clients can replay a fixed-range feed without missing a committed update.
 
-The profile reference is copied from the opposite authored intent when the
-relationship becomes active. Ordinary profile updates, blocking, and revocation
-do not change it. Re-establishing a retained relationship refreshes the reference
-and establishment time. A duplicate activation does neither. Revocation retains
-the snapshot and default profile reference with `READ_ONLY` state.
+The P2P profile reference starts from the opposite participant's relationship
+intent revision. After establishment, only an authored message from that peer
+can advance the thread's avatar revision. Group avatar revisions advance only
+from `GROUP_PROFILE` meta. An ordinary profile update, block, or replay cannot
+advance the thread avatar. The thread state stores one `threadProfileRev`;
+clients combine it with the stable profile identity when reading their lists.
 
-The migration backfills established conversations, including empty and retained
-read-only conversations, and removes old `THREAD_BLOCK` snapshots. Full state
-queries include unblocked conversations. Existing state-feed wakes remain in
-use. Business transactions capture the state and thread heads affected by
-conversation changes, then publish them through the existing SSE notification
-methods and per-account throttles after commit. The synchronous read-position
-business command also publishes its committed thread head. There is no periodic head query or database
-notification listener for these feeds; SSE reconnects recover via `HELLO`.
+This is a breaking client-cache revision: Web IndexedDB and native SQLite
+recreate local storage without importing old state-feed projections. It never
+deletes server conversations or messages. SSE `THREAD_FEED_UPDATED` only wakes
+the client to pull pages; `HELLO.threadFeedEndId` allows reconnect recovery.
 
-## Independent feed consumption
+## Client consumption
 
-The thread feed owns message coordinates, previews, read positions and counts.
-The client state feed owns conversation identity and visibility. Their cursors
-are independent.
+The thread feed alone creates and updates local conversations, including
+blocked state, role, and lifecycle. Its page and cursor commit atomically.
+Local read position remains independent from the server snapshot. Up to three
+previews may be used for immediate rendering and notification decisions, but
+only the greatest-sequence preview is persisted per thread; an empty preview
+array removes the stored preview. Missing required fields, including the
+requested `previews` array, fail the page instead of advancing its cursor.
+Relationship-intent events still maintain request UI projections, not the
+conversation list. The group roster remains in the independent group-meta
+feed, with its own cursor and reset behavior.
 
-If the thread feed arrives first, its atomic page commit saves the attention
-snapshot and an invisible `PENDING` thread-list record. `THREAD_STATE` promotes
-that record to a visible conversation without overwriting attention data. If
-state arrives first, later thread feed pages preserve the established identity.
-Browser IndexedDB and native SQLite implement the same ordering contract.
+## Exact profile resolution
 
-New or re-established conversations are ordered by server establishment time
-alongside message activity, within the existing pin tiers. Block updates and
-replays do not promote an existing conversation. Read-only and re-establishment
-snapshots preserve the cached group roster and its cursor; membership data continues
-to follow the independent group-meta feed. If its cursor is unavailable, the client
-clears that roster and resets its cursor before requesting full pages. A failed
-rebuild leaves the reset cursor ready for the next full attempt. Full recovery hides old rows
-until their authoritative snapshots are replayed. Renderer writes cannot
-replace a newer persisted state-feed snapshot.
+Clients resolve the thread profile via the existing `EXACT` profile selector.
+The server checks the authenticated account's established relationship,
+matching account/thread state revision, namespace, and profile identity before
+cache lookup; separate request, message-author, and group-member grants remain.
+Different revisions have different in-flight resolution keys. Clients check
+the current session, identity, namespace, and revision before applying results.
+A zero revision is a placeholder and triggers no profile request. Revoked
+conversations may display a locally retained profile without overriding
+federation disclosure policy.
 
-## Exact default profile resolution
-
-Clients call the existing profile-resolution endpoint with:
-
-```ts
-{
-  type: 'EXACT', account, domain, rev;
-}
-```
-
-The endpoint authorizes the exact reference against a matching `THREAD_STATE`
-owned by the authenticated account. The stored namespace must match the
-resolved namespace. Active request grants remain available for request UI;
-message and group-member selectors retain their own authorization rules.
-Authorization precedes both memory-cache and durable-profile lookup.
-
-There is no thread-default selector or extra frontend scheduler context.
-Different exact revisions naturally have different in-flight keys. Clients
-check the current identity, revision, namespace and session before applying a
-completion. A message-selected P2P profile is not overwritten by the default.
-
-A zero revision is a placeholder and causes no profile request. A revoked
-conversation may read a locally retained profile. If it was never cached and
-the peer no longer discloses it, the client retains its placeholder; local
-state does not override federation disclosure policy. Federation HTTP endpoints
-are unchanged.
-
-Implementation: [migration](../../database/migrations/0000_base.sql),
-[selectors](../../shared/profile-selector.ts),
+Implementation: [thread feed](../../src/message/thread-feed.service.ts),
+[migration](../../database/migrations/0001_unified_thread_feed.sql),
 [profile authorization](../../src/federation/profile-resolution-coordinator.service.ts),
 [browser projection](../../web/src/app/services/thread-state-projection.ts),
-[native projection](../../src-tauri/src/native_db/client_state.rs).
+[native projection](../../src-tauri/src/native_db/attention.rs).

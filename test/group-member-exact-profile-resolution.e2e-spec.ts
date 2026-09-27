@@ -6,7 +6,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
-import { ProfileResolutionCoordinatorService } from '../src/federation/profile-resolution-coordinator.service.js';
+import { ProfileResolutionCoordinatorService } from '../src/profile-resolution/profile-resolution-coordinator.service.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 
 describe('exact profile completion for a federated group member', () => {
@@ -20,7 +20,6 @@ describe('exact profile completion for a federated group member', () => {
   const domain = 'member-profile-origin.test';
   const account = 'exact-profile-member';
   const viewer = 'exact-profile-viewer';
-  const peerHttp = { get: vi.fn() };
   const selector = { type: 'EXACT' as const, account, domain, rev: 2 };
 
   beforeAll(async () => {
@@ -83,9 +82,7 @@ describe('exact profile completion for a federated group member', () => {
     );
     subject = new ProfileResolutionCoordinatorService(
       database,
-      peerHttp as never,
       new FederationProfileService(database, {} as never, {} as never),
-      {} as never,
       {} as never,
     );
   });
@@ -109,7 +106,6 @@ describe('exact profile completion for a federated group member', () => {
       status: 'READY',
       profile: { namespaceId, rev: 2, name: 'Updated member' },
     });
-    expect(peerHttp.get).not.toHaveBeenCalled();
   });
 
   it('does not disclose a cached snapshot to an unrelated viewer or a revision absent from the roster', async () => {
@@ -154,7 +150,10 @@ describe('exact profile completion for a federated group member', () => {
     } finally {
       await database.db
         .update(tables.groupMetaMemberFeed)
-        .set({ operation: 'MEMBER_UPSERT', body: { role: 'OWNER', profileRev: 2 } })
+        .set({
+          operation: 'MEMBER_UPSERT',
+          body: { role: 'OWNER', profileRev: 2 },
+        })
         .where(member);
     }
   });

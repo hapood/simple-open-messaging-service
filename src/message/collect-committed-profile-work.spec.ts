@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  selectCommittedProfileCandidates,
+  collectCommittedProfileWork,
   type CommittedProfileMessage,
-} from './select-committed-profile-candidates.js';
+} from './collect-committed-profile-work.js';
 
 const alice = { account: 'alice', domain: 'local', namespaceId: 0 };
 const bob = { account: 'bob', domain: 'remote.test', namespaceId: 3 };
@@ -15,7 +15,6 @@ function committed(
   return {
     threadId: 11,
     threadType: 'P2P',
-    groupOriginDomain: null,
     content: JSON.stringify({ text: 'hello' }),
     seq,
     profileRev,
@@ -27,9 +26,9 @@ function committed(
   };
 }
 
-describe('selectCommittedProfileCandidates', () => {
+describe('collectCommittedProfileWork', () => {
   it('returns one greatest message per thread and full author address, not greatest rev', () => {
-    const selected = selectCommittedProfileCandidates([
+    const selected = collectCommittedProfileWork([
       committed(2, 30),
       committed(4, 0),
       committed(3, 40),
@@ -37,58 +36,80 @@ describe('selectCommittedProfileCandidates', () => {
       committed(9, 4, { creator: { ...bob, namespaceId: 4 } }),
       committed(5, 1, { threadId: 12 }),
     ]);
-    expect(selected).toEqual([
-      {
-        kind: 'PROJECTION',
-        threadId: 11,
-        messageSeq: 4,
-        profileRev: 0,
-        ...alice,
-      },
-      {
-        kind: 'PROJECTION',
-        threadId: 11,
-        messageSeq: 8,
-        profileRev: 7,
-        ...bob,
-      },
-      {
-        kind: 'PROJECTION',
-        threadId: 11,
-        messageSeq: 9,
-        profileRev: 4,
-        ...bob,
-        namespaceId: 4,
-      },
-      {
-        kind: 'PROJECTION',
-        threadId: 12,
-        messageSeq: 5,
-        profileRev: 1,
-        ...alice,
-      },
-    ]);
+    expect(selected).toEqual({
+      demands: [
+        {
+          namespaceId: 0,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { account: 'alice', domain: 'local', rev: 0 },
+        },
+        {
+          namespaceId: 3,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { account: 'bob', domain: 'remote.test', rev: 7 },
+        },
+        {
+          namespaceId: 4,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { account: 'bob', domain: 'remote.test', rev: 4 },
+        },
+        {
+          namespaceId: 0,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { account: 'alice', domain: 'local', rev: 1 },
+        },
+      ],
+      evidenceProjections: [
+        {
+          profile: { namespaceId: 0, account: 'alice', domain: 'local', rev: 0 },
+          lookup: 'ACCOUNT_PROFILE',
+          projection: { threadId: 11, messageSeq: 4 },
+        },
+        {
+          profile: { namespaceId: 3, account: 'bob', domain: 'remote.test', rev: 7 },
+          lookup: 'ACCOUNT_PROFILE',
+          projection: { threadId: 11, messageSeq: 8 },
+        },
+        {
+          profile: { namespaceId: 4, account: 'bob', domain: 'remote.test', rev: 4 },
+          lookup: 'ACCOUNT_PROFILE',
+          projection: { threadId: 11, messageSeq: 9 },
+        },
+        {
+          profile: { namespaceId: 0, account: 'alice', domain: 'local', rev: 1 },
+          lookup: 'ACCOUNT_PROFILE',
+          projection: { threadId: 12, messageSeq: 5 },
+        },
+      ],
+    });
   });
 
   it('ignores deleted rows, uncommitted placeholders and malformed events', () => {
     expect(
-      selectCommittedProfileCandidates([
+      collectCommittedProfileWork([
         committed(10, 5),
         committed(11, 6, { localState: 'STUB' }),
         committed(12, 7, { localState: 'FAILED' }),
         committed(13, 8, { isDeleted: true }),
         committed(14, 9, { contentType: 'SYSTEM', content: '{invalid' }),
-        committed(15, 10, { creator: null }),
+        committed(15, 10, { contentType: 'SYSTEM', content: '{invalid' }),
       ]),
-    ).toEqual([
-      {
-        kind: 'PROJECTION',
-        threadId: 11,
-        messageSeq: 10,
-        profileRev: 5,
-        ...alice,
-      },
-    ]);
+    ).toEqual({
+      demands: [
+        {
+          namespaceId: 0,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { account: 'alice', domain: 'local', rev: 5 },
+        },
+      ],
+      evidenceProjections: [
+        {
+          profile: { namespaceId: 0, account: 'alice', domain: 'local', rev: 5 },
+          lookup: 'ACCOUNT_PROFILE',
+          projection: { threadId: 11, messageSeq: 10 },
+        },
+      ],
+    });
   });
 
   it('uses intent prefetch for a remote friend-add participant', () => {
@@ -111,37 +132,42 @@ describe('selectCommittedProfileCandidates', () => {
         }),
       });
     expect(
-      selectCommittedProfileCandidates([
+      collectCommittedProfileWork([
         system(4, 7),
         system(6, 7),
         system(8, 2),
       ]),
-    ).toEqual([
-      {
-        kind: 'PREFETCH',
-        lookup: 'RELATIONSHIP_INTENT_PROFILE',
-        threadId: 11,
-        eventSeq: 6,
-        ...bob,
-        profileRev: 7,
-      },
-      {
-        kind: 'PREFETCH',
-        lookup: 'RELATIONSHIP_INTENT_PROFILE',
-        threadId: 11,
-        eventSeq: 8,
-        ...bob,
-        profileRev: 2,
-      },
-    ]);
+    ).toEqual({
+      demands: [
+        {
+          lookup: 'RELATIONSHIP_INTENT_PROFILE',
+          namespaceId: 3,
+          target: { account: 'bob', domain: 'remote.test', rev: 7 },
+          peerAccount: 'alice',
+        },
+        {
+          lookup: 'RELATIONSHIP_INTENT_PROFILE',
+          namespaceId: 3,
+          target: { account: 'bob', domain: 'remote.test', rev: 2 },
+          peerAccount: 'alice',
+        },
+      ],
+      evidenceProjections: [],
+    });
   });
 
   it('returns group-member hints without turning a system seq into projection evidence', () => {
     const member = { ...bob, profileRev: 4 };
-    const selected = selectCommittedProfileCandidates([
-      committed(2, 10, { threadType: 'GROUP', creator: bob }),
+    const selected = collectCommittedProfileWork([
+      committed(2, 10, {
+        threadType: 'GROUP',
+        groupAccount: '!group',
+        groupOriginDomain: 'group-owner.test',
+        creator: bob,
+      }),
       committed(3, 0, {
         threadType: 'GROUP',
+        groupAccount: '!group',
         groupOriginDomain: 'group-owner.test',
         contentType: 'SYSTEM',
         creator: { account: '$system', domain: 'local', namespaceId: 0 },
@@ -149,6 +175,7 @@ describe('selectCommittedProfileCandidates', () => {
       }),
       committed(4, 0, {
         threadType: 'GROUP',
+        groupAccount: '!group',
         groupOriginDomain: 'group-owner.test',
         contentType: 'SYSTEM',
         content: JSON.stringify({
@@ -159,28 +186,36 @@ describe('selectCommittedProfileCandidates', () => {
       }),
       committed(5, 0, {
         threadType: 'GROUP',
+        groupAccount: '!group',
         groupOriginDomain: 'group-owner.test',
         contentType: 'SYSTEM',
         content: JSON.stringify({ type: 'GROUP_DISSOLVED' }),
       }),
     ]);
-    expect(selected).toEqual([
-      {
-        kind: 'PROJECTION',
-        threadId: 11,
-        messageSeq: 2,
-        profileRev: 10,
-        ...bob,
-      },
-      {
-        kind: 'PREFETCH',
-        lookup: 'GROUP_MEMBER_PROFILE',
-        threadId: 11,
-        eventSeq: 4,
-        profileRev: 4,
-        ...bob,
-      },
-    ]);
+    expect(selected).toEqual({
+      demands: [
+        {
+          namespaceId: 3,
+          lookup: 'GROUP_MEMBER_PROFILE',
+          groupAccount: '!group',
+          target: { account: 'bob', domain: 'remote.test', rev: 10 },
+        },
+        {
+          lookup: 'GROUP_MEMBER_PROFILE',
+          namespaceId: 3,
+          target: { account: 'bob', domain: 'remote.test', rev: 4 },
+          groupAccount: '!group',
+        },
+      ],
+      evidenceProjections: [
+        {
+          profile: { namespaceId: 3, account: 'bob', domain: 'remote.test', rev: 10 },
+          lookup: 'GROUP_MEMBER_PROFILE',
+          groupAccount: '!group',
+          projection: { threadId: 11, messageSeq: 2 },
+        },
+      ],
+    });
   });
 
   it('does not prefetch local members, own-group members, departures or unfriends', () => {
@@ -192,12 +227,13 @@ describe('selectCommittedProfileCandidates', () => {
     ) =>
       committed(seq, 0, {
         threadType: 'GROUP',
+        groupAccount: '!group',
         groupOriginDomain: origin,
         contentType: 'SYSTEM',
         content: JSON.stringify({ type, member }),
       });
     expect(
-      selectCommittedProfileCandidates([
+      collectCommittedProfileWork([
         groupEvent(1, 'local', 'GROUP_JOINED', { ...bob, profileRev: 3 }),
         groupEvent(2, 'group-owner.test', 'GROUP_JOINED', {
           ...alice,
@@ -223,10 +259,13 @@ describe('selectCommittedProfileCandidates', () => {
           }),
         }),
       ]),
-    ).toEqual([]);
+    ).toEqual({ demands: [], evidenceProjections: [] });
   });
 
   it('does not invent a candidate from an empty batch', () => {
-    expect(selectCommittedProfileCandidates([])).toEqual([]);
+    expect(collectCommittedProfileWork([])).toEqual({
+      demands: [],
+      evidenceProjections: [],
+    });
   });
 });

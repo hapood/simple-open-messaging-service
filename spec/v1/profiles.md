@@ -119,25 +119,27 @@ GET /s2s/v1/account-profiles/:account/:profileRev
 domain.
 
 For a user `Account`, the publisher MUST authorize the request by current
-serviceable single-chat message evidence for the authenticated signer domain.
-The publisher MUST find at least one currently readable P2P thread whose peer
-endpoint is hosted by the signer domain and at least one non-system message in
-that thread where:
+serviceable message evidence for an authenticated signer hosting the user's
+relationship counterpart. The publisher MUST find at least one non-system
+message authored by the requested `account` at the responding domain, carrying
+the requested `profileRev`, and lying within the signer's current serviceable
+message interval in either of these relationships:
 
-1. the message author is the requested `account` at the responding domain;
-2. the message carries the requested `profileRev`;
-3. the message `seq` is greater than the current lower serviceable message
-   boundary for that signer and thread; and
-4. the message `seq` is less than or equal to the current message read upper
-   bound for that signer and thread.
+- a currently readable P2P thread whose peer endpoint is hosted by the signer
+  domain; or
+- a currently confirmed membership of that user in a GROUP thread whose group
+  origin is hosted by the signer domain. Only the group origin may use this
+  relationship to fetch the member's account profile; another group member's
+  server is not the member's relationship counterpart for this operation.
 
-The read upper bound is derived by the publisher from the signer's current
-authorization and the published thread read range. The requester does not supply
-it. The requested
-`profileRev` MUST equal the `profileRev` carried by the qualifying message;
-when it matches, the publisher SHOULD return the exact snapshot. Recognition,
-knowledge of the account, knowledge of the revision, a stale thread-content head,
-or a message outside the current readable interval is not authorization proof.
+The publisher derives the lower and upper serviceable message boundaries from
+the signer's current relationship authorization and the published read range.
+The message `seq` MUST be greater than the lower boundary and no greater than
+the upper boundary; the requester does not supply either boundary. When the
+exact revision matches, the publisher SHOULD return its immutable snapshot.
+Recognition, membership in another group, knowledge of the account or revision,
+a stale thread-content head, or a message outside the current readable
+interval is not authorization proof.
 
 For a `GroupAccount`, the responding server MUST be the group origin. The origin
 MUST verify that the signer currently has an authorized Group Meta audience for
@@ -162,26 +164,35 @@ Path variables are:
 | `memberAccount` | `UserAccount` of the member                     |
 | `profileRev`    | Positive canonical decimal profile revision     |
 
-The group origin serves the complete member profile snapshot currently selected
-by its canonical Group Meta state. The operation is separate from Account
-Profile because the group origin may retain and disclose a member snapshot whose
-account is hosted by another domain. Member Profile evidence is the current
-Group Meta member-profile reference, not a group message.
+The group origin serves complete member profile snapshots for both the
+current Group Meta member reference and serviceable group messages. The
+operation is separate from Account Profile because the origin may retain and
+disclose a member snapshot whose account is hosted by another domain. The
+requester supplies the exact revision but no feed ID or message sequence.
 
 For every request the group origin MUST:
 
 1. resolve the origin-owned live group exactly;
 2. verify that the signer currently has an authorized Group Meta audience for
    that group;
-3. resolve the current Group Meta member-profile reference for the requested
-   `(memberDomain, memberAccount)`;
-4. verify that its `profileRev` equals the requested `profileRev`; and
-5. SHOULD return the exact immutable snapshot for that revision.
+3. verify at least one of these two proofs for the exact requested member and
+   revision:
+   - the current `MEMBER_UPSERT` for `(memberDomain, memberAccount)` has the
+     requested `profileRev`; or
+   - a non-system message authored by that member in this group carries the
+     requested `profileRev` and lies within the signer's current serviceable
+     message interval for the group; and
+4. SHOULD return the exact immutable snapshot for that revision.
 
-Recognition, knowledge of the member address, knowledge of the revision, a stale
-Group Meta item, or an earlier successful response is not authorization. A
-mirror MUST NOT serve this endpoint for a remote group and MUST NOT redirect
-another peer to the member's home server.
+For message evidence the origin derives both readable boundaries from the
+signer's current authorization and the published group read range; the
+requester does not choose the interval. The origin MUST check both applicable
+proofs and MUST NOT substitute a current Meta revision for the requested
+message-backed revision. Recognition, knowledge of the member address or
+revision, a stale Group Meta item, a message outside the current readable
+interval, or an earlier successful response is not authorization. A mirror
+MUST NOT serve this endpoint for a remote group and MUST NOT redirect another
+peer to the member's home server.
 
 ## 6. Intent Profile
 
@@ -218,11 +229,11 @@ account, opposite direction, peer account, peer domain, or revision.
 
 ## 7. Business no-data result
 
-For exact evidence profile operations, if the account, group, member, directed
-intent, authorization, requested revision, retained snapshot, readable message
-evidence, or the current Group Meta profile reference is unavailable or
-mismatched, the
-publisher returns HTTP `200 NOT_FOUND` with `data: null`. The publisher MUST NOT
+For any exact evidence profile operation, if its required account, group,
+member, authorization, exact revision, or retained snapshot is unavailable, or
+none of that operation's applicable intent, current Meta reference, or
+serviceable message proofs matches, the publisher returns HTTP `200 NOT_FOUND`
+with `data: null`. The publisher MUST NOT
 reveal which condition caused the no-data result, MUST NOT return generic
 `FORBIDDEN`, and MUST NOT mutate relationship, membership, Group Meta, peer
 lifecycle, or cursor state.

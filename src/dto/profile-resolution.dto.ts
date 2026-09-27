@@ -1,0 +1,84 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import {
+  IsDefined,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsString,
+  Min,
+  ValidateIf,
+  ValidateNested,
+} from 'class-validator';
+
+export class ProfileResolutionTargetDto {
+  @ApiProperty()
+  @IsDefined()
+  @IsString()
+  @IsNotEmpty()
+  account!: string;
+
+  @ApiProperty()
+  @IsDefined()
+  @IsString()
+  @IsNotEmpty()
+  domain!: string;
+
+  @ApiProperty({ minimum: 1 })
+  @IsDefined()
+  @IsInt()
+  @Min(1)
+  rev!: number;
+}
+
+/** Validated server demand accepted by the profile-resolution endpoint. */
+export class ProfileResolutionDto {
+  @ApiProperty({ minimum: 0 })
+  @IsDefined()
+  @IsInt()
+  @Min(0)
+  namespaceId!: number;
+
+  @ApiProperty({
+    enum: [
+      'ACCOUNT_PROFILE',
+      'RELATIONSHIP_INTENT_PROFILE',
+      'GROUP_MEMBER_PROFILE',
+    ],
+  })
+  @IsDefined()
+  @IsIn([
+    'ACCOUNT_PROFILE',
+    'RELATIONSHIP_INTENT_PROFILE',
+    'GROUP_MEMBER_PROFILE',
+  ])
+  lookup!:
+    | 'ACCOUNT_PROFILE'
+    | 'RELATIONSHIP_INTENT_PROFILE'
+    | 'GROUP_MEMBER_PROFILE';
+
+  @ApiProperty({ type: ProfileResolutionTargetDto })
+  @IsDefined()
+  @ValidateNested()
+  @Type(() => ProfileResolutionTargetDto)
+  target!: ProfileResolutionTargetDto;
+
+  @ApiPropertyOptional()
+  @ValidateIf(
+    (value: ProfileResolutionDto) =>
+      value.lookup === 'RELATIONSHIP_INTENT_PROFILE',
+  )
+  @IsDefined()
+  @IsString()
+  @IsNotEmpty()
+  peerAccount?: string;
+
+  @ApiPropertyOptional()
+  @ValidateIf(
+    (value: ProfileResolutionDto) => value.lookup === 'GROUP_MEMBER_PROFILE',
+  )
+  @IsDefined()
+  @IsString()
+  @IsNotEmpty()
+  groupAccount?: string;
+}

@@ -7,6 +7,8 @@ import {
 } from '../../database/schema.js';
 import { enqueueThreadFanoutInTx } from '../../message/thread-fanout-task.js';
 import { requireGroupThreadContentLockUnderGroupInTx } from '../../common/locks/thread-content-lock.js';
+import type { ProfilePrefetchDemand } from '../../profile-resolution/profile-resolution-demand.js';
+import { selectMirrorMetaProfileDemand } from './select-mirror-meta-profile-demand.js';
 import { upsertCurrentGroupMetaFactsInTx } from './current-group-meta-fact.js';
 import type {
   MirrorGroupAddress,
@@ -41,6 +43,7 @@ export async function applyFullMirrorMetaBatchInTx(
   input: FullMirrorMetaBatchInput,
 ): Promise<{
   threadId: number;
+  profileDemands: ProfilePrefetchDemand[];
 }> {
   await lockMirrorGroupInTx(tx, input.group);
   const mirror = await requireMirrorMetaInTx(tx, input.group);
@@ -58,9 +61,14 @@ export async function applyFullMirrorMetaBatchInTx(
   await tx
     .delete(groupMetaMemberFeed)
     .where(eq(groupMetaMemberFeed.threadId, mirror.threadId));
+  const profileDemands = input.items
+    .map((item) => selectMirrorMetaProfileDemand(input.group, item))
+    .filter((demand): demand is ProfilePrefetchDemand => demand !== null);
   const facts = input.items.flatMap((item) => {
     if (item.operation === 'MEMBER_DEPART')
-      throw new Error('a full group-meta snapshot cannot contain MEMBER_DEPART');
+      throw new Error(
+        'a full group-meta snapshot cannot contain MEMBER_DEPART',
+      );
     return item.operation === 'GROUP_ANNOUNCEMENT'
       ? []
       : [currentMirrorMetaFact(mirror.threadId, input.group, item)];
@@ -113,5 +121,5 @@ export async function applyFullMirrorMetaBatchInTx(
     input.scannedThrough,
     input.through,
   );
-  return { threadId: mirror.threadId };
+  return { threadId: mirror.threadId, profileDemands };
 }

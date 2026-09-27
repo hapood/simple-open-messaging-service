@@ -322,6 +322,65 @@ describe('federation message context isolation', () => {
     expect(notifyFeedUpdates).not.toHaveBeenCalled();
   });
 
+  it('executes profile fetch and evidence work carried by the committed message effect', async () => {
+    const service = Object.create(
+      FederationService.prototype,
+    ) as FederationService & Record<string, unknown>;
+    const resolveDemand = vi.fn().mockResolvedValue(undefined);
+    const resolveEvidence = vi.fn().mockResolvedValue(undefined);
+    const demand = {
+      namespaceId: 7,
+      lookup: 'GROUP_MEMBER_PROFILE',
+      target: {
+        account: 'bob',
+        domain: 'member.test',
+        rev: 4,
+      },
+      groupAccount: '!group',
+    };
+    const evidence = {
+      profile: {
+        namespaceId: 7,
+        account: 'bob',
+        domain: 'member.test',
+        rev: 4,
+      },
+      lookup: 'GROUP_MEMBER_PROFILE',
+      groupAccount: '!group',
+      projection: { threadId: 9, messageSeq: 70 },
+    };
+    Object.assign(service, {
+      config: { forwardedResourcePolicy: 'trust' },
+      profileResolutions: { resolveDemand },
+      profileEvidenceProjections: { resolve: resolveEvidence },
+      forwardBundles: { rebuildUntrustedCards: vi.fn() },
+    });
+
+    await service.publishMessageQueryEffects('origin.test', [
+      {
+        kind: 'message',
+        historical: true,
+        threadId: 9,
+        originSeq: 70,
+        recipients: [],
+        toAccount: '!group',
+        author: { account: 'bob', domain: 'member.test' },
+        profileDemand: demand,
+        profileEvidenceProjection: evidence,
+        message: {
+          seq: 70,
+          createdAt: new Date(),
+          isDeleted: false,
+        },
+      },
+    ] as never);
+
+    expect(resolveDemand).toHaveBeenCalledOnce();
+    expect(resolveDemand).toHaveBeenCalledWith(demand);
+    expect(resolveEvidence).toHaveBeenCalledOnce();
+    expect(resolveEvidence).toHaveBeenCalledWith(evidence);
+  });
+
   it.each([
     ['trust', 0],
     ['rebuild', 1],

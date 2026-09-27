@@ -47,6 +47,7 @@ import { FederationThreadFanoutTaskHandler } from './federation-thread-fanout-ta
 import { GroupRelationshipMutationService } from '../group/membership-intent/shared/group-relationship-mutation.service.js';
 import { FederationNamespaceService } from './federation-namespace.service.js';
 import { FederationStateFeedConsumerService } from './federation-state-feed-consumer.service.js';
+import { MessageProfileWorkDispatcherService } from './message-profile-work-dispatcher.service.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 import { FederationHealthSchedulerService } from './federation-health-scheduler.service.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
@@ -70,8 +71,9 @@ import { FederationStateFeedHeadClient } from './federation-state-feed-head-clie
 import { FederationStateFeedPushSchedulerService } from './federation-state-feed-push-scheduler.service.js';
 import { FederationPeerResourceService } from './federation-peer-resource.service.js';
 import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
-import { ProfileResolutionCoordinatorService } from './profile-resolution-coordinator.service.js';
-import { ProfileResolutionController } from './profile-resolution.controller.js';
+import { ProfileEvidenceProjectionService } from '../profile-resolution/profile-evidence-projection.service.js';
+import { ProfileResolutionCoordinatorService } from '../profile-resolution/profile-resolution-coordinator.service.js';
+import { ProfileResolutionController } from '../profile-resolution/profile-resolution.controller.js';
 import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 import { FederationDownloadAdminService } from './federation-download-admin.service.js';
@@ -243,6 +245,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     FederationPeerLifecycle,
     FederationHealthSchedulerService,
     FederationPeerHttp,
+    ProfileEvidenceProjectionService,
     ProfileResolutionCoordinatorService,
     QuoteResolutionCoordinatorService,
     FederationMediaRangeClient,
@@ -297,8 +300,8 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     FederationThreadContentHeadService,
     GroupRelationshipMutationService,
     FederationNamespaceService,
-    ProfileResolutionCoordinatorService,
     FederationStateFeedConsumerService,
+    MessageProfileWorkDispatcherService,
   ],
   exports: [
     UserIntentService,

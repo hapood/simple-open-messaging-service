@@ -103,6 +103,35 @@ describe('framework SSE streams', () => {
     svc.onModuleDestroy();
   });
 
+  it('sends profile wakes only to the indexed current session stream', () => {
+    const { svc } = makeService();
+    const old = connect(svc, 7, 11);
+    const current = connect(svc, 7, 11);
+    const sameUserOtherSession = connect(svc, 7, 22);
+    const otherUserSameSessionId = connect(svc, 8, 33);
+    svc.onProfileAvailable(11, {
+      namespaceId: 4,
+      account: 'alice',
+      domain: 'remote.test',
+      rev: 9,
+    });
+    expect(eventsOf(old, 'PROFILE_AVAILABLE')).toHaveLength(0);
+    expect(eventsOf(current, 'PROFILE_AVAILABLE')).toHaveLength(1);
+    expect(eventsOf(sameUserOtherSession, 'PROFILE_AVAILABLE')).toHaveLength(0);
+    expect(eventsOf(otherUserSameSessionId, 'PROFILE_AVAILABLE')).toHaveLength(0);
+
+    current.subscription.unsubscribe();
+    svc.onProfileUnavailable(11, {
+      namespaceId: 4,
+      account: 'alice',
+      domain: 'remote.test',
+      rev: 9,
+      reason: 'NOT_FOUND',
+    });
+    expect(eventsOf(current, 'PROFILE_UNAVAILABLE')).toHaveLength(0);
+    svc.onModuleDestroy();
+  });
+
   it('sends push revision only to matching sessions and thread wake-up only to its user', () => {
     const { svc } = makeService();
     const a = connect(svc, 7, 11);

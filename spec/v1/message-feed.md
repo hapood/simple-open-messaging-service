@@ -217,8 +217,7 @@ backward.
 
 A reverse message batch is not reconciled until the consumer has applied the
 required Group Meta state and every authoritative tombstone it has already
-discovered for that batch. Display profiles MAY be resolved lazily per message
-and do not block message-coordinate acceptance.
+discovered for that batch. Resolving profile snapshots does not block message-coordinate acceptance.
 
 ## 4. Authorization and state reconciliation
 
@@ -266,20 +265,22 @@ tombstone drain, but it does not complete reconciliation of that interval until
 both results have been applied. For a GROUP interval, it SHOULD first commit
 the required role-and-profile-reference Group Meta coordinate. If Group Meta has not converged, the
 stable author Address remains valid, the consumer MUST continue Group Meta
-drain, and it MUST NOT infer a role or current-membership state. The consumer
-MAY fetch display data using [Account Profile](./profiles.md#4-account-profile-by-current-account-evidence)
-after accepting the message coordinate. For P2P thread display, the greatest
-committed `seq` authored by the peer selects its carried `profileRev`; the
-consumer MUST NOT compare revision numbers or let a self-authored message
-replace the peer selection. Media and forward bundles continue to use the exact
+drain, and it MUST NOT infer a role or current-membership state. For P2P
+thread display, the greatest committed `seq` authored by the peer selects its
+carried `profileRev`; the consumer resolves the exact snapshot through
+[Account Profile](./profiles.md#4-account-profile-by-current-account-evidence).
+It MUST NOT compare revision numbers or let a self-authored message replace
+the peer selection. Media and forward bundles continue to use the exact
 message binding in [Resources](./resources.md).
 
-For group member display, a consumer SHOULD keep the selected revision scoped
-to `(group thread, author Address)`. Within that scope, the greatest committed
-message `seq` authored by that member selects its carried `profileRev`.
-Selection in one group MUST NOT replace the member display selection in another
-group. This local materialization rule does not add member profile data to
-Group Meta and does not change group-profile selection for the thread avatar.
+Within each group and member Address, the greatest committed non-system message
+`seq` in the current membership interval selects a candidate member
+`profileRev` at the group origin. A different
+revision may be published as a new `MEMBER_UPSERT` through
+[Group Meta](./group-meta.md) after the origin obtains its exact snapshot when
+positive; a later eligible message may retry an omitted replacement. [Group Member Profile](./profiles.md#5-group-member-profile) serves
+member revisions under the group's authorization rules. Member messages do
+not change the group's `GROUP_PROFILE` reference.
 
 ## 5. Query-specific deferral results
 

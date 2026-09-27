@@ -1,5 +1,10 @@
-import type { ProfileSelector } from '../../shared/profile-selector.js';
+import { ProfileResolutionDto } from '../dto/profile-resolution.dto.js';
 import {
+  ProfileLookup,
+  type ProfileClientResolutionDemand,
+} from './profile-resolution-demand.js';
+import {
+  BadRequestException,
   Body,
   Controller,
   HttpCode,
@@ -21,61 +26,23 @@ export class ProfileResolutionController {
   @HttpCode(HttpStatus.OK)
   @ApiBody({
     schema: {
-      discriminator: { propertyName: 'type' },
-      oneOf: [
-        {
-          type: 'object',
-          required: ['type', 'account', 'domain', 'rev'],
-          properties: {
-            type: { type: 'string', enum: ['EXACT'] },
-            account: { type: 'string' },
-            domain: { type: 'string' },
-            rev: { type: 'integer', minimum: 1 },
-          },
-          additionalProperties: false,
+      type: 'object',
+      required: ['namespaceId', 'lookup', 'target'],
+      properties: {
+        namespaceId: { type: 'integer', minimum: 0 },
+        lookup: {
+          type: 'string',
+          enum: [
+            'ACCOUNT_PROFILE',
+            'RELATIONSHIP_INTENT_PROFILE',
+            'GROUP_MEMBER_PROFILE',
+          ],
         },
-        {
-          type: 'object',
-          required: ['type', 'threadId', 'messageSeq', 'rev'],
-          properties: {
-            type: { type: 'string', enum: ['MESSAGE_AUTHOR'] },
-            threadId: { type: 'integer', minimum: 1 },
-            messageSeq: { type: 'integer', minimum: 1 },
-            rev: { type: 'integer', minimum: 1 },
-          },
-          additionalProperties: false,
-        },
-        {
-          type: 'object',
-          required: ['type', 'threadId', 'profileRev', 'subject'],
-          properties: {
-            type: { type: 'string', enum: ['GROUP_META'] },
-            threadId: { type: 'integer', minimum: 1 },
-            profileRev: { type: 'integer', minimum: 1 },
-            subject: {
-              oneOf: [
-                {
-                  type: 'object',
-                  required: ['type'],
-                  properties: { type: { type: 'string', enum: ['GROUP'] } },
-                  additionalProperties: false,
-                },
-                {
-                  type: 'object',
-                  required: ['type', 'account', 'domain'],
-                  properties: {
-                    type: { type: 'string', enum: ['MEMBER'] },
-                    account: { type: 'string' },
-                    domain: { type: 'string' },
-                  },
-                  additionalProperties: false,
-                },
-              ],
-            },
-          },
-          additionalProperties: false,
-        },
-      ],
+        target: { type: 'object' },
+        peerAccount: { type: 'string' },
+        groupAccount: { type: 'string' },
+      },
+      additionalProperties: false,
     },
   })
   @ApiOkResponse({
@@ -133,11 +100,54 @@ export class ProfileResolutionController {
       ],
     },
   })
-  start(
-    @Req() req: FastifyRequest,
-    @Body()
-    body: ProfileSelector,
-  ) {
-    return this.coordinator.start(req.user.userId, body);
+  start(@Req() req: FastifyRequest, @Body() body: ProfileResolutionDto) {
+    const sessionId = req.user.sessionId;
+    if (sessionId === undefined || sessionId === null)
+      throw new Error('authenticated profile resolution requires a session');
+    return this.coordinator.start(
+      req.user.userId,
+      sessionId,
+      toProfileClientResolutionDemand(body),
+    );
+  }
+}
+
+function toProfileClientResolutionDemand(
+  body: ProfileResolutionDto,
+): ProfileClientResolutionDemand {
+  if (
+    (body.namespaceId === 0 && body.target.domain !== 'local') ||
+    (body.namespaceId !== 0 && body.target.domain === 'local')
+  )
+    throw new BadRequestException(
+      'profile demand domain must use local for namespace 0 and a remote domain otherwise',
+    );
+
+  const target = {
+    account: body.target.account,
+    domain: body.target.domain,
+    rev: body.target.rev,
+  };
+  switch (body.lookup) {
+    case 'ACCOUNT_PROFILE':
+      return {
+        namespaceId: body.namespaceId,
+        lookup: ProfileLookup.ACCOUNT_PROFILE,
+        target,
+      };
+    case 'RELATIONSHIP_INTENT_PROFILE':
+      return {
+        namespaceId: body.namespaceId,
+        lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
+        target,
+        peerAccount: body.peerAccount!,
+      };
+    case 'GROUP_MEMBER_PROFILE':
+      return {
+        namespaceId: body.namespaceId,
+        lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
+        target,
+        groupAccount: body.groupAccount!,
+      };
   }
 }

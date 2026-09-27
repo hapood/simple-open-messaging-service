@@ -17,15 +17,19 @@ describe('FederationStatePullService drain window', () => {
             'profile is not available',
           )
         : new Error('database unavailable');
-      const start = vi.fn().mockRejectedValue(failure);
+      const resolveDemand = vi.fn().mockRejectedValue(failure);
+      const demand = {
+        namespaceId: 7,
+        lookup: 'RELATIONSHIP_INTENT_PROFILE' as const,
+        target: { account: 'alice', domain: 'peer.test', rev: 2 },
+        peerAccount: 'bob',
+      };
       const effect = {
         clientFeedUpdates: [],
         statePushDomains: [],
         localSystemMessages: [],
         threadRoundWakes: [],
-        profileResolutions: [
-          { userId: 3, account: 'alice', domain: 'peer.test', rev: 2 },
-        ],
+        profileDemands: [demand],
       };
       const service = new FederationStatePullService(
         {
@@ -61,17 +65,12 @@ describe('FederationStatePullService drain window', () => {
         { applyPageInTx: vi.fn().mockResolvedValue(effect) } as never,
         { notifyFeedUpdates: vi.fn() } as never,
         {} as never,
-        { start } as never,
+        { resolveDemand } as never,
         { emit: vi.fn() } as never,
       );
       try {
         await expect(service.pullStateFromPeer('peer.test')).resolves.toBe(2n);
-        expect(start).toHaveBeenCalledWith(3, {
-          type: 'EXACT',
-          account: 'alice',
-          domain: 'peer.test',
-          rev: 2,
-        });
+        expect(resolveDemand).toHaveBeenCalledWith(demand);
         expect(warn).toHaveBeenCalledTimes(unavailable ? 0 : 1);
       } finally {
         warn.mockRestore();
@@ -175,14 +174,14 @@ describe('FederationStatePullService drain window', () => {
         statePushDomains: [],
         localSystemMessages: [],
         threadRoundWakes: [],
-        profileResolutions: [],
+        profileDemands: [],
       })
       .mockResolvedValueOnce({
         clientFeedUpdates: [{ userId: 3, feedId: 8 }],
         statePushDomains: [],
         localSystemMessages: [],
         threadRoundWakes: [],
-        profileResolutions: [],
+        profileDemands: [],
       });
     const service = new FederationStatePullService(
       {

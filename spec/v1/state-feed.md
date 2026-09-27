@@ -165,10 +165,10 @@ direction expires or becomes `REVOKED`.
 
 A profile update by itself MUST NOT mutate or republish a
 `RELATIONSHIP_INTENT`, allocate a new State Feed item, or change its
-`profileRev`. Consequently, a receiver that observes no later message from the
-profile's user keeps displaying the revision referenced by the relationship flow. P2P profile
-changes become visible through a later message carrying a different
-`profileRev`, not through relationship-state churn.
+`profileRev`. For P2P display, the receiver keeps the revision referenced by the
+relationship flow until a later peer-authored message selects another one.
+Group member profile references are published through Group Meta instead.
+P2P profile changes do not become visible through relationship-state churn.
 
 ### 4.1 Authored intent state machine
 

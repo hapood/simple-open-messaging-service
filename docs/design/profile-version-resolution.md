@@ -1,292 +1,591 @@
-# Profile Version Resolution
+# Profile Version Resolution: Exact Federation Evidence Cutover
 
-Status: normative implementation design.
+Status: staged implementation design; changes require per-area review. This
+replaces the older local profile-rebase design. The federation wire contract is
+[Profiles](../../spec/v1/profiles.md); this document specifies how this
+repository will select and persist the evidence used to call that contract.
+Do not deploy mixed old/new server and client profile contracts.
 
-## 1. Invariants
+## 1. Identity, cache, and request boundary
 
-A profile snapshot is identified by the immutable key:
+A complete immutable profile is keyed solely by
+`(namespaceId, account, domain, profileRev)`. Neither PostgreSQL `Profile` nor
+browser/native profile caches bind snapshots to evidence, and a cache hit does
+not require a local evidence or authorization check. A client resolution first
+looks for this four-tuple locally; the backend likewise checks its in-memory
+LRU and PostgreSQL before constructing a federation request. On a miss, the
+backend uses the client's selected revision and evidence to choose the
+federation operation. The publisher, not this local read-through cache, checks
+federation disclosure. No local audience/roster/intent authorization preflight
+should prevent a valid historical revision from being fetched; a client may
+still hold a reference older than the latest local projection.
+
+A selected reference always includes `profileRev > 0`. Zero means no lookup.
+Source coordinates select a route; they are **not** part of the profile key or
+of the client-to-backend selector. A federation exact-profile response must
+match the requested four-tuple, including the revision. An unavailable or
+mismatched revision cannot be replaced with the publisher's current profile.
+
+Keep the bounded backend profile-fetch scheduler (1,000 pending exact keys,
+eight concurrent network requests) and per-four-tuple single-flight. A pending
+item is keyed by the exact `(namespaceId, account, domain, rev)` and owns one
+final fetch demand plus session listeners. Later demands for the same exact key
+join that item; there is no method list, fallback sequence, or projection
+upgrade path on the fetch queue. A not-found response or network failure
+removes the exact-key item, allowing a later demand to retry. A successful
+_exact, non-null_ response stores the profile once, touches the profile LRU as
+soon as the network result is accepted, then completes the matching four-tuple
+key after durable materialization; it never completes a _different_ revision's
+key. Profile absence need not reach the UI as a revision update: existing
+address/avatar fallbacks remain, and a later demand may retry. A lost SSE frame
+is likewise recoverable by a later cache read/demand.
+
+`PROFILE_AVAILABLE` signals only the resolved four-tuple, with no evidence or
+profile body. Remove evidence from the backend SSE method and payload, browser
+and native event decoding, wake models, and code which uses a returned evidence
+to rebase a local reference. The client API registers only its authenticated
+session on the exact-key item; an internal demand never registers a session. On
+exact success, send `PROFILE_AVAILABLE { namespaceId, account, domain, rev }`
+only to the item's registered sessions, then remove the item. On failure,
+remove the item and notify those sessions with session-scoped
+`PROFILE_UNAVAILABLE` if retained for retry signaling, without retaining a
+separate subscription or negative cache. A later demand can register again.
+Failure handling must release scheduler capacity and must not manufacture a new
+revision. Message evidence projection has its own capped queue and LRU; it is
+not part of profile fetch scheduling.
+
+## 2. Source-coordinate model
+
+The thread feed publishes an exact `profile` reference and one nullable profile
+source coordinate alongside it. `AccountThreadState` persists that coordinate
+with `threadProfileRev`; client `threads` records persist it with the selected
+profile. The existing P2P client `peerProfileMessageSeq` becomes this shared,
+meaningfully named coordinate rather than remaining a P2P-only field. Use the
+thread's existing `MessageThread.type` / thread-feed `type` to interpret it:
+
+| Thread                                                | Source coordinate                                                     | Profile lookup on a cache miss                                        |
+| ----------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| P2P, initial establishment                            | null; revision from the peer-authored effective Relationship Intent   | Intent Profile at the peer's origin                                   |
+| P2P, updated by a peer-authored message               | that selected message's committed seq; revision from the same message | Account Profile at the peer's origin                                  |
+| GROUP, newly activated from the group-authored intent | null; revision from that intent                                       | Intent Profile at the group origin                                    |
+| GROUP, selected by Meta                               | the selected `GROUP_PROFILE` item's feed ID; revision from that item  | Account Profile at the group origin, authorized by current Group Meta |
+
+A group's selected `GROUP_PROFILE.feedId` is **not** `GroupMeta.metaEndId` or
+`groupMetaFeedEndId`: subsequent member/announcement items can advance those
+heads without selecting another group profile. Persist the actual selected
+item coordinate on the origin and mirror and fan it out with the revision.
+Meta rounds compare actual Meta coordinates, not numerical profile revisions.
+Remove the `next.profileRev > plan.profileRev` pull/rebase gate and the
+independent `pullRemoteGroupProfile` HTTP path, **but retain eager profile
+resolution**: apply the selected `GROUP_PROFILE` item's revision and feed ID
+as part of the Meta fact and fanout path, without waiting for profile bytes.
+After the Meta transaction commits, submit only a prefetch hint for a changed
+positive revision; an unchanged revision or revision zero needs no profile
+fetch. The scheduler must not write Meta-derived evidence. The Meta round discovery gate is an active peer
+namespace plus `federationRoundsEnabled`; relationship mutations maintain the
+latter, and the publisher performs its own audience authorization. The Meta
+round discovery SQL itself does not JOIN the relationship table.
+
+Group member selection is scoped to `(group thread, member address)`. The
+server's current `GroupMetaMemberFeed` has a nullable `profileSourceSeq` beside
+the canonical `MEMBER_UPSERT.feedId`. The source seq is **backend-only**
+evidence for comparing committed member messages; the Meta feed ID is the
+published member-reference coordinate. A member-authored message selecting a
+different revision does not update the client directly or modify the member
+fact in its landing transaction. For a remote member, the common profile
+resolver obtains the exact positive snapshot and may replace the origin member
+fact in a separate transaction with a newly allocated Meta feed ID and fan
+out the new head. Revision zero needs no snapshot. A local member does **not**
+enter the profile-fetch scheduler: after message commit, use the shared
+candidate selection helper and call the origin's Meta update in a separate
+transaction against the already stored local snapshot. Neither branch calls
+the Meta writer from the message landing transaction. A full resolver queue
+may omit remote-member work: do not block message delivery or roll back a
+committed message; a later committed member message can submit another
+candidate.
+An unchanged revision updates neither the selected source seq nor the
+published member reference. Ordinary profile edits without a selecting message
+do not publish member Meta items.
+
+The client member record needs only the Meta item's feed ID, member identity,
+role, and exact revision; remove its message-source anchor rather than
+renaming it. On a cache miss, the client sends group thread, member address,
+and revision to the backend, which resolves Group Member Profile at the group
+origin. The client never selects a member version from message rows. A
+`MEMBER_DEPART` need not clear backend message evidence; a new membership
+incarnation initializes it instead of inheriting the previous anchor.
+
+A null source ID means no previous source coordinate is competing: any
+eligible positive candidate ID passes the ID gate, regardless of its revision
+number. It still must carry a **different** revision to change the selection.
+Once a source ID exists, first compare the candidate ID in the same coordinate
+space: only an ID strictly greater than the stored ID may replace the
+selection. An older or equal ID must not write either field, even if it carries
+a different revision. **Only after the ID passes** compare `profileRev`:
+update **both** the source ID and the revision only if the revision differs.
+When the revision is unchanged, leave **both fields** untouched even if the
+candidate ID is newer. For P2P and backend member-message candidates, compare message **seq** to
+the last selected message seq. Meta fact ordering uses **feed ID**. These are
+different coordinate spaces: never compare a Meta feed ID with a message seq
+or choose a profile by the larger `profileRev`. On a mirror, commit the incoming Meta item and its role/membership changes
+and arrange any required fanout first. After commit, submit an internal profile
+demand **only if the selected profile revision actually changes**. For a
+member Meta item, only a newly selected positive revision needs a profile
+lookup; a zero reference needs no bytes. For `GROUP_PROFILE`, a changed
+selection to zero is already projected by the Meta path and needs no fetch.
+An unchanged revision, including a role-only update, submits no profile
+demand. Meta carries no member-message evidence: if a committed member
+message already backs a selected revision, an incoming Meta item can update
+the role without replacing that selected revision or its source seq. If the
+role, selected revision, and source are all unchanged, do not write a new
+projection solely because an item arrived (the authentic feed cursor still
+advances). Await the origin's new Meta coordinate for client publication;
+never invent one on the mirror. A fresh
+membership incarnation initializes its selection from its new intent. The
+client compares only published feed coordinates, never message seq for a
+member profile. Group-profile selection never uses a member-authored message.
+
+## 3. Database and projection change inventory
+
+This is a breaking rebuild, **not a historical data backfill**. The reviewed
+PostgreSQL names and DDL are staged in
+[the append-only migration](../../database/migrations/0003_profile_source_coordinates.sql)
+and [Drizzle schema](../../src/database/schema.ts); no deployed migration is
+rewritten. The Web IndexedDB and Tauri SQLite cache changes remain subject to
+separate review before implementation. Keep SQL and Drizzle in sync. Recreate versioned Web IndexedDB and
+Tauri SQLite account caches, without converting old profile-source rows or
+falling back to legacy column names. Four-tuple profile snapshots themselves
+remain independent of evidence. Review concrete DDL and client cache schema
+changes before running them.
+
+| Store                                    | Required structural change                                                                                                                 | Writer/read boundary                                                                                                                            |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| PostgreSQL `AccountThreadState`          | Nullable selected-profile source ID next to `threadProfileRev`, constrained to a positive ID when set                                      | Establishment/acceptance; post-commit internal profile resolution for P2P messages and group `GROUP_PROFILE`; thread-feed query and publication |
+| PostgreSQL current `GroupMetaMemberFeed` | Nullable backend-only message-source seq for `MEMBER_UPSERT`                                                                               | New upsert; post-commit origin member-profile publication; mirror Meta reconciliation; departure/rejoin                                         |
+| Browser `threads`, native thread row     | Rename P2P-only `peerProfileMessageSeq` to shared nullable source ID; persist the same type, revision, and coordinate from the thread feed | Atomic feed snapshot/cursor commit, display projection, avatar resolution                                                                       |
+| Browser/native group member row          | Remove the message-source field; retain the published member Meta `feedId` and revision                                                    | Meta page application, full reset and rejoin, roster and system-message lookup                                                                  |
+
+### Physical schema and pending client-cache approval
+
+PostgreSQL column names below are staged. Web and native cache names and
+recreation still require their own approval before implementation:
+
+| Store                                      | Exact proposed field / reset                                             | Null and write semantics                                                                                                                                                                                   |
+| ------------------------------------------ | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| PostgreSQL `AccountThreadState`            | `"profileSourceId" integer NULL`, Drizzle `profileSourceId: integer()`   | `NULL` for an intent-initialized P2P or GROUP profile; P2P message seq or the selected GROUP_PROFILE feed ID otherwise; positive when non-null; update atomically with `threadProfileRev`                  |
+| PostgreSQL `GroupMetaMemberFeed`           | `"profileSourceSeq" integer NULL`, Drizzle `profileSourceSeq: integer()` | Backend-only selected member message seq; changed revisions replace the current upsert with a newly allocated `feedId` and its exact `body.profileRev`; departures need not clear it, but rejoin resets it |
+| Web `threads` row and shared thread record | `profileSourceId?: number                                                | null`instead of`peerProfileMessageSeq`                                                                                                                                                                     | Persist the server thread-feed field with type and revision; delete the P2P-only field |
+| Web `members` row                          | Remove `profileMessageSeq`; do not add `profileSourceSeq`                | Persist the existing Meta `feedId` and its selected revision atomically; remove message-based member selection                                                                                             |
+| Native SQLite `threads`                    | `profile_source_id INTEGER` instead of `peer_profile_message_seq`        | Same thread-feed value as Web; type is the existing `kind` column                                                                                                                                          |
+| Native SQLite `members`                    | Remove `profile_message_seq`; do not add `profile_source_seq`            | Persist the existing Meta `feedId` and revision; remove message-based member selection                                                                                                                     |
+
+The append-only PostgreSQL migration contains two `ALTER TABLE ... ADD COLUMN`
+statements, positive-if-present checks on both columns, and P2P intent
+re-establishment trigger updates. It does not rewrite `0000_base.sql` or
+backfill existing rows. The existing `thread_feed_before_write()` trigger allocates a
+new thread-feed version on `threadProfileRev` change, **not** on a change to
+`profileSourceId` alone. A source-only change is not an accepted profile
+selection or publication trigger.
+There is no extra index: account/thread and group/member current-fact lookups
+already have keys. Match actual DB DDL and `src/database/schema.ts` exactly.
+Before deployment, use a **fresh database** for this breaking cutover, not an
+implicit NULL-as-historical-intent interpretation of old populated rows.
+
+Web increments `CACHE_SCHEMA_VERSION` from 34 to 35 and rebuilds the existing
+account cache; leave the separate `MESSAGE_CACHE_SCHEMA_VERSION` at 6 because
+message bytes/schema do not change. Native increments `CACHE_SCHEMA_VERSION`
+from 36 to 37 and recreates its account cache. The Web IndexedDB format
+version may remain 1 because the account cache is explicitly deleted/recreated
+on logical schema-version mismatch. Rebuilds must not silently restore old
+conversation/member source fields. Before editing **any** of these schema
+files, stop and request approval of both client cache schemas. Approval of
+the PostgreSQL migration does not imply approval of browser/native cache resets.
+
+The existing group member fact's `feedId` remains its canonical Meta ordering
+coordinate. A message-selected different revision replaces the current origin
+member fact with a newly allocated ID **after** the exact snapshot is available.
+For a remote member, the group origin requests that exact version from the
+member home using `account-profiles` with confirmed group-member relationship
+and serviceable member-message evidence; other peers and clients request
+`group-member-profiles` from the group origin. The demand has only one `namespaceId`. For an ordinary message demand it is
+provided by the message creator. For a mirrored Group Meta prefetch it is the
+mirror group's namespace, while the target remains the non-local member address
+and exact revision. An origin may use its member-home federation state while
+fetching, but this does not add a second member or publisher namespace to the
+demand. Validate the authenticated
+publisher's namespace when materializing either response; do not require
+`Profile.domain` to equal the publisher domain for a group-origin-disclosed
+member. A mirror must not fabricate an
+origin Meta ID or let an incoming evidence-free Meta profile reference regress
+a locally selected, message-backed member revision. Its Meta transaction first
+advances the authentic feed cursor, applies the local member fact (including
+role-only changes where message evidence already selects the revision), and
+arranges fanout. Only after that transaction commits does it offer a prefetch hint for a
+newly selected positive remote revision. If the selected revision and role
+are already current, projection application is a no-op. Preserve canonical received item
+contents separately from a locally selected member fact if the two differ;
+full recovery must not discard newer committed message evidence.
+
+Only a message-derived internal projection commits the selected P2P thread
+revision and message source in a separate post-fetch database transaction;
+a changed `threadProfileRev` publishes via the existing thread-feed trigger,
+while an unchanged revision does not update the source. Group Meta selects its
+group thread revision and feed-ID source in its own fact/fanout path, before
+any optional profile prefetch. At the origin, a changed member revision allocates a new
+Meta ID and schedules durable audience head fanout in a separate transaction;
+an unchanged revision does neither. Client-only resolution never changes
+either projection. A no-op must not regress a coordinate. Preserve the
+existing account/thread/group lock order for these new post-fetch transactions.
+Remove default-profile-edit-driven member Meta propagation: only a selecting
+member message (or a new membership interval) changes the member profile
+reference.
+
+Audit every establishment path, especially local and mirrored group invitation
+acceptance and application approval: initialize the new member's revision and
+source consistently with the effective intent and first `MEMBER_UPSERT`;
+subsequent identical upserts must not reset an active member's message
+selection. Departures retain evidence; rejoin starts a new selection. P2P
+establishment selects the **opposite** participant's intent; post-commit
+internal message profile resolution sets the shared thread source only when it
+selects a different thread profile revision. An intent-initialized group thread starts with the group-authored intent
+revision and a null source; later Meta selection takes its source and revision
+from the same `GROUP_PROFILE` item, never from a general Meta head or member
+item. If Meta supplies the same revision, leave the intent selection unchanged.
+Meta-derived selection never waits for a snapshot or a scheduler callback.
+
+## 4. Selector conversion and federation endpoints
+
+The client profile request is the same exact-revision demand shape used by
+backend resolution. It contains one namespace and one concrete federation
+lookup. It does not contain presentation evidence or local asynchronous
+projection coordinates.
 
 ```ts
-interface ProfileKey {
-  namespaceId: number;
+interface ProfileTarget {
   account: string;
   domain: string;
   rev: number;
 }
-```
 
-Profile bytes, display name, and biography are stored and cached only under
-this four-part key. A request proof is not part of the profile identity. Several
-proofs may resolve to the same key.
-
-The system has three ownership boundaries:
-
-- the backend authenticates client proofs, schedules federation work, and
-  materializes profile snapshots in PostgreSQL;
-- the Web Worker or Rust runtime is the only client-side profile network and
-  database writer; and
-- the UI reads client storage through repositories and renders the result. UI
-  code never calls the profile-resolution HTTP endpoint or consumes raw profile
-  SSE events.
-
-There is no request identifier and no compatibility path for the superseded
-profile completion protocol.
-
-## 2. Client evidence
-
-Every client request contains exactly one evidence source. Evidence selects an
-immutable local fact and carries the expected profile revision so the backend
-can construct a `ProfileKey` before scheduling network work.
-
-```ts
-type ProfileEvidence =
-  | { type: 'EXACT'; account: string; domain: string; rev: number }
+type ClientProfileResolutionDemand =
   | {
-      type: 'MESSAGE_AUTHOR';
-      threadId: number;
-      messageSeq: number;
-      rev: number;
+      namespaceId: number;
+      lookup: 'ACCOUNT_PROFILE';
+      target: ProfileTarget;
     }
   | {
-      type: 'GROUP_META';
-      threadId: number;
-      profileRev: number;
-      subject:
-        | { type: 'GROUP' }
-        | { type: 'MEMBER'; account: string; domain: string };
+      namespaceId: number;
+      lookup: 'RELATIONSHIP_INTENT_PROFILE';
+      target: ProfileTarget;
+      peerAccount: string;
+    }
+  | {
+      namespaceId: number;
+      lookup: 'GROUP_MEMBER_PROFILE';
+      target: ProfileTarget;
+      groupAccount: string;
     };
 ```
 
-The backend does not trust the supplied revision by itself. It authorizes the
-evidence and derives the account, domain, namespace, publisher, and federation
-route from local durable facts. The supplied revision is the requested profile
-version and forms the target key. A missing or unauthorized evidence fact is a
-synchronous business error.
-
-`EXACT` is still evidence, not an unrestricted address lookup. Relationship
-intent, thread state, group audience, or self-profile state must authorize the
-exact revision.
-
-## 3. Federation evidence
-
-Federation requests do not carry a profile revision for message or Group Meta
-proofs. The authoritative peer resolves the revision from its own durable fact.
+This is intentionally isomorphic with the backend prefetch demand. The
+client supplies `namespaceId`; it must not omit it or infer it from the
+profile domain. `target.domain` identifies the profile subject/member, while
+the namespace identifies the local publisher allocation used by the backend.
+The lookup value maps directly to the S2S operation:
 
 ```text
-GET /s2s/v1/message-author-profile
-    ?account=<thread account>
-    [&peerAccount=<p2p peer>]
-    &messageSeq=<publisher sequence>
-
-GET /s2s/v1/group-meta-profile
-    ?account=<group account>
-    &subject=GROUP
-
-GET /s2s/v1/group-meta-profile
-    ?account=<group account>
-    &subject=MEMBER
-    &memberAccount=<account>
-    &memberDomain=<domain>
+ACCOUNT_PROFILE              → account-profiles
+GROUP_MEMBER_PROFILE         → group-member-profiles
+RELATIONSHIP_INTENT_PROFILE  → intent-profiles
 ```
 
-The Group Meta endpoint serves both the group's `GROUP_PROFILE` fact and a
-member's current `MEMBER_UPSERT` fact. It verifies that the requesting peer has a
-current audience for the group, resolves the selected revision and namespace
-from canonical Group Meta, and returns the retained snapshot. A mirror never
-serves another peer as authority for a remote group.
+The client request contains no `evidence`, `threadId`, `messageSeq`, Meta
+feed ID, source sequence, or `projection`. A visible component derives the
+complete demand from the persisted message, relationship, or Group Meta
+record, then passes that demand to the profile repository. It does not pass a
+second evidence object beside the demand. Backend message evidence projection
+is a separate server-only queue because only the backend can revalidate and
+commit projection evidence.
 
-An exact S2S profile request retains its revision because the exact revision is
-the proof being exercised.
+`ACCOUNT_PROFILE` is used for an exact account snapshot, including a P2P
+message-selected author or a group profile. `GROUP_MEMBER_PROFILE` is used
+for a member snapshot through the group origin and includes `groupAccount`.
+`RELATIONSHIP_INTENT_PROFILE` is used for an exact relationship-intent
+snapshot and includes `peerAccount`. No generic thread-profile operation and
+no legacy `EXACT`, `MESSAGE_AUTHOR`, or `GROUP_META` client selector remains.
 
-## 4. Backend read-through scheduler
+All three demand variants carry an exact positive revision. A cache miss may
+request only that revision. The client must never replace it with a newer or
+older cached profile. The cache key remains
+`(namespaceId, account, domain, rev)`. `PROFILE_AVAILABLE` and
+`PROFILE_UNAVAILABLE` wake events carry only that exact key; they do not carry
+or reconstruct evidence.
+Implement the signed federation reads in the profile specification:
 
-The authenticated client endpoint performs these steps:
+```text
+GET /s2s/v1/accounts/:account
+GET /s2s/v1/account-profiles/:account/:profileRev
+GET /s2s/v1/group-member-profiles/:groupAccount/:memberDomain/:memberAccount/:profileRev
+GET /s2s/v1/intent-profiles/:account/:peerAccount/:profileRev
+```
 
-1. validate and authorize the evidence;
-2. derive the expected `ProfileKey` and one federation request method;
-3. check the completed in-memory LRU by `ProfileKey`;
-4. check PostgreSQL by `ProfileKey`;
-5. return `READY` on a hit; otherwise join or create the pending item for that
-   key and return `PENDING { key }`.
+Remove the old `/profiles/:account?rev=`, `/message-author-profile`, and
+`/group-meta-profile` implementation/callers, validators, generated client
+contracts, and tests. Respect canonical percent-encoded path segments and
+publisher-origin routing: group/member Meta comes from the group origin;
+relation-counterpart account profiles come from the account's home server
+(including the origin's internal request for a remote member's message rev);
+intent profiles come from the intent author. Publisher authorization, current readable
+message range, effective intent and current Group Meta audience/reference, and
+uniform `200 NOT_FOUND` for unavailable exact profiles follow the federation
+specification. No federation response may substitute another revision.
 
-The completed LRU is access ordered and contains at most 1,000 profiles. It is
-an optimization over PostgreSQL, never an authority.
+Do not reinterpret an absent response as `PROFILE_AVAILABLE` and do not retain
+a negative cache that prevents later retry. Exact-key fetch failures remove the
+pending item; a later demand can retry that four-tuple. Remove tests that assert
+local group-member revision drift and add tests for strict revision equality
+and the group-origin-to-member-home account request.
 
-Pending work is stored as:
+### Internal profile demands
+
+Backend work uses a separate server-only demand type. It is never accepted from
+client HTTP. The demand has one `namespaceId` and a shared `target`; the target's
+`account`, `domain`, and `rev` identify the exact profile. There is no second
+publisher/member namespace or publisher-domain field. Ordinary message demands
+get their namespace from the creator. System-message demands are an explicit
+exception: their creator is the local `$system` account and must not become the
+profile target; event participants provide the target and namespace. Mirrored
+Group Meta demands take the namespace from the mirror group and the target and
+revision from `MEMBER_UPSERT`. The transport peer domain is resolved from local
+federation state when the request is sent and is not part of the profile
+resource coordinate.
+
+`lookup` names the actual S2S operation and determines the endpoint:
 
 ```ts
-interface PendingProfileItem {
-  key: ProfileKey;
-  methods: Map<string, FederationRequestMethod>;
-  subscribers: Set<number>;
-  state: 'QUEUED' | 'ACTIVE';
+interface ProfileTarget {
+  account: string;
+  domain: string;
+  rev: number;
 }
+
+interface ProfileProjectionKey {
+  threadId: number;
+  messageSeq: number;
+}
+
+type ProfilePrefetchDemand =
+  | { namespaceId: number; lookup: 'ACCOUNT_PROFILE'; target: ProfileTarget }
+  | {
+      namespaceId: number;
+      lookup: 'RELATIONSHIP_INTENT_PROFILE';
+      target: ProfileTarget;
+      peerAccount: string;
+    }
+  | {
+      namespaceId: number;
+      lookup: 'GROUP_MEMBER_PROFILE';
+      target: ProfileTarget;
+      groupAccount: string;
+    };
+
+type ProfileResolutionDemand = ProfilePrefetchDemand;
+
+type ProfileEvidenceProjection =
+  | {
+      profile: ProfileKey;
+      lookup: 'ACCOUNT_PROFILE';
+      projection: ProfileProjectionKey;
+    }
+  | {
+      profile: ProfileKey;
+      lookup: 'GROUP_MEMBER_PROFILE';
+      groupAccount: string;
+      projection: ProfileProjectionKey;
+    };
 ```
 
-The scheduler maintains key lookup and fair queue traversal. An identical
-method is inserted once. A different proof for the same profile is an
-alternative method under the existing item. Each client evidence is authorized
-before its user is added to `subscribers`.
+`ACCOUNT_PROFILE` always calls `account-profiles`,
+`GROUP_MEMBER_PROFILE` always calls `group-member-profiles`, and
+`RELATIONSHIP_INTENT_PROFILE` always calls `intent-profiles`. The common
+`target` is the exact `(account, domain, rev)` profile identity; the single
+`namespaceId` is the trusted local snapshot namespace. A resolution demand only
+fetches and stores the exact snapshot. It does not contain projection evidence
+and never updates thread or Group Meta source coordinates.
 
-At most 1,000 pending keys and 1,000 retained request methods may exist. Joining
-an existing key and method remains allowed when the queue is full. New work is
-rejected with a dedicated retryable business error when either bound would be
-exceeded.
+Message-landed evidence uses a separate `ProfileEvidenceProjection` queue. It
+never fetches profiles. It revalidates the committed `{ threadId, messageSeq }`
+coordinate against local durable state and then updates either P2P thread
+profile evidence (`ACCOUNT_PROFILE`) or origin Group Meta member evidence
+(`GROUP_MEMBER_PROFILE`). Its LRU is independent from the profile fetch LRU and
+is keyed by the evidence slot, not by the exact snapshot revision. The stored
+LRU value is the greatest successfully applied message sequence; lower or equal
+message evidence is skipped, while a greater value waits behind any in-flight
+projection for the same slot and is replayed once as trailing work. A no-op DB
+projection does not advance the evidence LRU because the durable evidence did
+not change. If the evidence queue is full and the item cannot merge into an
+existing slot, the update is skipped with a warning; a later message can submit
+a greater coordinate.
 
-HTTP concurrency is bounded globally. Pending work consumes no completed-LRU
-capacity.
+The demand locates the exact revision and actual federation endpoint. A
+message-landing source may emit both a fetch demand and an evidence projection,
+but they are scheduled independently. All other scheduler work is a prefetch
+hint without evidence. A system-event sequence may be retained only as backend
+lookup context; it is never persisted as profile evidence. Neither
+`projection` nor backend source fields are accepted in the client API.
+Ordinary non-system messages derive the target from their non-null `creator`
+and carried `profileRev`. P2P author messages emit an `ACCOUNT_PROFILE` fetch
+demand and a separate account evidence projection. A remote member message at a
+group origin emits a `GROUP_MEMBER_PROFILE` fetch demand and a separate member
+evidence projection; after a local exact snapshot exists, the projection may
+publish the replacement `MEMBER_UPSERT`. A local group member bypasses the
+federation scheduler and uses its local snapshot for the same Meta capability.
+System messages are the explicit creator exception: their creator is the local
+`$system` account and must not become the profile target; event participants
+supply any prefetch target instead.
 
-## 5. Federation completion and revision mismatch
+A mirror never creates a Meta item from a member message. It commits its Meta
+fact and required fanout first, then submits `GROUP_MEMBER_PROFILE` only as a
+prefetch when a selected positive remote-member revision changed. Role-only,
+unchanged, zero-revision, departure, and removal cases submit no profile work.
+Mirrored Meta prefetch does not use the evidence projection LRU; it continues
+to rely on database fences in the Meta application path. Backend projection
+authority comes exclusively from local committed message evidence. A client
+request cannot supply or trigger a projection mutation. Equivalent client and
+internal fetch demands may share one exact-key network request without losing
+client listeners.
 
-Every successful federation response is validated structurally and converted
-to its actual `ProfileKey`. The scheduler deliberately does not require that
-the returned revision equal the requesting item's expected revision.
+After each committed message batch, outside its message transaction, source-specific
+selectors produce final demands. Ordinary messages use `creator` and the carried
+revision; system messages use event participants rather than the system
+`creator`. Mirrored Group Meta is a separate post-commit source: its
+`MEMBER_UPSERT` supplies the member target and revision, and the mirror group's
+namespace supplies the single demand namespace. These sources share the final
+`ProfileResolutionDemand` vocabulary but do not share a common evidence shape. Friend-add uses ordinary intent lookup; a mirrored group's remote member
+join/role/owner event uses ordinary group-member lookup. Local participants
+and events that terminate access yield no prefetch hint. P2P and group callers
+both use this helper, then
+filter by their own projection authority: for P2P, submit remote peer evidence;
+for a group, process member evidence only at the origin, from both locally
+authored and remote submissions. Local members use the direct, separate Meta
+transaction; only remote members enter the capped profile-fetch scheduler.
+Other peers wait for the origin's new Meta item rather than selecting a member
+profile from the message. Do not choose the numerically greatest revision,
+merge seq and rev from different messages, or call federation for an
+uncommitted batch. Submit eligible remote message candidates as internal demands; submit system
+event hints only for prefetch. A `GROUP_PROFILE` Meta item commits its group
+thread revision and source in the Meta fact/fanout path. **After** that
+transaction, a newly selected positive remote revision may submit a prefetch
+hint, including after partial delta pages and full recovery batches; unchanged
+or zero revisions submit nothing. A full queue may skip opportunistic work without rolling
+back message or Meta facts. A later message can resubmit an omitted member
+candidate; do not rely on a client demand to publish an as-yet-unpublished
+member revision. Existing message prefetch must move to this batch admission
+so internal projection work cannot be bypassed by an independent per-recipient
+lookup.
 
-For a response produced by method `M` from expected item `E`:
+The resolver checks the memory LRU, then PostgreSQL `Profile`, then federation.
+For a positive network result, it first persists the exact immutable snapshot
+in a completed transaction. Only a message projection candidate then attempts
+a separate evidence/projection transaction; a prefetch hint is finished once
+the snapshot is stored. On a cache hit, skip the redundant snapshot write;
+message projection candidates still take their separate evidence path, while
+prefetch hints do not. The projection transaction checks stored source ID
+(null or strictly smaller), then checks revision (must differ). A failed
+ID/revision gate makes no projection write. Snapshot success does not imply evidence success:
+revalidate the committed candidate and current authorization when committing
+evidence, and do not roll back stored bytes if that attempt fails. For a member
+at the origin, a changed remote-member revision
+replaces the current `MEMBER_UPSERT` with a newly allocated `feedId`, updates
+the backend message-source seq, and enqueues durable Meta publication; the
+direct local-member path uses the same origin Meta update. For a thread, update
+the source and revision together so the existing `threadProfileRev` change
+drives the thread feed. After a new snapshot is persisted, populate or touch
+the in-memory LRU; do not persist an already stored immutable profile a second
+time. The LRU is not a second source of truth. A prefetch hint or client-only
+demand persists fetched bytes but never writes a profile source or selected
+revision.
 
-1. materialize the returned snapshot under its actual key `A`;
-2. insert `A` into the completed LRU;
-3. remove the complete pending item keyed by `A`, if one exists;
-4. remove method `M` from expected item `E`, if `E` still exists;
-5. notify the union of subscribers from the removed actual item and the method
-   that performed the request with `PROFILE_AVAILABLE { A }`;
-6. if `E` still has methods, leave it scheduled; otherwise remove it.
+Fetch identity is the exact profile key. Internal prefetch and client demand
+for the same four-tuple join the same pending item; the item has no method list
+or projection behavior. Message evidence projection is scheduled independently
+and never changes which federation endpoint is called. An exact non-null
+success settles the fetch item after durable profile materialization completes.
+`NOT_FOUND` or network failure removes the exact-key item and its sessions so a
+later request can retry. Never negatively cache an empty response. SSE emits
+only the exact four-tuple on success.
 
-When `A === E.key`, step 3 removes the entire expected item, including every
-alternative proof. When the revisions differ, the returned revision is still a
-valid materialized profile, while only the completed method is removed from the
-original expected item. Another method may still obtain the expected revision.
-No preliminary mismatch branch is used; both cases execute the same state
-transition.
+## 5. System messages
 
-A failure removes only the failing method and emits `PROFILE_UNAVAILABLE` for
-its subscribers. A later client demand may submit the evidence again. The
-expected item is removed only after it has no remaining methods. Failures never
-modify relationship, membership, peer-health, or Group Meta state.
+System events already carry each participant's immutable `profileRev` and
+address. Keep that frozen revision; do not add a source coordinate to event
+content, and remove client-side `correctSystemMessageProfile` and related
+profile-rebase behavior. The renderer first reads the four-tuple cache. On a
+miss, choose an **ordinary selector by event type**, not a special
+system-event evidence selector and not a message-seq lookup:
 
-## 6. Client protocol and persistence
+| Participant in event                                                             | Lookup on a cache miss                                                                                                                  |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Remote participant in friendship add                                             | `RELATIONSHIP_INTENT_PROFILE` for the event's frozen revision when the directed intent remains effective                                |
+| Remote member joining a mirrored group (or appearing in role/owner changes)      | `GROUP_MEMBER_PROFILE` using the containing group conversation's ordinary group selector and the event's frozen member address/revision |
+| Friendship removal or group departure                                            | Cache-only `PROFILE_KEY`; never request a profile for the departing participant                                                         |
+| Mirror's own local group member, local group creator, or other local participant | Local four-tuple only; no federation read                                                                                               |
+| `$system`, revision zero, or call notice with no participant profile             | No lookup                                                                                                                               |
 
-ClientStateFeed carries relationship intents, invitation read heads, and thread
-state. It has no PROFILE event and never transports profile snapshots. Group
-Meta carries only role and revision references. Neither metadata ingestion nor
-optimistic conversation display updates may populate the immutable profile
-cache. Only complete resolved snapshots are committed through the profile
-runtime; missing content remains unresolved.
+The containing conversation already identifies the group for an ordinary
+group-member selector; no **additional** thread or system-message context is
+sent by the client. If the exact revision is no longer authorized or retained,
+use the locally cached snapshot or address fallback. The backend likewise
+submits no prefetch demand for friendship removal or group departure. Do not request
+or write a different revision, or invent intent evidence for a historical
+departure. Ordinary message-row avatars also use their author address and rev
+to choose `ACCOUNT_PROFILE` (P2P) or `GROUP_MEMBER_PROFILE` (GROUP); the
+message seq is not submitted for profile lookup. System event producer tests
+must cover friendship activation/removal, group creation/join/leave, role and
+owner changes, and invitation/application acceptance (including mirrored
+joins).
 
-The start response is:
+## 6. Removal and verification checklist
 
-```ts
-type ProfileResolutionStart =
-  | { status: 'READY'; profile: ResolvedProfile }
-  | { status: 'PENDING'; key: ProfileKey };
-```
-
-The backend SSE success event is a wake-up containing no profile body:
-
-```ts
-interface ProfileAvailableEvent extends ProfileKey {}
-```
-
-On `READY`, the Web Worker or Rust runtime decodes the JSON transport avatar,
-computes its SHA-256 digest, and commits the complete profile before returning
-the committed snapshot over IPC. The profile row contains name, biography, and
-an optional avatar digest; it never contains base64 image bytes. Web stores the
-binary avatar as an IndexedDB Blob keyed by digest. Native stores it as a file
-under the account's private application data directory, also keyed by digest.
-The native file is published before the profile row can reference it. Cache
-schema recreation discards the old inline-avatar data without a compatibility
-read path.
-The Settings action for clearing chat cache rebuilds message storage and clears
-cached chat media only; it preserves profile rows and their avatar blobs/files.
-
-On a backend `PROFILE_AVAILABLE`, the platform event bridge submits `EXACT` evidence
-made from the event key to the Web Worker or Rust database executor. The
-executor retrieves the backend-cached profile, commits it, and only then
-publishes a scoped local wake. A repository whose unresolved
-subscription has the same pending key rereads through IPC; the runtime returns
-the committed client-database row without another federation request.
-
-The binary write, profile commit, and IPC completion are strictly ordered.
-Components subscribe only to repositories; they do not consume backend profile
-SSE directly.
-
-Lost SSE frames do not lose state. A reconnect, runtime restart, or later UI
-demand repeats unresolved evidence. Since the backend snapshot is durable, the
-repeat returns `READY` without another federation request.
-
-## 7. Client repositories and UI
-
-The Web main thread maintains an access-ordered 1,000-entry LRU of profiles,
-keyed by `ProfileKey`. It is cleared on account/session changes. It caches only
-values read from client storage after a committed runtime write.
-
-`ProfileRepository.resolve(evidence)` submits an IPC demand to the runtime, which
-performs the local read first. On `READY`, the repository reads the selected
-avatar bytes by digest and returns a Blob with the profile metadata. The avatar
-component creates a short-lived object URL for that Blob. Live subscribers for
-identical evidence share one entry. A `PENDING` result records only its four-tuple key so an unrelated
-profile event cannot retry it; there is no request-ID map or main-thread HTTP
-queue. The entry is removed when it completes, fails, or loses its final UI
-subscriber.
-
-Avatar, system-message, member-list, friend-request, thread-list, and profile
-views subscribe through this repository. A resolving avatar wrapper may feed
-the existing presentational avatar primitive, but no component calls a
-resolution service. Message sources and repositories do not write profile
-bytes or keep independent resolved-profile maps.
-
-### Self profile publication
-
-The self-profile endpoint supplies account metadata and the selected revision.
-`UserService` resolves that revision through `ProfileRepository.resolve(EXACT)`
-before publishing and persisting the self view. Avatar content comes from the
-runtime result, including explicit absence. Endpoint avatar URLs must never be
-inserted into the immutable four-part profile cache.
-
-The old main-thread profile write APIs and native `native_db_put_profile`
-command are removed. Runtime materialization owns profile writes. Self identity
-is persisted separately for membership projection, and no URL-to-byte cache
-compatibility or old-data conversion is performed.
-
-### Conversation display updates
-
-Conversation profiles have two independent delivery paths. When a conversation
-is loaded or its selected profile reference changes, `ThreadRepository` submits
-the evidence through `WebdbService.resolveProfileEvidence`. The platform runtime
-returns a local cache hit immediately, or resolves the evidence with the backend.
-A `READY` response updates the matching conversation display; `PENDING` leaves
-completion to the local worker notification.
-
-The repository also handles `profileWake$` availability events. It matches all
-four fields (`namespaceId`, `account`, `domain`, `rev`) against the current
-conversation reference, rereads through the same runtime entry point, and updates
-the displayed name, avatar, and biography. An earlier cache hit does not disable
-this handler. No additional SSE subscription, completion event type, or
-"already resolved" flag is needed. Delayed responses are applied only to the
-matching current reference and account session.
-
-Conversation rows can contain empty display fields even when their selected
-profile already exists in the profile store. Reading the profile on conversation
-load handles this ordering without requiring another backend notification or
-copying profile fields into every structural projection writer.
-
-A resolved profile with a null avatar digest explicitly selects no avatar. Avatar
-components must render their generated fallback instead of falling back to an
-older input image. This rule applies both to immediate query results and to
-pending resolutions completed by a local wake.
-
-## 8. Required verification
-
-Tests cover:
-
-- one federation call for duplicate evidence and duplicate four-part keys;
-- alternative evidence for one key;
-- returned revision equal to and different from the expected revision;
-- group and member profile resolution through Group Meta;
-- queue and method capacity rejection;
-- SSE-before-response, reconnect, runtime restart, and lost-SSE recovery;
-- transaction-before-local-event ordering;
-- account switch while resolution is active;
-- multi-tab IndexedDB visibility; and
-- absence of profile-resolution HTTP calls and raw profile SSE consumers from
-  Angular UI code.
+- Move the currently staged P2P message `threadProfileRev`/`profileSourceId`
+  update **out of** `ThreadFeedHeadWriter.advanceInTx` and into the internal
+  resolver's post-fetch transaction. The content-head fanout still advances
+  message heads, unread counts and previews independently of profile fetch.
+  Keep intent-based establishment and mirror-initialization writes in their
+  establishment transactions. Audit the analogous group Meta projections: select Meta-derived evidence in
+  the Meta fact/fanout path; optional eager prefetch is after commit, never
+  inside the Meta transaction.
+- Delete revision rebase/drift in the backend coordinator, browser profile
+  store/worker and group-member storage, native `native_db_apply_group_member_profile_drift`,
+  and system-row correction; remove obsolete special message/system evidence
+  selectors, commands, and tests. Do **not**
+  remove unrelated unread-count rebase or the bounded profile scheduler.
+- Remove evidence from `PROFILE_AVAILABLE` across SSE payloads, client
+  protocols, native/browser wake handling, and corresponding tests; do not
+  require evidence-specific notification delivery for correct fallback.
+- Assert the selected revision and source coordinate travel together through
+  thread feed and IndexedDB/native storage, and the server's group-member
+  message evidence and newly allocated Meta item. Exercise unchanged rev with
+  a newer candidate ID (neither field changes), and decreasing rev with newer
+  **message seq** (a new origin Meta ID and revision);
+  never use rev magnitude to order candidates.
+- Test alternate evidence for one four-tuple, null response, network error,
+  exact success, retry after method/item removal, internal-over-client
+  precedence, cached profile with pending internal projection, and
+  wrong-revision response rejection. Test that a client-only cache miss never
+  mutates thread or member evidence and full queues do not roll back message
+  or Meta facts.
+- Test session-scoped profile notifications: one subscribed session receives
+  the key; another session of the same user does not; multiple connections of
+  the subscribed session receive it; invalidated sessions and a key whose
+  last method failed leave no listeners or pending item. `PROFILE_AVAILABLE`
+  carries no evidence. Other SSE
+  events must not change delivery semantics.
+- Test P2P intent-to-message selection, group `GROUP_PROFILE` independent of
+  later unrelated Meta items, member Meta-to-message selection, repeated
+  upserts, departures and rejoin; local/mirror group invitation acceptance and
+  application approval; historical system messages and missing cached bytes.
+- Run backend unit and PostgreSQL-backed federation E2E tests, Web unit/build,
+  native Rust tests/build, protocol/schema/conformance checks, and database
+  migration/schema consistency checks. Review the server DDL, Web and Tauri
+  cache recreation separately before rollout.

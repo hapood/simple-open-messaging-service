@@ -19,7 +19,7 @@ import {
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
 import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
-import { ProfileResolutionCoordinatorService } from './profile-resolution-coordinator.service.js';
+import { ProfileResolutionCoordinatorService } from '../profile-resolution/profile-resolution-coordinator.service.js';
 import type { PeerStateFeedPage } from './peer-state-feed.service.js';
 
 /** Owns bounded State Feed drains. Dependent Group Meta is materialized by durable tasks. */
@@ -108,7 +108,7 @@ export class FederationStatePullService {
           statePushDomains: [],
           localSystemMessages: [],
           threadRoundWakes: [],
-          profileResolutions: [],
+          profileDemands: [],
         };
         await this.publishEffect(effect);
       },
@@ -130,15 +130,10 @@ export class FederationStatePullService {
       await this.systemMessages.publish(status);
     for (const wake of effect.threadRoundWakes)
       this.eventEmitter.emit(FEDERATION_THREAD_ROUND_WAKE, wake);
-    for (const resolution of effect.profileResolutions) {
-      if (resolution.rev === 0) continue;
+    for (const demand of effect.profileDemands) {
+      if (demand.target.rev === 0) continue;
       void this.profileResolutions
-        .start(resolution.userId, {
-          type: 'EXACT',
-          account: resolution.account,
-          domain: resolution.domain,
-          rev: resolution.rev,
-        })
+        .resolveDemand(demand)
         .catch((error: unknown) => {
           // Post-commit preloading may outlive the intent authorizing it.
           if (
@@ -147,7 +142,7 @@ export class FederationStatePullService {
           )
             return;
           this.logger.warn(
-            `profile resolution failed for ${resolution.account}@${resolution.domain} rev ${resolution.rev}: ${(error as Error).message}`,
+            `profile resolution failed for account ${demand.target.account}, domain ${demand.target.domain}, revision ${demand.target.rev}: ${(error as Error).message}`,
           );
         });
     }

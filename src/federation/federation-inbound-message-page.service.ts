@@ -33,6 +33,14 @@ import {
 } from './federation-inbound-message-store.service.js';
 import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
 import type { ThreadContentLock } from '../common/locks/thread-content-lock.js';
+import type {
+  ProfileEvidenceProjection,
+  ProfilePrefetchDemand,
+} from '../profile-resolution/profile-resolution-demand.js';
+import {
+  selectInboundMessageProfileDemand,
+  selectInboundMessageProfileEvidenceProjection,
+} from './select-inbound-message-profile-demand.js';
 import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
 import { type FederationContext } from './federation-namespace.service.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
@@ -53,6 +61,8 @@ export type FederationMessagePageEffect = FederationMessagePageEffectContext &
     | {
         kind: 'message';
         message: Message;
+        profileDemand?: ProfilePrefetchDemand;
+        profileEvidenceProjection?: ProfileEvidenceProjection;
         deletionSeq?: number;
         forwardClosure?: InboundForwardWireBundle;
         remoteForwardBundleId?: string;
@@ -513,6 +523,17 @@ export class FederationInboundMessagePageService {
           });
           deletionSeq = deletion?.deletionSeq;
         }
+        const profileDemand = selectInboundMessageProfileDemand(
+          item,
+          stored.message,
+          token.namespaceId,
+        );
+        const profileEvidenceProjection =
+          selectInboundMessageProfileEvidenceProjection(
+            item,
+            stored.message,
+            token.namespaceId,
+          );
         effects.push({
           kind: 'message',
           historical,
@@ -522,6 +543,8 @@ export class FederationInboundMessagePageService {
           toAccount: route.toAccount,
           author,
           message: stored.message,
+          ...(profileDemand ? { profileDemand } : {}),
+          ...(profileEvidenceProjection ? { profileEvidenceProjection } : {}),
           deletionSeq,
           forwardClosure,
           remoteForwardBundleId: forwardCard?.bundleId,

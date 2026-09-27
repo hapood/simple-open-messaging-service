@@ -139,17 +139,13 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
   only durable device-feed cursor. `THREAD_CONTENT_HEAD` carries required `messageEndSeq` and
   `tombstoneEndSeq` high-water marks. It carries no message preview or profile-selection hint: message
   catch-up owns list presentation, and exact author profiles are resolved only when the client reads the
-  corresponding message. The response carries the current feed end and the next cursor for deterministic
-  catch-up.
-- `THREAD_STATE` is the durable, account-owned conversation snapshot. Its body carries
-  `threadId`, `type`, `authorityNamespaceId`, `conversationState`, `establishedAt`, `blocked`,
-  `role`, and `profile: { account, domain, namespaceId, profileRev }`. Establishment, re-establishment,
-  revocation, and block/role changes publish it in the same database transaction. Full mode includes
-  unblocked and retained read-only conversations. `THREAD_BLOCK` is replaced by this snapshot.
-- Clients create visible thread list entries only from `THREAD_STATE`; relationship intents update
-  request projections. An earlier thread-feed entry creates an invisible placeholder. Consuming the
-  snapshot reveals it while retaining its attention/message state. Establishment time controls initial
-  placement; block changes and replay preserve placement.
+  corresponding message. `RELATIONSHIP_INTENT` entries last updated more than seven days ago are
+  omitted in both full and delta mode; `INCOMING_INVITE_HEAD` remains available regardless of age
+  so request read state survives a device rebuild. Filtered ranges still advance the response cursor.
+  The response carries the current feed end and the next cursor for deterministic catch-up.
+- The client state feed retains relationship and request events, but no longer publishes
+  `THREAD_STATE`. Established and retained read-only conversations are created and updated by
+  the complete thread-feed snapshot; pending relationships do not create thread-list entries.
 - The default profile reference remains fixed until the relationship is established again. Revocation
   retains the previous reference; ordinary profile changes do not replace it.
 - `GET /user/group-meta` serves a visible group's full or delta roster feed by `threadId` or account.
@@ -159,22 +155,20 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 ### POST `/user/profile-resolution` — Resolve a profile
 
-The request is a discriminated union:
+The request is a projection-free exact profile demand:
 
-- `{ type: 'EXACT', account, domain, rev }`
-- `{ type: 'MESSAGE_AUTHOR', threadId, messageSeq, rev }`
-- `{ type: 'GROUP_META', threadId, profileRev, subject: { type: 'GROUP' } }`
-- `{ type: 'GROUP_META', threadId, profileRev, subject: { type: 'MEMBER', account, domain } }`
+- `ACCOUNT_PROFILE`: `{ namespaceId, lookup: 'ACCOUNT_PROFILE', target: { account, domain, rev } }`
+- `RELATIONSHIP_INTENT_PROFILE`: `{ namespaceId, lookup: 'RELATIONSHIP_INTENT_PROFILE', target: { account, domain, rev }, peerAccount }`
+- `GROUP_MEMBER_PROFILE`: `{ namespaceId, lookup: 'GROUP_MEMBER_PROFILE', target: { account, domain, rev }, groupAccount }`
 
-There is no thread-default selector or separate endpoint. Clients use the exact identity and revision
-from `THREAD_STATE.profile`. Before any cache lookup, the server verifies the user's matching snapshot
-or another existing disclosure grant. The snapshot grant includes namespace and revision; it does not
-require a surviving intent. A new establishment may replace this grant with another revision.
-`READY.profile` includes `namespaceId`; `PENDING.key` is the expected
-`{ namespaceId, account, domain, rev }` tuple. Completion is announced by the
-authenticated event stream and clients then reread their local profile store.
-Message Author Profile and Group Meta Profile federation requests derive the
-selected revision from the referenced remote fact rather than accepting a revision parameter.
+The request carries no `threadId`, `messageSeq`, Meta feed coordinate, selector, or separate evidence
+object. Clients use the exact identity and revision already present in visible thread, relationship,
+or group-meta records. Before any cache lookup, the server verifies that the authenticated user has a
+matching disclosure grant for the requested lookup. `READY.profile` includes `namespaceId`;
+`PENDING.key` is the expected `{ namespaceId, account, domain, rev }` tuple. Completion is announced
+by the authenticated event stream with the same tuple and clients then reread their local profile store.
+Federation profile requests use the lookup directly: Account Profile, Relationship Intent Profile, and
+Group Member Profile map to their corresponding S2S operations.
 
 ### POST `/user/query` · `/user/resolve` · `/user/search`
 
@@ -288,6 +282,11 @@ under `/group/*` because the group, rather than the current user, authors that d
 - **Replies**: PURE_TEXT content is `{ "text": "...", "quote": { "seq": n } }`. A positive `n` must identify a visible message in the same local thread when sending; `0` explicitly preserves a reply with no target. Ordinary text omits `quote`. Internal federation namespaces are not client navigation coordinates.
 - **Errors**: `30001` empty · `30002` not approved · `30003` thread not found.
 
+### POST `/send-contact-card` — Share a contact snapshot
+
+- **Body**: `{ threadId, target: { account, domain, namespaceId, profileRev }, clientMessageId }`. The same four-part target identifies a user or group; no numeric target ID is accepted.
+- **Behavior**: the server checks that the target is a visible group, an available local user, or an active federated friend, then snapshots the exact stored profile version. If that version is unavailable, the card uses `account` as its display name, an empty bio, and no avatar. Available avatar bytes are copied into message CAS storage. The resulting `CONTACT_CARD` message is immutable.
+
 ### POST `/send-media` — Send media (staged)
 
 - **Body**: `{ threadId, contentType: 'IMAGE'|'FILE'|'VIDEO'|'AUDIO', clientMessageId, ...display meta }`. Stages a `PendingMedia` row; the bytes land via `/upload` and are promoted to a `Message` once confirmed. (`/query-media-stages`, `/media-status`, `/relocalize-media` support the staging lifecycle.)
@@ -342,9 +341,9 @@ under `/group/*` because the group, rather than the current user, authors that d
   direction cursors, `scannedThrough`, and `deletionSeq` are JSON integers in
   the conversation's thread-local deletion-coordinate space.
 
-### POST `/thread/{by-user-id, mark-read, set-muted, set-pinned, set-alias}`
+### POST `/thread/{mark-read, set-muted, set-pinned, set-alias}`
 
-- Per-`AccountThreadState` mutations: the P2P thread lookup, read watermark advance, mute, pin, and per-thread alias. `search-messages` does in-chat search.
+- Per-`AccountThreadState` mutations: read watermark advance, mute, pin, and per-thread alias. `search-messages` does in-chat search.
 
 `mark-read` synchronously commits a viewport read mutation:
 
@@ -357,18 +356,24 @@ under `/group/*` because the group, rather than the current user, authors that d
   No count cap applies; `999+` is a client presentation choice.
 - After commit, the server publishes an SSE hint for clients to pull the thread feed.
 
-### POST `/thread/feed-delta`
+### POST `/thread-feed`
 
 - **Body**: `{ after: number, through?: number, take?: number, previewCount?: number }`; feed cursors are
   nonnegative int32, take defaults to 100 and is limited to 1..200.
 - **Data**: `{ threadFeedEndId, through, scannedThrough, hasMore, items }`.
-- Each item is `{ threadId, threadFeedId, messageEndSeq, tombstoneEndSeq, groupMetaFeedEndId, joinRequestEndFeedId, joinRequestReadFeedId, groupInviteEndFeedId, lastReadSeq, unreadCount, lastMentionSeq, previews? }`.
+- Each item includes `threadId`, `threadFeedId`, `type`, `authorityNamespaceId`,
+  `conversationState`, `blocked`, nullable `role`, and an exact
+  `profile: { account, domain, namespaceId, profileRev }`, plus `messageEndSeq`,
+  `tombstoneEndSeq`, nullable `groupMetaFeedEndId`, `joinRequestEndFeedId`,
+  `joinRequestReadFeedId`, `groupInviteEndFeedId`, `threadProfileRev`, `lastReadSeq`,
+  `unreadCount`, nullable `lastMentionSeq`, and nullable `alias`.
   `lastMentionSeq` is nullable; clients compare it with their local read position.
   `joinRequestReadFeedId` is `-1` for non-managers; otherwise a join-request
   notification is unread when it is smaller than `joinRequestEndFeedId`.
-- `previewCount` defaults to zero and cannot exceed three.
-  Previews include sequence, sender, timestamp, and live/retracted/removed status;
-  deleted entries contain no original message text.
+- `previewCount` defaults to zero and cannot exceed three. When requested,
+  `previews` is required (possibly empty). Previews include sequence, sender identity
+  and profile revision, timestamp, and live/retracted/removed status; deleted entries
+  contain no original message text. Clients persist only the greatest-sequence preview.
 - Initial consumption uses `after: 0`; omitted through captures the current head.
   Subsequent pages reuse through. Persist items and scannedThrough atomically.
 - Rows are compacted by account/thread and ordered by threadFeedId. An empty
@@ -471,7 +476,7 @@ See the [Android calls client contract](../platform/android/calls.md).
 - `POST /devices/push-probes`, `GET /devices/push-probes/:probeId`, and `POST /devices/push-probes/:probeId/ack` — run and observe a one-off Web Push or Android FCM delivery probe for the authenticated session. No token or target session is accepted in the request body; the server selects the session's stored subscription.
 - `GET /notifications/vapid-key` (`@Public`) — Web Push VAPID public key.
 - `GET /user/state-feed` — account and relationship metadata.
-- `POST /thread/feed-delta` — unified thread heads, read positions, unread counts and bounded previews.
+- `POST /thread-feed` — complete conversation snapshots, thread heads, read positions, unread counts and bounded previews.
   Clients reconcile local optimistic reads and compose notifications from this feed.
   Message notifications have no action buttons. Body taps open the thread; dismissal is local.
 
@@ -630,13 +635,14 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
   manifest for field support. The report is owned by the submitting user; only administrators can list,
   download, or delete reports.
 
-## Shell Bootstrap
+## Client Bootstrap
 
-- `GET /shell/compat` returns the server version and public registration/login policy.
-- `GET /shell/web-manifest` returns the current web bundle version and SHA-256 digest.
-- `GET /shell/web-bundle` streams the verified `application/gzip` web bundle as raw bytes, not an
-  `ApiResult` envelope. These three routes are public and rate-limited because the shell calls them
-  before a user session exists.
+- `GET /client/compat` returns the client API contract version, server software version, public
+  registration/login policy, optional client origins and public Firebase configuration. It is public
+  and rate-limited because an installed client requests it before a user session exists. App assets
+  ship inside the installation package; the server does not publish OTA web bundles. The native
+  compatibility predicate currently accepts valid responses unconditionally pending implementation
+  of exact API version matching.
 
 ---
 
@@ -651,32 +657,53 @@ The browser opens the stream via a fetch-backed SSE client inside a Web Worker (
 On connect the server pushes a **`HELLO`** frame with `userId`, `sessionId`, `pushSubscriptionRev`, `stateFeedEndId`, `threadFeedEndId`, `profileRev`, and `activeCall`.
 `stateFeedEndId` bounds catch-up for hydrated thread state (including group/roster invalidation and per-user
 settings/read state), cached profile changes, source-scoped member profiles, incoming friend requests, and
-paired thread content heads. Heartbeat: a `: ping` comment frame every 25s.
+paired thread content heads. The stream is push-only; it sends no idle heartbeat.
 
 ### Frame format
 
 ```
 event: <EVENT_NAME>
+id: <connection-local sequence>
 data: <json>
 ```
 
 ### Event list (backend → frontend)
 
-| Event                        | Purpose                                           | Recovery source                            |
-| ---------------------------- | ------------------------------------------------- | ------------------------------------------ |
-| `HELLO`                      | connection handshake and current high-water marks | sent on every connection                   |
-| `PUSH_SUBSCRIPTION_CHANGED` | session-specific push recovery `{ sessionId, pushSubscriptionRev }` | `HELLO.pushSubscriptionRev` |
-| `STATE_FEED_UPDATED`         | identity-only Client State Feed wake `{ feedId }` | `HELLO.stateFeedEndId` + ranged state pull |
-| `MEDIA_STATUS`               | media-localization completion wake                | message/media query                        |
-| `CALL_EVENT` / `CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling     | active-call snapshot/new negotiation       |
-| `FORCE_LOGOUT`               | terminate a revoked session                       | authentication state                       |
+| Event                        | Purpose                                                             | Recovery source                              |
+| ---------------------------- | ------------------------------------------------------------------- | -------------------------------------------- |
+| `HELLO`                      | connection handshake and current high-water marks                   | sent on every connection                     |
+| `PUSH_SUBSCRIPTION_CHANGED`  | session-specific push recovery `{ sessionId, pushSubscriptionRev }` | `HELLO.pushSubscriptionRev`                  |
+| `STATE_FEED_UPDATED`         | identity-only Client State Feed wake `{ feedId }`                   | `HELLO.stateFeedEndId` + ranged state pull   |
+| `THREAD_FEED_UPDATED`        | one-second thread-feed hint `{ threadFeedEndId, sseUuid? }`         | `HELLO.threadFeedEndId` + ranged thread pull |
+| `MEDIA_STATUS`               | media-localization completion wake                                  | message/media query                          |
+| `CALL_EVENT` / `CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling                       | active-call snapshot/new negotiation         |
+| `FORCE_LOGOUT`               | terminate a revoked session                                         | authentication state                         |
+| `SSE_REPLACED`               | stop an old connection when its device session opens a new SSE      | new connection's `HELLO`                     |
 
 There are no dedicated group, profile, friend/request, thread-metadata, message-head, or read-state SSE
-events. Those changes are committed to the Client State Feed first and SSE carries only
-`STATE_FEED_UPDATED`. Out-of-band Push may still use the payload type `NEW_MESSAGE`; it is suppressed only
-for the exact device session that has a live SSE takeover, carries only `{ type, messageEndSeq }`, and is not
-an SSE event. Incoming-call Push follows the same per-session takeover rule while remaining eligible on the
-user's other offline devices.
+events. Changes are committed to durable feeds first; SSE carries only cursor hints.
+
+For a message notification candidate, the existing one-second `THREAD_FEED_UPDATED` hint includes
+this device session's current `sseUuid`. Clients collect the highest `threadFeedEndId` during a **fixed
+three-second window starting with the first hint** and send `POST /api/v1/events/receipt` with
+`{ "sseUuid": "...", "threadFeedEndId": 42 }`. The authenticated endpoint returns `{ accepted: boolean }`
+in the standard API envelope. It accepts only a head actually emitted on this session's current SSE
+connection. A late confirmation for an older head cannot confirm a newer wake. A new SSE connection
+for the same authenticated device session sends `SSE_REPLACED` to its old connection and closes it;
+that client must stop automatic reconnects, and the old UUID no longer accepts receipts. Browser
+tabs sharing one session hand ownership to the newly active tab. This proves SSE receipt, **not message read status or Android notification
+display**. No idle polling or heartbeat is involved. The generated wire `id` is neither a durable
+cursor nor this connection UUID.
+
+Pending device-session push heads, deadlines, and confirmed cursors live only in the origin server's
+memory. The first notification-relevant hint starts a **five-second** push window (not a leading
+immediate send); later heads advance that device's target without postponing the deadline. At that
+decision, the device skips FCM/Web Push only when its confirmed head covers the target head. An
+unconfirmed session with live SSE rechecks current unread attention before fallback push; an offline
+session receives its usual identity-only wake `{ type, threadFeedEndId }` without message content.
+A backend restart within the window **loses that pending push**, by design. Deployments with multiple
+backends for one origin must route the SSE and its receipt HTTP to the same process. A late receipt
+can still result in both an SSE hint and a push; clients reconcile via the durable feed cursor.
 
 > Ordering & completeness: on a live connection, strict ordering is guaranteed by TCP; state missed during a disconnect is caught up from the local Client State Feed cursor through `HELLO.stateFeedEndId`, and message bodies are caught up from per-thread cursors through each `THREAD_CONTENT_HEAD.messageEndSeq` (the stream does not replay history — no `Last-Event-ID`).
 

@@ -1,0 +1,525 @@
+import {
+  ProfileLookup,
+  type ProfileClientResolutionDemand,
+  type ProfileKey,
+  type ProfileResolutionDemand,
+} from './profile-resolution-demand.js';
+import { groupStateSql } from '../group/shared/group-state.js';
+import { Injectable, Logger } from '@nestjs/common';
+import { and, eq, sql } from 'drizzle-orm';
+import { normalizeAccount } from '../common/account.js';
+import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
+import { DatabaseService } from '../database/database.service.js';
+import * as tables from '../database/schema.js';
+import { SseService } from '../gateway/sse.service.js';
+import { S2sResponseError } from '../federation/federation-errors.js';
+import type { S2SProfile } from '../federation/federation-profile.js';
+import { FederationProfileService } from '../federation/federation-profile.service.js';
+
+export interface ResolvedClientProfile {
+  namespaceId: number;
+  account: string;
+  domain: string;
+  rev: number;
+  name: string;
+  bio: string;
+  avatarBase64: string | null;
+}
+
+export type ProfileResolutionStart =
+  | { status: 'READY'; profile: ResolvedClientProfile }
+  | { status: 'PENDING'; key: ProfileKey };
+
+interface ResolutionEnqueueOptions {
+  listenerSessionIds?: Iterable<number>;
+}
+
+interface PendingItem {
+  key: ProfileKey;
+  demand: ProfileResolutionDemand;
+  /** A session is registered at most once for this exact profile key. */
+  listeners: Set<number>;
+  state: 'QUEUED' | 'ACTIVE';
+}
+
+/** Application-wide exact-profile resolver with single-flight and a 1,000-entry access-ordered LRU. */
+@Injectable()
+export class ProfileResolutionCoordinatorService {
+  private static readonly CAPACITY = 1000;
+  private static readonly HTTP_CONCURRENCY = 8;
+  private readonly logger = new Logger(
+    ProfileResolutionCoordinatorService.name,
+  );
+  private readonly pending = new Map<string, PendingItem>();
+  private readonly queue: string[] = [];
+  private activeCount = 0;
+  private readonly cache = new Map<string, ResolvedClientProfile>();
+
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly profiles: FederationProfileService,
+    private readonly sse: SseService,
+  ) {}
+
+  async start(
+    userId: number,
+    sessionId: number,
+    demand: ProfileClientResolutionDemand,
+  ): Promise<ProfileResolutionStart> {
+    await this.authorizeDemand(userId, demand);
+    return this.enqueueResolution(demand, {
+      listenerSessionIds: [sessionId],
+    });
+  }
+
+  async resolveDemand(demand: ProfileResolutionDemand): Promise<void> {
+    if (demand.target.rev < 1 || demand.namespaceId === 0) return;
+    await this.enqueueResolution(demand);
+  }
+
+  private async enqueueResolution(
+    demand: ProfileResolutionDemand,
+    options: ResolutionEnqueueOptions = {},
+  ): Promise<ProfileResolutionStart> {
+    const key: ProfileKey = {
+      namespaceId: demand.namespaceId,
+      account: demand.target.account,
+      domain: demand.target.domain,
+      rev: demand.target.rev,
+    };
+    const keyString = profileKeyString(key);
+    const cached = this.cache.get(keyString);
+    if (cached) {
+      this.touch(keyString, cached);
+      return { status: 'READY', profile: cached };
+    }
+    const durable = await this.readDurable(key);
+    if (durable) {
+      this.touch(keyString, durable);
+      return { status: 'READY', profile: durable };
+    }
+    if (key.domain === 'local' && key.namespaceId === 0) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'local profile revision is unavailable',
+      );
+    }
+    const listeners = new Set<number>(options.listenerSessionIds ?? []);
+    const existing = this.pending.get(keyString);
+    if (existing) {
+      for (const sessionId of listeners) existing.listeners.add(sessionId);
+      return { status: 'PENDING', key };
+    }
+    if (this.pending.size >= ProfileResolutionCoordinatorService.CAPACITY)
+      this.capacityExceeded();
+    this.pending.set(keyString, {
+      key,
+      demand,
+      listeners,
+      state: 'QUEUED',
+    });
+    this.enqueue(keyString);
+    this.drain();
+    return { status: 'PENDING', key };
+  }
+
+  private async authorizeDemand(
+    userId: number,
+    demand: ProfileClientResolutionDemand,
+  ): Promise<void> {
+    const namespace = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.id, demand.namespaceId),
+      columns: { domain: true },
+    });
+    if (!namespace)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'profile namespace is unavailable',
+      );
+
+    if (demand.lookup === ProfileLookup.GROUP_MEMBER_PROFILE) {
+      await this.authorizeGroupMemberDemand(userId, demand, namespace.domain);
+      return;
+    }
+    if (demand.lookup === ProfileLookup.RELATIONSHIP_INTENT_PROFILE) {
+      await this.authorizeIntentDemand(userId, demand);
+      return;
+    }
+    await this.authorizeAccountDemand(userId, demand);
+  }
+
+  private async authorizeGroupMemberDemand(
+    userId: number,
+    demand: Extract<
+      ProfileResolutionDemand,
+      { lookup: ProfileLookup.GROUP_MEMBER_PROFILE }
+    >,
+    publisherDomain: string,
+  ): Promise<void> {
+    const memberDomain = demand.target.domain;
+    const rows = await this.database.db.execute(sql`
+      SELECT 1
+      FROM "MessageThread" thread
+      JOIN ${groupStateSql} group_state ON group_state.id = thread.id
+      JOIN "Account" viewer ON viewer.id = ${userId}
+      JOIN LATERAL (
+        SELECT fact.operation, fact.body
+        FROM "GroupMetaMemberFeed" fact
+        WHERE fact."threadId" = group_state.id
+          AND fact."memberAccount" = ${normalizeAccount(demand.target.account)}
+          AND fact."memberDomain" = ${memberDomain}
+        ORDER BY fact."feedId" DESC
+        LIMIT 1
+      ) latest ON true
+      WHERE thread.type = 'GROUP'
+        AND group_state.account = ${normalizeAccount(demand.groupAccount)}
+        AND group_state.domain = ${publisherDomain}
+        AND group_state."namespaceId" = ${demand.namespaceId}
+        AND latest.operation = 'MEMBER_UPSERT'
+        AND (latest.body ->> 'profileRev')::integer = ${demand.target.rev}
+        AND EXISTS (
+          SELECT 1 FROM "RelationshipPair" pair
+          WHERE pair."threadId" = thread.id
+            AND pair.kind = 'GROUP_MEMBER' AND pair.active = true
+            AND ((pair."endpointAType" = 'USER'
+              AND pair."endpointAAccount" = viewer.account
+              AND pair."endpointADomain" = viewer.domain)
+              OR (pair."endpointBType" = 'USER'
+              AND pair."endpointBAccount" = viewer.account
+              AND pair."endpointBDomain" = viewer.domain))
+        )
+      LIMIT 1
+    `);
+    if (rows.rows.length === 0)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'group member profile is not available',
+      );
+  }
+
+  private async authorizeIntentDemand(
+    userId: number,
+    demand: Extract<
+      ProfileResolutionDemand,
+      { lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE }
+    >,
+  ): Promise<void> {
+    const rows = await this.database.db.execute(sql`
+      SELECT 1
+      FROM "Account" self
+      JOIN "RelationshipPair" pair ON (
+        (pair."endpointAAccount" = ${normalizeAccount(demand.target.account)}
+          AND pair."endpointADomain" = ${demand.target.domain}
+          AND pair."endpointBAccount" = ${normalizeAccount(demand.peerAccount)} )
+        OR (pair."endpointBAccount" = ${normalizeAccount(demand.target.account)}
+          AND pair."endpointBDomain" = ${demand.target.domain}
+          AND pair."endpointAAccount" = ${normalizeAccount(demand.peerAccount)} )
+      )
+      JOIN "RelationshipIntent" intent ON intent."pairId" = pair.id
+      WHERE self.id = ${userId}
+        AND intent."profileRev" = ${demand.target.rev}
+        AND (intent.status = 'ACCEPTED' OR
+          (intent.status = 'REQUESTED' AND intent."expiresAt" > CURRENT_TIMESTAMP))
+        AND (pair."endpointAType" = 'USER' OR pair."endpointBType" = 'USER')
+        AND (pair."endpointANamespaceId" = ${demand.namespaceId}
+          OR pair."endpointBNamespaceId" = ${demand.namespaceId})
+        AND (pair."endpointAAccount" = self.account
+          OR pair."endpointBAccount" = self.account)
+      LIMIT 1
+    `);
+    if (rows.rows.length === 0)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'relationship intent profile is not available',
+      );
+  }
+
+  private async authorizeAccountDemand(
+    userId: number,
+    demand: Extract<
+      ProfileResolutionDemand,
+      { lookup: ProfileLookup.ACCOUNT_PROFILE }
+    >,
+  ): Promise<void> {
+    const account = normalizeAccount(demand.target.account);
+    const rows = await this.database.db.execute(sql`
+      SELECT 1
+      FROM "Account" self
+      WHERE self.id = ${userId}
+        AND (
+          (self.account = ${account} AND ${demand.namespaceId} = 0)
+          OR EXISTS (
+            SELECT 1
+            FROM "AccountThreadState" state
+            JOIN "MessageThread" thread ON thread.id = state."threadId"
+            WHERE state."accountId" = self.id
+              AND state."threadProfileRev" = ${demand.target.rev}
+              AND (
+                (thread.type = 'GROUP'
+                  AND thread."groupAccount" = ${account}
+                  AND thread."authorityNamespaceId" = ${demand.namespaceId})
+                OR EXISTS (
+                  SELECT 1 FROM "RelationshipPair" pair
+                  WHERE pair."threadId" = thread.id
+                    AND pair.established
+                    AND pair."endpointAAccount" = ${account}
+                    AND pair."endpointANamespaceId" = ${demand.namespaceId}
+                  OR pair."endpointBAccount" = ${account}
+                    AND pair."endpointBNamespaceId" = ${demand.namespaceId}
+                )
+              )
+          )
+          OR EXISTS (
+            SELECT 1 FROM "GroupMetaMemberFeed" fact
+            JOIN "MessageThread" thread ON thread.id = fact."threadId"
+            WHERE thread.type = 'GROUP'
+              AND fact.operation = 'MEMBER_UPSERT'
+              AND fact."memberAccount" = ${account}
+              AND (fact.body ->> 'profileRev')::integer = ${demand.target.rev}
+              AND group_meta_member_namespace(thread.id, fact."memberAccount", fact."memberDomain") = ${demand.namespaceId}
+          )
+        )
+      LIMIT 1
+    `);
+    if (rows.rows.length === 0)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'profile is not available',
+      );
+  }
+
+  private async readDurable(key: ProfileKey) {
+    const profile = await this.profiles.getStoredProfile(
+      key.account,
+      key.domain,
+      key.namespaceId,
+      key.rev,
+    );
+    return profile ? this.clientProfile(profile, key.namespaceId) : null;
+  }
+
+  private drain(): void {
+    while (
+      this.activeCount < ProfileResolutionCoordinatorService.HTTP_CONCURRENCY &&
+      this.queue.length > 0
+    ) {
+      const keyString = this.queue.shift()!;
+      const item = this.pending.get(keyString);
+      if (!item || item.state !== 'QUEUED') continue;
+      item.state = 'ACTIVE';
+      this.activeCount++;
+      void this.execute(keyString, item).finally(() => {
+        this.activeCount--;
+        this.drain();
+      });
+    }
+  }
+
+  private async execute(
+    expectedKeyString: string,
+    pendingItem: PendingItem,
+  ): Promise<void> {
+    const item = this.pending.get(expectedKeyString);
+    if (item !== pendingItem) return;
+    try {
+      const profile = await this.fetch(item.key, item.demand);
+      this.complete(expectedKeyString, item, profile);
+    } catch (error) {
+      this.fail(expectedKeyString, item, error);
+    }
+  }
+
+  private complete(
+    expectedKeyString: string,
+    pendingItem: PendingItem,
+    profile: ResolvedClientProfile,
+  ): void {
+    const item = this.pending.get(expectedKeyString);
+    if (item !== pendingItem) return;
+
+    // `fetch()` has already awaited materializeExactForeignProfile() and its
+    // committing transaction. Nothing below can run before the exact snapshot
+    // is durable in PostgreSQL.
+    const actualKey: ProfileKey = {
+      namespaceId: profile.namespaceId,
+      account: profile.account,
+      domain: profile.domain,
+      rev: profile.rev,
+    };
+    this.touch(profileKeyString(actualKey), profile);
+
+    // A durable exact snapshot satisfies every method waiting for this same
+    // four-tuple. Remove the pending key only after persistence, then notify
+    // the union of its session listeners. Internal prefetches have no listener.
+    const listeners = [...item.listeners];
+    this.removeItem(expectedKeyString, item);
+
+    for (const sessionId of listeners)
+      this.sse.onProfileAvailable(sessionId, actualKey);
+  }
+
+  private fail(
+    expectedKeyString: string,
+    pendingItem: PendingItem,
+    error: unknown,
+  ): void {
+    const item = this.pending.get(expectedKeyString);
+    if (item !== pendingItem) return;
+    const reason = this.failureReason(error);
+    const detail =
+      error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : String(error);
+    const message = `profile resolution failed for ${expectedKeyString}: ${reason} (${detail})`;
+    if (reason === 'TEMPORARILY_UNAVAILABLE') this.logger.warn(message);
+    else this.logger.debug(message);
+    for (const sessionId of item.listeners)
+      this.sse.onProfileUnavailable(sessionId, { ...item.key, reason });
+    this.removeItem(expectedKeyString, item);
+  }
+
+  private removeItem(keyString: string, item: PendingItem): void {
+    if (this.pending.get(keyString) !== item) return;
+    this.pending.delete(keyString);
+    this.removeQueued(keyString);
+  }
+
+  private enqueue(keyString: string): void {
+    if (!this.queue.includes(keyString)) this.queue.push(keyString);
+  }
+
+  private removeQueued(keyString: string): void {
+    for (let index = this.queue.length - 1; index >= 0; index--)
+      if (this.queue[index] === keyString) this.queue.splice(index, 1);
+  }
+
+  private async fetch(
+    expected: ProfileKey,
+    demand: ProfileResolutionDemand,
+  ): Promise<ResolvedClientProfile> {
+    if (expected.namespaceId === 0) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'profile revision is unavailable',
+      );
+    }
+    const profile = await this.fetchExactProfile(expected, demand);
+    if (!profile.profile) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'profile revision is unavailable',
+      );
+    }
+    const fetched = this.clientProfile(profile.profile, expected.namespaceId);
+    this.touch(profileKeyString(expected), fetched);
+    await this.profiles.materializeExactForeignProfile(
+      profile.profile,
+      profile.sourceDomain,
+      expected.namespaceId,
+    );
+    const materialized = await this.readDurable(expected);
+    if (!materialized) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'materialized profile revision is unavailable',
+      );
+    }
+    return materialized;
+  }
+
+  private async fetchExactProfile(
+    expected: ProfileKey,
+    demand: ProfileResolutionDemand,
+  ) {
+    const namespace = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.id, demand.namespaceId),
+      columns: { domain: true },
+    });
+    if (!namespace || demand.namespaceId === 0)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'profile namespace is unavailable',
+      );
+    const publisherDomain = namespace.domain;
+    if (demand.lookup === ProfileLookup.ACCOUNT_PROFILE)
+      return {
+        profile: await this.profiles.fetchExactAccountProfile(
+          demand.target.account,
+          demand.target.rev,
+          publisherDomain,
+        ),
+        sourceDomain: publisherDomain,
+      };
+    if (demand.lookup === ProfileLookup.GROUP_MEMBER_PROFILE)
+      return {
+        profile: await this.profiles.fetchExactGroupMemberProfile(
+          demand.groupAccount,
+          demand.target.domain,
+          demand.target.account,
+          demand.target.rev,
+          publisherDomain,
+        ),
+        sourceDomain: publisherDomain,
+      };
+    return {
+      profile: await this.profiles.fetchExactIntentProfile(
+        demand.target.account,
+        demand.peerAccount,
+        demand.target.rev,
+        publisherDomain,
+      ),
+      sourceDomain: publisherDomain,
+    };
+  }
+
+  private capacityExceeded(): never {
+    this.logger.warn('profile resolution queue is full');
+    throw new BusinessException(
+      BusinessCode.PROFILE_RESOLUTION_CAPACITY,
+      'profile resolution queue is full',
+    );
+  }
+
+  private clientProfile(
+    profile: S2SProfile,
+    namespaceId: number,
+  ): ResolvedClientProfile {
+    return {
+      namespaceId,
+      account: profile.account,
+      domain: profile.domain,
+      rev: profile.profileRev,
+      name: profile.displayName,
+      bio: profile.bio,
+      avatarBase64: profile.avatar?.base64 ?? null,
+    };
+  }
+
+  private touch(key: string, profile: ResolvedClientProfile): void {
+    this.cache.delete(key);
+    this.cache.set(key, profile);
+    while (this.cache.size > ProfileResolutionCoordinatorService.CAPACITY)
+      this.cache.delete(this.cache.keys().next().value!);
+  }
+
+  private failureReason(
+    error: unknown,
+  ): 'NOT_FOUND' | 'NOT_DISCLOSED' | 'TEMPORARILY_UNAVAILABLE' {
+    const code =
+      error instanceof BusinessException
+        ? error.bizCode
+        : error instanceof S2sResponseError
+          ? error.code
+          : undefined;
+    if (code === BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED)
+      return 'NOT_DISCLOSED';
+    if (code === BusinessCode.NOT_FOUND || code === BusinessCode.FORBIDDEN)
+      return 'NOT_FOUND';
+    return 'TEMPORARILY_UNAVAILABLE';
+  }
+}
+
+function profileKeyString(key: ProfileKey): string {
+  return JSON.stringify([key.namespaceId, key.account, key.domain, key.rev]);
+}

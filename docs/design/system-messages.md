@@ -127,12 +127,20 @@ identities with their namespaces, but writes `profileRev: 0` for both: call
 notices do not disclose or request participant profiles. Event content is written
 with the relationship or roster transition, not inferred later from the current roster.
 
-The presentation layer reads committed local snapshots using the event's
-four-tuple. A join or friendship activation may resolve its authorized event
-evidence; a departure does not ask the departed relationship for new profile
-data. When authorized Group Meta resolution returns a different revision, the
-runtime retains the actual profile and the client corrects **only the invoking
-local system-message row's** participant revision. Neither the server message
-nor other historical system rows are rewritten. A later cache refill of the
-same row preserves this correction; a different body or tombstone does not.
-The parser rejects old address-only payloads; there is no historical conversion.
+The presentation layer first reads committed local snapshots using the
+event's four-tuple. On a miss, it selects an ordinary profile query from the
+event type and frozen participant identity; no system-specific evidence
+selector, message seq, or backend conversion is needed. Friendship addition
+uses the directed intent while effective. Friendship removal and group
+departure are cache-only and never issue a profile request. A mirrored group's
+own local participant uses the local snapshot without a federation read. A
+remote member joining a mirrored group, or appearing in a role/owner change,
+uses the ordinary group-member selector for that group. The
+containing conversation already provides the group identity; it does not add
+a system-specific thread parameter. If the exact revision is no longer
+disclosed, the address fallback remains. Departures never manufacture current
+membership evidence to fetch an old member profile. Neither the server
+message nor any local system row is corrected to a newer profile revision.
+The parser rejects old address-only payloads; there is no historical
+conversion. The cutover inventory and source-coordinate rules are in
+[Profile Version Resolution](profile-version-resolution.md).

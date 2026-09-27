@@ -17,6 +17,7 @@ import {
   accountThreadState,
   account as user,
 } from '../database/schema.js';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
   requireThreadContentLockInTx,
@@ -83,6 +84,14 @@ import { enqueueThreadFanoutInTx } from './thread-fanout-task.js';
 import { requireOutboundPendingMedia } from './pending-media-row.js';
 import { resolveStoredQuotes } from './quote-reference.js';
 import { ThreadPreviewService } from './thread-preview.service.js';
+import {
+  collectCommittedProfileWork,
+  type CommittedProfileMessage,
+} from './collect-committed-profile-work.js';
+import {
+  MESSAGE_PROFILE_WORK_COMMITTED,
+  type MessageProfileWorkCommittedEvent,
+} from './message-profile-work.event.js';
 
 interface ReplyPreview {
   author: string;
@@ -199,6 +208,7 @@ export class MessageService {
     private readonly database: DatabaseService,
     private readonly linkPreview: LinkPreviewService,
     private readonly previews: ThreadPreviewService,
+    private readonly events?: EventEmitter2,
   ) {}
 
   private async queryRaw<T extends object[]>(
@@ -213,6 +223,60 @@ export class MessageService {
       values.map((value) => sql`${value}`),
       sql`, `,
     );
+  }
+
+  private async publishCommittedProfileWork(
+    committed: PublicMessage,
+  ): Promise<void> {
+    const creator = committed.creator;
+    if (!creator) return;
+    const [thread] = await this.database.db
+      .select({
+        type: messageThread.type,
+        groupAccount: messageThread.groupAccount,
+        groupDomain: messageThread.groupDomain,
+      })
+      .from(messageThread)
+      .where(eq(messageThread.id, committed.threadId))
+      .limit(1);
+    if (!thread) return;
+    const messages: CommittedProfileMessage[] =
+      thread.type === MessageThreadType.GROUP
+        ? [
+            {
+              threadType: 'GROUP',
+              groupAccount: thread.groupAccount!,
+              groupOriginDomain: thread.groupDomain!,
+              threadId: committed.threadId,
+              seq: committed.seq,
+              profileRev: committed.profileRev,
+              creator,
+              contentType: committed.contentType,
+              content: committed.content,
+              isDeleted: committed.isDeleted,
+              localState: committed.localState,
+            },
+          ]
+        : [
+            {
+              threadType: 'P2P',
+              threadId: committed.threadId,
+              seq: committed.seq,
+              profileRev: committed.profileRev,
+              creator,
+              contentType: committed.contentType,
+              content: committed.content,
+              isDeleted: committed.isDeleted,
+              localState: committed.localState,
+            },
+          ];
+    const work = collectCommittedProfileWork(messages);
+    if (work.demands.length === 0 && work.evidenceProjections.length === 0)
+      return;
+    this.events?.emit(MESSAGE_PROFILE_WORK_COMMITTED, {
+      demands: work.demands,
+      evidenceProjections: work.evidenceProjections,
+    } satisfies MessageProfileWorkCommittedEvent);
   }
 
   private async localAuthor(userId: number): Promise<{
@@ -288,7 +352,7 @@ export class MessageService {
       if (existing !== null) return existing; // retry → return the original message (already dispatched)
     }
     try {
-      return await this.previews.commitMessage(threadId, async (tx) => {
+      const created = await this.previews.commitMessage(threadId, async (tx) => {
         if (beforeMessageCreate) await beforeMessageCreate(tx);
         // Atomic per-thread seq allocation: increment curSeq and read back the new value. The row lock
         // held to commit serializes concurrent sends to this thread (a brief wait, never an error) and
@@ -489,6 +553,8 @@ export class MessageService {
         // (msg.id is consumed above for the MediaMessage FK; the strip is the LAST use of the full row.)
         return stripMessageId(msg);
       });
+      await this.publishCommittedProfileWork(created);
+      return created;
     } catch (e) {
       // seq allocation cannot P2002 (the row lock serializes it), so the only unique-violation path is a
       // concurrent RETRY of the same send (same clientMessageId): another request inserted it first.
@@ -574,6 +640,7 @@ export class MessageService {
     const result = await this.database.db.transaction((tx) =>
       this.writeSystemMessageInTx(tx, threadId, event),
     );
+    await this.publishCommittedProfileWork(result.message);
     return result.message;
   }
 
@@ -1112,6 +1179,7 @@ export class MessageService {
       throw e;
     }
     if (created === null) return null; // lost the promote race
+    await this.publishCommittedProfileWork(created);
     return { message: created, newlyPromoted: true };
   }
 

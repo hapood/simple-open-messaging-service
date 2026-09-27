@@ -38,6 +38,7 @@ interface SseClient {
 export class SseService implements OnModuleDestroy {
   private readonly logger = new Logger(SseService.name);
   private readonly clients: Record<number, SseClient[]> = {};
+  private readonly clientsBySession = new Map<number, SseClient>();
   private readonly notificationHeads = new Map<number, number>();
   private readonly receipts = new Map<
     number,
@@ -95,6 +96,7 @@ export class SseService implements OnModuleDestroy {
       });
       const entry: SseClient = { sink, since: Date.now(), sessionId, sseUuid };
       (this.clients[userId] ??= []).push(entry);
+      this.clientsBySession.set(sessionId, entry);
       // HELLO captures the feed heads; a reconnect catches up from persisted cursors.
       void this.sendHello(userId, entry);
       return () => {
@@ -102,6 +104,8 @@ export class SseService implements OnModuleDestroy {
         if (!list) return;
         const idx = list.indexOf(entry);
         if (idx !== -1) list.splice(idx, 1);
+        if (this.clientsBySession.get(sessionId) === entry)
+          this.clientsBySession.delete(sessionId);
         if (list.length === 0) delete this.clients[userId];
       };
     });
@@ -282,6 +286,17 @@ export class SseService implements OnModuleDestroy {
     }
   }
 
+  /** Push a profile wake only to the live stream owned by this session. */
+  private pushToSession(
+    sessionId: number,
+    eventName: string,
+    data: unknown,
+  ): void {
+    const client = this.clientsBySession.get(sessionId);
+    if (!client || client.sink.closed) return;
+    this.emit(client.sink, eventName, data);
+  }
+
   /** 1:1 WebRTC call LIFECYCLE notification — incoming ring / accepted / declined / cancelled / ended /
    *  missed. A call is ephemeral coordination rather than persisted content, so its descriptor rides
    *  inline. The addressed user's online
@@ -317,16 +332,15 @@ export class SseService implements OnModuleDestroy {
   }
 
   onProfileAvailable(
-    userId: number,
+    sessionId: number,
     key: {
       namespaceId: number;
       account: string;
       domain: string;
       rev: number;
     },
-    evidence: import('../../shared/profile-selector.js').ProfileSelector,
-  ) {
-    this.pushToUser(userId, 'PROFILE_AVAILABLE', { ...key, evidence });
+  ): void {
+    this.pushToSession(sessionId, 'PROFILE_AVAILABLE', key);
   }
 
   onQuoteResolution(
@@ -338,7 +352,7 @@ export class SseService implements OnModuleDestroy {
   }
 
   onProfileUnavailable(
-    userId: number,
+    sessionId: number,
     data: {
       namespaceId: number;
       account: string;
@@ -346,8 +360,8 @@ export class SseService implements OnModuleDestroy {
       rev: number;
       reason: 'NOT_FOUND' | 'NOT_DISCLOSED' | 'TEMPORARILY_UNAVAILABLE';
     },
-  ) {
-    this.pushToUser(userId, 'PROFILE_UNAVAILABLE', data);
+  ): void {
+    this.pushToSession(sessionId, 'PROFILE_UNAVAILABLE', data);
   }
 
   /** Coalesce durable state feed hints per account, independently of thread hints. */
@@ -401,6 +415,7 @@ export class SseService implements OnModuleDestroy {
   onModuleDestroy() {
     clearInterval(this.receiptCleanup);
     this.receipts.clear();
+    this.clientsBySession.clear();
     this.notificationHeads.clear();
     this.stateThrottle.stop();
     this.threadThrottle.stop();

@@ -7,6 +7,10 @@ import {
   MessageService,
   stripMessageId,
 } from './message.service.js';
+import {
+  MESSAGE_PROFILE_WORK_COMMITTED,
+  type MessageProfileWorkCommittedEvent,
+} from './message-profile-work.event.js';
 import type { Message } from './message.service.js';
 import type { ContentType } from '../database/enums.js';
 
@@ -148,6 +152,140 @@ function selectBuilder<T>(result: T, resolvesAtLimit = false) {
   };
   return builder;
 }
+
+describe('MessageService committed profile work', () => {
+  it('emits profile hints after writeSystemMessage commits', async () => {
+    const emit = vi.fn();
+    const tx = {};
+    const svc = new MessageService(
+      {
+        db: {
+          transaction: vi.fn(async (work) => work(tx)),
+          select: vi.fn().mockReturnValue(
+            selectBuilder(
+              [
+                {
+                  type: 'P2P',
+                  groupAccount: null,
+                  groupDomain: null,
+                },
+              ],
+              true,
+            ),
+          ),
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      { emit } as never,
+    );
+    const systemContent = {
+      type: 'FRIEND_ADDED' as const,
+      participants: [
+        {
+          account: 'alice',
+          domain: 'remote.test',
+          namespaceId: 7,
+          profileRev: 3,
+        },
+        {
+          account: 'bob',
+          domain: 'local',
+          namespaceId: 0,
+          profileRev: 2,
+        },
+      ] as const,
+    };
+    vi.spyOn(svc, 'writeSystemMessageInTx').mockResolvedValue({
+      messageId: 1n,
+      message: {
+        threadId: 9,
+        seq: 4,
+        profileRev: 0,
+        creator: { account: '$system', domain: 'local', namespaceId: 0 },
+        contentType: 'SYSTEM',
+        content: JSON.stringify(systemContent),
+        isDeleted: false,
+        localState: 'READY',
+      } as never,
+    });
+
+    await svc.writeSystemMessage(9, systemContent);
+
+    expect(emit).toHaveBeenCalledOnce();
+    const event = emit.mock.calls[0][1] as MessageProfileWorkCommittedEvent;
+    expect(event.demands).toEqual([
+      {
+        namespaceId: 7,
+        lookup: 'RELATIONSHIP_INTENT_PROFILE',
+        target: { account: 'alice', domain: 'remote.test', rev: 3 },
+        peerAccount: 'bob',
+      },
+    ]);
+    expect(event.evidenceProjections).toEqual([]);
+  });
+
+  it('emits collected profile work for a committed remote-author message', async () => {
+    const emit = vi.fn();
+    const svc = new MessageService(
+      {
+        db: {
+          select: vi.fn().mockReturnValue(
+            selectBuilder(
+              [
+                {
+                  type: 'P2P',
+                  groupAccount: null,
+                  groupDomain: null,
+                },
+              ],
+              true,
+            ),
+          ),
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      { emit } as never,
+    );
+
+    await (svc as unknown as {
+      publishCommittedProfileWork(message: unknown): Promise<void>;
+    }).publishCommittedProfileWork({
+      threadId: 9,
+      seq: 4,
+      profileRev: 3,
+      creator: { account: 'alice', domain: 'remote.test', namespaceId: 7 },
+      contentType: 'PURE_TEXT',
+      content: JSON.stringify({ text: 'hello' }),
+      isDeleted: false,
+      localState: 'READY',
+    });
+
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toBe(MESSAGE_PROFILE_WORK_COMMITTED);
+    const event = emit.mock.calls[0][1] as MessageProfileWorkCommittedEvent;
+    expect(event.demands).toEqual([
+      {
+        namespaceId: 7,
+        lookup: 'ACCOUNT_PROFILE',
+        target: { account: 'alice', domain: 'remote.test', rev: 3 },
+      },
+    ]);
+    expect(event.evidenceProjections).toEqual([
+      {
+        profile: {
+          namespaceId: 7,
+          account: 'alice',
+          domain: 'remote.test',
+          rev: 3,
+        },
+        lookup: 'ACCOUNT_PROFILE',
+        projection: { threadId: 9, messageSeq: 4 },
+      },
+    ]);
+  });
+});
 
 describe('MessageService.queryClientMessagePage', () => {
   it('returns authoritative recovery cursors before querying an out-of-range before cursor', async () => {

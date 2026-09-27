@@ -7,7 +7,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
 import { ThreadFeedService } from '../src/message/thread-feed.service.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
-import { ProfileResolutionCoordinatorService } from '../src/federation/profile-resolution-coordinator.service.js';
+import { ProfileResolutionCoordinatorService } from '../src/profile-resolution/profile-resolution-coordinator.service.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { resolveAuthorizedFederationThreadInTx } from '../src/federation/federation-thread-query-authorization.js';
@@ -16,13 +16,10 @@ describe('account-owned THREAD_STATE and default profiles', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   let counter = 0;
-  const peerHttp = { get: vi.fn() };
   const resolver = () =>
     new ProfileResolutionCoordinatorService(
       database,
-      peerHttp as never,
       new FederationProfileService(database, {} as never, {} as never),
-      {} as never,
       { onProfileResolved: vi.fn(), onProfileFailed: vi.fn() } as never,
     );
   const feed = () => new ThreadFeedService(database);
@@ -318,7 +315,6 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         status: 'READY',
         profile: { rev: 7, name: 'Disclosed profile' },
       });
-      expect(peerHttp.get).not.toHaveBeenCalled();
     },
   );
 

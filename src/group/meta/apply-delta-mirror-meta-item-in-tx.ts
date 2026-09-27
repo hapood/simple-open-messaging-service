@@ -8,6 +8,10 @@ import { SystemMessageType } from '../../message/system-message.js';
 import { enqueueThreadFanoutInTx } from '../../message/thread-fanout-task.js';
 import { readCurrentLocalAuthorizedGroupMemberIdsInTx } from './current-group-roster.js';
 import { requireGroupThreadContentLockUnderGroupInTx } from '../../common/locks/thread-content-lock.js';
+import type { ProfilePrefetchDemand } from '../../profile-resolution/profile-resolution-demand.js';
+import { collectCommittedProfileWork } from '../../message/collect-committed-profile-work.js';
+import type { MessageProfileWorkCommittedEvent } from '../../message/message-profile-work.event.js';
+import { selectMirrorMetaProfileDemand } from './select-mirror-meta-profile-demand.js';
 import type {
   MirrorGroupAddress,
   MirrorMetaReplicatedItem,
@@ -42,6 +46,8 @@ export async function applyDeltaMirrorMetaItemInTx(
   input: DeltaMirrorMetaItemInput,
 ): Promise<{
   threadId: number;
+  profileDemand: ProfilePrefetchDemand | null;
+  systemMessageProfileWork?: MessageProfileWorkCommittedEvent;
 }> {
   await lockMirrorGroupInTx(tx, input.group);
   const mirror = await requireMirrorMetaInTx(tx, input.group);
@@ -67,14 +73,15 @@ export async function applyDeltaMirrorMetaItemInTx(
     input.item,
     'delta',
   );
-  const transitioned = await writeObservedMembershipTransitionInTx(
+  const transition = await writeObservedMembershipTransitionInTx(
     tx,
     mirror.threadId,
-    input.group.namespaceId,
+    input.group,
     input.item,
     previousFact,
     { threadLock, messages: input.messages },
   );
+  const transitioned = transition.transitioned;
   if (!transitioned) {
     // A meta-only advance is legitimate member-visible progress: publish the
     // current head so the new coordinate reaches every member's thread feed.
@@ -105,7 +112,17 @@ export async function applyDeltaMirrorMetaItemInTx(
       input.item.feedId,
       input.through,
     );
-    return { threadId: mirror.threadId };
+    return {
+      threadId: mirror.threadId,
+      profileDemand: selectChangedMirrorMemberProfileDemand(
+        input.group,
+        input.item,
+        previousFact,
+      ),
+      ...(transition.profileWork
+        ? { systemMessageProfileWork: transition.profileWork }
+        : {}),
+    };
   }
   await advanceMirrorProcessedThroughInTx(
     tx,
@@ -113,7 +130,31 @@ export async function applyDeltaMirrorMetaItemInTx(
     input.item.feedId,
     input.through,
   );
-  return { threadId: mirror.threadId };
+  return {
+    threadId: mirror.threadId,
+    profileDemand: selectChangedMirrorMemberProfileDemand(
+      input.group,
+      input.item,
+      previousFact,
+    ),
+    ...(transition.profileWork
+      ? { systemMessageProfileWork: transition.profileWork }
+      : {}),
+  };
+}
+
+function selectChangedMirrorMemberProfileDemand(
+  group: DeltaMirrorMetaItemInput['group'],
+  item: MirrorMetaReplicatedItem,
+  previousFact: { operation: string; profileRev: number | null } | undefined,
+): ProfilePrefetchDemand | null {
+  if (
+    item.operation === 'MEMBER_UPSERT' &&
+    previousFact?.operation === 'MEMBER_UPSERT' &&
+    previousFact.profileRev === item.profileRev
+  )
+    return null;
+  return selectMirrorMetaProfileDemand(group, item);
 }
 
 /** Closes a delta round whose final page carried no items: the applied end
@@ -187,7 +228,7 @@ async function readCurrentMirrorMemberOperationInTx(
 async function writeObservedMembershipTransitionInTx(
   tx: DatabaseTransaction,
   threadId: number,
-  namespaceId: number,
+  group: MirrorGroupAddress,
   item: MirrorMetaReplicatedItem,
   previousFact: { operation: string; profileRev: number | null } | undefined,
   deps: {
@@ -196,24 +237,35 @@ async function writeObservedMembershipTransitionInTx(
     >;
     messages: Pick<MessageService, 'writeSystemMessageInTx'>;
   },
-): Promise<boolean> {
+): Promise<{
+  transitioned: boolean;
+  profileWork?: MessageProfileWorkCommittedEvent;
+}> {
   if (
     item.operation === 'GROUP_PROFILE' ||
     item.operation === 'GROUP_ANNOUNCEMENT'
   )
-    return false;
+    return { transitioned: false };
   const member = toClientIdentity(
-    { account: item.account, domain: item.domain, namespaceId },
+    {
+      account: item.account,
+      domain: item.domain,
+      namespaceId: group.namespaceId,
+    },
     loadFederationConfig().domain,
   );
   const joined =
-    item.operation === 'MEMBER_UPSERT' && previousFact?.operation !== 'MEMBER_UPSERT';
+    item.operation === 'MEMBER_UPSERT' &&
+    previousFact?.operation !== 'MEMBER_UPSERT';
   const left =
-    item.operation === 'MEMBER_DEPART' && previousFact?.operation === 'MEMBER_UPSERT';
-  if (!joined && !left) return false;
-  if (left && member.domain === 'local') return false;
+    item.operation === 'MEMBER_DEPART' &&
+    previousFact?.operation === 'MEMBER_UPSERT';
+  if (!joined && !left) return { transitioned: false };
+  if (left && member.domain === 'local') return { transitioned: false };
   const profileRev =
-    item.operation === 'MEMBER_UPSERT' ? item.profileRev : previousFact?.profileRev;
+    item.operation === 'MEMBER_UPSERT'
+      ? item.profileRev
+      : previousFact?.profileRev;
   if (profileRev === null || profileRev === undefined)
     throw new Error('departing member has no previous profile revision');
   const identity = await tx.execute<{ namespaceId: number }>(sql`
@@ -231,14 +283,14 @@ async function writeObservedMembershipTransitionInTx(
       LIMIT 1
     `);
     const current = pair.rows[0];
-    if (!current?.active) return false;
+    if (!current?.active) return { transitioned: false };
   }
   const recipients = await readCurrentLocalAuthorizedGroupMemberIdsInTx(tx, {
     groupId: threadId,
     threadId,
   });
-  if (!recipients.length) return false;
-  await deps.messages.writeSystemMessageInTx(
+  if (!recipients.length) return { transitioned: false };
+  const result = await deps.messages.writeSystemMessageInTx(
     tx,
     threadId,
     {
@@ -253,5 +305,22 @@ async function writeObservedMembershipTransitionInTx(
     },
     { threadLock: deps.threadLock },
   );
-  return true;
+  const work = collectCommittedProfileWork([
+    {
+      threadType: 'GROUP',
+      threadId,
+      seq: result.message.seq,
+      profileRev: result.message.profileRev,
+      creator: result.message.creator!,
+      contentType: result.message.contentType,
+      content: result.message.content,
+      isDeleted: result.message.isDeleted,
+      localState: result.message.localState,
+      groupAccount: group.account,
+      groupOriginDomain: group.domain,
+    },
+  ]);
+  if (work.demands.length === 0 && work.evidenceProjections.length === 0)
+    return { transitioned: true };
+  return { transitioned: true, profileWork: work };
 }

@@ -135,15 +135,26 @@ positive reference identifies the selected snapshot, not the member's default
 or numerically newest profile. [Group Member Profile](./profiles.md#5-group-member-profile)
 returns the origin's current member reference, which may have changed since
 this feed item was read. A member profile update by
-itself MUST NOT republish a member item or advance this feed.
+itself MUST NOT republish a member item or advance this feed. A member-authored
+group message carrying a different `profileRev` selects a replacement
+reference as specified below.
 
 The `MEMBER_UPSERT` that first makes a membership current MUST carry the exact
 `profileRev` selected by the effective member-authored join intent. The origin
 MUST NOT replace it with the member's default revision observed later while
-asynchronous work is pending. Later profile changes and messages do not mutate
-that current Group Meta member reference. A new membership interval selects a
-new initial reference from its new member-authored intent; a role-only mutation
-may preserve the current reference.
+asynchronous work is pending. The greatest committed non-system message
+`seq` authored by that member in the current membership interval may select
+a different revision for a replacement member reference. A message need not
+wait for that replacement to be published, and a missed replacement may be
+retried by a later eligible message. Before publishing a positive replacement,
+the origin MUST obtain its exact complete snapshot and allocate a new
+`MEMBER_UPSERT.feedId`; a selected value of `0` needs no snapshot but still
+requires a new `feedId` when published. The origin MUST NOT publish an
+unavailable positive snapshot. Repeating the same revision does not publish
+another item solely because a later message selected it. A
+new membership interval selects a new initial reference from its new
+member-authored intent; a role-only mutation may preserve the current
+reference.
 
 The single
 `GROUP_PROFILE` projection has a separate group-wide stable key and carries no
@@ -236,8 +247,8 @@ reference. A role mutation MAY preserve the preceding `profileRev`; it does not
 need to discover the member's default revision.
 
 `feedId`, message `seq`, and `profileRev` are distinct coordinate spaces. A
-Group Meta `feedId` selects the newest group-profile reference but MUST NOT be
-used as a profile revision or message coordinate.
+Group Meta `feedId` selects the newest group-profile or member-profile
+reference but MUST NOT be used as a profile revision or message coordinate.
 
 ## 3. Full mode
 
@@ -267,9 +278,10 @@ Compaction during a drain MAY remove an item formerly visible at or below
 Repeating a page after a failure may therefore return fewer items, never an
 additional item. The subsequent delta drain from `through` observes the
 newest replacement above that boundary and restores eventual roster
-convergence. The group origin retains
-the exact complete member profile snapshots separately for Group Member Profile; Group
-Meta has no historical-message-author obligation.
+convergence. The group origin retains exact complete member profile snapshots
+separately for Group Member Profile, including revisions authorized by currently
+serviceable group messages. Group Meta itself carries only current member
+references, not message-author history.
 
 ## 4. Delta mode
 
@@ -313,5 +325,6 @@ already be committed in Group Meta. The same `THREAD_CONTENT_HEAD` carries the
 Group Meta coordinate and the message/tombstone bounds atomically. A later lightweight
 `feed-heads` hint advertises a `stateFeedEndId` covering that item. The
 consumer drains that state and Group Meta dependency while reconciling the
-corresponding message interval. The author's display data is not a Group Meta
-dependency and is fetched using the exact message coordinate when needed.
+corresponding message interval. A new member profile reference is published
+separately from its selecting message, after the origin obtains the exact
+snapshot when the revision is positive.

@@ -3,7 +3,7 @@
 The backend unified feed, differential counts, database preview references, and
 client tomb storage/query contract are implemented.
 
-The backend exposes `/thread/feed-delta` and `THREAD_FEED_UPDATED`. The old
+The backend exposes `/api/v1/thread-feed` and `THREAD_FEED_UPDATED`. The old
 notification query route and split content-head writer are removed. Mentions,
 counts, preview references, and content heads share the existing fanout/read
 writer. State feed still carries relationships and other non-content events.
@@ -21,11 +21,14 @@ no append-only thread-feed table. The row stores a bounded previewSeqs array.
 | Content-head JSON `tombstoneEndSeq`               | `AccountThreadState.tombstoneEndSeq`, nonnegative integer, default 0 |
 | Unique `(accountId, attentionFeedId)` index       | Unique `(accountId, threadFeedId)` index                             |
 | `unreadCount`, `lastReadSeq`, `lastMentionSeq`    | Unchanged                                                            |
-| Web `attentionStates` / native `attention_states` | `threadStates` / `thread_states`                                     |
+| Web `attentionStates` / native `attention_states` | Web and native `threads` (state and presentation merged) |
 | Local `attentionFeedCursor`                       | `threadFeedCursor`                                                   |
 
-Local rows hold the complete server snapshot plus independent `localReadSeq`,
-not submission state. All feed/sequence coordinates remain int32. Allocation
+Web and native each store one flat, typed `threads` row per feed snapshot with
+presentation and `localReadSeq`. Native cache schema 36 discards the old separate
+state table. Preview rows remain separate, not submission state. Only the
+highest-sequence preview is persisted per thread; requested previews (up to
+three) remain available for immediate rendering and notification decisions. All feed/sequence coordinates remain int32. Allocation
 must hold the account lock through commit: a later committed ID cannot hide an
 earlier uncommitted update. Multiple accounts use deterministic lock ordering.
 
@@ -55,8 +58,8 @@ caches, without old-cache imports, runtime fallbacks, or dual writes.
   this merge does not move them into fanout.
 - Content fanout skips blocked accounts. Check `blocked` in the transactional
   head update, not only in an earlier audience snapshot or notification filter.
-  Skipped accounts still count toward the batch checkpoint. Block state events
-  themselves continue to use the independent state feed.
+  Skipped accounts still count toward the batch checkpoint. Block changes
+  publish the complete thread snapshot instead of a state-feed projection.
 
 A source transaction may publish a new count with previously published heads.
 Fanout subsequently publishes advanced heads with another ID. Compression may
@@ -85,7 +88,7 @@ transaction: after its parent and thread locks, it locks that account's
 
 ## HTTP and SSE contract
 
-`POST /thread/feed-delta` uses the existing API prefix and business envelope.
+`POST /api/v1/thread-feed` uses the existing API prefix and business envelope.
 It replaces attention delta and the content-head portion of state delta.
 
 ```ts
@@ -98,21 +101,30 @@ interface ThreadFeedRequest {
 interface ThreadFeedState {
   threadId: number;
   threadFeedId: number;
+  type: 'P2P' | 'GROUP';
+  authorityNamespaceId: number;
+  conversationState: 'ACTIVE' | 'READ_ONLY';
+  blocked: boolean;
+  role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
+  profile: { account: string; domain: string; namespaceId: number; profileRev: number };
+  alias: string | null;
+  threadProfileRev: number;
   messageEndSeq: number;
   tombstoneEndSeq: number;
   groupMetaFeedEndId: string | null;
   joinRequestEndFeedId: number;
   joinRequestReadFeedId: number; // -1 disables manager-only attention
   groupInviteEndFeedId: number;
+  announcementReadFeedId: number;
   unreadCount: number;
   lastReadSeq: number;
   lastMentionSeq: number | null;
-  previews?: ThreadPreview[];
+  previews?: ThreadPreview[]; // required whenever previewCount > 0
 }
 interface ThreadPreview {
   seq: number;
   createdAt: string;
-  sender: { account: string; domain: string };
+  sender: { account: string; domain: string; namespaceId: number; profileRev: number };
   status: 'LIVE' | 'USER_RETRACTION' | 'MODERATION_REMOVAL';
   text?: string; // live preview text only; never included for deleted entries
 }
@@ -136,13 +148,14 @@ a fresh SSE signal.
 The web conversation list persists the latest `threadFeedId` on every visible
 thread item. Pinned items form the first tier; within the pinned and ordinary
 tiers, items are ordered strictly by descending `threadFeedId`. The account-level
-unique constraint makes equal IDs invalid. A structural thread-state projection
-that arrives before its thread snapshot remains hidden until that positive feed
-ID is available. Clients must not reconstruct list order from timestamps, local
-arrival order, thread IDs, or a separately persisted order array.
+unique constraint makes equal IDs invalid. The same snapshot creates or updates the thread identity and attention state;
+there is no invisible placeholder or `THREAD_STATE` projection. Clients must
+not reconstruct list order from timestamps, local arrival order, thread IDs,
+or a separately persisted order array.
 
-Preview count zero omits the array. Otherwise return up to the requested number
-of latest other-sender entries, ordered by seq ascending. Own messages never
+Preview count zero omits the array. Otherwise the array is required (even if
+empty) and contains up to the requested number of latest other-sender entries,
+ordered by seq ascending. Own messages never
 occupy slots. Retractions retain stored slots; queries attach current deletion facts. Deleted text
 is localized by the client; no original text is returned. Avatars are supplied
 only by client-side profiles or the agreed logo/account fallback.
@@ -282,7 +295,7 @@ against advancing the cursor after a complete notification-consumed feed page.
   message cards, not only the retired summary ID. Notification clicks retain the
   existing thread deep-link route.
 - The old Kotlin notification HTTP query, persisted notification-feed cursor and
-  WebView cursor-mirroring bridge are removed. Native cache schema 22 rebuilds old
+  WebView cursor-mirroring bridge are removed. Native cache schema 36 rebuilds old
   account caches, including dropping notification_feed_state, without migration.
   The unused Android WebView showDescriptor bridge and its legacy renderer are
   removed. Notification taps remain in a native mailbox until the WebView opens
