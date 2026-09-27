@@ -263,10 +263,14 @@ export class ProfileResolutionCoordinatorService {
                   SELECT 1 FROM "RelationshipPair" pair
                   WHERE pair."threadId" = thread.id
                     AND pair.established
-                    AND pair."endpointAAccount" = ${account}
-                    AND pair."endpointANamespaceId" = ${demand.namespaceId}
-                  OR pair."endpointBAccount" = ${account}
-                    AND pair."endpointBNamespaceId" = ${demand.namespaceId}
+                    AND (
+                      (pair."endpointAAccount" = ${account}
+                        AND pair."endpointADomain" = ${demand.target.domain}
+                        AND pair."endpointANamespaceId" = ${demand.namespaceId})
+                      OR (pair."endpointBAccount" = ${account}
+                        AND pair."endpointBDomain" = ${demand.target.domain}
+                        AND pair."endpointBNamespaceId" = ${demand.namespaceId})
+                    )
                 )
               )
           )

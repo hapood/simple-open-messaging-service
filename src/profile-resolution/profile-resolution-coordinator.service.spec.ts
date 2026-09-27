@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { S2sResponseError } from '../federation/federation-errors.js';
 import { ProfileLookup } from './profile-resolution-demand.js';
@@ -152,6 +154,20 @@ describe('ProfileResolutionCoordinatorService', () => {
       'alice',
       4,
       'group-origin.test',
+    );
+  });
+
+  it('keeps relationship account authorization scoped to the same established thread pair', async () => {
+    const { subject, database } = createSubject();
+
+    await subject['authorizeAccountDemand'](3, accountDemand);
+
+    const statement = database.db.execute.mock.calls[0][0] as SQL;
+    const query = new PgDialect().sqlToQuery(statement).sql;
+    expect(query).toContain('pair."threadId" = thread.id');
+    expect(query).toContain('pair.established');
+    expect(query).toMatch(
+      /AND \(\s*\(pair\."endpointAAccount" = \$\d+\s+AND pair\."endpointADomain" = \$\d+\s+AND pair\."endpointANamespaceId" = \$\d+\)\s+OR \(pair\."endpointBAccount" = \$\d+\s+AND pair\."endpointBDomain" = \$\d+\s+AND pair\."endpointBNamespaceId" = \$\d+\)\s+\)/,
     );
   });
 
