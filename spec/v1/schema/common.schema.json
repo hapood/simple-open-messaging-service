@@ -100,9 +100,8 @@
     },
     "inlineProfileAvatar": {
       "type": "object",
-      "required": ["digest", "mimeType", "base64", "width", "height"],
+      "required": ["mimeType", "base64", "width", "height"],
       "properties": {
-        "digest": { "$ref": "#/$defs/sha256Hex" },
         "mimeType": { "type": "string", "minLength": 1 },
         "base64": {
           "type": "string",

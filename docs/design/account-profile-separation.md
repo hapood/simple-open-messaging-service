@@ -22,15 +22,18 @@ values belong exclusively to versioned profiles.
 ## Profiles
 
 `Profile` stores immutable complete profile snapshots under the unique key
-`(account, domain, namespaceId, profileRev)`. The `!` account prefix distinguishes
+`(publisherNamespaceId, profileNamespaceId, account, domain, profileRev)`. The
+`!` account prefix distinguishes
 group profiles from user profiles. A snapshot contains a display name, avatar,
 biography/description, and storage timestamp. It has no `userId`, `groupId`,
 default-version pointer, membership, authorization, or dissolution state.
 
-The namespace identifies the publisher context through which a foreign profile
-was obtained. It is not necessarily the server named in the subject's domain.
-Namespace identity remains part of the key even when two publishers return the
-same account, domain, and revision.
+`publisherNamespaceId` identifies the local publisher context through which a
+snapshot was obtained or authored. It is not necessarily the server named in
+the subject's domain. `profileNamespaceId` is the profile-subject namespace
+assigned by that publisher and carried by its federation reference or response.
+It has no meaning without `publisherNamespaceId`; both remain part of the key
+even when two publishers return the same account, domain, and revision.
 
 An unresolved profile is represented by its reference in a message, relationship,
 or roster entry. It does not require an empty profile row or a synthetic remote
@@ -41,8 +44,8 @@ updates acquire the existing group business lock. Each update allocates an unuse
 revision, inserts the complete profile, and advances `defaultProfileRev` within
 the same transaction. Group profile updates do not acquire an additional explicit
 `GroupAccount` row lock. Existing snapshots are never overwritten. Runtime
-readers use the exact revision selected by their context rather than a global
-latest-profile projection.
+readers use the exact namespace and revision selected by their context rather
+than a global latest-profile projection.
 
 ## Group threads and membership
 
@@ -66,17 +69,20 @@ The source coordinate of a message or roster fact remains distinct from the
 identity/profile coordinate of its subject. A local-account mapping must not
 erase the source namespace used for synchronization, replay, or archival.
 
-| Context                                        | Subject identity/profile namespace    |
-| ---------------------------------------------- | ------------------------------------- |
-| Local member in an authoritative local group   | `local`, namespace `0`                |
-| Foreign member in an authoritative local group | Member's authoritative peer namespace |
-| Foreign member in a mirrored group             | Group publisher's namespace           |
-| Local member in a mirrored group               | `local`, namespace `0`                |
+The implementation keeps three coordinates separate:
 
-For local subjects, ingestion normalizes the stored subject identity to `local`/`0`
-solely by comparing the subject domain with this server's public domain. This
-does not query or require an existing local `Account`. Source coordinates remain
-on the enclosing feed or message, separately from the subject identity.
+| Coordinate | Meaning |
+| --- | --- |
+| Subject address | Stable `account + domain`; local storage may normalize this server's public domain to `local` |
+| Publisher namespace | Local `IdentityNamespace.id` of the server that emitted or disclosed the profile reference |
+| Profile namespace | Opaque subject namespace carried by that publisher |
+
+For a locally authored profile, both namespace values are `0`. For a consumed
+federation reference, the captured peer identity supplies `publisherNamespaceId`
+and the wire `namespaceId` supplies `profileNamespaceId`. A group origin that
+serves a retained member snapshot becomes the publisher for that response even
+when the member's subject domain names another server. Source coordinates remain
+on the enclosing feed or message and are not inferred from the subject address.
 
 The server projects the normalized identity to the client and
 resolves the exact message- or roster-selected profile version locally. It does
@@ -130,10 +136,11 @@ relationship endpoints directly; they do not require foreign account rows.
 Existing authorization-epoch checks continue to reject stale query failures. Group dissolution enumerates relationship endpoints, including foreign
 members, without joining an identity table.
 
-Messages now have a separate `creatorNamespaceId`. Incoming messages normalize
-their creator identity without changing `sourceNamespaceId`. Profile resolution
-reads the stored message/member namespace and does not fetch a missing local
-revision from a group publisher.
+Messages now keep `sourceNamespaceId` for the direct publisher/source and
+`profileNamespaceId` for the author's profile namespace. Incoming messages
+normalize their creator identity without changing `sourceNamespaceId`. Profile
+resolution reads the stored message/member namespace and does not fetch a
+missing local revision from a group publisher.
 
 P2P peer queries and the group invitation picker derive foreign identities from
 relationship endpoints. The invitation picker now paginates by P2P thread ID.

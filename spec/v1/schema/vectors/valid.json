@@ -145,6 +145,7 @@
             "feedId": "1",
             "body": {
               "status": "ACCEPTED",
+              "namespaceId": 0,
               "profileRev": 3,
               "note": "",
               "requestedAt": 1700000000000,
@@ -160,6 +161,7 @@
             "feedId": "3",
             "body": {
               "status": "ACCEPTED",
+              "namespaceId": 0,
               "profileRev": 4,
               "note": "",
               "requestedAt": 1700000000000,
@@ -197,6 +199,7 @@
               "feedId": "1",
               "body": {
                 "status": "REQUESTED",
+                "namespaceId": 0,
                 "profileRev": 3,
                 "note": "hello",
                 "requestedAt": 1700000000000,
@@ -219,6 +222,7 @@
               "feedId": "1",
               "body": {
                 "status": "REVOKED",
+                "namespaceId": 0,
                 "profileRev": 3,
                 "note": "",
                 "requestedAt": null,
@@ -239,6 +243,7 @@
               "feedId": "1",
               "body": {
                 "status": "REVOKED",
+                "namespaceId": 0,
                 "profileRev": 3,
                 "note": "",
                 "requestedAt": 1700000000000,
@@ -266,6 +271,7 @@
             "operation": "MEMBER_UPSERT",
             "body": {
               "role": "OWNER",
+              "namespaceId": 0,
               "profileRev": 2
             }
           },
@@ -276,6 +282,7 @@
             "operation": "MEMBER_UPSERT",
             "body": {
               "role": "MEMBER",
+              "namespaceId": 0,
               "profileRev": 1
             }
           },
@@ -283,6 +290,7 @@
             "feedId": 9,
             "operation": "GROUP_PROFILE",
             "body": {
+              "namespaceId": 0,
               "profileRev": 4
             }
           }
@@ -322,6 +330,7 @@
               "peerAccount": "bob"
             },
             "authorRef": "THREAD_ACCOUNT",
+            "namespaceId": 0,
             "seq": 1,
             "profileRev": 3,
             "originSeq": null,
@@ -349,6 +358,7 @@
               "account": "alice",
               "domain": "a.example"
             },
+            "namespaceId": 0,
             "seq": 2,
             "profileRev": 3,
             "originSeq": null,
@@ -593,10 +603,12 @@
       "values": [
         {
           "account": "alice",
+          "namespaceId": "0",
           "profileRev": "3"
         },
         {
           "account": "!group",
+          "namespaceId": "0",
           "profileRev": "4"
         }
       ]
@@ -609,6 +621,7 @@
           "groupAccount": "!group",
           "memberDomain": "a.example",
           "memberAccount": "alice",
+          "namespaceId": "0",
           "profileRev": "7"
         }
       ]
@@ -620,11 +633,13 @@
         {
           "account": "alice",
           "peerAccount": "bob",
+          "namespaceId": "0",
           "profileRev": "3"
         },
         {
           "account": "!group",
           "peerAccount": "alice",
+          "namespaceId": "0",
           "profileRev": "4"
         }
       ]
@@ -638,7 +653,6 @@
         "displayName": "Alice",
         "bio": "",
         "avatar": {
-          "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
           "mimeType": "image/webp",
           "base64": "AA==",
           "width": 1,

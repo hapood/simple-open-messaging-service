@@ -1,51 +1,16 @@
 # Profile Resolution Refactor Record
 
-Status: implemented backend contract. This document records the exact-profile
-resolution shape and the migration checkpoints that produced it.
+Status: historical implementation record. The current namespace-role contract is defined in
+[Profile Version Resolution](./profile-version-resolution.md). This file records migration
+checkpoints and must not be used as the authoritative profile-resolution API shape.
 
 ## Final contract
 
-The client and backend HTTP boundary use the same exact profile demand shape:
-
-```ts
-interface ProfileTarget {
-  account: string;
-  domain: string;
-  rev: number;
-}
-
-type ProfileResolutionDemand =
-  | {
-      namespaceId: number;
-      lookup: 'ACCOUNT_PROFILE';
-      target: ProfileTarget;
-    }
-  | {
-      namespaceId: number;
-      lookup: 'RELATIONSHIP_INTENT_PROFILE';
-      target: ProfileTarget;
-      peerAccount: string;
-    }
-  | {
-      namespaceId: number;
-      lookup: 'GROUP_MEMBER_PROFILE';
-      target: ProfileTarget;
-      groupAccount: string;
-    };
-
-type ProfileEvidenceProjection =
-  | {
-      profile: ProfileKey;
-      lookup: 'ACCOUNT_PROFILE';
-      projection: { threadId: number; messageSeq: number };
-    }
-  | {
-      profile: ProfileKey;
-      lookup: 'GROUP_MEMBER_PROFILE';
-      groupAccount: string;
-      projection: { threadId: number; messageSeq: number };
-    };
-```
+The current client and backend HTTP boundary use the projection-free exact demand shape documented in
+[Profile Version Resolution](./profile-version-resolution.md#4-selector-conversion-and-federation-endpoints).
+That shape names both namespace roles explicitly: `publisherNamespaceId` is the local recognized
+publisher version and never a federation profile field, while `target.profileNamespaceId` is the
+publisher-scoped profile subject value serialized as the S2S path's `:namespaceId`.
 
 Resolution demand only fetches and stores exact snapshots. Evidence projection
 is server-only, uses an independent queue/LRU, never fetches profiles, and is
@@ -74,7 +39,7 @@ Files:
 
 Tasks:
 
-- Validate `namespaceId`, `lookup`, and exact `target`.
+- Validate `publisherNamespaceId`, `lookup`, and exact `target.profileNamespaceId`.
 - Require `peerAccount` only for `RELATIONSHIP_INTENT_PROFILE`.
 - Require `groupAccount` only for `GROUP_MEMBER_PROFILE`.
 - Reject unrelated fields through the global `ValidationPipe`.
@@ -144,8 +109,9 @@ namespace. Authorization must be specific to the lookup:
   - validate the current exact `MEMBER_UPSERT` reference and revision;
   - preserve the rule that member profiles always use this lookup.
 
-Do not infer or rewrite `namespaceId` from `target.domain`. Local namespace zero
-is not converted into a remote namespace by the coordinator.
+Do not infer or rewrite either namespace from `target.domain`. Local publisher namespace zero is not
+converted into a remote publisher namespace by the coordinator, and profile namespace zero is valid
+when it is scoped by a non-zero publisher namespace.
 
 Verification:
 
@@ -207,7 +173,7 @@ Tasks:
 - Use `ACCOUNT_PROFILE` for P2P message-author and selected group profile.
 - Use `GROUP_MEMBER_PROFILE` for every Group Meta member profile.
 - Use `RELATIONSHIP_INTENT_PROFILE` for intent-selected thread profiles.
-- Do not use `namespaceId: 0` for remote work.
+- Do not use `publisherNamespaceId: 0` for remote work.
 - Do not perform network resolution inside message or Meta transactions.
 
 Verification:
@@ -307,14 +273,14 @@ Files include:
 Tasks:
 
 - Use the same demand field names and lookup values as the backend.
-- Include `namespaceId`.
+- Include both `publisherNamespaceId` and `target.profileNamespaceId`.
 - Do not send evidence, thread coordinates, or projection.
 - Group Meta members always use `GROUP_MEMBER_PROFILE`.
 - Thread intent-selected profiles use `RELATIONSHIP_INTENT_PROFILE`.
 - Message-selected P2P and Group profiles use the appropriate
   `ACCOUNT_PROFILE`/`GROUP_MEMBER_PROFILE` route.
 - Read the source/revision facts from Thread Feed and Group Meta.
-- Keep exact four-tuple cache identity everywhere.
+- Keep exact five-tuple cache identity everywhere: `(publisherNamespaceId, profileNamespaceId, account, domain, rev).`
 
 ### 10. Full verification
 

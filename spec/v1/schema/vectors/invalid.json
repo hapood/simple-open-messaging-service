@@ -84,6 +84,7 @@
               "peerAccount": "bob"
             },
             "authorRef": "THREAD_ACCOUNT",
+            "namespaceId": 0,
             "seq": 3,
             "profileRev": 3,
             "originSeq": null,
@@ -1020,6 +1021,7 @@
               "peerAccount": "bob"
             },
             "authorRef": "THREAD_ACCOUNT",
+            "namespaceId": 0,
             "seq": 1,
             "profileRev": 3,
             "originSeq": null,
@@ -1050,6 +1052,7 @@
               "account": "alice",
               "domain": "a.example"
             },
+            "namespaceId": 0,
             "seq": 1,
             "profileRev": 3,
             "originSeq": null,
@@ -1134,15 +1137,14 @@
       ]
     },
     {
-      "name": "public user profile rejects zero revision",
+      "name": "public profile requires revision",
       "schema": "urn:somfp:v1:profile",
       "value": {
         "account": "alice",
         "domain": "a.example",
         "displayName": "Alice",
         "bio": "",
-        "avatar": null,
-        "profileRev": 0
+        "avatar": null
       }
     },
     {
@@ -1165,6 +1167,7 @@
               "account": "!team"
             },
             "authorRef": "THREAD_ACCOUNT",
+            "namespaceId": 0,
             "seq": 1,
             "profileRev": 3,
             "originSeq": null,
@@ -1391,6 +1394,7 @@
               "feedId": "1",
               "body": {
                 "status": "REQUESTED",
+                "namespaceId": 0,
                 "profileRev": 0,
                 "note": "",
                 "requestedAt": 1700000000000,
@@ -1412,6 +1416,7 @@
               "feedId": "1",
               "body": {
                 "status": "REQUESTED",
+                "namespaceId": 0,
                 "profileRev": 0,
                 "note": "",
                 "requestedAt": 1700000000000,
@@ -1433,6 +1438,7 @@
               "feedId": "1",
               "body": {
                 "status": "ACCEPTED",
+                "namespaceId": 0,
                 "profileRev": 0,
                 "note": "",
                 "requestedAt": 1700000000000,
@@ -1454,6 +1460,7 @@
               "feedId": "1",
               "body": {
                 "status": "ACCEPTED",
+                "namespaceId": 0,
                 "profileRev": 0,
                 "note": "",
                 "requestedAt": 1700000000000,

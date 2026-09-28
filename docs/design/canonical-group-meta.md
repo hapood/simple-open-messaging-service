@@ -18,21 +18,21 @@ one validated replica of that feed and never authors items in it. No
 
 ## 2. Ownership matrix
 
-| State                            | Group origin                           | Group mirror                               | Local client                                         |
-| -------------------------------- | -------------------------------------- | ------------------------------------------ | ---------------------------------------------------- |
-| Relationship authorization       | Authoritative local intents and pair   | Authenticated mirror of authored intents   | Device projection only                               |
-| Current group roster             | Canonical Group Meta latest operations | Replica Group Meta latest operations       | Local current-member rows                            |
-| Group Meta current facts         | Member, group-profile, and announcement projections | One group-scoped replica and remote cursor | Current display projections |
-| Member role                      | Current canonical `MEMBER_UPSERT`             | Current replica `MEMBER_UPSERT`                   | Current member role                                  |
-| Initial member profile reference | Current canonical `MEMBER_UPSERT.profileRev`  | Current replica `MEMBER_UPSERT.profileRev`        | Current member `profileRev`                          |
-| Later message-selected profile   | Immutable `Message.profileRev`         | Immutable `Message.profileRev`             | May replace that member's displayed revision locally |
-| Group-member profile authority   | Retained group-scoped snapshot         | Requests and caches from origin            | Requests through its local backend                   |
+| State                            | Group origin                                                      | Group mirror                                                    | Local client                                          |
+| -------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------- | ----------------------------------------------------- |
+| Relationship authorization       | Authoritative local intents and pair                              | Authenticated mirror of authored intents                        | Device projection only                                |
+| Current group roster             | Canonical Group Meta latest operations                            | Replica Group Meta latest operations                            | Local current-member rows                             |
+| Group Meta current facts         | Member, group-profile, and announcement projections               | One group-scoped replica and remote cursor                      | Current display projections                           |
+| Member role                      | Current canonical `MEMBER_UPSERT`                                 | Current replica `MEMBER_UPSERT`                                 | Current member role                                   |
+| Initial member profile reference | Current canonical `MEMBER_UPSERT.profileNamespaceId + profileRev` | Current replica `MEMBER_UPSERT.profileNamespaceId + profileRev` | Current member profile namespace + `profileRev`       |
+| Later message-selected profile   | Immutable `Message.profileNamespaceId + profileRev`               | Immutable `Message.profileNamespaceId + profileRev`             | May replace that member's displayed reference locally |
+| Group-member profile authority   | Retained group-scoped snapshot                                    | Requests and caches from origin                                 | Requests through its local backend                    |
 
 The mirror's latest replicated operation is its replaceable current-state
 projection, but is not local authorization proof. A client member row has a
 current-only lifecycle and is physically removed by `MEMBER_DEPART`. Historical
 message rendering uses the immutable message author Address and
-`Message.profileRev`, not a retained roster row.
+`Message.profileNamespaceId + profileRev`, not a retained roster row.
 
 An origin serves local clients from the canonical current facts. A mirror retains one
 current fact per member key, one group-profile fact, and one announcement
@@ -64,7 +64,7 @@ GroupMeta(groupId)
 GroupMetaMemberFeed(groupId, feedId)
   fact subject = account + domain (a member, or the group itself for GROUP_PROFILE)
   operation = MEMBER_UPSERT | MEMBER_DEPART | GROUP_PROFILE
-  body = { role, profileRev } | {} | { profileRev }
+  body = { role, profileNamespaceId, profileRev } | {} | { profileNamespaceId, profileRev }
 ```
 
 `GroupMetaMemberFeed` stores member and profile facts. The announcement
@@ -75,10 +75,12 @@ current coordinate with the compacted member/profile rows in feed order.
 Client presentation and its per-account acknowledgement are described in
 [Group announcement](./group-announcement.md).
 
-Member namespace is not stored in Group Meta. Local identity queries derive it
-from the member's relationship pair, or from the mirror group's source
-namespace for third-party projected members. The Group Meta unique index is
-`(threadId, memberAccount, memberDomain)`.
+The member subject key remains `(threadId, memberAccount, memberDomain)`, while
+`profileNamespaceId` is stored in the current `MEMBER_UPSERT` body. It is the
+opaque profile-subject namespace supplied by the profile publisher and must not
+be derived from the member's relationship endpoint namespace. The recognized
+publisher namespace is tracked separately from this profile namespace. The
+Group Meta unique index remains `(threadId, memberAccount, memberDomain)`.
 
 The compacted GROUP_PROFILE item is a stored feed fact like any member fact:
 a profile mutation allocates one new coordinate, stores the row with the group
@@ -126,9 +128,9 @@ representations and is prohibited.
 create the local Group, MessageThread, and immutable group ProfileVersion rev 1
 write the group-authored REQUESTED relationship intent
 write the member-authored ACCEPTED intent with the owner's current profileRev
-append GROUP_PROFILE { profileRev: 1 }
+append GROUP_PROFILE { profileNamespaceId, profileRev: 1 }
 establish GROUP_ANNOUNCEMENT { text: null }
-append the first member MEMBER_UPSERT { role: OWNER, profileRev: member intent rev }
+append the first member MEMBER_UPSERT { role: OWNER, profileNamespaceId, profileRev: member intent rev }
 materialize the local AccountThreadState and ThreadAudience
 enqueue local and federation thread fan-out
 write the final group-authored ACCEPTED intent
@@ -148,7 +150,7 @@ lock the group aggregate
 fold the two relationship-intent directions
 if membership did not become active: stop without Group Meta work
 read profileRev from the effective MEMBER-authored join intent
-append canonical MEMBER_UPSERT { role, profileRev }
+append canonical MEMBER_UPSERT { role, profileNamespaceId, profileRev }
 materialize pair.active
 update AccountThreadState and ThreadAudience
 if this creates an audience, set its deltaVisibleAfter to the canonical end
@@ -168,7 +170,7 @@ best-effort warm-up. Warm-up success, failure, cancellation, and retry have no
 effect on pair activity, Group Meta, audiences, or head fan-out.
 
 Warm-up may start earlier than membership. A committed member-authored
-`REQUESTED { profileRev }` is the authorization proof for the group origin to
+`REQUESTED { profileNamespaceId, profileRev }` is the authorization proof for the group origin to
 query that exact account revision from the member's authority. The request
 transaction commits first, then offers the immutable key to the global
 coordinator. It does not wait for the opposite intent or active membership. If
@@ -305,12 +307,13 @@ projection, and writes compacted client State Feed heads, so the new end
 coordinate — and with it the newest drained GROUP_PROFILE row — reaches every
 member's thread feed; the per-item and per-batch fan-out admissions already
 carried the intermediate advances.
-A round that advanced the applied profile revision then pulls the exact
-revision's content from the origin through
-`/s2s/v1/account-profiles/:account/:profileRev`, because the GROUP_PROFILE feed
-item carries the revision only; a failed pull degrades display until the next
-head re-admits it. Group Meta item and batch transactions publish nothing beyond
-the fan-out admissions described above.
+A round that advanced the applied group-profile reference then pulls the exact
+snapshot content from the origin through
+`/s2s/v1/account-profiles/:namespaceId/:account/:profileRev`, because the
+`GROUP_PROFILE` feed item carries the selected namespace and revision but no
+display bytes; a failed pull degrades display until the next head re-admits it.
+Group Meta item and batch transactions publish nothing beyond the fan-out
+admissions described above.
 
 An unknown `MEMBER_DEPART` is a valid current-state removal. Full recovery accumulates
 pages above its scan cursor and replaces the committed replica only after the
@@ -346,7 +349,7 @@ relationship termination still converges through State Feed.
 The local client uses the same current-only semantics:
 
 ```text
-MEMBER_UPSERT -> upsert member and initial role/profileRev
+MEMBER_UPSERT -> upsert member and initial role/profileNamespaceId + profileRev
 MEMBER_DEPART -> physically delete member
 successful full replacement -> delete members absent from the snapshot
 ```
@@ -376,7 +379,7 @@ group origin
   -> may warm the revision immediately after REQUESTED commits
   -> publishes the stable reference without waiting for profile bytes
   -> lazily resolves and caches the exact revision through the global coordinator
-  -> serves GET /s2s/v1/group-member-profiles/:groupAccount/:memberDomain/:memberAccount/:profileRev
+  -> serves GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev
 
 group mirror
   -> requests only from the group origin
@@ -390,7 +393,7 @@ remote group and never redirects a mirror to the member's home server.
 The application-wide profile coordinator uses the immutable key:
 
 ```text
-(namespaceId, memberAccount, memberDomain, profileRev)
+(publisherNamespaceId, profileNamespaceId, memberAccount, memberDomain, profileRev)
 ```
 
 Equal requests share one in-flight job. In-flight jobs live in a separate

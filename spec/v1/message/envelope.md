@@ -21,9 +21,7 @@ interface BlobDescriptor {
   bytes: SafeInteger;
 }
 
-type QuoteTarget =
-  | { seq: 0 | ThreadSequence }
-  | { originSeq: ThreadSequence };
+type QuoteTarget = { seq: 0 | ThreadSequence } | { originSeq: ThreadSequence };
 
 type JsonObjectString = string;
 
@@ -33,6 +31,7 @@ interface EncodedMessageContent {
 }
 
 interface FederatedMessageBase extends EncodedMessageContent {
+  namespaceId: SafeNonNegativeInteger;
   seq: ThreadSequence;
   profileRev: SafeInteger;
   originSeq: ThreadSequence | null;
@@ -81,18 +80,24 @@ type FederatedMessage = FederatedMessageBase &
 - A GROUP message MUST contain the explicit `author` address and MUST NOT
   contain `authorRef`. A group publisher may relay a message authored on
   another member domain, so direction alone cannot identify its author.
+- `namespaceId` identifies the author profile subject namespace in the current
+  message publisher's namespace space. It is scoped by the publisher serving
+  this message page and has no standalone meaning outside that publisher. It is
+  part of the author profile target together with the reconstructed P2P author
+  or explicit GROUP `author` and `profileRev`.
 - `profileRev` identifies the immutable author profile selected when the
   publisher committed this message copy. It applies to the reconstructed P2P
   author or explicit GROUP `author`, never to the thread or group account. It
   is required and non-null; a positive value selects a real revision, while `0`
   means that this message has no author-profile snapshot and MUST NOT trigger a
   profile request.
-- A locally authored new message carries the revision selected for its
-  audience, normally the author's local default revision when the message is
-  committed. A non-authoritative copy, accepted group submission, authoritative
-  group distribution, mirror copy, and processing receipt MUST preserve the
-  direct incoming message's `profileRev`; an intermediary MUST NOT substitute
-  its own default revision or another retained version.
+- A locally authored new message carries the namespace and revision selected
+  for its audience, normally the author's local default namespace and revision
+  when the message is committed. A non-authoritative copy, accepted group
+  submission, authoritative group distribution, mirror copy, and processing
+  receipt MUST preserve the direct incoming message's `namespaceId` and
+  `profileRev`; an intermediary MUST NOT substitute its own default namespace,
+  revision, or another retained version.
 
 ## 3. Ordering and origin time
 
@@ -157,6 +162,7 @@ All of the following fields are immutable at a given origin coordinate:
 - `thread`
 - `authorRef` for P2P, or `author` for GROUP
 - `seq`
+- `namespaceId`
 - `profileRev`
 - `originSeq/originCreatedAt`
 - `createdAt`
@@ -171,9 +177,9 @@ A conflict in any field makes the item invalid. It MUST NOT be overwritten using
 
 `?` in a field declaration means the field is omitted in certain valid states; it does not give the publisher an arbitrary choice:
 
-| Field             | Required value when                       | Other valid value                                                 |
-| ----------------- | ----------------------------------------- | ----------------------------------------------------------------- |
-| `quoteTarget`     | A `PURE_TEXT` message is a quoted reply   | Omitted when the message is not a quoted reply or not `PURE_TEXT` |
+| Field         | Required value when                     | Other valid value                                                 |
+| ------------- | --------------------------------------- | ----------------------------------------------------------------- |
+| `quoteTarget` | A `PURE_TEXT` message is a quoted reply | Omitted when the message is not a quoted reply or not `PURE_TEXT` |
 
 The corresponding content document defines type-specific conditional fields.
 
@@ -183,7 +189,7 @@ The corresponding content document defines type-specific conditional fields.
 
 | `contentType`                     | Digests and `assets`                                |
 | --------------------------------- | --------------------------------------------------- |
-| `PURE_TEXT`, `FORWARD`    | Reference no digest directly; MUST be empty         |
+| `PURE_TEXT`, `FORWARD`            | Reference no digest directly; MUST be empty         |
 | `LINK`                            | The optional `icon` and `favicon` digests           |
 | `CONTACT_CARD`                    | The optional `avatarDigest`                         |
 | `IMAGE`, `VIDEO`, `AUDIO`, `FILE` | Exactly one digest and a descriptor for that digest |

@@ -239,9 +239,10 @@ export class FederationService {
         subjectDomain: string;
         subjectNamespaceId: number;
         threadId: number | null;
+        profileNamespaceId: number;
         profileRev: number;
       }>(sql`
-        SELECT intent."pairId", intent."authorSide", intent."profileRev", pair.kind, pair."threadId",
+        SELECT intent."pairId", intent."authorSide", intent."profileNamespaceId", intent."profileRev", pair.kind, pair."threadId",
           CASE WHEN intent."authorSide" = 'A' THEN pair."endpointAAccount"
             ELSE pair."endpointBAccount" END AS "authorAccount",
           CASE WHEN intent."authorSide" = 'A' THEN pair."endpointADomain"
@@ -422,6 +423,7 @@ export class FederationService {
             eventType: 'RELATIONSHIP_INTENT',
             body: {
               status: 'REVOKED',
+              namespaceId: request.profileNamespaceId,
               profileRev: request.profileRev,
               note: '',
               requestedAt: null,
@@ -449,6 +451,7 @@ export class FederationService {
   async getAuthorizedIntentProfile(
     account: string,
     peerAccount: string,
+    profileNamespaceId: number,
     rev: number,
     peerDomain: string,
     namespaceId: number,
@@ -456,6 +459,7 @@ export class FederationService {
     return this.profiles.getAuthorizedIntentProfile(
       account,
       peerAccount,
+      profileNamespaceId,
       rev,
       peerDomain,
       namespaceId,
@@ -464,12 +468,14 @@ export class FederationService {
 
   async getAuthorizedAccountProfile(
     account: string,
+    profileNamespaceId: number,
     rev: number,
     peerDomain: string,
     namespaceId: number,
   ): Promise<S2SProfile | null> {
     return this.profiles.getAuthorizedAccountProfile(
       account,
+      profileNamespaceId,
       rev,
       peerDomain,
       namespaceId,
@@ -480,6 +486,7 @@ export class FederationService {
     groupAccount: string,
     memberDomain: string,
     memberAccount: string,
+    profileNamespaceId: number,
     rev: number,
     peerDomain: string,
     namespaceId: number,
@@ -488,6 +495,7 @@ export class FederationService {
       groupAccount,
       memberDomain,
       memberAccount,
+      profileNamespaceId,
       rev,
       peerDomain,
       namespaceId,
@@ -495,12 +503,19 @@ export class FederationService {
   }
 
   async getStoredProfile(
+    publisherNamespaceId: number,
     account: string,
     domain: string,
-    namespaceId: number,
+    profileNamespaceId: number,
     rev: number,
   ): Promise<S2SProfile | null> {
-    return this.profiles.getStoredProfile(account, domain, namespaceId, rev);
+    return this.profiles.getStoredProfile(
+      publisherNamespaceId,
+      account,
+      domain,
+      profileNamespaceId,
+      rev,
+    );
   }
 
   // ─── bidirectional server recognition ─────────────────────────────────────────

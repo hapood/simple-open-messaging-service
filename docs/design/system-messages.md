@@ -6,7 +6,7 @@ Status: implemented.
 
 Every system notification is a local `Message` with `contentType = SYSTEM`.
 The existing message `creator` field is its sender, always
-`{ account: '$system', domain: 'local', namespaceId: 0 }`. Do not add a second
+`{ account: '$system', domain: 'local', publisherNamespaceId: 0, profileNamespaceId: 0, profileRev: 0 }`. Do not add a second
 `sender` field. This is the reserved disabled `Account.kind = SYSTEM` account,
 which has no published profile. Notification rows use profile revision zero and
 source namespace zero. They are never published as federation messages.
@@ -24,10 +24,11 @@ into system-message content. Event producers supply semantic participants instea
 ## Closed event content
 
 [The shared contract](../../shared/system-message-content.ts) defines a
-validated discriminated union used by both backend and frontend. Each participant has exactly `account`, `domain`, `namespaceId`, and
-`profileRev`. Local identities use `domain: local`, `namespaceId: 0`;
-remote identities retain their home domain and participant namespace. The
-writer captures revisions at the event boundary; internal user IDs are not
+validated discriminated union used by both backend and frontend. Each participant has exactly `account`, `domain`, `publisherNamespaceId`, `profileNamespaceId`, and
+`profileRev`. Local identities use `domain: local`, `publisherNamespaceId: 0`,
+`profileNamespaceId: 0`; remote identities retain their home domain, the local
+publisher namespace of the peer that disclosed the reference, and that peer's
+profile namespace. The writer captures revisions at the event boundary; internal user IDs are not
 persisted in event content.
 
 | Type                      | Content fields besides `type`                                 |
@@ -47,7 +48,7 @@ Do not store viewer-relative `isSelf` or incoming/outgoing fields. Both local
 endpoints read the same notification. The renderer compares the event's
 `initiator`, `creator`, `member`, or `caller` to the current account as appropriate.
 A friendship removal always records its initiator. Local automatic operations
-use `{ account: '$system', domain: 'local', namespaceId: 0, profileRev: 0 }`; received federation revocations
+use `{ account: '$system', domain: 'local', publisherNamespaceId: 0, profileNamespaceId: 0, profileRev: 0 }`; received federation revocations
 use the remote relationship endpoint. There is no `reason` field and no attempt
 to infer whether a remote human or remote automation caused the change. The
 renderer uses the participant identity for viewer perspective; a local system
@@ -114,10 +115,10 @@ the supported contract. Database migration history remains append-only.
 ## Participant profile selection
 
 The implemented content contract gives every displayed participant `account`, `domain`,
-`namespaceId`, and `profileRev`. Revision zero means no available profile;
-`$system@local` has namespace and revision zero. A group member's namespace
-comes from that member's identity, not necessarily the group's authority
-namespace. The same four-tuple is already used by authored messages.
+`publisherNamespaceId`, `profileNamespaceId`, and `profileRev`. Revision zero means no available profile;
+`$system@local` has both namespace values and revision zero. A group member's profile namespace
+comes from the publisher that supplied the selected reference, not necessarily the group's authority
+namespace. Authored messages use the same explicit participant identity and revision fields.
 
 P2P friendship transitions now write both endpoint identities and their
 relationship-intent revisions. The viewer chooses the other endpoint for its
@@ -128,7 +129,7 @@ notices do not disclose or request participant profiles. Event content is writte
 with the relationship or roster transition, not inferred later from the current roster.
 
 The presentation layer first reads committed local snapshots using the
-event's four-tuple. On a miss, it selects an ordinary profile query from the
+event's exact profile key, including publisher and profile namespaces. On a miss, it selects an ordinary profile query from the
 event type and frozen participant identity; no system-specific evidence
 selector, message seq, or backend conversion is needed. Friendship addition
 uses the directed intent while effective. Friendship removal and group

@@ -29,6 +29,7 @@ This is a closed schema with no optional fields.
     "peerAccount": "bob"
   },
   "authorRef": "THREAD_ACCOUNT",
+  "namespaceId": 0,
   "seq": 91,
   "profileRev": 7,
   "originSeq": null,

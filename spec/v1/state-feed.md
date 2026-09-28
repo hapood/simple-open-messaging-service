@@ -100,7 +100,8 @@ event types or fields are malformed.
 
 ```ts
 interface RelationshipIntentFields {
-  profileRev: SafeInteger;
+  namespaceId: SafeNonNegativeInteger;
+  profileRev: SafeNonNegativeInteger;
   note: string;
   requestedAt: EpochMilliseconds | null;
   expiresAt: EpochMilliseconds | null;
@@ -150,12 +151,18 @@ and transaction boundaries are implementation choices. A different `feedId`
 does not by itself create a new thread coordinate space or require another
 history initialization. Feed ordering and current authorization still apply.
 
-`profileRev` is required and non-null. A positive value is the source account's
-immutable profile reference selected when the current request flow was authored;
-`0` means that the flow carries no profile and the consumer performs no profile
+`namespaceId` and `profileRev` are required and non-null. `namespaceId`
+identifies the source account's profile namespace in the authenticated
+publisher's namespace space. It is not a receiver-local namespace, and the
+consumer interprets and stores it only as part of the profile reference emitted
+by that publisher. A positive `profileRev` selects the source
+account's immutable profile reference for `(namespaceId, account, source
+domain, profileRev)` when the current request flow was authored; `profileRev:
+0` means that the flow carries no profile and the consumer performs no profile
 request. `REQUESTED -> ACCEPTED` and the later `REVOKED` transition retain that
-same value. A new request flow after revocation selects the author's chosen
-revision, normally its local default, or zero when it has none.
+same reference. A new request flow after revocation selects the author's chosen
+revision and namespace, normally its local default namespace, or revision zero
+when it has none.
 
 While `REQUESTED` remains unexpired or the direction is `ACCEPTED`, the source
 MUST allow the receiver to resolve that positive exact reference through

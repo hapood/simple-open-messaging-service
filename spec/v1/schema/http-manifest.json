@@ -63,7 +63,7 @@
     {
       "id": "accountEvidenceProfile",
       "method": "GET",
-      "path": "/s2s/v1/account-profiles/:account/:profileRev",
+      "path": "/s2s/v1/account-profiles/:namespaceId/:account/:profileRev",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/accountEvidenceProfileParameters",
@@ -73,7 +73,7 @@
     {
       "id": "groupMemberProfile",
       "method": "GET",
-      "path": "/s2s/v1/group-member-profiles/:groupAccount/:memberDomain/:memberAccount/:profileRev",
+      "path": "/s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileParameters",
@@ -83,7 +83,7 @@
     {
       "id": "intentProfile",
       "method": "GET",
-      "path": "/s2s/v1/intent-profiles/:account/:peerAccount/:profileRev",
+      "path": "/s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/intentProfileParameters",

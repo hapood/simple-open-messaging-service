@@ -75,6 +75,7 @@ The author server validates that a mention applies to the thread before first pe
     "peerAccount": "bob"
   },
   "authorRef": "THREAD_ACCOUNT",
+  "namespaceId": 0,
   "seq": 42,
   "profileRev": 7,
   "originSeq": null,
@@ -95,6 +96,7 @@ The author server validates that a mention applies to the thread before first pe
     "peerAccount": "bob"
   },
   "authorRef": "THREAD_PEER_ACCOUNT",
+  "namespaceId": 0,
   "seq": 57,
   "profileRev": 9,
   "originSeq": null,

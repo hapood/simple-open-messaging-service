@@ -5,10 +5,13 @@
   "$defs": {
     "relationshipIntentBody": {
       "type": "object",
-      "required": ["status", "profileRev", "note", "requestedAt", "expiresAt"],
+      "required": ["status", "namespaceId", "profileRev", "note", "requestedAt", "expiresAt"],
       "properties": {
         "status": {
           "enum": ["REQUESTED", "ACCEPTED", "REVOKED"]
+        },
+        "namespaceId": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         },
         "profileRev": {
           "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"

@@ -95,7 +95,8 @@ interface GroupMetaProfileItem {
   feedId: PositiveSafeInteger;
   operation: 'GROUP_PROFILE';
   body: {
-    profileRev: SafeInteger;
+    namespaceId: SafeNonNegativeInteger;
+    profileRev: SafeNonNegativeInteger;
   };
 }
 
@@ -115,7 +116,8 @@ type GroupMetaItem =
 
 interface GroupMetaMemberBody {
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
-  profileRev: SafeInteger;
+  namespaceId: SafeNonNegativeInteger;
+  profileRev: SafeNonNegativeInteger;
 }
 ```
 
@@ -128,23 +130,27 @@ coordinate space or create a peer-specific copy. Reauthorization advances that
 audience's delta visibility floor instead.
 
 Member items have stable key `(member account, member domain)`. Their required,
-non-null `profileRev` selects an immutable complete profile snapshot retained by the
-group origin when positive. The value `0` means that the projection has no
-profile; the consumer MUST NOT issue a Group Member Profile request for it. A
-positive reference identifies the selected snapshot, not the member's default
-or numerically newest profile. [Group Member Profile](./profiles.md#5-group-member-profile)
-returns the origin's current member reference, which may have changed since
-this feed item was read. A member profile update by
+non-null `namespaceId` identifies the member profile namespace in the group
+origin's namespace space. Their required, non-null `profileRev` selects an
+immutable complete profile snapshot retained by the group origin when positive.
+The value `0` means that the projection has no profile; the consumer MUST NOT
+issue a Group Member Profile request for it. A positive reference identifies the
+selected snapshot `(namespaceId, member account, member domain, profileRev)`,
+not the member's default or numerically newest profile. The item records the
+reference selected at its own feed coordinate. [Group Member Profile](./profiles.md#5-group-member-profile)
+authorizes a read through the current member reference or serviceable
+member-message evidence. A past `MEMBER_UPSERT` alone does not require the
+origin to serve that older reference after it is no longer current. A member profile update by
 itself MUST NOT republish a member item or advance this feed. A member-authored
-group message carrying a different `profileRev` selects a replacement
+group message carrying a different `namespaceId` and `profileRev` selects a replacement
 reference as specified below.
 
 The `MEMBER_UPSERT` that first makes a membership current MUST carry the exact
-`profileRev` selected by the effective member-authored join intent. The origin
+`namespaceId` and `profileRev` selected by the effective member-authored join intent. The origin
 MUST NOT replace it with the member's default revision observed later while
 asynchronous work is pending. The greatest committed non-system message
 `seq` authored by that member in the current membership interval may select
-a different revision for a replacement member reference. A message need not
+a different namespace and revision for a replacement member reference. A message need not
 wait for that replacement to be published, and a missed replacement may be
 retried by a later eligible message. Before publishing a positive replacement,
 the origin MUST obtain its exact complete snapshot and allocate a new
@@ -158,9 +164,11 @@ reference.
 
 The single
 `GROUP_PROFILE` projection has a separate group-wide stable key and carries no
-member identity. Its `profileRev` applies to the page's group `account`. Group
-Meta does not carry the group name, biography, or avatar bytes. A zero value
-means that the group has no profile and MUST NOT trigger a profile query.
+member identity. Its `namespaceId` identifies the group profile namespace in
+the group origin's namespace space, and `profileRev` applies to the page's group
+`account`. Group Meta does not carry the group name, biography, or avatar bytes.
+A zero `profileRev` means that the group has no profile and MUST NOT trigger a
+profile query.
 
 When the group profile changes, the origin allocates one new `GROUP_PROFILE`
 item in the canonical group feed and advances the group's
@@ -168,11 +176,13 @@ item in the canonical group feed and advances the group's
 for the same stable key; compaction preserves the new item's allocated `feedId`
 rather than retaining or reusing the older item's coordinate. The consumer
 selects the committed `GROUP_PROFILE` item with the greatest `feedId`; it does
-not compare `profileRev` values. To request that exact revision, it uses
+not compare `profileRev` values. To request that exact namespace and revision,
+it uses
 [Account Profile](./profiles.md#4-account-profile-by-current-account-evidence),
 subject to Group Meta audience authorization and the current group-profile
-reference. The operation resolves the current group reference; it does not
-resolve an earlier feed item after the current reference changes.
+reference. The operation resolves the current group reference; a past
+`GROUP_PROFILE` item records historical feed state but does not by itself
+authorize that older reference after the current reference changes.
 
 ### 2.1. Current group announcement
 
@@ -240,7 +250,7 @@ are local policy and are not federated facts.
 
 Only `MEMBER_UPSERT` carries role and profile reference state. `MEMBER_DEPART` is a distinct
 closed item with only `feedId`, member Address, and `operation`; `body`, `role`,
-and `profileRev` MUST be absent. A mirror deletes its current member projection
+`namespaceId`, and `profileRev` MUST be absent. A mirror deletes its current member projection
 when it commits `MEMBER_DEPART`. A later `MEMBER_UPSERT` for the same stable key creates a new
 current member projection with the newly selected role and exact profile
 reference. A role mutation MAY preserve the preceding `profileRev`; it does not

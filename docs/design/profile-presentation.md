@@ -21,6 +21,7 @@ is no separate selector/evidence object:
 
 ```ts
 export interface ProfileTarget {
+  profileNamespaceId: number;
   account: string;
   domain: string;
   rev: number;
@@ -28,18 +29,18 @@ export interface ProfileTarget {
 
 export type ProfileResolutionDemand =
   | {
-      namespaceId: number;
+      publisherNamespaceId: number;
       lookup: 'ACCOUNT_PROFILE';
       target: ProfileTarget;
     }
   | {
-      namespaceId: number;
+      publisherNamespaceId: number;
       lookup: 'RELATIONSHIP_INTENT_PROFILE';
       target: ProfileTarget;
       peerAccount: string;
     }
   | {
-      namespaceId: number;
+      publisherNamespaceId: number;
       lookup: 'GROUP_MEMBER_PROFILE';
       target: ProfileTarget;
       groupAccount: string;
@@ -47,15 +48,18 @@ export type ProfileResolutionDemand =
 ```
 
 The frontend demand is isomorphic with the backend prefetch demand. It carries
-`namespaceId`, the exact subject `target`, and the concrete `lookup`. It does
-not carry `threadId`, `messageSeq`, Meta feed coordinates, `projection`, or a
-parallel `evidence` object. The display component passes this complete demand
-to the profile repository.
+the local publisher namespace, the publisher-scoped exact profile subject, and
+the concrete `lookup`. `publisherNamespaceId` selects the locally recognized
+peer that can answer the request; `target.profileNamespaceId` is serialized as
+the S2S profile path's `:namespaceId`. The publisher namespace itself is never
+sent as a profile field. The demand does not carry `threadId`, `messageSeq`,
+Meta feed coordinates, `projection`, or a parallel `evidence` object. The
+display component passes this complete demand to the profile repository.
 
 The immutable profile/cache identity remains:
 
 ```text
-(namespaceId, account, domain, rev)
+(publisherNamespaceId, profileNamespaceId, account, domain, rev)
 ```
 
 A demand never authorizes a different revision and never permits profile
@@ -87,10 +91,11 @@ later `MEMBER_UPSERT` selection:
 
 ```ts
 {
-  namespaceId: group.namespaceId,
+  publisherNamespaceId: group.publisherNamespaceId,
   lookup: 'GROUP_MEMBER_PROFILE',
   groupAccount: group.account,
   target: {
+    profileNamespaceId: member.profileNamespaceId,
     account: member.account,
     domain: member.domain,
     rev: member.profileRev,
@@ -138,10 +143,10 @@ profile”.
 ## Wake and cache behavior
 
 `PROFILE_AVAILABLE` and `PROFILE_UNAVAILABLE` are wake events keyed by the
-exact four-tuple:
+exact five-tuple:
 
 ```text
-(namespaceId, account, domain, rev)
+(publisherNamespaceId, profileNamespaceId, account, domain, rev)
 ```
 
 They do not carry presentation evidence. The repository associates a wake
@@ -149,9 +154,10 @@ with an existing component-owned resolution, rereads the committed local
 snapshot, and completes the component request. A wake cannot create a new
 selector, change the displayed revision, or rebase a message/Meta reference.
 
-The client profile cache and storage use the four-tuple everywhere. A cache
+The client profile cache and storage use the five-tuple everywhere. A cache
 entry for revision 8 cannot satisfy evidence requesting revision 7, even when
-revision 8 is newer.
+revision 8 is newer, and a snapshot resolved through one publisher namespace
+cannot satisfy a demand for another publisher namespace.
 
 ## Responsibility boundary
 
@@ -179,5 +185,5 @@ Backend
 ```
 
 No layer may replace the selected revision with another revision. Evidence
-identifies what the user is looking at; the four-tuple identifies the immutable
-profile bytes.
+identifies what the user is looking at; the five-tuple identifies the immutable
+profile bytes and the publisher route that disclosed them.

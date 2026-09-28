@@ -73,6 +73,7 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
     "peerAccount": "bob"
   },
   "authorRef": "THREAD_ACCOUNT",
+  "namespaceId": 0,
   "seq": 72,
   "profileRev": 7,
   "originSeq": null,

@@ -39,6 +39,7 @@ This is a closed schema. `url`, `title`, and `description` are always required. 
     "peerAccount": "bob"
   },
   "authorRef": "THREAD_ACCOUNT",
+  "namespaceId": 0,
   "seq": 61,
   "profileRev": 7,
   "originSeq": null,

@@ -13,6 +13,15 @@ function target() {
     pullStateFromPeer: vi.fn().mockResolvedValue(0n),
     pullTombstonesFromPeer: vi.fn().mockResolvedValue(undefined),
     pullMissedFromPeer: vi.fn().mockResolvedValue(undefined),
+    getLocalAccountProfile: vi.fn().mockResolvedValue({
+      namespaceId: 0,
+      account: 'alice',
+      domain: 'local.example',
+      profileRev: 5,
+      displayName: 'Alice',
+      bio: '',
+      avatar: null,
+    }),
     getAuthorizedAccountProfile: vi.fn().mockResolvedValue({
       account: 'alice',
       domain: 'local.example',
@@ -136,11 +145,41 @@ function replyTarget() {
   };
 }
 
+describe('S2sController public account profiles', () => {
+  it('uses only the account path and omits the internal namespace from the response', async () => {
+    const { controller, federation } = target();
+    const req = mediaRequest('');
+    req.url = '/s2s/v1/accounts/alice';
+    await expect(controller.getAccountProfile(req)).resolves.toEqual({
+      account: 'alice',
+      domain: 'local.example',
+      displayName: 'Alice',
+      bio: '',
+      avatar: null,
+      profileRev: 5,
+    });
+    expect(federation.getLocalAccountProfile).toHaveBeenCalledWith({
+      account: 'alice',
+      domain: 'local.example',
+    });
+  });
+
+  it('rejects an old namespace-bearing path', async () => {
+    const { controller, federation } = target();
+    const req = mediaRequest('');
+    req.url = '/s2s/v1/accounts/0/alice';
+    await expect(controller.getAccountProfile(req)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+    });
+    expect(federation.getLocalAccountProfile).not.toHaveBeenCalled();
+  });
+});
+
 describe('S2sController intent profiles', () => {
   it('passes only the authenticated signer and exact path identity to intent authorization', async () => {
     const { controller, federation } = target();
     const req = mediaRequest('');
-    req.url = '/s2s/v1/intent-profiles/%21team/alice/7';
+    req.url = '/s2s/v1/intent-profiles/0/%21team/alice/7';
     expect(await controller.getIntentProfile(req)).toEqual({
       account: '!team',
       domain: 'local.example',
@@ -151,6 +190,7 @@ describe('S2sController intent profiles', () => {
     expect(federation.getAuthorizedIntentProfile).toHaveBeenCalledWith(
       '!team',
       'alice',
+      0,
       7,
       'a.example',
       7,
@@ -160,11 +200,11 @@ describe('S2sController intent profiles', () => {
   it('rejects zero and queries without consulting stored evidence', async () => {
     const { controller, federation } = target();
     const req = mediaRequest('');
-    req.url = '/s2s/v1/intent-profiles/%21team/alice/0';
+    req.url = '/s2s/v1/intent-profiles/0/%21team/alice/0';
     await expect(controller.getIntentProfile(req)).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MALFORMED,
     });
-    req.url = '/s2s/v1/intent-profiles/%21team/alice/7?rev=7';
+    req.url = '/s2s/v1/intent-profiles/0/%21team/alice/7?rev=7';
     await expect(controller.getIntentProfile(req)).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MALFORMED,
     });
@@ -176,7 +216,7 @@ describe('S2sController account profiles', () => {
   it('passes only the exact account/revision and authenticated signer', async () => {
     const { controller, federation } = target();
     const req = mediaRequest('');
-    req.url = '/s2s/v1/account-profiles/alice/4';
+    req.url = '/s2s/v1/account-profiles/0/alice/4';
     expect(await controller.getExactAccountProfile(req)).toMatchObject({
       account: 'alice',
       domain: 'local.example',
@@ -184,6 +224,7 @@ describe('S2sController account profiles', () => {
     });
     expect(federation.getAuthorizedAccountProfile).toHaveBeenCalledWith(
       'alice',
+      0,
       4,
       'a.example',
       7,
@@ -194,13 +235,15 @@ describe('S2sController account profiles', () => {
     const { controller, federation } = target();
     const req = mediaRequest('');
     for (const url of [
-      '/s2s/v1/account-profiles/alice/0',
-      '/s2s/v1/account-profiles/%61lice/4',
-      '/s2s/v1/account-profiles/alice/4?seq=1',
-      '/s2s/v1/account-profiles/alice/4/extra',
+      '/s2s/v1/account-profiles/0/alice/0',
+      '/s2s/v1/account-profiles/0/%61lice/4',
+      '/s2s/v1/account-profiles/0/alice/4?seq=1',
+      '/s2s/v1/account-profiles/0/alice/4/extra',
     ]) {
       req.url = url;
-      await expect(controller.getExactAccountProfile(req)).rejects.toMatchObject({
+      await expect(
+        controller.getExactAccountProfile(req),
+      ).rejects.toMatchObject({
         bizCode: BusinessCode.FEDERATION_MALFORMED,
       });
     }
@@ -212,7 +255,7 @@ describe('S2sController group member profiles', () => {
   it('passes canonical independent path variables and authenticated signer', async () => {
     const { controller, federation } = target();
     const req = mediaRequest('');
-    req.url = '/s2s/v1/group-member-profiles/%21team/member.example/alice/4';
+    req.url = '/s2s/v1/group-member-profiles/%21team/0/alice/member.example/4';
     expect(await controller.getGroupMemberProfile(req)).toEqual({
       account: 'alice',
       domain: 'member.example',
@@ -224,6 +267,7 @@ describe('S2sController group member profiles', () => {
       '!team',
       'member.example',
       'alice',
+      0,
       4,
       'a.example',
       7,
@@ -234,10 +278,10 @@ describe('S2sController group member profiles', () => {
     const { controller, federation } = target();
     const req = mediaRequest('');
     for (const url of [
-      '/s2s/v1/group-member-profiles/alice/member.example/bob/4',
-      '/s2s/v1/group-member-profiles/%21team/member.example/%61lice/4',
-      '/s2s/v1/group-member-profiles/%21team/member.example/alice/0',
-      '/s2s/v1/group-member-profiles/%21team/member.example/alice/4?seq=1',
+      '/s2s/v1/group-member-profiles/alice/0/bob/member.example/4',
+      '/s2s/v1/group-member-profiles/%21team/0/%61lice/member.example/4',
+      '/s2s/v1/group-member-profiles/%21team/0/alice/member.example/0',
+      '/s2s/v1/group-member-profiles/%21team/0/alice/member.example/4?seq=1',
     ]) {
       req.url = url;
       await expect(controller.getGroupMemberProfile(req)).rejects.toMatchObject(
@@ -601,7 +645,6 @@ describe('S2sController group-meta modes', () => {
     expect(groupMeta.serve).not.toHaveBeenCalled();
   });
 });
-
 
 describe('S2sController feed-head recovery', () => {
   it('rejects unknown fields without scheduling work', async () => {

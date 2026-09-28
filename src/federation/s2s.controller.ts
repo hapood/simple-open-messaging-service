@@ -380,7 +380,7 @@ export class S2sController {
     });
     const account = requireAccount(parsed.pathValue, 'account');
     // The endpoint serves OUR users and groups only, so the domain is implicitly ours. The account is
-    // the sole path segment — no `@`-joined address on the wire (the `@` is a UI input aid, split
+    // the sole address segment — no `@`-joined address on the wire (the `@` is a UI input aid, split
     // client-side).
     const address: S2SAddress = { account, domain: this.federation.ourDomain };
     const profile = await this.resourceOperation(() =>
@@ -394,16 +394,23 @@ export class S2sController {
         `account ${account} not found`,
       );
     }
-    return profile;
+    const { account: owner, domain, displayName, bio, avatar, profileRev } =
+      profile;
+    return { account: owner, domain, displayName, bio, avatar, profileRev };
   }
 
-  @Get('intent-profiles/:account/:peerAccount/:profileRev')
+  @Get('intent-profiles/:namespaceId/:account/:peerAccount/:profileRev')
   async getIntentProfile(@Req() req: FastifyRequest) {
     const path = parseFederationResourcePath(req, '/s2s/v1/intent-profiles/', [
+      'namespaceId',
       'account',
       'peerAccount',
       'profileRev',
     ]);
+    const profileNamespaceId = requireSafeDecimal(
+      path.namespaceId,
+      'namespaceId',
+    );
     const account = requireAccount(path.account, 'account');
     const peerAccount = requireAccount(path.peerAccount, 'peerAccount');
     const rev = requireSafeDecimal(path.profileRev, 'profileRev');
@@ -418,6 +425,7 @@ export class S2sController {
       this.federation.getAuthorizedIntentProfile(
         account,
         peerAccount,
+        profileNamespaceId,
         rev,
         this.signerDomain(req),
         req.peer!.namespaceId,
@@ -426,16 +434,27 @@ export class S2sController {
     if (!profile) {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
     }
-    const { account: owner, domain, displayName, bio, avatar } = profile;
+    const {
+      account: owner,
+      domain,
+      displayName,
+      bio,
+      avatar,
+    } = profile;
     return { account: owner, domain, displayName, bio, avatar };
   }
 
-  @Get('account-profiles/:account/:profileRev')
+  @Get('account-profiles/:namespaceId/:account/:profileRev')
   async getExactAccountProfile(@Req() req: FastifyRequest) {
     const path = parseFederationResourcePath(req, '/s2s/v1/account-profiles/', [
+      'namespaceId',
       'account',
       'profileRev',
     ]);
+    const profileNamespaceId = requireSafeDecimal(
+      path.namespaceId,
+      'namespaceId',
+    );
     const account = requireAccount(path.account, 'account');
     const rev = requireSafeDecimal(path.profileRev, 'profileRev');
     if (rev < 1)
@@ -447,6 +466,7 @@ export class S2sController {
     const profile = await this.resourceOperation(() =>
       this.federation.getAuthorizedAccountProfile(
         account,
+        profileNamespaceId,
         rev,
         this.signerDomain(req),
         req.peer!.namespaceId,
@@ -454,18 +474,30 @@ export class S2sController {
     );
     if (!profile)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
-    const { account: owner, domain, displayName, bio, avatar } = profile;
+    const {
+      account: owner,
+      domain,
+      displayName,
+      bio,
+      avatar,
+    } = profile;
     return { account: owner, domain, displayName, bio, avatar };
   }
 
   @Get(
-    'group-member-profiles/:groupAccount/:memberDomain/:memberAccount/:profileRev',
+    'group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev',
   )
   async getGroupMemberProfile(@Req() req: FastifyRequest) {
     const path = parseFederationResourcePath(
       req,
       '/s2s/v1/group-member-profiles/',
-      ['groupAccount', 'memberDomain', 'memberAccount', 'profileRev'],
+      [
+        'groupAccount',
+        'namespaceId',
+        'memberAccount',
+        'memberDomain',
+        'profileRev',
+      ],
     );
     const groupAccount = requireAccount(path.groupAccount, 'groupAccount');
     if (!groupAccount.startsWith('!')) {
@@ -475,11 +507,15 @@ export class S2sController {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const memberDomain = requireDomain(path.memberDomain, 'memberDomain');
+    const profileNamespaceId = requireSafeDecimal(
+      path.namespaceId,
+      'namespaceId',
+    );
     const memberAccount = requireUserAccount(
       path.memberAccount,
       'memberAccount',
     );
+    const memberDomain = requireDomain(path.memberDomain, 'memberDomain');
     const rev = requireSafeDecimal(path.profileRev, 'profileRev');
     if (rev < 1) {
       throw new BusinessException(
@@ -493,6 +529,7 @@ export class S2sController {
         groupAccount,
         memberDomain,
         memberAccount,
+        profileNamespaceId,
         rev,
         this.signerDomain(req),
         req.peer!.namespaceId,

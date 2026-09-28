@@ -8,8 +8,30 @@ relationships, authorization, synchronization cursors, or pending work.
 
 The database therefore separates the public domain from a local integer namespace. One namespace is
 created when a remote identity is first verified, or when an identity is verified after a reset.
-Revalidating the current identity does not create another namespace. Namespace IDs are storage-only
-and never appear on the federation wire.
+Revalidating the current identity does not create another namespace. These local namespace IDs are
+publisher namespaces: they identify the peer version recognized by this server and are used for
+routing, authorization, synchronization, quotas, and local integrity checks.
+
+Federation message envelopes also carry a field named `namespaceId`. That field is not a publisher
+namespace and must not be interpreted as this server's `IdentityNamespace.id`. In a message envelope,
+`namespaceId` is the current publisher's profile-subject namespace for the message author. Outside
+that envelope, documentation and APIs must use explicit names: `publisherNamespaceId` for the local
+recognized peer version, and `profileNamespaceId` for the publisher-scoped profile subject value.
+A durable profile identity is the combination `(publisherNamespaceId, profileNamespaceId, account,
+domain, profileRev)`; the profile namespace alone is intentionally opaque outside the publisher
+that emitted or disclosed it.
+
+| Concept | Scope | Federation wire | Local implementation |
+| --- | --- | --- | --- |
+| Recognized publisher identity version | Local to the receiving server | Inferred from the authenticated peer; never sent as a profile field | `publisherNamespaceId`, backed by `IdentityNamespace.id` |
+| Profile-subject namespace | Local to one publisher | `namespaceId` in a profile reference | `profileNamespaceId` |
+| Complete immutable profile key | Local storage | No single wire field | `(publisherNamespaceId, profileNamespaceId, account, domain, profileRev)` |
+
+When this server consumes a federation object, it maps the authenticated peer's captured
+`IdentityNamespace.id` to `publisherNamespaceId` and the object's wire `namespaceId` to
+`profileNamespaceId`. When it sends a profile request, `publisherNamespaceId` selects the peer and
+`profileNamespaceId` becomes the request path's `:namespaceId`. The local publisher namespace is
+never serialized as a profile field.
 
 ## Domain and namespace ownership
 
@@ -125,14 +147,18 @@ archived namespace because the group thread itself is owned by namespace `0`.
 ## Client projection and display
 
 Web IndexedDB and native SQLite use equivalent logical tables. Both maintain a namespace registry,
-persist `MessageThread.authorityNamespaceId`, and persist namespace IDs on remote identities and
-message authors. SQLite enforces references with foreign keys. IndexedDB cannot declare foreign
-keys, so its repositories validate the same references within the write transaction.
+persist `MessageThread.authorityNamespaceId`, and persist publisher namespace IDs on remote
+identities. Message authors additionally carry a publisher-scoped profile namespace from the
+federation envelope. SQLite enforces local publisher-namespace references with foreign keys.
+IndexedDB cannot declare foreign keys, so its repositories validate the same local references within
+the write transaction; publisher-scoped profile namespace values are stored only together with their
+publisher namespace.
 
-Client `User` and group-member rows do not persist a separate source domain. Their
-`namespaceId` identifies the registered publisher namespace, while `domain` remains the claimed
-wire address. UI identity keys and roster cursors encode the explicit JSON tuple
-`[namespaceId, domain, account]`; pagination compares those fields directly.
+Client identity and group-member rows use `namespaceId` for the registered publisher namespace,
+while `domain` remains the claimed wire address. This client column is an identity/publisher
+coordinate, not the wire profile-reference field of the same name. Profile references and cache
+rows separately retain `profileNamespaceId`. UI identity keys and roster cursors encode the explicit
+JSON tuple `[namespaceId, domain, account]`; pagination compares those fields directly.
 
 There is no namespace-activation client-state event. Registration is an optimistic, monotonic client
 projection: the first newly discovered namespace for a remote domain is active; a newly discovered

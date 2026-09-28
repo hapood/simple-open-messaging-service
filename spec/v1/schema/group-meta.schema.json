@@ -5,9 +5,12 @@
   "$defs": {
     "upsertBody": {
       "type": "object",
-      "required": ["role", "profileRev"],
+      "required": ["role", "namespaceId", "profileRev"],
       "properties": {
         "role": { "enum": ["OWNER", "ADMIN", "MEMBER"] },
+        "namespaceId": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+        },
         "profileRev": {
           "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         }
@@ -16,8 +19,11 @@
     },
     "profileBody": {
       "type": "object",
-      "required": ["profileRev"],
+      "required": ["namespaceId", "profileRev"],
       "properties": {
+        "namespaceId": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+        },
         "profileRev": {
           "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         }

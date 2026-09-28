@@ -11,6 +11,7 @@ process.env.SOMS_DOMAIN ??= 'chat.example';
 const dialect = new PgDialect();
 
 const profile = (profileRev: number): S2SProfile => ({
+  namespaceId: 0,
   account: 'alice',
   domain: 'peer.example',
   displayName: 'Alice',
@@ -33,7 +34,8 @@ function makeSubject() {
       findFirst: vi.fn().mockResolvedValue({
         account: 'alice',
         domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 1,
         displayName: 'Alice',
         avatar: '',
@@ -83,6 +85,7 @@ describe('FederationProfileService localization', () => {
       defaultProfileRev: 1,
     } as never);
     const serialize = vi.spyOn(subject, 'toS2SProfile').mockResolvedValueOnce({
+      namespaceId: 0,
       account: 'alice',
       domain: loadFederationConfig().domain,
       displayName: 'Alice',
@@ -97,6 +100,7 @@ describe('FederationProfileService localization', () => {
     });
 
     expect(serialize).toHaveBeenCalledWith({
+      profileNamespaceId: 0,
       account: 'alice',
       domain: loadFederationConfig().domain,
       name: 'Alice',
@@ -135,6 +139,7 @@ describe('FederationProfileService localization', () => {
       }),
     ).resolves.toBeNull();
     expect(stored).toHaveBeenCalledWith(
+      0,
       '!group',
       loadFederationConfig().domain,
       0,
@@ -150,9 +155,10 @@ describe('FederationProfileService localization', () => {
       12,
     );
     expect(values).toHaveBeenCalledWith({
+      publisherNamespaceId: 12,
       account: 'alice',
       domain: 'peer.example',
-      namespaceId: 12,
+      profileNamespaceId: 0,
       profileRev: 8,
       displayName: 'Alice',
       avatar: '',
@@ -184,9 +190,10 @@ describe('FederationProfileService localization', () => {
       12,
     );
     expect(values).toHaveBeenCalledWith({
+      publisherNamespaceId: 12,
       account: 'alice',
       domain: 'peer.example',
-      namespaceId: 12,
+      profileNamespaceId: 0,
       profileRev: 2,
       displayName: '😀'.repeat(31),
       bio: '界'.repeat(120),

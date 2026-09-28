@@ -40,6 +40,7 @@ export class FederationProfileService {
   ) {}
 
   async toS2SProfile(user: {
+    profileNamespaceId: number;
     account: string;
     domain?: string;
     name: string;
@@ -60,6 +61,7 @@ export class FederationProfileService {
         }
       : null;
     return {
+      namespaceId: user.profileNamespaceId,
       account: user.account,
       domain: user.domain ?? this.config.domain,
       displayName: user.name,
@@ -70,24 +72,29 @@ export class FederationProfileService {
   }
 
   async getStoredProfile(
+    publisherNamespaceId: number,
     account: string,
     domain: string,
-    namespaceId: number,
+    profileNamespaceId: number,
     rev: number,
   ): Promise<S2SProfile | null> {
     if (rev < 1) return null;
     const storedDomain =
-      namespaceId === 0 && domain === this.config.domain ? 'local' : domain;
+      publisherNamespaceId === 0 && domain === this.config.domain
+        ? 'local'
+        : domain;
     const row = await this.database.db.query.profileTable.findFirst({
       where: and(
+        eq(tables.profileTable.publisherNamespaceId, publisherNamespaceId),
         eq(tables.profileTable.account, normalizeAccount(account)),
         eq(tables.profileTable.domain, storedDomain),
-        eq(tables.profileTable.namespaceId, namespaceId),
+        eq(tables.profileTable.profileNamespaceId, profileNamespaceId),
         eq(tables.profileTable.profileRev, rev),
       ),
     });
     if (!row) return null;
     return this.toS2SProfile({
+      profileNamespaceId: row.profileNamespaceId,
       account: row.account,
       domain,
       name: row.displayName,
@@ -101,23 +108,24 @@ export class FederationProfileService {
   async materializeExactForeignProfile(
     profile: S2SProfile,
     sourceDomain: string,
-    namespaceId: number,
+    publisherNamespaceId: number,
   ): Promise<void> {
     this.assertPositiveRevision(profile.profileRev);
     const prepared = await this.prepareForeignProfileData(profile);
     await this.database.db.transaction(async (tx) => {
       const source = await tx.query.identityNamespace.findFirst({
         where: and(
-          eq(tables.identityNamespace.id, namespaceId),
+          eq(tables.identityNamespace.id, publisherNamespaceId),
           eq(tables.identityNamespace.domain, sourceDomain),
         ),
       });
-      if (!source || namespaceId === 0)
+      if (!source || publisherNamespaceId === 0)
         throw new Error('foreign profile publisher namespace is unavailable');
       await writeProfileSnapshotInTx(tx, {
+        publisherNamespaceId,
         account: normalizeAccount(profile.account),
         domain: profile.domain,
-        namespaceId,
+        profileNamespaceId: profile.namespaceId,
         profileRev: profile.profileRev,
         displayName: prepared.name,
         avatar: prepared.avatar,
@@ -130,6 +138,7 @@ export class FederationProfileService {
     address: S2SAddress,
   ): Promise<S2SProfile | null> {
     if (address.domain !== this.config.domain) return null;
+    const profileNamespaceId = 0;
     const account = normalizeAccount(address.account);
     if (account.startsWith('!')) {
       const group = await readGroupState(
@@ -142,9 +151,10 @@ export class FederationProfileService {
       );
       if (!group || group.profileRev === 0 || group.dissolvedAt) return null;
       return this.getStoredProfile(
+        0,
         group.account,
         this.config.domain,
-        0,
+        profileNamespaceId,
         group.profileRev,
       );
     }
@@ -158,9 +168,10 @@ export class FederationProfileService {
     if (!user || user.domain !== 'local' || user.defaultProfileRev === 0)
       return null;
     return this.getStoredProfile(
+      0,
       user.account,
       this.config.domain,
-      0,
+      profileNamespaceId,
       user.defaultProfileRev,
     );
   }
@@ -171,11 +182,18 @@ export class FederationProfileService {
   async getAuthorizedIntentProfile(
     account: string,
     peerAccount: string,
+    profileNamespaceId: number,
     rev: number,
     peerDomain: string,
     namespaceId: number,
   ): Promise<S2SProfile | null> {
-    if (!Number.isSafeInteger(rev) || rev < 1) return null;
+    if (
+      !Number.isSafeInteger(profileNamespaceId) ||
+      profileNamespaceId < 0 ||
+      !Number.isSafeInteger(rev) ||
+      rev < 1
+    )
+      return null;
     const result = await this.database.db.transaction(
       (tx) =>
         tx.execute<{
@@ -183,13 +201,15 @@ export class FederationProfileService {
           displayName: string;
           avatar: string;
           bio: string;
+          profileNamespaceId: number;
           profileRev: number;
         }>(sql`
         SELECT profile.account, profile."displayName", profile.avatar,
-          profile.bio, profile."profileRev"
+          profile.bio, profile."profileNamespaceId", profile."profileRev"
         FROM "Profile" profile
         WHERE profile.account = ${normalizeAccount(account)}
-          AND profile.domain = 'local' AND profile."namespaceId" = 0
+          AND profile.domain = 'local'
+          AND profile."profileNamespaceId" = ${profileNamespaceId}
           AND profile."profileRev" = ${rev}
           AND (
             EXISTS (SELECT 1 FROM "Account" owner
@@ -205,7 +225,8 @@ export class FederationProfileService {
           AND EXISTS (
             SELECT 1 FROM "RelationshipIntent" intent
             JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
-            WHERE intent."profileRev" = ${rev}
+            WHERE intent."profileNamespaceId" = ${profileNamespaceId}
+              AND intent."profileRev" = ${rev}
               AND (intent.status = 'ACCEPTED'
                 OR (intent.status = 'REQUESTED'
                   AND intent."expiresAt" > CURRENT_TIMESTAMP))
@@ -233,6 +254,7 @@ export class FederationProfileService {
     const row = result.rows[0];
     return row
       ? this.toS2SProfile({
+          profileNamespaceId: row.profileNamespaceId,
           account: row.account,
           name: row.displayName,
           avatar: row.avatar,
@@ -247,11 +269,18 @@ export class FederationProfileService {
    * one read-only repeatable-read snapshot. */
   async getAuthorizedAccountProfile(
     account: string,
+    profileNamespaceId: number,
     rev: number,
     peerDomain: string,
     namespaceId: number,
   ): Promise<S2SProfile | null> {
-    if (!Number.isSafeInteger(rev) || rev < 1) return null;
+    if (
+      !Number.isSafeInteger(profileNamespaceId) ||
+      profileNamespaceId < 0 ||
+      !Number.isSafeInteger(rev) ||
+      rev < 1
+    )
+      return null;
     const owner = normalizeAccount(account);
     if (owner.startsWith('!')) {
       let row;
@@ -271,10 +300,11 @@ export class FederationProfileService {
               displayName: string;
               avatar: string;
               bio: string;
+              profileNamespaceId: number;
               profileRev: number;
             }>(sql`
             SELECT profile.account, profile."displayName", profile.avatar,
-              profile.bio, profile."profileRev"
+              profile.bio, profile."profileNamespaceId", profile."profileRev"
             FROM "GroupAccount" group_account
             JOIN "MessageThread" thread ON thread.id = ${authorized.threadId}
               AND thread."groupAccountId" = group_account.id
@@ -283,10 +313,12 @@ export class FederationProfileService {
               AND meta."profileRev" = ${rev}
             JOIN "GroupMetaMemberFeed" fact ON fact."threadId" = meta."threadId"
               AND fact.operation = 'GROUP_PROFILE'
+              AND (fact.body ->> 'namespaceId')::integer = ${profileNamespaceId}
               AND (fact.body ->> 'profileRev')::integer = ${rev}
             JOIN "Profile" profile ON profile.account = group_account.account
-              AND profile.domain = 'local' AND profile."namespaceId" = 0
-              AND profile."profileRev" = ${rev}
+              AND profile.domain = 'local'
+          AND profile."profileNamespaceId" = ${profileNamespaceId}
+          AND profile."profileRev" = ${rev}
             WHERE group_account.account = ${owner}
               AND group_account."dissolvedAt" IS NULL
             LIMIT 1
@@ -305,6 +337,7 @@ export class FederationProfileService {
       }
       return row
         ? this.toS2SProfile({
+            profileNamespaceId: row.profileNamespaceId,
             account: row.account,
             name: row.displayName,
             avatar: row.avatar,
@@ -321,16 +354,18 @@ export class FederationProfileService {
           displayName: string;
           avatar: string;
           bio: string;
+          profileNamespaceId: number;
           profileRev: number;
         }>(sql`
       SELECT profile.account, profile."displayName", profile.avatar,
-        profile.bio, profile."profileRev"
+        profile.bio, profile."profileNamespaceId", profile."profileRev"
       FROM "Profile" profile
       JOIN "Account" owner ON owner.account = profile.account
         AND owner.domain = 'local' AND owner."namespaceId" = 0
         AND owner.kind = 'USER' AND owner.availability = 'AVAILABLE'
       WHERE profile.account = ${owner} AND profile.domain = 'local'
-        AND profile."namespaceId" = 0 AND profile."profileRev" = ${rev}
+        AND profile."profileNamespaceId" = ${profileNamespaceId}
+        AND profile."profileRev" = ${rev}
         AND EXISTS (
           SELECT 1 FROM "Message" m
           JOIN "MessageThread" thread ON thread.id = m."threadId"
@@ -356,6 +391,7 @@ export class FederationProfileService {
             AND audience."localUserId" IS NULL
           WHERE m."creatorAccount" = profile.account
             AND m."creatorDomain" = 'local'
+            AND m."profileNamespaceId" = profile."profileNamespaceId"
             AND m."profileRev" = ${rev} AND m."sourceNamespaceId" = 0
             AND m."contentType" <> 'SYSTEM'
             AND m.seq > COALESCE(audience."messageAccessAfterSeq", 0)
@@ -423,6 +459,7 @@ export class FederationProfileService {
     const row = result.rows[0];
     return row
       ? this.toS2SProfile({
+          profileNamespaceId: row.profileNamespaceId,
           account: row.account,
           name: row.displayName,
           avatar: row.avatar,
@@ -439,11 +476,18 @@ export class FederationProfileService {
     groupAccount: string,
     memberDomain: string,
     memberAccount: string,
+    profileNamespaceId: number,
     rev: number,
     peerDomain: string,
     namespaceId: number,
   ): Promise<S2SProfile | null> {
-    if (!Number.isSafeInteger(rev) || rev < 1) return null;
+    if (
+      !Number.isSafeInteger(profileNamespaceId) ||
+      profileNamespaceId < 0 ||
+      !Number.isSafeInteger(rev) ||
+      rev < 1
+    )
+      return null;
     const storedDomain =
       memberDomain === this.config.domain ? 'local' : memberDomain;
     let row;
@@ -486,10 +530,11 @@ export class FederationProfileService {
             displayName: string;
             avatar: string;
             bio: string;
+            profileNamespaceId: number;
             profileRev: number;
           }>(sql`
           SELECT profile.account, profile."displayName", profile.avatar,
-            profile.bio, profile."profileRev"
+            profile.bio, profile."profileNamespaceId", profile."profileRev"
           FROM "Profile" profile
           JOIN "MessageThread" thread ON thread.id = ${authorized.threadId}
           JOIN "GroupAccount" group_account ON group_account.id = thread."groupAccountId"
@@ -498,6 +543,7 @@ export class FederationProfileService {
             AND thread."groupAccount" = ${normalizeAccount(groupAccount)}
             AND profile.account = ${normalizeAccount(memberAccount)}
             AND profile.domain = ${storedDomain}
+            AND profile."profileNamespaceId" = ${profileNamespaceId}
             AND profile."profileRev" = ${rev}
             AND EXISTS (
               SELECT 1 FROM "GroupMetaMemberFeed" fact
@@ -505,8 +551,9 @@ export class FederationProfileService {
                 AND fact."memberAccount" = profile.account
                 AND fact."memberDomain" = profile.domain
                 AND fact.operation = 'MEMBER_UPSERT'
-                AND (fact.body ->> 'profileRev')::integer = ${rev}
-                AND (profile.domain <> 'local' OR profile."namespaceId" = 0)
+                AND (fact.body ->> 'namespaceId')::integer = ${profileNamespaceId}
+              AND (fact.body ->> 'profileRev')::integer = ${rev}
+                AND (profile.domain <> 'local' OR profile."profileNamespaceId" = 0)
                 AND (profile.domain = 'local' OR EXISTS (
                   SELECT 1 FROM "RelationshipPair" pair
                   WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = thread.id
@@ -514,7 +561,7 @@ export class FederationProfileService {
                     AND pair."endpointBType" = 'USER'
                     AND pair."endpointBAccount" = profile.account
                     AND pair."endpointBDomain" = profile.domain
-                    AND pair."endpointBNamespaceId" = profile."namespaceId"
+                    AND pair."endpointBNamespaceId" = profile."profileNamespaceId"
                 ))
             )
             AND EXISTS (
@@ -524,6 +571,8 @@ export class FederationProfileService {
                 AND message.seq <= ${messageEnd}
                 AND message."creatorAccount" = profile.account
                 AND message."creatorDomain" = profile.domain
+                AND message."profileNamespaceId" = profile."profileNamespaceId"
+                AND message."profileNamespaceId" = ${profileNamespaceId}
                 AND message."profileRev" = ${rev}
                 AND message."contentType" <> 'SYSTEM'
             )
@@ -543,6 +592,7 @@ export class FederationProfileService {
     }
     return row
       ? this.toS2SProfile({
+          profileNamespaceId: row.profileNamespaceId,
           account: row.account,
           domain: memberDomain,
           name: row.displayName,
@@ -561,34 +611,61 @@ export class FederationProfileService {
   }
 
   async fetchRemoteAccount(address: S2SAddress): Promise<S2SProfile> {
-    const profile = await this.peerHttp.get<S2SProfile>(
+    const profile = await this.peerHttp.get<unknown>(
       `/s2s/v1/accounts/${encodeFederationResourceComponent(address.account)}`,
       address.domain,
     );
-    if (!Number.isSafeInteger(profile.profileRev) || profile.profileRev < 1) {
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
       throw new S2sResponseError(
-        `S2S profile from ${address.domain} has an invalid profileRev`,
+        `S2S profile from ${address.domain} has an invalid response`,
         HttpStatus.OK,
         BusinessCode.FEDERATION_MALFORMED,
       );
     }
-    return profile;
+    const fields = profile as Record<string, unknown>;
+    if (
+      Object.keys(fields).sort().join(',') !==
+        'account,avatar,bio,displayName,domain,profileRev' ||
+      fields.account !== address.account ||
+      fields.domain !== address.domain ||
+      typeof fields.displayName !== 'string' ||
+      !this.validWireText(fields.displayName, 1, 31) ||
+      typeof fields.bio !== 'string' ||
+      !this.validWireText(fields.bio, 0, 120) ||
+      !this.validWireAvatar(fields.avatar) ||
+      !Number.isSafeInteger(fields.profileRev) ||
+      Number(fields.profileRev) < 1
+    ) {
+      throw new S2sResponseError(
+        `S2S profile from ${address.domain} has an invalid response`,
+        HttpStatus.OK,
+        BusinessCode.FEDERATION_MALFORMED,
+      );
+    }
+    return {
+      ...(profile as Omit<S2SProfile, 'namespaceId'>),
+      namespaceId: 0,
+    };
   }
 
-  /** Fetch an exact signed profile. The path names its revision, so the
-   * closed evidence response intentionally omits profileRev on the wire. */
+  /** Fetch an exact signed profile. The path names its namespace and revision;
+   * the closed evidence response carries only profile content and subject address. */
   async fetchExactIntentProfile(
     account: string,
     peerAccount: string,
     rev: number,
     publisherDomain: string,
+    expectedProfileNamespaceId = 0,
   ): Promise<S2SProfile | null> {
     return this.fetchExactProfile(
-      `/s2s/v1/intent-profiles/${encodeFederationResourceComponent(account)}` +
+      `/s2s/v1/intent-profiles/${expectedProfileNamespaceId}` +
+        `/${encodeFederationResourceComponent(account)}` +
         `/${encodeFederationResourceComponent(peerAccount)}/${rev}`,
       account,
       publisherDomain,
       rev,
+      publisherDomain,
+      expectedProfileNamespaceId,
     );
   }
 
@@ -596,12 +673,16 @@ export class FederationProfileService {
     account: string,
     rev: number,
     publisherDomain: string,
+    expectedProfileNamespaceId = 0,
   ): Promise<S2SProfile | null> {
     return this.fetchExactProfile(
-      `/s2s/v1/account-profiles/${encodeFederationResourceComponent(account)}/${rev}`,
+      `/s2s/v1/account-profiles/${expectedProfileNamespaceId}` +
+        `/${encodeFederationResourceComponent(account)}/${rev}`,
       account,
       publisherDomain,
       rev,
+      publisherDomain,
+      expectedProfileNamespaceId,
     );
   }
 
@@ -611,15 +692,18 @@ export class FederationProfileService {
     memberAccount: string,
     rev: number,
     groupDomain: string,
+    expectedProfileNamespaceId = 0,
   ): Promise<S2SProfile | null> {
     return this.fetchExactProfile(
       `/s2s/v1/group-member-profiles/${encodeFederationResourceComponent(groupAccount)}` +
-        `/${encodeFederationResourceComponent(memberDomain)}` +
-        `/${encodeFederationResourceComponent(memberAccount)}/${rev}`,
+        `/${expectedProfileNamespaceId}` +
+        `/${encodeFederationResourceComponent(memberAccount)}` +
+        `/${encodeFederationResourceComponent(memberDomain)}/${rev}`,
       memberAccount,
       memberDomain,
       rev,
       groupDomain,
+      expectedProfileNamespaceId,
     );
   }
 
@@ -629,6 +713,7 @@ export class FederationProfileService {
     expectedDomain: string,
     rev: number,
     publisherDomain = expectedDomain,
+    expectedProfileNamespaceId = 0,
   ): Promise<S2SProfile | null> {
     this.assertPositiveRevision(rev);
     let body: unknown;
@@ -662,7 +747,11 @@ export class FederationProfileService {
       !this.validWireAvatar(fields.avatar)
     )
       return this.invalidExactProfile(publisherDomain);
-    return { ...(body as Omit<S2SProfile, 'profileRev'>), profileRev: rev };
+    return {
+      ...(body as Omit<S2SProfile, 'namespaceId' | 'profileRev'>),
+      namespaceId: expectedProfileNamespaceId,
+      profileRev: rev,
+    };
   }
 
   private validWireText(value: string, min: number, max: number): boolean {
@@ -676,8 +765,7 @@ export class FederationProfileService {
       return false;
     const avatar = value as Record<string, unknown>;
     return (
-      Object.keys(avatar).sort().join(',') ===
-        'base64,height,mimeType,width' &&
+      Object.keys(avatar).sort().join(',') === 'base64,height,mimeType,width' &&
       typeof avatar.mimeType === 'string' &&
       avatar.mimeType.length > 0 &&
       typeof avatar.base64 === 'string' &&

@@ -150,25 +150,29 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
   retains the previous reference; ordinary profile changes do not replace it.
 - `GET /user/group-meta` serves a visible group's full or delta roster feed by `threadId` or account.
   `MEMBER_UPSERT` and `MEMBER_DEPART` items include `account`, `domain`, and the server-local `namespaceId`.
-  `MEMBER_UPSERT.body` carries role and profile revision references; clients resolve profile content separately.
-  `GROUP_PROFILE` carries only `feedId` and `body.profileRev`, without a member identity.
+  `MEMBER_UPSERT.body` carries role plus profile namespace/revision references; clients resolve profile content separately.
+  `GROUP_PROFILE` carries only `feedId` and `body.profileNamespaceId + body.profileRev`, without a member identity.
 
 ### POST `/user/profile-resolution` — Resolve a profile
 
 The request is a projection-free exact profile demand:
 
-- `ACCOUNT_PROFILE`: `{ namespaceId, lookup: 'ACCOUNT_PROFILE', target: { account, domain, rev } }`
-- `RELATIONSHIP_INTENT_PROFILE`: `{ namespaceId, lookup: 'RELATIONSHIP_INTENT_PROFILE', target: { account, domain, rev }, peerAccount }`
-- `GROUP_MEMBER_PROFILE`: `{ namespaceId, lookup: 'GROUP_MEMBER_PROFILE', target: { account, domain, rev }, groupAccount }`
+- `ACCOUNT_PROFILE`: `{ publisherNamespaceId, lookup: 'ACCOUNT_PROFILE', target: { profileNamespaceId, account, domain, rev } }`
+- `RELATIONSHIP_INTENT_PROFILE`: `{ publisherNamespaceId, lookup: 'RELATIONSHIP_INTENT_PROFILE', target: { profileNamespaceId, account, domain, rev }, peerAccount }`
+- `GROUP_MEMBER_PROFILE`: `{ publisherNamespaceId, lookup: 'GROUP_MEMBER_PROFILE', target: { profileNamespaceId, account, domain, rev }, groupAccount }`
 
 The request carries no `threadId`, `messageSeq`, Meta feed coordinate, selector, or separate evidence
 object. Clients use the exact identity and revision already present in visible thread, relationship,
 or group-meta records. Before any cache lookup, the server verifies that the authenticated user has a
-matching disclosure grant for the requested lookup. `READY.profile` includes `namespaceId`;
-`PENDING.key` is the expected `{ namespaceId, account, domain, rev }` tuple. Completion is announced
-by the authenticated event stream with the same tuple and clients then reread their local profile store.
-Federation profile requests use the lookup directly: Account Profile, Relationship Intent Profile, and
-Group Member Profile map to their corresponding S2S operations.
+matching disclosure grant for the requested lookup. `READY.profile` includes both `publisherNamespaceId`
+and `profileNamespaceId`; `PENDING.key` is the expected `{ publisherNamespaceId, profileNamespaceId,
+account, domain, rev }` tuple. Completion is announced by the authenticated event stream with the same
+tuple and clients then reread their local profile store.
+These are client/backend implementation field names. For federation profile
+requests, `publisherNamespaceId` selects the locally recognized peer and is not
+sent as a profile field; `target.profileNamespaceId` becomes the S2S path's
+`:namespaceId`. Account Profile, Relationship Intent Profile, and Group Member
+Profile map directly to their corresponding S2S operations.
 
 ### POST `/user/query` · `/user/resolve` · `/user/search`
 
@@ -222,7 +226,7 @@ the complete transition, pair-folding, and projection-side-effect rules.
 - Execution upserts the caller's directed request. A new request expires after seven days; an explicit
   resend after expiry renews the absolute expiry. `20001` friending self · `10001` target not found.
 - A federated request publishes only `RELATIONSHIP_INTENT`, including the author's referenced
-  `profileRev`. The receiver resolves that exact revision independently through the global profile
+  profile namespace and `profileRev`. The receiver resolves that exact reference independently through the global profile
   resolver; there is no separate `PROFILE` State Feed event. A stable foreign identity shell and its
   immutable `ProfileVersion` may be materialized by that resolution without changing relationship
   authorization.

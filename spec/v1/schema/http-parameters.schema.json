@@ -15,9 +15,10 @@
     },
     "accountEvidenceProfileParameters": {
       "type": "object",
-      "required": ["account", "profileRev"],
+      "required": ["account", "namespaceId", "profileRev"],
       "properties": {
         "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
+        "namespaceId": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,15})$" },
         "profileRev": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
       },
       "additionalProperties": false
@@ -163,21 +164,23 @@
     },
     "groupMemberProfileParameters": {
       "type": "object",
-      "required": ["groupAccount", "memberDomain", "memberAccount", "profileRev"],
+      "required": ["groupAccount", "memberDomain", "memberAccount", "namespaceId", "profileRev"],
       "properties": {
         "groupAccount": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
         "memberDomain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
         "memberAccount": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+        "namespaceId": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,15})$" },
         "profileRev": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
       },
       "additionalProperties": false
     },
     "intentProfileParameters": {
       "type": "object",
-      "required": ["account", "peerAccount", "profileRev"],
+      "required": ["account", "peerAccount", "namespaceId", "profileRev"],
       "properties": {
         "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
         "peerAccount": { "$ref": "urn:somfp:v1:common#/$defs/account" },
+        "namespaceId": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,15})$" },
         "profileRev": { "type": "string", "pattern": "^[1-9][0-9]{0,15}$" }
       },
       "additionalProperties": false

@@ -18,18 +18,23 @@ Client profile resolution accepts only these lookup values:
 'RELATIONSHIP_INTENT_PROFILE'
 ```
 
-Shared target shape:
+Shared demand shape:
 
 ```ts
 {
-  namespaceId: number;
+  publisherNamespaceId: number;
   target: {
+    profileNamespaceId: number;
     account: string;
     domain: string;
     rev: number;
   };
 }
 ```
+
+`publisherNamespaceId` routes and authorizes the federation request.
+`target.profileNamespaceId` identifies the immutable profile subject and is the
+namespace stored in the profile cache.
 
 Additional fields:
 
@@ -46,10 +51,12 @@ Do not send `threadId`, `messageSeq`, Meta feed coordinates, `projection`, or a 
 The exact profile identity/cache key is:
 
 ```text
-(namespaceId, account, domain, rev)
+(publisherNamespaceId, profileNamespaceId, account, domain, rev)
 ```
 
-For local identities, keep `target.domain = 'local'`.
+For local identities, construct `publisherNamespaceId: 0` and
+`target.profileNamespaceId: 0` together with `target.domain: 'local'`. Do not
+infer either namespace from `domain` for remote identities.
 
 ### TODO
 
@@ -58,7 +65,7 @@ For local identities, keep `target.domain = 'local'`.
 - Use `ACCOUNT_PROFILE` for account snapshots, including P2P message author/counterpart and group account profile snapshots.
 - Use `GROUP_MEMBER_PROFILE` for Group Meta member snapshots. Always include `groupAccount`.
 - Use `RELATIONSHIP_INTENT_PROFILE` for intent-selected snapshots. Always include `peerAccount`.
-- Ensure frontend profile cache and wake handling are keyed by `(namespaceId, account, domain, rev)`.
+- Ensure frontend profile cache and wake handling are keyed by `(publisherNamespaceId, profileNamespaceId, account, domain, rev)`.
 - Treat `PROFILE_AVAILABLE` / `PROFILE_UNAVAILABLE` as exact-key wakes only. Do not reconstruct old selectors from SSE payloads.
 - Remove selector/evidence conversion helpers once all callers are migrated.
 

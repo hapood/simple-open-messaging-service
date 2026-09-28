@@ -3,7 +3,6 @@ vi.mock('../user/system-account.js', () => ({
 }));
 import { afterEach, describe, it, expect, vi } from 'vitest';
 afterEach(() => vi.restoreAllMocks());
-import { createHash } from 'node:crypto';
 
 // loadFederationConfig() reads SOMS_DOMAIN via requireEnv at construction (field initializer), so it
 // must be set before `new FederationService(...)`. Module-top runs before any test body.
@@ -339,7 +338,14 @@ describe('thread-query FORBIDDEN convergence', () => {
 describe('FederationProfileService resource path', () => {
   it('canonically percent-encodes a group account', async () => {
     const { profiles, peerHttp } = makeStubs();
-    const getSigned = vi.fn().mockResolvedValue({ profileRev: 1 });
+    const getSigned = vi.fn().mockResolvedValue({
+      account: '!group',
+      domain: 'peer.test',
+      displayName: 'Group',
+      bio: '',
+      avatar: null,
+      profileRev: 1,
+    });
     Object.assign(peerHttp, { get: getSigned });
 
     await profiles.fetchRemoteAccount({
@@ -353,11 +359,38 @@ describe('FederationProfileService resource path', () => {
     );
   });
 
+  it('rejects a public response that echoes namespaceId or has the wrong identity', async () => {
+    const { profiles, peerHttp } = makeStubs();
+    const getSigned = vi.fn().mockResolvedValue({
+      namespaceId: 0,
+      account: 'alice',
+      domain: 'peer.test',
+      displayName: 'Alice',
+      bio: '',
+      avatar: null,
+      profileRev: 1,
+    });
+    Object.assign(peerHttp, { get: getSigned });
+    await expect(
+      profiles.fetchRemoteAccount({ account: 'alice', domain: 'peer.test' }),
+    ).rejects.toMatchObject({
+      code: BusinessCode.FEDERATION_MALFORMED,
+      status: 200,
+    });
+  });
+
   it.each([0, -1])(
     'rejects a non-positive public profile revision (%i)',
     async (profileRev) => {
       const { profiles, peerHttp } = makeStubs();
-      const getSigned = vi.fn().mockResolvedValue({ profileRev });
+      const getSigned = vi.fn().mockResolvedValue({
+        account: 'alice',
+        domain: 'peer.test',
+        displayName: 'Alice',
+        bio: '',
+        avatar: null,
+        profileRev,
+      });
       Object.assign(peerHttp, { get: getSigned });
 
       await expect(
@@ -382,6 +415,7 @@ describe('FederationProfileService resource path', () => {
 
     await expect(
       profiles.toS2SProfile({
+        profileNamespaceId: 12,
         account: 'alice',
         name: 'Alice',
         avatar: '/uploads/avatars/alice.webp',
@@ -389,12 +423,12 @@ describe('FederationProfileService resource path', () => {
         profileRev: 7,
       }),
     ).resolves.toEqual({
+      namespaceId: 12,
       account: 'alice',
       domain: 'chat.example',
       displayName: 'Alice',
       bio: '',
       avatar: {
-        digest: createHash('sha256').update(bytes).digest('hex'),
         mimeType: 'image/webp',
         base64: bytes.toString('base64'),
         width: 32,
@@ -416,7 +450,6 @@ describe('FederationProfileService resource path', () => {
         displayName: string;
         bio: string;
         avatar: {
-          digest: string;
           mimeType: string;
           base64: string;
           width: number;
@@ -434,7 +467,6 @@ describe('FederationProfileService resource path', () => {
         displayName: 'Alice',
         bio: '',
         avatar: {
-          digest: createHash('sha256').update(bytes).digest('hex'),
           mimeType: 'image/webp',
           base64: bytes.toString('base64'),
           width: 32,

@@ -62,23 +62,23 @@ The v1 wire surface and every v1 object are closed. Unknown fields and unknown e
 
 The following table is the complete v1 surface. Its synchronization surface contains two GET feeds, two GET thread queries, three exact profile queries, and one POST feed-head hint. The authentication context determines how signature validation obtains a key and which peer states MAY invoke an operation; it does not change the Section 6 signature wire format.
 
-| Method | Absolute path                       | Authentication context | Request                   | Success     | Response                 |
-| ------ | ----------------------------------- | ---------------------- | ------------------------- | ----------- | ------------------------ |
-| `GET`  | `/.well-known/somfp`                | public TLS             | no query or body          | `200`       | bare discovery object    |
-| `POST` | `/s2s/v1/recognize`                 | bootstrap signed       | empty JSON object         | `200`       | bare Recognize OK        |
-| `GET`  | `/s2s/v1/health`                    | status signed          | no query or body          | `200`       | bare privacy-safe status |
-| `POST` | `/s2s/v1/feed-heads`                | lightweight signed     | JSON feed-head hint       | `200`       | success ACK envelope     |
-| `GET`  | `/s2s/v1/state-feed`                | recognized signed      | feed query                | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/group-meta`                | recognized signed      | group/meta mode query     | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/account-profiles/:account/:profileRev` | recognized signed      | path profile evidence     | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/group-member-profiles/:groupAccount/:memberDomain/:memberAccount/:profileRev` | recognized signed      | path member evidence      | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/intent-profiles/:account/:peerAccount/:profileRev` | recognized signed      | path intent evidence      | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/messages`                  | recognized signed      | thread data query         | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/message-tombstones`        | recognized signed      | thread data query         | `200`       | success data envelope    |
-| `POST` | `/s2s/v1/call`                      | recognized signed      | JSON call frame           | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/accounts/:account`         | recognized signed      | path account              | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/media/:digest`             | recognized signed      | path/query/optional Range | `200`/`206` | raw bytes                |
-| `GET`  | `/s2s/v1/forward-bundles/:bundleId` | recognized signed      | path bundle ID            | `200`       | success data envelope    |
+| Method | Absolute path                                                                                       | Authentication context | Request                   | Success     | Response                 |
+| ------ | --------------------------------------------------------------------------------------------------- | ---------------------- | ------------------------- | ----------- | ------------------------ |
+| `GET`  | `/.well-known/somfp`                                                                                | public TLS             | no query or body          | `200`       | bare discovery object    |
+| `POST` | `/s2s/v1/recognize`                                                                                 | bootstrap signed       | empty JSON object         | `200`       | bare Recognize OK        |
+| `GET`  | `/s2s/v1/health`                                                                                    | status signed          | no query or body          | `200`       | bare privacy-safe status |
+| `POST` | `/s2s/v1/feed-heads`                                                                                | lightweight signed     | JSON feed-head hint       | `200`       | success ACK envelope     |
+| `GET`  | `/s2s/v1/state-feed`                                                                                | recognized signed      | feed query                | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/group-meta`                                                                                | recognized signed      | group/meta mode query     | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/account-profiles/:namespaceId/:account/:profileRev`                                        | recognized signed      | path profile evidence     | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev` | recognized signed      | path member evidence      | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev`                            | recognized signed      | path intent evidence      | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/messages`                                                                                  | recognized signed      | thread data query         | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/message-tombstones`                                                                        | recognized signed      | thread data query         | `200`       | success data envelope    |
+| `POST` | `/s2s/v1/call`                                                                                      | recognized signed      | JSON call frame           | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/accounts/:account`                                                                         | recognized signed      | path account              | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/media/:digest`                                                                             | recognized signed      | path/query/optional Range | `200`/`206` | raw bytes                |
+| `GET`  | `/s2s/v1/forward-bundles/:bundleId`                                                                 | recognized signed      | path bundle ID            | `200`       | success data envelope    |
 
 All four signed contexts use the same HTTP Message Signature profile but have different authorization boundaries:
 
@@ -154,7 +154,6 @@ When an operation references a type in this table, it MUST follow the listed for
 
 ```ts
 interface InlineProfileAvatar {
-  digest: Sha256Hex;
   mimeType: string;
   base64: string;
   width: PositiveSafeInteger;
@@ -164,18 +163,20 @@ interface InlineProfileAvatar {
 
 `InlineProfileAvatar.base64` MUST contain 4–1,048,576 characters of strict RFC
 4648 padded Base64 without whitespace or a `data:` prefix. It MUST decode to a
-non-empty image of at most 786,432 bytes. `digest` MUST equal the SHA-256 of the
-decoded bytes, and `mimeType` MUST be a non-empty media type matching the
-decoded image. `width` and `height` MUST equal the decoded image's actual pixel
-dimensions, and each MUST NOT exceed 512. A conforming implementation MUST
-reject an avatar that exceeds either the encoded-byte or dimension limit. It
-MUST preserve accepted avatar bytes exactly; resizing, re-encoding, and
-multi-size derivative generation are forbidden at the federation boundary. A
-consumer MUST verify the decoded bytes, digest, media type, and dimensions;
-declared metadata is not trusted allocation metadata. Unknown fields are
-forbidden.
+non-empty image of at most 786,432 bytes. `mimeType` MUST be a non-empty media
+type matching the decoded image. `width` and `height` MUST equal the decoded
+image's actual pixel dimensions, and each MUST NOT exceed 512. A conforming
+implementation MUST reject an avatar that exceeds either the encoded-byte or
+dimension limit. It MUST preserve accepted avatar bytes exactly; resizing,
+re-encoding, and multi-size derivative generation are forbidden at the
+federation boundary. A consumer MUST verify the decoded bytes, media type, and
+dimensions; declared metadata is not trusted allocation metadata. Unknown
+fields are forbidden. Profile avatars are carried entirely inline and do not
+contain an independently fetchable media digest.
 
 v1 accepts only normalized `Domain` and `Account` values on the wire. A sender MUST send both as lower-case ASCII. The RFC 6762 special-use `.local` namespace is not a globally stable server identity, so `local` and any `Domain` ending in `.local` MUST NOT appear on the SOMFP wire. An implementation may use `local` as an internal storage marker, but it MUST convert that marker to the server's real `Domain` at the federation boundary and MUST NOT expose it to a peer.
+
+In v1 wire objects, a field or path variable named `namespaceId` in a profile reference is always a publisher-scoped profile-subject namespace. It is scoped by the authenticated server that emitted or serves the object. It is not a receiver-local peer identity namespace, synchronization namespace, quota namespace, or database namespace. A complete wire profile reference is `(publisher, namespaceId, account, domain, profileRev)`, where `publisher` is the authenticated server and `namespaceId` is meaningful only in that publisher's profile namespace space.
 
 An `Account` MUST come from an already-normalized Federation account ID. A sender MUST NOT place a display name or raw user input without identity mapping directly in an S2S request. Before entering the S2S boundary, the sender MUST deterministically normalize or reject case, whitespace, a Unicode domain, or a trailing root dot from user input. A receiver MUST reject a transmitted `Domain` or `Account` containing upper-case letters, whitespace, Unicode, or another non-canonical form. It MUST NOT lower-case, trim, or loosely normalize received values in a way that treats two distinct transmitted values as the same identity. A local database ID MUST NOT be used as an inter-server identity coordinate.
 
@@ -244,19 +245,19 @@ An accepted cursor position represents every accepted item through that position
 `state-feed` carries two event types: the account-generic `RELATIONSHIP_INTENT`
 and `THREAD_CONTENT_HEAD`, which combines message, deletion, and Group Meta
 query bounds. It carries no profile bytes. A relationship intent carries an
-exact `profileRev` reference and, for a positive direction, simultaneous message
-and tombstone bounds.
+exact `namespaceId` + `profileRev` profile reference and, for a positive
+direction, simultaneous message and tombstone bounds.
 
 The group origin's canonical Group Meta feed is the sole source of the current
 roster, roles, member-profile references, compacted group-profile reference, and
-current announcement. A `MEMBER_UPSERT` body contains `role` and `profileRev`
-but no display bytes; `MEMBER_DEPART` has no body. Initial synchronization uses `full`
+current announcement. A `MEMBER_UPSERT` body contains `role`, `namespaceId`,
+and `profileRev` but no display bytes; `MEMBER_DEPART` has no body. Initial synchronization uses `full`
 mode; subsequent `delta` reads respect the peer's authorization-segment
 visibility floor, with recovery returning to `full` mode when required.
 
 Profiles resolves public current profile lookups and exact profile references
 authorized by readable message evidence, Group Meta, or Relationship Intent.
-Every message carries its author's exact `profileRev`. An Account Profile exact
+Every message carries its author's exact `namespaceId` and `profileRev`. An Account Profile exact
 read authorizes current serviceable message evidence for the signer's
 relationship counterpart; a Group Member Profile exact read authorizes the
 current member reference or a serviceable member-authored group message.
@@ -310,16 +311,16 @@ request is never authorization proof by itself.
 
 The required closure is:
 
-| Operation                             | Required state-derived rule                                                                                                                                           |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `state-feed`                          | Publishes relationship facts with exact profile references and thread-content heads carrying Group Meta coordinates; it publishes no profile display data.            |
-| `group-meta`                          | Publishes the origin-authoritative current roster and compacted group-profile reference; it does not provide a historical roster.                                     |
-| `/accounts/:account`                  | Returns the current public profile of an exact local account to a recognized signer.                                                                                 |
-| `/account-profiles/:account/:profileRev` | Returns an exact account profile revision authorized by current readable user-message evidence or the current group-profile reference.                              |
-| `/group-member-profiles/:groupAccount/:memberDomain/:memberAccount/:profileRev` | Returns an exact member profile revision authorized by the current Group Meta member reference or a serviceable member-authored group message. |
-| `/intent-profiles/:account/:peerAccount/:profileRev` | Returns an exact account profile revision selected by one current directed Relationship Intent.                                                     |
-| `/messages` and `/message-tombstones` | Recompute the operation's relationship and authority rules and apply local history policy on every request; a stale head grants no authority.                         |
-| Media and forward bundles             | Recompute the exact authorized message/thread binding independently of every feed cursor or hint.                                                                     |
+| Operation                                                                                    | Required state-derived rule                                                                                                                                |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `state-feed`                                                                                 | Publishes relationship facts with exact profile references and thread-content heads carrying Group Meta coordinates; it publishes no profile display data. |
+| `group-meta`                                                                                 | Publishes the origin-authoritative current roster and compacted group-profile reference; it does not provide a historical roster.                          |
+| `/accounts/:account`                                                                         | Returns the current public profile for an exact local account on the responding server.                                                                    |
+| `/account-profiles/:namespaceId/:account/:profileRev`                                        | Returns an exact account profile revision authorized by current readable user-message evidence or the current group-profile reference.                     |
+| `/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev` | Returns an exact member profile revision authorized by the current Group Meta member reference or a serviceable member-authored group message.             |
+| `/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev`                            | Returns an exact account profile revision selected by one current directed Relationship Intent.                                                            |
+| `/messages` and `/message-tombstones`                                                        | Recompute the operation's relationship and authority rules and apply local history policy on every request; a stale head grants no authority.              |
+| Media and forward bundles                                                                    | Recompute the exact authorized message/thread binding independently of every feed cursor or hint.                                                          |
 
 Consumers MUST drain state first and MUST NOT use data learned from another
 feed to invent a relationship or member absent from the applicable state
@@ -339,7 +340,7 @@ The following publication, recovery, and loop-prevention rules form part of the 
 - A message item's `seq/createdAt` is the current publisher's local-copy coordinate and persistence time. When returning a copy to its direct publisher, the sender MUST carry that publisher's original `seq/createdAt` as `originSeq/originCreatedAt`, regardless of the author's domain. Its outer `seq/createdAt` still identifies its own copy. This applies to a group origin returning a submission to its source and to a mirror returning an origin-published message. Other authoritative distribution and locally authored submissions MUST use `originSeq/originCreatedAt: null/null`. Wire projection depends on the direct recipient and MUST remain immutable for that recipient. Message Envelope Sections 3 and 8 define receipt validation and loop prevention.
 - After consumer B pulls and durably stores a message from publisher A, B SHOULD make its stored copy readable by A through message query as a processing receipt. B allocates the copy back to A, advances that thread's `messageEndSeq` toward A, and publishes a new `THREAD_CONTENT_HEAD` item. A then reads the copy through B's `/messages` query. `(thread, author, originSeq)` identifies which message previously published by A was durably processed by B. B's publisher-local `seq/createdAt` gives B's copy coordinate and time, while `originSeq/originCreatedAt` equals the original A item’s `seq/createdAt`. The processing acknowledgement therefore comes from the queried message, not the State Feed item.
 - A MUST correlate the receipt's `(thread, author, originSeq)` with its previously published `(thread, author, seq)`. It MUST NOT create a duplicate message, change the original message's content, or allocate another thread-content item for the receipt itself. A receipt from the group's authoritative server MAY update the original local message's group-authoritative coordinate projection, as specified in [Processing receipts](message/envelope.md#8-processing-receipts). A processing receipt is visible only to the direct publisher of that copy; the fixed v1 topology has no further receipt-distribution step. Receipt coordinates support association and reference resolution, not merely diagnostics. A receipt is not a reliable ACK: its absence means only that A has not observed a durably stored copy; it cannot prove that B did not receive it, discarded it, or isolated it for a particular reason.
-- After a group origin receives a third-party-authored submission from a member's home server, it MUST validate the author, membership, and content before durably accepting and distributing the message. The accepted and distributed copies preserve the submission's `profileRev`; obtaining the referenced author-profile snapshot does not delay message distribution. The origin publishes a changed member-profile reference through a later Group Meta item only after obtaining the exact positive revision. Only the origin may distribute accepted messages authoritatively to mirrors. A mirror accepts only the known group origin as the group's distribution source and MUST NOT republish the fact to another peer. v1 carries no end-to-end message signature from the author's server. A mirror trusts the authenticated group origin's authoritative assertion about its accepted timeline, not an arbitrary thread participant's retelling.
+- After a group origin receives a third-party-authored submission from a member's home server, it MUST validate the author, membership, and content before durably accepting and distributing the message. The accepted and distributed copies preserve the submission's `namespaceId` and `profileRev`; obtaining the referenced author-profile snapshot does not delay message distribution. The origin publishes a changed member-profile reference through a later Group Meta item only after obtaining the exact positive reference. Only the origin may distribute accepted messages authoritatively to mirrors. A mirror accepts only the known group origin as the group's distribution source and MUST NOT republish the fact to another peer. v1 carries no end-to-end message signature from the author's server. A mirror trusts the authenticated group origin's authoritative assertion about its accepted timeline, not an arbitrary thread participant's retelling.
 - A v1 item at `(source domain, thread, seq)` is immutable. A repeated item's authored content, resources, and coordinate fields MUST be semantically identical. The v1 message wire does not carry publisher-local `updatedAt` and does not use it to express edits, withdrawals, or deletion. Withdrawals and effective moderation deletions use `/message-tombstones`.
 
 ### 9.1 Feed-coordinate vocabulary
@@ -356,10 +357,12 @@ This specification uses the following feed-coordinate terms consistently. An unq
 - A message's `seq` is its publisher-local thread coordinate. Exact profile
   reads authorized by message evidence do not expose this coordinate; the
   publisher uses its current readable message interval to authorize the
-  requested account revision.
-- `profileRev` is an immutable profile-version identifier. A real profile
-  revision is a positive `SafeInteger`, begins allocation at `1`, and is never
-  reused for different content within one `(account, domain)`. The required,
+  requested account profile reference.
+- `namespaceId` in a profile reference is the publisher-scoped profile-subject namespace defined in Section 6.2. It MUST be interpreted with the authenticated publisher that emitted or serves the reference.
+- `profileRev` is an immutable profile-version identifier within a profile
+  namespace. A real profile revision is a positive `SafeInteger`, begins
+  allocation at `1`, and is never reused for different content within one
+  `(publisher, namespaceId, account, domain)`. The required,
   non-null value `0` is the sole sentinel meaning that the referencing object
   has no profile snapshot. A consumer MUST NOT issue exact Profile work for a
   zero reference. A

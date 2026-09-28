@@ -257,9 +257,10 @@ When the revalidated state still authorizes the denied request, the consumer MUS
 Authorization calculation MAY atomically derive immediately available state from existing authoritative facts, such as request expiration, friendship validity, or group-audience validity. This reconciliation MUST be idempotent and MUST NOT create an invitation, accept a friendship, join a group, or expand the current request's authorization merely because the peer issued a GET.
 
 The consumer receives messages idempotently by `(source domain, thread, seq)`.
-Every message carries a required, non-null author `profileRev`. A positive value
-is an exact immutable profile reference; `0` means no profile and MUST NOT
-trigger a profile request. A forward
+Every message carries required, non-null author `namespaceId` and `profileRev`.
+Together they identify the exact immutable profile reference in the message
+publisher's namespace space. A positive `profileRev` is resolvable; `0` means
+no profile and MUST NOT trigger a profile request. A forward
 consumer MAY fetch a bounded message interval concurrently with its bounded authoritative
 tombstone drain, but it does not complete reconciliation of that interval until
 both results have been applied. For a GROUP interval, it SHOULD first commit
@@ -267,16 +268,19 @@ the required role-and-profile-reference Group Meta coordinate. If Group Meta has
 stable author Address remains valid, the consumer MUST continue Group Meta
 drain, and it MUST NOT infer a role or current-membership state. For P2P
 thread display, the greatest committed `seq` authored by the peer selects its
-carried `profileRev`; the consumer resolves the exact snapshot through
+carried `namespaceId` and `profileRev`; the consumer resolves the exact snapshot through
 [Account Profile](./profiles.md#4-account-profile-by-current-account-evidence).
-It MUST NOT compare revision numbers or let a self-authored message replace
+While that message remains in the signer's current serviceable interval, its
+message evidence may authorize the exact carried reference even if another
+protocol object now selects a newer reference. The publisher MUST return only
+the requested namespace and revision. The consumer MUST NOT compare revision numbers or let a self-authored message replace
 the peer selection. Media and forward bundles continue to use the exact
 message binding in [Resources](./resources.md).
 
 Within each group and member Address, the greatest committed non-system message
 `seq` in the current membership interval selects a candidate member
-`profileRev` at the group origin. A different
-revision may be published as a new `MEMBER_UPSERT` through
+`namespaceId` and `profileRev` at the group origin. A different profile reference
+may be published as a new `MEMBER_UPSERT` through
 [Group Meta](./group-meta.md) after the origin obtains its exact snapshot when
 positive; a later eligible message may retry an omitted replacement. [Group Member Profile](./profiles.md#5-group-member-profile) serves
 member revisions under the group's authorization rules. Member messages do

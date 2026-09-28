@@ -33,6 +33,7 @@
       "type": "object",
       "required": [
         "thread",
+        "namespaceId",
         "seq",
         "profileRev",
         "originSeq",
@@ -49,6 +50,9 @@
         "author": { "$ref": "urn:somfp:v1:common#/$defs/address" },
         "authorRef": {
           "enum": ["THREAD_ACCOUNT", "THREAD_PEER_ACCOUNT"]
+        },
+        "namespaceId": {
+          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         },
         "seq": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"

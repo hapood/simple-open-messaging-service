@@ -35,9 +35,9 @@ describe('exact signed profile operations', () => {
         7,
         'member.example',
       ),
-    ).toEqual({ ...evidence, profileRev: 7 });
+    ).toEqual({ ...evidence, namespaceId: 0, profileRev: 7 });
     expect(get).toHaveBeenCalledWith(
-      '/s2s/v1/intent-profiles/alice/%21group/7',
+      '/s2s/v1/intent-profiles/0/alice/%21group/7',
       'member.example',
       expect.any(Number),
     );
@@ -47,7 +47,7 @@ describe('exact signed profile operations', () => {
     const { get, profiles } = target();
     await profiles.fetchExactAccountProfile('alice', 4, 'member.example');
     expect(get).toHaveBeenCalledWith(
-      '/s2s/v1/account-profiles/alice/4',
+      '/s2s/v1/account-profiles/0/alice/4',
       'member.example',
       expect.any(Number),
     );
@@ -63,7 +63,7 @@ describe('exact signed profile operations', () => {
       'group.example',
     );
     expect(get).toHaveBeenCalledWith(
-      '/s2s/v1/group-member-profiles/%21group/member.example/alice/4',
+      '/s2s/v1/group-member-profiles/%21group/0/alice/member.example/4',
       'group.example',
       expect.any(Number),
     );
@@ -90,11 +90,12 @@ describe('exact signed profile operations', () => {
     ).rejects.toBeInstanceOf(S2sResponseError);
   });
 
-  it('rejects wrong identity and an extra revision in the closed evidence response', async () => {
+  it('rejects wrong identity and request-coordinate echoes in the closed evidence response', async () => {
     const { get, profiles } = target();
     for (const body of [
       { ...evidence, account: 'other' },
       { ...evidence, domain: 'group.example' },
+      { ...evidence, namespaceId: 0 },
       { ...evidence, profileRev: 9 },
       { ...evidence, displayName: '' },
       { ...evidence, displayName: '\ud800' },

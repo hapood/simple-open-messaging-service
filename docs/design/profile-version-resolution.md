@@ -8,12 +8,12 @@ Do not deploy mixed old/new server and client profile contracts.
 
 ## 1. Identity, cache, and request boundary
 
-A complete immutable profile is keyed solely by
-`(namespaceId, account, domain, profileRev)`. Neither PostgreSQL `Profile` nor
-browser/native profile caches bind snapshots to evidence, and a cache hit does
-not require a local evidence or authorization check. A client resolution first
-looks for this four-tuple locally; the backend likewise checks its in-memory
-LRU and PostgreSQL before constructing a federation request. On a miss, the
+A complete client-visible immutable profile resolution is keyed by
+`(publisherNamespaceId, profileNamespaceId, account, domain, profileRev)`. The
+profile subject namespace identifies the account revision; the publisher
+namespace identifies the disclosure route that authorized materialization. A
+client resolution first looks for this five-tuple locally; the backend likewise
+checks its in-memory LRU and PostgreSQL before constructing a federation request. On a miss, the
 backend uses the client's selected revision and evidence to choose the
 federation operation. The publisher, not this local read-through cache, checks
 federation disclosure. No local audience/roster/intent authorization preflight
@@ -21,35 +21,37 @@ should prevent a valid historical revision from being fetched; a client may
 still hold a reference older than the latest local projection.
 
 A selected reference always includes `profileRev > 0`. Zero means no lookup.
-Source coordinates select a route; they are **not** part of the profile key or
-of the client-to-backend selector. A federation exact-profile response must
-match the requested four-tuple, including the revision. An unavailable or
+Source coordinates select a route; they are **not** part of the profile subject
+identity. The client-to-backend demand carries the publisher namespace
+explicitly. A federation exact-profile response must match the requested
+profile subject tuple, including the revision. An unavailable or
 mismatched revision cannot be replaced with the publisher's current profile.
 
 Keep the bounded backend profile-fetch scheduler (1,000 pending exact keys,
-eight concurrent network requests) and per-four-tuple single-flight. A pending
-item is keyed by the exact `(namespaceId, account, domain, rev)` and owns one
+eight concurrent network requests) and per-five-tuple single-flight. A pending
+item is keyed by the exact `(publisherNamespaceId, profileNamespaceId, account, domain, rev)` and owns one
 final fetch demand plus session listeners. Later demands for the same exact key
 join that item; there is no method list, fallback sequence, or projection
 upgrade path on the fetch queue. A not-found response or network failure
 removes the exact-key item, allowing a later demand to retry. A successful
 _exact, non-null_ response stores the profile once, touches the profile LRU as
-soon as the network result is accepted, then completes the matching four-tuple
+soon as the network result is accepted, then completes the matching five-tuple
 key after durable materialization; it never completes a _different_ revision's
 key. Profile absence need not reach the UI as a revision update: existing
 address/avatar fallbacks remain, and a later demand may retry. A lost SSE frame
 is likewise recoverable by a later cache read/demand.
 
-`PROFILE_AVAILABLE` signals only the resolved four-tuple, with no evidence or
+`PROFILE_AVAILABLE` signals only the resolved five-tuple, with no evidence or
 profile body. Remove evidence from the backend SSE method and payload, browser
 and native event decoding, wake models, and code which uses a returned evidence
 to rebase a local reference. The client API registers only its authenticated
 session on the exact-key item; an internal demand never registers a session. On
-exact success, send `PROFILE_AVAILABLE { namespaceId, account, domain, rev }`
+exact success, send `PROFILE_AVAILABLE { publisherNamespaceId, profileNamespaceId, account, domain, rev }`
 only to the item's registered sessions, then remove the item. On failure,
 remove the item and notify those sessions with session-scoped
-`PROFILE_UNAVAILABLE` if retained for retry signaling, without retaining a
-separate subscription or negative cache. A later demand can register again.
+`PROFILE_UNAVAILABLE` carrying the same key if retained for retry signaling,
+without retaining a separate subscription or negative cache. A later demand can
+register again.
 Failure handling must release scheduler capacity and must not manufacture a new
 revision. Message evidence projection has its own capped queue and LRU; it is
 not part of profile fetch scheduling.
@@ -108,10 +110,11 @@ published member reference. Ordinary profile edits without a selecting message
 do not publish member Meta items.
 
 The client member record needs only the Meta item's feed ID, member identity,
-role, and exact revision; remove its message-source anchor rather than
-renaming it. On a cache miss, the client sends group thread, member address,
-and revision to the backend, which resolves Group Member Profile at the group
-origin. The client never selects a member version from message rows. A
+role, and exact namespace and revision; remove its message-source anchor rather
+than renaming it. On a cache miss, the client sends group thread, member
+address, namespace, and revision to the backend, which resolves Group Member
+Profile at the group origin. The client never selects a member version from
+message rows. A
 `MEMBER_DEPART` need not clear backend message evidence; a new membership
 incarnation initializes it instead of inheriting the previous anchor.
 
@@ -148,13 +151,15 @@ member profile. Group-profile selection never uses a member-authored message.
 ## 3. Database and projection change inventory
 
 This is a breaking rebuild, **not a historical data backfill**. The reviewed
-PostgreSQL names and DDL are staged in
-[the append-only migration](../../database/migrations/0003_profile_source_coordinates.sql)
-and [Drizzle schema](../../src/database/schema.ts); no deployed migration is
+PostgreSQL names and DDL are staged across append-only migrations, including
+[the source-coordinate migration](../../database/migrations/0003_profile_source_coordinates.sql)
+and
+[the publisher/profile namespace migration](../../database/migrations/0004_profile_publisher_namespace.sql),
+and in [Drizzle schema](../../src/database/schema.ts); no deployed migration is
 rewritten. The Web IndexedDB and Tauri SQLite cache changes remain subject to
 separate review before implementation. Keep SQL and Drizzle in sync. Recreate versioned Web IndexedDB and
 Tauri SQLite account caches, without converting old profile-source rows or
-falling back to legacy column names. Four-tuple profile snapshots themselves
+falling back to legacy column names. Five-tuple profile snapshots themselves
 remain independent of evidence. Review concrete DDL and client cache schema
 changes before running them.
 
@@ -207,15 +212,16 @@ member fact with a newly allocated ID **after** the exact snapshot is available.
 For a remote member, the group origin requests that exact version from the
 member home using `account-profiles` with confirmed group-member relationship
 and serviceable member-message evidence; other peers and clients request
-`group-member-profiles` from the group origin. The demand has only one `namespaceId`. For an ordinary message demand it is
-provided by the message creator. For a mirrored Group Meta prefetch it is the
-mirror group's namespace, while the target remains the non-local member address
-and exact revision. An origin may use its member-home federation state while
-fetching, but this does not add a second member or publisher namespace to the
-demand. Validate the authenticated
-publisher's namespace when materializing either response; do not require
-`Profile.domain` to equal the publisher domain for a group-origin-disclosed
-member. A mirror must not fabricate an
+`group-member-profiles` from the group origin. The demand always keeps namespace
+roles separate: the publisher namespace is the local namespace of the peer that
+will answer the profile request, while the profile namespace is the answering
+publisher's subject namespace for the member profile. Ordinary message demands
+use the message source as publisher namespace and the federated message
+`namespaceId` as target profile namespace. Mirrored Group Meta prefetch uses the
+mirror group's publisher namespace and the `MEMBER_UPSERT` profile namespace.
+Validate the authenticated publisher namespace when materializing either
+response; do not require the profile subject domain to equal the publisher
+domain for a group-origin-disclosed member. A mirror must not fabricate an
 origin Meta ID or let an incoming evidence-free Meta profile reference regress
 a locally selected, message-backed member revision. Its Meta transaction first
 advances the authentic feed cursor, applies the local member fact (including
@@ -256,12 +262,24 @@ Meta-derived selection never waits for a snapshot or a scheduler callback.
 ## 4. Selector conversion and federation endpoints
 
 The client profile request is the same exact-revision demand shape used by
-backend resolution. It contains one namespace and one concrete federation
-lookup. It does not contain presentation evidence or local asynchronous
+backend resolution. It carries two explicitly named namespace roles: the
+publisher namespace used to route/authorize the federation request, and the
+profile namespace that identifies the immutable profile subject. The local-to-wire mapping is fixed:
+
+```text
+publisherNamespaceId       = local IdentityNamespace.id of the authenticated peer
+target.profileNamespaceId  = wire namespaceId emitted by that peer
+```
+
+For an outbound profile read, `publisherNamespaceId` selects the peer connection
+and recognized identity, while `target.profileNamespaceId` becomes the
+`:namespaceId` path segment. `publisherNamespaceId` is never sent as a profile
+field. The demand does not contain presentation evidence or local asynchronous
 projection coordinates.
 
 ```ts
 interface ProfileTarget {
+  profileNamespaceId: number;
   account: string;
   domain: string;
   rev: number;
@@ -269,28 +287,30 @@ interface ProfileTarget {
 
 type ClientProfileResolutionDemand =
   | {
-      namespaceId: number;
+      publisherNamespaceId: number;
       lookup: 'ACCOUNT_PROFILE';
       target: ProfileTarget;
     }
   | {
-      namespaceId: number;
+      publisherNamespaceId: number;
       lookup: 'RELATIONSHIP_INTENT_PROFILE';
       target: ProfileTarget;
       peerAccount: string;
     }
   | {
-      namespaceId: number;
+      publisherNamespaceId: number;
       lookup: 'GROUP_MEMBER_PROFILE';
       target: ProfileTarget;
       groupAccount: string;
     };
 ```
 
-This is intentionally isomorphic with the backend prefetch demand. The
-client supplies `namespaceId`; it must not omit it or infer it from the
-profile domain. `target.domain` identifies the profile subject/member, while
-the namespace identifies the local publisher allocation used by the backend.
+This is intentionally isomorphic with the backend prefetch demand. The client
+supplies both namespaces; it must not omit either or infer one from the profile
+domain. `target.profileNamespaceId` is the publisher-scoped subject namespace
+and is meaningful only with `publisherNamespaceId`. `publisherNamespaceId`
+identifies the local federation publisher allocation used to route the S2S
+request and validate the disclosure context.
 The lookup value maps directly to the S2S operation:
 
 ```text
@@ -317,16 +337,16 @@ no legacy `EXACT`, `MESSAGE_AUTHOR`, or `GROUP_META` client selector remains.
 All three demand variants carry an exact positive revision. A cache miss may
 request only that revision. The client must never replace it with a newer or
 older cached profile. The cache key remains
-`(namespaceId, account, domain, rev)`. `PROFILE_AVAILABLE` and
+`(publisherNamespaceId, profileNamespaceId, account, domain, rev)`. `PROFILE_AVAILABLE` and
 `PROFILE_UNAVAILABLE` wake events carry only that exact key; they do not carry
 or reconstruct evidence.
 The signed federation profile reads are:
 
 ```text
 GET /s2s/v1/accounts/:account
-GET /s2s/v1/account-profiles/:account/:profileRev
-GET /s2s/v1/group-member-profiles/:groupAccount/:memberDomain/:memberAccount/:profileRev
-GET /s2s/v1/intent-profiles/:account/:peerAccount/:profileRev
+GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev
+GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev
+GET /s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev
 ```
 
 These are the only profile-read operations on the federation surface. Respect
@@ -341,16 +361,17 @@ specification. No federation response may substitute another revision.
 
 Do not reinterpret an absent response as `PROFILE_AVAILABLE` and do not retain
 a negative cache that prevents later retry. Exact-key fetch failures remove the
-pending item; a later demand can retry that four-tuple. Tests cover strict
+pending item; a later demand can retry that five-tuple. Tests cover strict
 revision equality and group-origin-to-member-home account requests rather than
 local group-member revision drift.
 
 ### Internal profile demands
 
-Backend work uses a separate server-only demand type. It is never accepted from
-client HTTP. The demand has one `namespaceId` and a shared `target`; the target's
-`account`, `domain`, and `rev` identify the exact profile. There is no second
-publisher/member namespace or publisher-domain field. Ordinary message demands
+Backend work uses the same namespace-role split internally. It is never stored
+with an ambiguous bare namespace name: `publisherNamespaceId` routes and
+authorizes the federation request, while `target.profileNamespaceId` identifies
+the exact profile subject. `target.account`, `target.domain`, and `target.rev`
+complete the immutable profile key. Ordinary message demands
 get their namespace from the creator. System-message demands are an explicit
 exception: their creator is the local `$system` account and must not become the
 profile target; event participants provide the target and namespace. Mirrored
@@ -363,6 +384,7 @@ resource coordinate.
 
 ```ts
 interface ProfileTarget {
+  profileNamespaceId: number;
   account: string;
   domain: string;
   rev: number;
@@ -374,15 +396,19 @@ interface ProfileProjectionKey {
 }
 
 type ProfilePrefetchDemand =
-  | { namespaceId: number; lookup: 'ACCOUNT_PROFILE'; target: ProfileTarget }
   | {
-      namespaceId: number;
+      publisherNamespaceId: number;
+      lookup: 'ACCOUNT_PROFILE';
+      target: ProfileTarget;
+    }
+  | {
+      publisherNamespaceId: number;
       lookup: 'RELATIONSHIP_INTENT_PROFILE';
       target: ProfileTarget;
       peerAccount: string;
     }
   | {
-      namespaceId: number;
+      publisherNamespaceId: number;
       lookup: 'GROUP_MEMBER_PROFILE';
       target: ProfileTarget;
       groupAccount: string;
@@ -407,10 +433,11 @@ type ProfileEvidenceProjection =
 `ACCOUNT_PROFILE` always calls `account-profiles`,
 `GROUP_MEMBER_PROFILE` always calls `group-member-profiles`, and
 `RELATIONSHIP_INTENT_PROFILE` always calls `intent-profiles`. The common
-`target` is the exact `(account, domain, rev)` profile identity; the single
-`namespaceId` is the trusted local snapshot namespace. A resolution demand only
-fetches and stores the exact snapshot. It does not contain projection evidence
-and never updates thread or Group Meta source coordinates.
+`target` carries the exact publisher-scoped profile subject identity and
+revision. `publisherNamespaceId` completes the cache/pending/wake key and
+identifies the request publisher namespace. A resolution demand only fetches
+and stores the exact snapshot. It does not contain projection evidence and
+never updates thread or Group Meta source coordinates.
 
 Message-landed evidence uses a separate `ProfileEvidenceProjection` queue. It
 never fetches profiles. It revalidates the committed `{ threadId, messageSeq }`
@@ -426,14 +453,14 @@ not change. If the evidence queue is full and the item cannot merge into an
 existing slot, the update is skipped with a warning; a later message can submit
 a greater coordinate.
 
-The demand locates the exact revision and actual federation endpoint. A
+The demand locates the exact publisher route, profile namespace, revision, and federation endpoint. A
 message-landing source may emit both a fetch demand and an evidence projection,
 but they are scheduled independently. All other scheduler work is a prefetch
 hint without evidence. A system-event sequence may be retained only as backend
 lookup context; it is never persisted as profile evidence. Neither
 `projection` nor backend source fields are accepted in the client API.
 Ordinary non-system messages derive the target from their non-null `creator`
-and carried `profileRev`. P2P author messages emit an `ACCOUNT_PROFILE` fetch
+and carried `profileNamespaceId` and `profileRev`. P2P author messages emit an `ACCOUNT_PROFILE` fetch
 demand and a separate account evidence projection. A remote member message at a
 group origin emits a `GROUP_MEMBER_PROFILE` fetch demand and a separate member
 evidence projection; after a local exact snapshot exists, the projection may
@@ -456,10 +483,12 @@ client listeners.
 
 After each committed message batch, outside its message transaction, source-specific
 selectors produce final demands. Ordinary messages use `creator` and the carried
-revision; system messages use event participants rather than the system
-`creator`. Mirrored Group Meta is a separate post-commit source: its
-`MEMBER_UPSERT` supplies the member target and revision, and the mirror group's
-namespace supplies the single demand namespace. These sources share the final
+revision; their publisher namespace is the message source namespace, and their
+target profile namespace is the federated message `namespaceId`. System messages
+use event participants rather than the system `creator`. Mirrored Group Meta is
+a separate post-commit source: its `MEMBER_UPSERT` supplies the member target,
+target profile namespace, and revision, while the mirror group's namespace
+supplies the publisher namespace. These sources share the final
 `ProfileResolutionDemand` vocabulary but do not share a common evidence shape. Friend-add uses ordinary intent lookup; a mirrored group's remote member
 join/role/owner event uses ordinary group-member lookup. Local participants
 and events that terminate access yield no prefetch hint. P2P and group callers
@@ -506,20 +535,21 @@ demand persists fetched bytes but never writes a profile source or selected
 revision.
 
 Fetch identity is the exact profile key. Internal prefetch and client demand
-for the same four-tuple join the same pending item; the item has no method list
+for the same five-tuple join the same pending item; the item has no method list
 or projection behavior. Message evidence projection is scheduled independently
 and never changes which federation endpoint is called. An exact non-null
 success settles the fetch item after durable profile materialization completes.
 `NOT_FOUND` or network failure removes the exact-key item and its sessions so a
 later request can retry. Never negatively cache an empty response. SSE emits
-only the exact four-tuple on success.
+only the exact five-tuple on success.
 
 ## 5. System messages
 
-System events already carry each participant's immutable `profileRev` and
-address. Keep that frozen revision; do not add a source coordinate to event
+System events already carry each participant's immutable `profileNamespaceId`
+and `profileRev` and address. Keep that frozen profile reference; do not add a
+message-source coordinate to event
 content, and remove client-side `correctSystemMessageProfile` and related
-profile-rebase behavior. The renderer first reads the four-tuple cache. On a
+profile-rebase behavior. The renderer first reads the five-tuple cache. On a
 miss, choose an **ordinary selector by event type**, not a special
 system-event evidence selector and not a message-seq lookup:
 
@@ -528,14 +558,14 @@ system-event evidence selector and not a message-seq lookup:
 | Remote participant in friendship add                                             | `RELATIONSHIP_INTENT_PROFILE` for the event's frozen revision when the directed intent remains effective                                |
 | Remote member joining a mirrored group (or appearing in role/owner changes)      | `GROUP_MEMBER_PROFILE` using the containing group conversation's ordinary group selector and the event's frozen member address/revision |
 | Friendship removal or group departure                                            | Cache-only `PROFILE_KEY`; never request a profile for the departing participant                                                         |
-| Mirror's own local group member, local group creator, or other local participant | Local four-tuple only; no federation read                                                                                               |
+| Mirror's own local group member, local group creator, or other local participant | Local five-tuple only; no federation read                                                                                               |
 | `$system`, revision zero, or call notice with no participant profile             | No lookup                                                                                                                               |
 
 The containing conversation already identifies the group for an ordinary
 group-member selector; no **additional** thread or system-message context is
-sent by the client. If the exact revision is no longer authorized or retained,
-use the locally cached snapshot or address fallback. The backend likewise
-submits no prefetch demand for friendship removal or group departure. Do not request
+sent by the client. If the exact namespace and revision is no longer authorized
+or retained, use the locally cached snapshot or address fallback. The backend
+likewise submits no prefetch demand for friendship removal or group departure. Do not request
 or write a different revision, or invent intent evidence for a historical
 departure. Ordinary message-row avatars also use their author address and rev
 to choose `ACCOUNT_PROFILE` (P2P) or `GROUP_MEMBER_PROFILE` (GROUP); the
@@ -568,7 +598,7 @@ joins).
   a newer candidate ID (neither field changes), and decreasing rev with newer
   **message seq** (a new origin Meta ID and revision);
   never use rev magnitude to order candidates.
-- Test alternate evidence for one four-tuple, null response, network error,
+- Test alternate evidence for one five-tuple, null response, network error,
   exact success, retry after method/item removal, internal-over-client
   precedence, cached profile with pending internal projection, and
   wrong-revision response rejection. Test that a client-only cache miss never
