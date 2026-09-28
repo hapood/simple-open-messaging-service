@@ -63,6 +63,29 @@ observable requirements:
   request admission, not necessarily its bilateral lifecycle. A valid request
   may therefore return `degraded` even as it refreshes reachability.
 
+- During rotation, the successor certificate is published before first use.
+  Exactly one key signs newly generated requests at an instant: the predecessor
+  before the local switch and the successor after the local switch. The
+  successor prepublication interval and predecessor post-switch overlap cover
+  the deployment's configured clock-skew budget and request/discovery timing
+  bounds; the receiver still validates the exact half-open certificate interval
+  without adding an implicit grace period. The predecessor remains published and
+  valid for a post-switch verification overlap, so the successor is valid before
+  first use and the predecessor remains valid after that first successor-signed
+  request. The certificate validity intervals in a well-known document need not
+  be contiguous; conformance does not require continuous certificate coverage.
+- During certificate overlap, a receiver selects exactly the currently valid,
+  root-authorized certificate named by the request's `keyid`. It does not try
+  multiple certificates for one request or infer preference from discovery
+  document order.
+- Normal signing-key rotation under the pinned root preserves recognition,
+  peer acceptance, cursors, mirrors, and authorization. It does not restart
+  Recognize for an already accepted peer.
+- Common certificate or signature failure on inbound Health uses the stable
+  `400`/`401` error path before the Health handler and is not projected as
+  `unavailable`. An outbound Health `401 FEDERATION_BAD_SIGNATURE` preserves
+  pins and acceptance, marks an accepted peer `degraded`, and does not halt it.
+
 ## Synchronization and deletion checks
 
 - An effective one-way intent permits passive history queries before a thread

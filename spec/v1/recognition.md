@@ -144,7 +144,8 @@ indivisible; an intermediate state cannot authorize traffic.
 | Commit local recognition and receive-path preparation | `unrecognized`                            | Pin and recognize the peer; acceptance remains unknown                              | `establishing`                                                     |
 | Process a valid inbound Recognize                     | Any non-`halted`                          | Recognize the signer locally and accept its explicit recognition of the recipient   | `available` when reachability is current                           |
 | Receive valid Recognize `OK` or positive Health       | `establishing` / `degraded` / `available` | Accept the peer's recognition and receive-readiness assertion; refresh reachability | `available`                                                        |
-| Health is `unavailable`, invalid, or unreachable      | `establishing` / `available` / `degraded` | Retain recognition evidence; mark reachability absent                               | `establishing` if peer acceptance is unknown, otherwise `degraded` |
+| Health returns `unavailable`, or the Health response is invalid or unreachable | `establishing` / `available` / `degraded` | Retain recognition evidence; mark reachability absent | `establishing` if peer acceptance is unknown, otherwise `degraded` |
+| Outbound Health receives `401 FEDERATION_BAD_SIGNATURE` | `establishing` / `available` / `degraded` | Retain pins and acceptance evidence; mark current authenticated reachability absent; do not assume refreshing the recipient's well-known repairs its cache of the local key; do not retry the same signed request unchanged | `establishing` if peer acceptance is unknown, otherwise `degraded` |
 | Authenticated protocol communication succeeds         | `establishing` / `available` / `degraded` | Refresh reachability without creating acceptance evidence                           | `establishing` if acceptance is unknown, otherwise `available`     |
 | Network failure, timeout, or HTTP `503`               | `establishing` / `available` / `degraded` | Retain pins and acceptance evidence; mark reachability absent                       | `establishing` if acceptance is unknown, otherwise `degraded`      |
 | Verifiable hard-security or policy failure            | Any non-`halted`                          | Retain the original security evidence and stop automatic communication              | `halted`                                                           |
@@ -158,7 +159,7 @@ Operation gates are calculated separately from lifecycle:
 | Operation class                                     | Required gate                                                                                                                                                                                                                                                      |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `recognize`                                         | bootstrap signed and its admission rule; no existing lifecycle required                                                                                                                                                                                            |
-| `health`                                            | status signed; failures uniformly project as `unavailable`                                                                                                                                                                                                         |
+| `health`                                            | status signed; common authentication failures use the stable error registry; authenticated status/privacy failures project as `unavailable`                                                                                                                        |
 | `feed-heads`                                        | The recipient's local recognition and prepared lightweight receive path, with a valid signer identity                                                                                                                                                              |
 | Ordinary recognized data sent by the local node     | Local recognition and prepared path, peer acceptance proven by valid Recognize `OK`, inbound Recognize, or positive Health, current authenticated reachability without unresolved degradation, compatible version and policy, and operation-specific authorization |
 | Ordinary recognized data received from the peer     | The recipient's local recognition and prepared path, valid signer identity, compatible version and policy, and operation-specific authorization; the sender's earlier Recognize delivery is not a separate receive gate                                            |
@@ -452,7 +453,7 @@ MUST include `Cache-Control: no-store`.
 
 ### 9.1 Recipient B: validating the request and producing the privacy projection
 
-B MAY attempt to validate Health only with an existing pinned or recognized identity. For a completely unknown domain, B SHOULD NOT fetch well-known merely to answer the query, because that would turn the endpoint into an arbitrary DNS/HTTP fetch oracle. For A with an existing pinned identity, B MAY refresh well-known under the signing-key rotation rules, but MUST NOT replace the root pin because of the query.
+B MUST validate the Health request's common HTTP Message Signature authentication before entering the Health handler, using the common parsing, digest, certificate-validity, `keyid` selection, and signature-verification rules defined in transport-security.md. A malformed request, an unpublished or invalid signing certificate, an expired or not-yet-valid certificate, or a failed signature MUST produce the common authentication error; it MUST NOT be converted into a Health status object. Inbound Health authentication MUST NOT initiate well-known discovery merely to answer the query, even for a known peer. Health-specific privacy projection begins only after request authentication succeeds. For an authenticated signer whose local peer relationship is not recognized, prepared, authorized, or safely disclosable, B MUST return the privacy-safe `unavailable` result. Health processing MUST NOT replace the root pin because of the query.
 
 B MUST return exactly one of the following three closed objects:
 
@@ -480,8 +481,7 @@ it does not require B to have already received A's reciprocal acceptance:
 
 The following cases MUST uniformly return HTTP `200` with `{"status":"unavailable"}`:
 
-- The peer or domain does not exist, or B has never pinned and recognized that identity.
-- The signature cannot be validated by the existing identity or the current signing certificate needed for validation is unavailable.
+- The authenticated signer is not locally recognized by B, or B has not prepared the receive path for that identity.
 - The requester lacks query authorization, or B has placed the peer in `halted` for any reason.
 - A reset is in progress, or another identity or version state cannot safely be disclosed.
 - Any other local connection state that cannot safely be disclosed.
@@ -497,14 +497,15 @@ This `unavailable` result is only an external privacy projection; it does not er
 | Valid `available` or `degraded`                     | Adopt B's acceptance and prepared receive path, refresh reachability, and become `available` if local recognition, version, and policy remain valid              |
 | Valid `unavailable`                                 | Treat current reachability as absent; retain pins and acceptance evidence. Remain `establishing` if acceptance is unknown, otherwise become or remain `degraded` |
 | Timeout, network error, HTTP `503`, or invalid body | Treat reachability like `unavailable`; adopt no assertion from the response                                                                                      |
-| HTTP `400`, `401`, or another unexpected status     | Treat this query as failed; do not change peer lifecycle solely for this reason                                                                                  |
+| HTTP `401 FEDERATION_BAD_SIGNATURE`                  | Treat the current authentication as failed, retain pins and acceptance evidence, mark an accepted peer `degraded`, do not halt, and do not retry the same signed request unchanged                                  |
+| HTTP `400` or another unexpected status               | Treat this query as failed; do not change peer lifecycle solely for this reason                                                                                  |
 
 A receiving valid `available` or `degraded` MUST recognize that B accepts A
 and is prepared to receive A's Federation traffic. This is the same
 peer-acceptance evidence as valid Recognize `OK`; a previously lost `OK` does
 not require an idempotent notification retry after this Health result.
 
-A MUST NOT infer B's actual reason from `unavailable`, nor enter `halted` solely because of that result. `halted` requires either an authenticated, non-automatically-recoverable HTTP error from the target peer as defined in Section 8 or hard security evidence independently verified by A.
+A MUST NOT infer B's actual reason from `unavailable`, nor enter `halted` solely because of that result. An outbound Health `401 FEDERATION_BAD_SIGNATURE` is a retryable authentication failure for the current Health attempt: it MUST NOT replace the pinned root or enter `halted`, but an already accepted peer MUST become or remain `degraded`. A later Health retry requires a newly constructed request after local key/signature checks; the failed signed request MUST NOT be retried unchanged. Refreshing A's copy of B's well-known does not directly refresh B's copy of A's signing keys. B's cache of A's signing keys is maintained by B's outbound Health overlap refresh and other ordinary discovery refreshes; B does not initiate well-known discovery while authenticating A's inbound Health request. `halted` requires either an authenticated, non-automatically-recoverable HTTP error from the target peer as defined in Section 8 or hard security evidence independently verified by A.
 
 ### 9.3 Other reachability evidence and convergence optimization
 
