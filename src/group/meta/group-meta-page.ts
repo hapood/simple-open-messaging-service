@@ -44,13 +44,13 @@ export interface GroupMetaFeedPage {
 export interface GroupMetaPageRead {
   groupId: number;
   account: string;
-  mode: 'full' | 'delta';
+  viewMode: 'federation' | 'client';
+  feedMode: 'full' | 'delta';
   after: number | undefined;
   take: number;
   through?: number;
   end: number;
   visibleAfter: number;
-  client?: { localDomain: string };
 }
 
 const MAX_TAKE = 200;
@@ -68,7 +68,7 @@ export async function readGroupMetaPageInTx(
   };
   if (params.after === undefined)
     throw new BusinessException(
-      params.client
+      params.viewMode === 'client'
         ? BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE
         : BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the group-meta feed cursor',
@@ -84,7 +84,7 @@ export async function readGroupMetaPageInTx(
     params.take > MAX_TAKE
   )
     throw new BusinessException(
-      params.client
+      params.viewMode === 'client'
         ? BusinessCode.VALIDATION_FAILED
         : BusinessCode.FEDERATION_MALFORMED,
       'invalid group-meta cursor or page size',
@@ -96,12 +96,12 @@ export async function readGroupMetaPageInTx(
       : params.through;
   const outsideCoordinateSpace = params.after > params.end;
   const outsideVisibility =
-    params.mode === 'delta'
+    params.feedMode === 'delta'
       ? params.after < params.visibleAfter
       : scanEnd < params.visibleAfter;
   if (outsideCoordinateSpace || outsideVisibility)
     throw new BusinessException(
-      params.client
+      params.viewMode === 'client'
         ? BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE
         : BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'group meta cursor is outside the available coordinate space',
@@ -123,7 +123,7 @@ export async function readGroupMetaPageInTx(
     FROM "GroupMetaMemberFeed" fact
     WHERE fact."threadId" = ${params.groupId}
       AND fact."feedId" > ${params.after} AND fact."feedId" <= ${scanEnd}
-      ${params.mode === 'full' ? sql`AND fact.operation IN ('MEMBER_UPSERT', 'GROUP_PROFILE')` : sql.empty()}
+      ${params.feedMode === 'full' ? sql`AND fact.operation IN ('MEMBER_UPSERT', 'GROUP_PROFILE')` : sql.empty()}
     UNION ALL
     SELECT meta."announcementFeedId", NULL::varchar, NULL::varchar,
       'GROUP_ANNOUNCEMENT'::text, jsonb_build_object('text', meta."announcementText")
@@ -135,7 +135,7 @@ export async function readGroupMetaPageInTx(
   ).rows;
   const namespaceByAddress = new Map<string, number>();
   if (
-    params.client &&
+    params.viewMode === 'client' &&
     memberRows.some(
       (row) => row.operation === 'MEMBER_UPSERT' || row.operation === 'MEMBER_DEPART',
     )
@@ -179,7 +179,7 @@ export async function readGroupMetaPageInTx(
       );
       if (row.memberDomain === null || row.memberAccount === null)
         throw new Error('group-meta member identity is missing');
-      if (params.client && namespaceId === undefined)
+      if (params.viewMode === 'client' && namespaceId === undefined)
         throw new Error('group-meta client identity namespace is missing');
       const identity = {
         account: row.memberAccount,
@@ -188,7 +188,7 @@ export async function readGroupMetaPageInTx(
       };
       const base = {
         feedId: row.feedId,
-        ...(params.client
+        ...(params.viewMode === 'client'
           ? toClientIdentity(identity)
           : { account: identity.account, domain: identity.domain }),
       };
@@ -206,7 +206,7 @@ export async function readGroupMetaPageInTx(
     : scanEnd;
   return {
     account: params.account,
-    mode: params.mode,
+    mode: params.feedMode,
     items: pageItems,
     scannedThrough,
     groupMetaFeedEndId: params.end,

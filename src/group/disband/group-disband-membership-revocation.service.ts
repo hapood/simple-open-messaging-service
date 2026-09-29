@@ -272,7 +272,7 @@ export class GroupDisbandMembershipRevocationService {
         groupAvatar: row.avatar,
         groupDescription: row.description,
         groupProfileRev: row.profileRev,
-        localDomain: row.domain,
+        localDomain: 'local',
         memberAccount: member.account,
         memberDomain: row.memberDomain,
         memberNamespaceId: row.memberNamespaceId,

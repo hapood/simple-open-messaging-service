@@ -7,7 +7,6 @@ import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { groupMeta } from '../database/schema.js';
 import { readGroupMetaPageInTx } from '../group/meta/group-meta-page.js';
-import { loadFederationConfig } from '../federation/federation.config.js';
 
 @Injectable()
 export class ClientGroupMetaFeedService {
@@ -79,13 +78,13 @@ export class ClientGroupMetaFeedService {
       const page = await readGroupMetaPageInTx(tx, {
         groupId,
         account,
-        mode,
+        viewMode: 'client',
+        feedMode: mode,
         after,
         take,
         through,
         end: feed?.metaEndId ?? 0,
         visibleAfter: 0,
-        client: { localDomain: loadFederationConfig().domain },
       });
       return {
         ...page,

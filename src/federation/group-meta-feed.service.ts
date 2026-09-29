@@ -112,7 +112,8 @@ export class FederationGroupMetaFeedService {
         const page = await readGroupMetaPageInTx(tx, {
           groupId: source.groupId,
           account,
-          mode,
+          viewMode: 'federation',
+          feedMode: mode,
           after,
           take,
           through,

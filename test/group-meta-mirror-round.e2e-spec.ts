@@ -959,7 +959,8 @@ describe('mirror Group Meta rounds', () => {
       readGroupMetaPageInTx(tx, {
         groupId: threadId,
         account: groupAccount,
-        mode: 'delta',
+        viewMode: 'federation',
+        feedMode: 'delta',
         after: 40,
         take: 100,
         end: head.end,

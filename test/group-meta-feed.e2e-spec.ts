@@ -19,7 +19,6 @@ import {
   account as user,
 } from '../src/database/schema.js';
 import { GroupRole, MessageThreadType } from '../src/database/enums.js';
-import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { GroupMetaFeedService } from '../src/group/meta/group-meta-feed.service.js';
 import { FederationGroupMetaFeedService } from '../src/federation/group-meta-feed.service.js';
 import { seedFederatedPeerNamespace } from './seed.js';
@@ -35,7 +34,6 @@ describe('canonical Group Meta feed', () => {
   const ownerAccount = `owner-${suffix}`;
   const memberAccount = `member-${suffix}`;
   const observerAccount = `observer-${suffix}`;
-  const localDomain = loadFederationConfig().domain;
   let module: TestingModule;
   let database: DatabaseService;
   let feed: GroupMetaFeedService;
@@ -328,7 +326,8 @@ describe('canonical Group Meta feed', () => {
         readGroupMetaPageInTx(tx, {
           groupId,
           account: groupAccount,
-          mode,
+          viewMode: 'federation',
+          feedMode: mode,
           after,
           through,
           take: 100,
@@ -390,12 +389,12 @@ describe('canonical Group Meta feed', () => {
         readGroupMetaPageInTx(tx, {
           groupId,
           account: groupAccount,
-          mode,
+          viewMode: 'client',
+          feedMode: mode,
           after: 0,
           take: 100,
           end: head.metaEndId,
           visibleAfter: 0,
-          client: { localDomain },
         }),
       );
       expect(page.items).toEqual(
@@ -449,7 +448,7 @@ describe('canonical Group Meta feed', () => {
       {
         feedId: 2,
         account: ownerAccount,
-        domain: localDomain,
+        domain: 'local',
         operation: 'MEMBER_UPSERT',
         body: { role: GroupRole.OWNER, profileRev: 1 },
       },

@@ -720,7 +720,7 @@ function feedInput(base: {
     pairId: base.pairId,
     threadId: base.threadId,
     namespaceId,
-    localDomain: base.actor.domain,
+    localDomain: 'local',
     // The compaction keys follow the direction each key names, independent of
     // which canonical pair side the actor occupies.
     actorKey: userIntentCompactionKey(namespaceId, base.actor, base.target),

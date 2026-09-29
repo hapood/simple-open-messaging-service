@@ -249,7 +249,7 @@ describe('FederationRecognitionService atomic commit', () => {
   });
 
   it.each(['available', 'degraded'] as const)(
-    'accepts positive Health %s instead of a lost Recognize OK',
+    'accepts positive Health %s instead of a lost recognized result',
     async (status) => {
       const [namespace] = await database.db
         .insert(identityNamespace)
