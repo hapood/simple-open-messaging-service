@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, eq, or, sql } from 'drizzle-orm';
 import { serializeBody } from '../../common/serialize.interceptor.js';
+import { GroupRole } from '../../database/enums.js';
 import { groupMeta, groupMetaMemberFeed } from '../../database/schema.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 import {
@@ -10,10 +11,16 @@ import {
 } from '../shared/group-state.js';
 import { upsertCurrentGroupMetaFactsInTx } from './current-group-meta-fact.js';
 
+export interface GroupMetaMemberBody extends Record<string, unknown> {
+  role: GroupRole;
+  profileNamespaceId: number;
+  profileRev: number;
+}
+
 export interface GroupMetaMemberChange {
   account: string;
   domain: string;
-  body: Record<string, unknown>;
+  body: GroupMetaMemberBody;
   operation: 'MEMBER_UPSERT' | 'MEMBER_DEPART';
 }
 
@@ -61,10 +68,7 @@ export class GroupMetaFeedService {
     const changes = members
       .map((member) => ({
         ...member,
-        body:
-          member.operation === 'MEMBER_DEPART'
-            ? {}
-            : (serializeBody(member.body) as Record<string, unknown>),
+        body: serializeBody(member.body) as Record<string, unknown>,
       }))
       .filter((member) => {
         const previous = current.get(memberKey(member));
@@ -99,10 +103,7 @@ export class GroupMetaFeedService {
     groupId: number,
     member: GroupMetaMemberChange,
   ): Promise<number> {
-    const body =
-      member.operation === 'MEMBER_DEPART'
-        ? {}
-        : (serializeBody(member.body) as Record<string, unknown>);
+    const body = serializeBody(member.body) as Record<string, unknown>;
     const allocation = await tx.execute<{ metaEndId: number }>(sql`
       WITH coordinate AS (
         INSERT INTO "GroupMeta" ("threadId", "metaEndId")

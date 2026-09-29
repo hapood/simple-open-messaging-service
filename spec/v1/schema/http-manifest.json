@@ -21,7 +21,7 @@
       "successStatus": [200],
       "requestMediaType": "application/json",
       "requestSchema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
-      "responseSchema": "urn:somfp:v1:identity#/$defs/recognizeOk"
+      "responseSchema": "urn:somfp:v1:identity#/$defs/recognizeResult"
     },
     {
       "id": "health",

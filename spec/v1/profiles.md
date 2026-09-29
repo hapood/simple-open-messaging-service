@@ -20,7 +20,17 @@ resolves only the responding server's authoritative current profile for the
 local account. The three exact profile-validation operations carry the profile
 subject namespace as a required `namespaceId` path variable. That value is
 scoped by the responding publisher and identifies the requested profile subject
-inside that publisher's namespace space.
+inside that publisher's namespace space. A `namespaceId` of `0` requests the
+responding server's own local subject and is served from its local profile
+store; a positive value selects the namespace that publisher holds for a
+foreign identity. When a profile request includes a subject-domain path
+variable for the requested subject, `namespaceId: 0` requires that path segment
+to be `local`, even if the requester stores the responding server's public
+domain for that subject. `memberDomain` path variables and response `domain`
+values follow the same local-subject marker rules as every publisher-serialized
+address ([Core Protocol Section 6.2.1](./protocol.md#local-subject-marker-and-namespace-interpretation)):
+the responding server serializes its own subjects with the literal `local`,
+and a requester MUST NOT infer subject locality from a domain string.
 
 Feed cursors, scan windows, modes, and byte ranges use query parameters in
 their own operations; profile reads have none.
@@ -39,7 +49,7 @@ path-segment representation is `%21`. For example, the decoded group account
 ```http
 GET /s2s/v1/accounts/%21team
 GET /s2s/v1/account-profiles/0/%21team/7
-GET /s2s/v1/group-member-profiles/%21team/0/alice/a.example/7
+GET /s2s/v1/group-member-profiles/%21team/0/alice/local/7
 GET /s2s/v1/intent-profiles/0/%21team/alice/7
 ```
 
@@ -49,9 +59,14 @@ percent-decoding pass before grammar validation and MUST NOT decode twice, fold
 case, or re-encode before signature verification.
 
 `namespaceId` path variables use canonical non-negative decimal text with a
-value no greater than `SafeInteger`. `profileRev` path variables use canonical
-positive decimal text with a value no greater than `SafeInteger`. JSON Schema
-patterns validate the canonical decimal spelling; receivers MUST additionally
+value no greater than `SafeInteger`. A subject-domain path variable is coupled
+to that namespace: when `namespaceId` is `0`, it MUST be the literal `local`;
+when `namespaceId` is positive, it MUST be a canonical `Domain` and MUST NOT
+be `local`. This applies to `memberDomain` in the Group Member Profile
+operation. The conversion from a stored target domain to `local` for a zero
+namespace is performed by the outbound request builder; it does not change the
+stored target. `profileRev` path variables use canonical positive decimal text
+with a value no greater than `SafeInteger`. JSON Schema patterns validate the canonical decimal spelling; receivers MUST additionally
 parse the value and reject one greater than `SafeInteger`. The revision value
 `0` is the no-profile sentinel and MUST NOT be requested. Unknown query
 parameters, duplicate parameters, malformed path variables, non-canonical path
@@ -90,7 +105,8 @@ Their success `data` is a closed object with exactly these fields:
 ```ts
 interface EvidenceProfile {
   account: Account;
-  domain: Domain;
+  // 'local' is the publisher-scoped subject marker of Core Protocol 6.2.1.
+  domain: Domain | 'local';
   displayName: string;
   bio: string;
   avatar: InlineProfileAvatar | null;
@@ -182,7 +198,7 @@ Path variables are:
 | `groupAccount`  | `GroupAccount` owned by the responding origin                |
 | `namespaceId`   | Profile namespace in the responding origin's namespace space |
 | `memberAccount` | `UserAccount` of the member                                  |
-| `memberDomain`  | Canonical `Domain` of the member account                     |
+| `memberDomain`  | Canonical `Domain` of the member account, or `local` exactly when `namespaceId` is `0` |
 | `profileRev`    | Positive canonical decimal profile revision                  |
 
 The group origin serves complete member profile snapshots for both the

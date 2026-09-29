@@ -2,7 +2,6 @@ import { eq, sql } from 'drizzle-orm';
 import { toClientIdentity } from '../../common/client-identity.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 import { messageThread } from '../../database/schema.js';
-import { loadFederationConfig } from '../../federation/federation.config.js';
 import { MessageService } from '../../message/message.service.js';
 import { SystemMessageType } from '../../message/system-message.js';
 import { enqueueThreadFanoutInTx } from '../../message/thread-fanout-task.js';
@@ -210,10 +209,11 @@ async function readCurrentMirrorMemberOperationInTx(
     item.operation === 'GROUP_ANNOUNCEMENT'
   )
     return undefined;
-  const member = toClientIdentity(
-    { account: item.account, domain: item.domain, namespaceId },
-    loadFederationConfig().domain,
-  );
+  const member = toClientIdentity({
+    account: item.account,
+    domain: item.domain,
+    namespaceId: item.profileNamespaceId,
+  });
   const previous = await tx.execute<{
     operation: string;
     profileNamespaceId: number | null;
@@ -258,14 +258,11 @@ async function writeObservedMembershipTransitionInTx(
     item.operation === 'GROUP_ANNOUNCEMENT'
   )
     return { transitioned: false };
-  const member = toClientIdentity(
-    {
-      account: item.account,
-      domain: item.domain,
-      namespaceId: group.publisherNamespaceId,
-    },
-    loadFederationConfig().domain,
-  );
+  const member = toClientIdentity({
+    account: item.account,
+    domain: item.domain,
+    namespaceId: item.profileNamespaceId,
+  });
   const joined =
     item.operation === 'MEMBER_UPSERT' &&
     previousFact?.operation !== 'MEMBER_UPSERT';

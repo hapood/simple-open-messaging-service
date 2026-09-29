@@ -10,12 +10,18 @@ const state = vi.hoisted(() => ({
 }));
 const block = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
 const unblock = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
+const setActiveNamespace = vi.hoisted(() => ({
+  isPending: false,
+  mutateAsync: vi.fn(),
+}));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+const confirmMock = vi.hoisted(() => vi.fn());
 
 vi.mock('react-i18next', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-i18next')>()),
   useTranslation: () => ({ t: (key: string) => key }),
 }));
+vi.stubGlobal('confirm', confirmMock);
 vi.mock('sonner', () => ({ toast }));
 vi.mock('@/hooks/use-me', () => ({ useIsSuperAdmin: () => state.isSuper }));
 vi.mock('@/hooks/use-quotas', () => ({
@@ -39,6 +45,27 @@ vi.mock('@/hooks/use-federation', () => ({
     error: null,
   }),
   useFederationPeerEvents: () => ({ data: [], isLoading: false }),
+  useFederationPeerNamespaces: () => ({
+    data: [
+      {
+        id: 0,
+        domain: 'peer.test',
+        rootKeyFingerprint: 'sha256:new',
+        rootPublicKey: 'root',
+        peerAssignedLocalNamespaceId: 44,
+        identityPinnedAt: null,
+        createdAt: null,
+        retiredAt: null,
+        active: false,
+        candidate: true,
+        candidateStatus: 'pending',
+        failedCode: null,
+        failedMessage: null,
+      },
+    ],
+    isLoading: false,
+  }),
+  useSetActiveFederationPeerNamespace: () => setActiveNamespace,
   useBlockFederationPeer: () => block,
   useUnblockFederationPeer: () => unblock,
 }));
@@ -62,6 +89,8 @@ describe('PeerDetailPage authorization', () => {
     unblock.mutateAsync.mockReset().mockResolvedValue(undefined);
     toast.success.mockReset();
     toast.error.mockReset();
+    setActiveNamespace.mutateAsync.mockReset().mockResolvedValue(undefined);
+    confirmMock.mockReset().mockReturnValue(true);
   });
 
   it('does not expose peer lifecycle mutations to a non-super administrator', () => {
@@ -85,6 +114,26 @@ describe('PeerDetailPage authorization', () => {
       expect(block.mutateAsync).toHaveBeenCalledWith({ domain: 'peer.test' }),
     );
     expect(toast.success).toHaveBeenCalledWith('federation.toast.blocked');
+  });
+
+  it('lets a super administrator approve a new namespace candidate without a namespace id', async () => {
+    state.isSuper = true;
+    renderPage();
+
+    fireEvent.click(screen.getByText('federation.detail.tabNamespaces'));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'federation.namespaces.approve' }),
+    );
+
+    await waitFor(() =>
+      expect(setActiveNamespace.mutateAsync).toHaveBeenCalledWith({
+        domain: 'peer.test',
+        namespaceId: undefined,
+      }),
+    );
+    expect(toast.success).toHaveBeenCalledWith(
+      'federation.toast.namespaceActive',
+    );
   });
 
   it('lets a super administrator unblock a blocked peer and reports success', async () => {

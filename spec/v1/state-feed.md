@@ -152,16 +152,19 @@ does not by itself create a new thread coordinate space or require another
 history initialization. Feed ordering and current authorization still apply.
 
 `namespaceId` and `profileRev` are required and non-null. `namespaceId`
-identifies the source account's profile namespace in the authenticated
-publisher's namespace space. It is not a receiver-local namespace, and the
-consumer interprets and stores it only as part of the profile reference emitted
+identifies the source account's profile subject namespace in the authenticated
+publisher's namespace space under the local-subject marker rules of
+[Core Protocol Section 6.2.1](./protocol.md#local-subject-marker-and-namespace-interpretation);
+because the subject `account` is hosted by the source, the value is `0`. It is
+not a receiver-local namespace, and the consumer interprets and stores it only
+as part of the profile reference emitted
 by that publisher. A positive `profileRev` selects the source
 account's immutable profile reference for `(namespaceId, account, source
 domain, profileRev)` when the current request flow was authored; `profileRev:
 0` means that the flow carries no profile and the consumer performs no profile
 request. `REQUESTED -> ACCEPTED` and the later `REVOKED` transition retain that
-same reference. A new request flow after revocation selects the author's chosen
-revision and namespace, normally its local default namespace, or revision zero
+same reference. A new request flow after revocation selects the author's chosen revision in
+its local subject namespace, or revision zero
 when it has none.
 
 While `REQUESTED` remains unexpired or the direction is `ACCEPTED`, the source

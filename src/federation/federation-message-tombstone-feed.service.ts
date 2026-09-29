@@ -10,7 +10,6 @@ import {
   type FederationThreadAddress,
   type FederationThreadQuery,
 } from './federation-message-feed.service.js';
-import { loadFederationConfig } from './federation.config.js';
 import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
 
 const DEFAULT_PAGE_SIZE = 100;
@@ -32,7 +31,7 @@ export interface FederationMessageTombstoneQueryPage {
 
 @Injectable()
 export class FederationMessageTombstoneFeedService {
-  private readonly localDomain = loadFederationConfig().domain;
+  private readonly localDomain = 'local';
 
   constructor(private readonly database: DatabaseService) {}
 

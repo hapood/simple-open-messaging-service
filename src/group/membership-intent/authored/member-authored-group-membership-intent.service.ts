@@ -72,7 +72,7 @@ export interface MemberAuthoredGroupMembershipIntentDependencies {
   database: DatabaseService;
   clientFeed: ClientStateFeedService;
   relationshipMutations: GroupRelationshipMutationService;
-  federation: Pick<FederationService, 'ourDomain' | 'pushStateFeedDomains'>;
+  federation: Pick<FederationService, 'pushStateFeedNamespaces'>;
 }
 
 export interface MemberAuthoredGroupMembershipIntentOptions {
@@ -164,8 +164,7 @@ export class MemberAuthoredGroupMembershipIntentService {
         BusinessCode.NOT_FOUND,
         'group not found',
       );
-    const storedDomain =
-      domain === this.deps.federation.ourDomain ? 'local' : domain;
+    const storedDomain = domain;
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
     const applied = await this.deps.database.db.transaction(async (tx) => {
       const namespaceId =
@@ -187,7 +186,7 @@ export class MemberAuthoredGroupMembershipIntentService {
             BusinessCode.NOT_FOUND,
             'group not found',
           ),
-          peers: new Map<string, bigint>(),
+          peers: new Map<number, bigint>(),
         };
       const member = (
         await tx.execute<{ account: string }>(sql`
@@ -203,7 +202,7 @@ export class MemberAuthoredGroupMembershipIntentService {
             BusinessCode.NOT_FOUND,
             'authenticated member is missing',
           ),
-          peers: new Map<string, bigint>(),
+          peers: new Map<number, bigint>(),
         };
       await lockBusinessAccountsInTx(tx, [
         { account, domain: storedDomain },
@@ -233,7 +232,7 @@ export class MemberAuthoredGroupMembershipIntentService {
             BusinessCode.INVITE_NOT_FOUND,
             'group request not found',
           ),
-          peers: new Map<string, bigint>(),
+          peers: new Map<number, bigint>(),
         };
       const command: MemberAuthoredGroupMembershipIntentCommand =
         params.decision === 'REQUESTED'
@@ -311,11 +310,11 @@ export class MemberAuthoredGroupMembershipIntentService {
     options?: MemberAuthoredGroupMembershipIntentOptions,
   ): Promise<{
     outcome: MemberAuthoredGroupMembershipIntentResult;
-    peers: Map<string, bigint>;
+    peers: Map<number, bigint>;
   }> {
     const context = await this.lockAndValidateInTx(tx, params);
     if ('status' in context)
-      return { outcome: context, peers: new Map<string, bigint>() };
+      return { outcome: context, peers: new Map<number, bigint>() };
     await options?.admissionInTx?.(tx);
     return {
       outcome: { status: 'APPLIED' },
@@ -330,7 +329,7 @@ export class MemberAuthoredGroupMembershipIntentService {
   private publishApplied(
     applied: {
       outcome: { status: string };
-      peers: Map<string, bigint>;
+      peers: Map<number, bigint>;
     },
     clientUpdates: PendingClientStateFeedUpdate[],
   ): void {
@@ -346,13 +345,7 @@ export class MemberAuthoredGroupMembershipIntentService {
     }
     if (applied.peers.size > 0)
       void this.deps.federation
-        .pushStateFeedDomains(applied.peers.keys())
-        .catch((error: unknown) =>
-          this.logger.warn(
-            'member-authored membership intent peer wake failed',
-            error,
-          ),
-        );
+        .pushStateFeedNamespaces(applied.peers.keys());
   }
 
   private async lockAndValidateInTx(
@@ -743,7 +736,7 @@ export class MemberAuthoredGroupMembershipIntentService {
     context: ValidatedMembership,
     clientUpdates: PendingClientStateFeedUpdate[],
     mirrorGroupSnapshot?: FederatedPendingProfileSnapshot,
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     if (context[validated] !== true || context.threadLock.tx !== context.tx)
       throw new Error('invalid group membership lock context');
     if (context.kind === 'acceptance') {

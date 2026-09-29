@@ -466,7 +466,6 @@ export class ProfileResolutionCoordinatorService {
     this.touch(profileKeyString(expected), fetched);
     await this.profiles.materializeExactForeignProfile(
       profile.profile,
-      profile.sourceDomain,
       expected.publisherNamespaceId,
     );
     const materialized = await this.readDurable(expected);

@@ -15,7 +15,7 @@ export function eligiblePreviewOwnerSql(
       WHERE ns.id = ${thread}."authorityNamespaceId" AND ns."retiredAt" IS NULL
         AND (ns.id = 0 OR EXISTS (
           SELECT 1 FROM "FederatedPeer" peer
-          WHERE peer.domain = ns.domain AND peer."activeNamespaceId" = ns.id
+          WHERE peer."activeNamespaceId" = ns.id
         ))
     )
     AND EXISTS (

@@ -7,12 +7,9 @@ import {
 } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import type { S2SAddress } from './federation-address.js';
-import { loadFederationConfig } from './federation.config.js';
-
 /** Resolves local and foreign federation identities without owning profile materialization. */
 @Injectable()
 export class FederationUserDirectoryService {
-  private readonly config = loadFederationConfig();
 
   constructor(private readonly database: DatabaseService) {}
 
@@ -31,7 +28,7 @@ export class FederationUserDirectoryService {
   }
 
   async findLocalUserIdByAddress(address: S2SAddress): Promise<number | null> {
-    if (address.domain !== this.config.domain) return null;
+    if (address.domain !== 'local') return null;
     return this.findLocalUserId(address.account);
   }
 

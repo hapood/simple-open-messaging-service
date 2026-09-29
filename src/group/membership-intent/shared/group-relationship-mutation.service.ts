@@ -113,7 +113,7 @@ export class GroupRelationshipMutationService {
     note = '',
     groupSnapshot?: FederatedPendingProfileSnapshot,
     options: GroupRelationshipMutationOptions = {},
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     const {
       publishGroupState = true,
       allowOwnerDeactivation,
@@ -132,7 +132,7 @@ export class GroupRelationshipMutationService {
       !allowDissolvedPositive &&
       (await isGroupDissolvedInTx(tx, threadId))
     )
-      return new Map<string, bigint>();
+      return new Map<number, bigint>();
     const locked =
       lockedGroupPair ??
       (await this.lockGroupMutationInTx(tx, threadId, memberUserId));
@@ -162,7 +162,7 @@ export class GroupRelationshipMutationService {
         group.domain !== expectedAuthorization.group.domain ||
         group.namespaceId !== expectedAuthorization.group.namespaceId)
     )
-      return new Map<string, bigint>();
+      return new Map<number, bigint>();
     if (!lockedGroupPair) await this.lockMemberRelationshipFeedInTx(tx, group);
     const projectedGroup = applyFederatedPendingProfileSnapshot(
       { name: group.name, avatar: group.avatar },
@@ -355,7 +355,7 @@ export class GroupRelationshipMutationService {
     clientFeedUpdates: PendingClientStateFeedUpdate[],
     requestProjectionDirection?: 'APPLICATION' | 'INVITATION',
     options: GroupRelationshipMutationOptions = {},
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     const {
       publishGroupState = true,
       allowOwnerDeactivation,
@@ -365,7 +365,7 @@ export class GroupRelationshipMutationService {
       clientRequestDirection,
     } = options;
     if (status !== 'REVOKED' && (await isGroupDissolvedInTx(tx, threadId)))
-      return new Map<string, bigint>();
+      return new Map<number, bigint>();
     await this.lockGroupMutationInTx(tx, threadId, memberUserId);
     const [state] = await tx
       .select({
@@ -394,7 +394,7 @@ export class GroupRelationshipMutationService {
         state.groupDomain !== expectedAuthorization.group.domain ||
         state.groupNamespaceId !== expectedAuthorization.group.namespaceId)
     )
-      return new Map<string, bigint>();
+      return new Map<number, bigint>();
     const member = await accountAddressInTx(tx, memberUserId);
     if (member.domain !== 'local')
       await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [

@@ -135,13 +135,16 @@ newest item left to the forward path starts at
 `forwardStartSeq = E + messageSeqOffset`. Local relationship system messages
 are therefore never overwritten by a later reverse reconstruction.
 
-A returned item with non-null `originSeq` is a processing receipt, regardless
-of its author's domain. It creates no STUB. The consumer validates its author
-and origin coordinates against a previously published message and retains the
-peer-copy association. An authoritative group receipt may also establish the
-local submission's group-authoritative coordinate; a mirror receipt must not
-replace an authoritative message's direct-source association. An unmatched or
-conflicting receipt is rejected without creating a message.
+A returned item with non-null `originSeq` is a processing receipt when the
+author `namespaceId` equals the peer-assigned namespace disclosed by the direct
+publisher. The consumer never recognizes receipts by comparing the author
+domain with its own configured domain. A receipt creates no STUB. The consumer
+validates its author and origin coordinates against a previously published
+message and retains the peer-copy association. An authoritative group receipt
+may also establish the local submission's group-authoritative coordinate; a
+mirror receipt must not replace an authoritative message's direct-source
+association. An unmatched or conflicting receipt is rejected without creating
+a message.
 
 Normal client history returns STUB, FAILED, and READY messages together with
 their local state. Search, unread calculation, previews, federation publication,

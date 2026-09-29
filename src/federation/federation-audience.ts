@@ -7,7 +7,6 @@ import {
   systemSetting,
   threadAudience,
 } from '../database/schema.js';
-import { loadFederationConfig } from './federation.config.js';
 import {
   FEDERATION_HISTORY_ACCESS_SETTING_KEY,
   federationHistoryAccessEnabled,
@@ -64,7 +63,7 @@ export async function closeFederatedAudienceInTx(
   peerDomain: string,
   threadId: number,
 ): Promise<boolean> {
-  const localDomain = loadFederationConfig().domain;
+  const localDomain = 'local';
   const namespaceId = await resolveAudienceNamespaceInTx(
     tx,
     peerDomain,

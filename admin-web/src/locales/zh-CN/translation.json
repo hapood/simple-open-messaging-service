@@ -411,6 +411,7 @@
       "all": "全部",
       "available": "可用",
       "establishing": "正在建立",
+      "pending": "待审核",
       "degraded": "已降级",
       "unrecognized": "未认可",
       "halted": "已停机"
@@ -472,8 +473,15 @@
       "title": "身份命名空间",
       "empty": "该对端暂无身份命名空间记录",
       "active": "当前",
+      "approve": "审核通过",
       "setActive": "设为当前",
+      "newCandidate": "新建",
       "confirmSetActive": "确认将命名空间 {{namespaceId}} 设为当前？普通流量会等待对端认可与可达性重新收敛。",
+      "confirmApproveCandidate": "确认审核通过该已验证命名空间候选并设为当前？普通流量会等待对端认可与可达性重新收敛。",
+      "candidate": {
+        "pending": "待审核",
+        "failed": "失败"
+      },
       "col": {
         "id": "命名空间",
         "fingerprint": "根指纹",

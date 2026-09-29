@@ -7,7 +7,6 @@ import { BusinessException } from '../common/business.exception.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
 import type { S2SAddress } from './federation-address.js';
-import { loadFederationConfig } from './federation.config.js';
 import { FederationMessageContextError } from './federation-errors.js';
 import type {
   FederationMessageFeedMessage,
@@ -31,26 +30,68 @@ export interface FederationInboundTombstoneRoute {
   authority: 'P2P_HOME' | 'GROUP_ORIGIN' | 'GROUP_MEMBER';
 }
 
+interface ResolvedInboundAuthor extends S2SAddress {
+  publisherLocal: boolean;
+  receiverLocal: boolean;
+}
+
 /** Resolves authenticated wire thread coordinates to retained local federation threads. */
 @Injectable()
 export class FederationInboundMessageRouteService {
-  private readonly config = loadFederationConfig();
-
   messageAuthor(
     item: FederationMessageFeedMessage,
     sourceDomain: string,
+    peerAssignedLocalNamespaceId: number,
   ): S2SAddress {
+    const author = this.resolveAuthor(
+      item,
+      sourceDomain,
+      peerAssignedLocalNamespaceId,
+    );
+    return { account: author.account, domain: author.domain };
+  }
+
+  private resolveAuthor(
+    item: FederationMessageFeedMessage,
+    sourceDomain: string,
+    peerAssignedLocalNamespaceId: number,
+  ): ResolvedInboundAuthor {
     if ('authorRef' in item) {
       return item.authorRef === 'THREAD_ACCOUNT'
-        ? { account: item.thread.account, domain: sourceDomain }
+        ? {
+            account: item.thread.account,
+            domain: 'local',
+            publisherLocal: true,
+            receiverLocal: false,
+          }
         : {
             account: item.thread.peerAccount,
-            domain: this.config.domain,
+            domain: 'local',
+            publisherLocal: false,
+            receiverLocal: true,
           };
     }
-    return item.author.domain === 'local'
-      ? { account: item.author.account, domain: sourceDomain }
-      : item.author;
+    if (item.author.domain === 'local') {
+      return {
+        account: item.author.account,
+        domain: 'local',
+        publisherLocal: true,
+        receiverLocal: false,
+      };
+    }
+    if (item.namespaceId === peerAssignedLocalNamespaceId) {
+      return {
+        account: item.author.account,
+        domain: 'local',
+        publisherLocal: false,
+        receiverLocal: true,
+      };
+    }
+    return {
+      ...item.author,
+      publisherLocal: false,
+      receiverLocal: false,
+    };
   }
 
   async resolveMessage(
@@ -58,8 +99,13 @@ export class FederationInboundMessageRouteService {
     item: FederationMessageFeedMessage,
     sourceDomain: string,
     namespaceId: number,
+    peerAssignedLocalNamespaceId: number,
   ): Promise<FederationInboundMessageRoute> {
-    const author = this.messageAuthor(item, sourceDomain);
+    const author = this.resolveAuthor(
+      item,
+      sourceDomain,
+      peerAssignedLocalNamespaceId,
+    );
     let authority: FederationInboundMessageRoute['authority'] | undefined;
     let threadRows: Array<{
       threadId: number;
@@ -88,7 +134,7 @@ export class FederationInboundMessageRouteService {
       if (threadRows.length > 0) {
         // A remote group owns its accepted timeline except for messages authored
         // by this server, which return as authoritative-coordinate receipts.
-        authority = author.domain === this.config.domain ? 'LOCAL' : 'PEER';
+        authority = author.receiverLocal ? 'LOCAL' : 'PEER';
       }
       if (threadRows.length === 0 && item.originSeq != null) {
         // A mirror may return any author from this origin's timeline. Resolve only
@@ -124,7 +170,11 @@ export class FederationInboundMessageRouteService {
           );
         }
       }
-      if (threadRows.length === 0 && author.domain !== sourceDomain) {
+      if (
+        threadRows.length === 0 &&
+        !author.publisherLocal &&
+        !author.receiverLocal
+      ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
           'group mirror may only submit its locally managed authors',
@@ -164,7 +214,7 @@ export class FederationInboundMessageRouteService {
         if (threadRows.length > 0) authority = 'PEER';
       }
     } else {
-      const selfAuthored = author.domain === this.config.domain;
+      const selfAuthored = author.receiverLocal;
       authority = selfAuthored ? 'LOCAL' : 'PEER';
       const expectedAuthorAccount = selfAuthored
         ? item.thread.peerAccount
@@ -218,8 +268,7 @@ export class FederationInboundMessageRouteService {
     }
     if (!authority) throw new Error('message authority was not resolved');
     const creatorAccount = normalizeAccount(author.account);
-    const creatorDomain =
-      author.domain === this.config.domain ? 'local' : author.domain;
+    const creatorDomain = author.domain;
     const recipientRows =
       'peerAccount' in item.thread
         ? await tx.execute<{ userId: number }>(sql`
@@ -265,6 +314,7 @@ export class FederationInboundMessageRouteService {
     thread: FederationThreadAddress,
     sourceDomain: string,
     namespaceId: number,
+    peerAssignedLocalNamespaceId: number,
     messageSeq?: number,
   ): Promise<FederationInboundTombstoneRoute> {
     if ('peerAccount' in thread) {
@@ -273,6 +323,7 @@ export class FederationInboundMessageRouteService {
         { thread, authorRef: 'THREAD_ACCOUNT' } as FederationMessageFeedMessage,
         sourceDomain,
         namespaceId,
+        peerAssignedLocalNamespaceId,
       );
       return { ...route, authority: 'P2P_HOME' };
     }
@@ -307,7 +358,8 @@ export class FederationInboundMessageRouteService {
           AND g.domain = 'local' AND g."namespaceId" = 0
           AND m."sourceNamespaceId" = ${namespaceId}
           AND m."originSeq" = ${messageSeq}
-          AND m."creatorDomain" = ${sourceDomain}
+          AND m."creatorDomain" = 'local'
+          AND m."profileNamespaceId" = 0
           AND m."contentType" <> 'SYSTEM'
         LIMIT 1
       `);
@@ -317,10 +369,11 @@ export class FederationInboundMessageRouteService {
           tx,
           {
             thread,
-            author: { account: target.account, domain: sourceDomain },
+            author: { account: target.account, domain: 'local' },
           } as FederationMessageFeedMessage,
           sourceDomain,
           namespaceId,
+          peerAssignedLocalNamespaceId,
         );
         return {
           ...memberRoute,

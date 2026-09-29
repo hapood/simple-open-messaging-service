@@ -17,7 +17,10 @@ type GroupMetaFeedItem =
       operation: 'MEMBER_UPSERT';
       body: Record<string, unknown>;
     })
-  | (GroupMetaFeedItemBase & { operation: 'MEMBER_DEPART' })
+  | (GroupMetaFeedItemBase & {
+      operation: 'MEMBER_DEPART';
+      body: Record<string, unknown>;
+    })
   | {
       feedId: number;
       operation: 'GROUP_PROFILE';
@@ -186,12 +189,14 @@ export async function readGroupMetaPageInTx(
       const base = {
         feedId: row.feedId,
         ...(params.client
-          ? toClientIdentity(identity, params.client.localDomain)
+          ? toClientIdentity(identity)
           : { account: identity.account, domain: identity.domain }),
       };
-      return row.operation === 'MEMBER_UPSERT'
-        ? { ...base, operation: 'MEMBER_UPSERT', body: row.body }
-        : { ...base, operation: 'MEMBER_DEPART' };
+      return {
+        ...base,
+        operation: row.operation,
+        body: row.body,
+      };
     })
     .sort((left, right) => left.feedId - right.feedId);
   const hasMore = items.length > params.take;

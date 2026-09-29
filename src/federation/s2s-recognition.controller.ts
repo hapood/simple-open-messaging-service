@@ -35,38 +35,16 @@ export class S2sRecognitionController {
   async recognize(@Req() req: FastifyRequest, @Body() body: unknown) {
     this.keypair.assertAvailable();
     const headers = this.verify.extractHeaders(req);
-    const { keyId, domain } = this.verify.parseSigner(headers);
+    const { keyId, domain, expires } = this.verify.parseSigner(headers);
     const namespaceEcho = this.assertRecognizeRequest(body);
-    const doc = await this.discovery.fetchWellKnown(domain);
-    const certificate = doc.keys.find(
-      (key) =>
-        key.keyId === keyId &&
-        key.notBefore <= Date.now() &&
-        Date.now() < key.notAfter,
-    );
-    if (!certificate) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_BAD_SIGNATURE,
-        `keyId ${keyId} is not currently authorized`,
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
-    await this.verify.verifyWithPublicKey(
-      this.verify.signedRequest(req),
-      headers,
-      certificate.ed25519,
-    );
-    const context = await this.recognition.acceptInbound(
+    return this.recognition.submitInboundRecognize({
       domain,
-      doc,
+      keyId,
+      signedRequest: this.verify.signedRequest(req),
+      headers,
       namespaceEcho,
-    );
-    await this.discovery.cacheDocument(domain, context.namespaceId, doc);
-    return {
-      ok: true,
-      status: 'recognized',
-      peerAssignedLocalNamespaceId: context.namespaceId,
-    } as const;
+      signatureExpires: expires,
+    });
   }
 
   @Get('health')

@@ -417,6 +417,7 @@ describe('FederationProfileService resource path', () => {
       profiles.toS2SProfile({
         profileNamespaceId: 12,
         account: 'alice',
+        domain: 'local',
         name: 'Alice',
         avatar: '/uploads/avatars/alice.webp',
         bio: '',
@@ -425,7 +426,7 @@ describe('FederationProfileService resource path', () => {
     ).resolves.toEqual({
       namespaceId: 12,
       account: 'alice',
-      domain: 'chat.example',
+      domain: 'local',
       displayName: 'Alice',
       bio: '',
       avatar: {
@@ -624,7 +625,6 @@ function makeStubs() {
     {} as never,
     {} as never,
     mediaRangeClient,
-    {} as never,
     sse as never,
   );
   const users = new FederationUserDirectoryService(database as never);
@@ -1041,7 +1041,7 @@ describe('FederationPeerResourceService media authorization gates', () => {
       service.resolveMediaFile(
         'sender',
         'recipient',
-        'chat.example',
+        'local',
         'peer.example',
         4,
         'f'.repeat(64),
@@ -1061,7 +1061,7 @@ describe('FederationPeerResourceService media authorization gates', () => {
       service.resolveMediaFile(
         'sender',
         'recipient',
-        'chat.example',
+        'local',
         'peer.example',
         4,
         'f'.repeat(64),
@@ -1081,7 +1081,7 @@ describe('FederationPeerResourceService media authorization gates', () => {
       service.resolveMediaFile(
         'sender',
         'recipient',
-        'chat.example',
+        'local',
         'peer.example',
         4,
         'f'.repeat(64),
@@ -1186,6 +1186,8 @@ describe('FederationService global missed transport', () => {
           tx: unknown,
           item: unknown,
           sourceDomain: string,
+          namespaceId: number,
+          peerAssignedLocalNamespaceId: number,
         ) => Promise<unknown>;
       }
     ).resolveMissedThreadInTransaction.bind(svc);
@@ -1198,6 +1200,8 @@ describe('FederationService global missed transport', () => {
           authorRef: 'THREAD_ACCOUNT',
         },
         'peer.test',
+        7,
+        44,
       ),
     ).resolves.toEqual({
       threadId: 10,
@@ -1205,7 +1209,7 @@ describe('FederationService global missed transport', () => {
       toAccount: 'alice',
       authority: 'PEER',
       creatorAccount: 'bob',
-      creatorDomain: 'peer.test',
+      creatorDomain: 'local',
       recipients: [1],
     });
     expect(findUser).not.toHaveBeenCalled();

@@ -10,12 +10,16 @@
           {
             "feedId": 11,
             "operation": "GROUP_ANNOUNCEMENT",
-            "body": { "text": "Old" }
+            "body": {
+              "text": "Old"
+            }
           },
           {
             "feedId": 12,
             "operation": "GROUP_ANNOUNCEMENT",
-            "body": { "text": null }
+            "body": {
+              "text": null
+            }
           }
         ],
         "scannedThrough": 12,
@@ -27,35 +31,57 @@
       "name": "group announcement rejects empty or malformed bodies and foreign fields",
       "schema": "urn:somfp:v1:group-meta#/$defs/item",
       "values": [
-        { "feedId": 11, "operation": "GROUP_ANNOUNCEMENT" },
-        { "feedId": 11, "operation": "GROUP_ANNOUNCEMENT", "body": null },
-        { "feedId": 11, "operation": "GROUP_ANNOUNCEMENT", "body": {} },
         {
           "feedId": 11,
-          "operation": "GROUP_ANNOUNCEMENT",
-          "body": { "text": "" }
+          "operation": "GROUP_ANNOUNCEMENT"
         },
         {
           "feedId": 11,
           "operation": "GROUP_ANNOUNCEMENT",
-          "body": { "text": 1 }
+          "body": null
         },
         {
           "feedId": 11,
           "operation": "GROUP_ANNOUNCEMENT",
-          "body": { "text": "Notice", "profileRev": 1 }
+          "body": {}
+        },
+        {
+          "feedId": 11,
+          "operation": "GROUP_ANNOUNCEMENT",
+          "body": {
+            "text": ""
+          }
+        },
+        {
+          "feedId": 11,
+          "operation": "GROUP_ANNOUNCEMENT",
+          "body": {
+            "text": 1
+          }
+        },
+        {
+          "feedId": 11,
+          "operation": "GROUP_ANNOUNCEMENT",
+          "body": {
+            "text": "Notice",
+            "profileRev": 1
+          }
         },
         {
           "feedId": 11,
           "operation": "GROUP_ANNOUNCEMENT",
           "account": "alice",
           "domain": "a.example",
-          "body": { "text": "Notice" }
+          "body": {
+            "text": "Notice"
+          }
         },
         {
           "feedId": 0,
           "operation": "GROUP_ANNOUNCEMENT",
-          "body": { "text": null }
+          "body": {
+            "text": null
+          }
         }
       ]
     },
@@ -233,7 +259,10 @@
       "semantic": "protocolVersions",
       "value": {
         "software": "example/1.0",
-        "protocolVersions": [2, 1],
+        "protocolVersions": [
+          2,
+          1
+        ],
         "rootKey": {
           "fingerprint": "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
           "ed25519": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
@@ -939,7 +968,7 @@
       }
     },
     {
-      "name": "group-meta departure rejects every body",
+      "name": "group-meta departure requires the complete member body",
       "schema": "urn:somfp:v1:group-meta",
       "value": {
         "account": "!group",
@@ -949,8 +978,7 @@
             "feedId": 2,
             "account": "alice",
             "domain": "a.example",
-            "operation": "MEMBER_DEPART",
-            "body": {}
+            "operation": "MEMBER_DEPART"
           }
         ],
         "scannedThrough": 2,
@@ -1472,6 +1500,49 @@
           "scannedThrough": "1",
           "stateFeedEndId": "1",
           "hasMore": false
+        }
+      ]
+    },
+    {
+      "name": "recognize echo must be a positive safe integer",
+      "schema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
+      "values": [
+        {
+          "namespaceId": 0
+        },
+        {
+          "namespaceId": "7"
+        }
+      ]
+    },
+    {
+      "name": "recognize ok legacy and unknown status rejected",
+      "schema": "urn:somfp:v1:identity#/$defs/recognizeResult",
+      "values": [
+        {
+          "ok": true
+        },
+        {
+          "ok": true,
+          "status": "ok",
+          "peerAssignedLocalNamespaceId": 7
+        },
+        {
+          "ok": true,
+          "status": "recognized"
+        }
+      ]
+    },
+    {
+      "name": "health discloses namespace only with available or degraded",
+      "schema": "urn:somfp:v1:identity#/$defs/healthResult",
+      "values": [
+        {
+          "status": "available"
+        },
+        {
+          "status": "unavailable",
+          "peerAssignedLocalNamespaceId": 7
         }
       ]
     }

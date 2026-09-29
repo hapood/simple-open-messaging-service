@@ -37,7 +37,7 @@ observable requirements:
   recognized the peer and prepared its receive path. It is `establishing`
   while peer acceptance is unknown; proven acceptance preserves `available`
   or `degraded` according to reachability.
-- Before returning the first Recognize `OK`, the receiver atomically pins and
+- Before returning the first Recognize `recognized`, the receiver atomically pins and
   recognizes the signer, accepts the signer's explicit recognition assertion,
   and prepares its receive path. The
   authenticated request supplies reachability, so it becomes `available`.
@@ -50,7 +50,7 @@ observable requirements:
   acceptance effect.
 - A valid Health `available` or `degraded` response is accepted by the requester
   as confirmation that the responder recognizes it and has prepared its receive
-  path. This is the same acceptance evidence as valid Recognize `OK`;
+  path. This is the same acceptance evidence as valid Recognize `recognized`;
   `unavailable` supplies no new acceptance evidence.
 - An ordinary recognized-data sender validates local recognition, peer
   acceptance, current reachability, and operation authorization. The receiver

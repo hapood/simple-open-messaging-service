@@ -67,7 +67,6 @@ export class FederationNamespaceService {
         identityNamespace,
         and(
           eq(identityNamespace.id, federatedPeer.activeNamespaceId),
-          eq(identityNamespace.domain, federatedPeer.domain),
           isNull(identityNamespace.retiredAt),
         ),
       )
@@ -93,7 +92,6 @@ export class FederationNamespaceService {
       .where(
         and(
           eq(identityNamespace.id, context.namespaceId),
-          eq(identityNamespace.domain, context.domain),
           eq(identityNamespace.rootKeyFingerprint, context.rootKeyFingerprint),
         ),
       )
@@ -128,7 +126,6 @@ export class FederationNamespaceService {
       .where(
         and(
           eq(identityNamespace.id, peer.activeNamespaceId),
-          eq(identityNamespace.domain, domain),
           isNull(identityNamespace.retiredAt),
         ),
       )
@@ -161,7 +158,6 @@ export class FederationNamespaceService {
         .where(
           and(
             eq(identityNamespace.id, peer.activeNamespaceId),
-            eq(identityNamespace.domain, identity.domain),
             isNull(identityNamespace.retiredAt),
           ),
         )
@@ -220,7 +216,6 @@ export class FederationNamespaceService {
       .where(
         and(
           eq(identityNamespace.id, peer.activeNamespaceId),
-          eq(identityNamespace.domain, domain),
           isNull(identityNamespace.retiredAt),
         ),
       );

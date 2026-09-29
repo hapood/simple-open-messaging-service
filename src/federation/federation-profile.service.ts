@@ -14,7 +14,6 @@ import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { UploadService } from '../upload/upload.service.js';
 import type { S2SAddress } from './federation-address.js';
-import { loadFederationConfig } from './federation.config.js';
 import { S2sResponseError } from './federation-errors.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import type { S2SProfile } from './federation-profile.js';
@@ -32,8 +31,6 @@ function truncateCodePoints(value: string, max: number): string {
 /** Reads public federation profiles and materializes verified foreign profile projections. */
 @Injectable()
 export class FederationProfileService {
-  private readonly config = loadFederationConfig();
-
   constructor(
     private readonly database: DatabaseService,
     private readonly upload: UploadService,
@@ -64,7 +61,7 @@ export class FederationProfileService {
     return {
       namespaceId: user.profileNamespaceId,
       account: user.account,
-      domain: user.domain ?? this.config.domain,
+      domain: user.domain ?? 'local',
       displayName: user.name,
       avatar,
       bio: user.bio,
@@ -108,17 +105,13 @@ export class FederationProfileService {
   /** Store an exact snapshot without creating a user/group identity or moving a default pointer. */
   async materializeExactForeignProfile(
     profile: S2SProfile,
-    sourceDomain: string,
     publisherNamespaceId: number,
   ): Promise<void> {
     this.assertPositiveRevision(profile.profileRev);
     const prepared = await this.prepareForeignProfileData(profile);
     await this.database.db.transaction(async (tx) => {
       const source = await tx.query.identityNamespace.findFirst({
-        where: and(
-          eq(tables.identityNamespace.id, publisherNamespaceId),
-          eq(tables.identityNamespace.domain, sourceDomain),
-        ),
+        where: eq(tables.identityNamespace.id, publisherNamespaceId),
       });
       if (!source || publisherNamespaceId === 0)
         throw new Error('foreign profile publisher namespace is unavailable');
@@ -138,7 +131,7 @@ export class FederationProfileService {
   async getLocalAccountProfile(
     address: S2SAddress,
   ): Promise<S2SProfile | null> {
-    if (address.domain !== this.config.domain) return null;
+    if (address.domain !== 'local') return null;
     const profileNamespaceId = 0;
     const account = normalizeAccount(address.account);
     if (account.startsWith('!')) {
@@ -154,7 +147,7 @@ export class FederationProfileService {
       return this.getStoredProfile(
         0,
         group.account,
-        this.config.domain,
+        'local',
         profileNamespaceId,
         group.profileRev,
       );
@@ -171,7 +164,7 @@ export class FederationProfileService {
     return this.getStoredProfile(
       0,
       user.account,
-      this.config.domain,
+      'local',
       profileNamespaceId,
       user.defaultProfileRev,
     );
@@ -375,7 +368,7 @@ export class FederationProfileService {
               THEN pair."endpointBNamespaceId" ELSE pair."endpointANamespaceId" END
           JOIN "PeerStateFeed" head ON head."peerDomain" = ${peerDomain}
             AND head."namespaceId" = ${namespaceId}
-            AND head.domain = ${this.config.domain}
+            AND head.domain = 'local'
             AND head."eventType" = 'THREAD_CONTENT_HEAD'
             AND head.account = CASE WHEN thread.type = 'P2P'
               THEN profile.account ELSE thread."groupAccount" END
@@ -486,7 +479,7 @@ export class FederationProfileService {
                   tables.peerStateFeed.account,
                   normalizeAccount(groupAccount),
                 ),
-                eq(tables.peerStateFeed.domain, this.config.domain),
+                eq(tables.peerStateFeed.domain, 'local'),
                 eq(tables.peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
                 eq(tables.peerStateFeed.subjectAccount, ''),
                 eq(tables.peerStateFeed.subjectDomain, 'local'),

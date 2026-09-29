@@ -7,12 +7,16 @@
         {
           "feedId": 11,
           "operation": "GROUP_ANNOUNCEMENT",
-          "body": { "text": "Welcome to the group.\nPlease read the rules." }
+          "body": {
+            "text": "Welcome to the group.\nPlease read the rules."
+          }
         },
         {
           "feedId": 12,
           "operation": "GROUP_ANNOUNCEMENT",
-          "body": { "text": null }
+          "body": {
+            "text": null
+          }
         }
       ]
     },
@@ -26,7 +30,9 @@
           {
             "feedId": 12,
             "operation": "GROUP_ANNOUNCEMENT",
-            "body": { "text": null }
+            "body": {
+              "text": null
+            }
           }
         ],
         "scannedThrough": 12,
@@ -91,7 +97,10 @@
       "schema": "urn:somfp:v1:discovery",
       "value": {
         "software": "example/1.0",
-        "protocolVersions": [1, 2],
+        "protocolVersions": [
+          1,
+          2
+        ],
         "rootKey": {
           "ed25519": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
         },
@@ -109,17 +118,24 @@
     {
       "name": "recognize request",
       "schema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
-      "value": {}
+      "values": [
+        {},
+        {
+          "namespaceId": 7
+        }
+      ]
     },
     {
       "name": "health result",
       "schema": "urn:somfp:v1:identity#/$defs/healthResult",
       "values": [
         {
-          "status": "available"
+          "status": "available",
+          "peerAssignedLocalNamespaceId": 7
         },
         {
-          "status": "degraded"
+          "status": "degraded",
+          "peerAssignedLocalNamespaceId": 7
         },
         {
           "status": "unavailable"
@@ -301,7 +317,7 @@
       }
     },
     {
-      "name": "group meta departure carries only its member Address",
+      "name": "group meta departure carries the final member reference",
       "schema": "urn:somfp:v1:group-meta",
       "value": {
         "account": "!01arz3ndektsv4rrffq69g5fav",
@@ -311,7 +327,12 @@
             "feedId": 10,
             "account": "bob",
             "domain": "b.example",
-            "operation": "MEMBER_DEPART"
+            "operation": "MEMBER_DEPART",
+            "body": {
+              "role": "MEMBER",
+              "namespaceId": 7,
+              "profileRev": 3
+            }
           }
         ],
         "scannedThrough": 10,
@@ -830,6 +851,28 @@
           "retryAfter": 10
         }
       }
+    },
+    {
+      "name": "recognize result states",
+      "schema": "urn:somfp:v1:identity#/$defs/recognizeResult",
+      "values": [
+        {
+          "ok": true,
+          "status": "recognized",
+          "peerAssignedLocalNamespaceId": 7
+        },
+        {
+          "ok": true,
+          "status": "pending",
+          "message": "verification in progress"
+        },
+        {
+          "ok": false,
+          "status": "failed",
+          "code": 50001,
+          "message": "verification failed"
+        }
+      ]
     }
   ]
 }

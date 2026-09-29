@@ -125,8 +125,8 @@ export type PeerResponseToken = FederationContext;
  * friend ops.
  *
  * Identity model: local users have domain="local"; federated peers are foreign User stubs
- * (domain=<peer>, unusable random hashPwd). Federation addresses always
- * use the REAL config.domain for local users' wire addresses ({ account: <account>, domain: <config.domain> }), never "local".
+ * (domain=<peer>, unusable random hashPwd). Federation subject addresses use
+ * the publisher-scoped `local` marker for local users.
  *
  * Avatar localization: foreign stubs carry the peer's avatar/name/bio/remoteUpdatedAt, localized from
  * the profile embedded in the friend-request payload (and refreshed via fetchRemoteAccount on
@@ -178,14 +178,9 @@ export class FederationService {
     private readonly profileEvidenceProjections?: ProfileEvidenceProjectionService,
   ) {}
 
-  /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
+  /** The wire address of a local publisher subject. */
   localAddress(account: string): S2SAddress {
-    return { account: account, domain: this.config.domain };
-  }
-
-  /** This server's domain (config.domain) — for address-domain comparison in controllers. */
-  get ourDomain(): string {
-    return this.config.domain;
+    return { account, domain: 'local' };
   }
 
   /** Find a LOCAL user id by account (domain="local"). Null if not found / not local / soft-deleted.
@@ -198,14 +193,32 @@ export class FederationService {
     return this.users.findLocalUserId(account);
   }
 
-  /** Look up a local user id from a full address (must be account@<our domain>). */
+  /** Look up a local user id from a publisher-local subject address. */
   async findLocalUserIdByAddress(address: S2SAddress): Promise<number | null> {
     return this.users.findLocalUserIdByAddress(address);
   }
 
   async pushStateFeedDomains(domains: Iterable<string>): Promise<void> {
-    for (const peerDomain of new Set(domains))
-      this.eventEmitter.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
+    const namespaceIds: number[] = [];
+    for (const peerDomain of new Set(domains)) {
+      const context = await this.threadAccess.capturePeerResponseToken(peerDomain);
+      namespaceIds.push(context.namespaceId);
+    }
+    this.pushStateFeedNamespaces(namespaceIds);
+  }
+
+  pushStateFeedNamespaces(namespaceIds: Iterable<number>): void {
+    for (const namespaceId of new Set(namespaceIds))
+      this.eventEmitter.emit(FEDERATION_STATE_FEED_PUSH, { namespaceId });
+  }
+
+  async activePeerDomainForNamespace(namespaceId: number): Promise<string | null> {
+    const [peer] = await this.database.db
+      .select({ domain: tables.federatedPeer.domain })
+      .from(tables.federatedPeer)
+      .where(eq(tables.federatedPeer.activeNamespaceId, namespaceId))
+      .limit(1);
+    return peer?.domain ?? null;
   }
 
   async handleThreadQueryForbidden(
@@ -304,7 +317,8 @@ export class FederationService {
             namespaceId: request.subjectNamespaceId,
           })),
       );
-      const allocated = new Map<string, bigint>();
+      const allocated = new Map<number, bigint>();
+      const namespaceIds = new Set<number>();
       let count = 0;
       for (const request of expired.rows) {
         const pairId = BigInt(request.pairId);
@@ -344,20 +358,15 @@ export class FederationService {
               ),
             ),
           );
-          const member = toClientIdentity(
-            {
-              account: groupIsAuthor
-                ? request.subjectAccount
-                : request.authorAccount,
-              domain: groupIsAuthor
-                ? request.subjectDomain
-                : request.authorDomain,
-              namespaceId: groupIsAuthor
-                ? request.subjectNamespaceId
-                : request.authorNamespaceId,
-            },
-            this.config.domain,
-          );
+          const member = toClientIdentity({
+            account: groupIsAuthor
+              ? request.subjectAccount
+              : request.authorAccount,
+            domain: groupIsAuthor ? request.subjectDomain : request.authorDomain,
+            namespaceId: groupIsAuthor
+              ? request.subjectNamespaceId
+              : request.authorNamespaceId,
+          });
           if (!groupState)
             throw new Error('expired group relationship endpoint missing');
           await this.groupRelationships.syncActiveInTx(tx, {
@@ -385,22 +394,16 @@ export class FederationService {
               pendingClientFeedUpdates,
             );
         } else if (request.kind === 'P2P') {
-          const author = toClientIdentity(
-            {
-              account: request.authorAccount,
-              domain: request.authorDomain,
-              namespaceId: request.authorNamespaceId,
-            },
-            this.config.domain,
-          );
-          const subject = toClientIdentity(
-            {
-              account: request.subjectAccount,
-              domain: request.subjectDomain,
-              namespaceId: request.subjectNamespaceId,
-            },
-            this.config.domain,
-          );
+          const author = toClientIdentity({
+            account: request.authorAccount,
+            domain: request.authorDomain,
+            namespaceId: request.authorNamespaceId,
+          });
+          const subject = toClientIdentity({
+            account: request.subjectAccount,
+            domain: request.subjectDomain,
+            namespaceId: request.subjectNamespaceId,
+          });
           await this.relationshipIntents.setPairActiveInTx(
             tx,
             author,
@@ -416,6 +419,7 @@ export class FederationService {
           );
         }
         if (request.subjectDomain === 'local') continue;
+        namespaceIds.add(request.subjectNamespaceId!);
         const revisions = await this.stateFeed.writeManyInTx(tx, [
           {
             peerDomain: request.subjectDomain,
@@ -435,13 +439,13 @@ export class FederationService {
             },
           },
         ]);
-        for (const [domain, revision] of revisions)
-          allocated.set(domain, revision);
+        for (const [namespaceId, revision] of revisions)
+          allocated.set(namespaceId, revision);
       }
-      return { count, allocated };
+      return { count, allocated, namespaceIds };
     });
     this.clientStateFeed.notifyFeedUpdates(pendingClientFeedUpdates);
-    await this.pushStateFeedDomains(result.allocated.keys());
+    this.pushStateFeedNamespaces(result.namespaceIds);
     return result.count;
   }
 
@@ -635,19 +639,16 @@ export class FederationService {
     return trd.group?.domain === 'local';
   }
 
-  /** Resolve a wire address (account + domain) to a User row, normalizing the local domain: wire addresses
-   *  use the real config.domain for locals, but the DB stores local users with domain="local". Foreign
-   *  stubs are looked up by their peer domain verbatim. Returns the stub/local user or null. */
+  /** Resolve a publisher-scoped wire address to its stored User row. */
   private async resolveUserByWireAddress(
     account: string,
     fromDomain: string,
   ): Promise<{ id: number } | null> {
-    const domain = fromDomain === this.config.domain ? 'local' : fromDomain;
     return (
       (await this.database.db.query.account.findFirst({
         where: and(
           eq(tables.account.account, normalizeAccount(account)),
-          eq(tables.account.domain, domain),
+          eq(tables.account.domain, fromDomain),
         ),
         columns: { id: true },
       })) ?? null
@@ -995,8 +996,13 @@ export class FederationService {
   private federatedMessageAuthor(
     item: FederationMessageFeedMessage,
     sourceDomain: string,
+    peerAssignedLocalNamespaceId: number,
   ): S2SAddress {
-    return this.inboundMessageRoutes.messageAuthor(item, sourceDomain);
+    return this.inboundMessageRoutes.messageAuthor(
+      item,
+      sourceDomain,
+      peerAssignedLocalNamespaceId,
+    );
   }
 
   private async resolveMissedThreadInTransaction(
@@ -1004,12 +1010,14 @@ export class FederationService {
     item: FederationMessageFeedMessage,
     sourceDomain: string,
     namespaceId: number,
+    peerAssignedLocalNamespaceId: number,
   ) {
     return this.inboundMessageRoutes.resolveMessage(
       tx,
       item,
       sourceDomain,
       namespaceId,
+      peerAssignedLocalNamespaceId,
     );
   }
 
@@ -1018,12 +1026,14 @@ export class FederationService {
     thread: FederationThreadAddress,
     sourceDomain: string,
     namespaceId: number,
+    peerAssignedLocalNamespaceId: number,
   ) {
     return this.inboundMessageRoutes.resolveTombstone(
       tx,
       thread,
       sourceDomain,
       namespaceId,
+      peerAssignedLocalNamespaceId,
     );
   }
   /** Locally prepared peers still waiting for the peer's acceptance assertion. */

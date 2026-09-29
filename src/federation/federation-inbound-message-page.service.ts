@@ -147,18 +147,13 @@ export class FederationInboundMessagePageService {
           );
           continue;
         }
-        if ('author' in item && item.author.domain === 'local') {
-          this.logger.warn(
-            `normalized a federated group-message author from the local persistence domain to its authenticated peer domain: ${federatedMessageLogContext(
-              domain,
-              item,
-              'LOCAL_AUTHOR_DOMAIN_NORMALIZED',
-            )}`,
-          );
-        }
-        const author = this.federatedMessageAuthor(item, domain);
+        const author = this.federatedMessageAuthor(
+          item,
+          domain,
+          token.peerAssignedLocalNamespaceId,
+        );
         let profileNamespaceId = item.namespaceId;
-        if (!isValidSomfpDomain(author.domain)) {
+        if (author.domain !== 'local' && !isValidSomfpDomain(author.domain)) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
             'federated message author has an invalid wire domain',
@@ -200,15 +195,13 @@ export class FederationInboundMessagePageService {
           item,
           domain,
           token.namespaceId,
+          token.peerAssignedLocalNamespaceId,
         );
         // The route resolver canonicalizes receipt/self-authored identities to
         // this server's local persistence domain. Once the stored creator is
         // local, the profile subject namespace is always zero; the remote wire
         // namespace remains only the publisher/source coordinate.
-        if (
-          route.creatorDomain === 'local' ||
-          route.creatorDomain === this.config.domain
-        ) {
+        if (route.creatorDomain === 'local') {
           profileNamespaceId = 0;
         }
         if (
@@ -643,8 +636,13 @@ export class FederationInboundMessagePageService {
   private federatedMessageAuthor(
     item: FederationMessageFeedMessage,
     sourceDomain: string,
+    peerAssignedLocalNamespaceId: number,
   ): S2SAddress {
-    return this.routes.messageAuthor(item, sourceDomain);
+    return this.routes.messageAuthor(
+      item,
+      sourceDomain,
+      peerAssignedLocalNamespaceId,
+    );
   }
 
   private resolveMissedThreadInTransaction(
@@ -652,8 +650,15 @@ export class FederationInboundMessagePageService {
     item: FederationMessageFeedMessage,
     sourceDomain: string,
     namespaceId: number,
+    peerAssignedLocalNamespaceId: number,
   ) {
-    return this.routes.resolveMessage(tx, item, sourceDomain, namespaceId);
+    return this.routes.resolveMessage(
+      tx,
+      item,
+      sourceDomain,
+      namespaceId,
+      peerAssignedLocalNamespaceId,
+    );
   }
 }
 

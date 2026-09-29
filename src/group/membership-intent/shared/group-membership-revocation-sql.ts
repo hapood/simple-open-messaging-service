@@ -83,17 +83,28 @@ export function groupMembershipRevocationSql(
     input.localMemberId === null
       ? ''
       : accountFanoutScopeKey(input.threadId, input.localMemberId);
-  // The compacted MEMBER_DEPART fact no longer contains a profile revision. Capture
-  // the member's authored direction in the same transaction as the notice.
+  // Freeze the departing member's final profile reference in the canonical
+  // departure body. The body is retained for coordinate continuity but does not
+  // cause a profile fetch on mirrors.
   const memberProfileRev = authorIsMember
     ? sql`(SELECT "profileRev" FROM revocation)`
     : sql`(SELECT "profileRev" FROM "RelationshipIntent"
       WHERE "authorAccount" = ${memberEndpoint.account} AND "authorNamespaceId" = ${memberEndpoint.namespaceId}
         AND "receiverAccount" = ${groupEndpoint.account} AND "receiverNamespaceId" = ${groupEndpoint.namespaceId} LIMIT 1)`;
+  const memberProfileNamespaceId =
+    input.memberDomain === 'local' ? 0 : input.memberNamespaceId;
+  const memberBody = sql`jsonb_build_object(
+    'role', COALESCE((SELECT body ->> 'role' FROM "GroupMetaMemberFeed"
+      WHERE "threadId" = ${input.threadId}
+        AND "memberAccount" = ${input.memberAccount}
+        AND "memberDomain" = ${input.memberDomain}
+        AND operation = 'MEMBER_UPSERT' LIMIT 1), 'MEMBER')::text,
+    'profileNamespaceId', ${memberProfileNamespaceId}::integer,
+    'profileRev', COALESCE(${memberProfileRev}, 0)::integer)`;
   const content = sql`jsonb_build_object('type', 'GROUP_LEFT', 'member',
     jsonb_build_object('account', ${input.memberAccount}::text,
       'domain', ${input.memberDomain}::text,
-      'profileNamespaceId', ${input.memberDomain === 'local' ? 0 : input.memberNamespaceId}::integer,
+      'profileNamespaceId', ${memberProfileNamespaceId}::integer,
       'profileRev', COALESCE(${memberProfileRev}, 0)))`;
   return sql`
     WITH authored AS (
@@ -130,7 +141,7 @@ export function groupMembershipRevocationSql(
       INSERT INTO "GroupMetaMemberFeed"
         ("threadId", "feedId", "memberAccount", "memberDomain", operation, body)
       SELECT ${input.threadId}, a."metaEndId", ${input.memberAccount}, ${input.memberDomain},
-        'MEMBER_DEPART'::"GroupMetaMemberOperation", '{}'::jsonb
+        'MEMBER_DEPART'::"GroupMetaMemberOperation", ${memberBody}::jsonb
       FROM depart_alloc a
       ON CONFLICT ("threadId", "memberAccount", "memberDomain")
       DO UPDATE SET "feedId" = EXCLUDED."feedId",

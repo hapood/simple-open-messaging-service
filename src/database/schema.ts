@@ -799,8 +799,8 @@ export const threadAudience = pgTable(
       )
       .where(sql`${table.targetDomain} <> 'local'`),
     foreignKey({
-      columns: [table.targetDomain, table.targetNamespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      columns: [table.targetNamespaceId],
+      foreignColumns: [identityNamespace.id],
       name: 'ThreadAudience_targetNamespace_fkey',
     }).onDelete('restrict'),
     foreignKey({
@@ -1811,6 +1811,55 @@ export const localFederationSigningState = pgTable(
   ],
 );
 
+export const federationNamespaceCandidate = pgTable(
+  'FederationNamespaceCandidate',
+  {
+    nextDomain: varchar({ length: 63 }).primaryKey().notNull(),
+    matchedNamespaceId: integer(),
+    rootKeyFingerprint: varchar({ length: 80 }).notNull(),
+    rootPublicKey: varchar({ length: 44 }).notNull(),
+    peerAssignedLocalNamespaceId: integer(),
+    status: varchar({ length: 15 }).default('pending').notNull(),
+    failedCode: integer(),
+    failedMessage: text(),
+    verifiedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    uniqueIndex('FederationNamespaceCandidate_matchedNamespace_key')
+      .on(table.matchedNamespaceId)
+      .where(sql`${table.matchedNamespaceId} IS NOT NULL`),
+    foreignKey({
+      columns: [table.matchedNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'FederationNamespaceCandidate_matchedNamespace_fkey',
+    }).onDelete('cascade'),
+    check(
+      'FederationNamespaceCandidate_matchedNamespace_check',
+      sql`${table.matchedNamespaceId} IS NULL OR ${table.matchedNamespaceId} > 0`,
+    ),
+    check(
+      'FederationNamespaceCandidate_peerAssignedLocalNamespace_check',
+      sql`${table.peerAssignedLocalNamespaceId} IS NULL OR ${table.peerAssignedLocalNamespaceId} > 0`,
+    ),
+    check(
+      'FederationNamespaceCandidate_status_check',
+      sql`${table.status} IN ('pending', 'failed')`,
+    ),
+    check(
+      'FederationNamespaceCandidate_failed_check',
+      sql`(${table.status} = 'failed') = (${table.failedCode} IS NOT NULL AND ${table.failedMessage} IS NOT NULL)`,
+    ),
+  ],
+);
+
 export const federatedPeer = pgTable(
   'FederatedPeer',
   {
@@ -1841,7 +1890,7 @@ export const federatedPeer = pgTable(
   (table) => [
     check(
       'FederatedPeer_trustLevel_check',
-      sql`${table.trustLevel} IN ('unrecognized', 'establishing', 'available', 'degraded', 'halted')`,
+      sql`${table.trustLevel} IN ('unrecognized', 'establishing', 'pending', 'available', 'degraded', 'halted')`,
     ),
     index('FederatedPeer_lastSuccessAt_idx').using(
       'btree',
@@ -1852,8 +1901,8 @@ export const federatedPeer = pgTable(
       table.trustLevel.asc().nullsLast().op('text_ops'),
     ),
     foreignKey({
-      columns: [table.domain, table.activeNamespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      columns: [table.activeNamespaceId],
+      foreignColumns: [identityNamespace.id],
       name: 'FederatedPeer_activeNamespace_fkey',
     }).onDelete('restrict'),
   ],
@@ -1897,8 +1946,8 @@ export const peerStateFeed = pgTable(
       table.feedId,
     ),
     foreignKey({
-      columns: [table.peerDomain, table.namespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
       name: 'PeerStateFeed_namespace_fkey',
     }).onDelete('restrict'),
     check('PeerStateFeed_feedId_check', sql`${table.feedId} > 0`),
@@ -2024,7 +2073,7 @@ export const groupMetaMemberFeed = pgTable(
       'GroupMetaMemberFeed_body_check',
       sql`jsonb_typeof(${table.body}) = 'object'
         AND ((${table.operation} = 'MEMBER_UPSERT' AND ${table.body} <> '{}'::jsonb)
-          OR (${table.operation} = 'MEMBER_DEPART' AND ${table.body} = '{}'::jsonb)
+          OR (${table.operation} = 'MEMBER_DEPART' AND ${table.body} <> '{}'::jsonb)
           OR (${table.operation} = 'GROUP_PROFILE'
             AND ${table.body} <> '{}'::jsonb))`,
     ),
@@ -2046,8 +2095,8 @@ export const peerStateFeedPullCursor = pgTable(
   },
   (table) => [
     foreignKey({
-      columns: [table.peerDomain, table.namespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
       name: 'PeerStateFeedPullCursor_namespace_fkey',
     }).onDelete('restrict'),
     check(
@@ -2672,8 +2721,8 @@ export const s2SKeyCache = pgTable(
       name: 'S2SKeyCache_pkey',
     }),
     foreignKey({
-      columns: [table.domain, table.namespaceId],
-      foreignColumns: [identityNamespace.domain, identityNamespace.id],
+      columns: [table.namespaceId],
+      foreignColumns: [identityNamespace.id],
       name: 'S2SKeyCache_namespace_fkey',
     }).onDelete('restrict'),
   ],

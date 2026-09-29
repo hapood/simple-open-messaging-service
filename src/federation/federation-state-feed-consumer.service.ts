@@ -44,7 +44,7 @@ class PermanentFederationItemError extends Error {
 
 export interface StatePageEffect {
   clientFeedUpdates: PendingClientStateFeedUpdate[];
-  statePushDomains: string[];
+  statePushNamespaces: number[];
   localSystemMessages: FederationLocalSystemMessage[];
   threadRoundWakes: Array<{
     threadId: number;
@@ -107,7 +107,7 @@ export class FederationStateFeedConsumerService {
     page: PeerStateFeedPage,
   ): Promise<StatePageApplyResult> {
     const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
-    const statePushDomains: string[] = [];
+    const statePushNamespaces: number[] = [];
     const localSystemMessages: StatePageEffect['localSystemMessages'] = [];
     const threadRoundWakes: StatePageEffect['threadRoundWakes'] = [];
     const profileDemands: StatePageEffect['profileDemands'] = [];
@@ -125,7 +125,7 @@ export class FederationStateFeedConsumerService {
       .entries()) {
       const savepoint = `federation_state_${itemIndex}`;
       const clientFeedUpdatesLength = clientFeedUpdates.length;
-      const statePushLength = statePushDomains.length;
+      const statePushLength = statePushNamespaces.length;
       const systemMessageLength = localSystemMessages.length;
       const threadRoundWakeLength = threadRoundWakes.length;
       const profileDemandLength = profileDemands.length;
@@ -236,7 +236,7 @@ export class FederationStateFeedConsumerService {
             throw new PermanentFederationItemError(
               'user relationship local subject does not exist',
             );
-          const peers = new Set<string>();
+          const peers = new Set<number>();
           let effect: { routed: string; threadId?: number };
           try {
             effect = await this.receivedUserIntents.applyInTx(
@@ -258,7 +258,7 @@ export class FederationStateFeedConsumerService {
               throw new PermanentFederationItemError(error.message);
             throw error;
           }
-          statePushDomains.push(...peers);
+          statePushNamespaces.push(...peers);
           if (body.status !== 'REVOKED' && Number(body.profileRev) > 0) {
             profileDemands.push({
               publisherNamespaceId: namespaceId,
@@ -348,7 +348,7 @@ export class FederationStateFeedConsumerService {
           // the applier routes it to a no-op and the cursor still advances.
           const receivedBody = this.receivedBodyOf(body);
           if (validateReceivedIntentBody(receivedBody) === undefined) continue;
-          const peers = new Set<string>();
+          const peers = new Set<number>();
           let effect: { routed: string; threadId?: number };
           try {
             if (inviteDirection) {
@@ -420,7 +420,7 @@ export class FederationStateFeedConsumerService {
               throw new PermanentFederationItemError(error.message);
             throw error;
           }
-          statePushDomains.push(...peers);
+          statePushNamespaces.push(...peers);
           if (inviteDirection && Number(body.profileRev) > 0) {
             profileDemands.push({
               publisherNamespaceId: namespaceId,
@@ -546,7 +546,7 @@ export class FederationStateFeedConsumerService {
       } catch (error) {
         await tx.execute(sql.raw(`ROLLBACK TO SAVEPOINT ${savepoint}`));
         clientFeedUpdates.length = clientFeedUpdatesLength;
-        statePushDomains.length = statePushLength;
+        statePushNamespaces.length = statePushLength;
         localSystemMessages.length = systemMessageLength;
         threadRoundWakes.length = threadRoundWakeLength;
         profileDemands.length = profileDemandLength;
@@ -566,7 +566,7 @@ export class FederationStateFeedConsumerService {
     );
     return {
       clientFeedUpdates,
-      statePushDomains,
+      statePushNamespaces,
       localSystemMessages,
       threadRoundWakes,
       profileDemands,

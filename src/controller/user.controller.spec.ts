@@ -50,7 +50,7 @@ describe('UserController.resolveUser', () => {
       {} as never,
       {} as never,
       {} as never,
-      { ourDomain: 'us.test' } as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -131,7 +131,6 @@ describe('UserController.queryStateFeed', () => {
 describe('UserController.resolveFederatedUserStream', () => {
   it('returns a transient federated group card from the peer account profile', async () => {
     const federationService = {
-      ourDomain: 'local.example',
       hasCompletePeerRecognition: vi.fn().mockResolvedValue(true),
       checkPeerHealth: vi.fn().mockResolvedValue('available'),
       checkPeerOutboundReady: vi.fn().mockResolvedValue(undefined),
@@ -182,7 +181,6 @@ describe('UserController.resolveFederatedUserStream', () => {
   it('completes explicit recognition and Health before fetching a profile', async () => {
     const calls: string[] = [];
     const federationService = {
-      ourDomain: 'local.example',
       hasCompletePeerRecognition: vi.fn().mockResolvedValue(false),
       checkPeerOutboundReady: vi.fn(async () => {
         calls.push('directions');
@@ -271,7 +269,6 @@ describe('UserController.resolveFederatedUserStream', () => {
       ),
     };
     const federationService = {
-      ourDomain: 'local.example',
       hasCompletePeerRecognition: vi.fn().mockResolvedValue(false),
     };
     const controller = new UserController(

@@ -74,11 +74,11 @@ export class FederationThreadFanoutTaskHandler
     for (;;) {
       const result = await this.projectNext(task.id, target);
       if (result.done) return;
-      if (result.peerDomain === undefined) continue;
+      if (result.namespaceId === undefined) continue;
       try {
         // The existing per-peer scheduler coalesces attempts at one-second intervals.
         this.events.emit(FEDERATION_STATE_FEED_PUSH, {
-          peerDomain: result.peerDomain,
+          namespaceId: result.namespaceId,
         });
       } catch (error) {
         this.logger.warn(`Federation wake hint failed: ${String(error)}`);
@@ -89,7 +89,7 @@ export class FederationThreadFanoutTaskHandler
   private async projectNext(
     taskId: bigint,
     target: ThreadFanoutTarget,
-  ): Promise<{ done: true } | { done: false; peerDomain?: string }> {
+  ): Promise<{ done: true } | { done: false; namespaceId?: number }> {
     return this.database.db.transaction(async (tx) => {
       // Preserve business -> thread -> projection/task lock ordering.
       const lock = await requireThreadContentLockInTx(tx, target.threadId);
@@ -119,10 +119,9 @@ export class FederationThreadFanoutTaskHandler
         peerDomain: string;
         namespaceId: number;
       }>(sql`
-        SELECT namespace.domain AS "peerDomain", namespace.id AS "namespaceId"
+        SELECT peer.domain AS "peerDomain", namespace.id AS "namespaceId"
         FROM "IdentityNamespace" namespace
-        JOIN "FederatedPeer" peer ON peer.domain = namespace.domain
-          AND peer."activeNamespaceId" = namespace.id
+        JOIN "FederatedPeer" peer ON peer."activeNamespaceId" = namespace.id
         JOIN "MessageThread" thread ON thread.id = ${target.threadId}
         WHERE namespace."retiredAt" IS NULL
           AND namespace.id > ${checkpoint.afterNamespaceId}
@@ -162,7 +161,7 @@ export class FederationThreadFanoutTaskHandler
       });
       return {
         done: false,
-        ...(projected ? { peerDomain: next.peerDomain } : {}),
+        ...(projected ? { namespaceId: next.namespaceId } : {}),
       };
     });
   }

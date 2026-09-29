@@ -79,7 +79,8 @@ interface GroupMetaFeedPage {
 interface GroupMetaMemberItemBase {
   feedId: PositiveSafeInteger;
   account: UserAccount;
-  domain: Domain;
+  // 'local' is the publisher-scoped subject marker of Core Protocol 6.2.1.
+  domain: Domain | 'local';
 }
 
 interface GroupMetaUpsertItem extends GroupMetaMemberItemBase {
@@ -89,6 +90,7 @@ interface GroupMetaUpsertItem extends GroupMetaMemberItemBase {
 
 interface GroupMetaDepartItem extends GroupMetaMemberItemBase {
   operation: 'MEMBER_DEPART';
+  body: GroupMetaMemberBody;
 }
 
 interface GroupMetaProfileItem {
@@ -131,7 +133,14 @@ audience's delta visibility floor instead.
 
 Member items have stable key `(member account, member domain)`. Their required,
 non-null `namespaceId` identifies the member profile namespace in the group
-origin's namespace space. Their required, non-null `profileRev` selects an
+origin's namespace space and follows the local-subject marker rules of
+[Core Protocol Section 6.2.1](./protocol.md#local-subject-marker-and-namespace-interpretation):
+the origin serializes its own members with `domain: 'local'` and
+`namespaceId: 0`; a foreign member carries the domain as retained by the
+origin together with the origin's positive namespace for that member's home
+identity. A mirror MUST NOT infer member locality from the member domain
+string; it recognizes its own local member when the `namespaceId` equals the
+peer-assigned namespace disclosed by the origin. Their required, non-null `profileRev` selects an
 immutable complete profile snapshot retained by the group origin when positive.
 The value `0` means that the projection has no profile; the consumer MUST NOT
 issue a Group Member Profile request for it. A positive reference identifies the
@@ -248,13 +257,14 @@ relationship, not by Group Meta rows. Non-member-derived settings
 other than the explicitly specified group profile and announcement projections
 are local policy and are not federated facts.
 
-Only `MEMBER_UPSERT` carries role and profile reference state. `MEMBER_DEPART` is a distinct
-closed item with only `feedId`, member Address, and `operation`; `body`, `role`,
-`namespaceId`, and `profileRev` MUST be absent. A mirror deletes its current member projection
-when it commits `MEMBER_DEPART`. A later `MEMBER_UPSERT` for the same stable key creates a new
-current member projection with the newly selected role and exact profile
-reference. A role mutation MAY preserve the preceding `profileRev`; it does not
-need to discover the member's default revision.
+Both `MEMBER_UPSERT` and `MEMBER_DEPART` carry the same `GroupMetaMemberBody`, including
+`role`, `namespaceId`, and `profileRev`. The body on `MEMBER_DEPART` is the last selected
+member reference and role at the departure coordinate; it is retained for coordinate
+continuity and event rendering, but it MUST NOT trigger a profile fetch. A mirror deletes
+its current member projection when it commits `MEMBER_DEPART`. A later `MEMBER_UPSERT` for
+the same stable key creates a new current member projection with the newly selected role and
+exact profile reference. A role mutation MAY preserve the preceding `profileRev`; it does
+not need to discover the member's default revision.
 
 `feedId`, message `seq`, and `profileRev` are distinct coordinate spaces. A
 Group Meta `feedId` selects the newest group-profile or member-profile

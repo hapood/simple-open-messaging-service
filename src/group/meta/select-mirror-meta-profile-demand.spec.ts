@@ -39,7 +39,7 @@ describe('selectMirrorMetaProfileDemand', () => {
   });
 
   it.each([
-    { operation: 'MEMBER_DEPART' as const, profileRev: undefined },
+    { operation: 'MEMBER_DEPART' as const, profileRev: 3 },
     { operation: 'MEMBER_UPSERT' as const, profileRev: 0 },
     { operation: 'GROUP_PROFILE' as const, profileRev: 3 },
     { operation: 'MEMBER_UPSERT' as const, profileRev: 4, domain: 'local' },
@@ -53,9 +53,17 @@ describe('selectMirrorMetaProfileDemand', () => {
               operation,
               account: member.account,
               domain: member.domain,
+              role: member.role,
+              profileNamespaceId: member.profileNamespaceId,
+              profileRev: profileRev!,
             }
           : operation === 'GROUP_PROFILE'
-            ? { feedId: 43, operation, profileRev: profileRev! }
+            ? {
+                feedId: 43,
+                operation,
+                profileNamespaceId: 0,
+                profileRev: profileRev!,
+              }
             : {
                 ...member,
                 feedId: 43,
@@ -90,6 +98,23 @@ describe('selectMirrorMetaProfileDemand', () => {
     });
 
     expect(canonical).toMatchObject({
+      domain: 'local',
+      profileNamespaceId: 0,
+    });
+  });
+
+  it('normalizes local departures to profile namespace zero', () => {
+    const depart = normalizeMirrorMetaReplicatedItem(group, {
+      feedId: 44,
+      operation: 'MEMBER_DEPART',
+      account: 'local-member',
+      domain: 'local',
+      role: GroupRole.MEMBER,
+      profileNamespaceId: 0,
+      profileRev: 0,
+    });
+
+    expect(depart).toMatchObject({
       domain: 'local',
       profileNamespaceId: 0,
     });

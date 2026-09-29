@@ -89,7 +89,10 @@ resolves the exact message- or roster-selected profile version locally. It does
 not substitute the current default or request the group publisher for a missing
 local version. Profile resolution reads the stored subject namespace directly;
 it does not independently infer a namespace from the subject domain. Federation
-serialization expands the local domain sentinel back to the public domain.
+serialization keeps the local domain sentinel on the wire: this server's own
+subjects leave as `local` with `namespaceId: 0`, and foreign subjects leave
+with this server's namespace for their home identity
+([federation-namespaces](./federation-namespaces.md)).
 
 MEMBER_UPSERT, MEMBER_DEPART, message-author serialization, profile-cache keys, and self/member
 matching must use the same mapping. IndexedDB and native SQLite must agree. The

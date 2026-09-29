@@ -187,6 +187,7 @@ export class FederationInboundMessageCommitService {
         item.thread,
         params.response.peerDomain,
         params.response.peerToken.namespaceId,
+        params.response.peerToken.peerAssignedLocalNamespaceId,
         item.messageSeq,
       );
       if (route.threadId !== params.response.threadId)

@@ -141,9 +141,9 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
           clientFeed,
           peerFeed,
           federation: {
-            async pushStateFeedDomains(domains) {
-              for (const peerDomain of new Set(domains))
-                events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
+            pushStateFeedNamespaces(namespaceIds) {
+              for (const namespaceId of new Set(namespaceIds))
+                events.emit(FEDERATION_STATE_FEED_PUSH, { namespaceId });
             },
           },
           namespaces,
@@ -156,6 +156,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         ClientStateFeedService,
         PeerStateFeedService,
         EventEmitter2,
+        FederationNamespaceService,
         UserIntentService,
       ],
       useFactory: (
@@ -163,6 +164,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         clientFeed: ClientStateFeedService,
         peerFeed: PeerStateFeedService,
         events: EventEmitter2,
+        namespaces: FederationNamespaceService,
         userIntents: UserIntentService,
       ) =>
         new ReceivedUserIntentService({
@@ -170,9 +172,9 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
           clientFeed,
           peerFeed,
           federation: {
-            async pushStateFeedDomains(domains) {
-              for (const peerDomain of new Set(domains))
-                events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
+            pushStateFeedNamespaces(namespaceIds) {
+              for (const namespaceId of new Set(namespaceIds))
+                events.emit(FEDERATION_STATE_FEED_PUSH, { namespaceId });
             },
           },
           userIntents,
@@ -185,6 +187,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         ClientStateFeedService,
         PeerStateFeedService,
         EventEmitter2,
+        FederationNamespaceService,
         GroupRelationshipMutationService,
       ],
       useFactory: (
@@ -192,6 +195,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         clientFeed: ClientStateFeedService,
         peerFeed: PeerStateFeedService,
         events: EventEmitter2,
+        namespaces: FederationNamespaceService,
         relationshipMutations: GroupRelationshipMutationService,
       ) =>
         new RemoteMemberMembershipIntentService({
@@ -199,9 +203,9 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
           clientFeed,
           peerFeed,
           federation: {
-            async pushStateFeedDomains(domains) {
-              for (const peerDomain of new Set(domains))
-                events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
+            pushStateFeedNamespaces(namespaceIds) {
+              for (const namespaceId of new Set(namespaceIds))
+                events.emit(FEDERATION_STATE_FEED_PUSH, { namespaceId });
             },
           },
           relationshipMutations,
@@ -214,6 +218,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         ClientStateFeedService,
         PeerStateFeedService,
         EventEmitter2,
+        FederationNamespaceService,
         GroupRelationshipMutationService,
       ],
       useFactory: (
@@ -221,6 +226,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         clientFeed: ClientStateFeedService,
         peerFeed: PeerStateFeedService,
         events: EventEmitter2,
+        namespaces: FederationNamespaceService,
         memberMutations: GroupRelationshipMutationService,
       ) =>
         new MirrorGroupMembershipIntentService({
@@ -228,9 +234,9 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
           clientFeed,
           peerFeed,
           federation: {
-            async pushStateFeedDomains(domains) {
-              for (const peerDomain of new Set(domains))
-                events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
+            pushStateFeedNamespaces(namespaceIds) {
+              for (const namespaceId of new Set(namespaceIds))
+                events.emit(FEDERATION_STATE_FEED_PUSH, { namespaceId });
             },
           },
           memberMutations,

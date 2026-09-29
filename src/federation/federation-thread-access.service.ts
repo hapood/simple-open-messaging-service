@@ -150,7 +150,10 @@ export class FederationThreadAccessService {
       )
       .leftJoin(
         tables.federatedPeer,
-        eq(tables.federatedPeer.domain, tables.identityNamespace.domain),
+        eq(
+          tables.federatedPeer.activeNamespaceId,
+          tables.messageThread.authorityNamespaceId,
+        ),
       )
       .where(eq(tables.messageThread.id, threadId))
       .limit(1);

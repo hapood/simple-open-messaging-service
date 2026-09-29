@@ -9,7 +9,8 @@ This document defines the outer wire shape, origin coordinates, idempotency rule
 ```ts
 interface Address {
   account: Account;
-  domain: Domain;
+  // 'local' is the publisher-scoped subject marker of Core Protocol 6.2.1.
+  domain: Domain | 'local';
 }
 
 type ThreadAddress =
@@ -81,8 +82,13 @@ type FederatedMessage = FederatedMessageBase &
   contain `authorRef`. A group publisher may relay a message authored on
   another member domain, so direction alone cannot identify its author.
 - `namespaceId` identifies the author profile subject namespace in the current
-  message publisher's namespace space. It is scoped by the publisher serving
-  this message page and has no standalone meaning outside that publisher. It is
+  message publisher's namespace space and follows the local-subject marker
+  rules of [Core Protocol Section 6.2.1](../protocol.md#local-subject-marker-and-namespace-interpretation).
+  It is scoped by the publisher serving
+  this message page and has no standalone meaning outside that publisher. `0`
+  marks an author hosted by the publisher itself, serialized with the `local`
+  subject marker; a positive value is the publisher's namespace for the
+  author's home identity. It is
   part of the author profile target together with the reconstructed P2P author
   or explicit GROUP `author` and `profileRev`.
 - `profileRev` identifies the immutable author profile selected when the
@@ -91,13 +97,16 @@ type FederatedMessage = FederatedMessageBase &
   is required and non-null; a positive value selects a real revision, while `0`
   means that this message has no author-profile snapshot and MUST NOT trigger a
   profile request.
-- A locally authored new message carries the namespace and revision selected
-  for its audience, normally the author's local default namespace and revision
-  when the message is committed. A non-authoritative copy, accepted group
-  submission, authoritative group distribution, mirror copy, and processing
-  receipt MUST preserve the direct incoming message's `namespaceId` and
-  `profileRev`; an intermediary MUST NOT substitute its own default namespace,
-  revision, or another retained version.
+- A locally authored new message carries the revision selected for its audience
+  with `namespaceId: 0` and the `local` subject marker: the author is hosted
+  by the publisher itself. A publisher serializing a subject it received from
+  another server re-encodes the reference into its own namespace space: the
+  `namespaceId` becomes the publisher's namespace for that subject's home
+  identity, and the subject `domain` is the address as retained by the
+  publisher. The carried `profileRev` remains the exact revision the publisher
+  retained for that subject; an intermediary MUST NOT substitute another
+  retained revision or invent a namespace it did not allocate for that
+  identity.
 
 ## 3. Ordering and origin time
 
@@ -113,7 +122,10 @@ The message wire has no client-authoritative `date` field:
 - When a publisher returns a copy to the direct publisher from which it
   received that message, it MUST send the received `seq/createdAt` as
   `originSeq/originCreatedAt`. Its outer `seq/createdAt` still identifies its
-  own copy. This is a processing receipt regardless of the author's domain.
+  own copy. This is a processing receipt: the direct publisher recognizes the
+  receipt item by the author `namespaceId` equaling the peer-assigned namespace
+  disclosed by this publisher ([Core Protocol Section 6.2.1](../protocol.md#local-subject-marker-and-namespace-interpretation)),
+  never by comparing the author domain with its own configured domain.
 - This rule applies both when a group origin returns an accepted submission to
   the submitting home and when a mirror returns an origin-published message to
   that origin, including a message authored on a third domain.

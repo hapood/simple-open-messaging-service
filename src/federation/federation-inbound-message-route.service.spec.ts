@@ -8,11 +8,9 @@ import { FederationInboundMessageRouteService } from './federation-inbound-messa
 const dialect = new PgDialect();
 
 function service() {
-  const value = Object.create(
+  return Object.create(
     FederationInboundMessageRouteService.prototype,
   ) as FederationInboundMessageRouteService & Record<string, unknown>;
-  Object.assign(value, { config: { domain: 'local.test' } });
-  return value;
 }
 
 function groupMessage(authorDomain = 'local'): FederationMessageFeedMessage {
@@ -87,6 +85,7 @@ describe('FederationInboundMessageRouteService', () => {
         'peer.test',
         9,
         7,
+        7,
       ),
     ).resolves.toMatchObject({
       threadId: 11,
@@ -96,16 +95,17 @@ describe('FederationInboundMessageRouteService', () => {
       expect.anything(),
       {
         thread: { account: '!group' },
-        author: { account: 'alice', domain: 'peer.test' },
+        author: { account: 'alice', domain: 'local' },
       },
       'peer.test',
       9,
+      7,
     );
     const query = dialect.sqlToQuery(execute.mock.calls[1]![0] as SQL);
     expect(query.sql).toContain('m."creatorDomain" =');
     expect(query.sql).toContain('m."sourceNamespaceId" =');
     expect(query.sql).toContain('m."originSeq" =');
-    expect(query.params).toEqual([0, 'GROUP', '!group', 9, 7, 'peer.test']);
+    expect(query.params).toEqual([0, 'GROUP', '!group', 9, 7]);
   });
 
   it('rejects unknown or foreign-authored member retractions without inventing pending facts', async () => {
@@ -117,6 +117,7 @@ describe('FederationInboundMessageRouteService', () => {
         { account: '!group' },
         'peer.test',
         9,
+        7,
         7,
       ),
     ).rejects.toThrow('tombstone has no retained local group thread');
@@ -134,13 +135,13 @@ describe('FederationInboundMessageRouteService', () => {
     const tx = { execute } as unknown as DatabaseTransaction;
 
     await expect(
-      service().resolveMessage(tx, groupMessage(), 'peer.test', 9),
+      service().resolveMessage(tx, groupMessage(), 'peer.test', 9, 7),
     ).resolves.toEqual({
       threadId: 11,
       federationVersion: 4,
       toAccount: '!group',
       creatorAccount: 'alice',
-      creatorDomain: 'peer.test',
+      creatorDomain: 'local',
       authority: 'PEER',
       recipients: [],
     });
@@ -165,7 +166,7 @@ describe('FederationInboundMessageRouteService', () => {
     const tx = { execute } as unknown as DatabaseTransaction;
 
     await expect(
-      service().resolveMessage(tx, groupReceipt(), 'peer.test', 9),
+      service().resolveMessage(tx, groupReceipt(), 'peer.test', 9, 12),
     ).resolves.toMatchObject({
       threadId: 11,
       creatorDomain: 'local',
@@ -177,11 +178,11 @@ describe('FederationInboundMessageRouteService', () => {
   });
 
   it.each([
-    ['third.test', 'PEER'],
-    ['local.test', 'LOCAL'],
+    ['third.test', 13, 'PEER'],
+    ['local.test', 12, 'LOCAL'],
   ] as const)(
-    'derives %s group-message authority from the author domain, not originSeq',
-    async (authorDomain, authority) => {
+    'derives group-message authority from peer-assigned namespace, not domain comparison',
+    async (authorDomain, namespaceId, authority) => {
       const execute = vi
         .fn()
         .mockResolvedValueOnce({
@@ -195,9 +196,11 @@ describe('FederationInboundMessageRouteService', () => {
           {
             ...groupReceipt(),
             author: { account: 'alice', domain: authorDomain },
+            namespaceId,
           },
           'group.test',
           9,
+          12,
         ),
       ).resolves.toMatchObject({ authority });
     },
@@ -213,6 +216,7 @@ describe('FederationInboundMessageRouteService', () => {
         groupMessage('third-party.test'),
         'peer.test',
         9,
+        7,
       ),
     ).rejects.toThrow(
       'group mirror may only submit its locally managed authors',
@@ -226,7 +230,7 @@ describe('FederationInboundMessageRouteService', () => {
     const tx = { execute } as unknown as DatabaseTransaction;
 
     await expect(
-      service().resolveTombstone(tx, { account: '!group' }, 'origin.test', 9),
+      service().resolveTombstone(tx, { account: '!group' }, 'origin.test', 9, 7),
     ).rejects.toThrow('tombstone has no retained local group thread');
 
     const query = dialect.sqlToQuery(execute.mock.calls[0]![0] as SQL);

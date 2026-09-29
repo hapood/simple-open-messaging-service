@@ -437,7 +437,7 @@ feed cursors, not only handler return values.
 ### 8.5 Canonical mutation and head behavior
 
 - Entry appends one canonical `MEMBER_UPSERT` using the effective member-authored
-  intent revision; departure appends one bodyless `MEMBER_DEPART`.
+  intent revision; departure appends one `MEMBER_DEPART` with the final member role and profile reference body; this does not enqueue profile fetch work.
 - Role and ownership changes append only the required canonical member items;
   group-profile changes append one canonical `GROUP_PROFILE`.
 - These items commit before task admission and are never rewritten or

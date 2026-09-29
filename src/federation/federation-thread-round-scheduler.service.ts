@@ -140,7 +140,7 @@ export class FederationThreadRoundSchedulerService
     event: FederationStateFeedPush,
   ): Promise<void> {
     try {
-      await this.recoverPendingRounds(event.peerDomain);
+      await this.recoverPendingRounds(event.namespaceId);
     } catch (error) {
       this.logger.warn(
         `relationship round recovery failed: ${(error as Error).message}`,
@@ -148,11 +148,11 @@ export class FederationThreadRoundSchedulerService
     }
   }
 
-  private async recoverPendingRounds(peerDomain?: string): Promise<void> {
+  private async recoverPendingRounds(namespaceId?: number): Promise<void> {
     const rows = await this.database.db
       .select({
         threadId: federationThreadSyncState.threadId,
-        peerDomain: identityNamespace.domain,
+        peerDomain: federatedPeer.domain,
         namespaceId: federationThreadSyncState.namespaceId,
         messageTargetSeq: federationThreadSyncState.messageTargetSeq,
         deletionTargetSeq: federationThreadSyncState.deletionTargetSeq,
@@ -173,19 +173,16 @@ export class FederationThreadRoundSchedulerService
       )
       .innerJoin(
         federatedPeer,
-        and(
-          eq(federatedPeer.domain, identityNamespace.domain),
-          eq(
-            federatedPeer.activeNamespaceId,
-            federationThreadSyncState.namespaceId,
-          ),
+        eq(
+          federatedPeer.activeNamespaceId,
+          federationThreadSyncState.namespaceId,
         ),
       )
       .where(
         and(
-          peerDomain === undefined
+          namespaceId === undefined
             ? undefined
-            : eq(identityNamespace.domain, peerDomain),
+            : eq(federationThreadSyncState.namespaceId, namespaceId),
           eq(messageThread.federationRoundsEnabled, true),
           sql`${federationThreadSyncState.authorizationEpoch} = ${messageThread.authorizationEpoch}`,
           or(
@@ -250,15 +247,14 @@ export class FederationThreadRoundSchedulerService
       peerDomain: string;
       namespaceId: number;
     }>(sql`
-      SELECT feed."threadId", ns.domain AS "peerDomain", ns.id AS "namespaceId"
+      SELECT feed."threadId", peer.domain AS "peerDomain", ns.id AS "namespaceId"
       FROM "GroupMeta" feed
       JOIN "MessageThread" thread ON thread.id = feed."threadId"
       JOIN "IdentityNamespace" ns ON ns.id = thread."authorityNamespaceId"
-      JOIN "FederatedPeer" peer
-        ON peer.domain = ns.domain AND peer."activeNamespaceId" = ns.id
+      JOIN "FederatedPeer" peer ON peer."activeNamespaceId" = ns.id
       WHERE feed."metaProcessedThroughId" < feed."metaTargetId"
         AND thread."federationRoundsEnabled" = true
-        ${peerDomain === undefined ? sql`` : sql`AND ns.domain = ${peerDomain}`}
+        ${namespaceId === undefined ? sql`` : sql`AND ns.id = ${namespaceId}`}
     `);
     for (const row of metaRows.rows)
       void this.wakeCaptured(
@@ -351,13 +347,13 @@ export class FederationThreadRoundSchedulerService
   ): Promise<void> {
     const [context] = await this.database.db
       .select({
-        peerDomain: identityNamespace.domain,
+        peerDomain: federatedPeer.domain,
         namespaceId: messageThread.authorityNamespaceId,
       })
       .from(messageThread)
       .innerJoin(
-        identityNamespace,
-        eq(identityNamespace.id, messageThread.authorityNamespaceId),
+        federatedPeer,
+        eq(federatedPeer.activeNamespaceId, messageThread.authorityNamespaceId),
       )
       .where(eq(messageThread.id, threadId))
       .limit(1);

@@ -109,7 +109,7 @@ async function resolveReadPositionInTx(
           AND ns."retiredAt" IS NULL
           AND (ns.id = 0 OR EXISTS (
             SELECT 1 FROM "FederatedPeer" p
-            WHERE p.domain = ns.domain AND p."activeNamespaceId" = ns.id
+            WHERE p."activeNamespaceId" = ns.id
           ))
           AND g."startSeq"::bigint + g."messageSeqOffset" <= visible.bound
           AND g."endSeq"::bigint + g."messageSeqOffset" > COALESCE(t."clearedSeq", 0)

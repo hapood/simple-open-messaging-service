@@ -461,10 +461,7 @@ export class DiscoveryService {
         .from(tables.federatedPeer)
         .innerJoin(
           tables.identityNamespace,
-          and(
-            eq(tables.identityNamespace.domain, normalized),
-            eq(tables.identityNamespace.id, namespaceId),
-          ),
+          eq(tables.identityNamespace.id, namespaceId),
         )
         .where(eq(tables.federatedPeer.domain, normalized))
         .limit(1)

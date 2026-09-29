@@ -196,14 +196,14 @@ transaction. Exactly one latest current member must remain `OWNER` at commit.
 ```text
 lock the group aggregate
 fold the relationship state to inactive
-append canonical MEMBER_DEPART with an empty stored body
+append canonical MEMBER_DEPART with the departing member's final role and selected profile reference body
 update AccountThreadState and ThreadAudience
 apply the thread authorization-interval transition
 enqueue/coalesce local and federation thread fan-out after the final audience write
 commit
 ```
 
-The departing target does not need a terminal Group Meta notification. If its
+The departing target does not need a terminal Group Meta notification. The departure body preserves the final profile coordinate for event rendering and continuity, but does not trigger a profile fetch. If its
 last effective member left, its audience is removed before fan-out observes the
 page. Other still-authorized audiences receive a head covering the canonical
 `MEMBER_DEPART`.
@@ -241,7 +241,7 @@ Serving rules are:
 - allow full mode to return an older current `MEMBER_UPSERT` whose feed ID is below
   the floor, because it reveals current state rather than historical changes;
 - never return `MEMBER_DEPART` in full mode;
-- return bodyless `MEMBER_DEPART` in delta mode.
+- return `MEMBER_DEPART` with its final member body in delta mode;
 
 This prevents a new peer from enumerating former members while allowing it to
 construct the current roster.
@@ -421,8 +421,9 @@ reference under the same audience check. The response revision may differ from
 the requester's earlier projection; an exact account/revision request uses
 Authorized Profile and its separate disclosure rules.
 
-After `MEMBER_DEPART`, Group Meta Profile no longer resolves that member. A
-historical message uses Message Author Profile with its exact message
+After `MEMBER_DEPART`, Group Meta Profile no longer resolves that member. Its body
+preserves the final profile coordinate but does not authorize or trigger a profile
+fetch. A historical message uses Message Author Profile with its exact message
 coordinate instead.
 
 ## 8. Thread-head fan-out and mirror dependency
@@ -478,7 +479,7 @@ round; a running round is never rewritten.
 - A later default-profile update and later messages do not mutate that item or
   append another member item.
 - Role changes preserve profileRev unless a new membership interval begins.
-- Departure appends one bodyless `MEMBER_DEPART`; re-entry appends a new `MEMBER_UPSERT`.
+- Departure appends one `MEMBER_DEPART` with the final member body; re-entry appends a new `MEMBER_UPSERT`.
 - Point membership, owner checks, and full roster reads agree on latest
   canonical operations.
 - Concurrent ownership and membership changes serialize and never commit zero

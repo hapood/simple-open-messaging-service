@@ -23,7 +23,7 @@ recovery operation for an already recognized peer:
 - A locally recognized peer whose acceptance is not yet proven is `establishing`.
 - The reconnect sweep retries Recognize only for `establishing` peers with
   `peerAcceptanceConfirmed = false`.
-- A valid Recognize OK, inbound valid Recognize, or Health `available`/`degraded`
+- A valid Recognize `recognized`, inbound valid Recognize, or Health `available`/`degraded`
   result proves peer acceptance. Once that fact is committed, Recognize retry
   stops.
 - A recognized peer that loses current transport reachability is `degraded`.

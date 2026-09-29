@@ -66,11 +66,17 @@ export class GroupMembershipProjectionService {
         return { canonicalRosterChanged: false };
       if (current?.role === GroupRole.OWNER && !params.allowOwnerDeactivation)
         throw new Error('owner deactivation requires explicit authorization');
+      if (!current)
+        throw new Error('departing group member projection is missing');
       await this.groupMeta.appendMemberTransitionInTx(tx, params.groupId, {
         account: identity.account,
         domain: identity.domain,
         operation: 'MEMBER_DEPART',
-        body: {},
+        body: {
+          role: current.role,
+          profileNamespaceId: current.namespaceId,
+          profileRev: current.profileRev,
+        },
       });
       return { canonicalRosterChanged: true };
     }

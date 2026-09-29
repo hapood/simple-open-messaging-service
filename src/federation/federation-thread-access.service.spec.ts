@@ -123,6 +123,7 @@ describe('FederationThreadAccessService', () => {
     const peerToken = {
       domain: 'peer.example',
       namespaceId: 7,
+      peerAssignedLocalNamespaceId: 11,
       rootKeyFingerprint: 'sha256:root',
     };
 

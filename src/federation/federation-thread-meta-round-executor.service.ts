@@ -281,18 +281,29 @@ function validateItem(
   if (
     !isValidSomfpUserAccount(item.account) ||
     item.account !== normalizeAccount(item.account) ||
-    !isValidSomfpDomain(item.domain)
+    (item.domain !== 'local' && !isValidSomfpDomain(item.domain))
   )
     throw new Error('invalid group-meta member address');
   if (item.operation === 'MEMBER_DEPART') {
-    requireKeys(item, ['feedId', 'account', 'domain', 'operation']);
+    requireKeys(item, ['feedId', 'account', 'domain', 'operation', 'body']);
     if (mode === 'full')
       throw new Error('full group-meta cannot contain MEMBER_DEPART');
+    requireKeys(item.body, ['role', 'namespaceId', 'profileRev']);
+    if (
+      !Object.values(GroupRole).includes(item.body.role as GroupRole) ||
+      !isProfileRev(item.body.profileRev) ||
+      !isProfileNamespaceId(item.body.namespaceId) ||
+      (item.domain === 'local' && item.body.namespaceId !== 0)
+    )
+      throw new Error('invalid group-meta member body');
     return {
       feedId,
       operation: 'MEMBER_DEPART',
       account: item.account,
       domain: item.domain,
+      role: item.body.role as GroupRole,
+      profileNamespaceId: item.body.namespaceId as number,
+      profileRev: item.body.profileRev as number,
     };
   }
   requireKeys(item, ['feedId', 'account', 'domain', 'operation', 'body']);
@@ -300,7 +311,8 @@ function validateItem(
   if (
     !Object.values(GroupRole).includes(item.body.role as GroupRole) ||
     !isProfileRev(item.body.profileRev) ||
-    !isProfileNamespaceId(item.body.namespaceId)
+    !isProfileNamespaceId(item.body.namespaceId) ||
+    (item.domain === 'local' && item.body.namespaceId !== 0)
   )
     throw new Error('invalid group-meta member body');
   return {

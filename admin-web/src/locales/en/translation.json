@@ -414,6 +414,7 @@
       "all": "All",
       "available": "Available",
       "establishing": "Establishing",
+      "pending": "Pending review",
       "degraded": "Degraded",
       "unrecognized": "Unrecognized",
       "halted": "Halted"
@@ -474,8 +475,15 @@
       "title": "Identity namespaces",
       "empty": "No identity namespaces recorded for this peer",
       "active": "active",
+      "approve": "Approve",
       "setActive": "Set active",
+      "newCandidate": "new",
       "confirmSetActive": "Set namespace {{namespaceId}} as active? Peer acceptance and reachability will re-converge before ordinary traffic resumes.",
+      "confirmApproveCandidate": "Approve this verified namespace candidate and make it active? Peer acceptance and reachability will re-converge before ordinary traffic resumes.",
+      "candidate": {
+        "pending": "pending review",
+        "failed": "failed"
+      },
       "col": {
         "id": "Namespace",
         "fingerprint": "Root fingerprint",

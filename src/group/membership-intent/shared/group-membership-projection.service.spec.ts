@@ -227,7 +227,7 @@ describe('GroupMembershipProjectionService', () => {
     expect(conflict.set).not.toHaveProperty('groupInviteEndFeedId');
   });
 
-  it('appends a bodyless departure but protects the current owner', async () => {
+  it('appends the final member body on departure but protects the current owner', async () => {
     const member = harness({ current: currentMember });
     await expect(
       member.service.syncFromActiveInTx(member.tx as never, {
@@ -242,7 +242,12 @@ describe('GroupMembershipProjectionService', () => {
     expect(member.appendMemberTransitionInTx).toHaveBeenCalledWith(
       member.tx,
       5,
-      expect.objectContaining({ operation: 'MEMBER_DEPART', body: {} }),
+      expect.objectContaining({
+        account: 'alice',
+        domain: 'local',
+        operation: 'MEMBER_DEPART',
+        body: { role: 'ADMIN', profileNamespaceId: 0, profileRev: 2 },
+      }),
     );
     expect(member.insert).not.toHaveBeenCalled();
 

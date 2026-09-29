@@ -220,6 +220,7 @@ export interface PushTestResult {
 export type FederationTrustLevel =
   | 'unrecognized'
   | 'establishing'
+  | 'pending'
   | 'available'
   | 'degraded'
   | 'halted';
@@ -259,6 +260,10 @@ export interface FederatedPeerNamespace {
   createdAt: number;
   retiredAt: number | null;
   active: boolean;
+  candidate: boolean;
+  candidateStatus: 'pending' | 'failed' | null;
+  failedCode: number | null;
+  failedMessage: string | null;
 }
 
 export interface FederatedPeerNamespaceSwitchResult {

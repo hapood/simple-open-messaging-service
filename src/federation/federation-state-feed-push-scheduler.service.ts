@@ -26,7 +26,7 @@ export class FederationStateFeedPushSchedulerService
   private readonly logger = new Logger(
     FederationStateFeedPushSchedulerService.name,
   );
-  private readonly dirty = new Set<string>();
+  private readonly dirty = new Map<string, FederationStateFeedPush>();
   private readonly active = new Set<string>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly lastAttemptAt = new Map<string, number>();
@@ -39,13 +39,14 @@ export class FederationStateFeedPushSchedulerService
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    for (const peerDomain of await this.federation.listTrustedPeerDomains())
-      this.schedule(peerDomain);
+    await this.federation.pushStateFeedDomains(
+      await this.federation.listTrustedPeerDomains(),
+    );
   }
 
   @OnEvent(FEDERATION_STATE_FEED_PUSH)
   onPush(event: FederationStateFeedPush): void {
-    this.schedule(event.peerDomain);
+    this.schedule(event);
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -56,40 +57,50 @@ export class FederationStateFeedPushSchedulerService
     await Promise.allSettled([...this.activeTasks]);
   }
 
-  private schedule(peerDomain: string): void {
+  private schedule(target: FederationStateFeedPush): void {
     if (this.shuttingDown) return;
-    this.dirty.add(peerDomain);
-    if (this.active.has(peerDomain) || this.timers.has(peerDomain)) return;
+    const key = this.key(target);
+    this.dirty.set(key, target);
+    if (this.active.has(key) || this.timers.has(key)) return;
     const delay = Math.max(
       0,
-      (this.lastAttemptAt.get(peerDomain) ?? 0) + MIN_INTERVAL_MS - Date.now(),
+      (this.lastAttemptAt.get(key) ?? 0) + MIN_INTERVAL_MS - Date.now(),
     );
     const timer = setTimeout(() => {
-      this.timers.delete(peerDomain);
-      this.run(peerDomain);
+      this.timers.delete(key);
+      this.run(key);
     }, delay);
     timer.unref?.();
-    this.timers.set(peerDomain, timer);
+    this.timers.set(key, timer);
   }
 
-  private run(peerDomain: string): void {
-    if (this.shuttingDown || !this.dirty.delete(peerDomain)) return;
-    this.active.add(peerDomain);
-    this.lastAttemptAt.set(peerDomain, Date.now());
-    const task = this.client
-      .send(peerDomain)
-      .catch((error: unknown) => {
-        this.logger.warn(
-          `state-feed head push ${peerDomain} failed: ${(error as Error).message}`,
-        );
-        if (shouldRetry(error)) this.dirty.add(peerDomain);
+  private run(key: string): void {
+    const target = this.dirty.get(key);
+    if (this.shuttingDown || !target) return;
+    this.dirty.delete(key);
+    this.active.add(key);
+    this.lastAttemptAt.set(key, Date.now());
+    const task = this.federation
+      .activePeerDomainForNamespace(target.namespaceId)
+      .then((peerDomain) => {
+        if (peerDomain === null) return;
+        return this.client.send(peerDomain).catch((error: unknown) => {
+          this.logger.warn(
+            `state-feed head push for namespace ${target.namespaceId} failed: ${(error as Error).message}`,
+          );
+          if (shouldRetry(error)) this.dirty.set(key, target);
+        });
       })
       .finally(() => {
-        this.active.delete(peerDomain);
+        this.active.delete(key);
         this.activeTasks.delete(task);
-        if (this.dirty.has(peerDomain)) this.schedule(peerDomain);
+        if (this.dirty.has(key)) this.schedule(target);
       });
     this.activeTasks.add(task);
+  }
+
+  private key(target: FederationStateFeedPush): string {
+    return String(target.namespaceId);
   }
 }
 

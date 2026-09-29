@@ -92,14 +92,14 @@ export type UserIntentOutcome =
 
 export interface UserIntentTransactionOutcome {
   outcome: UserIntentOutcome;
-  peers: Map<string, bigint>;
+  peers: Map<number, bigint>;
 }
 
 export interface UserIntentDependencies {
   database: DatabaseService;
   clientFeed: ClientStateFeedService;
   peerFeed: PeerStateFeedService;
-  federation: Pick<FederationService, 'pushStateFeedDomains'>;
+  federation: Pick<FederationService, 'pushStateFeedNamespaces'>;
   namespaces: FederationNamespaceService;
 }
 
@@ -188,10 +188,7 @@ export class UserIntentService {
       }
       if (applied.peers.size > 0)
         void this.deps.federation
-          .pushStateFeedDomains(applied.peers.keys())
-          .catch((error: unknown) =>
-            this.logger.warn('user intent peer wake failed', error),
-          );
+          .pushStateFeedNamespaces(applied.peers.keys());
     }
     return applied.outcome;
   }
@@ -584,7 +581,7 @@ export class UserIntentService {
   private async applyInTx(
     context: ValidatedIntent,
     clientUpdates: PendingClientStateFeedUpdate[],
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     if (context[validated] !== true || context.threadLock.tx !== context.tx)
       throw new Error('invalid user intent lock context');
     switch (context.kind) {
@@ -600,7 +597,7 @@ export class UserIntentService {
   private async applyRequestInTx(
     context: Extract<ValidatedIntent, { kind: 'request' }>,
     clientUpdates: PendingClientStateFeedUpdate[],
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     const result = await context.tx.execute<{
       intentChanged: boolean;
       clientUpdates: Array<{ userId: number; feedId: number }>;
@@ -612,7 +609,7 @@ export class UserIntentService {
   private async applyAcceptanceInTx(
     context: Extract<ValidatedIntent, { kind: 'acceptance' }>,
     clientUpdates: PendingClientStateFeedUpdate[],
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     const result = await context.tx.execute<{
       intentChanged: boolean;
       reverseUpgraded: boolean;
@@ -637,7 +634,7 @@ export class UserIntentService {
   private async applyRevocationInTx(
     context: Extract<ValidatedIntent, { kind: 'revocation' }>,
     clientUpdates: PendingClientStateFeedUpdate[],
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     const result = await context.tx.execute<{
       intentChanged: boolean;
       pairChanged: boolean;
@@ -689,7 +686,7 @@ export class UserIntentService {
       }>;
     },
     clientUpdates: PendingClientStateFeedUpdate[],
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     const row = result.rows[0];
     if (!row) throw new Error('user intent update disappeared');
     for (const update of row.clientUpdates ?? [])
@@ -703,9 +700,9 @@ export class UserIntentService {
     clientUpdates.push(
       ...(await captureThreadStateUpdatesInTx(context.tx, ids)),
     );
-    const peers = new Map<string, bigint>();
+    const peers = new Map<number, bigint>();
     if (context.target.domain !== 'local' && row.peerFeedId !== null)
-      peers.set(context.target.domain, BigInt(row.peerFeedId));
+      peers.set(context.target.namespaceId, BigInt(row.peerFeedId));
     return peers;
   }
 }

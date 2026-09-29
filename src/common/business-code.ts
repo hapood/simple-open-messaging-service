@@ -119,6 +119,7 @@ export enum BusinessCode {
   FEDERATION_MESSAGE_QUERY_RATE_LIMITED = 50024, // HTTP 200 + { retryAfter }; query cursor is unchanged
   FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE = 50025, // HTTP 200 + { retryAfter }; peer is not degraded
   FEDERATION_NAMESPACE_INACTIVE = 50026, // local client attempted to write to a thread owned by an archived namespace
+  FEDERATION_DOMAIN_CHANGE_REJECTED = 50028, // administrator rejected a verified domain re-binding candidate
 
   // 60xxx settings (admin-managed runtime config)
 

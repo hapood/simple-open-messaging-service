@@ -879,7 +879,7 @@ describe('federation message context isolation', () => {
     );
   });
 
-  it('maps a group author local domain to the authenticated peer domain', async () => {
+  it('keeps a publisher-local group author as the local marker', async () => {
     const service = createMessagePageService();
     const logger = { error: vi.fn(), warn: vi.fn() };
     Object.assign(service, {
@@ -891,6 +891,7 @@ describe('federation message context isolation', () => {
       ...item('1'),
       thread: { account: '!group' },
       author: { account: 'alice', domain: 'local' },
+      namespaceId: 0,
     } as FederationMessageFeedMessage;
     delete (localAuthorItem as { authorRef?: unknown }).authorRef;
     const author = (
@@ -898,14 +899,15 @@ describe('federation message context isolation', () => {
         federatedMessageAuthor(
           value: FederationMessageFeedMessage,
           peerDomain: string,
+          peerAssignedLocalNamespaceId: number,
         ): { account: string; domain: string };
       }
-    ).federatedMessageAuthor(localAuthorItem, 'peer.test');
+    ).federatedMessageAuthor(localAuthorItem, 'peer.test', 7);
 
-    expect(author).toEqual({ account: 'alice', domain: 'peer.test' });
+    expect(author).toEqual({ account: 'alice', domain: 'local' });
   });
 
-  it('warns when applying a group author local-domain compatibility item', async () => {
+  it('warns and drops a group author with local domain and positive namespace', async () => {
     const service = createMessagePageService();
     const logger = { error: vi.fn(), warn: vi.fn() };
     Object.assign(service, {
@@ -927,9 +929,9 @@ describe('federation message context isolation', () => {
     ).resolves.toEqual([]);
 
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('authenticated peer domain'),
+      expect.stringContaining('LOCAL_DOMAIN_POSITIVE_NAMESPACE'),
     );
-    expect(logger.warn).toHaveBeenCalledWith(
+    expect(logger.warn).not.toHaveBeenCalledWith(
       expect.stringContaining('unknown federated message content type'),
     );
   });

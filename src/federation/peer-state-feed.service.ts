@@ -155,7 +155,6 @@ export class PeerStateFeedService {
         .from(identityNamespace)
         .where(
           and(
-            eq(identityNamespace.domain, target.peerDomain),
             eq(identityNamespace.id, target.namespaceId),
             isNull(identityNamespace.retiredAt),
           ),
@@ -203,11 +202,11 @@ export class PeerStateFeedService {
   async writeManyInTx(
     tx: DatabaseTransaction,
     inputWrites: readonly PeerStateFeedWrite[],
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     const writes = inputWrites.map((write) =>
       this.normalizeAddressDomains(write),
     );
-    const result = new Map<string, bigint>();
+    const result = new Map<number, bigint>();
     const ordered = [...writes].sort(
       (a, b) =>
         a.peerDomain.localeCompare(b.peerDomain) ||
@@ -295,7 +294,6 @@ export class PeerStateFeedService {
         .where(
           and(
             eq(identityNamespace.id, write.namespaceId),
-            eq(identityNamespace.domain, write.peerDomain),
             isNull(identityNamespace.retiredAt),
           ),
         )
@@ -332,7 +330,7 @@ export class PeerStateFeedService {
             updatedAt: new Date(),
           },
         });
-      result.set(write.peerDomain, allocated.feedId);
+      result.set(write.namespaceId, allocated.feedId);
     }
     return result;
   }
@@ -342,7 +340,7 @@ export class PeerStateFeedService {
   async writeAcceptanceConfirmationsInTx(
     tx: DatabaseTransaction,
     inputWrites: readonly PeerStateFeedWrite[],
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     const writes = inputWrites.map((write) =>
       this.normalizeAddressDomains(write),
     );
@@ -363,7 +361,7 @@ export class PeerStateFeedService {
       const target = await tx.query.identityNamespace.findFirst({
         where: eq(identityNamespace.id, write.namespaceId),
       });
-      if (!target || target.domain !== write.peerDomain || target.retiredAt)
+      if (!target || target.retiredAt)
         throw new Error(
           `missing active federation namespace ${write.peerDomain}`,
         );
@@ -390,7 +388,6 @@ export class PeerStateFeedService {
         .where(
           and(
             eq(identityNamespace.id, write.namespaceId),
-            eq(identityNamespace.domain, write.peerDomain),
             isNull(identityNamespace.retiredAt),
           ),
         )
@@ -403,7 +400,7 @@ export class PeerStateFeedService {
         .update(peerStateFeed)
         .set({ feedId: allocated.feedId, updatedAt: new Date() })
         .where(key);
-      result.set(write.peerDomain, allocated.feedId);
+      result.set(write.namespaceId, allocated.feedId);
     }
     return result;
   }
@@ -424,12 +421,7 @@ export class PeerStateFeedService {
     const [target] = await this.database.db
       .select({ peerDomain: identityNamespace.domain })
       .from(identityNamespace)
-      .where(
-        and(
-          eq(identityNamespace.id, namespaceId),
-          eq(identityNamespace.domain, peerDomain),
-        ),
-      )
+      .where(eq(identityNamespace.id, namespaceId))
       .limit(1);
     if (!target) throw new Error(`peer ${peerDomain} has no state feed`);
     throw new BusinessException(
@@ -462,12 +454,7 @@ export class PeerStateFeedService {
       const [target] = await tx
         .select()
         .from(identityNamespace)
-        .where(
-          and(
-            eq(identityNamespace.id, namespaceId),
-            eq(identityNamespace.domain, peerDomain),
-          ),
-        )
+        .where(eq(identityNamespace.id, namespaceId))
         .limit(1);
       if (!target) {
         throw new Error(`peer ${peerDomain} has no federation namespace`);

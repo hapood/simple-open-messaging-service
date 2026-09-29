@@ -2,7 +2,6 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { Interval } from '@nestjs/schedule';
 import { FederationService } from './federation.service.js';
-import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
 import {
   FEDERATION_PEER_AVAILABLE,
   type FederationPeerAvailable,
@@ -91,7 +90,7 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   }
 
   private async reconcile(domain: string): Promise<void> {
-    this.scheduleStateFeedPush(domain);
+    await this.federation.pushStateFeedDomains([domain]);
     await this.federation.pullStateFromPeer(domain);
   }
 
@@ -116,11 +115,7 @@ export class FederationReconnectService implements OnApplicationBootstrap {
    *  throws on failure (peer still down) → the caller logs and the next sweep retries. */
   private async recover(domain: string): Promise<void> {
     await this.federation.recoverPeerRecognition(domain);
-    this.scheduleStateFeedPush(domain);
+    await this.federation.pushStateFeedDomains([domain]);
     await this.federation.pullStateFromPeer(domain);
-  }
-
-  private scheduleStateFeedPush(domain: string): void {
-    this.events.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain: domain });
   }
 }

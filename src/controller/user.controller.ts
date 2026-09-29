@@ -390,13 +390,13 @@ export class UserController {
   async resolveUser(@Body() dto: UserResolveDto) {
     const account = normalizeAccount(dto.account);
     const { domain } = dto;
-    if (domain && domain !== this.federationService.ourDomain) {
+    if (domain && domain !== 'local') {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'federated lookup requires resolve-federated-stream',
       );
     }
-    // No domain, or our own domain, is a local account lookup.
+    // No domain or the publisher-local marker means a local account lookup.
     const user = await this.resolveLocalAccount(account);
     if (user !== null) {
       return user;
@@ -439,7 +439,7 @@ export class UserController {
             finish('failed', { reason: 'INVALID_ADDRESS' });
             return;
           }
-          if (domain === this.federationService.ourDomain) {
+          if (domain === 'local') {
             const localUser = await this.resolveLocalAccount(account);
             finish(
               localUser ? 'resolved' : 'failed',

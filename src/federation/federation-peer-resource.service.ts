@@ -15,7 +15,6 @@ import { DatabaseService } from '../database/database.service.js';
 import { MessageThreadType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
 import { ForwardBundleService } from '../forward/forward-bundle.service.js';
-import { loadFederationConfig } from './federation.config.js';
 
 function currentThreadResourceAuthorizationSql(
   threadId: typeof tables.message.threadId,
@@ -75,7 +74,6 @@ function currentThreadResourceAuthorizationSql(
 /** Authorizes peer reads of durable message assets and forward-bundle closures. */
 @Injectable()
 export class FederationPeerResourceService {
-  private readonly config = loadFederationConfig();
   private readonly logger = new Logger(FederationPeerResourceService.name);
 
   constructor(
@@ -120,7 +118,7 @@ export class FederationPeerResourceService {
       );
     let sourceMessage: { id: bigint; threadId: number } | undefined;
     for (const candidate of candidates) {
-      if (this.effectiveDomain(candidate.authorDomain) !== fromDomain) continue;
+      if (candidate.authorDomain !== fromDomain) continue;
       if (
         !(await this.historicalThreadMatchesRecipient(
           candidate.threadId,
@@ -259,9 +257,6 @@ export class FederationPeerResourceService {
     }
   }
 
-  private effectiveDomain(domain: string): string {
-    return domain === 'local' ? this.config.domain : domain;
-  }
 
   private async historicalThreadMatchesRecipient(
     threadId: number,

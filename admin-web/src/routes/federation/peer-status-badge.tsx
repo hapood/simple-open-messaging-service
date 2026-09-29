@@ -15,6 +15,9 @@ const STYLE: Record<
   establishing: {
     cls: 'border-transparent bg-blue-500/15 text-blue-700 dark:text-blue-400',
   },
+  pending: {
+    cls: 'border-transparent bg-violet-500/15 text-violet-700 dark:text-violet-400',
+  },
   degraded: {
     cls: 'border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-400',
   },

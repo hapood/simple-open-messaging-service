@@ -70,7 +70,7 @@ export interface RemoteMemberMembershipIntentDependencies {
   database: DatabaseService;
   clientFeed: ClientStateFeedService;
   peerFeed: PeerStateFeedService;
-  federation: Pick<FederationService, 'pushStateFeedDomains'>;
+  federation: Pick<FederationService, 'pushStateFeedNamespaces'>;
   relationshipMutations: GroupRelationshipMutationService;
 }
 
@@ -113,7 +113,7 @@ export class RemoteMemberMembershipIntentService {
     command: RemoteMemberMembershipIntentCommand,
   ): Promise<{ routed: RemoteMemberMembershipRouting }> {
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
-    const peers = new Set<string>();
+    const peers = new Set<number>();
     const result = await this.deps.database.db.transaction(async (tx) =>
       this.applyInTx(tx, command, clientUpdates, peers),
     );
@@ -125,13 +125,7 @@ export class RemoteMemberMembershipIntentService {
     }
     if (peers.size > 0)
       void this.deps.federation
-        .pushStateFeedDomains(peers)
-        .catch((error: unknown) =>
-          this.logger.warn(
-            'remote member intent state-feed wake failed',
-            error,
-          ),
-        );
+        .pushStateFeedNamespaces(peers);
     return { routed: result.routed };
   }
 
@@ -141,7 +135,7 @@ export class RemoteMemberMembershipIntentService {
     tx: DatabaseTransaction,
     command: RemoteMemberMembershipIntentCommand,
     clientUpdates: PendingClientStateFeedUpdate[],
-    peers: Set<string>,
+    peers: Set<number>,
   ): Promise<RemoteMemberMembershipIntentResult> {
     const validated = validateReceivedIntentBody(command.body);
     if (!validated) return { routed: 'noop:expired-request' };
@@ -376,7 +370,7 @@ export class RemoteMemberMembershipIntentService {
       member: { account: string; domain: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
       clientUpdates: PendingClientStateFeedUpdate[];
-      peers: Set<string>;
+      peers: Set<number>;
     },
   ): Promise<RemoteMemberMembershipIntentResult> {
     const collapse =
@@ -460,7 +454,7 @@ export class RemoteMemberMembershipIntentService {
       member: { account: string; domain: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
       clientUpdates: PendingClientStateFeedUpdate[];
-      peers: Set<string>;
+      peers: Set<number>;
     },
   ): Promise<RemoteMemberMembershipIntentResult> {
     const live =
@@ -523,7 +517,7 @@ export class RemoteMemberMembershipIntentService {
       member: { account: string; domain: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
       clientUpdates: PendingClientStateFeedUpdate[];
-      peers: Set<string>;
+      peers: Set<number>;
     },
   ): Promise<RemoteMemberMembershipIntentResult> {
     const { command, wireIntent, pairId, threadId, member } = context;
@@ -570,7 +564,7 @@ export class RemoteMemberMembershipIntentService {
     if (!row) throw new Error('remote member acceptance update disappeared');
     if (row.invalidPeerHead) throw new Error('conflicting peer content head');
     const peers = context.peers;
-    if (row.recipientFeedId !== null) peers.add(member.domain);
+    if (row.recipientFeedId !== null) peers.add(member.namespaceId);
     return {
       routed:
         context.row.groupIntentStatus === 'REQUESTED'
@@ -601,7 +595,7 @@ export class RemoteMemberMembershipIntentService {
       member: { account: string; domain: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
       clientUpdates: PendingClientStateFeedUpdate[];
-      peers: Set<string>;
+      peers: Set<number>;
     },
   ): Promise<RemoteMemberMembershipIntentResult> {
     const { wireIntent, pairId, threadId, member } = context;
@@ -640,7 +634,7 @@ export class RemoteMemberMembershipIntentService {
     const row = result.rows[0];
     if (!row) throw new Error('remote member revocation update disappeared');
     const peers = context.peers;
-    if (row.recipientFeedId !== null) peers.add(member.domain);
+    if (row.recipientFeedId !== null) peers.add(member.namespaceId);
     const groupDirectionEffective =
       context.row.groupIntentStatus === 'ACCEPTED' ||
       (context.row.groupIntentStatus === 'REQUESTED' &&
@@ -664,7 +658,7 @@ export class RemoteMemberMembershipIntentService {
       threadId: number;
       member: { account: string; domain: string; namespaceId: number };
       clientUpdates: PendingClientStateFeedUpdate[];
-      peers: Set<string>;
+      peers: Set<number>;
     },
   ): Promise<void> {
     const allocated =

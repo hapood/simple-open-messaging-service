@@ -105,7 +105,7 @@ export class FederationStatePullService {
       afterCommit: async (page) => {
         const effect = changed.get(page) ?? {
           clientFeedUpdates: [],
-          statePushDomains: [],
+          statePushNamespaces: [],
           localSystemMessages: [],
           threadRoundWakes: [],
           profileDemands: [],
@@ -125,7 +125,8 @@ export class FederationStatePullService {
     effect: import('./federation-state-feed-consumer.service.js').StatePageEffect,
   ): Promise<void> {
     this.clientStateFeed.notifyFeedUpdates(effect.clientFeedUpdates);
-    this.pushStateFeedDomains(effect.statePushDomains);
+    for (const namespaceId of new Set(effect.statePushNamespaces))
+      this.eventEmitter.emit(FEDERATION_STATE_FEED_PUSH, { namespaceId });
     for (const status of effect.localSystemMessages)
       await this.systemMessages.publish(status);
     for (const wake of effect.threadRoundWakes)
@@ -146,11 +147,6 @@ export class FederationStatePullService {
           );
         });
     }
-  }
-
-  private pushStateFeedDomains(domains: Iterable<string>): void {
-    for (const peerDomain of new Set(domains))
-      this.eventEmitter.emit(FEDERATION_STATE_FEED_PUSH, { peerDomain });
   }
 
   private mapFeedCursorUnavailable(error: unknown): Error {

@@ -74,10 +74,12 @@ export function PeerDetailPage() {
     }
   };
 
-  const onSetActiveNamespace = async (namespaceId: number) => {
+  const onSetActiveNamespace = async (namespaceId?: number) => {
     if (
       !window.confirm(
-        t('federation.namespaces.confirmSetActive', { namespaceId }),
+        namespaceId === undefined
+          ? t('federation.namespaces.confirmApproveCandidate')
+          : t('federation.namespaces.confirmSetActive', { namespaceId }),
       )
     ) {
       return;
@@ -238,18 +240,40 @@ export function PeerDetailPage() {
                         </TableHeader>
                         <TableBody>
                           {namespaces?.map((ns) => (
-                            <TableRow key={ns.id}>
+                            <TableRow
+                              key={
+                                ns.candidate ? `candidate:${ns.domain}` : ns.id
+                              }
+                            >
                               <TableCell className="font-mono text-sm">
-                                {ns.id}{' '}
+                                {ns.candidate && ns.id === 0
+                                  ? t('federation.namespaces.newCandidate')
+                                  : ns.id}{' '}
                                 {ns.active ? (
                                   <Badge variant="secondary">
                                     {t('federation.namespaces.active')}
                                   </Badge>
                                 ) : null}
+                                {ns.candidate ? (
+                                  <Badge variant="outline">
+                                    {t(
+                                      `federation.namespaces.candidate.${ns.candidateStatus ?? 'pending'}`,
+                                    )}
+                                  </Badge>
+                                ) : null}
                               </TableCell>
                               <TableCell className="max-w-80 break-all font-mono text-xs text-muted-foreground">
-                                {ns.rootKeyFingerprint ??
-                                  t('federation.meta.none')}
+                                <div>
+                                  {ns.rootKeyFingerprint ??
+                                    t('federation.meta.none')}
+                                </div>
+                                {ns.failedMessage ? (
+                                  <div className="mt-1 font-sans text-xs text-destructive">
+                                    {ns.failedCode
+                                      ? `${ns.failedCode}: ${ns.failedMessage}`
+                                      : ns.failedMessage}
+                                  </div>
+                                ) : null}
                               </TableCell>
                               <TableCell className="font-mono text-sm">
                                 {ns.peerAssignedLocalNamespaceId ??
@@ -266,10 +290,21 @@ export function PeerDetailPage() {
                                   <Button
                                     size="sm"
                                     variant="outline"
-                                    onClick={() => onSetActiveNamespace(ns.id)}
-                                    disabled={setActiveNamespace.isPending}
+                                    onClick={() =>
+                                      onSetActiveNamespace(
+                                        ns.candidate && ns.id === 0
+                                          ? undefined
+                                          : ns.id,
+                                      )
+                                    }
+                                    disabled={
+                                      setActiveNamespace.isPending ||
+                                      ns.candidateStatus === 'failed'
+                                    }
                                   >
-                                    {t('federation.namespaces.setActive')}
+                                    {ns.candidate
+                                      ? t('federation.namespaces.approve')
+                                      : t('federation.namespaces.setActive')}
                                   </Button>
                                 ) : null}
                               </TableCell>

@@ -352,7 +352,7 @@
         "group meta supplies role and an exact profile reference but no display bytes",
         "group-member profile resolution uses the exact revision selected by committed group meta",
         "member-message revisions are published through newly allocated Group Meta coordinates after exact snapshot resolution",
-        "group-meta departures carry no body, role, or profile revision"
+        "group-meta departures carry the final role and profile reference but do not enqueue profile work"
       ]
     }
   ]

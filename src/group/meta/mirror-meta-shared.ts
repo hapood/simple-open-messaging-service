@@ -1,6 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../../common/account.js';
-import { toClientIdentityOrNull } from '../../common/client-identity.js';
+import { toClientIdentity, toClientIdentityOrNull } from '../../common/client-identity.js';
 import type { ThreadContentLock } from '../../common/locks/thread-content-lock.js';
 import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
@@ -35,6 +35,9 @@ export type MirrorMetaReplicatedItem =
       operation: 'MEMBER_DEPART';
       account: string;
       domain: string;
+      role: GroupRole;
+      profileNamespaceId: number;
+      profileRev: number;
     }
   | {
       feedId: number;
@@ -81,15 +84,13 @@ export function normalizeMirrorMetaReplicatedItem(
   const member = normalizeMirrorMetaMemberAddress(
     item.account,
     item.domain,
-    item.operation === 'MEMBER_UPSERT' ? item.profileNamespaceId : 0,
+    item.profileNamespaceId,
   );
   return {
     ...item,
     account: member.account,
     domain: member.domain,
-    ...(item.operation === 'MEMBER_UPSERT'
-      ? { profileNamespaceId: member.profileNamespaceId }
-      : {}),
+    profileNamespaceId: member.profileNamespaceId,
   };
 }
 
@@ -186,14 +187,11 @@ export async function applyMirrorMetaFactInTx(
     return;
   }
   if (item.operation === 'MEMBER_DEPART') {
-    const subject = toClientIdentity(
-      {
-        account: item.account,
-        domain: item.domain,
-        namespaceId: group.publisherNamespaceId,
-      },
-      loadFederationConfig().domain,
-    );
+    const subject = toClientIdentity({
+      account: item.account,
+      domain: item.domain,
+      namespaceId: item.profileNamespaceId,
+    });
     await upsertCurrentGroupMetaFactsInTx(tx, [
       {
         threadId,
@@ -201,7 +199,11 @@ export async function applyMirrorMetaFactInTx(
         memberAccount: subject.account,
         memberDomain: subject.domain,
         operation: 'MEMBER_DEPART',
-        body: {},
+        body: {
+          role: item.role,
+          profileNamespaceId: item.profileNamespaceId,
+          profileRev: item.profileRev,
+        },
       },
     ]);
     return;
@@ -243,14 +245,11 @@ export function currentMirrorMetaFact(
           domain: group.domain,
           namespaceId: group.publisherNamespaceId,
         }
-      : toClientIdentity(
-          {
-            account: item.account,
-            domain: item.domain,
-            namespaceId: group.publisherNamespaceId,
-          },
-          loadFederationConfig().domain,
-        );
+      : toClientIdentity({
+          account: item.account,
+          domain: item.domain,
+          namespaceId: item.profileNamespaceId,
+        });
   return {
     threadId,
     feedId: item.feedId,

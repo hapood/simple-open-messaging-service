@@ -273,8 +273,11 @@ target.profileNamespaceId  = wire namespaceId emitted by that peer
 
 For an outbound profile read, `publisherNamespaceId` selects the peer connection
 and recognized identity, while `target.profileNamespaceId` becomes the
-`:namespaceId` path segment. `publisherNamespaceId` is never sent as a profile
-field. The demand does not contain presentation evidence or local asynchronous
+`:namespaceId` path segment. If `target.profileNamespaceId` is `0`, every
+subject-domain path variable in the selected operation is serialized as the
+literal `local`; otherwise the retained target domain is serialized. This
+conversion is performed at the S2S request boundary and does not mutate the
+stored profile target. `publisherNamespaceId` is never sent as a profile field. The demand does not contain presentation evidence or local asynchronous
 projection coordinates.
 
 ```ts
@@ -371,14 +374,10 @@ Backend work uses the same namespace-role split internally. It is never stored
 with an ambiguous bare namespace name: `publisherNamespaceId` routes and
 authorizes the federation request, while `target.profileNamespaceId` identifies
 the exact profile subject. `target.account`, `target.domain`, and `target.rev`
-complete the immutable profile key. Ordinary message demands
-get their namespace from the creator. System-message demands are an explicit
-exception: their creator is the local `$system` account and must not become the
-profile target; event participants provide the target and namespace. Mirrored
-Group Meta demands take the namespace from the mirror group and the target and
-revision from `MEMBER_UPSERT`. The transport peer domain is resolved from local
-federation state when the request is sent and is not part of the profile
-resource coordinate.
+complete the immutable profile key. The transport path conversion is explicit:
+when `target.profileNamespaceId` is `0`, a subject-domain path variable is
+`local`; for a positive namespace it is the retained canonical domain. The
+transport peer domain is resolved from local federation state when the request is sent and is not part of the profile resource coordinate.
 
 `lookup` names the actual S2S operation and determines the endpoint:
 

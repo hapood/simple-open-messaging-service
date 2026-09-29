@@ -4,7 +4,6 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { BusinessCode } from '../common/business-code.js';
 import type { S2SProfile } from './federation-profile.js';
 import { FederationProfileService } from './federation-profile.service.js';
-import { loadFederationConfig } from './federation.config.js';
 
 process.env.SOMS_DOMAIN ??= 'chat.example';
 
@@ -73,7 +72,7 @@ function makeSubject() {
 describe('FederationProfileService localization', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('maps the internal local identity to the public server domain', async () => {
+  it('keeps the publisher-local marker for local identity', async () => {
     const { subject, database } = makeSubject();
     database.db.query.account.findFirst.mockResolvedValueOnce({
       account: 'alice',
@@ -87,7 +86,7 @@ describe('FederationProfileService localization', () => {
     const serialize = vi.spyOn(subject, 'toS2SProfile').mockResolvedValueOnce({
       namespaceId: 0,
       account: 'alice',
-      domain: loadFederationConfig().domain,
+      domain: 'local',
       displayName: 'Alice',
       avatar: null,
       bio: 'hello',
@@ -96,13 +95,13 @@ describe('FederationProfileService localization', () => {
 
     await subject.getLocalAccountProfile({
       account: 'alice',
-      domain: loadFederationConfig().domain,
+      domain: 'local',
     });
 
     expect(serialize).toHaveBeenCalledWith({
       profileNamespaceId: 0,
       account: 'alice',
-      domain: loadFederationConfig().domain,
+      domain: 'local',
       name: 'Alice',
       avatar: '',
       bio: 'hello',
@@ -135,13 +134,13 @@ describe('FederationProfileService localization', () => {
     await expect(
       subject.getLocalAccountProfile({
         account: '!group',
-        domain: loadFederationConfig().domain,
+        domain: 'local',
       }),
     ).resolves.toBeNull();
     expect(stored).toHaveBeenCalledWith(
       0,
       '!group',
-      loadFederationConfig().domain,
+      'local',
       0,
       2,
     );
@@ -149,11 +148,7 @@ describe('FederationProfileService localization', () => {
 
   it('stores a referenced third-party snapshot without an Account or a default pointer', async () => {
     const { subject, database, values } = makeSubject();
-    await subject.materializeExactForeignProfile(
-      profile(8),
-      'group-host.example',
-      12,
-    );
+    await subject.materializeExactForeignProfile(profile(8), 12);
     expect(values).toHaveBeenCalledWith({
       publisherNamespaceId: 12,
       account: 'alice',
@@ -186,7 +181,6 @@ describe('FederationProfileService localization', () => {
           height: 513,
         },
       },
-      'peer.example',
       12,
     );
     expect(values).toHaveBeenCalledWith({
@@ -214,7 +208,6 @@ describe('FederationProfileService localization', () => {
           height: 1,
         },
       },
-      'peer.example',
       12,
     );
     expect(values).toHaveBeenCalledWith(
@@ -231,32 +224,29 @@ describe('FederationProfileService localization', () => {
   it('rejects revision zero before opening a transaction', async () => {
     const { subject, database } = makeSubject();
     await expect(
-      subject.materializeExactForeignProfile(profile(0), 'peer.example', 12),
+      subject.materializeExactForeignProfile(profile(0), 12),
     ).rejects.toMatchObject({ bizCode: BusinessCode.FEDERATION_MALFORMED });
     expect(database.db.transaction).not.toHaveBeenCalled();
   });
 
-  it('does not write when the captured publisher namespace is missing or mismatched', async () => {
+  it('does not write when the captured publisher namespace is missing', async () => {
     const { subject, database, values } = makeSubject();
     database.db.query.identityNamespace.findFirst.mockResolvedValueOnce(
       null as never,
     );
     await expect(
-      subject.materializeExactForeignProfile(profile(2), 'peer.example', 12),
+      subject.materializeExactForeignProfile(profile(2), 12),
     ).rejects.toThrow('publisher namespace is unavailable');
     expect(values).not.toHaveBeenCalled();
     const lookup = database.db.query.identityNamespace.findFirst.mock
       .calls[0]![0] as { where: SQL };
-    expect(dialect.sqlToQuery(lookup.where).params).toEqual([
-      12,
-      'peer.example',
-    ]);
+    expect(dialect.sqlToQuery(lookup.where).params).toEqual([12]);
   });
 
   it('never materializes a remote snapshot in the local namespace', async () => {
     const { subject, values } = makeSubject();
     await expect(
-      subject.materializeExactForeignProfile(profile(2), 'peer.example', 0),
+      subject.materializeExactForeignProfile(profile(2), 0),
     ).rejects.toThrow('publisher namespace is unavailable');
     expect(values).not.toHaveBeenCalled();
   });

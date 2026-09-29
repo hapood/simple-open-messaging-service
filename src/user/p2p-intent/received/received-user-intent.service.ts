@@ -74,7 +74,7 @@ export interface ReceivedUserIntentDependencies {
   database: DatabaseService;
   clientFeed: ClientStateFeedService;
   peerFeed: PeerStateFeedService;
-  federation: Pick<FederationService, 'pushStateFeedDomains'>;
+  federation: Pick<FederationService, 'pushStateFeedNamespaces'>;
   userIntents: UserIntentService;
 }
 
@@ -128,7 +128,7 @@ export class ReceivedUserIntentService {
     command: ReceivedUserIntentCommand,
   ): Promise<{ routed: ReceivedUserIntentRouting }> {
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
-    const peers = new Set<string>();
+    const peers = new Set<number>();
     const result = await this.deps.database.db.transaction(async (tx) =>
       this.applyInTx(tx, command, clientUpdates, peers),
     );
@@ -140,10 +140,7 @@ export class ReceivedUserIntentService {
     }
     if (peers.size > 0)
       void this.deps.federation
-        .pushStateFeedDomains(peers)
-        .catch((error: unknown) =>
-          this.logger.warn('received user intent peer wake failed', error),
-        );
+        .pushStateFeedNamespaces(peers);
     return { routed: result.routed };
   }
 
@@ -153,7 +150,7 @@ export class ReceivedUserIntentService {
     tx: DatabaseTransaction,
     command: ReceivedUserIntentCommand,
     clientUpdates: PendingClientStateFeedUpdate[],
-    peers: Set<string>,
+    peers: Set<number>,
   ): Promise<ReceivedUserIntentResult> {
     // The REQUESTED member's dates are non-null by validation, but the shared
     // validator returns the common shape; the command's status discriminates.
@@ -354,7 +351,7 @@ export class ReceivedUserIntentService {
       peer: Endpoint;
       row: UserIntentAuthorizationRow;
       clientUpdates: PendingClientStateFeedUpdate[];
-      peers: Set<string>;
+      peers: Set<number>;
     },
   ): Promise<ReceivedUserIntentResult> {
     const { command, intent, wireIntent, pairId, threadId } = context;
@@ -453,7 +450,8 @@ export class ReceivedUserIntentService {
             },
           },
         ]);
-      for (const domain of confirmations.keys()) context.peers.add(domain);
+      for (const namespaceId of confirmations.keys())
+        context.peers.add(namespaceId);
     }
     await openFederatedAudienceInTx(tx, context.peer.domain, threadId);
     await initializeRelationshipThreadStateInTx(
@@ -578,7 +576,7 @@ export class ReceivedUserIntentService {
       peer: Endpoint;
       row: UserIntentAuthorizationRow;
       clientUpdates: PendingClientStateFeedUpdate[];
-      peers: Set<string>;
+      peers: Set<number>;
       localUserId: number;
     },
   ): Promise<ReceivedUserIntentResult> {
@@ -649,7 +647,7 @@ export class ReceivedUserIntentService {
       peer: Endpoint;
       localUserId: number;
       clientUpdates: PendingClientStateFeedUpdate[];
-      peers: Set<string>;
+      peers: Set<number>;
     },
   ): Promise<void> {
     const result = await this.deps.userIntents.executeInTx(
@@ -665,7 +663,8 @@ export class ReceivedUserIntentService {
       throw new Error(
         `received revoke conclusion rejected: ${result.outcome.reason}`,
       );
-    for (const peerDomain of result.peers.keys()) context.peers.add(peerDomain);
+    for (const namespaceId of result.peers.keys())
+      context.peers.add(namespaceId);
   }
 
   /** Feed compaction keys follow the direction each key names: the wire

@@ -88,11 +88,12 @@ describe('FederationGroupMetaClient', () => {
           account: 'alice',
           domain: 'peer.test',
           operation: 'MEMBER_DEPART',
+          body: { role: 'MEMBER', namespaceId: 7, profileRev: 3 },
         },
         {
           feedId: 4,
           operation: 'GROUP_PROFILE',
-          body: { profileRev: 1 },
+          body: { namespaceId: 0, profileRev: 1 },
         },
       ],
       scannedThrough: 5,

@@ -9,7 +9,6 @@ import {
   groupStateFields,
 } from '../group/shared/group-state.js';
 import { readGroupMetaPageInTx } from '../group/meta/group-meta-page.js';
-import { loadFederationConfig } from './federation.config.js';
 import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
 
 interface GroupMetaFeedItemBase {
@@ -23,7 +22,10 @@ export type GroupMetaFeedItem =
       operation: 'MEMBER_UPSERT';
       body: Record<string, unknown>;
     })
-  | (GroupMetaFeedItemBase & { operation: 'MEMBER_DEPART' })
+  | (GroupMetaFeedItemBase & {
+      operation: 'MEMBER_DEPART';
+      body: Record<string, unknown>;
+    })
   | {
       feedId: number;
       operation: 'GROUP_PROFILE';
@@ -48,8 +50,6 @@ const DEFAULT_TAKE = 100;
 
 @Injectable()
 export class FederationGroupMetaFeedService {
-  private readonly ourDomain = loadFederationConfig().domain;
-
   constructor(private readonly database: DatabaseService) {}
 
   async serve(
@@ -131,22 +131,20 @@ export class FederationGroupMetaFeedService {
                   profileRev: item.body.profileRev,
                 },
               };
-            if (item.operation === 'MEMBER_UPSERT') {
+            if (
+              item.operation === 'MEMBER_UPSERT' ||
+              item.operation === 'MEMBER_DEPART'
+            ) {
               const { profileNamespaceId, ...body } = item.body;
               return {
                 ...item,
-                ...('domain' in item && item.domain === 'local'
-                  ? { domain: this.ourDomain }
-                  : {}),
                 body: {
                   ...body,
                   namespaceId: Number(profileNamespaceId),
                 },
               };
             }
-            return 'domain' in item && item.domain === 'local'
-              ? { ...item, domain: this.ourDomain }
-              : item;
+            return item;
           }),
         };
       },

@@ -2,13 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { GroupController } from './group.controller.js';
 
 describe('group invitation admission', () => {
-  it('normalizes the local public domain and deduplicates equivalent addresses', async () => {
+  it('normalizes addresses without collapsing the local public domain', async () => {
     const execute = vi.fn().mockResolvedValue({ status: 'APPLIED' });
     const controller = Object.create(
       GroupController.prototype,
     ) as GroupController;
     Object.assign(controller, {
-      federationService: { ourDomain: 'local.test' },
       groupIntents: { execute },
     });
     const result = await controller.inviteUsers(
@@ -24,14 +23,24 @@ describe('group invitation admission', () => {
         ],
       },
     );
-    expect(execute).toHaveBeenCalledExactlyOnceWith({
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenNthCalledWith(1, {
+      threadId: 7,
+      managerUserId: 3,
+      decision: 'REQUESTED',
+      target: { account: 'friend', domain: 'local.test' },
+    });
+    expect(execute).toHaveBeenNthCalledWith(2, {
       threadId: 7,
       managerUserId: 3,
       decision: 'REQUESTED',
       target: { account: 'friend', domain: 'local' },
     });
     expect(result).toEqual({
-      invited: [{ account: 'friend', domain: 'local' }],
+      invited: [
+        { account: 'friend', domain: 'local.test' },
+        { account: 'friend', domain: 'local' },
+      ],
       skipped: [],
     });
   });
@@ -41,7 +50,6 @@ describe('group invitation admission', () => {
       GroupController.prototype,
     ) as GroupController;
     Object.assign(controller, {
-      federationService: { ourDomain: 'local.test' },
       groupIntents: {
         execute: vi.fn().mockResolvedValue({
           status: 'REJECTED',

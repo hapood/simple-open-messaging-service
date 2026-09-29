@@ -149,7 +149,7 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 - The default profile reference remains fixed until the relationship is established again. Revocation
   retains the previous reference; ordinary profile changes do not replace it.
 - `GET /user/group-meta` serves a visible group's full or delta roster feed by `threadId` or account.
-  `MEMBER_UPSERT` and `MEMBER_DEPART` items include `account`, `domain`, and the server-local `namespaceId`.
+  `MEMBER_UPSERT` and `MEMBER_DEPART` items include `account`, `domain`, and a member body containing `role`, `namespaceId`, and `profileRev`; the wire `namespaceId` is the publisher-scoped profile coordinate.
   `MEMBER_UPSERT.body` carries role plus profile namespace/revision references; clients resolve profile content separately.
   `GROUP_PROFILE` carries only `feedId` and `body.profileNamespaceId + body.profileRev`, without a member identity.
 

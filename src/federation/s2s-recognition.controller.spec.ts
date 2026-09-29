@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import * as tables from '../database/schema.js';
 import { FEDERATION_PEER_AVAILABLE } from './federation-peer.events.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
@@ -19,8 +20,13 @@ describe('S2sRecognitionController Health privacy projection', () => {
       parseSigner: vi.fn().mockReturnValue({
         keyId: 'peer.example/key-2',
         domain: 'peer.example',
+        expires: Math.floor(Date.now() / 1000) + 300,
       }),
-      signedRequest: vi.fn(),
+      signedRequest: vi.fn().mockReturnValue({
+        method: 'POST',
+        url: new URL('https://local.example/s2s/v1/recognize'),
+        body: '{}',
+      }),
       verifyWithPublicKey: vi.fn(),
     };
     const recognition = {
@@ -30,6 +36,11 @@ describe('S2sRecognitionController Health privacy projection', () => {
         peerAssignedLocalNamespaceId: 7,
       }),
       acceptInbound: vi.fn(),
+      submitInboundRecognize: vi.fn().mockResolvedValue({
+        ok: true,
+        status: 'pending',
+        message: 'verification in progress',
+      }),
       queryHealth: vi.fn(),
       markReachable: vi.fn().mockResolvedValue(undefined),
     };
@@ -192,34 +203,25 @@ describe('S2sRecognitionController Health privacy projection', () => {
     expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
   });
 
-  it('returns the namespace assigned to the requester from Recognize', async () => {
+  it('accepts Recognize into asynchronous verification', async () => {
     const { controller, discovery, recognition } = target();
-    const now = Date.now();
-    discovery.fetchWellKnown.mockResolvedValue({
-      rootKey: { ed25519: 'root' },
-      keys: [
-        {
-          keyId: 'peer.example/key-2',
-          ed25519: Buffer.alloc(32).toString('base64'),
-          notBefore: now - 1000,
-          notAfter: now + 1000,
-        },
-      ],
-    });
-    recognition.acceptInbound = vi.fn().mockResolvedValue({ namespaceId: 12 });
 
     await expect(
       controller.recognize({} as never, { namespaceId: 5 }),
     ).resolves.toEqual({
       ok: true,
-      status: 'recognized',
-      peerAssignedLocalNamespaceId: 12,
+      status: 'pending',
+      message: 'verification in progress',
     });
-    expect(recognition.acceptInbound).toHaveBeenCalledWith(
-      'peer.example',
-      expect.anything(),
-      5,
-    );
+    expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
+    expect(recognition.submitInboundRecognize).toHaveBeenCalledWith({
+      domain: 'peer.example',
+      keyId: 'peer.example/key-2',
+      signedRequest: expect.anything(),
+      headers: {},
+      namespaceEcho: 5,
+      signatureExpires: expect.any(Number),
+    });
   });
 });
 
@@ -519,6 +521,262 @@ describe('FederationRecognitionService health transitions', () => {
     expect(
       namespaces.recordPeerAssignedLocalNamespaceInTx,
     ).toHaveBeenCalledWith(expect.anything(), 'peer.example', 44);
+  });
+});
+
+describe('FederationRecognitionService inbound Recognize result states', () => {
+  function subject(candidate?: Record<string, unknown> | null) {
+    const database = {
+      db: {
+        query: {
+          federationNamespaceCandidate: {
+            findFirst: vi.fn().mockResolvedValue(candidate ?? null),
+          },
+        },
+      },
+    };
+    const service = new FederationRecognitionService(
+      database as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const verify = vi
+      .spyOn(
+        service as unknown as Record<string, (...args: unknown[]) => unknown>,
+        'verifyInboundRecognize',
+      )
+      .mockResolvedValue(undefined);
+    return { service, verify, database };
+  }
+
+  const signedRequest = {
+    method: 'POST' as const,
+    url: new URL('https://local.example/s2s/v1/recognize'),
+    body: '{}',
+  };
+  const recognizeHeaders = {
+    date: new Date().toUTCString(),
+    'content-digest': 'sha-256=:test:',
+    'signature-input':
+      'sig1=("@method");created=1;expires=2;keyid="peer.example/key-1"',
+    signature: 'sig1=:test:',
+  };
+
+  it('returns pending when a verified candidate is waiting for administrator approval', async () => {
+    const { service, verify } = subject({
+      nextDomain: 'peer.example',
+      status: 'pending',
+    });
+
+    await expect(
+      service.submitInboundRecognize({
+        domain: 'Peer.Example.',
+        keyId: 'peer.example/key-1',
+        signedRequest,
+        headers: recognizeHeaders,
+        signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      status: 'pending',
+      message: 'waiting for administrator approval',
+    });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it('returns failed when a candidate stores a terminal recognition failure', async () => {
+    const { service, verify } = subject({
+      nextDomain: 'peer.example',
+      status: 'failed',
+      failedCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+      failedMessage: 'namespace echo mismatch',
+    });
+
+    await expect(
+      service.submitInboundRecognize({
+        domain: 'peer.example',
+        keyId: 'peer.example/key-1',
+        signedRequest,
+        headers: recognizeHeaders,
+        signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      status: 'failed',
+      code: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+      message: 'namespace echo mismatch',
+    });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it('writes an unmatched root candidate and pending peer after async verification', async () => {
+    const candidateValues = vi.fn();
+    const candidateConflict = vi.fn();
+    const peerValues = vi.fn();
+    const peerConflict = vi.fn();
+    const eventValues = vi.fn();
+    const tx = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            limit: vi.fn().mockResolvedValue([]),
+          })),
+        })),
+      })),
+      insert: vi.fn((table: unknown) => {
+        if (table === tables.federationNamespaceCandidate) {
+          return {
+            values: vi.fn((values: unknown) => {
+              candidateValues(values);
+              return { onConflictDoUpdate: candidateConflict };
+            }),
+          };
+        }
+        if (table === tables.federatedPeer) {
+          return {
+            values: vi.fn((values: unknown) => {
+              peerValues(values);
+              return { onConflictDoUpdate: peerConflict };
+            }),
+          };
+        }
+        return {
+          values: vi.fn((values: unknown) => {
+            eventValues(values);
+            return Promise.resolve();
+          }),
+        };
+      }),
+    };
+    const database = {
+      db: {
+        query: {
+          federatedPeer: {
+            findFirst: vi.fn().mockResolvedValue({ activeNamespaceId: 12 }),
+          },
+        },
+        select: vi.fn(() => ({
+          from: vi.fn(() => ({
+            where: vi.fn(() => ({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  rootKeyFingerprint: 'sha256:old',
+                  rootPublicKey: Buffer.alloc(32, 1).toString('base64'),
+                },
+              ]),
+            })),
+          })),
+        })),
+        transaction: vi.fn((run: (value: typeof tx) => Promise<void>) =>
+          run(tx),
+        ),
+      },
+    };
+    const discovery = {
+      fetchWellKnown: vi.fn().mockResolvedValue({
+        rootKey: { ed25519: Buffer.alloc(32, 2).toString('base64') },
+        keys: [
+          {
+            keyId: 'peer.example/key-1',
+            ed25519: Buffer.alloc(32, 3).toString('base64'),
+            notBefore: Date.now() - 1000,
+            notAfter: Date.now() + 1000,
+          },
+        ],
+      }),
+    };
+    const signature = { verifyWithKey: vi.fn().mockResolvedValue(true) };
+    const service = new FederationRecognitionService(
+      database as never,
+      discovery as never,
+      signature as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const verify = (
+      service as unknown as {
+        verifyInboundRecognize: (params: {
+          domain: string;
+          keyId: string;
+          signedRequest: typeof signedRequest;
+          headers: typeof recognizeHeaders;
+          signatureExpires: number;
+          namespaceEcho?: number;
+        }) => Promise<void>;
+      }
+    ).verifyInboundRecognize.bind(service);
+
+    await verify({
+      domain: 'Peer.Example.',
+      keyId: 'peer.example/key-1',
+      signedRequest,
+      headers: recognizeHeaders,
+      signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      namespaceEcho: 44,
+    });
+
+    expect(candidateValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nextDomain: 'peer.example',
+        matchedNamespaceId: null,
+        rootPublicKey: Buffer.alloc(32, 2).toString('base64'),
+        peerAssignedLocalNamespaceId: 44,
+        status: 'pending',
+        failedCode: null,
+        failedMessage: null,
+      }),
+    );
+    expect(peerValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        domain: 'peer.example',
+        trustLevel: 'pending',
+        recognizesPeer: true,
+        localServiceAvailable: true,
+      }),
+    );
+    expect(eventValues).toHaveBeenCalledWith({
+      domain: 'peer.example',
+      type: 'pending',
+      reason: 'verified namespace candidate with new root',
+    });
+  });
+
+  it('starts one async verifier per normalized domain and returns pending while it runs', async () => {
+    const { service, verify } = subject(null);
+    let release!: () => void;
+    verify.mockReturnValue(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const params = {
+      domain: 'Peer.Example.',
+      keyId: 'peer.example/key-1',
+      signedRequest,
+      headers: recognizeHeaders,
+      signatureExpires: Math.floor(Date.now() / 1000) + 300,
+    };
+
+    await expect(service.submitInboundRecognize(params)).resolves.toEqual({
+      ok: true,
+      status: 'pending',
+      message: 'verification in progress',
+    });
+    await expect(service.submitInboundRecognize(params)).resolves.toEqual({
+      ok: true,
+      status: 'pending',
+      message: 'verification in progress',
+    });
+
+    expect(verify).toHaveBeenCalledExactlyOnceWith({
+      ...params,
+      domain: 'peer.example',
+    });
+    release();
   });
 });
 

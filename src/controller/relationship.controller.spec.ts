@@ -2,16 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
 import { RelationshipController } from './relationship.controller.js';
 
-/** Constructor order: federation, clientStateFeed, userIntents, userQuota, memberIntents. */
+/** Constructor order: clientStateFeed, userIntents, userQuota, memberIntents. */
 function build(overrides: {
-  federation?: unknown;
   clientStateFeed?: unknown;
   userIntents?: unknown;
   userQuota?: unknown;
   memberIntents?: unknown;
 }): RelationshipController {
   return new RelationshipController(
-    (overrides.federation ?? {}) as never,
     (overrides.clientStateFeed ?? {}) as never,
     (overrides.userIntents ?? {}) as never,
     (overrides.userQuota ?? {}) as never,
@@ -215,7 +213,6 @@ describe('RelationshipController.requestRelationship', () => {
       executeAddressed: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
     };
     const controller = build({
-      federation: { ourDomain: 'us.test' },
       userQuota: { tick: vi.fn() },
       memberIntents,
     });
@@ -246,7 +243,6 @@ describe('RelationshipController.requestRelationship', () => {
       }),
     };
     const controller = build({
-      federation: { ourDomain: 'us.test' },
       userQuota,
       memberIntents,
     });
@@ -319,7 +315,6 @@ describe('RelationshipController.requestRelationship', () => {
   });
 
   it('runs the addressed request synchronously with in-transaction quota admission', async () => {
-    const federationService = { ourDomain: 'us.test' };
     const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
     const admissionTx = { admission: true };
     const userIntents = {
@@ -329,7 +324,6 @@ describe('RelationshipController.requestRelationship', () => {
       }),
     };
     const controller = build({
-      federation: federationService,
       userIntents,
       userQuota,
     });
@@ -354,12 +348,11 @@ describe('RelationshipController.requestRelationship', () => {
     expect(userQuota.tick).toHaveBeenCalledWith(7, 'requests', admissionTx);
   });
 
-  it('rejects an addressed request toward our own domain', async () => {
-    const userIntents = { execute: vi.fn() };
-    const controller = build({
-      federation: { ourDomain: 'us.test' },
-      userIntents,
-    });
+  it('keeps the local public domain as an addressed remote target', async () => {
+    const userIntents = {
+      execute: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
+    };
+    const controller = build({ userIntents });
 
     await expect(
       controller.requestRelationship({ user: { userId: 7 } } as never, {
@@ -367,11 +360,16 @@ describe('RelationshipController.requestRelationship', () => {
         domain: 'us.test',
         displayName: 'Bob',
       }),
-    ).resolves.toMatchObject({
-      code: BusinessCode.VALIDATION_FAILED,
-      data: { status: 'REJECTED', reason: 'INVALID_TARGET' },
-    });
-    expect(userIntents.execute).not.toHaveBeenCalled();
+    ).resolves.toEqual({ status: 'OK' });
+    expect(userIntents.execute).toHaveBeenCalledWith(
+      {
+        userId: 7,
+        decision: 'REQUESTED',
+        target: { account: 'bob', domain: 'us.test' },
+        note: '',
+      },
+      expect.objectContaining({ admissionInTx: expect.any(Function) }),
+    );
   });
 
   it('returns an unavailable actor as a business rejection', async () => {

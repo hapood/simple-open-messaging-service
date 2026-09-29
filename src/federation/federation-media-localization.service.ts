@@ -19,7 +19,6 @@ import {
   extractDigests,
 } from '../upload/file-content.js';
 import { UploadService } from '../upload/upload.service.js';
-import { loadFederationConfig } from './federation.config.js';
 import {
   federationFileSyncKind,
   isFederatedMediaContentType,
@@ -38,8 +37,6 @@ export interface FederationForwardAssetAuthorization {
 /** Localizes peer-hosted message and forward-bundle assets into the local CAS. */
 @Injectable()
 export class FederationMediaLocalizationService {
-  private readonly config = loadFederationConfig();
-
   constructor(
     private readonly database: DatabaseService,
     private readonly upload: UploadService,
@@ -132,10 +129,7 @@ export class FederationMediaLocalizationService {
       const batchId = await this.restageFailedInboundMessage(msg, {
         peerDomain,
         fromAccount: msg.creatorAccount,
-        fromDomain:
-          msg.creatorDomain === 'local'
-            ? this.config.domain
-            : msg.creatorDomain,
+        fromDomain: msg.creatorDomain,
         toAccount,
       });
       if (batchId) {
@@ -145,9 +139,7 @@ export class FederationMediaLocalizationService {
               peerDomain,
               digest,
               msg.creatorAccount!,
-              msg.creatorDomain === 'local'
-                ? this.config.domain
-                : msg.creatorDomain!,
+              msg.creatorDomain!,
               toAccount,
               msg.originSeq!,
               offset,
@@ -167,7 +159,7 @@ export class FederationMediaLocalizationService {
       msg,
       peerDomain,
       msg.creatorAccount,
-      msg.creatorDomain === 'local' ? this.config.domain : msg.creatorDomain,
+      msg.creatorDomain,
       toAccount,
       msg.originSeq ?? msg.seq,
       federationVersion,
@@ -191,8 +183,7 @@ export class FederationMediaLocalizationService {
     );
     return {
       fromAccount: msg.creatorAccount,
-      fromDomain:
-        msg.creatorDomain === 'local' ? this.config.domain : msg.creatorDomain,
+      fromDomain: msg.creatorDomain,
       toAccount,
       sourceSeq: msg.originSeq ?? msg.seq,
     };

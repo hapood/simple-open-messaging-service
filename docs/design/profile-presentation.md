@@ -51,8 +51,10 @@ The frontend demand is isomorphic with the backend prefetch demand. It carries
 the local publisher namespace, the publisher-scoped exact profile subject, and
 the concrete `lookup`. `publisherNamespaceId` selects the locally recognized
 peer that can answer the request; `target.profileNamespaceId` is serialized as
-the S2S profile path's `:namespaceId`. The publisher namespace itself is never
-sent as a profile field. The demand does not carry `threadId`, `messageSeq`,
+the S2S profile path's `:namespaceId`. If it is `0`, any subject-domain path
+variable is serialized as the literal `local`; otherwise the retained target
+domain is used. This conversion occurs only at the transport boundary. The
+publisher namespace itself is never sent as a profile field. The demand does not carry `threadId`, `messageSeq`,
 Meta feed coordinates, `projection`, or a parallel `evidence` object. The
 display component passes this complete demand to the profile repository.
 
@@ -61,6 +63,12 @@ The immutable profile/cache identity remains:
 ```text
 (publisherNamespaceId, profileNamespaceId, account, domain, rev)
 ```
+
+The profile reference is immutable in storage, but its wire address is
+operation-specific: for a profile request with `profileNamespaceId: 0`, the
+request builder serializes every subject-domain path variable as `local`; for a
+positive profile namespace it serializes the retained canonical domain. This
+conversion does not rewrite `target.domain`.
 
 A demand never authorizes a different revision and never permits profile
 rebase. If the requested exact snapshot is unavailable, the component keeps

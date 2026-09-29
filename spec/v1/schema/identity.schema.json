@@ -4,23 +4,83 @@
   "title": "Federation v1 recognition and feed-head objects",
   "$defs": {
     "recognizeRequest": {
-      "type": "object",
-      "maxProperties": 0,
-      "additionalProperties": false
+      "oneOf": [
+        {
+          "type": "object",
+          "maxProperties": 0,
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["namespaceId"],
+          "properties": {
+            "namespaceId": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
     },
-    "recognizeOk": {
-      "type": "object",
-      "required": ["ok"],
-      "properties": { "ok": { "const": true } },
-      "additionalProperties": false
+    "recognizeResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["ok", "status"],
+          "properties": {
+            "ok": { "const": true },
+            "status": { "const": "pending" },
+            "message": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["ok", "status", "peerAssignedLocalNamespaceId"],
+          "properties": {
+            "ok": { "const": true },
+            "status": { "const": "recognized" },
+            "peerAssignedLocalNamespaceId": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["ok", "status", "code", "message"],
+          "properties": {
+            "ok": { "const": false },
+            "status": { "const": "failed" },
+            "code": { "$ref": "urn:somfp:v1:common#/$defs/safeInteger" },
+            "message": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      ]
     },
     "healthResult": {
-      "type": "object",
-      "required": ["status"],
-      "properties": {
-        "status": { "enum": ["available", "degraded", "unavailable"] }
-      },
-      "additionalProperties": false
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status", "peerAssignedLocalNamespaceId"],
+          "properties": {
+            "status": { "enum": ["available", "degraded"] },
+            "peerAssignedLocalNamespaceId": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status"],
+          "properties": {
+            "status": { "const": "unavailable" }
+          },
+          "additionalProperties": false
+        }
+      ]
     },
     "feedHeadHint": {
       "type": "object",

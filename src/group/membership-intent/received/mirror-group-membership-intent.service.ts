@@ -72,7 +72,7 @@ export interface MirrorGroupMembershipIntentDependencies {
   database: DatabaseService;
   clientFeed: ClientStateFeedService;
   peerFeed: PeerStateFeedService;
-  federation: Pick<FederationService, 'pushStateFeedDomains'>;
+  federation: Pick<FederationService, 'pushStateFeedNamespaces'>;
   /** The member-side mutation service owns transition-gated acceptance
    * confirmations sent back to the group authority. */
   memberMutations: GroupRelationshipMutationService;
@@ -119,7 +119,7 @@ interface ActivationContext {
     tombstoneEndSeq: number;
   };
   clientUpdates: PendingClientStateFeedUpdate[];
-  peers: Set<string>;
+  peers: Set<number>;
   routed: MirrorMembershipRouting;
 }
 
@@ -132,7 +132,7 @@ export class MirrorGroupMembershipIntentService {
     command: MirrorGroupMembershipIntentCommand,
   ): Promise<{ routed: MirrorMembershipRouting }> {
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
-    const peers = new Set<string>();
+    const peers = new Set<number>();
     const applied = await this.deps.database.db.transaction(async (tx) =>
       this.applyInTx(tx, command, clientUpdates, peers),
     );
@@ -146,10 +146,7 @@ export class MirrorGroupMembershipIntentService {
     }
     if (peers.size > 0)
       void this.deps.federation
-        .pushStateFeedDomains(peers.keys())
-        .catch((error: unknown) =>
-          this.logger.warn('mirror intent state-feed wake failed', error),
-        );
+        .pushStateFeedNamespaces(peers.keys());
     return { routed };
   }
 
@@ -160,7 +157,7 @@ export class MirrorGroupMembershipIntentService {
     tx: DatabaseTransaction,
     command: MirrorGroupMembershipIntentCommand,
     clientUpdates: PendingClientStateFeedUpdate[],
-    peers: Set<string>,
+    peers: Set<number>,
   ): Promise<{ routed: MirrorMembershipRouting; threadId?: number }> {
     const intent = validateReceivedIntentBody(command.body);
     if (!intent) return { routed: 'noop:expired-request' };
@@ -473,7 +470,7 @@ export class MirrorGroupMembershipIntentService {
         memberAccount,
         threadLock,
       });
-      peers.add(group.domain);
+      peers.add(group.namespaceId);
       await this.concludeMemberDirectionInTx(
         tx,
         threadId,
@@ -592,7 +589,7 @@ export class MirrorGroupMembershipIntentService {
         context.clientUpdates,
       );
     for (const domain of confirmed.keys()) context.peers.add(domain);
-    context.peers.add(group.domain);
+    context.peers.add(group.namespaceId);
     return { routed: context.routed, threadId: context.threadId };
   }
 
@@ -601,7 +598,7 @@ export class MirrorGroupMembershipIntentService {
     threadId: number,
     memberUserId: number,
     clientUpdates: PendingClientStateFeedUpdate[],
-    peers: Set<string>,
+    peers: Set<number>,
     requestStatus?: 'WITHDRAWN' | 'REJECTED',
     requestDirection?: 'INCOMING' | 'OUTGOING',
   ): Promise<void> {

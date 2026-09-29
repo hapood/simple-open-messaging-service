@@ -9,7 +9,6 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
-import { FederationService } from '../federation/federation.service.js';
 import { UserIntentService } from '../user/p2p-intent/authored/user-intent.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { businessEnvelope } from '../common/api-result.js';
@@ -36,7 +35,6 @@ import {
 @Controller('relationship')
 export class RelationshipController {
   constructor(
-    private readonly federationService: FederationService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly userIntents: UserIntentService,
     private readonly userQuota: UserQuotaService,
@@ -126,7 +124,7 @@ export class RelationshipController {
           target: { account, domain },
           decision: 'REQUESTED',
           note: dto.note ?? '',
-          ...(domain === 'local' || domain === this.federationService.ourDomain
+          ...(domain === 'local'
             ? {}
             : {
                 snapshot: {
@@ -139,12 +137,6 @@ export class RelationshipController {
       );
     }
     if (domain !== 'local') {
-      if (domain === this.federationService.ourDomain)
-        return businessEnvelope(
-          BusinessCode.VALIDATION_FAILED,
-          "local targets must use domain 'local'",
-          { status: 'REJECTED' as const, reason: 'INVALID_TARGET' },
-        );
       // The addressed request runs in the intent transaction like the local
       // branch: quota admission inside it, the peer feed item and post-commit
       // wake owned by the composed statement.

@@ -25,12 +25,24 @@ import {
   forwardBundleDependency,
   forwardBundleAsset,
   federatedPeer,
+  federationNamespaceCandidate,
+  identityNamespace,
   peerStateFeed,
   peerStateFeedPullCursor,
   relationshipPair,
   federationThreadHistoryGap,
   federationThreadSyncState,
 } from './schema.js';
+
+export const federationNamespaceCandidateRelations = relations(
+  federationNamespaceCandidate,
+  ({ one }) => ({
+    matchedNamespace: one(identityNamespace, {
+      fields: [federationNamespaceCandidate.matchedNamespaceId],
+      references: [identityNamespace.id],
+    }),
+  }),
+);
 
 export const federatedPeerRelations = relations(
   federatedPeer,

@@ -380,10 +380,9 @@ export class S2sController {
       pathName: 'account',
     });
     const account = requireAccount(parsed.pathValue, 'account');
-    // The endpoint serves OUR users and groups only, so the domain is implicitly ours. The account is
-    // the sole address segment — no `@`-joined address on the wire (the `@` is a UI input aid, split
-    // client-side).
-    const address: S2SAddress = { account, domain: this.federation.ourDomain };
+    // The endpoint serves OUR users and groups only. The account is the sole path segment;
+    // profile identity uses the publisher-local subject marker.
+    const address: S2SAddress = { account, domain: 'local' };
     const profile = await this.resourceOperation(() =>
       this.federation.getLocalAccountProfile(address),
     );

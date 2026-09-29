@@ -260,7 +260,19 @@ The consumer receives messages idempotently by `(source domain, thread, seq)`.
 Every message carries required, non-null author `namespaceId` and `profileRev`.
 Together they identify the exact immutable profile reference in the message
 publisher's namespace space. A positive `profileRev` is resolvable; `0` means
-no profile and MUST NOT trigger a profile request. A forward
+no profile and MUST NOT trigger a profile request.
+
+The author `namespaceId` follows the local-subject marker rules of
+[Core Protocol Section 6.2.1](./protocol.md#local-subject-marker-and-namespace-interpretation):
+`0` marks an author hosted by the source, and a positive value is the source's
+namespace for the author's home identity. A consumer MUST NOT infer author
+locality from the author domain string. A P2P item with
+`authorRef: THREAD_PEER_ACCOUNT` denotes the authenticated signer's own
+account and carries the same self-subject meaning; the consumer processes such
+an item, and a GROUP item whose author `namespaceId` equals the peer-assigned
+namespace disclosed by the source, under the processing-receipt rules of
+[Message Envelope, Section 3](./message/envelope.md#3-ordering-and-origin-time)
+without altering the carried profile reference. A forward
 consumer MAY fetch a bounded message interval concurrently with its bounded authoritative
 tombstone drain, but it does not complete reconciliation of that interval until
 both results have been applied. For a GROUP interval, it SHOULD first commit

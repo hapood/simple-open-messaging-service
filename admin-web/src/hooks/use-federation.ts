@@ -71,7 +71,7 @@ export function useUnblockFederationPeer() {
 export function useSetActiveFederationPeerNamespace() {
   const invalidate = useInvalidateFederation()
   return useMutation({
-    mutationFn: (v: { domain: string; namespaceId: number }) =>
+    mutationFn: (v: { domain: string; namespaceId?: number }) =>
       setActiveFederationPeerNamespace(v.domain, v.namespaceId),
     onSuccess: invalidate,
   })

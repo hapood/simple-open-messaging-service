@@ -25,7 +25,6 @@ import {
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
 import type { S2SAddress } from './federation-address.js';
-import { loadFederationConfig } from './federation.config.js';
 import {
   federationFileSyncKind,
   isFederatedMediaContentType,
@@ -90,8 +89,6 @@ export type FederationInboundMessageStoreResult =
 /** Persists one validated inbound message while preserving its transactional identity invariants. */
 @Injectable()
 export class FederationInboundMessageStoreService {
-  private readonly config = loadFederationConfig();
-
   constructor(
     private readonly threadAccess: FederationThreadAccessService,
     private readonly forwardBundles: ForwardBundleService,
@@ -119,10 +116,10 @@ export class FederationInboundMessageStoreService {
       downloadAuth,
       sequencePolicy,
     } = params;
-    const creator = toClientIdentity(
-      { ...incomingCreator, namespaceId: profileNamespaceId },
-      this.config.domain,
-    );
+    const creator = toClientIdentity({
+      ...incomingCreator,
+      namespaceId: profileNamespaceId,
+    });
     if (sequencePolicy) {
       mapFederationOriginSequence(incoming.originSeq, sequencePolicy);
     }

@@ -20,12 +20,12 @@ describe('query-denied authored membership revocation', () => {
     const writeGroupRelationshipIntentInTx = vi
       .fn()
       .mockResolvedValue(new Map([['peer.test', 3n]]));
-    const pushStateFeedDomains = vi.fn().mockResolvedValue(undefined);
+    const pushStateFeedNamespaces = vi.fn().mockResolvedValue(undefined);
     const service = new GroupAuthoredMembershipIntentService({
       database: target.database as never,
       clientFeed: { notifyFeedUpdates: vi.fn() } as never,
       peerFeed: {} as never,
-      federation: { pushStateFeedDomains } as never,
+      federation: { pushStateFeedNamespaces } as never,
       relationshipMutations: { writeGroupRelationshipIntentInTx } as never,
     });
 
@@ -57,7 +57,7 @@ describe('query-denied authored membership revocation', () => {
         },
       },
     );
-    expect(pushStateFeedDomains).toHaveBeenCalledOnce();
+    expect(pushStateFeedNamespaces).toHaveBeenCalledOnce();
   });
 
   it('calls the member-authored writer and returns a normal no-op on a stale generation', async () => {
@@ -70,8 +70,7 @@ describe('query-denied authored membership revocation', () => {
       clientFeed: { notifyFeedUpdates: vi.fn() } as never,
       relationshipMutations: { writeMemberRelationshipIntentInTx } as never,
       federation: {
-        ourDomain: 'local.test',
-        pushStateFeedDomains: vi.fn(),
+        pushStateFeedNamespaces: vi.fn(),
       },
     });
 

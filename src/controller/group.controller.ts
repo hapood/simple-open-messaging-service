@@ -24,7 +24,6 @@ import { isBusinessRejection } from '../common/business-command-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { GroupService } from '../group/group.service.js';
-import { FederationService } from '../federation/federation.service.js';
 import { normalizeAccount } from '../common/account.js';
 import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
@@ -64,7 +63,6 @@ import {
 export class GroupController {
   constructor(
     private readonly groupService: GroupService,
-    private readonly federationService: FederationService,
     private readonly durableTasks: DurableTaskQueueService,
     private readonly rosterRoles: GroupRosterRoleService,
     private readonly groupIntents: GroupAuthoredMembershipIntentService,
@@ -116,8 +114,7 @@ export class GroupController {
           const domain = user.domain.trim().toLowerCase();
           const address = {
             account: normalizeAccount(user.account),
-            domain:
-              domain === this.federationService.ourDomain ? 'local' : domain,
+            domain,
           };
           return [JSON.stringify(address), address];
         }),

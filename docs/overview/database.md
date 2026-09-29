@@ -210,8 +210,10 @@ The latest operation for a stable member is the authoritative local roster:
 peer authorization and its delta visibility floor; it does not own a roster
 copy.
 
-`GroupMetaMemberFeed` stores `MEMBER_UPSERT { role, profileRev }` and internally stores
-an empty body for `MEMBER_DEPART`; federation serialization omits the body entirely.
+`GroupMetaMemberFeed` stores the complete member body (`role`, selected profile
+namespace, and `profileRev`) for both `MEMBER_UPSERT` and `MEMBER_DEPART`. A departure
+body preserves the final reference for coordinate continuity; it is not a profile-fetch
+request.
 `GroupMetaProfileFeed` is the compacted group-profile reference in the same
 group coordinate space.
 
@@ -309,7 +311,7 @@ similarity is not an identity substitute.
 
 ### Federation (S2S)
 
-- **FederatedPeer** — stable domain recognition and reachability state. `activeNamespaceId` points to the currently verified identity namespace. `peerAcceptanceConfirmed` records evidence that the peer recognizes this node, supplied by a valid Recognize result, an inbound Recognize request, or a valid `available`/`degraded` Health result. `trustLevel` is `unrecognized | establishing | available | degraded | halted`; `establishing` means local recognition is complete but peer acceptance is unproven, while `available` and `degraded` distinguish current reachability after acceptance. Daily federation quota overrides belong to the active identity namespace, not the domain.
+- **FederatedPeer** — stable domain recognition and reachability state. `activeNamespaceId` points to the currently verified identity namespace. `peerAcceptanceConfirmed` records evidence that the peer recognizes this node, supplied by a valid Recognize result, an inbound Recognize request, or a valid `available`/`degraded` Health result. `trustLevel` is `unrecognized | establishing | pending | available | degraded | halted`; `pending` means a verified namespace candidate is awaiting administrator review, `establishing` means local recognition is complete but peer acceptance is unproven, while `available` and `degraded` distinguish current reachability after acceptance. Daily federation quota overrides belong to the active identity namespace, not the domain.
 - **IdentityNamespace** — immutable verified peer-identity epochs. Reset retires the active namespace without rewriting data already owned by it; the next successful verification creates and activates a new integer namespace.
 - **FederatedPeerEvent** — append-only trust-lifecycle log (decoupled, no FK — history survives any row change).
 - **S2SKeyCache** — cached peer signing keys (JWKS-style, TTL'd).
@@ -364,8 +366,9 @@ CREATE TYPE "AdminRole" AS ENUM ('SUPER_ADMIN', 'ADMIN', 'VIEWER');
    state-feed coordinate. Content/unread snapshots use `threadFeedEndId` and the
    independent thread-feed cursor. `HELLO` advertises both heads; subsequent
    `STATE_FEED_UPDATED` and `THREAD_FEED_UPDATED` wakes drain their respective feeds.
-6. **Lifecycle is model-specific**: the origin appends bodyless Group Meta
-   `MEMBER_DEPART`; mirrors and clients physically delete current member projections.
+6. **Lifecycle is model-specific**: the origin appends Group Meta
+   `MEMBER_DEPART` with the final member body; mirrors and clients physically delete
+   current member projections without fetching that profile.
    Historical messages retain their own author Address and profile reference.
    Media-CAS blobs are reclaimed only after reachability checks.
 7. **BigInt serialization**: internal BigInt identifiers are uniformly serialized to strings by the global `SerializeInterceptor`. Client thread-feed IDs and message/tombstone sequences are int32 coordinates.

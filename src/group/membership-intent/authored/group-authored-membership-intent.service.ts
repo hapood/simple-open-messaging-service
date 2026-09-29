@@ -222,7 +222,7 @@ export class GroupAuthoredMembershipIntentService {
   }
 
   private publishWakes(
-    peers: Map<string, bigint>,
+    peers: Map<number, bigint>,
     clientUpdates: PendingClientStateFeedUpdate[],
   ): void {
     try {
@@ -236,13 +236,7 @@ export class GroupAuthoredMembershipIntentService {
     }
     if (peers.size > 0)
       void this.deps.federation
-        .pushStateFeedDomains(peers.keys())
-        .catch((error: unknown) =>
-          this.logger.warn(
-            'group-authored membership intent state-feed wake failed',
-            error,
-          ),
-        );
+        .pushStateFeedNamespaces(peers.keys());
   }
 
   private async lockAndValidateInTx(
@@ -867,7 +861,7 @@ export class GroupAuthoredMembershipIntentService {
   private async applyInTx(
     context: ValidatedDecision,
     clientUpdates: PendingClientStateFeedUpdate[],
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     if (context[validated] !== true || context.threadLock.tx !== context.tx)
       throw new Error('invalid group-authored membership intent lock context');
     switch (context.kind) {
@@ -883,7 +877,7 @@ export class GroupAuthoredMembershipIntentService {
   private async applyAcceptanceInTx(
     context: Extract<ValidatedDecision, { kind: 'acceptance' }>,
     clientUpdates: PendingClientStateFeedUpdate[],
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     const { tx } = context;
     const result = await tx.execute<{
       canonicalRosterChanged: boolean;
@@ -905,14 +899,14 @@ export class GroupAuthoredMembershipIntentService {
       });
     // The ACK feed belongs only to the applicant's peer. Wake it after commit.
     return context.member.domain !== 'local' && row.recipientFeedId !== null
-      ? new Map([[context.member.domain, BigInt(row.recipientFeedId)]])
+      ? new Map([[context.member.namespaceId, BigInt(row.recipientFeedId)]])
       : new Map();
   }
 
   private async applyRevocationInTx(
     context: Extract<ValidatedDecision, { kind: 'revocation' }>,
     clientUpdates: PendingClientStateFeedUpdate[],
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     const { tx } = context;
     const result = await tx.execute<{
       requestId: string;
@@ -934,7 +928,7 @@ export class GroupAuthoredMembershipIntentService {
       });
     const peers =
       context.member.domain !== 'local' && row.recipientFeedId !== null
-        ? new Map([[context.member.domain, BigInt(row.recipientFeedId)]])
+        ? new Map([[context.member.namespaceId, BigInt(row.recipientFeedId)]])
         : new Map();
     if (row.pairChanged && context.localMemberId !== null) {
       const conclusion =
@@ -945,7 +939,7 @@ export class GroupAuthoredMembershipIntentService {
           'REVOKED',
           clientUpdates,
         );
-      for (const [domain, feedId] of conclusion) peers.set(domain, feedId);
+      for (const [namespaceId, feedId] of conclusion) peers.set(namespaceId, feedId);
     }
     return peers;
   }
@@ -953,7 +947,7 @@ export class GroupAuthoredMembershipIntentService {
   private async applyRequestInTx(
     context: Extract<ValidatedDecision, { kind: 'request' }>,
     clientUpdates: PendingClientStateFeedUpdate[],
-  ): Promise<Map<string, bigint>> {
+  ): Promise<Map<number, bigint>> {
     const { tx } = context;
     const result = await tx.execute<{
       requestId: string;
@@ -985,7 +979,7 @@ export class GroupAuthoredMembershipIntentService {
         groupAccount: context.authorization.account,
       });
     return context.member.domain !== 'local' && row.recipientFeedId !== null
-      ? new Map([[context.member.domain, BigInt(row.recipientFeedId)]])
+      ? new Map([[context.member.namespaceId, BigInt(row.recipientFeedId)]])
       : new Map();
   }
 }

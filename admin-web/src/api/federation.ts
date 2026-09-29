@@ -49,11 +49,11 @@ export function federationPeerNamespaces(
 
 export function setActiveFederationPeerNamespace(
   domain: string,
-  namespaceId: number,
+  namespaceId?: number,
 ): Promise<FederatedPeerNamespaceSwitchResult> {
   return request<FederatedPeerNamespaceSwitchResult>(
     `/admin/federation/peers/${encodeURIComponent(domain)}/namespaces/active`,
-    { namespaceId },
+    namespaceId === undefined ? {} : { namespaceId },
   );
 }
 
