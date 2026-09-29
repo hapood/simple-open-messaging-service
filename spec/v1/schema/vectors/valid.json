@@ -101,16 +101,21 @@
           1,
           2
         ],
-        "rootKey": {
-          "ed25519": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
-        },
+        "roots": [
+          {
+            "ed25519": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+            "notBefore": 1699990000000,
+            "notAfter": 1899990000000
+          }
+        ],
         "keys": [
           {
             "keyId": "a.example/key-1",
             "ed25519": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
+            "root": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
             "notBefore": 1699990000000,
-            "notAfter": 1800000000000,
-            "authorizationSignature": "mPwPCPikeeOi90FHS8cA/YhwWUYid11G8bQGOMMgidhOyW1/k9BbrK669CkBTlsDPyu/t4FDxqmZlrZZGSAkDA=="
+            "notAfter": 1899990000000,
+            "authorizationSignature": "xyJJS+reShl4dW0H10b0KXCD40MuXk9L9fsuwSU051gU2ldnijgi7jVbqF5e+759z4cUY3BG+864jdV/DIsJAw=="
           }
         ]
       }
@@ -122,6 +127,49 @@
         {},
         {
           "namespaceId": 7
+        },
+        {
+          "rotationProof": {
+            "challenge": "c2FtcGxlLWNoYWxsZW5nZS1ub25jZS0zMi1ieXRlcy1iYXNlNjQ",
+            "claimedRoot": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "created": 1699999999000,
+            "domain": "a.example",
+            "roots": [
+              {
+                "ed25519": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+                "notBefore": 1699990000000,
+                "notAfter": 1899990000000
+              },
+              {
+                "ed25519": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+                "notBefore": 1699995000000,
+                "notAfter": 1999990000000
+              }
+            ],
+            "signature": "Vst671/Ru56e4kwPY6QhqpJb8MFQB01ex7Am4VYuzZRLrVrOCesG8DtXj+f0kdHQTw1jpNQdRsnJvmp53zT9DQ=="
+          }
+        },
+        {
+          "namespaceId": 7,
+          "rotationProof": {
+            "challenge": "c2FtcGxlLWNoYWxsZW5nZS1ub25jZS0zMi1ieXRlcy1iYXNlNjQ",
+            "claimedRoot": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+            "created": 1699999999000,
+            "domain": "a.example",
+            "roots": [
+              {
+                "ed25519": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+                "notBefore": 1699990000000,
+                "notAfter": 1899990000000
+              },
+              {
+                "ed25519": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+                "notBefore": 1699995000000,
+                "notAfter": 1999990000000
+              }
+            ],
+            "signature": "Vst671/Ru56e4kwPY6QhqpJb8MFQB01ex7Am4VYuzZRLrVrOCesG8DtXj+f0kdHQTw1jpNQdRsnJvmp53zT9DQ=="
+          }
         }
       ]
     },
@@ -871,6 +919,33 @@
           "status": "failed",
           "code": 50001,
           "message": "verification failed"
+        }
+      ]
+    },
+    {
+      "name": "recognize result",
+      "schema": "urn:somfp:v1:identity#/$defs/recognizeResult",
+      "values": [
+        {
+          "ok": true,
+          "status": "pending",
+          "challenge": "c2FtcGxlLWNoYWxsZW5nZS1ub25jZS0zMi1ieXRlcy1iYXNlNjQ"
+        },
+        {
+          "ok": true,
+          "status": "pending",
+          "message": "verification in progress"
+        },
+        {
+          "ok": true,
+          "status": "recognized",
+          "peerAssignedLocalNamespaceId": 7
+        },
+        {
+          "ok": false,
+          "status": "failed",
+          "code": 50029,
+          "message": "root rotation rejected"
         }
       ]
     }

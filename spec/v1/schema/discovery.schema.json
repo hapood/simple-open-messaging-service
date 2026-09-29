@@ -3,7 +3,7 @@
   "$id": "urn:somfp:v1:discovery",
   "title": "GET /.well-known/somfp response for a v1-capable node",
   "type": "object",
-  "required": ["protocolVersions", "rootKey", "keys"],
+  "required": ["protocolVersions", "roots", "keys"],
   "properties": {
     "software": { "type": "string", "minLength": 1, "maxLength": 128 },
     "protocolVersions": {
@@ -13,15 +13,8 @@
       "contains": { "const": 1 },
       "items": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
     },
-    "rootKey": {
-      "type": "object",
-      "required": ["ed25519"],
-      "properties": {
-        "ed25519": {
-          "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
-        }
-      },
-      "additionalProperties": false
+    "roots": {
+      "$ref": "#/$defs/rootGroup"
     },
     "keys": {
       "type": "array",
@@ -31,6 +24,7 @@
         "required": [
           "keyId",
           "ed25519",
+          "root",
           "notBefore",
           "notAfter",
           "authorizationSignature"
@@ -38,6 +32,9 @@
         "properties": {
           "keyId": { "type": "string", "minLength": 3 },
           "ed25519": {
+            "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
+          },
+          "root": {
             "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
           },
           "notBefore": {
@@ -54,5 +51,28 @@
       }
     }
   },
-  "additionalProperties": true
+  "additionalProperties": true,
+  "$defs": {
+    "rootKeyEntry": {
+      "type": "object",
+      "required": ["ed25519", "notBefore", "notAfter"],
+      "properties": {
+        "ed25519": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
+        },
+        "notBefore": {
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+        },
+        "notAfter": {
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+        }
+      },
+      "additionalProperties": false
+    },
+    "rootGroup": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/rootKeyEntry" }
+    }
+  }
 }

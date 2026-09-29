@@ -3,6 +3,38 @@
   "$id": "urn:somfp:v1:identity",
   "title": "Federation v1 recognition and feed-head objects",
   "$defs": {
+    "rotationProof": {
+      "type": "object",
+      "required": [
+        "challenge",
+        "claimedRoot",
+        "created",
+        "domain",
+        "roots",
+        "signature"
+      ],
+      "properties": {
+        "challenge": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64UrlNonce"
+        },
+        "claimedRoot": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
+        },
+        "created": {
+          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
+        },
+        "domain": {
+          "$ref": "urn:somfp:v1:common#/$defs/domain"
+        },
+        "roots": {
+          "$ref": "urn:somfp:v1:discovery#/$defs/rootGroup"
+        },
+        "signature": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Signature"
+        }
+      },
+      "additionalProperties": false
+    },
     "recognizeRequest": {
       "oneOf": [
         {
@@ -19,6 +51,25 @@
             }
           },
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["rotationProof"],
+          "properties": {
+            "rotationProof": { "$ref": "#/$defs/rotationProof" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["namespaceId", "rotationProof"],
+          "properties": {
+            "namespaceId": {
+              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+            },
+            "rotationProof": { "$ref": "#/$defs/rotationProof" }
+          },
+          "additionalProperties": false
         }
       ]
     },
@@ -30,6 +81,9 @@
           "properties": {
             "ok": { "const": true },
             "status": { "const": "pending" },
+            "challenge": {
+              "$ref": "urn:somfp:v1:common#/$defs/base64UrlNonce"
+            },
             "message": { "type": "string" }
           },
           "additionalProperties": false

@@ -1,5 +1,15 @@
 # Domain re-binding
 
+> **Status (2025 root-identity redesign):** the parts of this document that key
+> identity on `rootKeyFingerprint` are superseded by
+> [`federation-root-identity-model.md`](./federation-root-identity-model.md).
+> The wire contract is now `spec/v1/recognition.md` Sections 4.4–4.5 and
+> `spec/v1/transport-security.md` Section 1.5: identity matching is by the root
+> public key itself (no fingerprint), the arrival may also rotate the root, and
+> the review queue is `FederationIdentityReview`. This document remains the
+> record of the domain re-binding design and will be rewritten in the
+> implementation phase.
+
 ## Motivation
 
 Identity is the namespace, not the domain. Once every stored fact, authorization, cursor, and

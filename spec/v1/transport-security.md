@@ -13,12 +13,16 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 `GET /.well-known/somfp` without a query is a public discovery request and does not use an HTTP Message Signature. A successful response MUST use `Content-Type: application/json` and return this bare JSON object:
 
 ```ts
+interface RootKeyEntry {
+  ed25519: Base64Ed25519Key;
+  notBefore: EpochMilliseconds;
+  notAfter: EpochMilliseconds;
+}
+
 interface DiscoveryDocumentV1View {
   software?: string;
   protocolVersions: number[];
-  rootKey: {
-    ed25519: Base64Ed25519Key;
-  };
+  roots: RootKeyEntry[];
   keys: SigningKeyCertificate[];
 }
 ```
@@ -27,21 +31,23 @@ The interface above is the view that MUST be validated after selecting v1; it do
 
 `software` is an optional, untrusted opaque diagnostic string. If present, its UTF-8 encoding MUST be 1–128 bytes and MUST NOT contain a Unicode control character. A consumer MUST NOT parse or depend on its format and MUST NOT use it for version negotiation, capability decisions, authentication, authorization, or implementation-specific behavior.
 
-`protocolVersions` MUST follow [Core Protocol, Section 2](./protocol.md). `rootKey` is the server-identity anchor object: a container whose actual Ed25519 root public-key value is `rootKey.ed25519`.
+`protocolVersions` MUST follow [Core Protocol, Section 2](./protocol.md). `roots` is the server-identity anchor set: the root public keys that currently authorize this server's signing keys, together with each key's half-open validity interval. Within one document, `roots[].ed25519` values MUST NOT repeat, and at least one root MUST be currently valid when the response is generated. A root public key is not self-certifying; it is trusted only through the pinning rules in Section 1.2. Root keys and HTTP signing keys have distinct roles; equality of their public-key values MUST NOT be a protocol requirement.
 
-`keys` MUST be a non-empty array and may contain old, current, and not-yet-active signing-key certificates simultaneously. `keyId` values MUST NOT repeat within one document, and at least one certificate MUST be valid when the response is generated. Root keys and HTTP signing keys have distinct roles; equality of their public-key values MUST NOT be a protocol requirement.
+`keys` MUST be a non-empty array and may contain old, current, and not-yet-active signing-key certificates simultaneously. `keyId` values MUST NOT repeat within one document, and at least one certificate MUST be valid when the response is generated. Each certificate names its authorizing root in `keys[].root`; that root MUST appear in `roots` with a validity interval enclosing the certificate's own interval.
 
 | JSON key                        | Required | Role and example                                                                                                                                                                                                        |
 | ------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `software`                      | No       | Untrusted diagnostic text such as `example-server/1.4.2`; never used for protocol decisions.                                                                                                                            |
 | `protocolVersions`              | Yes      | The complete set of fully supported majors, such as `[1, 2]`.                                                                                                                                                           |
-| `rootKey`                       | Yes      | The long-lived server-identity anchor object; a container rather than a standalone public-key value.                                                                                                                    |
-| `rootKey.ed25519`               | Yes      | The Ed25519 root public key, such as `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`; it does not directly sign ordinary HTTP requests.                                                                                  |
+| `roots`                         | Yes      | The root identity anchor set: every root public key currently authorized to sign this server's signing-key certificates, with validity intervals; may overlap during a root rotation.                                    |
+| `roots[].ed25519`               | Yes      | An Ed25519 root public key, such as `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`; a root does not directly sign ordinary HTTP requests.                                                                                |
+| `roots[].notBefore` / `notAfter`| Yes      | The half-open validity interval `[notBefore, notAfter)` in Unix epoch milliseconds during which this root may authorize certificates.                                                                                    |
 | `keys`                          | Yes      | Root-authorized signing-key certificates, permitting rotation overlap.                                                                                                                                                  |
 | `keys[].keyId`                  | Yes      | A domain-bound certificate name such as `a.example/key-1`; neither a public key nor a secret.                                                                                                                           |
 | `keys[].ed25519`                | Yes      | The online HTTP request-signing public key, such as `Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=`.                                                                                                                       |
-| `keys[].notBefore` / `notAfter` | Yes      | The half-open validity interval `[notBefore, notAfter)` in Unix epoch milliseconds.                                                                                                                                     |
-| `keys[].authorizationSignature` | Yes      | An Ed25519 signature by the root private key over the Section 1.3 certificate statement. See [Peer Recognition, Section 10](./recognition.md#10-complete-http-construction-examples) for a complete verifiable example. |
+| `keys[].root`                   | Yes      | The base64 Ed25519 public key of the root authorizing this certificate; MUST byte-equal one `roots[].ed25519` entry.                                                                                                    |
+| `keys[].notBefore` / `notAfter` | Yes      | The half-open validity interval `[notBefore, notAfter)` in Unix epoch milliseconds, enclosed by the authorizing root's interval.                                                                                          |
+| `keys[].authorizationSignature` | Yes      | An Ed25519 signature by the authorizing root's private key over the Section 1.3 certificate statement. See [Peer Recognition, Section 10](./recognition.md#10-complete-http-construction-examples) for a complete verifiable example. |
 
 A consumer selecting v1 MUST ignore well-known fields undefined by v1 and MUST NOT create v1 surface, authorization, or security branches from them. v1 does not publish runtime limits through well-known. Each operation's deterministic responses govern page, body, media, quota, group-capacity, and retention limits.
 
@@ -49,9 +55,13 @@ A consumer selecting v1 MUST ignore well-known fields undefined by v1 and MUST N
 
 A root public key cannot establish first trust through a self-signature. First trust comes from hostname-validated HTTPS. A root signature binds a rotatable signing key to that root, and an HTTP Message Signature proves possession of the signing private key. These purposes MUST NOT be conflated.
 
+A receiver pins exactly one root public key per recognition epoch of a peer: the root the sender claims in `S2S-Root-Key` and under which the request's certificate is authorized (Section 3.3). The claimed root MUST byte-equal one currently valid entry of the sender's well-known `roots` group. The pin, not the whole group, is the local trust anchor.
+
 [Federation v1 Peer Recognition, Section 4](./recognition.md#4-identity-verification-recognition-and-pinning) defines strict base64 handling, byte-for-byte root pinning, the first-Recognize validation order, domain binding, and the pin transaction. Successfully reading well-known alone MUST NOT establish recognition.
 
-Subsequent validation of an established peer MUST use the local pinned root rather than treating a newly fetched root as a new trust anchor. On a well-known refresh, the root public key MUST exactly equal the pin byte for byte. A mismatch is an identity contradiction: the peer MUST enter `halted`, record the identity-mismatch reason, and reject ordinary S2S operations. v1 does not rotate a root key within an existing recognition relationship. Adopting a new root requires a destructive reset and fresh reciprocal recognition; two Recognize HTTP requests are not mandatory.
+Subsequent validation of an established peer MUST use the local pinned root rather than treating a newly fetched root as a new trust anchor. On a well-known refresh of a recognized peer, the pinned root MUST remain present in the fetched `roots` group byte for byte, and the receiver MUST continue to authenticate requests only against certificates authorized by the pinned root until a rotation is accepted under Section 1.5. A fetched group that no longer contains the pin is an identity contradiction, not rotation: the peer MUST enter `halted`, record the identity-mismatch reason, and reject ordinary S2S operations — unless a root rotation is completed through Recognize under Section 1.5, which requires proof of possession of the pinned root's private key.
+
+Normal addition, overlap, expiration, and removal of signing certificates authorized by the pinned root MUST NOT clear recognition or acceptance evidence.
 
 ### 1.3 Root-authorized signing-key certificate
 
@@ -59,23 +69,24 @@ Subsequent validation of an established peer MUST use the local pinned root rath
 interface SigningKeyCertificate {
   keyId: KeyId;
   ed25519: Base64Ed25519Key;
+  root: Base64Ed25519Key;
   notBefore: EpochMilliseconds;
   notAfter: EpochMilliseconds;
   authorizationSignature: Base64Ed25519Signature;
 }
 ```
 
-The domain in `keyId` MUST equal the publisher's server domain, and `notBefore < notAfter`. The certificate statement therefore does not repeat a `domain` field; its complete canonical `keyId` provides domain binding. A publisher MAY choose any unique `KeyName` satisfying the shared `KeyId` grammar; the name MUST NOT be interpreted as key age, rotation order, activation state, priority, or predecessor/successor relationship. Once published under one root identity, a `keyId` is permanently bound to the same `ed25519`. The publisher MUST NOT reuse it for another public key.
+The domain in `keyId` MUST equal the publisher's server domain, and `notBefore < notAfter`. The certificate statement therefore does not repeat a `domain` field; its complete canonical `keyId` provides domain binding. `root` MUST byte-equal one `roots[].ed25519` entry of the same document, and the certificate's validity interval MUST be enclosed by that root's interval. A publisher MAY choose any unique `KeyName` satisfying the shared `KeyId` grammar; the name MUST NOT be interpreted as key age, rotation order, activation state, priority, or predecessor/successor relationship. Once published under one root identity, a `keyId` is permanently bound to the same `ed25519`. The publisher MUST NOT reuse it for another public key.
 
-`authorizationSignature` is an Ed25519 signature by the root private key over this canonical certificate statement. The statement is UTF-8 JSON with fixed field order and no extra whitespace. `notBefore` and `notAfter` use the JSON integer literals from the certificate:
+`authorizationSignature` is an Ed25519 signature by the private key of the certificate's `root` over this canonical certificate statement. The statement is UTF-8 JSON with fixed field order and no extra whitespace. `notBefore` and `notAfter` use the JSON integer literals from the certificate:
 
 ```text
-{"keyId":"<key-id>","ed25519":"<base64-key>","usage":"somfp-http-message-signature","notBefore":<epoch-ms>,"notAfter":<epoch-ms>}
+{"keyId":"<key-id>","ed25519":"<base64-key>","root":"<base64-root-key>","usage":"somfp-http-message-signature","notBefore":<epoch-ms>,"notAfter":<epoch-ms>}
 ```
 
 The statement above is the exact signed input used by v1 to validate `authorizationSignature`. A later major MAY reuse this shared certificate core or add its own certificate fields, but MUST NOT change existing fields or the v1 meaning of `authorizationSignature`. If an added field affects key authorization, the new major MUST define a new independently verifiable signature field or structure. Well-known needs no separate `certificateVersion`; the selected Federation major determines the applicable requirements.
 
-A consumer MUST validate `authorizationSignature` with the discovery document's root public key, or the pinned root public key for an established peer. The certificate authorizes HTTP request signing and signature validation only while `notBefore <= now < notAfter`. An expired or not-yet-active certificate MUST NOT be used to accept a request, although a consumer MAY cache one before activation. The consumer MUST evaluate this interval using its current UTC wall clock and MUST NOT add an implicit clock-skew grace period before `notBefore` or after `notAfter`.
+A consumer MUST validate `authorizationSignature` with the certificate's `root` public key, which MUST itself be a currently valid member of the discovery document's `roots` group — or, for an established peer, the pinned root. The certificate authorizes HTTP request signing and signature validation only while both its own interval and its authorizing root's interval satisfy `notBefore <= now < notAfter`. An expired or not-yet-active certificate or root MUST NOT be used to accept a request, although a consumer MAY cache one before activation. The consumer MUST evaluate these intervals using its current UTC wall clock and MUST NOT add an implicit clock-skew grace period before `notBefore` or after `notAfter`.
 
 ### 1.4 Signing-key rotation
 
@@ -97,9 +108,24 @@ The successor prepublication interval MUST be long enough for recognized receive
 
 The overlap window SHOULD normally be at least one hour and SHOULD normally be 24 hours or longer for peers that may be offline; an implementation MAY choose another value when its configured timing bounds provide equivalent protection. Signing-key certificates SHOULD have finite validity periods rather than remaining valid indefinitely.
 
-The publisher MUST keep the same `rootKey.ed25519` during ordinary signing-key rotation. Addition, activation, expiration, and removal of a signing key correctly authorized by the pinned root are normal rotation and MUST NOT change peer identity, initial-recognition confirmation time, cursors, mirrors, or existing authorization. A root public key differing byte for byte from the pin remains an identity contradiction and MUST be handled fail closed.
+The publisher MUST keep the same authorizing root during ordinary signing-key rotation. Addition, activation, expiration, and removal of a signing key correctly authorized by the pinned root are normal rotation and MUST NOT change peer identity, initial-recognition confirmation time, cursors, mirrors, or existing authorization. A root change is governed exclusively by Section 1.5; it is never implied by certificate churn.
 
-A receiver MAY cache certificates validated by the pinned root, but MUST validate the selected certificate's validity interval when authenticating a request. A receiver MUST reject a request using a `keyid` that is unpublished, invalidly authorized by the root, or not currently valid. For an established peer with a pinned root, a receiver of non-Health signed operations SHOULD obtain a newer well-known document when the selected `keyid` is absent or no longer valid in its local cache, subject to local rate limits and loop prevention. The refresh mechanism and its scheduling are implementation concerns described outside this wire specification. Temporary inability to obtain well-known is not identity loss. For signed operations that use such key discovery, including Recognize, temporary discovery failure is a retryable key-fetch failure, normally HTTP `503 INTERNAL`; if well-known is obtained but the `keyid` remains unauthorized or outside its validity interval, the result is HTTP `401 FEDERATION_BAD_SIGNATURE`. Health is different: inbound Health authentication MUST NOT initiate well-known discovery merely to answer the query. It uses only already available identity and certificate state; if the signer key cannot be resolved from that state, the request fails on the common authentication path. Only an authenticated request proceeds to Health status projection.
+A receiver MAY cache certificates validated by the pinned root, but MUST validate the selected certificate's validity interval when authenticating a request. A receiver MUST reject a request using a `keyid` that is unpublished, invalidly authorized by the pinned root, or not currently valid. For an established peer with a pinned root, a receiver of non-Health signed operations SHOULD obtain a newer well-known document when the selected `keyid` is absent or no longer valid in its local cache, subject to local rate limits and loop prevention. The refresh mechanism and its scheduling are implementation concerns described outside this wire specification. Temporary inability to obtain well-known is not identity loss. For signed operations that use such key discovery, including Recognize, temporary discovery failure is a retryable key-fetch failure, normally HTTP `503 INTERNAL`; if well-known is obtained but the `keyid` remains unauthorized or outside its validity interval, the result is HTTP `401 FEDERATION_BAD_SIGNATURE`. Health is different: inbound Health authentication MUST NOT initiate well-known discovery merely to answer the query. It uses only already available identity and certificate state; if the signer cannot be resolved and authenticated from that state, the query uniformly returns the `unavailable` status result under [Peer Recognition, Section 9](./recognition.md#9-health-query-and-privacy). Only an authenticated request proceeds to Health status projection.
+
+### 1.5 Root-key rotation
+
+A publisher MAY rotate its root identity. Rotation is a per-peer, administrator-gated protocol event, never a unilateral well-known change that receivers adopt by themselves.
+
+Publication rules:
+
+- Before its first use, the publisher MUST add the successor root to `roots` with `notBefore` at or before the present, while the predecessor root remains in `roots` and currently valid. During the overlap, both roots may authorize signing-key certificates, each certificate naming its authorizing root under `keys[].root`.
+- The predecessor root MUST remain published and currently valid until every recognized peer has accepted the rotation or the publisher has abandoned the rotation; removal of an unreplaced, still-pinned root is an identity contradiction for the peers that still pin it.
+- A receiver MUST NOT adopt a successor root merely because it appears in a fetched well-known document. Requests claiming a root the receiver has not pinned are authenticated only against the pinned root's certificates; a claim of an unpinned root is rejected like any other unauthenticated request.
+- The sole adoption path is a Recognize arrival under [Peer Recognition, Section 4.5](./recognition.md#45-root-rotation-arrival-challenge-and-proof): the receiver issues a single-use challenge, and the sender proves possession of the pinned root's private key by signing the complete rotation claim. Local administrator approval then swaps the pin. Proof failure leaves the pin, recognition, and lifecycle untouched.
+
+Sender behavior during rotation: the publisher SHOULD continue claiming (in `S2S-Root-Key`) and signing under the predecessor root until each peer's acceptance is observed — for a peer, at its next Recognize `recognized` result after approval. The successor root's overlap MUST cover the local review latency of that peer's administrators plus the configured clock-skew budget, exactly like the signing-key overlap in Section 1.4.
+
+The security invariant of this design: appending a root to a well-known document requires only control of the publication endpoint, which is not identity evidence for an established peer. Adopting it requires a signature by the private key of the root already pinned by the receiver, which publication control cannot forge.
 
 ## 2. Network discovery, transport, and signature security
 
@@ -145,9 +171,9 @@ DNS and SRV results determine only connection location and MUST NOT change a pin
 
 ### 2.3 Identity recovery and transport requirements
 
-After an identity contradiction, automatic processing MUST remain `halted` and MUST NOT recover merely because DNS changes again. After DNS is repaired, an administrator MAY initiate nondestructive recovery of the original identity. Recovery MUST resolve the connection location again and retrieve discovery over hostname-validated HTTPS. The original recognition relationship may resume only if the discovered root public key equals the pre-contradiction pin byte for byte and that root correctly validates a current signing-key certificate. The signing key or certificate set may differ through normal rotation and need not equal the old cache entry by entry. Recovery MUST preserve bidirectional recognition facts, initial-confirmation time, cursors, mirrors, and existing authorization. A different root identity MUST remain fail closed. Adopting a new root requires destructive reset under [Core Protocol, Section 10](./protocol.md); Federation v1 does not define its administrative workflow.
+After an identity contradiction, automatic processing MUST remain `halted` and MUST NOT recover merely because DNS changes again. After DNS is repaired, an administrator MAY initiate nondestructive recovery of the original identity. Recovery MUST resolve the connection location again and retrieve discovery over hostname-validated HTTPS. The original recognition relationship may resume only if the discovered `roots` group contains the pre-contradiction pin byte for byte and that root correctly validates a current signing-key certificate. The signing key or certificate set may differ through normal rotation and need not equal the old cache entry by entry. Recovery MUST preserve bidirectional recognition facts, initial-confirmation time, cursors, mirrors, and existing authorization. A different root identity remains fail closed unless a root rotation is completed under Section 1.5, which requires proof of possession of the pinned root's private key; adopting it is local administration under [Peer Recognition, Section 11](./recognition.md#11-administrative-boundary).
 
-Identity continuity requires no additional public proof endpoint. For an inbound request, the HTTP Message Signature proves possession of the current signing private key, and the pinned root's certificate signature binds that key to the original Federation identity. For an outbound connection and response, hostname-validated HTTPS authenticates the current domain endpoint, and the well-known root MUST equal the local pin. Failure of any check MUST NOT open ordinary S2S operations.
+Identity continuity requires no additional public proof endpoint. For an inbound request, the HTTP Message Signature proves possession of the current signing private key, the certificate's `authorizationSignature` binds that key to its authorizing root, and the receiver's pin binds the root to the original Federation identity. For an outbound connection and response, hostname-validated HTTPS authenticates the current domain endpoint, and the well-known `roots` group MUST contain the local pin. Failure of any check MUST NOT open ordinary S2S operations.
 
 Federation v1 communication MUST use HTTPS and validate the TLS hostname of the logical peer domain. Plain HTTP is nonconformant. Choice of DNS resolver, IP classification, connector, or outbound network policy is local implementation behavior and MUST NOT change v1 identity or signature-validation semantics.
 
@@ -188,13 +214,14 @@ Except for public well-known discovery, every v1 request, including `recognize` 
 | ----------------- | --------------------------------------------------------------------------------------------------------------- |
 | `Content-Type`    | MUST be `application/json` with a JSON body; MUST NOT be sent without a body.                                   |
 | `Accept`          | MAY be sent as `application/json`; not signed and does not change the v1 response shape.                        |
+| `S2S-Root-Key`    | MUST be sent; the base64 Ed25519 public key of the root authorizing the request's signing certificate. A routing and binding hint only: it is not covered by the signature base, and a receiver MUST NOT trust it beyond resolving the local identity; authentication always derives from the certificate chain and pinned root (Sections 1.2 and 1.5). |
 | `Date`            | MUST be sent as IMF-fixdate representing the same whole second as `created`.                                    |
 | `Content-Digest`  | MUST be sent; calculated over final body bytes under Section 3.2, or over the empty byte string without a body. |
 | `Signature-Input` | MUST be sent with exactly one label, `sig1`.                                                                    |
 | `Signature`       | MUST be sent with exactly one label, `sig1`.                                                                    |
 | `Range`           | MAY be sent only by the media operation; a single bytes range, not covered by the v1 request signature.         |
 
-Header names are case-insensitive, but signature component names use the lower-case forms in the table. A receiver MUST reject a request if `Date`, `Content-Digest`, `Signature-Input`, or `Signature` appears in multiple field lines, has multiple dictionary members, or has a combined value that cannot be parsed unambiguously. `Content-Length`, `User-Agent`, and hop-by-hop headers are not covered by the v1 signature.
+Header names are case-insensitive, but signature component names use the lower-case forms in the table. A receiver MUST reject a request if `Date`, `Content-Digest`, `Signature-Input`, or `Signature` appears in multiple field lines, has multiple dictionary members, or has a combined value that cannot be parsed unambiguously. `S2S-Root-Key` MUST appear at most once and MUST decode to exactly 32 bytes of Ed25519 public key under the strict base64 rules of [Peer Recognition, Section 4.3](./recognition.md#43-root-and-signing-key-continuity); it never enters the signature base, so removing or altering it cannot invalidate the signature — it only changes which local identity the receiver resolves, and a wrong value fails authentication. `Content-Length`, `User-Agent`, and hop-by-hop headers are not covered by the v1 signature.
 
 ### 3.4 HTTP Message Signature construction
 
@@ -238,16 +265,15 @@ The RFC 9421 signature base consists of these seven lines separated by `LF`, wit
 A receiver MUST validate a signed request according to these security boundaries. An implementation MAY combine internal steps that do not change observable results, but MUST NOT perform a later business side effect before completing its prerequisite security check:
 
 1. Bound request-line, header, and body sizes, and reject duplicate or ambiguously parseable security headers.
-2. Parse `Signature-Input` and `Signature`; check the single label, fixed component order, parameter set, and `alg`.
+2. Parse `Signature-Input` and `Signature`; check the single label, fixed component order, parameter set, and `alg`. Decode `S2S-Root-Key` to a root public key and use it — together with the canonical signer domain from `keyid` — to resolve the local identity: for an established peer, the active namespace pinned to that root; for `bootstrap signed`, the identity to be validated against the freshly fetched well-known group under recognition.md.
 3. Extract the canonical signer domain from `keyid` and resolve the selected
    certificate under the authentication context in [Core Protocol, Section 3]
    (./protocol.md). For `recognized signed`, the pinned identity and prepared
-   receive path are prerequisites to authentication. For `health`, common
-   certificate and signature authentication completes before Health-specific
-   recognition, readiness, authorization, and privacy projection; those later
-   checks may produce `unavailable` after authentication succeeds. For
-   `bootstrap signed`, use the dedicated well-known validation path defined by
-   recognition.md.
+   receive path are prerequisites to authentication, and the certificate's
+   authorizing `root` MUST byte-equal the pinned root. For `health`, any failure
+   to resolve or authenticate produces the uniform `unavailable` result defined
+   by recognition.md; no error envelope is emitted. For `bootstrap signed`, use
+   the dedicated well-known validation path defined by recognition.md.
 4. Check `created <= expires <= created + 300` and that `Date`, parsed as Unix epoch seconds, equals `created` exactly. Reject `created < now - 300`, `created > now + 60`, or `expires < now`.
 5. Validate `Content-Digest` over the received raw body bytes. Its Structured Fields dictionary MUST contain exactly one parameterless `sha-256` byte sequence.
 6. Validate the Ed25519 signature using the received method, raw path, raw query, authority, and header values.
@@ -271,7 +297,7 @@ resource-binding rules.
 
 A header or profile parsing error, digest mismatch, or signature mismatch MUST NOT be downgraded to a business rejection. The Stable Error Registry defines the exact HTTP status, stable code, and caller action.
 
-`health` is a status-query operation after common HTTP Message Signature authentication succeeds. An unparseable request line, malformed signature structure, invalid signature, or unavailable/expired/unpublished signing certificate uses the common malformed or bad-signature error path before the Health status handler. Inbound Health authentication MUST NOT initiate well-known discovery merely to answer the query, even for a known peer; signing-key freshness for Health is maintained by the requester's outbound Health overlap refresh and other ordinary discovery refreshes. Once authenticated, an unrecognized peer relationship, insufficient prepared receive path, permission failure, or local state that cannot safely be disclosed is a normal query result. Under recognition.md, it MUST return HTTP `200` with `unavailable`. The query does not establish a new identity, but successful authentication of an already prepared peer refreshes reachability. A valid `available` or `degraded` response is the responder's acceptance assertion, equivalent to Recognize `recognized`, and MUST be consumed as such by the requester. The response projects the responder's receive readiness and reachability at admission, before the reachability refresh.
+`health` is a status-query operation that MUST NOT emit any error envelope. An unparseable request line, malformed signature structure, missing or unresolvable `S2S-Root-Key`, invalid signature, or unavailable, expired, or unpublished signing certificate — and every authenticated signer whose relationship is not recognized, prepared, authorized, or safely disclosable — uniformly returns HTTP `200` with `unavailable` under recognition.md. Inbound Health authentication MUST NOT initiate well-known discovery merely to answer the query, even for a known peer; signing-key freshness for Health is maintained by the requester's outbound Health overlap refresh and other ordinary discovery refreshes, and by the certificate set persisted at recognition time. The query does not establish a new identity, but successful authentication of an already prepared peer refreshes reachability. A valid `available` or `degraded` response is the responder's acceptance assertion, equivalent to Recognize `recognized`, and MUST be consumed as such by the requester. The response projects the responder's receive readiness and reachability at admission, before the reachability refresh.
 
 Federation v1 does not add an HTTP Message Signature to an ordinary JSON response; hostname-validated TLS provides response origin and integrity. This does not alter response-digest rules separately defined by the media operation.
 
@@ -284,6 +310,7 @@ POST /s2s/v1/feed-heads HTTP/1.1
 Host: b.example
 Content-Type: application/json
 Date: Tue, 14 Nov 2023 22:13:20 GMT
+S2S-Root-Key: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
 Content-Digest: sha-256=:5IZ8gaj/brmz/2nnvsyh7h5RK8vujKNm/Ja5uAG7Oy4=:
 Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
 Signature: sig1=:Rq0Zqp2oS4lobqDctVVp5UmYJbJUSuxnluAjMOowvF+COrxXhS/ryAAb5SQY5TIqOCLLvjmsOJfO9wFJ/ijFDQ==:

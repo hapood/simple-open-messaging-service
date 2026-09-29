@@ -132,9 +132,10 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{22,128}$"
     },
-    "rootFingerprint": {
-      "type": "string",
-      "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+    "safeInteger": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
     },
     "ulid": {
       "type": "string",

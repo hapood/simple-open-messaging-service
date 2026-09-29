@@ -81,10 +81,11 @@ observable requirements:
 - Normal signing-key rotation under the pinned root preserves recognition,
   peer acceptance, cursors, mirrors, and authorization. It does not restart
   Recognize for an already accepted peer.
-- Common certificate or signature failure on inbound Health uses the stable
-  `400`/`401` error path before the Health handler and is not projected as
-  `unavailable`. An outbound Health `401 FEDERATION_BAD_SIGNATURE` preserves
-  pins and acceptance, marks an accepted peer `degraded`, and does not halt it.
+- Health emits no error envelope: every authentication, resolution, and
+  disclosure failure uniformly returns `200 unavailable`, which preserves
+  pins and acceptance, marks an accepted peer `degraded`, and does not halt
+  it. A root rotation is adopted only after a verified rotation proof and
+  administrator approval; publishing a successor root alone changes nothing.
 
 ## Synchronization and deletion checks
 
