@@ -373,6 +373,18 @@ export class AdminFederationBlockDto {
   note?: string;
 }
 
+/** Active federation namespace switch. */
+export class AdminFederationSetActiveNamespaceDto {
+  @ApiProperty({
+    example: 12,
+    description: 'Peer identity namespace id to make active',
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  namespaceId!: number;
+}
+
 /** Federation namespace reset confirmation. The normalized value must exactly match the path domain. */
 export class AdminFederationResetDto {
   @ApiProperty({

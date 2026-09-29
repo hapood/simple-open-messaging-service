@@ -5,6 +5,7 @@ import {
   ShieldAlert,
   ShieldBan,
   RotateCcw,
+  Shuffle,
   Wifi,
 } from 'lucide-react';
 import { Timestamp } from '@/components/common/timestamp';
@@ -30,6 +31,7 @@ const META: Record<string, { icon: typeof Eye; cls: string }> = {
   },
   halted: { icon: ShieldBan, cls: 'text-destructive bg-destructive/15' },
   unblocked: { icon: RotateCcw, cls: 'text-muted-foreground bg-muted' },
+  namespace_active: { icon: Shuffle, cls: 'text-sky-700 bg-sky-500/20 dark:text-sky-400' },
 };
 
 export function PeerTimeline({ events }: { events: FederatedPeerEvent[] }) {

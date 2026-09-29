@@ -11,6 +11,14 @@ import { federatedPeer, identityNamespace } from '../database/schema.js';
 export interface FederationContext {
   domain: string;
   namespaceId: number;
+  peerAssignedLocalNamespaceId: number;
+  rootKeyFingerprint: string;
+}
+
+export interface VerifiedFederationNamespace {
+  domain: string;
+  namespaceId: number;
+  peerAssignedLocalNamespaceId: number | null;
   rootKeyFingerprint: string;
 }
 
@@ -34,10 +42,24 @@ export class FederationNamespaceService {
     tx: DatabaseTransaction,
     domain: string,
   ): Promise<FederationContext> {
+    const row = await this.captureVerifiedInTx(tx, domain);
+    if (row.peerAssignedLocalNamespaceId === null) this.unavailable(domain);
+    return {
+      ...row,
+      peerAssignedLocalNamespaceId: row.peerAssignedLocalNamespaceId,
+    };
+  }
+
+  async captureVerifiedInTx(
+    tx: DatabaseTransaction,
+    domain: string,
+  ): Promise<VerifiedFederationNamespace> {
     const [row] = await tx
       .select({
         peerDomain: federatedPeer.domain,
         namespaceId: identityNamespace.id,
+        peerAssignedLocalNamespaceId:
+          identityNamespace.peerAssignedLocalNamespaceId,
         rootKeyFingerprint: identityNamespace.rootKeyFingerprint,
       })
       .from(federatedPeer)
@@ -52,11 +74,11 @@ export class FederationNamespaceService {
       .where(eq(federatedPeer.domain, domain))
       .limit(1);
     if (!row || row.rootKeyFingerprint === null) this.unavailable(domain);
-    const rootKeyFingerprint = row.rootKeyFingerprint;
     return {
       domain: row.peerDomain,
       namespaceId: row.namespaceId,
-      rootKeyFingerprint,
+      peerAssignedLocalNamespaceId: row.peerAssignedLocalNamespaceId,
+      rootKeyFingerprint: row.rootKeyFingerprint,
     };
   }
 
@@ -84,6 +106,36 @@ export class FederationNamespaceService {
     }
   }
 
+  async recordPeerAssignedLocalNamespaceInTx(
+    tx: DatabaseTransaction,
+    domain: string,
+    peerAssignedLocalNamespaceId: number,
+  ): Promise<void> {
+    const [peer] = await tx
+      .select({ activeNamespaceId: federatedPeer.activeNamespaceId })
+      .from(federatedPeer)
+      .where(eq(federatedPeer.domain, domain))
+      .for('no key update')
+      .limit(1);
+    if (
+      peer?.activeNamespaceId === null ||
+      peer?.activeNamespaceId === undefined
+    )
+      this.unavailable(domain);
+    const [updated] = await tx
+      .update(identityNamespace)
+      .set({ peerAssignedLocalNamespaceId })
+      .where(
+        and(
+          eq(identityNamespace.id, peer.activeNamespaceId),
+          eq(identityNamespace.domain, domain),
+          isNull(identityNamespace.retiredAt),
+        ),
+      )
+      .returning({ id: identityNamespace.id });
+    if (!updated) this.unavailable(domain);
+  }
+
   /** Pins the first verified identity after discovery/reset, or validates the current active pin. */
   async activateVerifiedInTx(
     tx: DatabaseTransaction,
@@ -93,7 +145,7 @@ export class FederationNamespaceService {
       rootPublicKey: string;
       identityPinnedAt: Date;
     },
-  ): Promise<FederationContext> {
+  ): Promise<VerifiedFederationNamespace> {
     const [peer] = await tx
       .select({ activeNamespaceId: federatedPeer.activeNamespaceId })
       .from(federatedPeer)
@@ -127,6 +179,7 @@ export class FederationNamespaceService {
       return {
         domain: identity.domain,
         namespaceId: active.id,
+        peerAssignedLocalNamespaceId: active.peerAssignedLocalNamespaceId,
         rootKeyFingerprint: identity.rootKeyFingerprint,
       };
     }
@@ -144,6 +197,7 @@ export class FederationNamespaceService {
     return {
       domain: identity.domain,
       namespaceId: created.id,
+      peerAssignedLocalNamespaceId: null,
       rootKeyFingerprint: identity.rootKeyFingerprint,
     };
   }

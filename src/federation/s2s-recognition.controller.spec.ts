@@ -11,6 +11,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
     const discovery = {
       fetchWellKnown: vi.fn(),
       getPublicKey: vi.fn().mockRejectedValue(new Error('well-known offline')),
+      cacheDocument: vi.fn().mockResolvedValue(undefined),
     };
     const verify = {
       extractHeaders: vi.fn().mockReturnValue({}),
@@ -23,7 +24,11 @@ describe('S2sRecognitionController Health privacy projection', () => {
     };
     const recognition = {
       hasPreparedPeer: vi.fn().mockResolvedValue(true),
-      captureContext: vi.fn().mockResolvedValue({ namespaceId: 12 }),
+      captureVerifiedContext: vi.fn().mockResolvedValue({
+        namespaceId: 12,
+        peerAssignedLocalNamespaceId: 7,
+      }),
+      acceptInbound: vi.fn(),
       queryHealth: vi.fn(),
       markReachable: vi.fn().mockResolvedValue(undefined),
     };
@@ -66,12 +71,16 @@ describe('S2sRecognitionController Health privacy projection', () => {
         rawBody: Buffer.alloc(0),
         headers: {},
       } as never),
-    ).resolves.toEqual({ status: 'degraded' });
+    ).resolves.toEqual({
+      status: 'degraded',
+      peerAssignedLocalNamespaceId: 12,
+    });
 
     expect(recognition.queryHealth).toHaveBeenCalledBefore(
       recognition.markReachable,
     );
     expect(recognition.markReachable).toHaveBeenCalledWith('peer.example');
+    expect(recognition.captureVerifiedContext).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -113,6 +122,36 @@ describe('S2sRecognitionController Health privacy projection', () => {
       status: 400,
     });
     expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
+  });
+
+  it('returns the namespace assigned to the requester from Recognize', async () => {
+    const { controller, discovery, recognition } = target();
+    const now = Date.now();
+    discovery.fetchWellKnown.mockResolvedValue({
+      rootKey: { ed25519: 'root' },
+      keys: [
+        {
+          keyId: 'peer.example/key-2',
+          ed25519: Buffer.alloc(32).toString('base64'),
+          notBefore: now - 1000,
+          notAfter: now + 1000,
+        },
+      ],
+    });
+    recognition.acceptInbound = vi.fn().mockResolvedValue({ namespaceId: 12 });
+
+    await expect(
+      controller.recognize({} as never, { namespaceId: 5 }),
+    ).resolves.toEqual({
+      ok: true,
+      status: 'recognized',
+      peerAssignedLocalNamespaceId: 12,
+    });
+    expect(recognition.acceptInbound).toHaveBeenCalledWith(
+      'peer.example',
+      expect.anything(),
+      5,
+    );
   });
 });
 
@@ -376,16 +415,23 @@ describe('FederationRecognitionService health transitions', () => {
       acquireRequestSlot: vi.fn(async () => () => {}),
       request: vi.fn(async () => ({
         status: 200,
-        json: async () => ({ status: 'available' }),
+        json: async () => ({
+          status: 'available',
+          peerAssignedLocalNamespaceId: 44,
+        }),
       })),
     };
     const { database } = txDatabase();
+    const namespaces = {
+      captureVerifiedInTx: vi.fn().mockResolvedValue({ namespaceId: 12 }),
+      recordPeerAssignedLocalNamespaceInTx: vi.fn().mockResolvedValue(undefined),
+    };
     const recognition = new FederationRecognitionService(
       database as never,
       discovery as never,
       { signOutbound: vi.fn(async () => ({})) } as never,
       { get: () => ({ callTimeoutSec: 12 }) } as never,
-      {} as never,
+      namespaces as never,
       { emit: vi.fn() } as never,
     );
 
@@ -400,6 +446,9 @@ describe('FederationRecognitionService health transitions', () => {
       'available',
       'available',
     ]);
+    expect(
+      namespaces.recordPeerAssignedLocalNamespaceInTx,
+    ).toHaveBeenCalledWith(expect.anything(), 'peer.example', 44);
   });
 });
 

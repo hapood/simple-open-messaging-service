@@ -6,15 +6,26 @@ import { ArrowLeft } from 'lucide-react';
 import {
   useFederationPeer,
   useFederationPeerEvents,
+  useFederationPeerNamespaces,
+  useSetActiveFederationPeerNamespace,
   useBlockFederationPeer,
   useUnblockFederationPeer,
 } from '@/hooks/use-federation';
 import { useIsSuperAdmin } from '@/hooks/use-me';
 import { useQuotaNodes } from '@/hooks/use-quotas';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { Timestamp } from '@/components/common/timestamp';
 import { formatApiError } from '@/lib/format-error';
 import { PeerStatusBadge } from './peer-status-badge';
@@ -39,8 +50,11 @@ export function PeerDetailPage() {
   const d = decodeURIComponent(domain);
   const { data: peer, isLoading, error } = useFederationPeer(d);
   const { data: events, isLoading: eventsLoading } = useFederationPeerEvents(d);
+  const { data: namespaces, isLoading: namespacesLoading } =
+    useFederationPeerNamespaces(d);
   const block = useBlockFederationPeer();
   const unblock = useUnblockFederationPeer();
+  const setActiveNamespace = useSetActiveFederationPeerNamespace();
   const isSuper = useIsSuperAdmin();
   const { data: quotaNodes, isLoading: quotaLoading } = useQuotaNodes();
   const quotaNode = quotaNodes?.find((node) => node.domain === d);
@@ -55,6 +69,22 @@ export function PeerDetailPage() {
         await block.mutateAsync({ domain: d });
         toast.success(t('federation.toast.blocked'));
       }
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  };
+
+  const onSetActiveNamespace = async (namespaceId: number) => {
+    if (
+      !window.confirm(
+        t('federation.namespaces.confirmSetActive', { namespaceId }),
+      )
+    ) {
+      return;
+    }
+    try {
+      await setActiveNamespace.mutateAsync({ domain: d, namespaceId });
+      toast.success(t('federation.toast.namespaceActive'));
     } catch (e) {
       toast.error(formatApiError(e));
     }
@@ -110,6 +140,9 @@ export function PeerDetailPage() {
               <TabsTrigger value="timeline">
                 {t('federation.detail.tabTimeline')}
               </TabsTrigger>
+              <TabsTrigger value="namespaces">
+                {t('federation.detail.tabNamespaces')}
+              </TabsTrigger>
               <TabsTrigger value="quota">
                 {t('federation.detail.tabQuota')}
               </TabsTrigger>
@@ -162,6 +195,89 @@ export function PeerDetailPage() {
                     </div>
                   ) : (
                     <PeerTimeline events={events ?? []} />
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+            <TabsContent value="namespaces">
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t('federation.namespaces.title')}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {namespacesLoading ? (
+                    <div className="py-4 text-sm text-muted-foreground">
+                      {t('common.loading')}
+                    </div>
+                  ) : (namespaces?.length ?? 0) === 0 ? (
+                    <div className="py-6 text-center text-sm text-muted-foreground">
+                      {t('federation.namespaces.empty')}
+                    </div>
+                  ) : (
+                    <div className="rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-24">
+                              {t('federation.namespaces.col.id')}
+                            </TableHead>
+                            <TableHead>
+                              {t('federation.namespaces.col.fingerprint')}
+                            </TableHead>
+                            <TableHead className="w-32">
+                              {t('federation.namespaces.col.peerAssigned')}
+                            </TableHead>
+                            <TableHead className="w-40">
+                              {t('federation.namespaces.col.pinnedAt')}
+                            </TableHead>
+                            <TableHead className="w-40">
+                              {t('federation.namespaces.col.retiredAt')}
+                            </TableHead>
+                            <TableHead className="w-32" />
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {namespaces?.map((ns) => (
+                            <TableRow key={ns.id}>
+                              <TableCell className="font-mono text-sm">
+                                {ns.id}{' '}
+                                {ns.active ? (
+                                  <Badge variant="secondary">
+                                    {t('federation.namespaces.active')}
+                                  </Badge>
+                                ) : null}
+                              </TableCell>
+                              <TableCell className="max-w-80 break-all font-mono text-xs text-muted-foreground">
+                                {ns.rootKeyFingerprint ??
+                                  t('federation.meta.none')}
+                              </TableCell>
+                              <TableCell className="font-mono text-sm">
+                                {ns.peerAssignedLocalNamespaceId ??
+                                  t('federation.meta.none')}
+                              </TableCell>
+                              <TableCell>
+                                <Timestamp value={ns.identityPinnedAt} />
+                              </TableCell>
+                              <TableCell>
+                                <Timestamp value={ns.retiredAt} />
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {isSuper && !ns.active ? (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => onSetActiveNamespace(ns.id)}
+                                    disabled={setActiveNamespace.isPending}
+                                  >
+                                    {t('federation.namespaces.setActive')}
+                                  </Button>
+                                ) : null}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
                   )}
                 </CardContent>
               </Card>

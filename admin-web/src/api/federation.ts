@@ -3,6 +3,8 @@ import type {
   FederatedPeer,
   FederatedPeerListResult,
   FederatedPeerEvent,
+  FederatedPeerNamespace,
+  FederatedPeerNamespaceSwitchResult,
   SelfCheckReport,
 } from '@/types/api';
 
@@ -34,6 +36,24 @@ export function federationPeerEvents(
   return request<FederatedPeerEvent[]>(
     `/admin/federation/peers/${encodeURIComponent(domain)}/events`,
     { take },
+  );
+}
+
+export function federationPeerNamespaces(
+  domain: string,
+): Promise<FederatedPeerNamespace[]> {
+  return request<FederatedPeerNamespace[]>(
+    `/admin/federation/peers/${encodeURIComponent(domain)}/namespaces`,
+  );
+}
+
+export function setActiveFederationPeerNamespace(
+  domain: string,
+  namespaceId: number,
+): Promise<FederatedPeerNamespaceSwitchResult> {
+  return request<FederatedPeerNamespaceSwitchResult>(
+    `/admin/federation/peers/${encodeURIComponent(domain)}/namespaces/active`,
+    { namespaceId },
   );
 }
 

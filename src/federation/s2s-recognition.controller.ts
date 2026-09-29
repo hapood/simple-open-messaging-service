@@ -36,7 +36,7 @@ export class S2sRecognitionController {
     this.keypair.assertAvailable();
     const headers = this.verify.extractHeaders(req);
     const { keyId, domain } = this.verify.parseSigner(headers);
-    this.assertEmptyObject(body);
+    const namespaceEcho = this.assertRecognizeRequest(body);
     const doc = await this.discovery.fetchWellKnown(domain);
     const certificate = doc.keys.find(
       (key) =>
@@ -56,9 +56,17 @@ export class S2sRecognitionController {
       headers,
       certificate.ed25519,
     );
-    const context = await this.recognition.acceptInbound(domain, doc);
+    const context = await this.recognition.acceptInbound(
+      domain,
+      doc,
+      namespaceEcho,
+    );
     await this.discovery.cacheDocument(domain, context.namespaceId, doc);
-    return { ok: true } as const;
+    return {
+      ok: true,
+      status: 'recognized',
+      peerAssignedLocalNamespaceId: context.namespaceId,
+    } as const;
   }
 
   @Get('health')
@@ -72,10 +80,11 @@ export class S2sRecognitionController {
       return this.unavailableHealth();
     }
     let publicKey: Uint8Array | null;
+    let context: Awaited<ReturnType<FederationRecognitionService['captureVerifiedContext']>>;
     try {
       // A recognized peer may legitimately rotate to a newly published key. Refresh on a cache miss,
       // but collapse every fetch/authorization outcome into Health's privacy-safe result.
-      const context = await this.recognition.captureContext(signer.domain);
+      context = await this.recognition.captureVerifiedContext(signer.domain);
       publicKey = await this.discovery.getPublicKey(
         signer.domain,
         context.namespaceId,
@@ -97,26 +106,42 @@ export class S2sRecognitionController {
     const status = await this.recognition.queryHealth(signer.domain);
     if (status === 'unavailable') return this.unavailableHealth();
     await this.recognition.markReachable(signer.domain);
-    return { status } as const;
+    return {
+      status,
+      peerAssignedLocalNamespaceId: context.namespaceId,
+    } as const;
   }
 
   private unavailableHealth() {
     return { status: 'unavailable' } as const;
   }
 
-  private assertEmptyObject(value: unknown): void {
-    if (
-      !value ||
-      typeof value !== 'object' ||
-      Array.isArray(value) ||
-      Object.keys(value).length !== 0
-    ) {
+  private assertRecognizeRequest(value: unknown): number | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'recognize body must be an empty object',
+        'recognize body must be an empty object or namespace echo',
         HttpStatus.BAD_REQUEST,
       );
     }
+    const keys = Object.keys(value);
+    if (keys.length === 0) return undefined;
+    if (
+      keys.length === 1 &&
+      keys[0] === 'namespaceId' &&
+      this.isPositiveSafeInteger((value as { namespaceId?: unknown }).namespaceId)
+    ) {
+      return (value as { namespaceId: number }).namespaceId;
+    }
+    throw new BusinessException(
+      BusinessCode.FEDERATION_MALFORMED,
+      'recognize body must be an empty object or namespace echo',
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+
+  private isPositiveSafeInteger(value: unknown): value is number {
+    return Number.isSafeInteger(value) && typeof value === 'number' && value > 0;
   }
 
   private assertEmptyGet(req: FastifyRequest): void {

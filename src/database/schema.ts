@@ -153,6 +153,7 @@ export const identityNamespace = pgTable(
       withTimezone: true,
       mode: 'date',
     }),
+    peerAssignedLocalNamespaceId: integer(),
     dailyMsgLimit: integer(),
     dailyRequestLimit: integer(),
     dailyFileLimit: integer(),
@@ -180,6 +181,7 @@ export const identityNamespace = pgTable(
         AND ${table.rootKeyFingerprint} IS NULL
         AND ${table.rootPublicKey} IS NULL
         AND ${table.identityPinnedAt} IS NULL
+        AND ${table.peerAssignedLocalNamespaceId} IS NULL
         AND ${table.retiredAt} IS NULL
       ) OR (
         ${table.id} > 0
@@ -187,6 +189,7 @@ export const identityNamespace = pgTable(
         AND ${table.rootKeyFingerprint} IS NOT NULL
         AND ${table.rootPublicKey} IS NOT NULL
         AND ${table.identityPinnedAt} IS NOT NULL
+        AND (${table.peerAssignedLocalNamespaceId} IS NULL OR ${table.peerAssignedLocalNamespaceId} > 0)
       )`,
     ),
     check(
@@ -1230,7 +1233,7 @@ export const federatedPeerEvent = pgTable(
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     domain: varchar({ length: 63 }).notNull(),
-    type: varchar({ length: 15 }).notNull(),
+    type: varchar({ length: 31 }).notNull(),
     reason: varchar({ length: 255 }),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)

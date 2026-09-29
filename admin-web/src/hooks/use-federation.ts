@@ -3,6 +3,8 @@ import {
   listFederationPeers,
   getFederationPeer,
   federationPeerEvents,
+  federationPeerNamespaces,
+  setActiveFederationPeerNamespace,
   blockFederationPeer,
   unblockFederationPeer,
   runFederationSelfCheck,
@@ -32,6 +34,14 @@ export function useFederationPeerEvents(domain: string | null) {
   })
 }
 
+export function useFederationPeerNamespaces(domain: string | null) {
+  return useQuery({
+    queryKey: ['admin', 'federation', 'peers', domain, 'namespaces'],
+    queryFn: () => federationPeerNamespaces(domain!),
+    enabled: domain !== null,
+  })
+}
+
 /** Single peer current-state (routed detail page). Distinct singular key 'peer' to avoid any overlap
  *  with the list ('peers', q) / events ('peers', domain, 'events') keys. */
 export function useFederationPeer(domain: string | null) {
@@ -54,6 +64,15 @@ export function useUnblockFederationPeer() {
   const invalidate = useInvalidateFederation()
   return useMutation({
     mutationFn: (domain: string) => unblockFederationPeer(domain),
+    onSuccess: invalidate,
+  })
+}
+
+export function useSetActiveFederationPeerNamespace() {
+  const invalidate = useInvalidateFederation()
+  return useMutation({
+    mutationFn: (v: { domain: string; namespaceId: number }) =>
+      setActiveFederationPeerNamespace(v.domain, v.namespaceId),
     onSuccess: invalidate,
   })
 }

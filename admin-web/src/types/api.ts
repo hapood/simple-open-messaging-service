@@ -249,6 +249,24 @@ export interface FederatedPeerListResult {
   total: number;
 }
 
+export interface FederatedPeerNamespace {
+  id: number;
+  domain: string;
+  rootKeyFingerprint: string | null;
+  rootPublicKey: string | null;
+  peerAssignedLocalNamespaceId: number | null;
+  identityPinnedAt: number | null;
+  createdAt: number;
+  retiredAt: number | null;
+  active: boolean;
+}
+
+export interface FederatedPeerNamespaceSwitchResult {
+  domain: string;
+  activeNamespaceId: number;
+  status: 'active_namespace_switched';
+}
+
 // ─── Federated peer daily quotas (POST /admin/quota/nodes) ───
 export type QuotaCategory = 'messages' | 'files' | 'requests';
 
@@ -309,7 +327,8 @@ type FederationPeerEventType =
   | 'degraded'
   | 'available'
   | 'halted'
-  | 'unblocked';
+  | 'unblocked'
+  | 'namespace_active';
 
 export interface FederatedPeerEvent {
   id: number;

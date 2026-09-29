@@ -430,7 +430,8 @@
     },
     "toast": {
       "blocked": "已屏蔽该对端——在取消屏蔽前拒绝联邦",
-      "unblocked": "已取消屏蔽——下次连接将重新握手"
+      "unblocked": "已取消屏蔽——下次连接将重新握手",
+      "namespaceActive": "当前命名空间已切换"
     },
     "total": "共 {{count}} 个对端",
     "empty": "暂无联邦对端",
@@ -456,14 +457,30 @@
       "degraded": "连接丢失 / 降级",
       "available": "连接恢复",
       "halted": "通信已停止",
-      "unblocked": "管理员取消屏蔽"
+      "unblocked": "管理员取消屏蔽",
+      "namespace_active": "当前命名空间已切换"
     },
     "detail": {
       "back": "返回联邦",
       "notFound": "节点不存在",
       "tabOverview": "概览",
       "tabTimeline": "时间线",
+      "tabNamespaces": "命名空间",
       "tabQuota": "配额"
+    },
+    "namespaces": {
+      "title": "身份命名空间",
+      "empty": "该对端暂无身份命名空间记录",
+      "active": "当前",
+      "setActive": "设为当前",
+      "confirmSetActive": "确认将命名空间 {{namespaceId}} 设为当前？普通流量会等待对端认可与可达性重新收敛。",
+      "col": {
+        "id": "命名空间",
+        "fingerprint": "根指纹",
+        "peerAssigned": "对端分配本机 ns",
+        "pinnedAt": "固定时间",
+        "retiredAt": "退役时间"
+      }
     },
     "selfCheck": {
       "title": "S2S 握手自检",

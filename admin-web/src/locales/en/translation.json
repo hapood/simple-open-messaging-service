@@ -432,7 +432,8 @@
     },
     "toast": {
       "blocked": "Peer blocked — federation refused until unblocked",
-      "unblocked": "Peer unblocked — will re-handshake on next contact"
+      "unblocked": "Peer unblocked — will re-handshake on next contact",
+      "namespaceActive": "Active namespace switched"
     },
     "total": "{{count}} peers",
     "empty": "No federated peers",
@@ -458,14 +459,30 @@
       "degraded": "Connection lost / degraded",
       "available": "Connection restored",
       "halted": "Communication halted",
-      "unblocked": "Unblocked by admin"
+      "unblocked": "Unblocked by admin",
+      "namespace_active": "Active namespace switched"
     },
     "detail": {
       "back": "Back to federation",
       "notFound": "Peer not found",
       "tabOverview": "Overview",
       "tabTimeline": "Timeline",
+      "tabNamespaces": "Namespaces",
       "tabQuota": "Quotas"
+    },
+    "namespaces": {
+      "title": "Identity namespaces",
+      "empty": "No identity namespaces recorded for this peer",
+      "active": "active",
+      "setActive": "Set active",
+      "confirmSetActive": "Set namespace {{namespaceId}} as active? Peer acceptance and reachability will re-converge before ordinary traffic resumes.",
+      "col": {
+        "id": "Namespace",
+        "fingerprint": "Root fingerprint",
+        "peerAssigned": "Peer-assigned local ns",
+        "pinnedAt": "Pinned at",
+        "retiredAt": "Retired at"
+      }
     },
     "selfCheck": {
       "title": "S2S Handshake Self-Check",

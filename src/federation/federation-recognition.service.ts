@@ -21,9 +21,30 @@ import { FederationTransportConfigService } from './federation-transport-config.
 import {
   FederationNamespaceService,
   type FederationContext,
+  type VerifiedFederationNamespace,
 } from './federation-namespace.service.js';
 
 export type FederationHealthStatus = 'available' | 'degraded' | 'unavailable';
+
+type PositivePeerStatus = Exclude<FederationHealthStatus, 'unavailable'>;
+
+interface PositivePeerResult {
+  status: PositivePeerStatus;
+  peerAssignedLocalNamespaceId: number;
+}
+
+interface UnavailablePeerResult {
+  status: 'unavailable';
+}
+
+type HealthResult = PositivePeerResult | UnavailablePeerResult;
+
+interface RecognizeOk {
+  ok: true;
+  status: 'recognized';
+  peerAssignedLocalNamespaceId: number;
+}
+
 export type FederationRecognitionStage =
   | 'DISCOVERING'
   | 'VERIFYING_IDENTITY'
@@ -69,6 +90,15 @@ export class FederationRecognitionService {
 
   captureContext(peerDomain: string): Promise<FederationContext> {
     return this.namespaces.captureActive(this.normalizeDomain(peerDomain));
+  }
+
+  captureVerifiedContext(
+    peerDomain: string,
+  ): Promise<VerifiedFederationNamespace> {
+    const domain = this.normalizeDomain(peerDomain);
+    return this.database.db.transaction((tx) =>
+      this.namespaces.captureVerifiedInTx(tx, domain),
+    );
   }
 
   /** Observe the domain-level bootstrap only. A re-entrant caller immediately receives the latest
@@ -195,26 +225,19 @@ export class FederationRecognitionService {
       } catch {
         value = undefined;
       }
-      const result = value as {
-        status?: unknown;
-      } | null;
-      const candidate = String(result?.status);
-      const status = ['available', 'degraded', 'unavailable'].includes(
-        candidate,
-      )
-        ? (candidate as FederationHealthStatus)
-        : undefined;
-      const healthShapeValid =
-        !!result &&
-        typeof result === 'object' &&
-        !Array.isArray(result) &&
-        Object.keys(result).length === 1;
-      if (!status || !healthShapeValid) {
+      const result = this.parseHealthResult(value);
+      if (!result) {
         await this.markTransportDegraded(domain, 'Health malformed response');
         throw new Error(`Health ${domain} returned malformed response`);
       }
-      await this.applyHealthResult(domain, status);
-      return status;
+      if (result.status !== 'unavailable') {
+        await this.recordPeerAssignedLocalNamespace(
+          domain,
+          result.peerAssignedLocalNamespaceId,
+        );
+      }
+      await this.applyHealthResult(domain, result.status);
+      return result.status;
     } finally {
       release();
     }
@@ -223,7 +246,8 @@ export class FederationRecognitionService {
   async acceptInbound(
     domain: string,
     doc: WellKnownDoc,
-  ): Promise<FederationContext> {
+    namespaceEcho?: number,
+  ): Promise<VerifiedFederationNamespace> {
     const normalized = this.normalizeDomain(domain);
     const fingerprint = this.fingerprint(doc.rootKey.ed25519);
     let restored = false;
@@ -290,6 +314,15 @@ export class FederationRecognitionService {
         rootKeyFingerprint: fingerprint,
         identityPinnedAt: peer?.identityPinnedAt ?? now,
       });
+      if (
+        namespaceEcho !== undefined &&
+        peer?.activeNamespaceId !== null &&
+        peer?.activeNamespaceId !== undefined &&
+        namespaceEcho !== context.namespaceId
+      ) {
+        await this.markIdentityLostInTx(tx, normalized);
+        return { mismatch: true as const };
+      }
       await this.initializePeerInTx(tx, context.domain, context.namespaceId);
       if (!peer) {
         await tx.insert(tables.federatedPeerEvent).values({
@@ -516,7 +549,9 @@ export class FederationRecognitionService {
     await this.discovery.cacheDocument(domain, context.namespaceId, doc);
     const base = await this.discovery.resolveBase(domain);
     const url = new URL(`${base}/s2s/v1/recognize`);
-    const body = '{}';
+    const body = context.peerAssignedLocalNamespaceId
+      ? JSON.stringify({ namespaceId: context.peerAssignedLocalNamespaceId })
+      : '{}';
     const release = await this.discovery.acquireRequestSlot(domain);
     try {
       const headers = await this.signature.signOutbound({
@@ -550,16 +585,15 @@ export class FederationRecognitionService {
       } catch {
         value = undefined;
       }
-      if (
-        !value ||
-        typeof value !== 'object' ||
-        Array.isArray(value) ||
-        Object.keys(value).length !== 1 ||
-        (value as { ok?: unknown }).ok !== true
-      ) {
+      const ok = this.parseRecognizeOk(value);
+      if (!ok) {
         await this.markTransportDegraded(domain, 'Recognize malformed OK');
         throw new Error(`Recognize ${domain} returned malformed OK`);
       }
+      await this.recordPeerAssignedLocalNamespace(
+        domain,
+        ok.peerAssignedLocalNamespaceId,
+      );
       let becameAvailable = false;
       await this.database.db.transaction(async (tx) => {
         const peer = await this.lockPeer(tx, domain);
@@ -598,7 +632,7 @@ export class FederationRecognitionService {
   private async prepareOutbound(
     domain: string,
     doc: WellKnownDoc,
-  ): Promise<FederationContext> {
+  ): Promise<VerifiedFederationNamespace> {
     const fingerprint = this.fingerprint(doc.rootKey.ed25519);
     const mismatch = await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, domain);
@@ -656,6 +690,19 @@ export class FederationRecognitionService {
     });
     if (mismatch.mismatch) this.throwIdentityMismatch(domain);
     return mismatch.context;
+  }
+
+  private async recordPeerAssignedLocalNamespace(
+    domain: string,
+    peerAssignedLocalNamespaceId: number,
+  ): Promise<void> {
+    await this.database.db.transaction((tx) =>
+      this.namespaces.recordPeerAssignedLocalNamespaceInTx(
+        tx,
+        domain,
+        peerAssignedLocalNamespaceId,
+      ),
+    );
   }
 
   private async initializePeerInTx(
@@ -808,6 +855,43 @@ export class FederationRecognitionService {
       BusinessCode.FEDERATION_IDENTITY_MISMATCH,
       BusinessCode.FEDERATION_PROTOCOL_VERSION_UNSUPPORTED,
     ].includes(code as BusinessCode);
+  }
+
+  private parseRecognizeOk(value: unknown): RecognizeOk | null {
+    if (!this.isRecord(value)) return null;
+    if (Object.keys(value).length !== 3) return null;
+    if (value.ok !== true) return null;
+    if (value.status !== 'recognized') return null;
+    if (!this.isPositiveSafeInteger(value.peerAssignedLocalNamespaceId))
+      return null;
+    return {
+      ok: true,
+      status: 'recognized',
+      peerAssignedLocalNamespaceId: value.peerAssignedLocalNamespaceId,
+    };
+  }
+
+  private parseHealthResult(value: unknown): HealthResult | null {
+    if (!this.isRecord(value)) return null;
+    if (value.status === 'unavailable') {
+      return Object.keys(value).length === 1 ? { status: 'unavailable' } : null;
+    }
+    if (value.status !== 'available' && value.status !== 'degraded') return null;
+    if (Object.keys(value).length !== 2) return null;
+    if (!this.isPositiveSafeInteger(value.peerAssignedLocalNamespaceId))
+      return null;
+    return {
+      status: value.status,
+      peerAssignedLocalNamespaceId: value.peerAssignedLocalNamespaceId,
+    };
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  private isPositiveSafeInteger(value: unknown): value is number {
+    return Number.isSafeInteger(value) && typeof value === 'number' && value > 0;
   }
 
   private fingerprint(publicKey: string): string {

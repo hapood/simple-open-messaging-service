@@ -21,6 +21,7 @@ import {
   AdminFederationSelfCheckDto,
   AdminFederationResetDto,
   AdminFederationIdentityRecoverDto,
+  AdminFederationSetActiveNamespaceDto,
 } from './admin.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -30,6 +31,7 @@ import { federatedPeer } from '../database/schema.js';
 import { FederationService } from '../federation/federation.service.js';
 import { FederationSelfCheckService } from './federation-self-check.service.js';
 import { FederationResetService } from './federation-reset.service.js';
+import { FederationNamespaceAdminService } from './federation-namespace-admin.service.js';
 
 /**
  * Federation trust-lifecycle admin endpoints. Read-only observability of the peer trust state +
@@ -52,6 +54,7 @@ export class AdminFederationController {
     private readonly federationService: FederationService,
     private readonly selfCheckService: FederationSelfCheckService,
     private readonly resetService: FederationResetService,
+    private readonly namespaceAdmin: FederationNamespaceAdminService,
     private readonly database: DatabaseService,
   ) {}
 
@@ -87,6 +90,34 @@ export class AdminFederationController {
     if (!peer)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'peer not found');
     return peer;
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/peers/:domain/namespaces')
+  @ApiOperation({
+    summary: 'List identity namespaces owned by a federated peer',
+  })
+  async peerNamespaces(@Param('domain') domain: string) {
+    return this.namespaceAdmin.list(domain);
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Audit('federation.peer.namespace_set_active', {
+    targetType: 'peer',
+    targetParam: 'domain',
+  })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/peers/:domain/namespaces/active')
+  @ApiOperation({
+    summary: 'Switch the active identity namespace for a federated peer',
+  })
+  async setActiveNamespace(
+    @Param('domain') domain: string,
+    @Body() dto: AdminFederationSetActiveNamespaceDto,
+  ) {
+    return this.namespaceAdmin.setActive(domain, dto.namespaceId);
   }
 
   @UseGuards(AdminAuthGuard)

@@ -20,6 +20,7 @@ import {
 import type { WellKnownDoc } from '../src/federation/discovery.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { FederationRecognitionService } from '../src/federation/federation-recognition.service.js';
+import { BusinessCode } from '../src/common/business-code.js';
 
 describe('FederationRecognitionService atomic commit', () => {
   let mod: TestingModule;
@@ -107,6 +108,41 @@ describe('FederationRecognitionService atomic commit', () => {
     ).toHaveLength(1);
   });
 
+  it('rejects a conflicting namespace echo on an existing recognition', async () => {
+    const [namespace] = await database.db
+      .insert(identityNamespace)
+      .values({
+        domain,
+        rootPublicKey,
+        rootKeyFingerprint: 'test-fingerprint',
+        identityPinnedAt: new Date(),
+      })
+      .returning({ id: identityNamespace.id });
+    await database.db.insert(federatedPeer).values({
+      domain,
+      activeNamespaceId: namespace!.id,
+      trustLevel: 'available',
+      recognizesPeer: true,
+      peerAcceptanceConfirmed: true,
+      localServiceAvailable: true,
+      remoteServiceReachable: true,
+    });
+
+    await expect(
+      service().acceptInbound(domain, document, namespace!.id + 1),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+    });
+    expect(
+      await database.db.query.federatedPeer.findFirst({
+        where: eq(federatedPeer.domain, domain),
+      }),
+    ).toMatchObject({
+      trustLevel: 'halted',
+      haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+    });
+  });
+
   it('rolls back the recognition fact and cursors when namespace initialization fails', async () => {
     const failingNamespaces = new FederationNamespaceService(database);
     const activateVerifiedInTx =
@@ -186,7 +222,14 @@ describe('FederationRecognitionService atomic commit', () => {
     });
 
     request.mockResolvedValueOnce(
-      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      new Response(
+        JSON.stringify({
+          ok: true,
+          status: 'recognized',
+          peerAssignedLocalNamespaceId: 37,
+        }),
+        { status: 200 },
+      ),
     );
     await recognition.recognize(domain);
     expect(
@@ -198,6 +241,11 @@ describe('FederationRecognitionService atomic commit', () => {
       peerAcceptanceConfirmed: true,
       remoteServiceReachable: true,
     });
+    expect(
+      await database.db.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.domain, domain),
+      }),
+    ).toMatchObject({ peerAssignedLocalNamespaceId: 37 });
   });
 
   it.each(['available', 'degraded'] as const)(
@@ -226,11 +274,15 @@ describe('FederationRecognitionService atomic commit', () => {
           .fn()
           .mockResolvedValue('https://atomic-recognition.test'),
         acquireRequestSlot: vi.fn().mockResolvedValue(() => undefined),
-        request: vi
-          .fn()
-          .mockResolvedValue(
-            new Response(JSON.stringify({ status }), { status: 200 }),
+        request: vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              status,
+              peerAssignedLocalNamespaceId: 38,
+            }),
+            { status: 200 },
           ),
+        ),
       };
       const recognition = new FederationRecognitionService(
         database,
@@ -251,6 +303,11 @@ describe('FederationRecognitionService atomic commit', () => {
         peerAcceptanceConfirmed: true,
         remoteServiceReachable: true,
       });
+      expect(
+        await database.db.query.identityNamespace.findFirst({
+          where: eq(identityNamespace.domain, domain),
+        }),
+      ).toMatchObject({ peerAssignedLocalNamespaceId: 38 });
     },
   );
 
