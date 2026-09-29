@@ -4,8 +4,6 @@ import { connect as tlsConnect } from 'node:tls';
 import { connect as netConnect } from 'node:net';
 import { createSocket } from 'node:dgram';
 import { X509Certificate, type KeyObject, createHash } from 'node:crypto';
-import { statSync, readFileSync } from 'node:fs';
-import { resolve as resolvePath } from 'node:path';
 import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import {
@@ -107,8 +105,12 @@ export class FederationSelfCheckService {
     );
     checks.push(
       await this.runOne(
-        { key: 'key-file', group: 'config', title: 'Key file permissions' },
-        () => this.checkKeyFile(config),
+        {
+          key: 'key-material',
+          group: 'config',
+          title: 'Database key material',
+        },
+        () => this.checkKeyMaterial(),
       ),
     );
     checks.push(
@@ -293,30 +295,40 @@ export class FederationSelfCheckService {
     };
   }
 
-  private async checkKeyFile(config: SelfCheckConfig): Promise<CheckBody> {
+  /** Federation private keys live in the database (access control is the secret boundary).
+   *  Verify the service holds usable material: availability, well-formed root material, and a
+   *  current signing key inside its validity interval. */
+  private async checkKeyMaterial(): Promise<CheckBody> {
+    const status = this.keypair.getStatus();
+    if (!status.available) {
+      return {
+        status: 'fail',
+        detail: `local federation identity unavailable: ${status.reason}`,
+      };
+    }
     try {
-      const path = resolvePath(config.keyPath);
-      const st = statSync(path);
-      const extra = st.mode & 0o077; // any group/other bits
-      if (extra !== 0) {
+      const rootPublicKey = this.keypair.getRootPublicKeyB64();
+      const fingerprint = this.keypair.getRootKeyFingerprint();
+      if (
+        !/^[A-Za-z0-9+/]{43}=$/.test(rootPublicKey) ||
+        !/^sha256:[A-Za-z0-9_-]{43}$/.test(fingerprint)
+      ) {
         return {
-          status: 'warn',
-          detail: `key file is group/other accessible (mode ${octal(st.mode)}); should be 0600`,
-          evidence: { path, mode: octal(st.mode) },
+          status: 'fail',
+          detail: 'stored root key material is malformed',
+          evidence: { fingerprint },
         };
       }
-      // also confirm it parses (a corrupted restore would crash the server on boot anyway)
-      JSON.parse(readFileSync(path, 'utf8'));
+      this.keypair.getKeyId(); // throws outside the current key validity interval
+      this.keypair.getSigningKeyCertificates();
       return {
         status: 'ok',
-        detail: `key file mode ${octal(st.mode)} (0600)`,
-        evidence: { path, mode: octal(st.mode) },
+        detail: `database key material usable (fingerprint ${fingerprint})`,
       };
     } catch (e) {
       return {
         status: 'fail',
-        detail: `cannot stat/read key file: ${(e as Error).message}`,
-        evidence: { path: config.keyPath },
+        detail: `local key material unusable: ${(e as Error).message}`,
       };
     }
   }
@@ -1252,9 +1264,6 @@ const CERT_CODES = new Set([
   'ERR_TLS_CERT_ALTNAME',
 ]);
 
-function octal(mode: number): string {
-  return (mode & 0o777).toString(8).padStart(3, '0');
-}
 function sha256B64(b64: string): string {
   return createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex');
 }

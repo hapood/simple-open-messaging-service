@@ -1,6 +1,5 @@
 import { requireEnv } from '../common/env.js';
 import { isValidSomfpDomain } from '../common/account.js';
-import { configDirectory } from '../common/data-directory.js';
 
 /**
  * Federation (S2S) configuration. Loaded from env at module-init time (fail-fast via requireEnv).
@@ -8,8 +7,6 @@ import { configDirectory } from '../common/data-directory.js';
 export interface FederationConfig {
   /** This server's public domain — the domain in @user@domain handles and in .well-known/somfp. */
   domain: string;
-  /** File path to the persisted Ed25519 S2S keypair (generated on first boot). */
-  keyPath: string;
   /** dev-only: allow plain http:// for localhost federation testing (never in production). */
   allowInsecureHttp: boolean;
   /** Dev-only static peer routes. This deliberately bypasses DNS/SRV so two local nodes can federate
@@ -19,6 +16,90 @@ export interface FederationConfig {
    *  bundle snapshot and its downloaded CAS assets; `rebuild` regenerates LINK cards locally and strips
    *  contact avatars because a card snapshot has no independent resource locator to re-resolve. */
   forwardedResourcePolicy: 'trust' | 'rebuild';
+  /** Local signing-key lifecycle timings (deployment-local, never wire fields). */
+  signingKey: SigningKeyLifecycleConfig;
+}
+
+/**
+ * Local signing-key rotation timings. All values are milliseconds and deployment-local: they shape
+ * certificate validity intervals and the local switch schedule, and are never advertised to peers.
+ * Receivers keep evaluating the exact half-open interval [notBefore, notAfter).
+ */
+export interface SigningKeyLifecycleConfig {
+  /** Finite certificate lifetime from generation (default 30 days). */
+  lifetimeMs: number;
+  /** Maximum assumed absolute UTC clock difference between this server and peers (default 10 min).
+   *  A successor's notBefore must lead the planned switch by at least this budget. */
+  clockSkewBudgetMs: number;
+  /** How long a successor is published before the planned switch (default 24 h). */
+  successorPrepublicationMs: number;
+  /** How long a predecessor stays published and valid after the switch (default 24 h). */
+  predecessorRetentionMs: number;
+}
+
+export const DEFAULT_SIGNING_KEY_LIFETIME_MS = 30 * 24 * 3_600_000;
+export const DEFAULT_CLOCK_SKEW_BUDGET_MS = 10 * 60_000;
+export const DEFAULT_SUCCESSOR_PREPUBLICATION_MS = 24 * 3_600_000;
+export const DEFAULT_PREDECESSOR_RETENTION_MS = 24 * 3_600_000;
+
+function loadPositiveMsInt(
+  name: string,
+  raw: string | undefined,
+  fallback: number,
+): number {
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer (milliseconds)`);
+  }
+  return value;
+}
+
+function loadSigningKeyLifecycle(): SigningKeyLifecycleConfig {
+  const lifetimeMs = loadPositiveMsInt(
+    'SOMS_FEDERATION_SIGNING_KEY_LIFETIME_MS',
+    process.env.SOMS_FEDERATION_SIGNING_KEY_LIFETIME_MS,
+    DEFAULT_SIGNING_KEY_LIFETIME_MS,
+  );
+  const clockSkewBudgetMs = loadPositiveMsInt(
+    'SOMS_FEDERATION_CLOCK_SKEW_BUDGET_MS',
+    process.env.SOMS_FEDERATION_CLOCK_SKEW_BUDGET_MS,
+    DEFAULT_CLOCK_SKEW_BUDGET_MS,
+  );
+  const successorPrepublicationMs = loadPositiveMsInt(
+    'SOMS_FEDERATION_SUCCESSOR_PREPUBLICATION_MS',
+    process.env.SOMS_FEDERATION_SUCCESSOR_PREPUBLICATION_MS,
+    DEFAULT_SUCCESSOR_PREPUBLICATION_MS,
+  );
+  const predecessorRetentionMs = loadPositiveMsInt(
+    'SOMS_FEDERATION_PREDECESSOR_RETENTION_MS',
+    process.env.SOMS_FEDERATION_PREDECESSOR_RETENTION_MS,
+    DEFAULT_PREDECESSOR_RETENTION_MS,
+  );
+  if (successorPrepublicationMs < clockSkewBudgetMs) {
+    throw new Error(
+      'SOMS_FEDERATION_SUCCESSOR_PREPUBLICATION_MS must be at least SOMS_FEDERATION_CLOCK_SKEW_BUDGET_MS',
+    );
+  }
+  if (predecessorRetentionMs < clockSkewBudgetMs) {
+    throw new Error(
+      'SOMS_FEDERATION_PREDECESSOR_RETENTION_MS must be at least SOMS_FEDERATION_CLOCK_SKEW_BUDGET_MS',
+    );
+  }
+  if (
+    lifetimeMs <=
+    successorPrepublicationMs + predecessorRetentionMs + clockSkewBudgetMs
+  ) {
+    throw new Error(
+      'SOMS_FEDERATION_SIGNING_KEY_LIFETIME_MS must exceed prepublication + retention + clock-skew budget',
+    );
+  }
+  return {
+    lifetimeMs,
+    clockSkewBudgetMs,
+    successorPrepublicationMs,
+    predecessorRetentionMs,
+  };
 }
 
 function loadForwardedResourcePolicy(): 'trust' | 'rebuild' {
@@ -103,10 +184,10 @@ export function loadFederationConfig(): FederationConfig {
   }
   return {
     domain,
-    keyPath: configDirectory('soms-s2s-key.json'),
     allowInsecureHttp,
     devRoutes: loadDevRoutes(allowInsecureHttp),
     forwardedResourcePolicy: loadForwardedResourcePolicy(),
+    signingKey: loadSigningKeyLifecycle(),
   };
 }
 

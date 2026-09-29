@@ -72,7 +72,7 @@ export function reportGeneratedSecrets(): void {
   new Logger('Secret').warn(
     `Auto-generated ${generatedPaths.length} persistent secret(s): ${generatedPaths.join(', ')}. ` +
       'Persist the configuration directory across restarts — losing these files logs out every user/admin on the next boot ' +
-      '(JWT secret) and/or forces admins to re-enroll 2FA (2FA key); same requirement as ' +
-      'soms-s2s-key.json.',
+      '(JWT secret) and/or forces admins to re-enroll 2FA (2FA key); the same requirement applies ' +
+      'to the database-backed federation keys, so back the database up too.',
   );
 }

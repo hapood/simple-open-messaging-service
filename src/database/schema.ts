@@ -1712,15 +1712,104 @@ export const systemSetting = pgTable('SystemSetting', {
   }).notNull(),
 });
 
-/** Non-secret anchor for this installation's immutable federation identity. The private root key stays
- * on disk; this row detects a missing/replaced key file and a changed SOMS_DOMAIN before S2S resumes. */
+/** This installation's immutable federation identity plus its root key material. Private keys are
+ * stored here unencrypted: database access control is the secret boundary. */
 export const localFederationIdentity = pgTable('LocalFederationIdentity', {
   domain: varchar({ length: 63 }).primaryKey().notNull(),
   rootKeyFingerprint: varchar({ length: 80 }).notNull(),
+  rootPublicKey: varchar({ length: 44 }).notNull(),
+  rootPrivateKey: varchar({ length: 44 }).notNull(),
   createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
     .default(sql`CURRENT_TIMESTAMP`)
     .notNull(),
 });
+
+/** Local signing-key certificates under the root identity. Exactly one key is selected for new
+ * outbound signatures at any instant (LocalFederationSigningState.currentKeyId); rows past their
+ * notAfter are removed together with their private material. */
+export const localFederationSigningKey = pgTable(
+  'LocalFederationSigningKey',
+  {
+    domain: varchar({ length: 63 }).notNull(),
+    keyId: varchar({ length: 127 }).notNull(),
+    publicKey: varchar({ length: 44 }).notNull(),
+    privateKey: varchar({ length: 44 }).notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    notBefore: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+    notAfter: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.domain, table.keyId],
+      name: 'LocalFederationSigningKey_pkey',
+    }),
+    foreignKey({
+      columns: [table.domain],
+      foreignColumns: [localFederationIdentity.domain],
+      name: 'LocalFederationSigningKey_identity_fkey',
+    }).onDelete('cascade'),
+    check(
+      'LocalFederationSigningKey_validity_check',
+      sql`${table.notBefore} < ${table.notAfter}`,
+    ),
+  ],
+);
+
+/** Single-row-per-domain local signing selection state. plannedSwitchAt/plannedSuccessorKeyId are
+ * both null or both set; the planned switch is applied atomically by the key-lifecycle maintainer. */
+export const localFederationSigningState = pgTable(
+  'LocalFederationSigningState',
+  {
+    domain: varchar({ length: 63 }).primaryKey().notNull(),
+    currentKeyId: varchar({ length: 127 }).notNull(),
+    plannedSwitchAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
+    plannedSuccessorKeyId: varchar({ length: 127 }),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.domain],
+      foreignColumns: [localFederationIdentity.domain],
+      name: 'LocalFederationSigningState_identity_fkey',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.domain, table.currentKeyId],
+      foreignColumns: [
+        localFederationSigningKey.domain,
+        localFederationSigningKey.keyId,
+      ],
+      name: 'LocalFederationSigningState_current_key_fkey',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.domain, table.plannedSuccessorKeyId],
+      foreignColumns: [
+        localFederationSigningKey.domain,
+        localFederationSigningKey.keyId,
+      ],
+      name: 'LocalFederationSigningState_successor_key_fkey',
+    }).onDelete('set null'),
+    check(
+      'LocalFederationSigningState_plan_check',
+      sql`(${table.plannedSwitchAt} IS NULL) = (${table.plannedSuccessorKeyId} IS NULL)`,
+    ),
+  ],
+);
 
 export const federatedPeer = pgTable(
   'FederatedPeer',
