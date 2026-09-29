@@ -18,6 +18,9 @@ export interface FederationConfig {
   forwardedResourcePolicy: 'trust' | 'rebuild';
   /** Local signing-key lifecycle timings (deployment-local, never wire fields). */
   signingKey: SigningKeyLifecycleConfig;
+  /** Interval between proactive peer certificate-set refresh rounds (default 60s,
+   *  minimum 1s). Deployment-local, never a wire field. */
+  peerKeyRefreshPollMs: number;
 }
 
 /**
@@ -41,6 +44,8 @@ export const DEFAULT_SIGNING_KEY_LIFETIME_MS = 30 * 24 * 3_600_000;
 export const DEFAULT_CLOCK_SKEW_BUDGET_MS = 10 * 60_000;
 export const DEFAULT_SUCCESSOR_PREPUBLICATION_MS = 24 * 3_600_000;
 export const DEFAULT_PREDECESSOR_RETENTION_MS = 24 * 3_600_000;
+export const DEFAULT_PEER_KEY_REFRESH_POLL_MS = 60_000;
+export const MIN_PEER_KEY_REFRESH_POLL_MS = 1_000;
 
 function loadPositiveMsInt(
   name: string,
@@ -52,6 +57,21 @@ function loadPositiveMsInt(
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer (milliseconds)`);
   }
+  return value;
+}
+
+/** Proactive refresh rounds run at least one second apart so a misconfigured tiny
+ *  interval cannot turn peer certificate refresh into a request flood. */
+function loadPeerKeyRefreshPollMs(): number {
+  const value = loadPositiveMsInt(
+    'SOMS_FEDERATION_KEY_REFRESH_POLL_MS',
+    process.env.SOMS_FEDERATION_KEY_REFRESH_POLL_MS,
+    DEFAULT_PEER_KEY_REFRESH_POLL_MS,
+  );
+  if (value < MIN_PEER_KEY_REFRESH_POLL_MS)
+    throw new Error(
+      `SOMS_FEDERATION_KEY_REFRESH_POLL_MS must be at least ${MIN_PEER_KEY_REFRESH_POLL_MS}ms`,
+    );
   return value;
 }
 
@@ -188,12 +208,13 @@ export function loadFederationConfig(): FederationConfig {
     devRoutes: loadDevRoutes(allowInsecureHttp),
     forwardedResourcePolicy: loadForwardedResourcePolicy(),
     signingKey: loadSigningKeyLifecycle(),
+    peerKeyRefreshPollMs: loadPeerKeyRefreshPollMs(),
   };
 }
 
 /**
  * Federated-peer daily-quota configuration. These are the global defaults; a per-peer override on
- * FederatedPeer takes precedence when set (null override → use the default here). Thresholds
+ * Active IdentityNamespace overrides take precedence when set (null override -> use the default here). Thresholds
  * Loaded separately from FederationConfig to keep the
  * transport config focused. See src/quota/quota.service.ts.
  */

@@ -126,15 +126,28 @@ async function main(): Promise<void> {
     'bbb.test': `http://127.0.0.1:${portB}`,
   };
 
-  const moduleRef = await Test.createTestingModule({
-    imports: [AppModule],
-    controllers: [TestS2sHookController], // test-only signed-S2S-GET probe (see the class doc)
-  })
-    .overrideProvider(KeypairService)
-    .useValue(makeInMemoryKeypair(domain))
-    .overrideProvider(DiscoveryService)
-    .useClass(TestDiscoveryService)
-    .compile();
+  // FED_E2E_REAL_KEYPAIR=1 keeps the REAL database-backed KeypairService (bootstrap,
+  //  well-known publication, and the adaptive rotation lifecycle). Used by the
+  //  signing-key-rotation e2e; every other spec keeps the deterministic in-memory keypair.
+  const overrides =
+    process.env.FED_E2E_REAL_KEYPAIR === '1'
+      ? (builder: ReturnType<typeof Test.createTestingModule>) =>
+          builder
+            .overrideProvider(DiscoveryService)
+            .useClass(TestDiscoveryService)
+      : (builder: ReturnType<typeof Test.createTestingModule>) =>
+          builder
+            .overrideProvider(KeypairService)
+            .useValue(makeInMemoryKeypair(domain))
+            .overrideProvider(DiscoveryService)
+            .useClass(TestDiscoveryService);
+
+  const moduleRef = await overrides(
+    Test.createTestingModule({
+      imports: [AppModule],
+      controllers: [TestS2sHookController], // test-only signed-S2S-GET probe (see the class doc)
+    }),
+  ).compile();
   const adapter = new FastifyAdapter();
   const app = moduleRef.createNestApplication<NestFastifyApplication>(adapter);
   app.useLogger(moduleRef.get(Logger, { strict: false }));

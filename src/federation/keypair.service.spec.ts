@@ -68,6 +68,48 @@ function interpretSql(fragment: unknown): { text: string; params: unknown[] } {
   return { text, params };
 }
 
+/** Collects every string-array parameter embedded in a Drizzle query object — the shape
+ *  `inArray(column, ids)` produces — so the typed delete can be interpreted. Only the
+ *  `queryChunks` chain is walked: StringChunk objects (SQL text) carry their parts in
+ *  `value`; the interpolated ids appear as a bare array whose elements are either plain
+ *  strings or Param objects ({ value }) depending on the drizzle version; everything else
+ *  (column references, primitives) carries no chunks. Column objects are cyclic graphs,
+ *  so never walk arbitrary object properties. */
+function collectStringArrays(
+  fragment: unknown,
+  found: string[][] = [],
+): string[][] {
+  if (fragment === undefined || fragment === null) return found;
+  const chunks = (fragment as { queryChunks?: unknown[] }).queryChunks;
+  if (!Array.isArray(chunks)) return found;
+  for (const chunk of chunks) {
+    if (chunk === undefined || chunk === null) continue;
+    const record = chunk as { value?: unknown };
+    if (
+      typeof chunk === 'object' &&
+      !Array.isArray(chunk) &&
+      Array.isArray(record.value) &&
+      record.value.every((part) => typeof part === 'string')
+    )
+      continue;
+    if (Array.isArray(chunk) && chunk.length > 0) {
+      const strings = chunk.map((item) =>
+        typeof item === 'string'
+          ? item
+          : typeof (item as { value?: unknown } | null)?.value === 'string'
+            ? ((item as { value: string }).value as string)
+            : undefined,
+      );
+      if (strings.every((item) => item !== undefined)) {
+        found.push(strings as string[]);
+        continue;
+      }
+    }
+    collectStringArrays(chunk, found);
+  }
+  return found;
+}
+
 function fakeDatabase(options: { hasHistory?: boolean } = {}): FakeHandle {
   let identity: FakeIdentityRow | undefined;
   let keys: FakeSigningKeyRow[] = [];
@@ -105,10 +147,8 @@ function fakeDatabase(options: { hasHistory?: boolean } = {}): FakeHandle {
       if (text.includes('hasHistory')) {
         return { rows: [{ hasHistory: options.hasHistory ?? false }] };
       }
-      if (text.includes('DELETE FROM "LocalFederationSigningKey"')) {
-        const ids = params[0] as string[];
-        keys = keys.filter((key) => !ids.includes(key.keyId));
-        return { rows: [] };
+      if (text.includes('hasHistory')) {
+        return { rows: [{ hasHistory: options.hasHistory ?? false }] };
       }
       throw new Error(`fake database cannot interpret SQL: ${text}`);
     },
@@ -121,9 +161,16 @@ function fakeDatabase(options: { hasHistory?: boolean } = {}): FakeHandle {
         state = { ...state, ...values } as FakeSigningStateRow;
       },
     }),
-    delete: async () => {
-      throw new Error('unexpected delete target');
-    },
+    delete: (table: unknown) => ({
+      where: async (condition: unknown) => {
+        if (table !== localFederationSigningKey)
+          throw new Error('unexpected delete target');
+        const [ids] = collectStringArrays(condition);
+        if (!ids)
+          throw new Error('fake database cannot interpret delete condition');
+        keys = keys.filter((key) => !ids.includes(key.keyId));
+      },
+    }),
     transaction: async (callback: (tx: unknown) => Promise<unknown>) =>
       callback(db),
   };

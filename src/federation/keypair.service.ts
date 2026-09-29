@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { createHash, randomBytes } from 'node:crypto';
-import { sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
@@ -75,9 +75,11 @@ const isValidAt = (key: LocalSigningKeyRow, now: number): boolean =>
  * material. Private key material is stored unencrypted: database access control is the
  * secret boundary.
  *
- * The snapshot is refreshed by the maintenance tick (default 30s). A short staleness
- * window is harmless because a switched-out predecessor remains published and valid for
- * the configured retention, so receivers still authenticate it while the refresh lands.
+ * The snapshot is refreshed by the maintenance tick — at most every 30s, and earlier
+ * when a persisted lifecycle event (successor prepublication, planned switch,
+ * predecessor expiry) falls due sooner. A short staleness window is harmless because
+ * a switched-out predecessor remains published and valid for the configured retention,
+ * so receivers still authenticate it while the refresh lands.
  */
 @Injectable()
 export class KeypairService
@@ -99,7 +101,7 @@ export class KeypairService
   }
 
   onApplicationShutdown(): void {
-    if (this.maintainTimer) clearInterval(this.maintainTimer);
+    if (this.maintainTimer) clearTimeout(this.maintainTimer);
     this.maintainTimer = undefined;
   }
 
@@ -118,10 +120,7 @@ export class KeypairService
         );
       }
       this.status = { available: true };
-      if (!this.maintainTimer) {
-        this.maintainTimer = setInterval(() => void this.tick(), 30_000);
-        this.maintainTimer.unref?.();
-      }
+      this.scheduleNextMaintenance();
       this.logger.log(
         `Loaded S2S identity ${this.getKeyId()} (${this.getRootKeyFingerprint()}) from the database`,
       );
@@ -210,7 +209,62 @@ export class KeypairService
       this.logger.warn(
         `S2S signing-key maintenance failed: ${(error as Error).message}`,
       );
+    } finally {
+      this.scheduleNextMaintenance();
     }
+  }
+
+  /** Self-scheduling maintenance: at most 30s between ticks, and sooner when the
+   *  persisted plan makes a lifecycle event imminent, so no event ever waits behind
+   *  the cap. Each event clears itself when the rotation it schedules completes, so
+   *  the early-run floor can never busy-loop. */
+  private scheduleNextMaintenance(): void {
+    if (this.maintainTimer) clearTimeout(this.maintainTimer);
+    const timer = setTimeout(
+      () => void this.tick(),
+      this.nextMaintenanceDelay(),
+    );
+    timer.unref?.();
+    this.maintainTimer = timer;
+  }
+
+  /** Milliseconds until the next tick: the earliest upcoming lifecycle event minus a
+   *  small margin, capped at 30s, floored to keep an already-due event prompt. Events
+   * observed from the snapshot: the successor-planning deadline for the current key,
+   * the planned switch time, each predecessor's advertised notAfter (row cleanup),
+   * and the current key's own expiry (expired-current recovery). */
+  private nextMaintenanceDelay(): number {
+    const CAP_MS = 30_000;
+    const MARGIN_MS = 250;
+    const FLOOR_MS = 200;
+    const snapshot = this.snapshot;
+    const now = Date.now();
+    if (!snapshot) return CAP_MS;
+    const events: number[] = [];
+    const current = snapshot.keys.get(snapshot.currentKeyId);
+    if (current) {
+      events.push(current.notAfter);
+      if (!snapshot.plannedSuccessorKeyId) {
+        events.push(
+          current.notAfter -
+            (this.config.signingKey.successorPrepublicationMs +
+              this.config.signingKey.predecessorRetentionMs),
+        );
+      }
+    }
+    if (snapshot.plannedSwitchAt !== null)
+      events.push(snapshot.plannedSwitchAt);
+    for (const key of snapshot.keys.values()) {
+      if (
+        key.keyId !== snapshot.currentKeyId &&
+        key.keyId !== snapshot.plannedSuccessorKeyId
+      ) {
+        events.push(key.notAfter);
+      }
+    }
+    if (events.some((time) => time <= now)) return FLOOR_MS;
+    const next = Math.min(CAP_MS, Math.min(...events) - now - MARGIN_MS);
+    return Math.max(FLOOR_MS, next);
   }
 
   /**
@@ -462,8 +516,14 @@ export class KeypairService
         (key) => !retained.includes(key.keyId) && now >= key.notAfter,
       );
       if (expired.length > 0) {
-        await tx.execute(
-          sql`DELETE FROM "LocalFederationSigningKey" WHERE "keyId" = ANY(${expired.map((key) => key.keyId)})`,
+        await tx.delete(localFederationSigningKey).where(
+          and(
+            eq(localFederationSigningKey.domain, domain),
+            inArray(
+              localFederationSigningKey.keyId,
+              expired.map((key) => key.keyId),
+            ),
+          ),
         );
         for (const key of expired) keys.delete(key.keyId);
       }
@@ -555,9 +615,7 @@ export class KeypairService
   ): Promise<boolean> {
     const result = await tx.execute<{ hasHistory: boolean }>(sql`
       SELECT
-        EXISTS (SELECT 1 FROM "FederatedPeer" LIMIT 1)
-        OR EXISTS (SELECT 1 FROM "IdentityNamespace" WHERE id <> 0 LIMIT 1)
-        OR EXISTS (SELECT 1 FROM "FederatedPeerEvent" LIMIT 1)
+        EXISTS (SELECT 1 FROM "IdentityNamespace" WHERE id <> 0 LIMIT 1)
         OR EXISTS (SELECT 1 FROM "S2SKeyCache" LIMIT 1)
         AS "hasHistory"
     `);

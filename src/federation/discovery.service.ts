@@ -1,5 +1,10 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
-import { Interval } from '@nestjs/schedule';
+import {
+  HttpStatus,
+  Injectable,
+  Logger,
+  OnApplicationShutdown,
+  OnModuleInit,
+} from '@nestjs/common';
 import { lookup, type LookupAddress } from 'node:dns';
 import { resolveSrv } from 'node:dns/promises';
 import { createHash } from 'node:crypto';
@@ -24,7 +29,6 @@ import { KeypairService } from './keypair.service.js';
 import { selectFederationProtocolVersion } from './federation-protocol.js';
 import { FederationHttpScheduler } from './federation-http-scheduler.js';
 
-const KEY_REFRESH_POLL_MS = 60_000;
 /** Minimum spacing between two well-known refresh attempts for one peer, shared by the
  *  inbound key-miss path and the proactive scheduler. */
 const REFRESH_MIN_SPACING_MS = 30_000;
@@ -55,13 +59,14 @@ interface CachedRoute {
 }
 
 @Injectable()
-export class DiscoveryService {
+export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(DiscoveryService.name);
   private readonly config = loadFederationConfig();
   private readonly routes = new Map<string, CachedRoute>();
   /** Single-flight well-known refreshes keyed by `<domain>#<namespaceId>`. */
   private readonly refreshInFlight = new Map<string, Promise<void>>();
   private readonly lastRefreshAttemptAt = new Map<string, number>();
+  private refreshTimer: NodeJS.Timeout | undefined;
 
   constructor(
     private readonly database: DatabaseService,
@@ -70,7 +75,28 @@ export class DiscoveryService {
     private readonly transportConfig: FederationTransportConfigService,
   ) {}
 
-  @Interval(KEY_REFRESH_POLL_MS)
+  /** The proactive refresh round runs on a self-scheduling (unref'd) timer so the
+   *  interval follows the configured poll cadence instead of a hard-coded decorator
+   *  constant. Started by the Nest lifecycle, so plain unit-test constructions stay
+   *  timer-free. */
+  onModuleInit(): void {
+    this.schedulePeriodicRefresh();
+  }
+
+  onApplicationShutdown(): void {
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = undefined;
+  }
+
+  private schedulePeriodicRefresh(): void {
+    const timer = setTimeout(() => {
+      this.periodicRefresh();
+      this.schedulePeriodicRefresh();
+    }, this.config.peerKeyRefreshPollMs);
+    timer.unref?.();
+    this.refreshTimer = timer;
+  }
+
   periodicRefresh(): void {
     void this.refreshDuePeers().catch((error) =>
       this.logger.warn(

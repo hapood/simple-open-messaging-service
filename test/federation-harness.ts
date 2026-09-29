@@ -248,6 +248,8 @@ interface FedAppConfig {
   portA: number;
   portB: number;
   dataDir: string;
+  /** Extra subprocess env (e.g. real-keypair/lifecycle overrides for the rotation e2e). */
+  env?: Record<string, string>;
 }
 
 /** Boot one app in a subprocess. `start()` forks test/federation-app.main.ts (via tsx) with the app's
@@ -286,6 +288,7 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
       LOG_LEVEL:
         process.env.FED_E2E_LOG_LEVEL ??
         (process.env.FED_E2E_DEBUG === '1' ? 'verbose' : 'warn'),
+      ...cfg.env,
     };
     const startedChild = fork(APP_MAIN, {
       env,
@@ -408,8 +411,12 @@ function waitForReady(child: ChildProcess, cfg: FedAppConfig): Promise<void> {
 /** Boot appA + appB in separate processes on separate DBs, wired over loopback. Tests call THIS.
  *  A transparent S2S proxy sits on the appB→appA path (appB's discovery[aaa] → proxy → appA); it relays
  *  all traffic verbatim by default and is only USED (fault injection) by the resume test, which calls
- *  `proxy.armGetFileTruncation()`. appA→appB stays direct (no fault test on that leg). */
-export async function bootFederationPair(): Promise<{
+ *  `proxy.armGetFileTruncation()`. appA→appB stays direct (no fault test on that leg).
+ *  `env` is merged into both subprocesses after the standard harness env, so a spec can opt into
+ *  the real database-backed signing-key lifecycle (FED_E2E_REAL_KEYPAIR=1 plus lifecycle overrides). */
+export async function bootFederationPair(options?: {
+  env?: Record<string, string>;
+}): Promise<{
   appA: FedApp;
   appB: FedApp;
   proxy: S2sProxy;
@@ -438,6 +445,7 @@ export async function bootFederationPair(): Promise<{
     portA,
     portB,
     dataDir: dataDirA,
+    env: options?.env,
   });
   // appB routes aaa.test through the proxy (portA field = proxy.port), so its signed media calls can
   // be fault-injected; bbb.test stays appB's own port.
@@ -448,6 +456,7 @@ export async function bootFederationPair(): Promise<{
     portA: proxy.port,
     portB,
     dataDir: dataDirB,
+    env: options?.env,
   });
   // Clean both persistent stores before any lifecycle hook or recovery scheduler can observe them.
   // Truncating after startup races in-memory recovery work against the replacement fixture state.
@@ -481,7 +490,7 @@ export async function assertSeparateDatabases(
 
 /** Reset isolated federation fixtures, including profiles and media without account foreign keys. */
 const FEDERATION_TRUNCATE_SQL =
-  'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "Message", "MessageAsset", "MediaAsset", "FederatedPeer", "FederatedPeerEvent", "S2SKeyCache", "CallTombstone", "PeerStateFeed", "PeerStateFeedPullCursor", "FileSyncProgress", "ForwardBundle" RESTART IDENTITY CASCADE';
+  'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "Message", "MessageAsset", "MediaAsset", "S2SKeyCache", "CallTombstone", "PeerStateFeed", "PeerStateFeedPullCursor", "FileSyncProgress", "ForwardBundle" RESTART IDENTITY CASCADE';
 const FEDERATION_NAMESPACE_RESET_SQL =
   'DELETE FROM "IdentityNamespace" WHERE id <> 0';
 
