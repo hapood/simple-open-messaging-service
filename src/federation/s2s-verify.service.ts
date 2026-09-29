@@ -8,6 +8,7 @@ import {
 import { DiscoveryService } from './discovery.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import { parseKeyId } from './key-id.js';
 
 /**
  * Shared inbound RFC 9421 verification primitives — the keyId parse + .well-known key fetch + signature
@@ -55,13 +56,9 @@ export class S2sVerifyService {
     };
   }
 
-  /** keyId "domain/key-1" → "domain" (the part before the first '/'). */
-  domainFromKeyId(keyId: string): string {
-    return keyId.split('/')[0];
-  }
-
   /** Parse the RFC 9421 keyId from Signature-Input → { keyId, signer domain }. Cheap, no network.
-   *  Throws FEDERATION_MALFORMED (400) on missing/malformed Signature-Input/keyId. */
+   *  The keyId must satisfy the full KeyId grammar; the domain before the first `/` is the signer
+   *  domain. Throws FEDERATION_MALFORMED (400) on missing/malformed Signature-Input/keyId. */
   parseSigner(headers: OutboundSignatureHeaders): {
     keyId: string;
     domain: string;
@@ -85,15 +82,15 @@ export class S2sVerifyService {
       );
     }
     const { keyId, expires } = metadata;
-    const domain = this.domainFromKeyId(keyId);
-    if (!domain) {
+    const parsed = parseKeyId(keyId);
+    if (!parsed) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         `malformed keyId "${keyId}"`,
         HttpStatus.BAD_REQUEST,
       );
     }
-    return { keyId, domain, expires };
+    return { keyId, domain: parsed.domain, expires };
   }
 
   /**

@@ -25,6 +25,7 @@ import {
   FederationTransportConfigService,
   type FederationTransportConfig,
 } from '../federation/federation-transport-config.service.js';
+import { parseKeyId } from '../federation/key-id.js';
 
 type SelfCheckConfig = FederationConfig & FederationTransportConfig;
 
@@ -517,7 +518,7 @@ export class FederationSelfCheckService {
         evidence: { localPubB64: localPub, localPubSha256: localSha, keyId },
       };
     }
-    const keyIdDomain = keyId.split('/')[0];
+    const keyIdDomain = parseKeyId(keyId)?.domain;
     const published = doc.keys.map((k) => k.ed25519);
     const keyMatch = published.includes(localPub);
     const domainMatch = keyIdDomain === domain;

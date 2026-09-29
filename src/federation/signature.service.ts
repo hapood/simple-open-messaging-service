@@ -8,6 +8,7 @@ import {
   serializeDictionary,
 } from 'structured-headers';
 import { KeypairService } from './keypair.service.js';
+import { parseKeyId } from './key-id.js';
 
 /** Federation v1's application profile over RFC 9421 and RFC 9530. */
 const SIG_LABEL = 'sig1';
@@ -89,7 +90,7 @@ function parseProfile(headers: OutboundSignatureHeaders): ParsedProfile | null {
       typeof expires !== 'number' ||
       !Number.isSafeInteger(expires) ||
       typeof keyId !== 'string' ||
-      !keyId
+      !parseKeyId(keyId)
     ) {
       return null;
     }

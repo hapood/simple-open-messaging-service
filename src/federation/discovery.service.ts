@@ -10,11 +10,11 @@ import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import {
-  certificateDomain,
   type SigningKeyCertificate,
   verifySigningCertificate,
 } from './federation-certificate.js';
 import { loadFederationConfig } from './federation.config.js';
+import { parseKeyId } from './key-id.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { KeypairService } from './keypair.service.js';
 import { selectFederationProtocolVersion } from './federation-protocol.js';
@@ -245,7 +245,7 @@ export class DiscoveryService {
       if (
         !certificate ||
         typeof certificate.keyId !== 'string' ||
-        certificateDomain(certificate.keyId) !== normalized ||
+        parseKeyId(certificate.keyId)?.domain !== normalized ||
         ids.has(certificate.keyId) ||
         !verifySigningCertificate(certificate, doc.rootKey.ed25519)
       ) {

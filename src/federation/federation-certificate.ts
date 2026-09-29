@@ -48,9 +48,3 @@ export function verifySigningCertificate(
     return false;
   }
 }
-
-export function certificateDomain(keyId: string): string | undefined {
-  const slash = keyId.indexOf('/');
-  if (slash <= 0 || slash === keyId.length - 1) return undefined;
-  return keyId.slice(0, slash);
-}
