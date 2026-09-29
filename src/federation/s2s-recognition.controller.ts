@@ -76,31 +76,32 @@ export class S2sRecognitionController {
     this.assertEmptyGet(req);
     const headers = this.verify.extractHeaders(req);
     const signer = this.verify.parseSigner(headers);
+
+    // Common authentication path. Inbound Health MUST NOT initiate well-known discovery,
+    // even for a known peer: key freshness is maintained by the requester's outbound Health
+    // overlap refresh and other ordinary discovery refreshes. A missing/expired certificate
+    // or failed signature is a common authentication error, never a Health status object.
+    const context = await this.resolveHealthSigner(signer.domain);
+    const publicKey = await this.discovery.getCachedPublicKey(
+      signer.domain,
+      context.namespaceId,
+      signer.keyId,
+    );
+    if (!publicKey) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_BAD_SIGNATURE,
+        `signing certificate ${signer.keyId} is not available in local state`,
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    await this.verify.verifyWithPublicKey(
+      this.verify.signedRequest(req),
+      headers,
+      Buffer.from(publicKey).toString('base64'),
+    );
+
+    // Privacy projection begins only after authentication succeeds.
     if (!(await this.recognition.hasPreparedPeer(signer.domain))) {
-      return this.unavailableHealth();
-    }
-    let publicKey: Uint8Array | null;
-    let context: Awaited<ReturnType<FederationRecognitionService['captureVerifiedContext']>>;
-    try {
-      // A recognized peer may legitimately rotate to a newly published key. Refresh on a cache miss,
-      // but collapse every fetch/authorization outcome into Health's privacy-safe result.
-      context = await this.recognition.captureVerifiedContext(signer.domain);
-      publicKey = await this.discovery.getPublicKey(
-        signer.domain,
-        context.namespaceId,
-        signer.keyId,
-      );
-    } catch {
-      return this.unavailableHealth();
-    }
-    if (!publicKey) return this.unavailableHealth();
-    try {
-      await this.verify.verifyWithPublicKey(
-        this.verify.signedRequest(req),
-        headers,
-        Buffer.from(publicKey).toString('base64'),
-      );
-    } catch {
       return this.unavailableHealth();
     }
     const status = await this.recognition.queryHealth(signer.domain);
@@ -110,6 +111,21 @@ export class S2sRecognitionController {
       status,
       peerAssignedLocalNamespaceId: context.namespaceId,
     } as const;
+  }
+
+  /** Resolve the pinned namespace that scopes the signer's cached certificate set. Failure
+   *  means no verified identity exists, so no certificate can be available: the common
+   *  authentication error, not a privacy projection. */
+  private async resolveHealthSigner(domain: string) {
+    try {
+      return await this.recognition.captureVerifiedContext(domain);
+    } catch (error) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_BAD_SIGNATURE,
+        `no verified identity for signer ${domain}: ${(error as Error).message}`,
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
   }
 
   private unavailableHealth() {
@@ -129,7 +145,9 @@ export class S2sRecognitionController {
     if (
       keys.length === 1 &&
       keys[0] === 'namespaceId' &&
-      this.isPositiveSafeInteger((value as { namespaceId?: unknown }).namespaceId)
+      this.isPositiveSafeInteger(
+        (value as { namespaceId?: unknown }).namespaceId,
+      )
     ) {
       return (value as { namespaceId: number }).namespaceId;
     }
@@ -141,7 +159,9 @@ export class S2sRecognitionController {
   }
 
   private isPositiveSafeInteger(value: unknown): value is number {
-    return Number.isSafeInteger(value) && typeof value === 'number' && value > 0;
+    return (
+      Number.isSafeInteger(value) && typeof value === 'number' && value > 0
+    );
   }
 
   private assertEmptyGet(req: FastifyRequest): void {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import { FEDERATION_PEER_AVAILABLE } from './federation-peer.events.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
@@ -10,7 +11,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
   function target() {
     const discovery = {
       fetchWellKnown: vi.fn(),
-      getPublicKey: vi.fn().mockRejectedValue(new Error('well-known offline')),
+      getCachedPublicKey: vi.fn(),
       cacheDocument: vi.fn().mockResolvedValue(undefined),
     };
     const verify = {
@@ -41,8 +42,79 @@ describe('S2sRecognitionController Health privacy projection', () => {
     return { controller, discovery, verify, recognition };
   }
 
-  it('returns unavailable when a recognized peer key cannot be fetched', async () => {
+  it('answers a cache miss with the common authentication error and never fetches well-known', async () => {
     const { controller, discovery, verify, recognition } = target();
+    discovery.getCachedPublicKey.mockResolvedValue(null);
+
+    await expect(
+      controller.health({
+        url: '/s2s/v1/health',
+        rawBody: Buffer.alloc(0),
+        headers: {},
+      } as never),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_BAD_SIGNATURE,
+      status: 401,
+    });
+    expect(discovery.getCachedPublicKey).toHaveBeenCalledWith(
+      'peer.example',
+      12,
+      'peer.example/key-2',
+    );
+    expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
+    expect(verify.verifyWithPublicKey).not.toHaveBeenCalled();
+    expect(recognition.queryHealth).not.toHaveBeenCalled();
+  });
+
+  it('maps a signer without a verified identity to the common authentication error', async () => {
+    const { controller, discovery, recognition } = target();
+    recognition.captureVerifiedContext.mockRejectedValue(
+      new Error('no verified namespace'),
+    );
+
+    await expect(
+      controller.health({
+        url: '/s2s/v1/health',
+        rawBody: Buffer.alloc(0),
+        headers: {},
+      } as never),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_BAD_SIGNATURE,
+      status: 401,
+    });
+    expect(discovery.getCachedPublicKey).not.toHaveBeenCalled();
+    expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
+  });
+
+  it('propagates a failed signature verification as the common authentication error', async () => {
+    const { controller, discovery, verify, recognition } = target();
+    discovery.getCachedPublicKey.mockResolvedValue(new Uint8Array(32));
+    verify.verifyWithPublicKey.mockRejectedValue(
+      new BusinessException(
+        BusinessCode.FEDERATION_BAD_SIGNATURE,
+        'signature verification failed',
+        401,
+      ),
+    );
+
+    await expect(
+      controller.health({
+        url: '/s2s/v1/health',
+        rawBody: Buffer.alloc(0),
+        headers: {},
+      } as never),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_BAD_SIGNATURE,
+      status: 401,
+    });
+    expect(recognition.queryHealth).not.toHaveBeenCalled();
+    expect(recognition.markReachable).not.toHaveBeenCalled();
+  });
+
+  it('returns unavailable after authentication when the peer has no prepared receive path', async () => {
+    const { controller, discovery, verify, recognition } = target();
+    discovery.getCachedPublicKey.mockResolvedValue(new Uint8Array(32));
+    recognition.hasPreparedPeer.mockResolvedValue(false);
 
     await expect(
       controller.health({
@@ -51,18 +123,14 @@ describe('S2sRecognitionController Health privacy projection', () => {
         headers: {},
       } as never),
     ).resolves.toEqual({ status: 'unavailable' });
-    expect(discovery.getPublicKey).toHaveBeenCalledWith(
-      'peer.example',
-      12,
-      'peer.example/key-2',
-    );
-    expect(verify.verifyWithPublicKey).not.toHaveBeenCalled();
+    expect(verify.verifyWithPublicKey).toHaveBeenCalledOnce();
     expect(recognition.queryHealth).not.toHaveBeenCalled();
+    expect(recognition.markReachable).not.toHaveBeenCalled();
   });
 
   it('returns the admission status before refreshing authenticated reachability', async () => {
     const { controller, discovery, recognition } = target();
-    discovery.getPublicKey.mockResolvedValue(new Uint8Array(32));
+    discovery.getCachedPublicKey.mockResolvedValue(new Uint8Array(32));
     recognition.queryHealth.mockResolvedValue('degraded');
 
     await expect(
@@ -424,7 +492,9 @@ describe('FederationRecognitionService health transitions', () => {
     const { database } = txDatabase();
     const namespaces = {
       captureVerifiedInTx: vi.fn().mockResolvedValue({ namespaceId: 12 }),
-      recordPeerAssignedLocalNamespaceInTx: vi.fn().mockResolvedValue(undefined),
+      recordPeerAssignedLocalNamespaceInTx: vi
+        .fn()
+        .mockResolvedValue(undefined),
     };
     const recognition = new FederationRecognitionService(
       database as never,
