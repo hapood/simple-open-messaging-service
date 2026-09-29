@@ -5,7 +5,8 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 
 const DOMAIN_PREFIX = 'trust-level-check-';
-describe('FederatedPeer schema', () => {
+
+describe('IdentityNamespace peer-state schema', () => {
   let database: DatabaseService;
   let mod: TestingModule;
 
@@ -18,7 +19,7 @@ describe('FederatedPeer schema', () => {
 
   afterAll(async () => {
     await database.pool.query(
-      'DELETE FROM "FederatedPeer" WHERE domain LIKE $1',
+      'DELETE FROM "IdentityNamespace" WHERE domain LIKE $1',
       [`${DOMAIN_PREFIX}%`],
     );
     await mod.close();
@@ -28,13 +29,14 @@ describe('FederatedPeer schema', () => {
     const result = await database.pool.query<{ definition: string }>(
       `SELECT pg_get_constraintdef(oid) AS definition
        FROM pg_constraint
-       WHERE conname = 'FederatedPeer_trustLevel_check'`,
+       WHERE conname = 'IdentityNamespace_trustLevel_check'`,
     );
 
     expect(result.rows).toHaveLength(1);
     for (const trustLevel of [
       'unrecognized',
       'establishing',
+      'pending',
       'available',
       'degraded',
       'halted',
@@ -46,30 +48,39 @@ describe('FederatedPeer schema', () => {
   it('rejects an unsupported trust level', async () => {
     await expect(
       database.pool.query(
-        'INSERT INTO "FederatedPeer" (domain, "trustLevel") VALUES ($1, $2)',
-        [`${DOMAIN_PREFIX}invalid.test`, 'unknown'],
+        'INSERT INTO "IdentityNamespace" (domain, "rootKeyFingerprint", "rootPublicKey", "identityPinnedAt", "trustLevel") VALUES ($1, $2, $3, NOW(), $4)',
+        [
+          `${DOMAIN_PREFIX}invalid.test`,
+          'sha256:test',
+          Buffer.alloc(32, 1).toString('base64'),
+          'unknown',
+        ],
       ),
     ).rejects.toMatchObject({
       code: '23514',
-      constraint: 'FederatedPeer_trustLevel_check',
+      constraint: 'IdentityNamespace_trustLevel_check',
     });
   });
 
-  it('removes the obsolete nonce table and pairwise peer column', async () => {
-    const [table, column] = await Promise.all([
+  it('removes obsolete federation identity tables and columns', async () => {
+    const [nonceTable, peerTable, column] = await Promise.all([
       database.pool.query<{ relation: string | null }>(
         `SELECT to_regclass('public."S2SIdentityNonce"')::text AS relation`,
+      ),
+      database.pool.query<{ relation: string | null }>(
+        `SELECT to_regclass('public."FederatedPeer"')::text AS relation`,
       ),
       database.pool.query<{ column_name: string }>(
         `SELECT column_name
          FROM information_schema.columns
          WHERE table_schema = 'public'
-           AND table_name = 'FederatedPeer'
+           AND table_name = 'IdentityNamespace'
            AND column_name = 'pairwiseServerId'`,
       ),
     ]);
 
-    expect(table.rows[0]?.relation).toBeNull();
+    expect(nonceTable.rows[0]?.relation).toBeNull();
+    expect(peerTable.rows[0]?.relation).toBeNull();
     expect(column.rows).toEqual([]);
   });
 });

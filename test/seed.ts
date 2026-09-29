@@ -19,7 +19,6 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import {
   account as accountTable,
-  federatedPeer,
   identityNamespace,
   profileTable,
   relationshipIntent,
@@ -49,6 +48,7 @@ export async function seedFederatedPeerNamespace(
     .where(
       and(
         eq(identityNamespace.domain, domain),
+        eq(identityNamespace.active, true),
         isNull(identityNamespace.retiredAt),
       ),
     )
@@ -63,16 +63,26 @@ export async function seedFederatedPeerNamespace(
           rootKeyFingerprint: `sha256:e2e:${domain}`,
           rootPublicKey: Buffer.alloc(32, domain.length).toString('base64'),
           identityPinnedAt: new Date(),
+          active: true,
+          trustLevel: 'available',
+          recognizesPeer: true,
+          localServiceAvailable: true,
+          peerAcceptanceConfirmed: true,
+          remoteServiceReachable: true,
         })
         .returning({ id: identityNamespace.id })
     )[0].id;
   await database
-    .insert(federatedPeer)
-    .values({ domain, activeNamespaceId: namespaceId, trustLevel: 'available' })
-    .onConflictDoUpdate({
-      target: federatedPeer.domain,
-      set: { activeNamespaceId: namespaceId, trustLevel: 'available' },
-    });
+    .update(identityNamespace)
+    .set({
+      active: true,
+      trustLevel: 'available',
+      recognizesPeer: true,
+      localServiceAvailable: true,
+      peerAcceptanceConfirmed: true,
+      remoteServiceReachable: true,
+    })
+    .where(eq(identityNamespace.id, namespaceId));
   return namespaceId;
 }
 

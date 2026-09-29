@@ -425,7 +425,7 @@
       "created": "发现时间"
     },
     "action": {
-      "viewTimeline": "查看时间线",
+      "viewDetail": "查看详情",
       "block": "屏蔽",
       "unblock": "取消屏蔽"
     },
@@ -448,24 +448,10 @@
       "auto": "自动（init）",
       "lastError": "最近错误"
     },
-    "timeline": {
-      "title": "生命周期时间线",
-      "empty": "尚无生命周期事件"
-    },
-    "event": {
-      "discovered": "发现对端",
-      "trusted": "建立信任",
-      "degraded": "连接丢失 / 降级",
-      "available": "连接恢复",
-      "halted": "通信已停止",
-      "unblocked": "管理员取消屏蔽",
-      "namespace_active": "当前命名空间已切换"
-    },
     "detail": {
       "back": "返回联邦",
       "notFound": "节点不存在",
       "tabOverview": "概览",
-      "tabTimeline": "时间线",
       "tabNamespaces": "命名空间",
       "tabQuota": "配额"
     },

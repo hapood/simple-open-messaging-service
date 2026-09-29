@@ -95,9 +95,10 @@ import {
  */
 
 export interface ProfileSelector {
+  publisherNamespaceId: number;
   account: string;
   domain: string;
-  namespaceId: number;
+  profileNamespaceId: number;
   profileRev: number;
 }
 
@@ -344,7 +345,7 @@ export interface WebdbSchema extends DBSchema {
     indexes: { domain: string };
   };
   profiles: {
-    key: [string, string, number, number];
+    key: [number, string, string, number, number];
     value: ProfileSnapshot;
   };
   profileAvatarBlobs: { key: string; value: { digest: string; blob: Blob } };
@@ -415,12 +416,42 @@ function idbAvailable(): boolean {
   return typeof indexedDB !== 'undefined';
 }
 
+function normalizeProfileSnapshot<T extends ProfileSelector>(
+  snapshot: T,
+): T {
+  const subject = localSubjectIdentity({
+    account: snapshot.account,
+    domain: snapshot.domain,
+    namespaceId: snapshot.profileNamespaceId,
+  });
+  return {
+    ...snapshot,
+    account: subject.account,
+    domain: subject.domain,
+    profileNamespaceId: subject.namespaceId,
+  };
+}
+
+function profileStoreKey(
+  profile: ProfileSelector,
+): [number, string, string, number, number] {
+  return [
+    profile.publisherNamespaceId,
+    profile.account,
+    profile.domain,
+    profile.profileNamespaceId,
+    profile.profileRev,
+  ];
+}
+
 function parseProfileKey(value: unknown): ProfileKey | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return;
   const candidate = value as Partial<ProfileKey>;
   if (
-    !Number.isSafeInteger(candidate.namespaceId) ||
-    Number(candidate.namespaceId) < 0 ||
+    !Number.isSafeInteger(candidate.publisherNamespaceId) ||
+    Number(candidate.publisherNamespaceId) < 0 ||
+    !Number.isSafeInteger(candidate.profileNamespaceId) ||
+    Number(candidate.profileNamespaceId) < 0 ||
     typeof candidate.account !== 'string' ||
     candidate.account.length === 0 ||
     typeof candidate.domain !== 'string' ||
@@ -430,7 +461,8 @@ function parseProfileKey(value: unknown): ProfileKey | undefined {
   )
     return;
   return {
-    namespaceId: Number(candidate.namespaceId),
+    publisherNamespaceId: Number(candidate.publisherNamespaceId),
+    profileNamespaceId: Number(candidate.profileNamespaceId),
     account: candidate.account,
     domain: candidate.domain,
     rev: Number(candidate.rev),
@@ -467,6 +499,8 @@ export class WebdbStorage {
     }
     const result = await this.resolveProfileEvidence({
       type: 'EXACT',
+      publisherNamespaceId: key.publisherNamespaceId,
+      profileNamespaceId: key.profileNamespaceId,
       account: key.account,
       domain: key.domain,
       rev: key.rev,
@@ -808,7 +842,13 @@ export class WebdbStorage {
           status: 'ACTIVE',
         });
         db.createObjectStore('profiles', {
-          keyPath: ['account', 'domain', 'namespaceId', 'profileRev'],
+          keyPath: [
+            'publisherNamespaceId',
+            'account',
+            'domain',
+            'profileNamespaceId',
+            'profileRev',
+          ],
         });
         db.createObjectStore('profileAvatarBlobs', { keyPath: 'digest' });
         const members = db.createObjectStore('members', {
@@ -2362,7 +2402,7 @@ export class WebdbStorage {
   async getProfile(
     selector: ProfileSelector,
   ): Promise<ProfileSnapshot | undefined> {
-    selector = localSubjectIdentity(selector);
+    selector = normalizeProfileSnapshot(selector);
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
         return (
@@ -2372,12 +2412,104 @@ export class WebdbStorage {
           })) ?? undefined
         );
       return (await this.db()).get('profiles', [
+        selector.publisherNamespaceId,
         selector.account,
         selector.domain,
-        selector.namespaceId,
+        selector.profileNamespaceId,
         selector.profileRev,
       ]);
     });
+  }
+
+  async profileDemandForEvidence(evidence: ProfileEvidence): Promise<unknown> {
+    return this.runAccountOperation(async () => {
+      if (evidence.type === 'EXACT') {
+        return {
+          publisherNamespaceId: evidence.publisherNamespaceId,
+          lookup: 'ACCOUNT_PROFILE',
+          target: {
+            profileNamespaceId: evidence.profileNamespaceId,
+            account: evidence.account,
+            domain: evidence.domain,
+            rev: evidence.rev,
+          },
+        };
+      }
+      const db = await this.db();
+      if (evidence.type === 'MESSAGE_AUTHOR') {
+        const message = await (
+          await this.messageDb()
+        ).get('messages', [evidence.threadId, evidence.messageSeq]);
+        if (
+          !message ||
+          message.isDeleted ||
+          !('creator' in message) ||
+          !message.creator ||
+          message.profileRev !== evidence.rev
+        )
+          throw new Error('message-author profile evidence is not locally available');
+        const creator = localSubjectIdentity(message.creator);
+        return {
+          publisherNamespaceId: creator.namespaceId,
+          lookup: 'ACCOUNT_PROFILE',
+          target: {
+            profileNamespaceId: creator.namespaceId,
+            account: creator.account,
+            domain: creator.domain,
+            rev: evidence.rev,
+          },
+        };
+      }
+      if (evidence.subject.type === 'GROUP') {
+        const state = await db.get('threads', evidence.threadId);
+        if (state?.type !== 'GROUP' || state.threadProfileRev !== evidence.profileRev)
+          throw new Error('Group Meta profile evidence is not locally available');
+        return {
+          publisherNamespaceId: state.profileNamespaceId,
+          lookup: 'ACCOUNT_PROFILE',
+          target: {
+            profileNamespaceId: state.profileNamespaceId,
+            account: state.profileAccount,
+            domain: state.profileDomain,
+            rev: evidence.profileRev,
+          },
+        };
+      }
+      const memberSubject = evidence.subject;
+      const member = (
+        await db
+          .transaction('members')
+          .store.index('thread')
+          .getAll(evidence.threadId)
+      ).find(
+        (row) =>
+          !row.left &&
+          row.account === memberSubject.account &&
+          row.domain === memberSubject.domain &&
+          row.profileRev === evidence.profileRev,
+      );
+      if (!member) throw new Error('Group member profile evidence is not locally available');
+      return {
+        publisherNamespaceId: member.namespaceId,
+        lookup: 'GROUP_MEMBER_PROFILE',
+        target: {
+          profileNamespaceId: member.namespaceId,
+          account: member.account,
+          domain: member.domain,
+          rev: member.profileRev,
+        },
+        groupAccount: await this.groupAccountForThread(db, evidence.threadId),
+      };
+    });
+  }
+
+  private async groupAccountForThread(
+    db: IDBPDatabase<WebdbSchema>,
+    threadId: number,
+  ): Promise<string> {
+    const state = await db.get('threads', threadId);
+    if (state?.type !== 'GROUP') throw new Error('Group thread is not locally available');
+    return state.profileAccount;
   }
 
   /** Resolve an evidence reference to an already materialized local snapshot. */
@@ -2387,18 +2519,11 @@ export class WebdbStorage {
     return this.runAccountOperation(async () => {
       const db = await this.db();
       if (evidence.type === 'EXACT') {
-        const domain = evidence.domain === 'local' ? 'local' : evidence.domain;
-        const namespace = (
-          await db
-            .transaction('namespaces')
-            .store.index('domain')
-            .getAll(domain)
-        ).find((candidate) => candidate.status === 'ACTIVE');
-        if (!namespace) return undefined;
         return db.get('profiles', [
+          evidence.publisherNamespaceId,
           evidence.account,
-          domain,
-          namespace.namespaceId,
+          evidence.domain,
+          evidence.profileNamespaceId,
           evidence.rev,
         ]);
       }
@@ -2416,6 +2541,7 @@ export class WebdbStorage {
           return undefined;
         const creator = localSubjectIdentity(message.creator);
         return db.get('profiles', [
+          creator.namespaceId,
           creator.account,
           creator.domain,
           creator.namespaceId,
@@ -2428,6 +2554,7 @@ export class WebdbStorage {
             state.threadProfileRev !== evidence.profileRev)
           return undefined;
         return db.get('profiles', [
+          state.profileNamespaceId,
           state.profileAccount,
           state.profileDomain,
           state.profileNamespaceId,
@@ -2449,6 +2576,7 @@ export class WebdbStorage {
       );
       if (!member) return undefined;
       return db.get('profiles', [
+        member.namespaceId,
         member.account,
         member.domain,
         member.namespaceId,
@@ -2462,9 +2590,10 @@ export class WebdbStorage {
     snapshot?: ProfileSnapshot,
   ): ProfileSnapshot {
     return {
+      publisherNamespaceId: member.namespaceId,
       account: member.account,
       domain: member.domain,
-      namespaceId: member.namespaceId,
+      profileNamespaceId: member.namespaceId,
       profileRev: member.profileRev,
       name: snapshot?.name ?? member.account,
       avatarDigest: snapshot?.avatarDigest ?? null,
@@ -2562,6 +2691,7 @@ export class WebdbStorage {
       for (const member of members) {
         if (result.length >= params.take) break;
         const snapshot = await db.get('profiles', [
+          member.namespaceId,
           member.account,
           member.domain,
           member.namespaceId,
@@ -2609,6 +2739,7 @@ export class WebdbStorage {
       ]);
       if (!member || member.left) return undefined;
       const snapshot = await db.get('profiles', [
+        namespaceId,
         account,
         domain,
         namespaceId,
@@ -2633,6 +2764,7 @@ export class WebdbStorage {
         if (state.type !== 'GROUP' || state.conversationState === 'READ_ONLY' ||
             state.threadProfileRev < 1) continue;
         const cached = await tx.objectStore('profiles').get([
+          state.profileNamespaceId,
           state.profileAccount,
           state.profileDomain,
           state.profileNamespaceId,
@@ -2658,6 +2790,7 @@ export class WebdbStorage {
         const cached = await tx
           .objectStore('profiles')
           .get([
+            member.namespaceId,
             member.account,
             member.domain,
             member.namespaceId,
@@ -2701,7 +2834,7 @@ export class WebdbStorage {
             threadId: evidence.threadId,
             account: key.account,
             domain: key.domain,
-            namespaceId: key.namespaceId,
+            namespaceId: key.profileNamespaceId,
             expectedRev: evidence.profileRev,
             actualRev: key.rev,
           },
@@ -2711,7 +2844,7 @@ export class WebdbStorage {
         evidence.threadId,
         key.account,
         key.domain,
-        key.namespaceId,
+        key.profileNamespaceId,
       ];
       const member = await tx.store.get(address);
       const changed =
@@ -2811,7 +2944,10 @@ export class WebdbStorage {
         return false;
       }
       await this.writeSnapshot(tx.objectStore('profiles'), {
-        ...identity,
+        publisherNamespaceId: identity.namespaceId,
+        account: identity.account,
+        domain: identity.domain,
+        profileNamespaceId: identity.namespaceId,
         profileRev: profile.rev,
         name: profile.name,
         avatarDigest: profile.avatarDigest ?? null,
@@ -2885,9 +3021,10 @@ export class WebdbStorage {
         reference.namespaceId,
       );
       await this.writeSnapshot(tx.objectStore('profiles'), {
+        publisherNamespaceId: reference.namespaceId,
         account: reference.account,
         domain: reference.domain,
-        namespaceId: reference.namespaceId,
+        profileNamespaceId: reference.namespaceId,
         profileRev: reference.rev,
         name: profile.name,
         avatarDigest: decodedAvatar?.digest ?? null,
@@ -2908,7 +3045,8 @@ export class WebdbStorage {
 
   /** Commit an immutable resolved snapshot. Runtime executors call this before notifying the UI. */
   async commitResolvedProfile(profile: {
-    namespaceId: number;
+    publisherNamespaceId: number;
+    profileNamespaceId: number;
     account: string;
     domain: string;
     rev: number;
@@ -2917,8 +3055,9 @@ export class WebdbStorage {
     avatarBase64: string | null;
   }): Promise<ProfileSnapshot> {
     const avatar = await decodeProfileAvatar(profile.avatarBase64);
-    const snapshot: ProfileSnapshot = localSubjectIdentity({
-      namespaceId: profile.namespaceId,
+    const snapshot: ProfileSnapshot = normalizeProfileSnapshot({
+      publisherNamespaceId: profile.publisherNamespaceId,
+      profileNamespaceId: profile.profileNamespaceId,
       account: profile.account,
       domain: profile.domain,
       profileRev: profile.rev,
@@ -2935,7 +3074,7 @@ export class WebdbStorage {
       await this.registerNamespace(
         tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
         snapshot.domain,
-        snapshot.namespaceId,
+        snapshot.profileNamespaceId,
       );
       const written = await this.writeSnapshot(
         tx.objectStore('profiles'),
@@ -2945,7 +3084,7 @@ export class WebdbStorage {
         if (
           thread.profileAccount === snapshot.account &&
           thread.profileDomain === snapshot.domain &&
-          thread.profileNamespaceId === snapshot.namespaceId &&
+          thread.profileNamespaceId === snapshot.profileNamespaceId &&
           thread.threadProfileRev === snapshot.profileRev
         )
           await tx.objectStore('threads').put({
@@ -2964,7 +3103,8 @@ export class WebdbStorage {
         key: {
           account: snapshot.account,
           domain: snapshot.domain,
-          namespaceId: snapshot.namespaceId,
+          publisherNamespaceId: snapshot.publisherNamespaceId,
+          profileNamespaceId: snapshot.profileNamespaceId,
           rev: snapshot.profileRev,
         },
       });
@@ -2994,7 +3134,7 @@ export class WebdbStorage {
   private async writeSnapshot(
     store: {
       get(
-        key: [string, string, number, number],
+        key: [number, string, string, number, number],
       ): Promise<ProfileSnapshot | undefined>;
       put(record: ProfileSnapshot): Promise<unknown>;
       transaction: { abort(): void; done: Promise<void> };
@@ -3006,13 +3146,8 @@ export class WebdbStorage {
       await store.transaction.done.catch(() => {});
       throw new Error('profile snapshot text is incomplete');
     }
-    record = localSubjectIdentity(record);
-    const previous = await store.get([
-      record.account,
-      record.domain,
-      record.namespaceId,
-      record.profileRev,
-    ]);
+    record = normalizeProfileSnapshot(record);
+    const previous = await store.get(profileStoreKey(record));
     if (previous) {
       if (
         previous.name !== record.name ||

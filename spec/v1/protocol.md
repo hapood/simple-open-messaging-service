@@ -62,29 +62,29 @@ The v1 wire surface and every v1 object are closed. Unknown fields and unknown e
 
 The following table is the complete v1 surface. Its synchronization surface contains two GET feeds, two GET thread queries, three exact profile queries, and one POST feed-head hint. `recognize` additionally serves as the arrival operation for a server presenting a new domain under an already pinned root identity. The authentication context determines how signature validation obtains a key and which peer states MAY invoke an operation; it does not change the Section 6 signature wire format.
 
-| Method | Absolute path                                                                                       | Authentication context | Request                   | Success     | Response                 |
-| ------ | --------------------------------------------------------------------------------------------------- | ---------------------- | ------------------------- | ----------- | ------------------------ |
-| `GET`  | `/.well-known/somfp`                                                                                | public TLS             | no query or body          | `200`       | bare discovery object    |
-| `POST` | `/s2s/v1/recognize`                                                                                 | bootstrap signed       | empty object or namespace echo | `200`       | bare Recognize result    |
-| `GET`  | `/s2s/v1/health`                                                                                    | status signed          | no query or body          | `200`       | bare privacy-safe status |
-| `POST` | `/s2s/v1/feed-heads`                                                                                | lightweight signed     | JSON feed-head hint       | `200`       | success ACK envelope     |
-| `GET`  | `/s2s/v1/state-feed`                                                                                | recognized signed      | feed query                | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/group-meta`                                                                                | recognized signed      | group/meta mode query     | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/account-profiles/:namespaceId/:account/:profileRev`                                        | recognized signed      | path profile evidence     | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev` | recognized signed      | path member evidence      | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev`                            | recognized signed      | path intent evidence      | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/messages`                                                                                  | recognized signed      | thread data query         | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/message-tombstones`                                                                        | recognized signed      | thread data query         | `200`       | success data envelope    |
-| `POST` | `/s2s/v1/call`                                                                                      | recognized signed      | JSON call frame           | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/accounts/:account`                                                                         | recognized signed      | path account              | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/media/:digest`                                                                             | recognized signed      | path/query/optional Range | `200`/`206` | raw bytes                |
-| `GET`  | `/s2s/v1/forward-bundles/:bundleId`                                                                 | recognized signed      | path bundle ID            | `200`       | success data envelope    |
+| Method | Absolute path                                                                                       | Authentication context | Request                                         | Success     | Response                 |
+| ------ | --------------------------------------------------------------------------------------------------- | ---------------------- | ----------------------------------------------- | ----------- | ------------------------ |
+| `GET`  | `/.well-known/somfp`                                                                                | public TLS             | no query or body                                | `200`       | bare discovery object    |
+| `POST` | `/s2s/v1/recognize`                                                                                 | bootstrap signed       | empty object or sender-assigned local namespace | `200`       | bare Recognize result    |
+| `GET`  | `/s2s/v1/health`                                                                                    | status signed          | no query or body                                | `200`       | bare privacy-safe status |
+| `POST` | `/s2s/v1/feed-heads`                                                                                | lightweight signed     | JSON feed-head hint                             | `200`       | success ACK envelope     |
+| `GET`  | `/s2s/v1/state-feed`                                                                                | recognized signed      | feed query                                      | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/group-meta`                                                                                | recognized signed      | group/meta mode query                           | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/account-profiles/:namespaceId/:account/:profileRev`                                        | recognized signed      | path profile evidence                           | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev` | recognized signed      | path member evidence                            | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev`                            | recognized signed      | path intent evidence                            | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/messages`                                                                                  | recognized signed      | thread data query                               | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/message-tombstones`                                                                        | recognized signed      | thread data query                               | `200`       | success data envelope    |
+| `POST` | `/s2s/v1/call`                                                                                      | recognized signed      | JSON call frame                                 | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/accounts/:account`                                                                         | recognized signed      | path account                                    | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/media/:digest`                                                                             | recognized signed      | path/query/optional Range                       | `200`/`206` | raw bytes                |
+| `GET`  | `/s2s/v1/forward-bundles/:bundleId`                                                                 | recognized signed      | path bundle ID                                  | `200`       | success data envelope    |
 
 All four signed contexts use the same HTTP Message Signature profile but have different authorization boundaries:
 
 - **bootstrap signed** applies only to `recognize`. The receiver may accept the
   attempt and return `pending` before asynchronous well-known fetch, signature
-  validation, root resolution, namespace echo validation, or administrator
+  validation, root resolution, sender-assigned local namespace validation, or administrator
   review completes. `pending` carries no namespace and creates no acceptance
   evidence. Only a later `recognized` result proves that the receiver has
   obtained the signer domain's current well-known document, validated the root,
@@ -96,7 +96,8 @@ All four signed contexts use the same HTTP Message Signature profile but have di
   namespace bound to another domain is a domain re-binding arrival. The
   receiver keeps that arrival pending for administrator review; approval allows
   a later `recognized` result, and rejection returns `failed` with the stable
-  rejection code. recognition.md defines the arrival, its namespace echo, and
+  rejection code. recognition.md defines the arrival, its sender-assigned
+  local namespace, and
   the review outcomes.
 - **status signed** applies only to `health`. Common HTTP Message Signature authentication, including signing-certificate validity, is enforced before the Health status handler and uses the stable error registry on failure. After authentication succeeds, the receiver evaluates the authenticated signer's existing pinned identity and locally recognized/prepared receive-path state. Such a peer MAY receive `available` or `degraded`; either result proves the receiver accepts the requester and is prepared to receive its traffic, equivalent to Recognize `recognized`. A successfully authenticated query also refreshes reachability. An authenticated signer that is not recognized, prepared, authorized, or safely disclosable uniformly receives privacy-safe `unavailable`; the query MUST NOT trigger first recognition.
 - **lightweight signed** applies only to `feed-heads`. The recipient MUST locally recognize the signer and have a prepared lightweight receive path. Recognize `recognized` is one prompt way to communicate that readiness; positive Health provides equivalent evidence. This context does not authorize another data-plane operation.
@@ -147,7 +148,7 @@ When an operation references a type in this table, it MUST follow the listed for
 | `UserAccount`            | A normalized lower-case ASCII user account matching `^[a-z0-9][a-z0-9._-]{0,29}$`, 1–30 characters overall.                                                                                                                                                                                                 |
 | `GroupAccount`           | A globally unique, immutable group identifier: `!` followed by a normalized lower-case ASCII opaque ID matching `^![a-z0-9]{2,30}$`, 3–31 characters overall. Creators MUST mint it with enough cryptographic randomness to make federation-wide collision negligible, and MUST retry on a local collision. |
 | `Account`                | A `UserAccount` or `GroupAccount`. It is case-sensitive and accepts only the lower-case forms above. An operation MUST reject an account of the wrong resource type.                                                                                                                                        |
-| `Address`                | The closed JSON object `{ "account": Account, "domain": Domain }`. `domain` MAY be the literal subject marker `local` only under the publisher-scoped rules of Section 6.2.1.                                                                                                                                                                                                                                          |
+| `Address`                | The closed JSON object `{ "account": Account, "domain": Domain }`. `domain` MAY be the literal subject marker `local` only under the publisher-scoped rules of Section 6.2.1.                                                                                                                               |
 | `DecimalString`          | The literal `"0"`, or a non-empty string of ASCII decimal digits without a leading `0`. It MUST NOT be replaced by a JSON number.                                                                                                                                                                           |
 | `SignedDecimalString`    | The literal `"0"`, or an optional `-` followed by a non-empty string of ASCII decimal digits without a leading `0`. `-0` is forbidden. It MUST NOT be replaced by a JSON number.                                                                                                                            |
 | `PositiveDecimalString`  | A non-empty string whose first character is `1..9` and remaining characters are `0..9`.                                                                                                                                                                                                                     |

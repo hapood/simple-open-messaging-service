@@ -311,9 +311,7 @@ similarity is not an identity substitute.
 
 ### Federation (S2S)
 
-- **FederatedPeer** — stable domain recognition and reachability state. `activeNamespaceId` points to the currently verified identity namespace. `peerAcceptanceConfirmed` records evidence that the peer recognizes this node, supplied by a valid Recognize result, an inbound Recognize request, or a valid `available`/`degraded` Health result. `trustLevel` is `unrecognized | establishing | pending | available | degraded | halted`; `pending` means a verified namespace candidate is awaiting administrator review, `establishing` means local recognition is complete but peer acceptance is unproven, while `available` and `degraded` distinguish current reachability after acceptance. Daily federation quota overrides belong to the active identity namespace, not the domain.
-- **IdentityNamespace** — immutable verified peer-identity epochs. Reset retires the active namespace without rewriting data already owned by it; the next successful verification creates and activates a new integer namespace.
-- **FederatedPeerEvent** — append-only trust-lifecycle log (decoupled, no FK — history survives any row change).
+- **IdentityNamespace** — the sole federation peer-state and identity aggregate. Each row owns the current route domain, immutable verified identity evidence, active state, trust/lifecycle state, recognition and reachability evidence, health timestamps, and per-namespace quota overrides. `trustLevel` is `unrecognized | establishing | pending | available | degraded | halted`; `peerAcceptanceConfirmed` records evidence that the peer recognizes this node.
 - **S2SKeyCache** — cached peer signing keys (JWKS-style, TTL'd).
 - **PeerStateFeed / IdentityNamespace.stateFeedEndId / PeerStateFeedPullCursor** — compacted
   per-peer relationship and group/thread heads with transactional source and

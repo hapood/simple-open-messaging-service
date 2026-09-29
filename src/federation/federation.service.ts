@@ -214,9 +214,9 @@ export class FederationService {
 
   async activePeerDomainForNamespace(namespaceId: number): Promise<string | null> {
     const [peer] = await this.database.db
-      .select({ domain: tables.federatedPeer.domain })
-      .from(tables.federatedPeer)
-      .where(eq(tables.federatedPeer.activeNamespaceId, namespaceId))
+      .select({ domain: tables.identityNamespace.domain })
+      .from(tables.identityNamespace)
+      .where(eq(tables.identityNamespace.id, namespaceId))
       .limit(1);
     return peer?.domain ?? null;
   }
@@ -550,13 +550,7 @@ export class FederationService {
     await this.peerLifecycle.recoverPeerRecognition(domain);
   }
 
-  // ─── trust lifecycle (state machine + audit log) ──────────────────────────────
-  //
-  // FederatedPeer holds the CURRENT state (the cheap read path); FederatedPeerEvent is the append-only
-  // log of every transition (the admin timeline). FederationPeerLifecycle is the single owner: every
-  // transition — recognition convergence, transport health and admin actions — flows through these
-  // methods, so the row + the event stay consistent. Recognition facts remain authoritative when a
-  // transport failure temporarily moves a healthy peer to degraded.
+  // ─── trust lifecycle ─────────────────────────────────────────────────────────
 
   /** Best-practice liveness watermark window. "Last successful contact" is an admin observability
    *  signal whose consumer needs MINUTE granularity (is this peer up?), not sub-second — so write
@@ -599,11 +593,6 @@ export class FederationService {
     status?: string;
   }) {
     return this.peerLifecycle.list(opts);
-  }
-
-  /** Admin timeline: a peer's lifecycle events, newest-first. */
-  async peerEvents(domain: string, take = 100) {
-    return this.peerLifecycle.events(domain, take);
   }
 
   /**
@@ -1038,12 +1027,12 @@ export class FederationService {
   }
   /** Locally prepared peers still waiting for the peer's acceptance assertion. */
   async listRecoverablePeerDomains(): Promise<string[]> {
-    const rows = await this.database.db.query.federatedPeer.findMany({
+    const rows = await this.database.db.query.identityNamespace.findMany({
       where: and(
-        eq(tables.federatedPeer.trustLevel, 'establishing'),
-        eq(tables.federatedPeer.recognizesPeer, true),
-        eq(tables.federatedPeer.localServiceAvailable, true),
-        eq(tables.federatedPeer.peerAcceptanceConfirmed, false),
+        eq(tables.identityNamespace.trustLevel, 'establishing'),
+        eq(tables.identityNamespace.recognizesPeer, true),
+        eq(tables.identityNamespace.localServiceAvailable, true),
+        eq(tables.identityNamespace.peerAcceptanceConfirmed, false),
       ),
       columns: { domain: true },
     });
@@ -1052,12 +1041,12 @@ export class FederationService {
 
   /** Fully recognized peers participating in startup reconciliation. */
   async listTrustedPeerDomains(): Promise<string[]> {
-    const rows = await this.database.db.query.federatedPeer.findMany({
+    const rows = await this.database.db.query.identityNamespace.findMany({
       where: and(
-        inArray(tables.federatedPeer.trustLevel, ['available', 'degraded']),
-        eq(tables.federatedPeer.recognizesPeer, true),
-        eq(tables.federatedPeer.localServiceAvailable, true),
-        eq(tables.federatedPeer.peerAcceptanceConfirmed, true),
+        inArray(tables.identityNamespace.trustLevel, ['available', 'degraded']),
+        eq(tables.identityNamespace.recognizesPeer, true),
+        eq(tables.identityNamespace.localServiceAvailable, true),
+        eq(tables.identityNamespace.peerAcceptanceConfirmed, true),
       ),
       columns: { domain: true },
     });

@@ -478,32 +478,30 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
     const normalized = this.normalizeDomain(domain);
     const fingerprint = this.fingerprint(doc.rootKey.ed25519);
     const mismatch = await this.database.db.transaction(async (tx) => {
-      const [peer] = await tx
+      const [namespace] = await tx
         .select({
-          activeNamespaceId: tables.federatedPeer.activeNamespaceId,
+          domain: tables.identityNamespace.domain,
+          active: tables.identityNamespace.active,
           rootPublicKey: tables.identityNamespace.rootPublicKey,
           rootKeyFingerprint: tables.identityNamespace.rootKeyFingerprint,
         })
-        .from(tables.federatedPeer)
-        .innerJoin(
-          tables.identityNamespace,
-          eq(tables.identityNamespace.id, namespaceId),
-        )
-        .where(eq(tables.federatedPeer.domain, normalized))
+        .from(tables.identityNamespace)
+        .where(eq(tables.identityNamespace.id, namespaceId))
         .limit(1)
-        // Lock a stable parent before replacing the key set. Concurrent DELETEs
-        // can miss each other's newly inserted rows and then fail with 23505.
-        .for('no key update', { of: tables.federatedPeer });
+        // Lock the pinned identity row before replacing the key set. Concurrent
+        // DELETEs can miss each other's newly inserted rows and then fail with 23505.
+        .for('no key update', { of: tables.identityNamespace });
       if (
-        !peer ||
-        peer.rootPublicKey !== doc.rootKey.ed25519 ||
-        peer.rootKeyFingerprint !== fingerprint
+        !namespace ||
+        namespace.domain !== normalized ||
+        namespace.rootPublicKey !== doc.rootKey.ed25519 ||
+        namespace.rootKeyFingerprint !== fingerprint
       ) {
         const reason =
           'peer presented a root different from the pinned identity';
-        if (peer?.activeNamespaceId === namespaceId) {
+        if (namespace?.active && namespace.domain === normalized) {
           await tx
-            .update(tables.federatedPeer)
+            .update(tables.identityNamespace)
             .set({
               trustLevel: 'halted',
               remoteServiceReachable: false,
@@ -511,12 +509,7 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
               haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
               haltReason: reason,
             })
-            .where(eq(tables.federatedPeer.domain, normalized));
-          await tx.insert(tables.federatedPeerEvent).values({
-            domain: normalized,
-            type: 'halted',
-            reason,
-          });
+            .where(eq(tables.identityNamespace.id, namespaceId));
         }
         return reason;
       }

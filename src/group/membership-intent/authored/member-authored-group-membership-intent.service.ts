@@ -173,10 +173,10 @@ export class MemberAuthoredGroupMembershipIntentService {
           : (
               await tx.execute<{ namespaceId: number }>(sql`
                 SELECT ns.id AS "namespaceId"
-                FROM "FederatedPeer" peer
-                JOIN "IdentityNamespace" ns ON ns.id = peer."activeNamespaceId"
-                  AND ns.domain = peer.domain AND ns."retiredAt" IS NULL
-                WHERE peer.domain = ${storedDomain}
+                FROM "IdentityNamespace" ns
+                WHERE ns.domain = ${storedDomain}
+                  AND ns.active = true
+                  AND ns."retiredAt" IS NULL
               `)
             ).rows[0]?.namespaceId;
       if (namespaceId === undefined)

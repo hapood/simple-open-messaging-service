@@ -74,12 +74,12 @@ export function groupAuthoredInvitationLocatorSql(input: {
           AND local_target.domain = 'local' AND local_target."namespaceId" = 0
       )
       UNION ALL
-      SELECT peer."activeNamespaceId"
-      FROM "FederatedPeer" peer
-      JOIN "IdentityNamespace" ns ON ns.id = peer."activeNamespaceId"
-        AND ns."retiredAt" IS NULL
+      SELECT ns.id
+      FROM "IdentityNamespace" ns
       WHERE ${input.targetDomain} <> 'local'
-        AND peer.domain = ${input.targetDomain}
+        AND ns.domain = ${input.targetDomain}
+        AND ns.active = true
+        AND ns."retiredAt" IS NULL
     ) target ON true
     WHERE g.id = ${input.threadId}
   `;
@@ -108,8 +108,10 @@ export function groupAuthoredMembershipAddressLocatorSql(input: {
       AND pair."endpointBAccount" = ${input.targetAccount}
       AND pair."endpointBNamespaceId" = CASE
         WHEN ${input.targetDomain} = 'local' THEN 0
-        ELSE (SELECT peer."activeNamespaceId" FROM "FederatedPeer" peer
-          WHERE peer.domain = ${input.targetDomain}) END
+        ELSE (SELECT ns.id FROM "IdentityNamespace" ns
+          WHERE ns.domain = ${input.targetDomain}
+            AND ns.active = true
+            AND ns."retiredAt" IS NULL) END
     ORDER BY pair.id DESC LIMIT 1
   `;
 }

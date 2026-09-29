@@ -53,27 +53,27 @@ verification; Section 11 keeps its activation administrative.
 
 ## 2. Operation overview
 
-| Item                   | Recognize                                       | Health                                                                      |
-| ---------------------- | ----------------------------------------------- | --------------------------------------------------------------------------- |
-| Method                 | `POST`                                          | `GET`                                                                       |
-| Path                   | `/s2s/v1/recognize`                             | `/s2s/v1/health`                                                            |
-| Query                  | None; signed `@query` is `?`                    | None; signed `@query` is `?`                                                |
-| Request                | Closed empty object or namespace echo           | Zero-byte body                                                              |
-| Request auth           | bootstrap signed                                | status signed                                                               |
-| Success                | HTTP `200`, bare `RecognizeResult`              | HTTP `200`, bare `HealthResult`                                             |
-| Idempotency coordinate | `(signerDomain, recipientDomain)`               | No new identity may be pinned by the query                                  |
-| State effect           | Commits local recognition and receive readiness | A positive result confirms responder acceptance and may update reachability |
+| Item                   | Recognize                                              | Health                                                                      |
+| ---------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------- |
+| Method                 | `POST`                                                 | `GET`                                                                       |
+| Path                   | `/s2s/v1/recognize`                                    | `/s2s/v1/health`                                                            |
+| Query                  | None; signed `@query` is `?`                           | None; signed `@query` is `?`                                                |
+| Request                | Closed empty object or sender-assigned local namespace | Zero-byte body                                                              |
+| Request auth           | bootstrap signed                                       | status signed                                                               |
+| Success                | HTTP `200`, bare `RecognizeResult`                     | HTTP `200`, bare `HealthResult`                                             |
+| Idempotency coordinate | `(signerDomain, recipientDomain)`                      | No new identity may be pinned by the query                                  |
+| State effect           | Commits local recognition and receive readiness        | A positive result confirms responder acceptance and may update reachability |
 
 ```ts
 type EmptyRequest = Record<string, never>;
 
-/** Continuity echo: the peerAssignedLocalNamespaceId the caller retains for
-    this recipient from a prior successful recognition. */
-interface NamespaceEchoRequest {
+/** The positive namespace the sender's local store has allocated for the
+    recipient's identity epoch; stable within the epoch. */
+interface SenderAssignedLocalNamespaceRequest {
   namespaceId: PositiveSafeInteger;
 }
 
-type RecognizeRequest = EmptyRequest | NamespaceEchoRequest;
+type RecognizeRequest = EmptyRequest | SenderAssignedLocalNamespaceRequest;
 
 type RecognizeResult =
   | {
@@ -105,6 +105,13 @@ type HealthResult =
 
 The objects listed here are closed. Every listed field is required; duplicate and unknown fields are forbidden.
 
+The request member `namespaceId` carries the sender-assigned local namespace:
+the positive namespace the sender's local store has allocated for the
+recipient's identity epoch. The recipient records it as the retained
+`peerAssignedLocalNamespaceId` for the sender and uses it to recognize its own
+subjects in the sender's traffic; it is never a namespace id of the recipient's
+own store.
+
 `peerAssignedLocalNamespaceId` is the positive namespace the responder's local
 store has allocated for the caller's identity epoch. The responder uses
 exactly this value as the wire `namespaceId` whenever it serializes the
@@ -134,11 +141,11 @@ the privacy-preserving `unavailable` result carries no namespace.
 These are distinct protocol facts, regardless of how a node represents them
 internally:
 
-| Protocol fact        | Meaning                                                                                   | Valid evidence                                                                                           |
-| -------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| Local recognition    | This node has validated and pinned the peer's root identity and prepared its receive path | A committed local recognition decision; never merely reading well-known                                  |
+| Protocol fact        | Meaning                                                                                   | Valid evidence                                                                                                          |
+| -------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Local recognition    | This node has validated and pinned the peer's root identity and prepared its receive path | A committed local recognition decision; never merely reading well-known                                                 |
 | Peer acceptance      | The peer recognizes this node and is prepared to receive its Federation traffic           | The peer's valid Recognize `recognized` result, its valid Recognize request, or its valid Health `available`/`degraded` |
-| Current reachability | Authenticated communication with the pinned peer is currently possible                    | A valid authenticated request, positive Health, Recognize `recognized`, or another definitive protocol response  |
+| Current reachability | Authenticated communication with the pinned peer is currently possible                    | A valid authenticated request, positive Health, Recognize `recognized`, or another definitive protocol response         |
 
 The peer lifecycle is this closed abstract protocol model. Its labels state only
 whether communication with the peer may continue automatically and do not
@@ -205,17 +212,17 @@ Externally observable transitions MUST be equivalent to this table. A node
 MUST make each fact change and resulting admission decision externally
 indivisible; an intermediate state cannot authorize traffic.
 
-| Event                                                 | Prior state                               | Protocol effect                                                                     | Next state                                                         |
-| ----------------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| Commit local recognition and receive-path preparation | `unrecognized`                            | Pin and recognize the peer; acceptance remains unknown                              | `establishing`                                                     |
-| Accept Recognize for asynchronous validation           | Any non-`halted`                          | No identity, namespace, reachability, or acceptance evidence is disclosed           | Existing state, or `pending` when review is required               |
-| Process a valid inbound Recognize to `recognized`      | Any non-`halted`                          | Recognize the signer locally and accept its explicit recognition of the recipient   | `available` when reachability is current                           |
-| Receive valid Recognize `recognized` or positive Health | `establishing` / `degraded` / `available` | Accept the peer's recognition and receive-readiness assertion; refresh reachability | `available`                                                        |
-| Health returns `unavailable`, or the Health response is invalid or unreachable | `establishing` / `available` / `degraded` | Retain recognition evidence; mark reachability absent | `establishing` if peer acceptance is unknown, otherwise `degraded` |
-| Outbound Health receives `401 FEDERATION_BAD_SIGNATURE` | `establishing` / `available` / `degraded` | Retain pins and acceptance evidence; mark current authenticated reachability absent; do not assume refreshing the recipient's well-known repairs its cache of the local key; do not retry the same signed request unchanged | `establishing` if peer acceptance is unknown, otherwise `degraded` |
-| Authenticated protocol communication succeeds         | `establishing` / `available` / `degraded` | Refresh reachability without creating acceptance evidence                           | `establishing` if acceptance is unknown, otherwise `available`     |
-| Network failure, timeout, or HTTP `503`               | `establishing` / `available` / `degraded` | Retain pins and acceptance evidence; mark reachability absent                       | `establishing` if acceptance is unknown, otherwise `degraded`      |
-| Verifiable hard-security or policy failure            | Any non-`halted`                          | Retain the original security evidence and stop automatic communication              | `halted`                                                           |
+| Event                                                                          | Prior state                               | Protocol effect                                                                                                                                                                                                             | Next state                                                         |
+| ------------------------------------------------------------------------------ | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Commit local recognition and receive-path preparation                          | `unrecognized`                            | Pin and recognize the peer; acceptance remains unknown                                                                                                                                                                      | `establishing`                                                     |
+| Accept Recognize for asynchronous validation                                   | Any non-`halted`                          | No identity, namespace, reachability, or acceptance evidence is disclosed                                                                                                                                                   | Existing state, or `pending` when review is required               |
+| Process a valid inbound Recognize to `recognized`                              | Any non-`halted`                          | Recognize the signer locally and accept its explicit recognition of the recipient                                                                                                                                           | `available` when reachability is current                           |
+| Receive valid Recognize `recognized` or positive Health                        | `establishing` / `degraded` / `available` | Accept the peer's recognition and receive-readiness assertion; refresh reachability                                                                                                                                         | `available`                                                        |
+| Health returns `unavailable`, or the Health response is invalid or unreachable | `establishing` / `available` / `degraded` | Retain recognition evidence; mark reachability absent                                                                                                                                                                       | `establishing` if peer acceptance is unknown, otherwise `degraded` |
+| Outbound Health receives `401 FEDERATION_BAD_SIGNATURE`                        | `establishing` / `available` / `degraded` | Retain pins and acceptance evidence; mark current authenticated reachability absent; do not assume refreshing the recipient's well-known repairs its cache of the local key; do not retry the same signed request unchanged | `establishing` if peer acceptance is unknown, otherwise `degraded` |
+| Authenticated protocol communication succeeds                                  | `establishing` / `available` / `degraded` | Refresh reachability without creating acceptance evidence                                                                                                                                                                   | `establishing` if acceptance is unknown, otherwise `available`     |
+| Network failure, timeout, or HTTP `503`                                        | `establishing` / `available` / `degraded` | Retain pins and acceptance evidence; mark reachability absent                                                                                                                                                               | `establishing` if acceptance is unknown, otherwise `degraded`      |
+| Verifiable hard-security or policy failure                                     | Any non-`halted`                          | Retain the original security evidence and stop automatic communication                                                                                                                                                      | `halted`                                                           |
 
 Only an HTTP `409` carrying a fatal code in the Stable Error Registry from the target peer of this request, over the same hostname-verified TLS connection and authority, or a locally validated hard pinned-root, version, or policy conflict MAY trigger `halted`. An unauthenticated proxy response, TLS or connection failure, timeout, HTTP `503`, malformed response, or Health `unavailable` MUST NOT trigger `halted`; those failures preserve acceptance evidence and affect only reachability.
 
@@ -223,14 +230,14 @@ After entering `halted`, the protocol defines no automatic recovery path or admi
 
 Operation gates are calculated separately from lifecycle:
 
-| Operation class                                     | Required gate                                                                                                                                                                                                                                                      |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `recognize`                                         | bootstrap signed and its admission rule; no existing lifecycle required                                                                                                                                                                                            |
-| `health`                                            | status signed; common authentication failures use the stable error registry; authenticated status/privacy failures project as `unavailable`                                                                                                                        |
-| `feed-heads`                                        | The recipient's local recognition and prepared lightweight receive path, with a valid signer identity                                                                                                                                                              |
+| Operation class                                     | Required gate                                                                                                                                                                                                                                                              |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `recognize`                                         | bootstrap signed and its admission rule; no existing lifecycle required                                                                                                                                                                                                    |
+| `health`                                            | status signed; common authentication failures use the stable error registry; authenticated status/privacy failures project as `unavailable`                                                                                                                                |
+| `feed-heads`                                        | The recipient's local recognition and prepared lightweight receive path, with a valid signer identity                                                                                                                                                                      |
 | Ordinary recognized data sent by the local node     | Local recognition and prepared path, peer acceptance proven by valid Recognize `recognized`, inbound Recognize, or positive Health, current authenticated reachability without unresolved degradation, compatible version and policy, and operation-specific authorization |
-| Ordinary recognized data received from the peer     | The recipient's local recognition and prepared path, valid signer identity, compatible version and policy, and operation-specific authorization; the sender's earlier Recognize delivery is not a separate receive gate                                            |
-| Termination convergence for an existing active call | Existing binding and tombstone rules in calls.md; health-cache degradation alone cannot block it                                                                                                                                                                   |
+| Ordinary recognized data received from the peer     | The recipient's local recognition and prepared path, valid signer identity, compatible version and policy, and operation-specific authorization; the sender's earlier Recognize delivery is not a separate receive gate                                                    |
+| Termination convergence for an existing active call | Existing binding and tombstone rules in calls.md; health-cache degradation alone cannot block it                                                                                                                                                                           |
 
 Sending Recognize, reading well-known, or merely validating a request signature MUST NOT create peer-acceptance evidence. A connected network socket is not a recognition fact. A transient disconnect MUST NOT delete an identity pin or acceptance evidence, although it MAY change current availability from `available` to `degraded`.
 
@@ -285,7 +292,7 @@ order; [Transport and Security, Section 3.5](./transport-security.md#35-validati
 governs request validation:
 
 - Extract canonical signer domain A from the HTTP Message Signature `keyid`.
-- Require the body to be either the closed empty JSON object `{}` or the namespace echo from Section 5.1.
+- Require the body to be either the closed empty JSON object `{}` or the sender-assigned local namespace from Section 5.1.
 - Accept the attempt into the recognition verifier, or reject before entry using the common error envelope when the request is malformed, locally rate-limited, or cannot be queued.
 - Before producing `recognized`, use A's hostname-verified HTTPS well-known document to validate A's root, certificate, and request signature.
 - If a root pin or prior authenticated record exists for A, require the newly obtained root to match it byte for byte.
@@ -294,7 +301,7 @@ governs request validation:
 
 B MAY return `pending` immediately after accepting the attempt into the
 verifier; at that point B may not yet have validated A's well-known document,
-request signature, root continuity, namespace echo, or admission policy. A
+request signature, root continuity, the sender-assigned local namespace, or admission policy. A
 `pending` result therefore proves none of those facts and carries no namespace.
 Validating A's well-known document and the request's HTTP signature proves
 that the request was signed with A's currently authorized Federation signing key. B's subsequent atomic pinning,
@@ -331,13 +338,17 @@ For an arrival, the recipient MUST additionally:
 
 1. Rely on the hostname-verified well-known fetch already performed for
    signature validation as the proof of control over the new domain.
-2. When the request carries the `namespaceId` echo, require it to equal the
-   matched namespace's id. A conflicting echo is an identity contradiction:
-   the caller presents the pinned key together with a relationship coordinate
-   the recipient never assigned to that identity, and the recipient fails
-   closed with `FEDERATION_IDENTITY_MISMATCH`. An absent echo is not an
-   identity failure; the recipient records the arrival with the echo noted
-   absent. A caller SHOULD include the echo whenever it retains one.
+2. When the request carries the `namespaceId` member, require it to equal
+   the `peerAssignedLocalNamespaceId` recorded on the matched namespace —
+   the sender-assigned local namespace that identity disclosed for the
+   recipient in a prior epoch. A conflicting value is an identity
+   contradiction: the caller presents the pinned key together with a
+   relationship coordinate inconsistent with the one it assigned before, and
+   the recipient fails closed with `FEDERATION_IDENTITY_MISMATCH`. An absent
+   value is not an identity failure; the recipient records the arrival with
+   the sender-assigned local namespace noted absent. A caller MUST include
+   the member whenever its local store has allocated a namespace for the
+   recipient.
 3. Reject with `FEDERATION_DOMAIN_CONFLICT` when the signer domain is bound to
    another peer or is under review for another peer.
 4. Record review state for the matched peer and signer domain together with an
@@ -356,7 +367,8 @@ peer as a `failed` Recognize result carrying
 
 The arrival proves three facts together: possession of the pinned
 root-authorized signing key, control of the new domain's discovery endpoint,
-and — when the echo is present — retention of the relationship coordinate.
+and — when the `namespaceId` member is present — retention of the stable
+sender-assigned local namespace.
 Key possession without the well-known fetch does not establish domain
 control; domain control without the key cannot match a pin.
 
@@ -370,19 +382,24 @@ For a request from A to B, the exact application body bytes used by the fixed ve
 {}
 ```
 
-The body is one of two closed objects: the empty object for a caller claiming
-no retained relationship coordinate, or the namespace echo
+The body is one of two closed objects: the empty object for a sender whose
+local store has not allocated a namespace for the recipient, or the
+sender-assigned local namespace
 
 ```text
 {"namespaceId":7}
 ```
 
-carrying the `peerAssignedLocalNamespaceId` A retains for B from a prior
-successful recognition. A SHOULD include the echo whenever it retains one; B
-MUST verify it under Section 4.4 when present and MUST NOT treat its absence
+carrying the namespace id A's local store allocated for B's identity epoch.
+A MUST include the member whenever its local store holds such an allocation;
+B validates it under Section 4.4 when present and MUST NOT treat its absence
 alone as an identity failure. The signer domain is established by the
 validated `keyid`, the recipient domain by the signed `@authority`, and the
 protocol version by `/s2s/v1`; the body repeats none of them.
+
+The recipient adopts a first-time disclosure by storing it as the
+`peerAssignedLocalNamespaceId` for the sender; it MUST NOT substitute a
+namespace id of its own store when the member is absent.
 
 The request MUST be constructed in the common order defined in
 [Transport and Security, Section 3](./transport-security.md#3-request-construction-overview):
@@ -539,22 +556,22 @@ attempt has reached a definitive recognition failure, B returns HTTP `200` with
 A request that cannot be parsed, accepted into the recognition verifier,
 queued, or processed as a recognition attempt uses the common error envelope:
 
-| Condition observed by B                                                  | HTTP | Stable code                               | B's local action                                                                                          |
-| ------------------------------------------------------------------------ | ---: | ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Malformed JSON, header, or type                                          |  400 | `FEDERATION_MALFORMED`                    | Do not commit new recognition effects                                                                     |
-| Path version disabled or no common version                               |  409 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` | Record the version reason and enter `halted`; do not commit a new fact                                    |
-| Invalid certificate or HTTP signature                                    |  401 | `FEDERATION_BAD_SIGNATURE`                | Do not commit recognition effects; do not replace a root pin merely because signature verification failed |
-| Recognize body is neither the closed empty object nor a valid namespace echo |  400 | `FEDERATION_MALFORMED`                    | Reject the malformed request without committing recognition effects                                       |
-| Local policy blocks A                                                    |  409 | `FEDERATION_PEER_BLOCKED`                 | Record the policy reason and enter `halted`; do not commit a new fact                                     |
-| A root obtained through hostname-verified HTTPS differs from its old pin |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Retain the old pin, record an identity contradiction, and enter `halted`                                  |
-| A is already halted for an identity contradiction                        |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Remain `halted`                                                                                           |
-| Arrival namespace echo conflicts with the matched pin            |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Retain the pin, record the identity contradiction, and enter `halted`                                      |
-| Arrival signer domain bound to or pending on another peer         |  409 | `FEDERATION_DOMAIN_CONFLICT`              | Record no re-binding; retain all pins, recognition, and lifecycle                                          |
-| Administration rejected the pending re-binding for this domain   |  409 | `FEDERATION_DOMAIN_CHANGE_REJECTED`       | Retain the current binding; keep returning the rejection until cleared by local administration             |
-| Request rate is too high                                                 |  503 | `RATE_LIMITED`                            | Do not commit recognition effects; apply rate-limit policy                                                |
-| Well-known is temporarily unavailable                                    |  503 | `INTERNAL`                                | Retain any existing pin and lifecycle; do not infer identity loss                                         |
-| B's local identity material is unavailable                               |  503 | `FEDERATION_LOCAL_IDENTITY_LOST`          | Do not commit new recognition effects                                                                     |
-| Commit failure or transient internal error                               |  503 | `INTERNAL`                                | Do not expose uncommitted facts; retain previously committed state                                        |
+| Condition observed by B                                                                       | HTTP | Stable code                               | B's local action                                                                                          |
+| --------------------------------------------------------------------------------------------- | ---: | ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Malformed JSON, header, or type                                                               |  400 | `FEDERATION_MALFORMED`                    | Do not commit new recognition effects                                                                     |
+| Path version disabled or no common version                                                    |  409 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` | Record the version reason and enter `halted`; do not commit a new fact                                    |
+| Invalid certificate or HTTP signature                                                         |  401 | `FEDERATION_BAD_SIGNATURE`                | Do not commit recognition effects; do not replace a root pin merely because signature verification failed |
+| Recognize body is neither the closed empty object nor a valid sender-assigned local namespace |  400 | `FEDERATION_MALFORMED`                    | Reject the malformed request without committing recognition effects                                       |
+| Local policy blocks A                                                                         |  409 | `FEDERATION_PEER_BLOCKED`                 | Record the policy reason and enter `halted`; do not commit a new fact                                     |
+| A root obtained through hostname-verified HTTPS differs from its old pin                      |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Retain the old pin, record an identity contradiction, and enter `halted`                                  |
+| A is already halted for an identity contradiction                                             |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Remain `halted`                                                                                           |
+| Arrival sender-assigned local namespace conflicts with the recorded value                     |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Retain the pin, record the identity contradiction, and enter `halted`                                     |
+| Arrival signer domain bound to or pending on another peer                                     |  409 | `FEDERATION_DOMAIN_CONFLICT`              | Record no re-binding; retain all pins, recognition, and lifecycle                                         |
+| Administration rejected the pending re-binding for this domain                                |  409 | `FEDERATION_DOMAIN_CHANGE_REJECTED`       | Retain the current binding; keep returning the rejection until cleared by local administration            |
+| Request rate is too high                                                                      |  503 | `RATE_LIMITED`                            | Do not commit recognition effects; apply rate-limit policy                                                |
+| Well-known is temporarily unavailable                                                         |  503 | `INTERNAL`                                | Retain any existing pin and lifecycle; do not infer identity loss                                         |
+| B's local identity material is unavailable                                                    |  503 | `FEDERATION_LOCAL_IDENTITY_LOST`          | Do not commit new recognition effects                                                                     |
+| Commit failure or transient internal error                                                    |  503 | `INTERNAL`                                | Do not expose uncommitted facts; retain previously committed state                                        |
 
 When returning any error envelope or `failed` result, B MUST NOT create
 acceptance evidence or open the lightweight gate because of this request.
@@ -571,18 +588,18 @@ A has committed local recognition and is `establishing` if B's acceptance is not
 
 | Result observed by A                                                  | Recognition and reachability effect                                                   | Required action                                                                 |
 | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| HTTP `200` with valid `status: 'recognized'`                            | Adopt B's acceptance and current reachability; become `available` if other gates hold | Ordinary traffic may begin subject to authorization                             |
+| HTTP `200` with valid `status: 'recognized'`                          | Adopt B's acceptance and current reachability; become `available` if other gates hold | Ordinary traffic may begin subject to authorization                             |
 | Timeout, DNS/connect failure, TLS interruption, or truncated response | Acceptance remains unknown unless already proven; reachability is absent              | Retain the pin; obtain a positive Health result or retry Recognize with backoff |
 | HTTP `503`                                                            | Same as a retryable transport failure                                                 | Retain the pin and back off                                                     |
-| HTTP `200` with valid `status: 'pending'`                               | Do not adopt acceptance, reachability, or namespace evidence                         | Retry Recognize with bounded backoff; keep the ordinary data plane closed       |
-| HTTP `200` with valid `status: 'failed'`                                | Do not adopt acceptance; classify by stable `code`                                   | Apply the code's retry, halt, or administration rule                            |
-| HTTP `200` with an invalid body                                         | Do not adopt acceptance from this response                                            | Record a protocol-response error; do not retry tightly                          |
+| HTTP `200` with valid `status: 'pending'`                             | Do not adopt acceptance, reachability, or namespace evidence                          | Retry Recognize with bounded backoff; keep the ordinary data plane closed       |
+| HTTP `200` with valid `status: 'failed'`                              | Do not adopt acceptance; classify by stable `code`                                    | Apply the code's retry, halt, or administration rule                            |
+| HTTP `200` with an invalid body                                       | Do not adopt acceptance from this response                                            | Record a protocol-response error; do not retry tightly                          |
 | Malformed, bad signature, or binding violation                        | Retain pin and previously proven acceptance                                           | Stop identical automatic retries until corrected                                |
 | HTTP `409` + `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED`                | `halted`; retain version reason                                                       | Stop automatic communication; do not downgrade                                  |
 | HTTP `409` + `FEDERATION_PEER_BLOCKED`                                | `halted`; retain remote-blocked reason                                                | Stop automatic communication                                                    |
 | HTTP `409` + `FEDERATION_IDENTITY_MISMATCH`                           | `halted`; retain old pin                                                              | Fail closed and stop automatic communication                                    |
-| HTTP `409` + `FEDERATION_DOMAIN_CONFLICT`                              | Retain pins and the current binding                                                                           | Stop re-binding attempts for that domain; local administration decides                                     |
-| HTTP `409` + `FEDERATION_DOMAIN_CHANGE_REJECTED`                       | `halted`; retain the rejection reason                                                                         | Stop automatic communication                                                                                |
+| HTTP `409` + `FEDERATION_DOMAIN_CONFLICT`                             | Retain pins and the current binding                                                   | Stop re-binding attempts for that domain; local administration decides          |
+| HTTP `409` + `FEDERATION_DOMAIN_CHANGE_REJECTED`                      | `halted`; retain the rejection reason                                                 | Stop automatic communication                                                    |
 | A directly verifies that B's root differs from its pin                | `halted`; retain independent security evidence                                        | Do not treat the contradiction as a network error                               |
 
 An authenticated HTTP error response does not always trigger `halted`; it MUST be classified by stable code. `FEDERATION_MALFORMED`, `FEDERATION_BAD_SIGNATURE`, `FEDERATION_BINDING_VIOLATION`, `RATE_LIMITED`, and generic `INTERNAL` reject or delay only the current request and do not independently halt the peer. Only the fatal HTTP `409` and code combinations above, plus a pinned-root conflict directly verified by A, trigger `halted`; `FEDERATION_DOMAIN_CONFLICT` retains the current binding instead. An unparseable proxy body, TLS or connection failure, timeout, or HTTP `503` MUST NOT trigger `halted`. For an unknown HTTP status or a status/code conflict, A MUST follow the classification rules in the [Stable Error Registry](./errors.md#http-layer), but MUST NOT replace or delete a root pin without an identity contradiction.
@@ -677,13 +694,13 @@ This `unavailable` result is only an external privacy projection; it does not er
 
 ### 9.2 Requester A: consuming a Health result
 
-| Result observed by A                                | Protocol action A MUST take                                                                                                                                      |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Result observed by A                                | Protocol action A MUST take                                                                                                                                                                         |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Valid `available` or `degraded`                     | Adopt B's acceptance and prepared receive path, refresh reachability and the retained `peerAssignedLocalNamespaceId`, and become `available` if local recognition, version, and policy remain valid |
-| Valid `unavailable`                                 | Treat current reachability as absent; retain pins and acceptance evidence. Remain `establishing` if acceptance is unknown, otherwise become or remain `degraded` |
-| Timeout, network error, HTTP `503`, or invalid body | Treat reachability like `unavailable`; adopt no assertion from the response                                                                                      |
-| HTTP `401 FEDERATION_BAD_SIGNATURE`                  | Treat the current authentication as failed, retain pins and acceptance evidence, mark an accepted peer `degraded`, do not halt, and do not retry the same signed request unchanged                                  |
-| HTTP `400` or another unexpected status               | Treat this query as failed; do not change peer lifecycle solely for this reason                                                                                  |
+| Valid `unavailable`                                 | Treat current reachability as absent; retain pins and acceptance evidence. Remain `establishing` if acceptance is unknown, otherwise become or remain `degraded`                                    |
+| Timeout, network error, HTTP `503`, or invalid body | Treat reachability like `unavailable`; adopt no assertion from the response                                                                                                                         |
+| HTTP `401 FEDERATION_BAD_SIGNATURE`                 | Treat the current authentication as failed, retain pins and acceptance evidence, mark an accepted peer `degraded`, do not halt, and do not retry the same signed request unchanged                  |
+| HTTP `400` or another unexpected status             | Treat this query as failed; do not change peer lifecycle solely for this reason                                                                                                                     |
 
 A receiving valid `available` or `degraded` MUST recognize that B accepts A
 and is prepared to receive A's Federation traffic. This is the same
@@ -765,7 +782,7 @@ The signature base is:
 "@signature-params": ("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
 ```
 
-The namespace echo form signs its exact application bytes with the same construction; only `Content-Digest` and `Signature` differ:
+The sender-assigned local namespace form signs its exact application bytes with the same construction; only `Content-Digest` and `Signature` differ:
 
 ```http
 POST /s2s/v1/recognize HTTP/1.1
@@ -782,19 +799,24 @@ Signature: sig1=:MuXuFcG0O0ZIkUtnSaawevEt4zjzgyosKBY2Jzko6ZGf98oeVS2GEDMoeVUlK6p
 A successful ordinary response body is:
 
 ```json
-{"ok":true,"status":"recognized","peerAssignedLocalNamespaceId":7}
+{ "ok": true, "status": "recognized", "peerAssignedLocalNamespaceId": 7 }
 ```
 
 A pending response body is:
 
 ```json
-{"ok":true,"status":"pending","message":"verification in progress"}
+{ "ok": true, "status": "pending", "message": "verification in progress" }
 ```
 
 A failed recognition result body is:
 
 ```json
-{"ok":false,"status":"failed","code":50028,"message":"domain re-binding rejected"}
+{
+  "ok": false,
+  "status": "failed",
+  "code": 50028,
+  "message": "domain re-binding rejected"
+}
 ```
 
 ### 10.2 Health

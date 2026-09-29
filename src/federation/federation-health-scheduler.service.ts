@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
-import { and, asc, eq, gt, inArray, isNotNull } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
@@ -50,22 +50,22 @@ export class FederationHealthSchedulerService
     if (capacity <= 0) return;
     this.refilling = true;
     try {
-      const rows = await this.database.db.query.federatedPeer.findMany({
+      const rows = await this.database.db.query.identityNamespace.findMany({
         where: and(
-          inArray(tables.federatedPeer.trustLevel, [
+          inArray(tables.identityNamespace.trustLevel, [
             'establishing',
             'available',
             'degraded',
           ]),
-          isNotNull(tables.federatedPeer.activeNamespaceId),
-          eq(tables.federatedPeer.recognizesPeer, true),
-          eq(tables.federatedPeer.localServiceAvailable, true),
+          eq(tables.identityNamespace.active, true),
+          eq(tables.identityNamespace.recognizesPeer, true),
+          eq(tables.identityNamespace.localServiceAvailable, true),
           ...(this.scanCursor === null
             ? []
-            : [gt(tables.federatedPeer.domain, this.scanCursor)]),
+            : [gt(tables.identityNamespace.domain, this.scanCursor)]),
         ),
         columns: { domain: true },
-        orderBy: asc(tables.federatedPeer.domain),
+        orderBy: asc(tables.identityNamespace.domain),
         limit: capacity,
       });
       if (rows.length === 0) {

@@ -53,15 +53,13 @@ export class FederationNamespaceAdminService {
         ns."identityPinnedAt",
         ns."createdAt",
         ns."retiredAt",
-        peer."activeNamespaceId" = ns.id AS active,
+        ns.active,
         false AS candidate,
         NULL::varchar AS "candidateStatus",
         NULL::integer AS "failedCode",
         NULL::text AS "failedMessage"
       FROM "IdentityNamespace" ns
-      JOIN "FederatedPeer" peer ON peer.domain = ns.domain
-      WHERE peer.domain = ${normalized}
-        AND peer."activeNamespaceId" = ns.id
+      WHERE ns.domain = ${normalized}
         AND ns.id > 0
       UNION ALL
       SELECT
@@ -134,22 +132,6 @@ export class FederationNamespaceAdminService {
           status: 'active_namespace_switched' as const,
         };
       }
-      const peerResult = await tx.execute<{
-        activeNamespaceId: number | null;
-      }>(sql`
-        SELECT "activeNamespaceId"
-        FROM "FederatedPeer"
-        WHERE domain = ${normalized}
-        FOR NO KEY UPDATE
-      `);
-      const peer = peerResult.rows[0];
-      if (!peer) {
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'peer not found',
-          HttpStatus.NOT_FOUND,
-        );
-      }
 
       if (namespaceId === undefined) {
         throw new BusinessException(
@@ -165,8 +147,9 @@ export class FederationNamespaceAdminService {
         rootPublicKey: string | null;
         identityPinnedAt: Date | null;
         retiredAt: Date | null;
+        active: boolean;
       }>(sql`
-        SELECT id, "rootKeyFingerprint", "rootPublicKey", "identityPinnedAt", "retiredAt"
+        SELECT id, "rootKeyFingerprint", "rootPublicKey", "identityPinnedAt", "retiredAt", active
         FROM "IdentityNamespace"
         WHERE id = ${namespaceId}
           AND id > 0
@@ -199,39 +182,7 @@ export class FederationNamespaceAdminService {
           HttpStatus.CONFLICT,
         );
       }
-      if (peer.activeNamespaceId === namespaceId) {
-        return {
-          domain: normalized,
-          activeNamespaceId: namespaceId,
-          status: 'active_namespace_switched' as const,
-        };
-      }
-
-      await tx.execute(sql`
-        UPDATE "FederatedPeer"
-        SET "activeNamespaceId" = ${namespaceId},
-            "trustLevel" = 'establishing',
-            "recognizesPeer" = true,
-            "localServiceAvailable" = true,
-            "peerAcceptanceConfirmed" = false,
-            "remoteServiceReachable" = false,
-            "lastSuccessAt" = NULL,
-            "degradedAt" = NULL,
-            "degradationReason" = NULL,
-            "haltedAt" = NULL,
-            "haltCode" = NULL,
-            "haltReason" = NULL
-        WHERE domain = ${normalized}
-      `);
-      await tx.execute(sql`
-        INSERT INTO "PeerStateFeedPullCursor" ("peerDomain", "namespaceId")
-        VALUES (${normalized}, ${namespaceId})
-        ON CONFLICT DO NOTHING
-      `);
-      await tx.execute(sql`
-        INSERT INTO "FederatedPeerEvent" (domain, type, reason)
-        VALUES (${normalized}, 'namespace_active', ${`active namespace switched to namespace ${namespaceId}`})
-      `);
+      if (!namespace.active) await this.activateNamespaceInTx(tx, normalized, namespaceId);
       return {
         domain: normalized,
         activeNamespaceId: namespaceId,
@@ -335,21 +286,6 @@ export class FederationNamespaceAdminService {
           HttpStatus.BAD_REQUEST,
         );
       }
-      const oldPeerResult = await tx.execute<{ activeNamespaceId: number | null }>(sql`
-        SELECT "activeNamespaceId"
-        FROM "FederatedPeer"
-        WHERE domain = ${normalized}
-        FOR NO KEY UPDATE
-      `);
-      const oldActiveNamespaceId = oldPeerResult.rows[0]?.activeNamespaceId;
-      if (oldActiveNamespaceId !== null && oldActiveNamespaceId !== undefined) {
-        await tx.execute(sql`
-          UPDATE "IdentityNamespace"
-          SET "retiredAt" = CURRENT_TIMESTAMP
-          WHERE id = ${oldActiveNamespaceId}
-            AND "retiredAt" IS NULL
-        `);
-      }
       const created = await tx.execute<{ id: number }>(sql`
         INSERT INTO "IdentityNamespace"
           (domain, "rootKeyFingerprint", "rootPublicKey", "identityPinnedAt", "peerAssignedLocalNamespaceId")
@@ -366,37 +302,7 @@ export class FederationNamespaceAdminService {
       if (!activeNamespaceId) throw new Error('failed to create namespace');
     }
 
-    await tx.execute(sql`
-      UPDATE "FederatedPeer"
-      SET "activeNamespaceId" = NULL,
-          "peerAcceptanceConfirmed" = false,
-          "remoteServiceReachable" = false
-      WHERE "activeNamespaceId" = ${activeNamespaceId}
-        AND domain <> ${normalized}
-    `);
-    await tx.execute(sql`
-      INSERT INTO "FederatedPeer" (
-        domain, "activeNamespaceId", "trustLevel", "recognizesPeer", "localServiceAvailable",
-        "peerAcceptanceConfirmed", "remoteServiceReachable", "lastSuccessAt",
-        "degradedAt", "degradationReason", "haltedAt", "haltCode", "haltReason"
-      ) VALUES (
-        ${normalized}, ${activeNamespaceId}, 'degraded', true, true,
-        false, false, NULL, NULL, NULL, NULL, NULL, NULL
-      )
-      ON CONFLICT (domain) DO UPDATE SET
-        "activeNamespaceId" = EXCLUDED."activeNamespaceId",
-        "trustLevel" = 'degraded',
-        "recognizesPeer" = true,
-        "localServiceAvailable" = true,
-        "peerAcceptanceConfirmed" = false,
-        "remoteServiceReachable" = false,
-        "lastSuccessAt" = NULL,
-        "degradedAt" = NULL,
-        "degradationReason" = NULL,
-        "haltedAt" = NULL,
-        "haltCode" = NULL,
-        "haltReason" = NULL
-    `);
+    await this.activateNamespaceInTx(tx, normalized, activeNamespaceId);
     await tx.execute(sql`
       INSERT INTO "PeerStateFeedPullCursor" ("peerDomain", "namespaceId")
       VALUES (${normalized}, ${activeNamespaceId})
@@ -406,11 +312,40 @@ export class FederationNamespaceAdminService {
       DELETE FROM "FederationNamespaceCandidate"
       WHERE "nextDomain" = ${normalized}
     `);
-    await tx.execute(sql`
-      INSERT INTO "FederatedPeerEvent" (domain, type, reason)
-      VALUES (${normalized}, 'namespace_active', ${`verified candidate activated as namespace`} || ' ' || ${activeNamespaceId})
-    `);
     return activeNamespaceId;
+  }
+
+  private async activateNamespaceInTx(
+    tx: DatabaseTransaction,
+    normalized: string,
+    namespaceId: number,
+  ): Promise<void> {
+    await tx.execute(sql`
+      UPDATE "IdentityNamespace"
+      SET active = false,
+          "peerAcceptanceConfirmed" = false,
+          "remoteServiceReachable" = false
+      WHERE domain = ${normalized}
+        AND active = true
+        AND id <> ${namespaceId}
+    `);
+    await tx.execute(sql`
+      UPDATE "IdentityNamespace"
+      SET active = true,
+          "trustLevel" = 'establishing',
+          "recognizesPeer" = true,
+          "localServiceAvailable" = true,
+          "peerAcceptanceConfirmed" = false,
+          "remoteServiceReachable" = false,
+          "lastSuccessAt" = NULL,
+          "degradedAt" = NULL,
+          "degradationReason" = NULL,
+          "haltedAt" = NULL,
+          "haltCode" = NULL,
+          "haltReason" = NULL
+      WHERE id = ${namespaceId}
+        AND domain = ${normalized}
+    `);
   }
 
   private requireDomain(value: string): string {

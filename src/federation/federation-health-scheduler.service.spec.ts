@@ -24,7 +24,7 @@ describe('FederationHealthSchedulerService', () => {
       return requests[index].promise;
     });
     const scheduler = new FederationHealthSchedulerService(
-      { db: { query: { federatedPeer: { findMany } } } } as never,
+      { db: { query: { identityNamespace: { findMany } } } } as never,
       { checkHealth } as never,
     );
 
@@ -48,7 +48,7 @@ describe('FederationHealthSchedulerService', () => {
       .mockResolvedValueOnce([]);
     const checkHealth = vi.fn().mockRejectedValue(new Error('timeout'));
     const scheduler = new FederationHealthSchedulerService(
-      { db: { query: { federatedPeer: { findMany } } } } as never,
+      { db: { query: { identityNamespace: { findMany } } } } as never,
       { checkHealth } as never,
     );
 

@@ -24,7 +24,6 @@ import {
   diagnosticsReport,
   forwardBundleDependency,
   forwardBundleAsset,
-  federatedPeer,
   federationNamespaceCandidate,
   identityNamespace,
   peerStateFeed,
@@ -40,31 +39,6 @@ export const federationNamespaceCandidateRelations = relations(
     matchedNamespace: one(identityNamespace, {
       fields: [federationNamespaceCandidate.matchedNamespaceId],
       references: [identityNamespace.id],
-    }),
-  }),
-);
-
-export const federatedPeerRelations = relations(
-  federatedPeer,
-  ({ many, one }) => ({
-    stateFeed: many(peerStateFeed),
-    stateFeedPullCursor: one(peerStateFeedPullCursor),
-  }),
-);
-
-export const peerStateFeedRelations = relations(peerStateFeed, ({ one }) => ({
-  peer: one(federatedPeer, {
-    fields: [peerStateFeed.peerDomain],
-    references: [federatedPeer.domain],
-  }),
-}));
-
-export const peerStateFeedPullCursorRelations = relations(
-  peerStateFeedPullCursor,
-  ({ one }) => ({
-    peer: one(federatedPeer, {
-      fields: [peerStateFeedPullCursor.peerDomain],
-      references: [federatedPeer.domain],
     }),
   }),
 );

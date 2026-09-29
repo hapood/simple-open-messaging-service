@@ -109,7 +109,7 @@ export class SystemRowComponent {
     });
   }
 
-  /** Resolve a four-tuple without ever deriving a member namespace from the group. */
+  /** Resolve an exact profile key without ever deriving a member namespace from the group. */
   private resolveProfiledParticipant(
     data: ChatMsgData,
     identity: SystemEventAddress,

@@ -138,20 +138,13 @@ export class FederationThreadAccessService {
       .select({
         authorityNamespaceId: tables.messageThread.authorityNamespaceId,
         domain: tables.identityNamespace.domain,
-        activeNamespaceId: tables.federatedPeer.activeNamespaceId,
+        active: tables.identityNamespace.active,
       })
       .from(tables.messageThread)
       .innerJoin(
         tables.identityNamespace,
         eq(
           tables.identityNamespace.id,
-          tables.messageThread.authorityNamespaceId,
-        ),
-      )
-      .leftJoin(
-        tables.federatedPeer,
-        eq(
-          tables.federatedPeer.activeNamespaceId,
           tables.messageThread.authorityNamespaceId,
         ),
       )
@@ -163,10 +156,7 @@ export class FederationThreadAccessService {
         `no thread [${threadId}]`,
       );
     }
-    if (
-      state.authorityNamespaceId !== 0 &&
-      state.activeNamespaceId !== state.authorityNamespaceId
-    ) {
+    if (state.authorityNamespaceId !== 0 && !state.active) {
       throw new BusinessException(
         BusinessCode.FEDERATION_NAMESPACE_INACTIVE,
         `thread ${threadId} belongs to an inactive namespace of ${state.domain}`,

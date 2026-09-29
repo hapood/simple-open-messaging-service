@@ -41,7 +41,7 @@ import {
 
 /**
  * S2S endpoints (signature-guarded, allow-list gated). The guard verifies the RFC 9421 signature +
- * FederatedPeer trust + request integrity + captures req.rawBody, then sets req.peer.
+ * Active namespace trust + request integrity + captures req.rawBody, then sets req.peer.
  *
  * - POST /s2s/v1/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationService.handleCallFrame.
  * - GET  /s2s/v1/state-feed — compacted profile/relationship/group state for the signed peer.

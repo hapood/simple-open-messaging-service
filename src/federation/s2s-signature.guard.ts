@@ -5,9 +5,9 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { federatedPeer } from '../database/schema.js';
+import { identityNamespace } from '../database/schema.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -60,16 +60,19 @@ export class S2sSignatureGuard implements CanActivate {
     } = this.verify.parseSigner(headers);
 
     // 2. Gate recognition using local facts before any network fetch.
-    const peer = await this.database.db.query.federatedPeer.findFirst({
+    const peer = await this.database.db.query.identityNamespace.findFirst({
       columns: {
         trustLevel: true,
-        activeNamespaceId: true,
+        id: true,
         recognizesPeer: true,
         localServiceAvailable: true,
         haltCode: true,
         haltReason: true,
       },
-      where: eq(federatedPeer.domain, signerDomain),
+      where: and(
+        eq(identityNamespace.domain, signerDomain),
+        eq(identityNamespace.active, true),
+      ),
     });
     if (peer?.trustLevel === 'halted') {
       const code = [
@@ -87,7 +90,6 @@ export class S2sSignatureGuard implements CanActivate {
     }
     if (
       !peer ||
-      peer.activeNamespaceId === null ||
       !peer.recognizesPeer ||
       !peer.localServiceAvailable
     ) {
@@ -103,7 +105,7 @@ export class S2sSignatureGuard implements CanActivate {
       headers,
       keyId,
       signerDomain,
-      peer.activeNamespaceId,
+      peer.id,
     );
 
     // Authentication proves current reachability. Later binding, shape, or business rejection
@@ -131,7 +133,7 @@ export class S2sSignatureGuard implements CanActivate {
     // Stash the verified signer for the handler.
     req.peer = {
       domain: signerDomain,
-      namespaceId: peer.activeNamespaceId,
+      namespaceId: peer.id,
       keyId,
       signatureExpiresAtSec: expires,
     };

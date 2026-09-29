@@ -225,7 +225,7 @@ export type FederationTrustLevel =
   | 'degraded'
   | 'halted';
 
-export interface FederatedPeer {
+export interface FederationPeerState {
   domain: string;
   trustLevel: FederationTrustLevel;
   addedBy: string | null;
@@ -238,19 +238,20 @@ export interface FederatedPeer {
   haltedAt: number | null;
   haltCode: number | null;
   haltReason: string | null;
-  activeNamespaceId: number | null;
+  id: number;
+  active: boolean;
   recognizesPeer: boolean;
   peerAcceptanceConfirmed: boolean;
   localServiceAvailable: boolean;
   remoteServiceReachable: boolean;
 }
 
-export interface FederatedPeerListResult {
-  list: FederatedPeer[];
+export interface FederationPeerStateListResult {
+  list: FederationPeerState[];
   total: number;
 }
 
-export interface FederatedPeerNamespace {
+export interface FederationNamespace {
   id: number;
   domain: string;
   rootKeyFingerprint: string | null;
@@ -266,7 +267,7 @@ export interface FederatedPeerNamespace {
   failedMessage: string | null;
 }
 
-export interface FederatedPeerNamespaceSwitchResult {
+export interface FederationNamespaceSwitchResult {
   domain: string;
   activeNamespaceId: number;
   status: 'active_namespace_switched';
@@ -322,25 +323,6 @@ export interface ContinueQuotaInput {
   addMsg?: number;
   addFile?: number;
   addFileBytes?: number;
-}
-
-// One trust-lifecycle transition (POST /admin/federation/peers/:domain/events) — the admin timeline
-// that shows the trust → connection-loss process.
-type FederationPeerEventType =
-  | 'discovered'
-  | 'trusted'
-  | 'degraded'
-  | 'available'
-  | 'halted'
-  | 'unblocked'
-  | 'namespace_active';
-
-export interface FederatedPeerEvent {
-  id: number;
-  domain: string;
-  type: FederationPeerEventType;
-  reason: string | null; // degraded: failure message; halted: persisted stop reason; available: recovery source
-  createdAt: number;
 }
 
 // ─── S2S handshake self-check (POST /admin/federation/self-check) ───

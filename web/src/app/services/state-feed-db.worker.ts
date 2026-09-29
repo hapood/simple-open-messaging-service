@@ -81,7 +81,8 @@ async function synchronizeNotifications(
 }
 
 interface ResolvedProfile {
-  namespaceId: number;
+  publisherNamespaceId: number;
+  profileNamespaceId: number;
   account: string;
   domain: string;
   rev: number;
@@ -97,11 +98,12 @@ type ProfileResolutionAttempt =
 const requestProfile = (url: string) => async (selector: ProfileSelector) => {
   const cached = await storage.findProfileForEvidence(selector);
   if (cached) return { status: 'READY', profile: cached } as const;
+  const demand = await storage.profileDemandForEvidence(selector);
   const response = await fetch(url, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(selector),
+    body: JSON.stringify(demand),
   });
   if (!response.ok)
     throw new Error(`profile-resolution HTTP ${response.status}`);
@@ -116,9 +118,19 @@ const requestProfile = (url: string) => async (selector: ProfileSelector) => {
     throw new Error(envelope.message ?? 'profile resolution failed');
   if (envelope.data.status === 'PENDING')
     return envelope.data as ProfileResolutionAttempt;
+  const profile = envelope.data.profile;
   return {
     status: 'READY',
-    profile: await storage.commitResolvedProfile(envelope.data.profile),
+    profile: await storage.commitResolvedProfile({
+      publisherNamespaceId: profile.publisherNamespaceId,
+      profileNamespaceId: profile.profileNamespaceId,
+      account: profile.account,
+      domain: profile.domain,
+      rev: profile.rev,
+      name: profile.name,
+      bio: profile.bio,
+      avatarBase64: profile.avatarBase64,
+    }),
   } as const;
 };
 
@@ -309,6 +321,8 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                 if (message.event === 'PROFILE_AVAILABLE') {
                   await requestProfile(data.profileResolutionUrl)({
                     type: 'EXACT',
+                    publisherNamespaceId: key.publisherNamespaceId,
+                    profileNamespaceId: key.profileNamespaceId,
                     account: key.account,
                     domain: key.domain,
                     rev: key.rev,
@@ -412,8 +426,10 @@ function profileKey(value: unknown): ProfileKey | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return;
   const key = value as Partial<ProfileKey>;
   if (
-    !Number.isSafeInteger(key.namespaceId) ||
-    Number(key.namespaceId) < 0 ||
+    !Number.isSafeInteger(key.publisherNamespaceId) ||
+    Number(key.publisherNamespaceId) < 0 ||
+    !Number.isSafeInteger(key.profileNamespaceId) ||
+    Number(key.profileNamespaceId) < 0 ||
     typeof key.account !== 'string' ||
     !key.account ||
     typeof key.domain !== 'string' ||
@@ -423,7 +439,8 @@ function profileKey(value: unknown): ProfileKey | undefined {
   )
     return;
   return {
-    namespaceId: Number(key.namespaceId),
+    publisherNamespaceId: Number(key.publisherNamespaceId),
+    profileNamespaceId: Number(key.profileNamespaceId),
     account: key.account,
     domain: key.domain,
     rev: Number(key.rev),

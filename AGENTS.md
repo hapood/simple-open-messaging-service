@@ -19,10 +19,9 @@ under `src/database/`; SQL migrations are under `database/migrations/`. Unit tes
 `*.e2e-spec.ts`.
 
 Organize backend code by domain first. Domain-owned behavior belongs directly
-under `src/<domain>/`, using meaningful capability directories such as
-`membership-intent/`, `meta/`, or `shared/` when another level is warranted.
-Do not add a generic `business/` directory under a domain or recreate a
-top-level `src/business/` layer that mixes unrelated domains. Put a primitive
+under `src/<domain>/`, using meaningful nested capability directories such as
+`src/group/membership-intent/`, `src/group/meta/`, or `src/group/shared/` when
+another level is warranted. Put a primitive
 in `src/common/` only when it is genuinely shared by multiple domains and has
 no natural domain owner. New business methods must use this layout. Migrate
 older services incrementally with behavior-preserving changes when their area

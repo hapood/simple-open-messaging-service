@@ -219,8 +219,11 @@ export class ProfileRepository {
         return;
       entry.state = { kind: 'REQUESTING' };
       void this.webdb.getProfile({
-        account: wake.key.account, domain: wake.key.domain,
-        namespaceId: wake.key.namespaceId, profileRev: wake.key.rev,
+        publisherNamespaceId: wake.key.publisherNamespaceId,
+        account: wake.key.account,
+        domain: wake.key.domain,
+        profileNamespaceId: wake.key.profileNamespaceId,
+        profileRev: wake.key.rev,
       }).then((snapshot) => {
         if (!snapshot) throw new Error('resolved Group Meta revision is missing locally');
         return this.commitReady(entry, snapshot);
@@ -257,13 +260,15 @@ function normalizeEvidence(selector: ProfileEvidence): ProfileEvidence {
 }
 
 function profileKey(key: {
-  namespaceId: number;
+  publisherNamespaceId: number;
+  profileNamespaceId: number;
   account: string;
   domain: string;
   rev: number;
 }): string {
   return JSON.stringify([
-    key.namespaceId,
+    key.publisherNamespaceId,
+    key.profileNamespaceId,
     key.account.toLowerCase(),
     key.domain.toLowerCase(),
     key.rev,

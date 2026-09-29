@@ -13,10 +13,7 @@ export function eligiblePreviewOwnerSql(
     AND EXISTS (
       SELECT 1 FROM "IdentityNamespace" ns
       WHERE ns.id = ${thread}."authorityNamespaceId" AND ns."retiredAt" IS NULL
-        AND (ns.id = 0 OR EXISTS (
-          SELECT 1 FROM "FederatedPeer" peer
-          WHERE peer."activeNamespaceId" = ns.id
-        ))
+        AND (ns.id = 0 OR ns.active = true)
     )
     AND EXISTS (
       SELECT 1 FROM "RelationshipPair" pair

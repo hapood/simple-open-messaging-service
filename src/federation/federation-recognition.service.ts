@@ -168,21 +168,17 @@ export class FederationRecognitionService {
 
   async recover(peerDomain: string): Promise<void> {
     const domain = this.normalizeDomain(peerDomain);
-    const peer = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, domain),
+    const peer = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.domain, domain),
       columns: {
-        activeNamespaceId: true,
+        id: true,
         recognizesPeer: true,
         peerAcceptanceConfirmed: true,
         localServiceAvailable: true,
       },
     });
     // Health can confirm peer acceptance only after local identity preparation.
-    if (
-      peer?.activeNamespaceId == null ||
-      !peer.recognizesPeer ||
-      !peer.localServiceAvailable
-    ) {
+    if (!peer || !peer.recognizesPeer || !peer.localServiceAvailable) {
       await this.recognize(domain);
       return;
     }
@@ -196,7 +192,7 @@ export class FederationRecognitionService {
     keyId: string;
     signedRequest: SignedRequest;
     headers: OutboundSignatureHeaders;
-    namespaceEcho?: number;
+    senderAssignedLocalNamespaceId?: number;
     signatureExpires: number;
   }): Promise<RecognizeResult> {
     const domain = this.normalizeDomain(params.domain);
@@ -347,16 +343,18 @@ export class FederationRecognitionService {
       try {
         const [peer] = await this.database.db
           .select({
-            activeNamespaceId: tables.federatedPeer.activeNamespaceId,
+            id: tables.identityNamespace.id,
           })
-          .from(tables.federatedPeer)
-          .where(eq(tables.federatedPeer.domain, domain))
+          .from(tables.identityNamespace)
+          .where(
+            and(
+              eq(tables.identityNamespace.domain, domain),
+              eq(tables.identityNamespace.active, true),
+            ),
+          )
           .limit(1);
-        if (peer?.activeNamespaceId != null) {
-          this.discovery.refreshAfterHealthSuccess(
-            domain,
-            peer.activeNamespaceId,
-          );
+        if (peer?.id != null) {
+          this.discovery.refreshAfterHealthSuccess(domain, peer.id);
         }
       } catch (error) {
         // Secondary maintenance: the Health result stands regardless.
@@ -372,7 +370,7 @@ export class FederationRecognitionService {
     keyId: string;
     signedRequest: SignedRequest;
     headers: OutboundSignatureHeaders;
-    namespaceEcho?: number;
+    senderAssignedLocalNamespaceId?: number;
     signatureExpires: number;
   }): Promise<void> {
     const normalized = this.normalizeDomain(params.domain);
@@ -404,18 +402,18 @@ export class FederationRecognitionService {
       );
     }
     const fingerprint = this.fingerprint(doc.rootKey.ed25519);
-    const peer = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, normalized),
-      columns: { activeNamespaceId: true },
+    const peer = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.domain, normalized),
+      columns: { id: true },
     });
-    if (peer?.activeNamespaceId != null) {
+    if (peer?.id != null) {
       const [active] = await this.database.db
         .select({
           rootKeyFingerprint: tables.identityNamespace.rootKeyFingerprint,
           rootPublicKey: tables.identityNamespace.rootPublicKey,
         })
         .from(tables.identityNamespace)
-        .where(eq(tables.identityNamespace.id, peer.activeNamespaceId))
+        .where(eq(tables.identityNamespace.id, peer.id))
         .limit(1);
       if (
         active?.rootKeyFingerprint === fingerprint &&
@@ -424,7 +422,7 @@ export class FederationRecognitionService {
         const context = await this.acceptInbound(
           normalized,
           doc,
-          params.namespaceEcho,
+          params.senderAssignedLocalNamespaceId,
         );
         this.inboundRecognizeResults.set(normalized, {
           expiresAtMs: params.signatureExpires * 1000,
@@ -456,11 +454,13 @@ export class FederationRecognitionService {
         )
         .limit(1);
       if (
-        matched?.peerAssignedLocalNamespaceId != null &&
-        params.namespaceEcho !== undefined &&
-        params.namespaceEcho !== matched.peerAssignedLocalNamespaceId
+        matched &&
+        params.senderAssignedLocalNamespaceId !== undefined &&
+        matched.peerAssignedLocalNamespaceId !== null &&
+        params.senderAssignedLocalNamespaceId !==
+          matched.peerAssignedLocalNamespaceId
       ) {
-        const message = `${normalized} namespace echo does not match pinned identity`;
+        const message = `${normalized} sender-assigned local namespace does not match pinned identity`;
         await tx
           .insert(tables.federationNamespaceCandidate)
           .values({
@@ -468,7 +468,7 @@ export class FederationRecognitionService {
             matchedNamespaceId: matched.id,
             rootKeyFingerprint: fingerprint,
             rootPublicKey: doc.rootKey.ed25519,
-            peerAssignedLocalNamespaceId: params.namespaceEcho,
+            peerAssignedLocalNamespaceId: matched.peerAssignedLocalNamespaceId,
             status: 'failed',
             failedCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
             failedMessage: message,
@@ -481,7 +481,8 @@ export class FederationRecognitionService {
               matchedNamespaceId: matched.id,
               rootKeyFingerprint: fingerprint,
               rootPublicKey: doc.rootKey.ed25519,
-              peerAssignedLocalNamespaceId: params.namespaceEcho,
+              peerAssignedLocalNamespaceId:
+                matched.peerAssignedLocalNamespaceId,
               status: 'failed',
               failedCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
               failedMessage: message,
@@ -496,7 +497,9 @@ export class FederationRecognitionService {
         );
       }
       const peerAssignedLocalNamespaceId =
-        matched?.peerAssignedLocalNamespaceId ?? params.namespaceEcho ?? null;
+        matched?.peerAssignedLocalNamespaceId ??
+        params.senderAssignedLocalNamespaceId ??
+        null;
       await tx
         .insert(tables.federationNamespaceCandidate)
         .values({
@@ -525,38 +528,26 @@ export class FederationRecognitionService {
             updatedAt: new Date(),
           },
         });
-      await tx
-        .insert(tables.federatedPeer)
-        .values({
-          domain: normalized,
-          trustLevel: 'pending',
-          recognizesPeer: true,
-          localServiceAvailable: true,
-        })
-        .onConflictDoUpdate({
-          target: tables.federatedPeer.domain,
-          set: {
+      if (matched) {
+        await tx
+          .update(tables.identityNamespace)
+          .set({
+            domain: normalized,
             trustLevel: 'pending',
             recognizesPeer: true,
             localServiceAvailable: true,
             peerAcceptanceConfirmed: false,
             remoteServiceReachable: false,
-          },
-        });
-      await tx.insert(tables.federatedPeerEvent).values({
-        domain: normalized,
-        type: 'pending',
-        reason: matched
-          ? `verified namespace candidate for namespace ${matched.id}`
-          : 'verified namespace candidate with new root',
-      });
+          })
+          .where(eq(tables.identityNamespace.id, matched.id));
+      }
     });
   }
 
   async acceptInbound(
     domain: string,
     doc: WellKnownDoc,
-    namespaceEcho?: number,
+    senderAssignedLocalNamespaceId?: number,
   ): Promise<VerifiedFederationNamespace> {
     const normalized = this.normalizeDomain(domain);
     const fingerprint = this.fingerprint(doc.rootKey.ed25519);
@@ -582,64 +573,49 @@ export class FederationRecognitionService {
         remoteServiceReachable: true,
       };
       const trustLevel = this.lifecycle(next);
-      restored = await this.logRecoveryInTx(
-        tx,
-        normalized,
-        peer,
-        trustLevel,
-        'signed Recognize handshake restored reachability',
-      );
-      await tx
-        .insert(tables.federatedPeer)
-        .values({
-          domain: normalized,
-          trustLevel: 'available',
-          recognizesPeer: true,
-          peerAcceptanceConfirmed: true,
-          localServiceAvailable: true,
-          remoteServiceReachable: true,
-          trustedAt: now,
-          lastSuccessAt: now,
-        })
-        .onConflictDoUpdate({
-          target: tables.federatedPeer.domain,
-          set: {
-            recognizesPeer: true,
-            peerAcceptanceConfirmed: true,
-            localServiceAvailable: true,
-            remoteServiceReachable: true,
-            lastSuccessAt: now,
-            degradedAt: null,
-            degradationReason: null,
-            trustLevel,
-            trustedAt:
-              trustLevel === 'available'
-                ? (peer?.trustedAt ?? now)
-                : peer?.trustedAt,
-          },
-        });
+      restored = this.didRecover(peer, trustLevel);
       const context = await this.namespaces.activateVerifiedInTx(tx, {
         domain: normalized,
         rootPublicKey: doc.rootKey.ed25519,
         rootKeyFingerprint: fingerprint,
         identityPinnedAt: peer?.identityPinnedAt ?? now,
       });
+      // The sender discloses the namespace its local store allocated for this
+      // server. A disclosure that contradicts the value already pinned for this
+      // identity epoch is an identity contradiction; when no value is pinned
+      // yet, the disclosure is adopted below.
       if (
-        namespaceEcho !== undefined &&
-        peer?.activeNamespaceId !== null &&
-        peer?.activeNamespaceId !== undefined &&
-        namespaceEcho !== context.namespaceId
+        senderAssignedLocalNamespaceId !== undefined &&
+        peer &&
+        peer.peerAssignedLocalNamespaceId !== null &&
+        senderAssignedLocalNamespaceId !== peer.peerAssignedLocalNamespaceId
       ) {
         await this.markIdentityLostInTx(tx, normalized);
         return { mismatch: true as const };
       }
+      await tx
+        .update(tables.identityNamespace)
+        .set({
+          recognizesPeer: true,
+          peerAcceptanceConfirmed: true,
+          localServiceAvailable: true,
+          remoteServiceReachable: true,
+          lastSuccessAt: now,
+          degradedAt: null,
+          degradationReason: null,
+          trustLevel,
+          trustedAt:
+            trustLevel === 'available'
+              ? (peer?.trustedAt ?? now)
+              : peer?.trustedAt,
+          ...(senderAssignedLocalNamespaceId !== undefined
+            ? {
+                peerAssignedLocalNamespaceId: senderAssignedLocalNamespaceId,
+              }
+            : {}),
+        })
+        .where(eq(tables.identityNamespace.id, context.namespaceId));
       await this.initializePeerInTx(tx, context.domain, context.namespaceId);
-      if (!peer) {
-        await tx.insert(tables.federatedPeerEvent).values({
-          domain: normalized,
-          type: 'discovered',
-        });
-      }
       return { mismatch: false as const, context };
     });
     if (mismatch.mismatch) this.throwIdentityMismatch(normalized);
@@ -650,12 +626,12 @@ export class FederationRecognitionService {
   }
 
   async queryHealth(domain: string): Promise<FederationHealthStatus> {
-    const peer = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, this.normalizeDomain(domain)),
+    const peer = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.domain, this.normalizeDomain(domain)),
     });
     if (
       !peer ||
-      peer.activeNamespaceId === null ||
+      peer.id === null ||
       !peer.recognizesPeer ||
       !peer.localServiceAvailable ||
       peer.trustLevel === 'halted'
@@ -666,17 +642,17 @@ export class FederationRecognitionService {
   }
 
   async hasPreparedPeer(domain: string): Promise<boolean> {
-    const peer = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, this.normalizeDomain(domain)),
+    const peer = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.domain, this.normalizeDomain(domain)),
       columns: {
-        activeNamespaceId: true,
+        id: true,
         trustLevel: true,
         recognizesPeer: true,
         localServiceAvailable: true,
       },
     });
     return (
-      peer?.activeNamespaceId != null &&
+      peer?.id != null &&
       peer.trustLevel !== 'halted' &&
       peer.recognizesPeer &&
       peer.localServiceAvailable
@@ -712,15 +688,9 @@ export class FederationRecognitionService {
       };
       const trustLevel = this.lifecycle(next);
       recovered = peer.trustLevel !== 'available' && trustLevel === 'available';
-      restored = await this.logRecoveryInTx(
-        tx,
-        normalized,
-        peer,
-        trustLevel,
-        'Health round trip restored reachability',
-      );
+      restored = this.didRecover(peer, trustLevel);
       await tx
-        .update(tables.federatedPeer)
+        .update(tables.identityNamespace)
         .set({
           peerAcceptanceConfirmed: true,
           remoteServiceReachable: true,
@@ -733,7 +703,12 @@ export class FederationRecognitionService {
               ? (peer.trustedAt ?? now)
               : peer.trustedAt,
         })
-        .where(eq(tables.federatedPeer.domain, normalized));
+        .where(
+          and(
+            eq(tables.identityNamespace.domain, normalized),
+            eq(tables.identityNamespace.active, true),
+          ),
+        );
     });
     // Emitted post-commit when Health restores reachability or first proves peer acceptance.
     if (restored) this.logger.log(`Health ${normalized}: degraded → available`);
@@ -758,15 +733,9 @@ export class FederationRecognitionService {
         ...peer,
         remoteServiceReachable: true,
       });
-      restored = await this.logRecoveryInTx(
-        tx,
-        normalized,
-        peer,
-        trustLevel,
-        'signed S2S contact restored reachability',
-      );
+      restored = this.didRecover(peer, trustLevel);
       await tx
-        .update(tables.federatedPeer)
+        .update(tables.identityNamespace)
         .set({
           remoteServiceReachable: true,
           lastSuccessAt: now,
@@ -778,7 +747,12 @@ export class FederationRecognitionService {
               ? (peer.trustedAt ?? now)
               : peer.trustedAt,
         })
-        .where(eq(tables.federatedPeer.domain, normalized));
+        .where(
+          and(
+            eq(tables.identityNamespace.domain, normalized),
+            eq(tables.identityNamespace.active, true),
+          ),
+        );
     });
     if (restored)
       this.logger.log(`Contact ${normalized}: degraded → available`);
@@ -802,7 +776,7 @@ export class FederationRecognitionService {
         return;
       const transitioned = peer.trustLevel === 'available';
       await tx
-        .update(tables.federatedPeer)
+        .update(tables.identityNamespace)
         .set({
           trustLevel: this.lifecycle({
             ...peer,
@@ -811,43 +785,28 @@ export class FederationRecognitionService {
           remoteServiceReachable: false,
           ...(transitioned
             ? {
-                degradationCount: sql`${tables.federatedPeer.degradationCount} + 1`,
+                degradationCount: sql`${tables.identityNamespace.degradationCount} + 1`,
               }
             : {}),
           degradedAt: new Date(),
           degradationReason: reason.slice(0, 255),
         })
-        .where(eq(tables.federatedPeer.domain, normalized));
-      if (transitioned)
-        await tx.insert(tables.federatedPeerEvent).values({
-          domain: normalized,
-          type: 'degraded',
-          reason: reason.slice(0, 255),
-        });
+        .where(
+          and(
+            eq(tables.identityNamespace.domain, normalized),
+            eq(tables.identityNamespace.active, true),
+          ),
+        );
     });
   }
 
-  /** The mirror of markTransportDegraded's `transitioned` guard: exactly when a DEGRADED peer returns
-   *  to 'available' — via a Health round trip, an inbound Recognize handshake or an ordinary signed
-   *  S2S contact — append the 'available' audit event in the same tx, so the admin timeline tells
-   *  both halves of the degradation story. Returns whether the event was written. */
-  private async logRecoveryInTx(
-    tx: DatabaseTransaction,
-    domain: string,
+  private didRecover(
     peer:
-      | Pick<typeof tables.federatedPeer.$inferSelect, 'trustLevel'>
+      | Pick<typeof tables.identityNamespace.$inferSelect, 'trustLevel'>
       | undefined,
     trustLevel: string,
-    reason: string,
-  ): Promise<boolean> {
-    if (peer?.trustLevel !== 'degraded' || trustLevel !== 'available')
-      return false;
-    await tx.insert(tables.federatedPeerEvent).values({
-      domain,
-      type: 'available',
-      reason: reason.slice(0, 255),
-    });
-    return true;
+  ): boolean {
+    return peer?.trustLevel === 'degraded' && trustLevel === 'available';
   }
 
   private async runRecognize(domain: string): Promise<void> {
@@ -859,8 +818,8 @@ export class FederationRecognitionService {
     await this.discovery.cacheDocument(domain, context.namespaceId, doc);
     const base = await this.discovery.resolveBase(domain);
     const url = new URL(`${base}/s2s/v1/recognize`);
-    const body = context.peerAssignedLocalNamespaceId
-      ? JSON.stringify({ namespaceId: context.peerAssignedLocalNamespaceId })
+    const body = context.namespaceId
+      ? JSON.stringify({ namespaceId: context.namespaceId })
       : '{}';
     const release = await this.discovery.acquireRequestSlot(domain);
     try {
@@ -923,7 +882,7 @@ export class FederationRecognitionService {
         becameAvailable =
           peer.trustLevel !== 'available' && trustLevel === 'available';
         await tx
-          .update(tables.federatedPeer)
+          .update(tables.identityNamespace)
           .set({
             peerAcceptanceConfirmed: true,
             remoteServiceReachable: true,
@@ -936,7 +895,12 @@ export class FederationRecognitionService {
                 ? (peer.trustedAt ?? now)
                 : peer.trustedAt,
           })
-          .where(eq(tables.federatedPeer.domain, domain));
+          .where(
+            and(
+              eq(tables.identityNamespace.domain, domain),
+              eq(tables.identityNamespace.active, true),
+            ),
+          );
       });
       if (becameAvailable) this.emitPeerAvailable(domain);
     } finally {
@@ -968,39 +932,25 @@ export class FederationRecognitionService {
         localServiceAvailable: true,
       };
       const trustLevel = this.lifecycle(next);
-      await tx
-        .insert(tables.federatedPeer)
-        .values({
-          domain,
-          trustLevel: 'establishing',
-          recognizesPeer: true,
-          localServiceAvailable: true,
-        })
-        .onConflictDoUpdate({
-          target: tables.federatedPeer.domain,
-          set: {
-            recognizesPeer: true,
-            localServiceAvailable: true,
-            trustLevel,
-            trustedAt:
-              trustLevel === 'available'
-                ? (peer?.trustedAt ?? now)
-                : peer?.trustedAt,
-          },
-        });
       const context = await this.namespaces.activateVerifiedInTx(tx, {
         domain,
         rootPublicKey: doc.rootKey.ed25519,
         rootKeyFingerprint: fingerprint,
         identityPinnedAt: peer?.identityPinnedAt ?? now,
       });
+      await tx
+        .update(tables.identityNamespace)
+        .set({
+          recognizesPeer: true,
+          localServiceAvailable: true,
+          trustLevel,
+          trustedAt:
+            trustLevel === 'available'
+              ? (peer?.trustedAt ?? now)
+              : peer?.trustedAt,
+        })
+        .where(eq(tables.identityNamespace.id, context.namespaceId));
       await this.initializePeerInTx(tx, context.domain, context.namespaceId);
-      if (!peer) {
-        await tx.insert(tables.federatedPeerEvent).values({
-          domain,
-          type: 'discovered',
-        });
-      }
       return { mismatch: false as const, context };
     });
     if (mismatch.mismatch) this.throwIdentityMismatch(domain);
@@ -1034,18 +984,19 @@ export class FederationRecognitionService {
   private async lockPeer(tx: DatabaseTransaction, domain: string) {
     const [peer] = await tx
       .select({
-        ...getTableColumns(tables.federatedPeer),
+        ...getTableColumns(tables.identityNamespace),
         rootKeyFingerprint: tables.identityNamespace.rootKeyFingerprint,
         rootPublicKey: tables.identityNamespace.rootPublicKey,
         identityPinnedAt: tables.identityNamespace.identityPinnedAt,
       })
-      .from(tables.federatedPeer)
-      .leftJoin(
-        tables.identityNamespace,
-        eq(tables.identityNamespace.id, tables.federatedPeer.activeNamespaceId),
+      .from(tables.identityNamespace)
+      .where(
+        and(
+          eq(tables.identityNamespace.domain, domain),
+          eq(tables.identityNamespace.active, true),
+        ),
       )
-      .where(eq(tables.federatedPeer.domain, domain))
-      .for('no key update', { of: tables.federatedPeer })
+      .for('no key update', { of: tables.identityNamespace })
       .limit(1);
     return peer;
   }
@@ -1072,7 +1023,7 @@ export class FederationRecognitionService {
   ): Promise<void> {
     const reason = 'peer presented a root different from the pinned identity';
     await tx
-      .update(tables.federatedPeer)
+      .update(tables.identityNamespace)
       .set({
         trustLevel: 'halted',
         remoteServiceReachable: false,
@@ -1080,16 +1031,16 @@ export class FederationRecognitionService {
         haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
         haltReason: reason,
       })
-      .where(eq(tables.federatedPeer.domain, domain));
-    await tx.insert(tables.federatedPeerEvent).values({
-      domain,
-      type: 'halted',
-      reason,
-    });
+      .where(
+        and(
+          eq(tables.identityNamespace.domain, domain),
+          eq(tables.identityNamespace.active, true),
+        ),
+      );
   }
 
   private lifecycle(
-    peer: Partial<typeof tables.federatedPeer.$inferSelect> & {
+    peer: Partial<typeof tables.identityNamespace.$inferSelect> & {
       identityPinnedAt?: Date | null;
     },
   ): string {
@@ -1147,7 +1098,7 @@ export class FederationRecognitionService {
     reason: string,
   ): Promise<void> {
     await this.database.db
-      .update(tables.federatedPeer)
+      .update(tables.identityNamespace)
       .set({
         trustLevel: 'halted',
         remoteServiceReachable: false,
@@ -1155,7 +1106,12 @@ export class FederationRecognitionService {
         haltCode: code,
         haltReason: reason.slice(0, 255),
       })
-      .where(eq(tables.federatedPeer.domain, domain));
+      .where(
+        and(
+          eq(tables.identityNamespace.domain, domain),
+          eq(tables.identityNamespace.active, true),
+        ),
+      );
   }
 
   private isFatalCode(code: unknown): code is number {

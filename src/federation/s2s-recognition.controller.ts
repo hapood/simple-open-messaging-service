@@ -36,13 +36,13 @@ export class S2sRecognitionController {
     this.keypair.assertAvailable();
     const headers = this.verify.extractHeaders(req);
     const { keyId, domain, expires } = this.verify.parseSigner(headers);
-    const namespaceEcho = this.assertRecognizeRequest(body);
+    const senderAssignedLocalNamespaceId = this.assertRecognizeRequest(body);
     return this.recognition.submitInboundRecognize({
       domain,
       keyId,
       signedRequest: this.verify.signedRequest(req),
       headers,
-      namespaceEcho,
+      senderAssignedLocalNamespaceId,
       signatureExpires: expires,
     });
   }
@@ -114,7 +114,7 @@ export class S2sRecognitionController {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'recognize body must be an empty object or namespace echo',
+        'recognize body must be an empty object or a sender-assigned local namespace',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -131,7 +131,7 @@ export class S2sRecognitionController {
     }
     throw new BusinessException(
       BusinessCode.FEDERATION_MALFORMED,
-      'recognize body must be an empty object or namespace echo',
+      'recognize body must be an empty object or a sender-assigned local namespace',
       HttpStatus.BAD_REQUEST,
     );
   }

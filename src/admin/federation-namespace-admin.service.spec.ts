@@ -32,7 +32,6 @@ describe('FederationNamespaceAdminService', () => {
     const execute = vi
       .fn()
       .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ activeNamespaceId: 12 }] })
       .mockResolvedValueOnce({
         rows: [
           {
@@ -41,6 +40,7 @@ describe('FederationNamespaceAdminService', () => {
             rootPublicKey: 'root',
             identityPinnedAt: new Date(),
             retiredAt: null,
+            active: false,
           },
         ],
       })
@@ -58,7 +58,7 @@ describe('FederationNamespaceAdminService', () => {
       activeNamespaceId: 13,
       status: 'active_namespace_switched',
     });
-    expect(execute).toHaveBeenCalledTimes(6);
+    expect(execute).toHaveBeenCalledTimes(4);
     expect(database.db.transaction).toHaveBeenCalledOnce();
   });
 
@@ -73,12 +73,13 @@ describe('FederationNamespaceAdminService', () => {
             rootKeyFingerprint: 'sha256:new',
             rootPublicKey: 'new-root',
             peerAssignedLocalNamespaceId: 44,
+            status: 'pending',
+            failedCode: null,
+            failedMessage: null,
             verifiedAt: new Date(),
           },
         ],
       })
-      .mockResolvedValueOnce({ rows: [{ activeNamespaceId: 12 }] })
-      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ id: 21 }] })
       .mockResolvedValue({ rows: [] });
     const tx = { execute };
@@ -98,7 +99,7 @@ describe('FederationNamespaceAdminService', () => {
       activeNamespaceId: 21,
       status: 'active_namespace_switched',
     });
-    expect(execute).toHaveBeenCalledTimes(9);
+    expect(execute).toHaveBeenCalledTimes(6);
     expect(recognition.recognize).toHaveBeenCalledWith('peer.example');
   });
 

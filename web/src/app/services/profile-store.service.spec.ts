@@ -45,7 +45,7 @@ describe('ProfileRepository resolution scheduler', () => {
     repository = TestBed.inject(ProfileRepository);
   });
 
-  it('reuses a committed four-tuple from the main-thread LRU', async () => {
+  it('reuses a committed exact profile key from the main-thread LRU', async () => {
     const snapshot: ProfileSnapshot = {
       account: 'alice',
       domain: 'peer.test',
@@ -148,7 +148,7 @@ describe('ProfileRepository resolution scheduler', () => {
     expect(resolveProfileEvidence).toHaveBeenCalledOnce();
   });
 
-  it('retries only the evidence whose pending four-tuple was committed', async () => {
+  it('retries only the evidence whose pending exact profile key was committed', async () => {
     const alice = {
       namespaceId: 4,
       account: 'alice',

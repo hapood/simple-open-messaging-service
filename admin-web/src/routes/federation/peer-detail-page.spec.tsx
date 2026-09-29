@@ -44,7 +44,6 @@ vi.mock('@/hooks/use-federation', () => ({
     isLoading: false,
     error: null,
   }),
-  useFederationPeerEvents: () => ({ data: [], isLoading: false }),
   useFederationPeerNamespaces: () => ({
     data: [
       {

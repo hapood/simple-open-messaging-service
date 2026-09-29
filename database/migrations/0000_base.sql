@@ -992,64 +992,6 @@ ALTER SEQUENCE public."FederatedMessageTombstone_id_seq" OWNED BY public."Federa
 
 
 --
--- Name: FederatedPeer; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederatedPeer" (
-    domain character varying(63) NOT NULL,
-    "activeNamespaceId" integer,
-    "trustLevel" character varying(31) DEFAULT 'unrecognized'::character varying NOT NULL,
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "trustedAt" timestamp(3) with time zone,
-    "lastSuccessAt" timestamp(3) with time zone,
-    "degradedAt" timestamp(3) with time zone,
-    "degradationReason" character varying(255),
-    "degradationCount" integer DEFAULT 0 NOT NULL,
-    "haltedAt" timestamp(3) with time zone,
-    "haltCode" integer,
-    "haltReason" character varying(255),
-    "recognizesPeer" boolean DEFAULT false NOT NULL,
-    "localServiceAvailable" boolean DEFAULT false NOT NULL,
-    "remoteServiceReachable" boolean DEFAULT false NOT NULL,
-    "resetAt" timestamp(3) with time zone,
-    "peerAcceptanceConfirmed" boolean DEFAULT false NOT NULL,
-    CONSTRAINT "FederatedPeer_trustLevel_check" CHECK ((("trustLevel")::text = ANY (ARRAY[('unrecognized'::character varying)::text, ('establishing'::character varying)::text, ('available'::character varying)::text, ('degraded'::character varying)::text, ('halted'::character varying)::text])))
-);
-
-
---
--- Name: FederatedPeerEvent; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederatedPeerEvent" (
-    id bigint NOT NULL,
-    domain character varying(63) NOT NULL,
-    type character varying(15) NOT NULL,
-    reason character varying(255),
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
-);
-
-
---
--- Name: FederatedPeerEvent_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public."FederatedPeerEvent_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: FederatedPeerEvent_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public."FederatedPeerEvent_id_seq" OWNED BY public."FederatedPeerEvent".id;
-
-
---
 -- Name: FederationMessageReceipt; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1060,6 +1002,29 @@ CREATE TABLE public."FederationMessageReceipt" (
     "messageId" bigint NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "FederationMessageReceipt_peerSeq_check" CHECK (("peerSeq" > 0))
+);
+
+
+--
+-- Name: FederationNamespaceCandidate; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."FederationNamespaceCandidate" (
+    "nextDomain" character varying(63) NOT NULL,
+    "matchedNamespaceId" integer,
+    "rootKeyFingerprint" character varying(80) NOT NULL,
+    "rootPublicKey" character varying(44) NOT NULL,
+    "peerAssignedLocalNamespaceId" integer,
+    status character varying(15) DEFAULT 'pending'::character varying NOT NULL,
+    "failedCode" integer,
+    "failedMessage" text,
+    "verifiedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "FederationNamespaceCandidate_failed_check" CHECK ((((status)::text = 'failed'::text) = (("failedCode" IS NOT NULL) AND ("failedMessage" IS NOT NULL)))),
+    CONSTRAINT "FederationNamespaceCandidate_matchedNamespace_check" CHECK ((("matchedNamespaceId" IS NULL) OR ("matchedNamespaceId" > 0))),
+    CONSTRAINT "FederationNamespaceCandidate_peerAssignedLocalNamespace_check" CHECK ((("peerAssignedLocalNamespaceId" IS NULL) OR ("peerAssignedLocalNamespaceId" > 0))),
+    CONSTRAINT "FederationNamespaceCandidate_status_check" CHECK (((status)::text = ANY (ARRAY[('pending'::character varying)::text, ('failed'::character varying)::text])))
 );
 
 
@@ -1336,6 +1301,22 @@ CREATE TABLE public."IdentityNamespace" (
     "rootKeyFingerprint" character varying(80),
     "rootPublicKey" character varying(44),
     "identityPinnedAt" timestamp(3) with time zone,
+    "peerAssignedLocalNamespaceId" integer,
+    active boolean DEFAULT false NOT NULL,
+    "trustLevel" character varying(31) DEFAULT 'unrecognized'::character varying NOT NULL,
+    "trustedAt" timestamp(3) with time zone,
+    "lastSuccessAt" timestamp(3) with time zone,
+    "degradedAt" timestamp(3) with time zone,
+    "degradationReason" character varying(255),
+    "degradationCount" integer DEFAULT 0 NOT NULL,
+    "haltedAt" timestamp(3) with time zone,
+    "haltCode" integer,
+    "haltReason" character varying(255),
+    "recognizesPeer" boolean DEFAULT false NOT NULL,
+    "peerAcceptanceConfirmed" boolean DEFAULT false NOT NULL,
+    "localServiceAvailable" boolean DEFAULT false NOT NULL,
+    "remoteServiceReachable" boolean DEFAULT false NOT NULL,
+    "resetAt" timestamp(3) with time zone,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "retiredAt" timestamp(3) with time zone,
     "stateFeedEndId" bigint DEFAULT 0 NOT NULL,
@@ -1343,9 +1324,11 @@ CREATE TABLE public."IdentityNamespace" (
     "dailyRequestLimit" integer,
     "dailyFileLimit" integer,
     "dailyFileBytesLimit" bigint,
+    CONSTRAINT "IdentityNamespace_active_check" CHECK (((active = false) OR ((id > 0) AND ("retiredAt" IS NULL)))),
     CONSTRAINT "IdentityNamespace_retiredAt_check" CHECK ((("retiredAt" IS NULL) OR ("retiredAt" >= "createdAt"))),
-    CONSTRAINT "IdentityNamespace_shape_check" CHECK ((((id = 0) AND ((domain)::text = 'local'::text) AND ("rootKeyFingerprint" IS NULL) AND ("rootPublicKey" IS NULL) AND ("identityPinnedAt" IS NULL) AND ("retiredAt" IS NULL)) OR ((id > 0) AND ((domain)::text <> 'local'::text) AND ("rootKeyFingerprint" IS NOT NULL) AND ("rootPublicKey" IS NOT NULL) AND ("identityPinnedAt" IS NOT NULL)))),
-    CONSTRAINT "IdentityNamespace_stateFeedEndId_check" CHECK ((("stateFeedEndId" >= 0) AND ((id <> 0) OR ("stateFeedEndId" = 0))))
+    CONSTRAINT "IdentityNamespace_shape_check" CHECK ((((id = 0) AND ((domain)::text = 'local'::text) AND ("rootKeyFingerprint" IS NULL) AND ("rootPublicKey" IS NULL) AND ("identityPinnedAt" IS NULL) AND ("peerAssignedLocalNamespaceId" IS NULL) AND ("retiredAt" IS NULL) AND (active = false) AND (("trustLevel")::text = 'unrecognized'::text) AND ("trustedAt" IS NULL) AND ("lastSuccessAt" IS NULL) AND ("degradedAt" IS NULL) AND ("degradationReason" IS NULL) AND ("degradationCount" = 0) AND ("haltedAt" IS NULL) AND ("haltCode" IS NULL) AND ("haltReason" IS NULL) AND ("recognizesPeer" = false) AND ("peerAcceptanceConfirmed" = false) AND ("localServiceAvailable" = false) AND ("remoteServiceReachable" = false) AND ("resetAt" IS NULL)) OR ((id > 0) AND ((domain)::text <> 'local'::text) AND ("rootKeyFingerprint" IS NOT NULL) AND ("rootPublicKey" IS NOT NULL) AND ("identityPinnedAt" IS NOT NULL) AND (("peerAssignedLocalNamespaceId" IS NULL) OR ("peerAssignedLocalNamespaceId" > 0))))),
+    CONSTRAINT "IdentityNamespace_stateFeedEndId_check" CHECK ((("stateFeedEndId" >= 0) AND ((id <> 0) OR ("stateFeedEndId" = 0)))),
+    CONSTRAINT "IdentityNamespace_trustLevel_check" CHECK ((("trustLevel")::text = ANY (ARRAY[('unrecognized'::character varying)::text, ('establishing'::character varying)::text, ('pending'::character varying)::text, ('available'::character varying)::text, ('degraded'::character varying)::text, ('halted'::character varying)::text])))
 );
 
 
@@ -2139,13 +2122,6 @@ ALTER TABLE ONLY public."FederatedMessageTombstone" ALTER COLUMN id SET DEFAULT 
 
 
 --
--- Name: FederatedPeerEvent id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederatedPeerEvent" ALTER COLUMN id SET DEFAULT nextval('public."FederatedPeerEvent_id_seq"'::regclass);
-
-
---
 -- Name: FederationThreadHistoryGap id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2371,27 +2347,19 @@ ALTER TABLE ONLY public."FederatedMessageTombstone"
 
 
 --
--- Name: FederatedPeerEvent FederatedPeerEvent_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederatedPeerEvent"
-    ADD CONSTRAINT "FederatedPeerEvent_pkey" PRIMARY KEY (id);
-
-
---
--- Name: FederatedPeer FederatedPeer_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederatedPeer"
-    ADD CONSTRAINT "FederatedPeer_pkey" PRIMARY KEY (domain);
-
-
---
 -- Name: FederationMessageReceipt FederationMessageReceipt_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."FederationMessageReceipt"
     ADD CONSTRAINT "FederationMessageReceipt_pkey" PRIMARY KEY ("namespaceId", "threadId", "peerSeq");
+
+
+--
+-- Name: FederationNamespaceCandidate FederationNamespaceCandidate_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."FederationNamespaceCandidate"
+    ADD CONSTRAINT "FederationNamespaceCandidate_pkey" PRIMARY KEY ("nextDomain");
 
 
 --
@@ -2496,14 +2464,6 @@ ALTER TABLE ONLY public."GroupMetaMemberFeed"
 
 ALTER TABLE ONLY public."GroupRequestProjection"
     ADD CONSTRAINT "GroupRequestProjection_pkey" PRIMARY KEY ("threadId", "memberAccount", "memberDomain", "memberNamespaceId", direction);
-
-
---
--- Name: IdentityNamespace IdentityNamespace_domain_id_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."IdentityNamespace"
-    ADD CONSTRAINT "IdentityNamespace_domain_id_key" UNIQUE (domain, id);
 
 
 --
@@ -2922,38 +2882,17 @@ CREATE UNIQUE INDEX "FederatedMessageTombstone_target_key" ON public."FederatedM
 
 
 --
--- Name: FederatedPeerEvent_createdAt_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "FederatedPeerEvent_createdAt_idx" ON public."FederatedPeerEvent" USING btree ("createdAt");
-
-
---
--- Name: FederatedPeerEvent_domain_createdAt_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "FederatedPeerEvent_domain_createdAt_idx" ON public."FederatedPeerEvent" USING btree (domain, "createdAt");
-
-
---
--- Name: FederatedPeer_lastSuccessAt_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "FederatedPeer_lastSuccessAt_idx" ON public."FederatedPeer" USING btree ("lastSuccessAt");
-
-
---
--- Name: FederatedPeer_trustLevel_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "FederatedPeer_trustLevel_idx" ON public."FederatedPeer" USING btree ("trustLevel");
-
-
---
 -- Name: FederationMessageReceipt_messageId_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX "FederationMessageReceipt_messageId_idx" ON public."FederationMessageReceipt" USING btree ("messageId");
+
+
+--
+-- Name: FederationNamespaceCandidate_matchedNamespace_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "FederationNamespaceCandidate_matchedNamespace_key" ON public."FederationNamespaceCandidate" USING btree ("matchedNamespaceId") WHERE ("matchedNamespaceId" IS NOT NULL);
 
 
 --
@@ -3083,10 +3022,24 @@ CREATE INDEX "GroupRequestProjection_thread_feed_idx" ON public."GroupRequestPro
 
 
 --
--- Name: IdentityNamespace_one_live_per_domain_key; Type: INDEX; Schema: public; Owner: -
+-- Name: IdentityNamespace_lastSuccessAt_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "IdentityNamespace_one_live_per_domain_key" ON public."IdentityNamespace" USING btree (domain) WHERE ((id > 0) AND ("retiredAt" IS NULL));
+CREATE INDEX "IdentityNamespace_lastSuccessAt_idx" ON public."IdentityNamespace" USING btree ("lastSuccessAt");
+
+
+--
+-- Name: IdentityNamespace_one_active_per_domain_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "IdentityNamespace_one_active_per_domain_key" ON public."IdentityNamespace" USING btree (domain) WHERE ((id > 0) AND (active = true));
+
+
+--
+-- Name: IdentityNamespace_trustLevel_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX "IdentityNamespace_trustLevel_idx" ON public."IdentityNamespace" USING btree ("trustLevel");
 
 
 --
@@ -3609,14 +3562,6 @@ ALTER TABLE ONLY public."FederatedMessageTombstone"
 
 
 --
--- Name: FederatedPeer FederatedPeer_activeNamespace_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederatedPeer"
-    ADD CONSTRAINT "FederatedPeer_activeNamespace_fkey" FOREIGN KEY (domain, "activeNamespaceId") REFERENCES public."IdentityNamespace"(domain, id) ON DELETE RESTRICT;
-
-
---
 -- Name: FederationMessageReceipt FederationMessageReceipt_messageId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3646,6 +3591,14 @@ ALTER TABLE ONLY public."FederationMessageReceipt"
 
 ALTER TABLE ONLY public."FederationThreadHistoryGap"
     ADD CONSTRAINT "FederationThreadHistoryGap_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: FederationNamespaceCandidate FederationNamespaceCandidate_matchedNamespace_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."FederationNamespaceCandidate"
+    ADD CONSTRAINT "FederationNamespaceCandidate_matchedNamespace_fkey" FOREIGN KEY ("matchedNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
 
 
 --
@@ -3845,7 +3798,7 @@ ALTER TABLE ONLY public."Message"
 --
 
 ALTER TABLE ONLY public."PeerStateFeedPullCursor"
-    ADD CONSTRAINT "PeerStateFeedPullCursor_namespace_fkey" FOREIGN KEY ("peerDomain", "namespaceId") REFERENCES public."IdentityNamespace"(domain, id) ON DELETE RESTRICT;
+    ADD CONSTRAINT "PeerStateFeedPullCursor_namespace_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3853,7 +3806,7 @@ ALTER TABLE ONLY public."PeerStateFeedPullCursor"
 --
 
 ALTER TABLE ONLY public."PeerStateFeed"
-    ADD CONSTRAINT "PeerStateFeed_namespace_fkey" FOREIGN KEY ("peerDomain", "namespaceId") REFERENCES public."IdentityNamespace"(domain, id) ON DELETE RESTRICT;
+    ADD CONSTRAINT "PeerStateFeed_namespace_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3949,7 +3902,7 @@ ALTER TABLE ONLY public."RelationshipPair"
 --
 
 ALTER TABLE ONLY public."S2SKeyCache"
-    ADD CONSTRAINT "S2SKeyCache_namespace_fkey" FOREIGN KEY (domain, "namespaceId") REFERENCES public."IdentityNamespace"(domain, id) ON DELETE RESTRICT;
+    ADD CONSTRAINT "S2SKeyCache_namespace_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3973,7 +3926,7 @@ ALTER TABLE ONLY public."ThreadAudience"
 --
 
 ALTER TABLE ONLY public."ThreadAudience"
-    ADD CONSTRAINT "ThreadAudience_targetNamespace_fkey" FOREIGN KEY ("targetDomain", "targetNamespaceId") REFERENCES public."IdentityNamespace"(domain, id) ON DELETE RESTRICT;
+    ADD CONSTRAINT "ThreadAudience_targetNamespace_fkey" FOREIGN KEY ("targetNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --

@@ -9,7 +9,7 @@ describe('FederationResetService', () => {
       .mockResolvedValueOnce({
         rows: [
           {
-            activeNamespaceId: 12,
+            id: 12,
             trustLevel: 'halted',
             haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
             haltReason: 'pinned root changed',

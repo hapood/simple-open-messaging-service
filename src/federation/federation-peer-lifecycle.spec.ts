@@ -12,7 +12,7 @@ function subject(peer: Record<string, unknown> | undefined) {
   const database = {
     db: {
       query: {
-        federatedPeer: {
+        identityNamespace: {
           findFirst: vi.fn().mockResolvedValue(peer),
         },
       },
@@ -32,58 +32,46 @@ describe('FederationPeerLifecycle recognition and reachability gates', () => {
   it('reports complete recognition independently of degraded reachability', async () => {
     const { lifecycle } = subject({
       trustLevel: 'degraded',
-      activeNamespaceId: 7,
+      active: true,
       recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: true,
     });
-
-    await expect(
-      lifecycle.hasCompleteRecognition('peer.example'),
-    ).resolves.toBe(true);
+    await expect(lifecycle.hasCompleteRecognition('peer.example')).resolves.toBe(true);
   });
 
   it('does not report complete recognition while peer acceptance is unproven', async () => {
     const { lifecycle } = subject({
       trustLevel: 'establishing',
-      activeNamespaceId: 7,
+      active: true,
       recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: false,
     });
-
-    await expect(
-      lifecycle.hasCompleteRecognition('peer.example'),
-    ).resolves.toBe(false);
+    await expect(lifecycle.hasCompleteRecognition('peer.example')).resolves.toBe(false);
   });
 
   it('blocks ordinary outbound traffic while a recognized peer is degraded', async () => {
     const { lifecycle, recognition } = subject({
       trustLevel: 'degraded',
-      activeNamespaceId: 7,
+      active: true,
       recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: true,
     });
-
-    await expect(
-      lifecycle.checkOutboundReady('peer.example'),
-    ).rejects.toBeInstanceOf(FederationTransportError);
+    await expect(lifecycle.checkOutboundReady('peer.example')).rejects.toBeInstanceOf(FederationTransportError);
     expect(recognition.recognize).not.toHaveBeenCalled();
   });
 
   it('rejects without starting recognition while peer acceptance is unproven', async () => {
     const { lifecycle, recognition } = subject({
       trustLevel: 'establishing',
-      activeNamespaceId: 7,
+      active: true,
       recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: false,
     });
-
-    await expect(
-      lifecycle.checkOutboundReady('peer.example'),
-    ).rejects.toMatchObject({
+    await expect(lifecycle.checkOutboundReady('peer.example')).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
       status: 401,
     });
@@ -93,40 +81,24 @@ describe('FederationPeerLifecycle recognition and reachability gates', () => {
   it('allows outbound traffic when acceptance and reachability are proven', async () => {
     const { lifecycle, recognition } = subject({
       trustLevel: 'available',
-      activeNamespaceId: 7,
+      active: true,
       recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: true,
     });
-
-    await expect(
-      lifecycle.checkOutboundReady('peer.example'),
-    ).resolves.toBeUndefined();
+    await expect(lifecycle.checkOutboundReady('peer.example')).resolves.toBeUndefined();
     expect(recognition.recognize).not.toHaveBeenCalled();
   });
 
   it('retries recognition only for an establishing peer', async () => {
-    const { lifecycle, recognition } = subject({
-      trustLevel: 'establishing',
-      peerAcceptanceConfirmed: false,
-    });
-
+    const { lifecycle, recognition } = subject({ trustLevel: 'establishing' });
     await lifecycle.recoverPeerRecognition('peer.example');
-
-    expect(recognition.recognize).toHaveBeenCalledExactlyOnceWith(
-      'peer.example',
-    );
+    expect(recognition.recognize).toHaveBeenCalledExactlyOnceWith('peer.example');
   });
 
   it('does not retry recognition for an available peer', async () => {
-    const { lifecycle, recognition } = subject({
-      trustLevel: 'available',
-      peerAcceptanceConfirmed: true,
-    });
-
-    await expect(
-      lifecycle.recoverPeerRecognition('peer.example'),
-    ).rejects.toMatchObject({
+    const { lifecycle, recognition } = subject({ trustLevel: 'available' });
+    await expect(lifecycle.recoverPeerRecognition('peer.example')).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
       status: 409,
     });

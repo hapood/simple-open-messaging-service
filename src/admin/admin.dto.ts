@@ -348,20 +348,7 @@ export class AdminListFederationPeersDto {
   status?: string;
 }
 
-/** A peer's lifecycle event timeline query (how many recent events to return). */
-export class AdminFederationPeerEventsDto {
-  @ApiProperty({
-    required: false,
-    example: 100,
-    description: 'Max events to return (optional, default 100)',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  take?: number;
-}
-
-/** Optional note attached to an admin block (recorded on the `blocked` lifecycle event). */
+/** Optional note attached to an admin block. */
 export class AdminFederationBlockDto {
   @ApiProperty({
     required: false,
@@ -414,7 +401,7 @@ export class AdminFederationIdentityRecoverDto {
 }
 
 /** Per-peer daily-quota override fields (POST admin/quota/nodes/:domain). All optional; a null/absent
- *  field means "use the global default". Stored on FederatedPeer. See QuotaService.setLimits. */
+ *  field means "use the global default". Stored on IdentityNamespace. See QuotaService.setLimits. */
 export class AdminSetQuotaDto {
   @ApiProperty({
     required: false,

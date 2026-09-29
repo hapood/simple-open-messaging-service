@@ -22,6 +22,11 @@ function fakeDatabase(peer: Record<string, unknown> | undefined) {
             }),
           }),
         }),
+        where: () => ({
+          for: () => ({
+            limit: () => selectRows,
+          }),
+        }),
       }),
     }),
     update: () => ({
@@ -62,7 +67,8 @@ function availablePeer() {
     remoteServiceReachable: true,
     lastSuccessAt: null,
     identityPinnedAt: new Date(),
-    activeNamespaceId: 12,
+    active: true,
+    id: 12,
   };
 }
 

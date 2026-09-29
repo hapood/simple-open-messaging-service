@@ -219,7 +219,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
       keyId: 'peer.example/key-2',
       signedRequest: expect.anything(),
       headers: {},
-      namespaceEcho: 5,
+      senderAssignedLocalNamespaceId: 5,
       signatureExpires: expect.any(Number),
     });
   });
@@ -438,11 +438,7 @@ describe('FederationRecognitionService health transitions', () => {
 
     await recognition.applyHealthResult('peer.example', 'available');
 
-    expect(insertValues).toHaveBeenCalledWith({
-      domain: 'peer.example',
-      type: 'available',
-      reason: 'Health round trip restored reachability',
-    });
+    expect(insertValues).not.toHaveBeenCalled();
     expect(events.emit).toHaveBeenCalledExactlyOnceWith(
       FEDERATION_PEER_AVAILABLE,
       { peerDomain: 'peer.example' },
@@ -592,7 +588,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
       nextDomain: 'peer.example',
       status: 'failed',
       failedCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-      failedMessage: 'namespace echo mismatch',
+      failedMessage: 'sender-assigned local namespace mismatch',
     });
 
     await expect(
@@ -607,17 +603,15 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
       ok: false,
       status: 'failed',
       code: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-      message: 'namespace echo mismatch',
+      message: 'sender-assigned local namespace mismatch',
     });
     expect(verify).not.toHaveBeenCalled();
   });
 
-  it('writes an unmatched root candidate and pending peer after async verification', async () => {
+  it('writes an unmatched root candidate after async verification', async () => {
     const candidateValues = vi.fn();
     const candidateConflict = vi.fn();
-    const peerValues = vi.fn();
-    const peerConflict = vi.fn();
-    const eventValues = vi.fn();
+    const otherInsertValues = vi.fn();
     const tx = {
       select: vi.fn(() => ({
         from: vi.fn(() => ({
@@ -635,17 +629,9 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
             }),
           };
         }
-        if (table === tables.federatedPeer) {
-          return {
-            values: vi.fn((values: unknown) => {
-              peerValues(values);
-              return { onConflictDoUpdate: peerConflict };
-            }),
-          };
-        }
         return {
           values: vi.fn((values: unknown) => {
-            eventValues(values);
+            otherInsertValues({ table, values });
             return Promise.resolve();
           }),
         };
@@ -654,22 +640,10 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     const database = {
       db: {
         query: {
-          federatedPeer: {
-            findFirst: vi.fn().mockResolvedValue({ activeNamespaceId: 12 }),
+          identityNamespace: {
+            findFirst: vi.fn().mockResolvedValue(null),
           },
         },
-        select: vi.fn(() => ({
-          from: vi.fn(() => ({
-            where: vi.fn(() => ({
-              limit: vi.fn().mockResolvedValue([
-                {
-                  rootKeyFingerprint: 'sha256:old',
-                  rootPublicKey: Buffer.alloc(32, 1).toString('base64'),
-                },
-              ]),
-            })),
-          })),
-        })),
         transaction: vi.fn((run: (value: typeof tx) => Promise<void>) =>
           run(tx),
         ),
@@ -705,7 +679,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
           signedRequest: typeof signedRequest;
           headers: typeof recognizeHeaders;
           signatureExpires: number;
-          namespaceEcho?: number;
+          senderAssignedLocalNamespaceId?: number;
         }) => Promise<void>;
       }
     ).verifyInboundRecognize.bind(service);
@@ -716,7 +690,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
       signedRequest,
       headers: recognizeHeaders,
       signatureExpires: Math.floor(Date.now() / 1000) + 300,
-      namespaceEcho: 44,
+      senderAssignedLocalNamespaceId: 44,
     });
 
     expect(candidateValues).toHaveBeenCalledWith(
@@ -730,19 +704,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
         failedMessage: null,
       }),
     );
-    expect(peerValues).toHaveBeenCalledWith(
-      expect.objectContaining({
-        domain: 'peer.example',
-        trustLevel: 'pending',
-        recognizesPeer: true,
-        localServiceAvailable: true,
-      }),
-    );
-    expect(eventValues).toHaveBeenCalledWith({
-      domain: 'peer.example',
-      type: 'pending',
-      reason: 'verified namespace candidate with new root',
-    });
+    expect(otherInsertValues).not.toHaveBeenCalled();
   });
 
   it('starts one async verifier per normalized domain and returns pending while it runs', async () => {

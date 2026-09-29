@@ -13,16 +13,24 @@ import { SessionLifecycleService } from './session-lifecycle.service';
 import { Message, MediaStatus, type MessageQueryRow } from './model';
 import { isTauri, tauriInvoke } from './runtime';
 
+export interface MessageHistoryTarget {
+  namespaceId: number;
+  account: string;
+  domain: string;
+  rev: number;
+}
+
 export type NativeMessageHistoryDemand =
-  | { kind: 'latest'; count: number }
+  | { kind: 'latest'; count: number; target?: MessageHistoryTarget }
   | {
       kind: 'around';
       anchor: number;
       olderCount: number;
       newerCount: number;
+      target?: MessageHistoryTarget;
     }
-  | { kind: 'older'; before: number; count: number }
-  | { kind: 'newer'; after: number; count: number };
+  | { kind: 'older'; before: number; count: number; target?: MessageHistoryTarget }
+  | { kind: 'newer'; after: number; count: number; target?: MessageHistoryTarget };
 
 export type MessageHistorySourceItem =
   | { kind: 'message'; message: MessageQueryRow }

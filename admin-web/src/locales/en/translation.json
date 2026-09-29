@@ -407,7 +407,7 @@
   },
   "federation": {
     "title": "Federation",
-    "desc": "Peer servers and their Federation v1 bidirectional recognition lifecycle. Open a peer for recognition facts, reachability, and the full timeline.",
+    "desc": "Peer servers and their Federation v1 bidirectional recognition lifecycle. Open a peer for recognition facts, reachability, and namespace state.",
     "searchPlaceholder": "Search domain",
     "tabs": { "peers": "Peers", "selfCheck": "Self-check" },
     "status": {
@@ -427,7 +427,7 @@
       "created": "Discovered"
     },
     "action": {
-      "viewTimeline": "View timeline",
+      "viewDetail": "View detail",
       "block": "Block",
       "unblock": "Unblock"
     },
@@ -450,24 +450,10 @@
       "auto": "auto (init)",
       "lastError": "Last failure"
     },
-    "timeline": {
-      "title": "Lifecycle timeline",
-      "empty": "No lifecycle events recorded"
-    },
-    "event": {
-      "discovered": "Discovered",
-      "trusted": "Trust established",
-      "degraded": "Connection lost / degraded",
-      "available": "Connection restored",
-      "halted": "Communication halted",
-      "unblocked": "Unblocked by admin",
-      "namespace_active": "Active namespace switched"
-    },
     "detail": {
       "back": "Back to federation",
       "notFound": "Peer not found",
       "tabOverview": "Overview",
-      "tabTimeline": "Timeline",
       "tabNamespaces": "Namespaces",
       "tabQuota": "Quotas"
     },

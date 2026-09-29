@@ -5,7 +5,6 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import {
-  federatedPeer,
   identityNamespace,
   quotaDailyAllowance,
   quotaDailyUsage,
@@ -64,14 +63,14 @@ export class QuotaService implements OnModuleInit {
 
   /** Resolve a domain-facing admin request to its current, verified identity epoch. */
   async activeNamespaceId(domain: string): Promise<number> {
-    const peer = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(federatedPeer.domain, domain),
-      columns: { activeNamespaceId: true },
+    const peer = await this.database.db.query.identityNamespace.findFirst({
+      where: and(eq(identityNamespace.domain, domain), eq(identityNamespace.active, true)),
+      columns: { id: true },
     });
-    if (peer?.activeNamespaceId == null) {
+    if (!peer) {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'active quota namespace not found');
     }
-    return peer.activeNamespaceId;
+    return peer.id;
   }
 
   // ── limit / cap resolution ───────────────────────────────────────────────
@@ -527,9 +526,9 @@ export class QuotaService implements OnModuleInit {
     const ids = this.breaker.trippedEntities(today).map(Number);
     if (ids.length === 0) return [];
     const peers = await this.database.db
-      .select({ namespaceId: federatedPeer.activeNamespaceId, domain: federatedPeer.domain })
-      .from(federatedPeer)
-      .where(inArray(federatedPeer.activeNamespaceId, ids));
+      .select({ namespaceId: identityNamespace.id, domain: identityNamespace.domain })
+      .from(identityNamespace)
+      .where(inArray(identityNamespace.id, ids));
     return Promise.all(peers.map(async ({ namespaceId, domain }) => ({
       ...(await this.breakerStatus(namespaceId!)),
       entity: domain,
@@ -612,15 +611,14 @@ export class QuotaService implements OnModuleInit {
 
   /** Domain remains a display/routing address; quota belongs to the active namespace. */
   async listNodes(): Promise<QuotaNode[]> {
-    const peers = await this.database.db.query.federatedPeer.findMany({
-      orderBy: asc(federatedPeer.domain),
-      columns: { domain: true, trustLevel: true, activeNamespaceId: true },
+    const peers = await this.database.db.query.identityNamespace.findMany({
+      orderBy: asc(identityNamespace.domain),
+      columns: { domain: true, trustLevel: true, id: true, active: true },
     });
     const activePeers = peers.filter(
-      (peer): peer is typeof peer & { activeNamespaceId: number } =>
-        peer.activeNamespaceId !== null,
+      (peer) => peer.id > 0 && peer.active,
     );
-    const namespaceIds = activePeers.map((peer) => peer.activeNamespaceId);
+    const namespaceIds = activePeers.map((peer) => peer.id);
     const counts = await this.countsToday(namespaceIds);
     const overrides = await Promise.all(
       namespaceIds.map((id) => this.getOverrides(id)),
@@ -629,7 +627,7 @@ export class QuotaService implements OnModuleInit {
       namespaceIds.map((id, i) => [id, overrides[i]]),
     );
     return activePeers.map((peer) => {
-      const namespaceId = peer.activeNamespaceId;
+      const namespaceId = peer.id;
       const settings = overridesById.get(namespaceId) ?? {};
       return {
         domain: peer.domain,

@@ -16,7 +16,6 @@ import { Audit } from './audit.decorator.js';
 import { AdminRole } from '../database/enums.js';
 import {
   AdminListFederationPeersDto,
-  AdminFederationPeerEventsDto,
   AdminFederationBlockDto,
   AdminFederationSelfCheckDto,
   AdminFederationResetDto,
@@ -27,16 +26,15 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { federatedPeer } from '../database/schema.js';
+import { identityNamespace } from '../database/schema.js';
 import { FederationService } from '../federation/federation.service.js';
 import { FederationSelfCheckService } from './federation-self-check.service.js';
 import { FederationResetService } from './federation-reset.service.js';
 import { FederationNamespaceAdminService } from './federation-namespace-admin.service.js';
 
 /**
- * Federation trust-lifecycle admin endpoints. Read-only observability of the peer trust state +
- * its append-only event timeline (the trust→connection-loss process), plus Block/Unblock as the
- * persistent admin control (a blocked peer is refused federation until unblocked). The runtime trust
+ * Federation trust-lifecycle admin endpoints. Read-only observability of the peer trust state,
+ * plus Block/Unblock as the persistent admin control (a blocked peer is refused federation until unblocked). The runtime trust
  * state machine itself — recognition, transport degradation and contact recovery — lives in the
  * federation services
  * and is driven by the S2S I/O paths; these endpoints only read it and flip the blocked bit.
@@ -84,8 +82,8 @@ export class AdminFederationController {
     // Read directly from the database rather than FederationService — the service is the S2S runtime's
     // concern; this is a trivial current-state read for the console, and keeps the admin surface
     // independent of the federation module's WIP.
-    const peer = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(federatedPeer.domain, domain),
+    const peer = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(identityNamespace.domain, domain),
     });
     if (!peer)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'peer not found');
@@ -118,20 +116,6 @@ export class AdminFederationController {
     @Body() dto: AdminFederationSetActiveNamespaceDto,
   ) {
     return this.namespaceAdmin.setActive(domain, dto.namespaceId);
-  }
-
-  @UseGuards(AdminAuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Post('admin/federation/peers/:domain/events')
-  @ApiOperation({
-    summary:
-      'A peer trust-lifecycle event timeline (available → degraded → available …)',
-  })
-  async peerEvents(
-    @Param('domain') domain: string,
-    @Body() dto: AdminFederationPeerEventsDto,
-  ) {
-    return this.federationService.peerEvents(domain, dto.take ?? 100);
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

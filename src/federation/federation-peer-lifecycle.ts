@@ -10,7 +10,6 @@ import {
   selectFederationProtocolVersion,
 } from './federation-protocol.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
-import { loadFederationConfig } from './federation.config.js';
 import { FederationTransportError } from './federation-errors.js';
 
 /** Owns peer trust state, liveness bookkeeping, and administrative lifecycle operations. */
@@ -18,7 +17,6 @@ import { FederationTransportError } from './federation-errors.js';
 export class FederationPeerLifecycle {
   private static readonly LAST_SUCCESS_WINDOW_MS = 60_000;
   private readonly lastSuccessSentAt = new Map<string, number>();
-  private readonly ourDomain = loadFederationConfig().domain;
 
   constructor(
     private readonly database: DatabaseService,
@@ -28,9 +26,8 @@ export class FederationPeerLifecycle {
 
   /** Pure local gate for an ordinary outbound S2S operation. Never starts recognition or network IO. */
   async checkOutboundReady(domain: string): Promise<void> {
-    if (domain === this.ourDomain) return;
-    const existing = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, domain),
+    const existing = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.domain, domain),
     });
     if (existing?.trustLevel === 'halted') {
       const code = this.isFatalCode(existing.haltCode)
@@ -49,7 +46,7 @@ export class FederationPeerLifecycle {
     }
     if (
       existing?.trustLevel === 'available' &&
-      existing?.activeNamespaceId != null &&
+      existing?.active === true &&
       existing.recognizesPeer &&
       existing.localServiceAvailable &&
       existing.peerAcceptanceConfirmed
@@ -64,8 +61,8 @@ export class FederationPeerLifecycle {
 
   /** Explicit recovery path used by the reconnect worker, never by a business read or write. */
   async recoverPeerRecognition(domain: string): Promise<void> {
-    const peer = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, domain),
+    const peer = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.domain, domain),
       columns: { trustLevel: true },
     });
     if (peer?.trustLevel !== 'establishing') {
@@ -80,13 +77,12 @@ export class FederationPeerLifecycle {
 
   /** Pure local recognition check used only to choose whether an explicit bootstrap is required. */
   async hasCompleteRecognition(domain: string): Promise<boolean> {
-    if (domain === this.ourDomain) return true;
-    const existing = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, domain),
+    const existing = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.domain, domain),
     });
     return (
       existing?.trustLevel !== 'halted' &&
-      existing?.activeNamespaceId != null &&
+      existing?.active === true &&
       existing.recognizesPeer &&
       existing.localServiceAvailable &&
       existing.peerAcceptanceConfirmed
@@ -116,15 +112,15 @@ export class FederationPeerLifecycle {
     this.lastSuccessSentAt.set(domain, now);
     try {
       await this.database.db
-        .update(tables.federatedPeer)
+        .update(tables.identityNamespace)
         .set({ lastSuccessAt: new Date(now) })
         .where(
           and(
-            eq(tables.federatedPeer.domain, domain),
+            eq(tables.identityNamespace.domain, domain),
             or(
-              isNull(tables.federatedPeer.lastSuccessAt),
+              isNull(tables.identityNamespace.lastSuccessAt),
               lt(
-                tables.federatedPeer.lastSuccessAt,
+                tables.identityNamespace.lastSuccessAt,
                 new Date(now - FederationPeerLifecycle.LAST_SUCCESS_WINDOW_MS),
               ),
             ),
@@ -154,7 +150,7 @@ export class FederationPeerLifecycle {
   ): Promise<void> {
     const reason = message ?? `peer returned fatal federation code ${code}`;
     await this.database.db
-      .update(tables.federatedPeer)
+      .update(tables.identityNamespace)
       .set({
         trustLevel: 'halted',
         remoteServiceReachable: false,
@@ -162,8 +158,7 @@ export class FederationPeerLifecycle {
         haltCode: code,
         haltReason: reason.slice(0, 255),
       })
-      .where(eq(tables.federatedPeer.domain, domain));
-    await this.logEvent(domain, 'halted', reason);
+      .where(eq(tables.identityNamespace.domain, domain));
   }
 
   async markPeerHalted(
@@ -175,8 +170,8 @@ export class FederationPeerLifecycle {
   }
 
   async markBlocked(domain: string, note?: string): Promise<void> {
-    const existing = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, domain),
+    const existing = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.domain, domain),
     });
     if (
       existing?.trustLevel === 'halted' &&
@@ -184,31 +179,22 @@ export class FederationPeerLifecycle {
     ) {
       return;
     }
+    if (!existing) return;
     const now = new Date();
     await this.database.db
-      .insert(tables.federatedPeer)
-      .values({
-        domain,
+      .update(tables.identityNamespace)
+      .set({
         trustLevel: 'halted',
         haltedAt: now,
         haltCode: BusinessCode.FEDERATION_PEER_BLOCKED,
         haltReason: note ?? 'blocked by local policy',
       })
-      .onConflictDoUpdate({
-        target: tables.federatedPeer.domain,
-        set: {
-          trustLevel: 'halted',
-          haltedAt: now,
-          haltCode: BusinessCode.FEDERATION_PEER_BLOCKED,
-          haltReason: note ?? 'blocked by local policy',
-        },
-      });
-    await this.logEvent(domain, 'halted', note ?? 'blocked by local policy');
+      .where(eq(tables.identityNamespace.id, existing.id));
   }
 
   async markUnblocked(domain: string): Promise<void> {
-    const existing = await this.database.db.query.federatedPeer.findFirst({
-      where: eq(tables.federatedPeer.domain, domain),
+    const existing = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.domain, domain),
     });
     if (
       !existing ||
@@ -218,7 +204,7 @@ export class FederationPeerLifecycle {
       return;
     }
     const trustLevel =
-      existing.activeNamespaceId === null
+      !existing.active
         ? 'unrecognized'
         : existing.recognizesPeer && existing.localServiceAvailable
           ? !existing.peerAcceptanceConfirmed
@@ -228,15 +214,14 @@ export class FederationPeerLifecycle {
               : 'degraded'
           : 'unrecognized';
     await this.database.db
-      .update(tables.federatedPeer)
+      .update(tables.identityNamespace)
       .set({
         trustLevel,
         haltedAt: null,
         haltCode: null,
         haltReason: null,
       })
-      .where(eq(tables.federatedPeer.domain, domain));
-    await this.logEvent(domain, 'unblocked');
+      .where(eq(tables.identityNamespace.domain, domain));
   }
 
   async list(opts: {
@@ -247,34 +232,26 @@ export class FederationPeerLifecycle {
   }) {
     const where = and(
       ...(opts.search
-        ? [ilike(tables.federatedPeer.domain, `%${opts.search}%`)]
+        ? [ilike(tables.identityNamespace.domain, `%${opts.search}%`)]
         : []),
       ...(opts.status
-        ? [eq(tables.federatedPeer.trustLevel, opts.status)]
+        ? [eq(tables.identityNamespace.trustLevel, opts.status)]
         : []),
     );
     const [list, total] = await Promise.all([
-      this.database.db.query.federatedPeer.findMany({
+      this.database.db.query.identityNamespace.findMany({
         where,
         offset: opts.skip,
         limit: opts.take,
-        orderBy: desc(tables.federatedPeer.createdAt),
+        orderBy: desc(tables.identityNamespace.createdAt),
       }),
       this.database.db
         .select({ value: count() })
-        .from(tables.federatedPeer)
+        .from(tables.identityNamespace)
         .where(where)
         .then(([row]) => row.value),
     ]);
     return { list, total };
-  }
-
-  async events(domain: string, take = 100) {
-    return this.database.db.query.federatedPeerEvent.findMany({
-      where: eq(tables.federatedPeerEvent.domain, domain),
-      orderBy: desc(tables.federatedPeerEvent.createdAt),
-      limit: take,
-    });
   }
 
   async manuallyRecoverPinnedIdentity(
@@ -294,23 +271,19 @@ export class FederationPeerLifecycle {
     }
     const [peer] = await this.database.db
       .select({
-        trustLevel: tables.federatedPeer.trustLevel,
-        haltCode: tables.federatedPeer.haltCode,
-        activeNamespaceId: tables.federatedPeer.activeNamespaceId,
+        trustLevel: tables.identityNamespace.trustLevel,
+        haltCode: tables.identityNamespace.haltCode,
+        id: tables.identityNamespace.id,
         rootKeyFingerprint: tables.identityNamespace.rootKeyFingerprint,
         rootPublicKey: tables.identityNamespace.rootPublicKey,
       })
-      .from(tables.federatedPeer)
-      .innerJoin(
-        tables.identityNamespace,
-        eq(tables.identityNamespace.id, tables.federatedPeer.activeNamespaceId),
-      )
-      .where(eq(tables.federatedPeer.domain, domain))
+      .from(tables.identityNamespace)
+            .where(eq(tables.identityNamespace.domain, domain))
       .limit(1);
     if (
       peer?.trustLevel !== 'halted' ||
       peer.haltCode !== BusinessCode.FEDERATION_IDENTITY_MISMATCH ||
-      peer.activeNamespaceId === null ||
+      peer.id === null ||
       !peer.rootKeyFingerprint ||
       !peer.rootPublicKey
     ) {
@@ -336,25 +309,25 @@ export class FederationPeerLifecycle {
       );
     }
 
-    await this.discovery.cacheDocument(domain, peer.activeNamespaceId, doc);
+    await this.discovery.cacheDocument(domain, peer.id, doc);
     const trustLevel = await this.database.db.transaction(async (tx) => {
       const [locked] = await tx
         .select({
-          trustLevel: tables.federatedPeer.trustLevel,
-          haltCode: tables.federatedPeer.haltCode,
-          activeNamespaceId: tables.federatedPeer.activeNamespaceId,
-          recognizesPeer: tables.federatedPeer.recognizesPeer,
-          localServiceAvailable: tables.federatedPeer.localServiceAvailable,
-          peerAcceptanceConfirmed: tables.federatedPeer.peerAcceptanceConfirmed,
+          trustLevel: tables.identityNamespace.trustLevel,
+          haltCode: tables.identityNamespace.haltCode,
+          id: tables.identityNamespace.id,
+          recognizesPeer: tables.identityNamespace.recognizesPeer,
+          localServiceAvailable: tables.identityNamespace.localServiceAvailable,
+          peerAcceptanceConfirmed: tables.identityNamespace.peerAcceptanceConfirmed,
         })
-        .from(tables.federatedPeer)
-        .where(eq(tables.federatedPeer.domain, domain))
+        .from(tables.identityNamespace)
+        .where(eq(tables.identityNamespace.domain, domain))
         .for('no key update')
         .limit(1);
       if (
         locked?.trustLevel !== 'halted' ||
         locked.haltCode !== BusinessCode.FEDERATION_IDENTITY_MISMATCH ||
-        locked.activeNamespaceId !== peer.activeNamespaceId
+        locked.id !== peer.id
       ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_IDENTITY_MISMATCH,
@@ -369,7 +342,7 @@ export class FederationPeerLifecycle {
             ? 'degraded'
             : 'establishing';
       await tx
-        .update(tables.federatedPeer)
+        .update(tables.identityNamespace)
         .set({
           trustLevel,
           remoteServiceReachable: false,
@@ -380,30 +353,10 @@ export class FederationPeerLifecycle {
           degradationReason: null,
           lastSuccessAt: new Date(),
         })
-        .where(eq(tables.federatedPeer.domain, domain));
-      await tx.insert(tables.federatedPeerEvent).values({
-        domain,
-        type: 'recovered',
-        reason: 'administrator verified the original pinned identity',
-      });
+        .where(eq(tables.identityNamespace.domain, domain));
       return trustLevel;
     });
     return { domain, trustLevel };
   }
 
-  private async logEvent(
-    domain: string,
-    type: string,
-    reason?: string,
-  ): Promise<void> {
-    try {
-      await this.database.db.insert(tables.federatedPeerEvent).values({
-        domain,
-        type,
-        reason: reason ? reason.slice(0, 255) : null,
-      });
-    } catch {
-      // Audit rows are secondary to peer state transitions.
-    }
-  }
 }

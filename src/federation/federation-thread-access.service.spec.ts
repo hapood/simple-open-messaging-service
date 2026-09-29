@@ -52,7 +52,7 @@ describe('FederationThreadAccessService', () => {
         {
           authorityNamespaceId: 7,
           domain: 'peer.example',
-          activeNamespaceId: 8,
+          active: false,
         },
       ],
     ]);
@@ -69,7 +69,7 @@ describe('FederationThreadAccessService', () => {
         {
           authorityNamespaceId: 7,
           domain: 'peer.example',
-          activeNamespaceId: 7,
+          active: true,
         },
       ],
       [{ dissolvedAt: new Date() }],

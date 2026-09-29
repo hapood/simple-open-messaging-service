@@ -27,7 +27,7 @@ use messages::{
     HistoryDirection, MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 
-const CACHE_SCHEMA_VERSION: i64 = 36;
+const CACHE_SCHEMA_VERSION: i64 = 37;
 
 pub(crate) fn invalidate_account_work() -> Result<(), String> {
     drop(lifetime::CACHE_LIFETIME.invalidate()?);
@@ -191,18 +191,20 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           ON namespaces(user_id, domain) WHERE status='ACTIVE';
         CREATE TABLE IF NOT EXISTS profiles (
           user_id INTEGER NOT NULL,
+          publisher_namespace_id INTEGER NOT NULL,
+          profile_namespace_id INTEGER NOT NULL,
           account TEXT NOT NULL,
           domain TEXT NOT NULL,
-          namespace_id INTEGER NOT NULL,
           profile_rev INTEGER NOT NULL CHECK(profile_rev > 0),
           name TEXT NOT NULL,
           avatar_digest TEXT,
           bio TEXT NOT NULL,
-          PRIMARY KEY (user_id, account, domain, namespace_id, profile_rev),
-          FOREIGN KEY (user_id, namespace_id) REFERENCES namespaces(user_id, namespace_id)
+          PRIMARY KEY (user_id, publisher_namespace_id, profile_namespace_id, account, domain, profile_rev),
+          FOREIGN KEY (user_id, publisher_namespace_id) REFERENCES namespaces(user_id, namespace_id),
+          FOREIGN KEY (user_id, profile_namespace_id) REFERENCES namespaces(user_id, namespace_id)
         );
         CREATE INDEX IF NOT EXISTS profiles_address_revision
-          ON profiles(user_id, account, domain, namespace_id, profile_rev);
+          ON profiles(user_id, publisher_namespace_id, profile_namespace_id, account, domain, profile_rev);
         CREATE TABLE IF NOT EXISTS members (
           user_id INTEGER NOT NULL,
           thread_id INTEGER NOT NULL,

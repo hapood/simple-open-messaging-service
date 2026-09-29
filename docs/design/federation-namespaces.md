@@ -16,11 +16,12 @@ compare a domain with the local configuration domain to decide that a subject is
 
 ## The three namespace coordinates
 
-| Concept | Scope | Wire field | Local storage |
-| --- | --- | --- | --- |
-| Publisher namespace (`publisherNamespaceId`) | Local to the receiving server; one verified identity epoch of one peer | never serialized as a profile field; inferred from the authenticated peer | `IdentityNamespace.id` referenced by peer-owned rows |
-| Profile-subject namespace (`profileNamespaceId`) | Local to one publisher; identifies the subject inside that publisher's store | `namespaceId` in a profile/subject reference | stored verbatim on the receiving side as part of the reference |
-| Peer-assigned local namespace (`peerAssignedLocalNamespaceId`) | The namespace one peer allocated for THIS server's identity; one per relationship epoch | disclosed in `Recognize` `recognized` and positive `HealthResult` | column on the local `IdentityNamespace` row for that peer |
+| Concept                                                        | Scope                                                                                                       | Wire field                                                                | Local storage                                                                |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Publisher namespace (`publisherNamespaceId`)                   | Local to the receiving server; one verified identity epoch of one peer                                      | never serialized as a profile field; inferred from the authenticated peer | `IdentityNamespace.id` referenced by peer-owned rows                         |
+| Profile-subject namespace (`profileNamespaceId`)               | Local to one publisher; identifies the subject inside that publisher's store                                | `namespaceId` in a profile/subject reference                              | stored verbatim on the receiving side as part of the reference               |
+| Peer-assigned local namespace (`peerAssignedLocalNamespaceId`) | The namespace one peer allocated for THIS server's identity; one per relationship epoch                     | disclosed in `Recognize` `recognized` and positive `HealthResult`         | column on the local `IdentityNamespace` row for that peer                    |
+| Sender-assigned local namespace                                | The namespace THIS server's local store allocated for one peer's identity epoch; one per relationship epoch | `namespaceId` in the `Recognize` request body                             | disclosed to the peer, which stores it as its `peerAssignedLocalNamespaceId` |
 
 `IdentityNamespace.id` remains the local publisher namespace: routing, authorization,
 synchronization, quotas, and integrity checks key on it. Namespace `0`, domain `local`, is the
@@ -81,10 +82,10 @@ configuration domain.
 
 ## Domain and namespace ownership
 
-`FederatedPeer` is the stable peer aggregate. Its nullable `activeNamespaceId` points at the one
-namespace available to new federation work. `IdentityNamespace` stores the immutable root-key
-evidence for one verified holder, a nullable retirement timestamp, and the
-`peerAssignedLocalNamespaceId` the holder disclosed for this server.
+`IdentityNamespace` is the sole peer aggregate. Each row stores one immutable verified identity
+and its current route domain, lifecycle/trust state, health evidence, and activity flag. The
+`active` flag identifies the namespace available to new federation work; the nullable
+`peerAssignedLocalNamespaceId` is the namespace the holder disclosed for this server.
 
 The database enforces:
 
@@ -92,7 +93,7 @@ The database enforces:
   namespace;
 - at most one unretired namespace per root-key fingerprint, so root-identity matching during
   recognition is unique by construction;
-- an active namespace referenced by a peer belongs to that peer's domain.
+- at most one positive namespace is active for each current route domain.
 
 Foreign keys from peer-owned state reference `IdentityNamespace.id` alone. The domain columns on
 those rows are provenance and display: after a domain re-binding they may legitimately differ from
@@ -119,9 +120,9 @@ namespace and may commit there.
 
 ## Reset lifecycle
 
-Reset remains a short metadata transaction: lock the peer, require an identity-mismatch halt,
-retire the referenced namespace, clear `activeNamespaceId` and holder-specific recognition state
-(including the peer-assigned value), and move the peer back to unrecognized. No business row is
+Reset remains a short metadata transaction: lock the active namespace, require an identity-mismatch halt,
+retire it, clear its activity and holder-specific recognition state (including the peer-assigned
+value), and leave no active namespace for the domain. No business row is
 deleted; no replacement namespace is created during reset. A later successful identity verification
 creates a new namespace, atomically activates it, and discloses a fresh
 `peerAssignedLocalNamespaceId` to the peer on the next recognition exchange.

@@ -60,11 +60,14 @@ describe('concurrent federation key-cache replacement', () => {
           rootPublicKey: root,
           rootKeyFingerprint: `sha256:${createHash('sha256').update(Buffer.from(root, 'base64')).digest('base64url')}`,
           identityPinnedAt: new Date(),
+          active: true,
+          trustLevel: 'available',
+          recognizesPeer: true,
+          localServiceAvailable: true,
+          peerAcceptanceConfirmed: true,
+          remoteServiceReachable: true,
         })
         .returning();
-      await database.db
-        .insert(tables.federatedPeer)
-        .values({ domain, activeNamespaceId: namespace.id });
       const document = (ids: string[]): WellKnownDoc => ({
         protocolVersions: [1],
         rootKey: { ed25519: root },
@@ -101,7 +104,7 @@ describe('concurrent federation key-cache replacement', () => {
           const { rows } = await database.pool.query(`
           SELECT pid FROM pg_stat_activity
           WHERE datname = current_database() AND wait_event_type = 'Lock'
-            AND (query LIKE '%S2SKeyCache%' OR query LIKE '%FederatedPeer%')
+            AND query LIKE '%S2SKeyCache%'
         `);
           if (rows.length >= 2) break;
           if (Date.now() > deadline)

@@ -32,6 +32,8 @@ export type Message = Omit<
   'contentType' | 'mediaStatus'
 > & {
   contentType: S['MessageResponseDto']['contentType'];
+  /** Namespace that published this message copy (zero is the local authority). */
+  namespaceId: number;
   /** Immutable author profile selected when this message was committed. */
   profileRev: number;
   /** Local-only corrections to participant revisions in a SYSTEM row, keyed by [account, domain].

@@ -5,7 +5,6 @@ import { toast } from 'sonner';
 import { ArrowLeft } from 'lucide-react';
 import {
   useFederationPeer,
-  useFederationPeerEvents,
   useFederationPeerNamespaces,
   useSetActiveFederationPeerNamespace,
   useBlockFederationPeer,
@@ -29,7 +28,6 @@ import {
 import { Timestamp } from '@/components/common/timestamp';
 import { formatApiError } from '@/lib/format-error';
 import { PeerStatusBadge } from './peer-status-badge';
-import { PeerTimeline } from './peer-timeline';
 import { PeerQuotaPanel } from './peer-quota-panel';
 
 function Meta({ label, children }: { label: string; children: ReactNode }) {
@@ -42,14 +40,12 @@ function Meta({ label, children }: { label: string; children: ReactNode }) {
 }
 
 /** Routed peer detail (deep-linkable by domain). Replaces the old PeerDetailDialog so a peer view is
- *  shareable/bookmarkable and respects browser back. Overview = lifecycle metadata + Block/Unblock;
- *  Timeline = the trust-lifecycle event feed. */
+ *  shareable/bookmarkable and respects browser back. */
 export function PeerDetailPage() {
   const { t } = useTranslation();
   const { domain = '' } = useParams<{ domain: string }>();
   const d = decodeURIComponent(domain);
   const { data: peer, isLoading, error } = useFederationPeer(d);
-  const { data: events, isLoading: eventsLoading } = useFederationPeerEvents(d);
   const { data: namespaces, isLoading: namespacesLoading } =
     useFederationPeerNamespaces(d);
   const block = useBlockFederationPeer();
@@ -139,9 +135,6 @@ export function PeerDetailPage() {
               <TabsTrigger value="overview">
                 {t('federation.detail.tabOverview')}
               </TabsTrigger>
-              <TabsTrigger value="timeline">
-                {t('federation.detail.tabTimeline')}
-              </TabsTrigger>
               <TabsTrigger value="namespaces">
                 {t('federation.detail.tabNamespaces')}
               </TabsTrigger>
@@ -156,7 +149,7 @@ export function PeerDetailPage() {
                     <Timestamp value={peer.createdAt} />
                   </Meta>
                   <Meta label={t('federation.meta.activeNamespace')}>
-                    {peer.activeNamespaceId ?? t('federation.meta.none')}
+                    {peer.id ?? t('federation.meta.none')}
                   </Meta>
                   <Meta label={t('federation.meta.trustedAt')}>
                     <Timestamp value={peer.trustedAt} />
@@ -182,22 +175,6 @@ export function PeerDetailPage() {
                       </Meta>
                     </div>
                   ) : null}
-                </CardContent>
-              </Card>
-            </TabsContent>
-            <TabsContent value="timeline">
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t('federation.timeline.title')}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {eventsLoading ? (
-                    <div className="py-4 text-sm text-muted-foreground">
-                      {t('common.loading')}
-                    </div>
-                  ) : (
-                    <PeerTimeline events={events ?? []} />
-                  )}
                 </CardContent>
               </Card>
             </TabsContent>

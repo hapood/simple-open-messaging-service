@@ -1,10 +1,9 @@
 import { request } from '@/api/client';
 import type {
-  FederatedPeer,
-  FederatedPeerListResult,
-  FederatedPeerEvent,
-  FederatedPeerNamespace,
-  FederatedPeerNamespaceSwitchResult,
+  FederationPeerState,
+  FederationPeerStateListResult,
+  FederationNamespace,
+  FederationNamespaceSwitchResult,
   SelfCheckReport,
 } from '@/types/api';
 
@@ -17,32 +16,21 @@ export interface FederationPeersQuery {
 
 export function listFederationPeers(
   q: FederationPeersQuery,
-): Promise<FederatedPeerListResult> {
-  return request<FederatedPeerListResult>('/admin/federation/peers', q);
+): Promise<FederationPeerStateListResult> {
+  return request<FederationPeerStateListResult>('/admin/federation/peers', q);
 }
 
 /** Single peer's current lifecycle state (the routed detail page's source — deep-linkable by domain). */
-export function getFederationPeer(domain: string): Promise<FederatedPeer> {
-  return request<FederatedPeer>(
+export function getFederationPeer(domain: string): Promise<FederationPeerState> {
+  return request<FederationPeerState>(
     `/admin/federation/peers/${encodeURIComponent(domain)}`,
-  );
-}
-
-/** The domain is a single path segment (dots are fine; never a slash), so it routes as :domain. */
-export function federationPeerEvents(
-  domain: string,
-  take?: number,
-): Promise<FederatedPeerEvent[]> {
-  return request<FederatedPeerEvent[]>(
-    `/admin/federation/peers/${encodeURIComponent(domain)}/events`,
-    { take },
   );
 }
 
 export function federationPeerNamespaces(
   domain: string,
-): Promise<FederatedPeerNamespace[]> {
-  return request<FederatedPeerNamespace[]>(
+): Promise<FederationNamespace[]> {
+  return request<FederationNamespace[]>(
     `/admin/federation/peers/${encodeURIComponent(domain)}/namespaces`,
   );
 }
@@ -50,8 +38,8 @@ export function federationPeerNamespaces(
 export function setActiveFederationPeerNamespace(
   domain: string,
   namespaceId?: number,
-): Promise<FederatedPeerNamespaceSwitchResult> {
-  return request<FederatedPeerNamespaceSwitchResult>(
+): Promise<FederationNamespaceSwitchResult> {
+  return request<FederationNamespaceSwitchResult>(
     `/admin/federation/peers/${encodeURIComponent(domain)}/namespaces/active`,
     namespaceId === undefined ? {} : { namespaceId },
   );

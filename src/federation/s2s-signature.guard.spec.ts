@@ -8,7 +8,8 @@ function subject(overrides?: {
 }) {
   const peer = {
     trustLevel: overrides?.trustLevel ?? 'available',
-    activeNamespaceId: 9,
+    active: true,
+    id: 9,
     recognizesPeer: overrides?.recognizesPeer ?? true,
     localServiceAvailable: true,
     haltCode: null,
@@ -31,7 +32,7 @@ function subject(overrides?: {
     {
       db: {
         query: {
-          federatedPeer: {
+          identityNamespace: {
             findFirst: vi.fn().mockResolvedValue(peer),
           },
         },

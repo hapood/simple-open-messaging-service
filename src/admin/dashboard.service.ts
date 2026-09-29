@@ -3,7 +3,7 @@ import { and, count, desc, gt, isNull, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   adminActionLog,
-  federatedPeer,
+  identityNamespace,
   mediaAsset,
   sessionToken,
 } from '../database/schema.js';
@@ -48,9 +48,9 @@ export class DashboardService {
           )
           .then(([row]) => row.value),
         this.database.db
-          .select({ trustLevel: federatedPeer.trustLevel, value: count() })
-          .from(federatedPeer)
-          .groupBy(federatedPeer.trustLevel),
+          .select({ trustLevel: identityNamespace.trustLevel, value: count() })
+          .from(identityNamespace)
+          .groupBy(identityNamespace.trustLevel),
         this.database.db
           .select({
             bytes: sql<bigint>`coalesce(sum(${mediaAsset.bytes}), 0)::bigint`,

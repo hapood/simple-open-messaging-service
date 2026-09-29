@@ -28,15 +28,20 @@ pub(super) fn write_profile(
         .get("domain")
         .and_then(Value::as_str)
         .ok_or("profile has no domain")?;
-    let namespace = profile
-        .get("namespaceId")
+    let publisher_namespace = profile
+        .get("publisherNamespaceId")
         .and_then(Value::as_i64)
-        .ok_or("profile has no namespace")?;
-    let (domain, namespace) = if domain == "local" || namespace == 0 {
+        .ok_or("profile has no publisher namespace")?;
+    let profile_namespace = profile
+        .get("profileNamespaceId")
+        .and_then(Value::as_i64)
+        .ok_or("profile has no profile namespace")?;
+    let (domain, profile_namespace) = if domain == "local" || profile_namespace == 0 {
         ("local", 0)
     } else {
-        (domain, namespace)
+        (domain, profile_namespace)
     };
+    let publisher_namespace = if publisher_namespace == 0 { 0 } else { publisher_namespace };
     let rev = profile
         .get("profileRev")
         .and_then(Value::as_i64)
@@ -48,8 +53,8 @@ pub(super) fn write_profile(
     let avatar_digest = profile.get("avatarDigest").and_then(Value::as_str);
     let bio = profile.get("bio").and_then(Value::as_str).ok_or("profile has no bio")?;
     let existing: Option<(String, Option<String>, String)> = conn.query_row(
-        "SELECT name, avatar_digest, bio FROM profiles WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4 AND profile_rev=?5",
-        params![user_id, account, domain, namespace, rev],
+        "SELECT name, avatar_digest, bio FROM profiles WHERE user_id=?1 AND publisher_namespace_id=?2 AND profile_namespace_id=?3 AND account=?4 AND domain=?5 AND profile_rev=?6",
+        params![user_id, publisher_namespace, profile_namespace, account, domain, rev],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .optional().map_err(|e| e.to_string())?;
     if let Some((previous_name, previous_digest, previous_bio)) = existing {
@@ -58,8 +63,8 @@ pub(super) fn write_profile(
         }
         return Ok(false);
     }
-    conn.execute("INSERT INTO profiles(user_id,account,domain,namespace_id,profile_rev,name,avatar_digest,bio) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-        params![user_id,account,domain,namespace,rev,name,avatar_digest,bio]).map_err(|e| e.to_string())?;
+    conn.execute("INSERT INTO profiles(user_id,publisher_namespace_id,profile_namespace_id,account,domain,profile_rev,name,avatar_digest,bio) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![user_id,publisher_namespace,profile_namespace,account,domain,rev,name,avatar_digest,bio]).map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -70,16 +75,19 @@ pub(super) fn read_profile(
     user_id: i64,
     account: &str,
     domain: &str,
-    namespace_id: i64,
+    publisher_namespace_id: i64,
+    profile_namespace_id: i64,
     profile_rev: i64,
 ) -> Result<Option<Value>, String> {
     let value: Option<(String, Option<String>, String)> = conn.query_row(
-        "SELECT name, avatar_digest, bio FROM profiles WHERE user_id=?1 AND account=?2 AND domain=?3 AND namespace_id=?4 AND profile_rev=?5",
-        params![user_id,account,domain,namespace_id,profile_rev],
+        "SELECT name, avatar_digest, bio FROM profiles WHERE user_id=?1 AND publisher_namespace_id=?2 AND profile_namespace_id=?3 AND account=?4 AND domain=?5 AND profile_rev=?6",
+        params![user_id,publisher_namespace_id,profile_namespace_id,account,domain,profile_rev],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .optional().map_err(|e| e.to_string())?;
     Ok(value.map(|(name, avatar_digest, bio)| serde_json::json!({
-        "account": account, "domain": domain, "namespaceId": namespace_id,
+        "publisherNamespaceId": publisher_namespace_id,
+        "account": account, "domain": domain, "namespaceId": profile_namespace_id,
+        "profileNamespaceId": profile_namespace_id,
         "profileRev": profile_rev, "name": name, "avatarDigest": avatar_digest, "bio": bio,
     })))
 }
@@ -89,11 +97,12 @@ pub(crate) async fn native_db_get_profile(
     user_id: i64,
     account: String,
     domain: String,
-    namespace_id: i64,
+    publisher_namespace_id: i64,
+    profile_namespace_id: i64,
     profile_rev: i64,
 ) -> Result<Option<Value>, String> {
     super::lifetime::spawn(move || {
-        read_profile(&open()?, user_id, &account, &domain, namespace_id, profile_rev)
+        read_profile(&open()?, user_id, &account, &domain, publisher_namespace_id, profile_namespace_id, profile_rev)
     }).await.map_err(|e| e.to_string())?
 }
 
@@ -120,14 +129,14 @@ pub(crate) async fn native_db_get_group_member(
                'profileBio',COALESCE(identity.bio,''),
                'user',json(CASE WHEN identity.profile_rev IS NOT NULL THEN
                  json_object('account',identity.account,'domain',identity.domain,
-                   'namespaceId',identity.namespace_id,'profileRev',identity.profile_rev,
+                   'namespaceId',identity.profile_namespace_id,'profileRev',identity.profile_rev,
                    'name',identity.name,'avatarDigest',identity.avatar_digest,'bio',identity.bio)
                ELSE json_object('account',member.member_account,'domain',member.member_domain,
                  'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatarDigest',json('null'),'bio','') END))
              FROM members member LEFT JOIN profiles identity
                ON identity.user_id=member.user_id AND identity.account=member.member_account
               AND identity.domain=member.member_domain
-              AND identity.namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
+              AND identity.publisher_namespace_id=member.namespace_id AND identity.profile_namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
              WHERE member.user_id=?1 AND member.thread_id=?2 AND member.member_account=?3
                AND member.member_domain=?4 AND member.namespace_id=?5
                AND member.left_state=0",
@@ -172,7 +181,7 @@ pub(crate) async fn native_db_query_group_members(
                    'profileBio',COALESCE(identity.bio,''),
                    'user', json(CASE WHEN identity.profile_rev IS NOT NULL THEN
                      json_object('account',identity.account,'domain',identity.domain,
-                       'namespaceId',identity.namespace_id,'profileRev',identity.profile_rev,
+                       'namespaceId',identity.profile_namespace_id,'profileRev',identity.profile_rev,
                        'name',identity.name,'avatarDigest',identity.avatar_digest,'bio',identity.bio)
                    ELSE json_object('account',member.member_account,'domain',member.member_domain,
                      'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatarDigest',json('null'),'bio','') END)
@@ -181,7 +190,7 @@ pub(crate) async fn native_db_query_group_members(
                    ON identity.user_id=member.user_id
                   AND identity.account=member.member_account
                   AND identity.domain=member.member_domain
-                  AND identity.namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
+                  AND identity.publisher_namespace_id=member.namespace_id AND identity.profile_namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
                  WHERE member.user_id=?1 AND member.thread_id=?2 AND member.left_state=0
                    AND (member.namespace_id,member.member_domain,member.member_account)>(?3,?4,?5)
                    AND (?6='' OR instr(lower(identity.name),lower(?6))>0

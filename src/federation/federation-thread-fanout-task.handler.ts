@@ -119,11 +119,11 @@ export class FederationThreadFanoutTaskHandler
         peerDomain: string;
         namespaceId: number;
       }>(sql`
-        SELECT peer.domain AS "peerDomain", namespace.id AS "namespaceId"
+        SELECT namespace.domain AS "peerDomain", namespace.id AS "namespaceId"
         FROM "IdentityNamespace" namespace
-        JOIN "FederatedPeer" peer ON peer."activeNamespaceId" = namespace.id
         JOIN "MessageThread" thread ON thread.id = ${target.threadId}
         WHERE namespace."retiredAt" IS NULL
+          AND namespace.active = true
           AND namespace.id > ${checkpoint.afterNamespaceId}
           AND (
             EXISTS (

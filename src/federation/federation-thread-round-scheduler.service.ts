@@ -15,7 +15,6 @@ import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import {
   federationThreadSyncState,
-  federatedPeer,
   identityNamespace,
   messageThread,
 } from '../database/schema.js';
@@ -152,7 +151,7 @@ export class FederationThreadRoundSchedulerService
     const rows = await this.database.db
       .select({
         threadId: federationThreadSyncState.threadId,
-        peerDomain: federatedPeer.domain,
+        peerDomain: identityNamespace.domain,
         namespaceId: federationThreadSyncState.namespaceId,
         messageTargetSeq: federationThreadSyncState.messageTargetSeq,
         deletionTargetSeq: federationThreadSyncState.deletionTargetSeq,
@@ -170,13 +169,6 @@ export class FederationThreadRoundSchedulerService
       .innerJoin(
         identityNamespace,
         eq(identityNamespace.id, federationThreadSyncState.namespaceId),
-      )
-      .innerJoin(
-        federatedPeer,
-        eq(
-          federatedPeer.activeNamespaceId,
-          federationThreadSyncState.namespaceId,
-        ),
       )
       .where(
         and(
@@ -247,12 +239,12 @@ export class FederationThreadRoundSchedulerService
       peerDomain: string;
       namespaceId: number;
     }>(sql`
-      SELECT feed."threadId", peer.domain AS "peerDomain", ns.id AS "namespaceId"
+      SELECT feed."threadId", ns.domain AS "peerDomain", ns.id AS "namespaceId"
       FROM "GroupMeta" feed
       JOIN "MessageThread" thread ON thread.id = feed."threadId"
       JOIN "IdentityNamespace" ns ON ns.id = thread."authorityNamespaceId"
-      JOIN "FederatedPeer" peer ON peer."activeNamespaceId" = ns.id
       WHERE feed."metaProcessedThroughId" < feed."metaTargetId"
+        AND ns.active = true
         AND thread."federationRoundsEnabled" = true
         ${namespaceId === undefined ? sql`` : sql`AND ns.id = ${namespaceId}`}
     `);
@@ -347,13 +339,13 @@ export class FederationThreadRoundSchedulerService
   ): Promise<void> {
     const [context] = await this.database.db
       .select({
-        peerDomain: federatedPeer.domain,
+        peerDomain: identityNamespace.domain,
         namespaceId: messageThread.authorityNamespaceId,
       })
       .from(messageThread)
       .innerJoin(
-        federatedPeer,
-        eq(federatedPeer.activeNamespaceId, messageThread.authorityNamespaceId),
+        identityNamespace,
+        eq(identityNamespace.id, messageThread.authorityNamespaceId),
       )
       .where(eq(messageThread.id, threadId))
       .limit(1);
@@ -752,12 +744,12 @@ export class FederationThreadRoundSchedulerService
     namespaceId: number,
   ): Promise<boolean> {
     const [peer] = await this.database.db
-      .select({ domain: federatedPeer.domain })
-      .from(federatedPeer)
+      .select({ domain: identityNamespace.domain })
+      .from(identityNamespace)
       .where(
         and(
-          eq(federatedPeer.domain, peerDomain),
-          eq(federatedPeer.activeNamespaceId, namespaceId),
+          eq(identityNamespace.domain, peerDomain),
+          eq(identityNamespace.id, namespaceId),
         ),
       )
       .limit(1);

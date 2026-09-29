@@ -196,7 +196,7 @@ export function FederationPage() {
                             )
                           }
                         >
-                          {t('federation.action.viewTimeline')}
+                          {t('federation.action.viewDetail')}
                         </DropdownMenuItem>
                         {isSuper ? (
                           <DropdownMenuItem

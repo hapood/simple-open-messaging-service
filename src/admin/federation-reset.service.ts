@@ -44,19 +44,20 @@ export class FederationResetService {
     const normalized = this.requireDomain(domain);
     return this.database.db.transaction(async (tx) => {
       const peerResult = await tx.execute<{
-        activeNamespaceId: number | null;
+        id: number;
         trustLevel: string;
         haltCode: number | null;
         haltReason: string | null;
       }>(sql`
-        SELECT "activeNamespaceId", "trustLevel", "haltCode", "haltReason"
-        FROM "FederatedPeer"
+        SELECT id, "trustLevel", "haltCode", "haltReason"
+        FROM "IdentityNamespace"
         WHERE domain = ${normalized}
+          AND active = true
         FOR NO KEY UPDATE
       `);
       const peer = peerResult.rows[0];
       this.assertResettable(peer, normalized);
-      const namespaceId = peer.activeNamespaceId;
+      const namespaceId = peer.id;
       const result = await tx.execute<PreviewCounts>(sql`
         WITH remote_users AS (
           SELECT DISTINCT account, domain FROM "Profile" WHERE "publisherNamespaceId" = ${namespaceId} AND account NOT LIKE '!%'
@@ -116,39 +117,18 @@ export class FederationResetService {
 
     const result = await this.database.db.transaction(async (tx) => {
       const peerResult = await tx.execute<{
-        activeNamespaceId: number | null;
+        id: number;
         trustLevel: string;
         haltCode: number | null;
       }>(sql`
-        SELECT "activeNamespaceId", "trustLevel", "haltCode"
-        FROM "FederatedPeer"
+        SELECT id, "trustLevel", "haltCode"
+        FROM "IdentityNamespace"
         WHERE domain = ${normalized}
+          AND active = true
         FOR NO KEY UPDATE
       `);
       this.assertResettable(peerResult.rows[0], normalized);
       const archived = await this.namespaces.retireActiveInTx(tx, normalized);
-
-      await tx.execute(sql`
-        UPDATE "FederatedPeer"
-        SET "trustLevel" = 'unrecognized',
-            "trustedAt" = NULL,
-            "lastSuccessAt" = NULL,
-            "degradedAt" = NULL,
-            "degradationReason" = NULL,
-            "haltedAt" = NULL,
-            "haltCode" = NULL,
-            "haltReason" = NULL,
-            "recognizesPeer" = false,
-            "peerAcceptanceConfirmed" = false,
-            "localServiceAvailable" = false,
-            "remoteServiceReachable" = false,
-            "resetAt" = CURRENT_TIMESTAMP
-        WHERE domain = ${normalized}
-      `);
-      await tx.execute(sql`
-        INSERT INTO "FederatedPeerEvent" (domain, type, reason)
-        VALUES (${normalized}, 'reset', ${`retired namespace ${archived.namespaceId}`})
-      `);
       return {
         domain: normalized,
         archivedNamespaceId: archived.namespaceId,
@@ -162,14 +142,14 @@ export class FederationResetService {
   private assertResettable(
     peer:
       | {
-          activeNamespaceId: number | null;
+          id: number;
           trustLevel: string;
           haltCode: number | null;
         }
       | undefined,
     domain: string,
   ): asserts peer is {
-    activeNamespaceId: number;
+    id: number;
     trustLevel: string;
     haltCode: number;
   } {
@@ -182,8 +162,7 @@ export class FederationResetService {
     }
     if (
       peer.trustLevel !== 'halted' ||
-      peer.haltCode !== BusinessCode.FEDERATION_IDENTITY_MISMATCH ||
-      peer.activeNamespaceId === null
+      peer.haltCode !== BusinessCode.FEDERATION_IDENTITY_MISMATCH
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,

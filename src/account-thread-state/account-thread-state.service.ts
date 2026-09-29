@@ -313,8 +313,11 @@ export class AccountThreadStateService {
       WHERE pair.kind = 'P2P' AND pair.active = true
         AND friend.account = ${address.account} AND friend.domain = ${address.domain}
         AND (friend.domain = 'local' OR EXISTS (
-          SELECT 1 FROM "FederatedPeer" peer JOIN "IdentityNamespace" ns ON ns.id = peer."activeNamespaceId"
-          WHERE peer.domain = friend.domain AND ns.id = friend."namespaceId" AND ns."retiredAt" IS NULL
+          SELECT 1 FROM "IdentityNamespace" ns
+          WHERE ns.id = friend."namespaceId"
+            AND ns.domain = friend.domain
+            AND ns.active = true
+            AND ns."retiredAt" IS NULL
         ))
       LIMIT 1
     `);

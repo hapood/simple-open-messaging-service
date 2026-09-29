@@ -211,7 +211,7 @@ describe('SystemRowComponent', () => {
     expect(fixture.nativeElement.textContent).not.toContain('Alice Profile');
   });
 
-  it("uses only this system row's cached four-tuple and persists its drift", async () => {
+  it("uses only this system row's cached profile key and persists its drift", async () => {
     const participant = { ...alice, namespaceId: 12, profileRev: 3 };
     getProfile.mockResolvedValue({ name: 'Alice before' });
     resolveProfile.mockReturnValue(

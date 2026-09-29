@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   blockFederationPeer,
-  federationPeerEvents,
   federationPeerNamespaces,
   getFederationPeer,
   runFederationSelfCheck,
@@ -15,9 +14,8 @@ vi.mock('@/api/client', () => ({ request }))
 describe('federation admin API', () => {
   beforeEach(() => request.mockReset().mockResolvedValue(undefined))
 
-  it('encodes peer domains as one path segment for detail and events', async () => {
+  it('encodes peer domains as one path segment for detail and namespaces', async () => {
     await getFederationPeer('peer.test/path')
-    await federationPeerEvents('peer.test/path', 25)
     await federationPeerNamespaces('peer.test/path')
 
     expect(request).toHaveBeenNthCalledWith(
@@ -26,11 +24,6 @@ describe('federation admin API', () => {
     )
     expect(request).toHaveBeenNthCalledWith(
       2,
-      '/admin/federation/peers/peer.test%2Fpath/events',
-      { take: 25 },
-    )
-    expect(request).toHaveBeenNthCalledWith(
-      3,
       '/admin/federation/peers/peer.test%2Fpath/namespaces',
     )
   })

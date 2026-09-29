@@ -12,8 +12,6 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
-  federatedPeer,
-  federatedPeerEvent,
   identityNamespace,
   peerStateFeedPullCursor,
 } from '../src/database/schema.js';
@@ -46,13 +44,6 @@ describe('FederationRecognitionService atomic commit', () => {
       [domain],
     );
     await database.pool.query(
-      'DELETE FROM "FederatedPeerEvent" WHERE domain = $1',
-      [domain],
-    );
-    await database.pool.query('DELETE FROM "FederatedPeer" WHERE domain = $1', [
-      domain,
-    ]);
-    await database.pool.query(
       'DELETE FROM "IdentityNamespace" WHERE domain = $1',
       [domain],
     );
@@ -66,6 +57,34 @@ describe('FederationRecognitionService atomic commit', () => {
     await cleanDomain();
     await mod.close();
   });
+
+  async function activeNamespace() {
+    return database.db.query.identityNamespace.findFirst({
+      where: eq(identityNamespace.domain, domain),
+    });
+  }
+
+  async function seedActiveNamespace(
+    values?: Partial<typeof identityNamespace.$inferInsert>,
+  ) {
+    const [namespace] = await database.db
+      .insert(identityNamespace)
+      .values({
+        domain,
+        rootPublicKey,
+        rootKeyFingerprint: 'test-fingerprint',
+        identityPinnedAt: new Date(),
+        active: true,
+        trustLevel: 'available',
+        recognizesPeer: true,
+        peerAcceptanceConfirmed: true,
+        localServiceAvailable: true,
+        remoteServiceReachable: true,
+        ...values,
+      })
+      .returning({ id: identityNamespace.id });
+    return namespace!;
+  }
 
   function service(
     namespaces: FederationNamespaceService = new FederationNamespaceService(
@@ -85,21 +104,12 @@ describe('FederationRecognitionService atomic commit', () => {
   it('commits inbound recognition, namespace, and State Feed cursors together', async () => {
     await service().acceptInbound(domain, document);
 
-    expect(
-      await database.db.query.federatedPeer.findFirst({
-        where: eq(federatedPeer.domain, domain),
-      }),
-    ).toMatchObject({
+    expect(await activeNamespace()).toMatchObject({
       trustLevel: 'available',
       peerAcceptanceConfirmed: true,
       remoteServiceReachable: true,
+      stateFeedEndId: 0n,
     });
-    expect(
-      await database.db
-        .select()
-        .from(identityNamespace)
-        .where(eq(identityNamespace.domain, domain)),
-    ).toEqual([expect.objectContaining({ stateFeedEndId: 0n })]);
     expect(
       await database.db
         .select()
@@ -108,38 +118,30 @@ describe('FederationRecognitionService atomic commit', () => {
     ).toHaveLength(1);
   });
 
-  it('rejects a conflicting namespace echo on an existing recognition', async () => {
-    const [namespace] = await database.db
-      .insert(identityNamespace)
-      .values({
-        domain,
-        rootPublicKey,
-        rootKeyFingerprint: 'test-fingerprint',
-        identityPinnedAt: new Date(),
-      })
-      .returning({ id: identityNamespace.id });
-    await database.db.insert(federatedPeer).values({
-      domain,
-      activeNamespaceId: namespace!.id,
-      trustLevel: 'available',
-      recognizesPeer: true,
-      peerAcceptanceConfirmed: true,
-      localServiceAvailable: true,
-      remoteServiceReachable: true,
+  it('rejects a conflicting sender-assigned local namespace on an existing recognition', async () => {
+    await seedActiveNamespace({
+      peerAssignedLocalNamespaceId: 900,
     });
 
     await expect(
-      service().acceptInbound(domain, document, namespace!.id + 1),
+      service().acceptInbound(domain, document, 901),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
     });
-    expect(
-      await database.db.query.federatedPeer.findFirst({
-        where: eq(federatedPeer.domain, domain),
-      }),
-    ).toMatchObject({
+    expect(await activeNamespace()).toMatchObject({
       trustLevel: 'halted',
       haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+    });
+  });
+
+  it('adopts a first-time sender-assigned local namespace disclosure', async () => {
+    await seedActiveNamespace();
+
+    await service().acceptInbound(domain, document, 901);
+
+    expect(await activeNamespace()).toMatchObject({
+      trustLevel: 'available',
+      peerAssignedLocalNamespaceId: 901,
     });
   });
 
@@ -158,12 +160,6 @@ describe('FederationRecognitionService atomic commit', () => {
       service(failingNamespaces).acceptInbound(domain, document),
     ).rejects.toThrow('namespace initialization failed');
 
-    expect(
-      await database.db
-        .select()
-        .from(federatedPeer)
-        .where(eq(federatedPeer.domain, domain)),
-    ).toEqual([]);
     expect(
       await database.db
         .select()
@@ -196,11 +192,7 @@ describe('FederationRecognitionService atomic commit', () => {
       { emit: () => undefined } as never,
     );
     request.mockImplementationOnce(async () => {
-      expect(
-        await database.db.query.federatedPeer.findFirst({
-          where: eq(federatedPeer.domain, domain),
-        }),
-      ).toMatchObject({
+      expect(await activeNamespace()).toMatchObject({
         trustLevel: 'establishing',
         recognizesPeer: true,
         peerAcceptanceConfirmed: false,
@@ -211,11 +203,7 @@ describe('FederationRecognitionService atomic commit', () => {
     await expect(recognition.recognize(domain)).rejects.toThrow(
       'temporary connection failure',
     );
-    expect(
-      await database.db.query.federatedPeer.findFirst({
-        where: eq(federatedPeer.domain, domain),
-      }),
-    ).toMatchObject({
+    expect(await activeNamespace()).toMatchObject({
       trustLevel: 'establishing',
       peerAcceptanceConfirmed: false,
       remoteServiceReachable: false,
@@ -232,41 +220,20 @@ describe('FederationRecognitionService atomic commit', () => {
       ),
     );
     await recognition.recognize(domain);
-    expect(
-      await database.db.query.federatedPeer.findFirst({
-        where: eq(federatedPeer.domain, domain),
-      }),
-    ).toMatchObject({
+    expect(await activeNamespace()).toMatchObject({
       trustLevel: 'available',
       peerAcceptanceConfirmed: true,
       remoteServiceReachable: true,
+      peerAssignedLocalNamespaceId: 37,
     });
-    expect(
-      await database.db.query.identityNamespace.findFirst({
-        where: eq(identityNamespace.domain, domain),
-      }),
-    ).toMatchObject({ peerAssignedLocalNamespaceId: 37 });
   });
 
   it.each(['available', 'degraded'] as const)(
     'accepts positive Health %s instead of a lost recognized result',
     async (status) => {
-      const [namespace] = await database.db
-        .insert(identityNamespace)
-        .values({
-          domain,
-          rootPublicKey,
-          rootKeyFingerprint: 'test-fingerprint',
-          identityPinnedAt: new Date(),
-        })
-        .returning({ id: identityNamespace.id });
-      await database.db.insert(federatedPeer).values({
-        domain,
-        activeNamespaceId: namespace!.id,
+      await seedActiveNamespace({
         trustLevel: 'establishing',
-        recognizesPeer: true,
         peerAcceptanceConfirmed: false,
-        localServiceAvailable: true,
         remoteServiceReachable: false,
       });
       const discovery = {
@@ -294,62 +261,27 @@ describe('FederationRecognitionService atomic commit', () => {
       );
 
       await expect(recognition.checkHealth(domain)).resolves.toBe(status);
-      expect(
-        await database.db.query.federatedPeer.findFirst({
-          where: eq(federatedPeer.domain, domain),
-        }),
-      ).toMatchObject({
+      expect(await activeNamespace()).toMatchObject({
         trustLevel: 'available',
         peerAcceptanceConfirmed: true,
         remoteServiceReachable: true,
+        peerAssignedLocalNamespaceId: 38,
       });
-      expect(
-        await database.db.query.identityNamespace.findFirst({
-          where: eq(identityNamespace.domain, domain),
-        }),
-      ).toMatchObject({ peerAssignedLocalNamespaceId: 38 });
     },
   );
 
-  it('counts and logs only the available to degraded transition', async () => {
-    const [namespace] = await database.db
-      .insert(identityNamespace)
-      .values({
-        domain,
-        rootPublicKey,
-        rootKeyFingerprint: 'test-fingerprint',
-        identityPinnedAt: new Date(),
-      })
-      .returning({ id: identityNamespace.id });
-    await database.db.insert(federatedPeer).values({
-      domain,
-      activeNamespaceId: namespace!.id,
-      trustLevel: 'available',
-      recognizesPeer: true,
-      peerAcceptanceConfirmed: true,
-      localServiceAvailable: true,
-      remoteServiceReachable: true,
-    });
+  it('counts only the available to degraded transition', async () => {
+    await seedActiveNamespace();
     const recognition = service();
 
     await recognition.markTransportDegraded(domain, 'first failure');
     await recognition.markTransportDegraded(domain, 'retry failure');
 
-    expect(
-      await database.db.query.federatedPeer.findFirst({
-        where: eq(federatedPeer.domain, domain),
-      }),
-    ).toMatchObject({
+    expect(await activeNamespace()).toMatchObject({
       trustLevel: 'degraded',
       remoteServiceReachable: false,
       degradationCount: 1,
       degradationReason: 'retry failure',
     });
-    expect(
-      await database.db
-        .select()
-        .from(federatedPeerEvent)
-        .where(eq(federatedPeerEvent.domain, domain)),
-    ).toMatchObject([{ type: 'degraded', reason: 'first failure' }]);
   });
 });

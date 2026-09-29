@@ -162,7 +162,7 @@ export class ThreadRepository {
       for (const item of this._items()) {
         const reference = threadProfileReference(item);
         if (
-          reference.namespaceId === wake.key.namespaceId &&
+          reference.namespaceId === wake.key.profileNamespaceId &&
           reference.account === wake.key.account &&
           reference.domain === wake.key.domain &&
           reference.profileRev === wake.key.rev

@@ -154,6 +154,25 @@ export const identityNamespace = pgTable(
       mode: 'date',
     }),
     peerAssignedLocalNamespaceId: integer(),
+    active: boolean().default(false).notNull(),
+    trustLevel: varchar({ length: 31 }).default('unrecognized').notNull(),
+    trustedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    lastSuccessAt: timestamp({
+      precision: 3,
+      withTimezone: true,
+      mode: 'date',
+    }),
+    degradedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    degradationReason: varchar({ length: 255 }),
+    degradationCount: integer().default(0).notNull(),
+    haltedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
+    haltCode: integer(),
+    haltReason: varchar({ length: 255 }),
+    recognizesPeer: boolean().default(false).notNull(),
+    peerAcceptanceConfirmed: boolean().default(false).notNull(),
+    localServiceAvailable: boolean().default(false).notNull(),
+    remoteServiceReachable: boolean().default(false).notNull(),
+    resetAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     dailyMsgLimit: integer(),
     dailyRequestLimit: integer(),
     dailyFileLimit: integer(),
@@ -169,10 +188,17 @@ export const identityNamespace = pgTable(
     retiredAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
   },
   (table) => [
-    unique('IdentityNamespace_domain_id_key').on(table.domain, table.id),
-    uniqueIndex('IdentityNamespace_one_live_per_domain_key')
+    uniqueIndex('IdentityNamespace_one_active_per_domain_key')
       .on(table.domain)
-      .where(sql`${table.id} > 0 AND ${table.retiredAt} IS NULL`),
+      .where(sql`${table.id} > 0 AND ${table.active} = true`),
+    index('IdentityNamespace_lastSuccessAt_idx').using(
+      'btree',
+      table.lastSuccessAt.asc().nullsLast().op('timestamptz_ops'),
+    ),
+    index('IdentityNamespace_trustLevel_idx').using(
+      'btree',
+      table.trustLevel.asc().nullsLast().op('text_ops'),
+    ),
     check(
       'IdentityNamespace_shape_check',
       sql`(
@@ -183,6 +209,21 @@ export const identityNamespace = pgTable(
         AND ${table.identityPinnedAt} IS NULL
         AND ${table.peerAssignedLocalNamespaceId} IS NULL
         AND ${table.retiredAt} IS NULL
+        AND ${table.active} = false
+        AND ${table.trustLevel} = 'unrecognized'
+        AND ${table.trustedAt} IS NULL
+        AND ${table.lastSuccessAt} IS NULL
+        AND ${table.degradedAt} IS NULL
+        AND ${table.degradationReason} IS NULL
+        AND ${table.degradationCount} = 0
+        AND ${table.haltedAt} IS NULL
+        AND ${table.haltCode} IS NULL
+        AND ${table.haltReason} IS NULL
+        AND ${table.recognizesPeer} = false
+        AND ${table.peerAcceptanceConfirmed} = false
+        AND ${table.localServiceAvailable} = false
+        AND ${table.remoteServiceReachable} = false
+        AND ${table.resetAt} IS NULL
       ) OR (
         ${table.id} > 0
         AND ${table.domain} <> 'local'
@@ -191,6 +232,14 @@ export const identityNamespace = pgTable(
         AND ${table.identityPinnedAt} IS NOT NULL
         AND (${table.peerAssignedLocalNamespaceId} IS NULL OR ${table.peerAssignedLocalNamespaceId} > 0)
       )`,
+    ),
+    check(
+      'IdentityNamespace_trustLevel_check',
+      sql`${table.trustLevel} IN ('unrecognized', 'establishing', 'pending', 'available', 'degraded', 'halted')`,
+    ),
+    check(
+      'IdentityNamespace_active_check',
+      sql`${table.active} = false OR (${table.id} > 0 AND ${table.retiredAt} IS NULL)`,
     ),
     check(
       'IdentityNamespace_retiredAt_check',
@@ -1228,30 +1277,6 @@ export const messageReport = pgTable(
   ],
 );
 
-export const federatedPeerEvent = pgTable(
-  'FederatedPeerEvent',
-  {
-    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
-    domain: varchar({ length: 63 }).notNull(),
-    type: varchar({ length: 31 }).notNull(),
-    reason: varchar({ length: 255 }),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    index('FederatedPeerEvent_createdAt_idx').using(
-      'btree',
-      table.createdAt.asc().nullsLast().op('timestamptz_ops'),
-    ),
-    index('FederatedPeerEvent_domain_createdAt_idx').using(
-      'btree',
-      table.domain.asc().nullsLast().op('text_ops'),
-      table.createdAt.asc().nullsLast().op('timestamptz_ops'),
-    ),
-  ],
-);
-
 export const adminActionLog = pgTable(
   'AdminActionLog',
   {
@@ -1857,54 +1882,6 @@ export const federationNamespaceCandidate = pgTable(
       'FederationNamespaceCandidate_failed_check',
       sql`(${table.status} = 'failed') = (${table.failedCode} IS NOT NULL AND ${table.failedMessage} IS NOT NULL)`,
     ),
-  ],
-);
-
-export const federatedPeer = pgTable(
-  'FederatedPeer',
-  {
-    domain: varchar({ length: 63 }).primaryKey().notNull(),
-    activeNamespaceId: integer(),
-    trustLevel: varchar({ length: 31 }).default('unrecognized').notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-    trustedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    lastSuccessAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }),
-    degradedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    degradationReason: varchar({ length: 255 }),
-    degradationCount: integer().default(0).notNull(),
-    haltedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-    haltCode: integer(),
-    haltReason: varchar({ length: 255 }),
-    recognizesPeer: boolean().default(false).notNull(),
-    peerAcceptanceConfirmed: boolean().default(false).notNull(),
-    localServiceAvailable: boolean().default(false).notNull(),
-    remoteServiceReachable: boolean().default(false).notNull(),
-    resetAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
-  },
-  (table) => [
-    check(
-      'FederatedPeer_trustLevel_check',
-      sql`${table.trustLevel} IN ('unrecognized', 'establishing', 'pending', 'available', 'degraded', 'halted')`,
-    ),
-    index('FederatedPeer_lastSuccessAt_idx').using(
-      'btree',
-      table.lastSuccessAt.asc().nullsLast().op('timestamptz_ops'),
-    ),
-    index('FederatedPeer_trustLevel_idx').using(
-      'btree',
-      table.trustLevel.asc().nullsLast().op('text_ops'),
-    ),
-    foreignKey({
-      columns: [table.activeNamespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'FederatedPeer_activeNamespace_fkey',
-    }).onDelete('restrict'),
   ],
 );
 

@@ -22,16 +22,11 @@ describe('Federated peer QuotaService (DB-backed)', () => {
     }).compile();
     quota = mod.get(QuotaService);
     database = mod.get(DatabaseService);
-    await database.pool.query(
-      'INSERT INTO "FederatedPeer" (domain, "trustLevel") VALUES ($1, $2) ON CONFLICT (domain) DO NOTHING',
-      [PEER, 'available'],
-    );
     const created = await database.pool.query<{ id: number }>(
-      'INSERT INTO "IdentityNamespace" (domain, "rootKeyFingerprint", "rootPublicKey", "identityPinnedAt") VALUES ($1, $2, $3, NOW()) RETURNING id',
-      [PEER, 'sha256:quota-test', Buffer.alloc(32, 1).toString('base64')],
+      'INSERT INTO "IdentityNamespace" (domain, "rootKeyFingerprint", "rootPublicKey", "identityPinnedAt", active, "trustLevel") VALUES ($1, $2, $3, NOW(), true, $4) RETURNING id',
+      [PEER, 'sha256:quota-test', Buffer.alloc(32, 1).toString('base64'), 'available'],
     );
     namespaceId = created.rows[0].id;
-    await database.pool.query('UPDATE "FederatedPeer" SET "activeNamespaceId" = $1 WHERE domain = $2', [namespaceId, PEER]);
   });
 
   beforeEach(async () => {
@@ -44,11 +39,7 @@ describe('Federated peer QuotaService (DB-backed)', () => {
   });
 
   afterAll(async () => {
-    await database.pool.query('UPDATE "FederatedPeer" SET "activeNamespaceId" = NULL WHERE domain = $1', [PEER]);
     await database.pool.query('DELETE FROM "IdentityNamespace" WHERE id = $1', [namespaceId]);
-    await database.pool.query('DELETE FROM "FederatedPeer" WHERE domain = $1', [
-      PEER,
-    ]);
     await database.pool.query('DELETE FROM "QuotaDailyUsage"');
     await database.pool.query('DELETE FROM "QuotaFileByteUsage"');
     await mod.close();
@@ -121,8 +112,8 @@ describe('Federated peer QuotaService (DB-backed)', () => {
     expect(nodes[0].usage.files.limit).toBeGreaterThan(0);
 
     await database.pool.query(
-      'UPDATE "FederatedPeer" SET "activeNamespaceId" = NULL WHERE domain = $1',
-      [PEER],
+      'UPDATE "IdentityNamespace" SET active = false WHERE id = $1',
+      [namespaceId],
     );
     try {
       expect(await quota.listNodes()).toEqual([]);
@@ -131,8 +122,8 @@ describe('Federated peer QuotaService (DB-backed)', () => {
       });
     } finally {
       await database.pool.query(
-        'UPDATE "FederatedPeer" SET "activeNamespaceId" = $1 WHERE domain = $2',
-        [namespaceId, PEER],
+        'UPDATE "IdentityNamespace" SET active = true WHERE id = $1',
+        [namespaceId],
       );
     }
   });

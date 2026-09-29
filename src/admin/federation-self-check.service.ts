@@ -32,7 +32,7 @@ type SelfCheckConfig = FederationConfig & FederationTransportConfig;
 /**
  * S2S handshake self-check — diagnoses whether THIS server's federation prerequisites are correctly
  * exposed to OTHER servers, from the external viewpoint (resolve our own public DNS → TLS → .well-known
- * → key consistency → signature loopback → clock). Strictly READ-ONLY: it never mutates FederatedPeer
+ * -> key consistency -> signature loopback -> clock). Strictly READ-ONLY: it never mutates namespace state
  * trust state and never writes the S2SKeyCache — it does its own dns lookups + bare fetches and does NOT
  * inject DiscoveryService (whose getPublicKey() UPSERTs the cache). Each network check is run per
  * resolved IP (SRV→DDNS or multi-A/AAAA records means each IP can have a different cert / reachability),

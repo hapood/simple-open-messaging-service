@@ -6,7 +6,7 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { federatedPeer, identityNamespace } from '../database/schema.js';
+import { identityNamespace } from '../database/schema.js';
 
 export interface FederationContext {
   domain: string;
@@ -27,7 +27,7 @@ export interface RetiredFederationNamespace {
   namespaceId: number;
 }
 
-/** Owns the boundary between a stable public peer domain and locally verified identity epochs. */
+/** Owns the boundary between a current peer route domain and locally verified identity namespaces. */
 @Injectable()
 export class FederationNamespaceService {
   constructor(private readonly database: DatabaseService) {}
@@ -56,25 +56,24 @@ export class FederationNamespaceService {
   ): Promise<VerifiedFederationNamespace> {
     const [row] = await tx
       .select({
-        peerDomain: federatedPeer.domain,
+        domain: identityNamespace.domain,
         namespaceId: identityNamespace.id,
         peerAssignedLocalNamespaceId:
           identityNamespace.peerAssignedLocalNamespaceId,
         rootKeyFingerprint: identityNamespace.rootKeyFingerprint,
       })
-      .from(federatedPeer)
-      .innerJoin(
-        identityNamespace,
+      .from(identityNamespace)
+      .where(
         and(
-          eq(identityNamespace.id, federatedPeer.activeNamespaceId),
+          eq(identityNamespace.domain, domain),
+          eq(identityNamespace.active, true),
           isNull(identityNamespace.retiredAt),
         ),
       )
-      .where(eq(federatedPeer.domain, domain))
       .limit(1);
     if (!row || row.rootKeyFingerprint === null) this.unavailable(domain);
     return {
-      domain: row.peerDomain,
+      domain: row.domain,
       namespaceId: row.namespaceId,
       peerAssignedLocalNamespaceId: row.peerAssignedLocalNamespaceId,
       rootKeyFingerprint: row.rootKeyFingerprint,
@@ -110,25 +109,22 @@ export class FederationNamespaceService {
     peerAssignedLocalNamespaceId: number,
   ): Promise<void> {
     const [peer] = await tx
-      .select({ activeNamespaceId: federatedPeer.activeNamespaceId })
-      .from(federatedPeer)
-      .where(eq(federatedPeer.domain, domain))
-      .for('no key update')
-      .limit(1);
-    if (
-      peer?.activeNamespaceId === null ||
-      peer?.activeNamespaceId === undefined
-    )
-      this.unavailable(domain);
-    const [updated] = await tx
-      .update(identityNamespace)
-      .set({ peerAssignedLocalNamespaceId })
+      .select({ id: identityNamespace.id })
+      .from(identityNamespace)
       .where(
         and(
-          eq(identityNamespace.id, peer.activeNamespaceId),
+          eq(identityNamespace.domain, domain),
+          eq(identityNamespace.active, true),
           isNull(identityNamespace.retiredAt),
         ),
       )
+      .for('no key update')
+      .limit(1);
+    if (!peer) this.unavailable(domain);
+    const [updated] = await tx
+      .update(identityNamespace)
+      .set({ peerAssignedLocalNamespaceId })
+      .where(eq(identityNamespace.id, peer.id))
       .returning({ id: identityNamespace.id });
     if (!updated) this.unavailable(domain);
   }
@@ -143,27 +139,21 @@ export class FederationNamespaceService {
       identityPinnedAt: Date;
     },
   ): Promise<VerifiedFederationNamespace> {
-    const [peer] = await tx
-      .select({ activeNamespaceId: federatedPeer.activeNamespaceId })
-      .from(federatedPeer)
-      .where(eq(federatedPeer.domain, identity.domain))
+    const [active] = await tx
+      .select()
+      .from(identityNamespace)
+      .where(
+        and(
+          eq(identityNamespace.domain, identity.domain),
+          eq(identityNamespace.active, true),
+          isNull(identityNamespace.retiredAt),
+        ),
+      )
       .for('no key update')
       .limit(1);
-    if (!peer) this.unavailable(identity.domain);
 
-    if (peer.activeNamespaceId !== null) {
-      const [active] = await tx
-        .select()
-        .from(identityNamespace)
-        .where(
-          and(
-            eq(identityNamespace.id, peer.activeNamespaceId),
-            isNull(identityNamespace.retiredAt),
-          ),
-        )
-        .limit(1);
+    if (active) {
       if (
-        !active ||
         active.rootKeyFingerprint !== identity.rootKeyFingerprint ||
         active.rootPublicKey !== identity.rootPublicKey
       ) {
@@ -182,14 +172,10 @@ export class FederationNamespaceService {
 
     const [created] = await tx
       .insert(identityNamespace)
-      .values(identity)
+      .values({ ...identity, active: true })
       .returning({ id: identityNamespace.id });
     if (!created || created.id <= 0)
       throw new Error('failed to allocate a federation namespace');
-    await tx
-      .update(federatedPeer)
-      .set({ activeNamespaceId: created.id })
-      .where(eq(federatedPeer.domain, identity.domain));
     return {
       domain: identity.domain,
       namespaceId: created.id,
@@ -204,26 +190,23 @@ export class FederationNamespaceService {
     retiredAt = new Date(),
   ): Promise<RetiredFederationNamespace> {
     const [peer] = await tx
-      .select({ activeNamespaceId: federatedPeer.activeNamespaceId })
-      .from(federatedPeer)
-      .where(eq(federatedPeer.domain, domain))
-      .for('no key update')
-      .limit(1);
-    if (!peer?.activeNamespaceId) this.unavailable(domain);
-    await tx
-      .update(identityNamespace)
-      .set({ retiredAt })
+      .select({ id: identityNamespace.id })
+      .from(identityNamespace)
       .where(
         and(
-          eq(identityNamespace.id, peer.activeNamespaceId),
+          eq(identityNamespace.domain, domain),
+          eq(identityNamespace.active, true),
           isNull(identityNamespace.retiredAt),
         ),
-      );
+      )
+      .for('no key update')
+      .limit(1);
+    if (!peer) this.unavailable(domain);
     await tx
-      .update(federatedPeer)
-      .set({ activeNamespaceId: null })
-      .where(eq(federatedPeer.domain, domain));
-    return { domain, namespaceId: peer.activeNamespaceId };
+      .update(identityNamespace)
+      .set({ retiredAt, active: false })
+      .where(eq(identityNamespace.id, peer.id));
+    return { domain, namespaceId: peer.id };
   }
 
   private unavailable(domain: string): never {

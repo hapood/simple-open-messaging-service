@@ -107,10 +107,7 @@ async function resolveReadPositionInTx(
         JOIN "IdentityNamespace" ns ON ns.id = g."namespaceId"
         WHERE g."threadId" = t.id AND g.recoverable = true
           AND ns."retiredAt" IS NULL
-          AND (ns.id = 0 OR EXISTS (
-            SELECT 1 FROM "FederatedPeer" p
-            WHERE p."activeNamespaceId" = ns.id
-          ))
+          AND (ns.id = 0 OR ns.active = true)
           AND g."startSeq"::bigint + g."messageSeqOffset" <= visible.bound
           AND g."endSeq"::bigint + g."messageSeqOffset" > COALESCE(t."clearedSeq", 0)
       ), 0) AS "minimumReadSeq"

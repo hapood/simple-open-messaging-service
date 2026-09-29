@@ -392,7 +392,7 @@ pub(super) fn apply_selected_profile(
             "SELECT profile.name,profile.bio FROM threads state
          JOIN profiles profile ON profile.user_id=state.user_id
            AND profile.account=state.subject_account AND profile.domain=state.subject_domain
-           AND profile.namespace_id=state.subject_namespace_id
+           AND profile.publisher_namespace_id=state.subject_namespace_id AND profile.profile_namespace_id=state.subject_namespace_id
            AND profile.profile_rev=state.thread_profile_rev
          WHERE state.user_id=?1 AND state.thread_id=?2 AND state.thread_profile_rev>0",
             params![user_id, thread_id],

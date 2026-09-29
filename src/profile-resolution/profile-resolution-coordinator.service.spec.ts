@@ -92,7 +92,13 @@ describe('ProfileResolutionCoordinatorService', () => {
     profiles.getStoredProfile.mockResolvedValue(wireProfile);
 
     await subject['fetch'](
-      { publisherNamespaceId: 7, profileNamespaceId: 12, account: 'alice', domain: 'member.test', rev: 4 },
+      {
+        publisherNamespaceId: 7,
+        profileNamespaceId: 12,
+        account: 'alice',
+        domain: 'member.test',
+        rev: 4,
+      },
       accountDemand,
     );
 
@@ -104,7 +110,6 @@ describe('ProfileResolutionCoordinatorService', () => {
     );
     expect(profiles.materializeExactForeignProfile).toHaveBeenCalledWith(
       wireProfile,
-      'publisher.test',
       7,
     );
   });
@@ -121,7 +126,13 @@ describe('ProfileResolutionCoordinatorService', () => {
     } as const;
 
     await subject['fetch'](
-      { publisherNamespaceId: 7, profileNamespaceId: 12, account: 'alice', domain: 'member.test', rev: 4 },
+      {
+        publisherNamespaceId: 7,
+        profileNamespaceId: 12,
+        account: 'alice',
+        domain: 'member.test',
+        rev: 4,
+      },
       demand,
     );
 
@@ -148,7 +159,13 @@ describe('ProfileResolutionCoordinatorService', () => {
     } as const;
 
     await subject['fetch'](
-      { publisherNamespaceId: 7, profileNamespaceId: 12, account: 'alice', domain: 'member.test', rev: 4 },
+      {
+        publisherNamespaceId: 7,
+        profileNamespaceId: 12,
+        account: 'alice',
+        domain: 'member.test',
+        rev: 4,
+      },
       demand,
     );
 
@@ -288,7 +305,11 @@ describe('ProfileResolutionCoordinatorService', () => {
     await subject.resolveDemand({
       ...accountDemand,
       publisherNamespaceId: 0,
-      target: { ...accountDemand.target, profileNamespaceId: 0, domain: 'local' },
+      target: {
+        ...accountDemand.target,
+        profileNamespaceId: 0,
+        domain: 'local',
+      },
     });
 
     expect(subject['pending'].size).toBe(0);
@@ -328,8 +349,26 @@ describe('ProfileResolutionCoordinatorService', () => {
     expect(order.indexOf('materialized')).toBeLessThan(order.indexOf('sse'));
     expect(order.indexOf('read-durable')).toBeLessThan(order.indexOf('sse'));
     expect(sse.onProfileAvailable.mock.calls).toEqual([
-      [41, { publisherNamespaceId: 7, profileNamespaceId: 12, account: 'alice', domain: 'member.test', rev: 4 }],
-      [42, { publisherNamespaceId: 7, profileNamespaceId: 12, account: 'alice', domain: 'member.test', rev: 4 }],
+      [
+        41,
+        {
+          publisherNamespaceId: 7,
+          profileNamespaceId: 12,
+          account: 'alice',
+          domain: 'member.test',
+          rev: 4,
+        },
+      ],
+      [
+        42,
+        {
+          publisherNamespaceId: 7,
+          profileNamespaceId: 12,
+          account: 'alice',
+          domain: 'member.test',
+          rev: 4,
+        },
+      ],
     ]);
   });
 
@@ -346,7 +385,13 @@ describe('ProfileResolutionCoordinatorService', () => {
     profiles.getStoredProfile.mockResolvedValue(wireProfile);
 
     await subject['fetch'](
-      { publisherNamespaceId: 7, profileNamespaceId: 12, account: 'alice', domain: 'member.test', rev: 4 },
+      {
+        publisherNamespaceId: 7,
+        profileNamespaceId: 12,
+        account: 'alice',
+        domain: 'member.test',
+        rev: 4,
+      },
       accountDemand,
     );
 
@@ -361,5 +406,4 @@ describe('ProfileResolutionCoordinatorService', () => {
       avatarBase64: null,
     });
   });
-
 });
