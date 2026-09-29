@@ -15,12 +15,19 @@ import {
 } from './federation-certificate.js';
 import { loadFederationConfig } from './federation.config.js';
 import { parseKeyId } from './key-id.js';
+import {
+  continuousCoverageEnd,
+  type CoverageInterval,
+} from './peer-key-coverage.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { KeypairService } from './keypair.service.js';
 import { selectFederationProtocolVersion } from './federation-protocol.js';
 import { FederationHttpScheduler } from './federation-http-scheduler.js';
 
 const KEY_REFRESH_POLL_MS = 60_000;
+/** Minimum spacing between two well-known refresh attempts for one peer, shared by the
+ *  inbound key-miss path and the proactive scheduler. */
+const REFRESH_MIN_SPACING_MS = 30_000;
 const DOMAIN_RE =
   /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
 
@@ -52,7 +59,9 @@ export class DiscoveryService {
   private readonly logger = new Logger(DiscoveryService.name);
   private readonly config = loadFederationConfig();
   private readonly routes = new Map<string, CachedRoute>();
-  private lastKeyRefreshAt = 0;
+  /** Single-flight well-known refreshes keyed by `<domain>#<namespaceId>`. */
+  private readonly refreshInFlight = new Map<string, Promise<void>>();
+  private readonly lastRefreshAttemptAt = new Map<string, number>();
 
   constructor(
     private readonly database: DatabaseService,
@@ -63,14 +72,7 @@ export class DiscoveryService {
 
   @Interval(KEY_REFRESH_POLL_MS)
   periodicRefresh(): void {
-    const now = Date.now();
-    if (
-      now - this.lastKeyRefreshAt <
-      this.transportConfig.get().keyCacheTtlSec * 1000
-    )
-      return;
-    this.lastKeyRefreshAt = now;
-    void this.refreshAll().catch((error) =>
+    void this.refreshDuePeers().catch((error) =>
       this.logger.warn(
         `proactive key-refresh round failed: ${(error as Error).message}`,
       ),
@@ -275,6 +277,21 @@ export class DiscoveryService {
     keyId: string,
   ): Promise<Uint8Array | null> {
     const normalized = this.normalizeDomain(domain);
+    const cached = await this.cachedPublicKey(normalized, namespaceId, keyId);
+    if (cached) return cached;
+    // Non-Health key miss: single-flight, rate-limited well-known refresh, then
+    // re-resolve from the atomically replaced cache set. A miss that survives the
+    // refresh surfaces to the caller as FEDERATION_BAD_SIGNATURE (401); a fetch
+    // failure propagates as the retryable key-fetch failure (503).
+    await this.refreshPeerKeys(normalized, namespaceId);
+    return this.cachedPublicKey(normalized, namespaceId, keyId);
+  }
+
+  private async cachedPublicKey(
+    normalized: string,
+    namespaceId: number,
+    keyId: string,
+  ): Promise<Uint8Array | null> {
     const now = new Date();
     const cached = await this.database.db.query.s2SKeyCache.findFirst({
       where: and(
@@ -283,18 +300,129 @@ export class DiscoveryService {
         eq(tables.s2SKeyCache.keyId, keyId),
       ),
     });
-    if (cached && cached.notBefore <= now && cached.notAfter > now) {
-      return Uint8Array.from(Buffer.from(cached.publicKey, 'base64'));
+    return cached && cached.notBefore <= now && cached.notAfter > now
+      ? Uint8Array.from(Buffer.from(cached.publicKey, 'base64'))
+      : null;
+  }
+
+  /** Single-flight, rate-limited refresh of one peer's cached certificate set. Concurrent
+   *  callers for the same pinned peer await one in-flight promise; the in-flight entry is
+   *  cleared on both success and failure; the complete key set is replaced only after the
+   *  document and root continuity have been validated. A skipped rate-limited attempt
+   *  resolves without fetching. */
+  async refreshPeerKeys(domain: string, namespaceId: number): Promise<void> {
+    const normalized = this.normalizeDomain(domain);
+    const scope = `${normalized}#${namespaceId}`;
+    const inFlight = this.refreshInFlight.get(scope);
+    if (inFlight) return inFlight;
+    const lastAttempt = this.lastRefreshAttemptAt.get(scope) ?? 0;
+    if (Date.now() - lastAttempt < REFRESH_MIN_SPACING_MS) return;
+    const flight = (async () => {
+      try {
+        const doc = await this.fetchWellKnown(normalized);
+        await this.cacheDocument(normalized, namespaceId, doc);
+      } finally {
+        this.lastRefreshAttemptAt.set(scope, Date.now());
+        this.refreshInFlight.delete(scope);
+      }
+    })();
+    this.refreshInFlight.set(scope, flight);
+    return flight;
+  }
+
+  /** Proactive refresh scheduling: a peer is due when its cached certificate set has no
+   *  current coverage, when the continuous coverage ends within the configured key-cache
+   *  TTL window, or when the cached set is older than that TTL. Coverage is computed from
+   *  the whole set — never from a guessed remote active key or only the largest notAfter. */
+  async refreshDuePeers(): Promise<void> {
+    if (!this.keypair.getStatus().available) return;
+    const rows = await this.database.db
+      .select({
+        domain: tables.s2SKeyCache.domain,
+        namespaceId: tables.s2SKeyCache.namespaceId,
+        notBefore: tables.s2SKeyCache.notBefore,
+        notAfter: tables.s2SKeyCache.notAfter,
+        fetchedAt: tables.s2SKeyCache.fetchedAt,
+      })
+      .from(tables.s2SKeyCache);
+    const now = Date.now();
+    const ttlMs = this.transportConfig.get().keyCacheTtlSec * 1000;
+    const byScope = new Map<
+      string,
+      {
+        domain: string;
+        namespaceId: number;
+        intervals: CoverageInterval[];
+        fetchedAt: number;
+      }
+    >();
+    for (const row of rows) {
+      const scope = `${row.domain}#${row.namespaceId}`;
+      const entry = byScope.get(scope) ?? {
+        domain: row.domain,
+        namespaceId: row.namespaceId,
+        intervals: [],
+        fetchedAt: 0,
+      };
+      entry.intervals.push({
+        notBefore: row.notBefore.getTime(),
+        notAfter: row.notAfter.getTime(),
+      });
+      entry.fetchedAt = Math.max(entry.fetchedAt, row.fetchedAt.getTime());
+      byScope.set(scope, entry);
     }
-    const doc = await this.fetchWellKnown(normalized);
-    await this.cacheDocument(normalized, namespaceId, doc);
-    const hit = doc.keys.find(
-      (key) =>
-        key.keyId === keyId &&
-        key.notBefore <= Date.now() &&
-        Date.now() < key.notAfter,
-    );
-    return hit ? Uint8Array.from(Buffer.from(hit.ed25519, 'base64')) : null;
+    for (const peer of byScope.values()) {
+      const coverageEnd = continuousCoverageEnd(peer.intervals, now);
+      const due =
+        coverageEnd === null ||
+        coverageEnd - now <= ttlMs ||
+        now - peer.fetchedAt > ttlMs;
+      if (due) {
+        void this.refreshPeerKeys(peer.domain, peer.namespaceId).catch(
+          (error) =>
+            this.logger.warn(
+              `proactive key refresh failed for ${peer.domain}: ${(error as Error).message}`,
+            ),
+        );
+      }
+    }
+  }
+
+  /** Maintenance hook after a successful outbound Health round trip: pull the peer's
+   *  certificate set forward promptly when its coverage is about to end, without letting
+   *  the refresh turn the successful Health result into a failure. */
+  refreshAfterHealthSuccess(domain: string, namespaceId: number): void {
+    void (async () => {
+      try {
+        const rows = await this.database.db
+          .select({
+            notBefore: tables.s2SKeyCache.notBefore,
+            notAfter: tables.s2SKeyCache.notAfter,
+          })
+          .from(tables.s2SKeyCache)
+          .where(
+            and(
+              eq(tables.s2SKeyCache.domain, this.normalizeDomain(domain)),
+              eq(tables.s2SKeyCache.namespaceId, namespaceId),
+            ),
+          );
+        const now = Date.now();
+        const coverageEnd = continuousCoverageEnd(
+          rows.map((row) => ({
+            notBefore: row.notBefore.getTime(),
+            notAfter: row.notAfter.getTime(),
+          })),
+          now,
+        );
+        const ttlMs = this.transportConfig.get().keyCacheTtlSec * 1000;
+        if (coverageEnd !== null && coverageEnd - now > ttlMs) return;
+        await this.refreshPeerKeys(domain, namespaceId);
+      } catch (error) {
+        this.logger.warn(
+          `post-Health key refresh failed for ${domain}: ${(error as Error).message}`,
+        );
+      }
+    })();
   }
 
   async getCachedPublicKey(
@@ -392,26 +520,6 @@ export class DiscoveryService {
         mismatch,
         HttpStatus.CONFLICT,
       );
-    }
-  }
-
-  private async refreshAll(): Promise<void> {
-    if (!this.keypair.getStatus().available) return;
-    const rows = await this.database.db
-      .selectDistinct({
-        domain: tables.s2SKeyCache.domain,
-        namespaceId: tables.s2SKeyCache.namespaceId,
-      })
-      .from(tables.s2SKeyCache);
-    for (const { domain, namespaceId } of rows) {
-      try {
-        const doc = await this.fetchWellKnown(domain);
-        await this.cacheDocument(domain, namespaceId, doc);
-      } catch (error) {
-        this.logger.warn(
-          `proactive key refresh failed for ${domain}: ${(error as Error).message}`,
-        );
-      }
     }
   }
 

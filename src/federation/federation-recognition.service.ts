@@ -237,10 +237,39 @@ export class FederationRecognitionService {
         );
       }
       await this.applyHealthResult(domain, result.status);
+      this.schedulePostHealthKeyRefresh(domain);
       return result.status;
     } finally {
       release();
     }
+  }
+
+  /** Outbound Health overlap refresh: after a successful round trip, pull the peer's
+   *  published certificate set forward when its cached coverage is about to end. This is
+   *  maintenance and must never turn the successful Health result into a failure. */
+  private schedulePostHealthKeyRefresh(domain: string): void {
+    void (async () => {
+      try {
+        const [peer] = await this.database.db
+          .select({
+            activeNamespaceId: tables.federatedPeer.activeNamespaceId,
+          })
+          .from(tables.federatedPeer)
+          .where(eq(tables.federatedPeer.domain, domain))
+          .limit(1);
+        if (peer?.activeNamespaceId != null) {
+          this.discovery.refreshAfterHealthSuccess(
+            domain,
+            peer.activeNamespaceId,
+          );
+        }
+      } catch (error) {
+        // Secondary maintenance: the Health result stands regardless.
+        this.logger.debug(
+          `post-Health key refresh scheduling failed for ${domain}: ${(error as Error).message}`,
+        );
+      }
+    })();
   }
 
   async acceptInbound(
