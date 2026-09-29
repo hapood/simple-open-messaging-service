@@ -66,11 +66,9 @@ describe('transactional thread attention', () => {
       threadId,
       endpointAType: 'USER',
       endpointAAccount: 'peer',
-      endpointADomain: 'local',
       endpointANamespaceId: 0,
       endpointBType: 'USER',
       endpointBAccount: 'reader',
-      endpointBDomain: 'local',
       endpointBNamespaceId: 0,
       updatedAt: new Date(),
     });
@@ -171,15 +169,17 @@ describe('transactional thread attention', () => {
       .values({ type: 'GROUP', groupAccount: control.account, groupDomain: 'local',
         groupAccountId: control.id, updatedAt: new Date() })
       .returning();
-    const [pair] = await db.db.insert(relationshipPair).values({
+    await db.db.insert(relationshipPair).values({
       kind: 'GROUP_MEMBER', threadId: group.id, active: false,
       endpointAType: 'GROUP', endpointAAccount: control.account,
-      endpointADomain: 'local', endpointANamespaceId: 0,
+      endpointANamespaceId: 0,
       endpointBType: 'USER', endpointBAccount: 'reader',
-      endpointBDomain: 'local', endpointBNamespaceId: 0,
+      endpointBNamespaceId: 0,
     }).returning();
     await db.db.insert(relationshipIntent).values({
-      pairId: pair.id, authorSide: 'A', status: 'ACCEPTED',
+      authorAccount: control.account, authorNamespaceId: 0,
+      receiverAccount: 'reader', receiverNamespaceId: 0,
+      status: 'ACCEPTED',
       profileRev: 99, messageEndSeq: 0, tombstoneEndSeq: 0,
       requestedAt: new Date(), expiresAt: null,
     });
@@ -899,11 +899,9 @@ describe('transactional thread attention', () => {
         active: true,
         endpointAType: 'USER',
         endpointAAccount: `peer-${i}`,
-        endpointADomain: 'local',
         endpointANamespaceId: 0,
         endpointBType: 'USER',
         endpointBAccount: 'reader',
-        endpointBDomain: 'local',
         endpointBNamespaceId: 0,
       });
       await db.db.insert(accountThreadState).values({

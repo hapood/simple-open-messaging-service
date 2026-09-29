@@ -21,7 +21,7 @@ import {
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, or } from 'drizzle-orm';
 import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { withBusinessLockCapture } from './business-lock-capture.js';
@@ -59,9 +59,10 @@ function pairScope(
     kind: pair.kind as PairAddressScope['kind'],
     // Lowercase the parts, not the assembled address: toLowerCase on the
     // template erases the `${string}@${string}` literal type the scope wants.
+    // This suite keeps both endpoints local; namespace zero is local.
     addresses: [
-      `${pair.endpointAAccount.toLowerCase()}@${pair.endpointADomain.toLowerCase()}`,
-      `${pair.endpointBAccount.toLowerCase()}@${pair.endpointBDomain.toLowerCase()}`,
+      `${pair.endpointAAccount.toLowerCase()}@local`,
+      `${pair.endpointBAccount.toLowerCase()}@local`,
     ],
   };
 }
@@ -177,16 +178,34 @@ describe('user intent decision', () => {
             domain: bob.domain!,
             namespaceId: bob.namespaceId ?? 0,
           };
-    const { pair, firstSide } = await findP2PRelationship(
+    const { pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
       database.db,
       alice.id,
       bobTarget,
     );
     const intents = pair
-      ? await database.db.query.relationshipIntent.findMany({
-          where: eq(tables.relationshipIntent.pairId, pair.id),
-          orderBy: tables.relationshipIntent.authorSide,
-        })
+      ? await database.db.query.relationshipIntent
+          .findMany({
+            where: or(
+              and(
+                eq(tables.relationshipIntent.authorAccount, firstEndpoint.account),
+                eq(tables.relationshipIntent.authorNamespaceId, firstEndpoint.namespaceId),
+                eq(tables.relationshipIntent.receiverAccount, secondEndpoint.account),
+                eq(tables.relationshipIntent.receiverNamespaceId, secondEndpoint.namespaceId),
+              ),
+              and(
+                eq(tables.relationshipIntent.authorAccount, secondEndpoint.account),
+                eq(tables.relationshipIntent.authorNamespaceId, secondEndpoint.namespaceId),
+                eq(tables.relationshipIntent.receiverAccount, firstEndpoint.account),
+                eq(tables.relationshipIntent.receiverNamespaceId, firstEndpoint.namespaceId),
+              ),
+            ),
+          })
+          .then((rows) =>
+            rows.sort((left, right) =>
+              left.authorAccount.localeCompare(right.authorAccount),
+            ),
+          )
       : [];
     const thread = pair?.threadId
       ? await database.db.query.messageThread.findFirst({
@@ -229,7 +248,8 @@ describe('user intent decision', () => {
     );
     return {
       pair,
-      firstSide,
+      firstEndpoint,
+      secondEndpoint,
       intents,
       thread,
       messages,
@@ -242,18 +262,29 @@ describe('user intent decision', () => {
 
   function eventParticipants(after: Awaited<ReturnType<typeof state>>) {
     const pair = after.pair!;
-    return (['A', 'B'] as const).map((side) => ({
-      account: side === 'A' ? pair.endpointAAccount : pair.endpointBAccount,
-      domain: side === 'A' ? pair.endpointADomain : pair.endpointBDomain,
-      namespaceId:
-        (side === 'A' ? pair.endpointADomain : pair.endpointBDomain) === 'local'
-          ? 0
-          : side === 'A'
-            ? pair.endpointANamespaceId
-            : pair.endpointBNamespaceId,
+    return (
+      [
+        {
+          account: pair.endpointAAccount,
+          namespaceId: pair.endpointANamespaceId,
+        },
+        {
+          account: pair.endpointBAccount,
+          namespaceId: pair.endpointBNamespaceId,
+        },
+      ] as const
+    ).map((endpoint) => ({
+      account: endpoint.account,
+      // Local endpoints resolve through the namespace-zero identity; remote
+      // domains are irrelevant to participant facts in this local suite.
+      domain: endpoint.namespaceId === 0 ? 'local' : 'remote',
+      profileNamespaceId: endpoint.namespaceId,
       profileRev:
-        after.intents.find((intent) => intent.authorSide === side)
-          ?.profileRev ?? 0,
+        after.intents.find(
+          (intent) =>
+            intent.authorAccount === endpoint.account &&
+            intent.authorNamespaceId === endpoint.namespaceId,
+        )?.profileRev ?? 0,
     }));
   }
 
@@ -275,7 +306,9 @@ describe('user intent decision', () => {
     expect(after.thread).toMatchObject({ type: 'P2P' });
     // The authoring side holds REQUESTED with the seven-day TTL.
     const authored = after.intents.find(
-      (intent) => intent.authorSide === after.firstSide,
+      (intent) =>
+        intent.authorAccount === after.firstEndpoint.account &&
+        intent.authorNamespaceId === after.firstEndpoint.namespaceId,
     );
     expect(authored).toMatchObject({
       status: 'REQUESTED',
@@ -432,7 +465,9 @@ describe('user intent decision', () => {
     const after = await state(alice, bob);
     expect(after.pair).toMatchObject({ active: false, established: false });
     const authored = after.intents.find(
-      (intent) => intent.authorSide === after.firstSide,
+      (intent) =>
+        intent.authorAccount === after.firstEndpoint.account &&
+        intent.authorNamespaceId === after.firstEndpoint.namespaceId,
     );
     expect(authored).toMatchObject({ status: 'REVOKED' });
     expect(after.messages).toHaveLength(0);
@@ -608,9 +643,9 @@ describe('user intent decision', () => {
       active: false,
       established: false,
       endpointAAccount: alice.account,
-      endpointADomain: 'local',
+      endpointANamespaceId: 0,
       endpointBAccount: `${prefix}-peer`,
-      endpointBDomain: domain,
+      endpointBNamespaceId: namespaceId,
     });
     expect(after.intents).toHaveLength(1);
     expect(after.intents[0]).toMatchObject({
@@ -772,11 +807,9 @@ describe('user intent decision', () => {
         kind: 'GROUP_MEMBER',
         endpointAType: 'USER',
         endpointAAccount: bob.account,
-        endpointADomain: 'local',
         endpointANamespaceId: 0,
         endpointBType: 'GROUP',
         endpointBAccount: `!mirror-${sequence}`,
-        endpointBDomain: `decoy-${sequence}.test`,
         endpointBNamespaceId: decoyNamespaceId,
         active: true,
         established: true,
@@ -784,9 +817,12 @@ describe('user intent decision', () => {
       })
       .returning({ id: tables.relationshipPair.id });
     await database.db.insert(tables.relationshipIntent).values({
-      pairId: mirror!.id,
-      authorSide: 'A',
+      authorAccount: bob.account,
+      authorNamespaceId: 0,
+      receiverAccount: `!mirror-${sequence}`,
+      receiverNamespaceId: decoyNamespaceId,
       status: 'REQUESTED',
+      profileNamespaceId: 0,
       note: '',
       requestedAt: new Date(),
       expiresAt: new Date(Date.now() + 86_400_000),
@@ -803,11 +839,19 @@ describe('user intent decision', () => {
     expect(revoked).toEqual({ status: 'APPLIED' });
     const after = await state(bob, alice);
     expect(
-      after.intents.find((intent) => intent.authorSide === after.firstSide)
-        ?.status,
+      after.intents.find(
+        (intent) =>
+          intent.authorAccount === after.firstEndpoint.account &&
+          intent.authorNamespaceId === after.firstEndpoint.namespaceId,
+      )?.status,
     ).toBe('REVOKED');
     const mirrorIntents = await database.db.query.relationshipIntent.findMany({
-      where: eq(tables.relationshipIntent.pairId, mirror!.id),
+      where: and(
+        eq(tables.relationshipIntent.authorAccount, bob.account),
+        eq(tables.relationshipIntent.authorNamespaceId, 0),
+        eq(tables.relationshipIntent.receiverAccount, `!mirror-${sequence}`),
+        eq(tables.relationshipIntent.receiverNamespaceId, decoyNamespaceId),
+      ),
     });
     expect(mirrorIntents.map((intent) => intent.status)).toEqual(['REQUESTED']);
   });

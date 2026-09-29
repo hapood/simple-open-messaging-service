@@ -63,6 +63,7 @@ function groupRow(overrides: Record<string, unknown> = {}) {
     authorityNamespaceId: 9,
     authorAccount: 'member',
     authorDomain: 'local',
+    profileNamespaceId: 0,
     ...overrides,
   };
 }
@@ -276,7 +277,8 @@ describe('FederationMessageFeedService group origin coordinates', () => {
 
     expect(messages).toMatchObject([
       {
-        author: { account: 'member', domain: 'member.test' },
+        namespaceId: 0,
+        author: { account: 'member', domain: 'local' },
         originSeq: null,
         originCreatedAt: null,
       },

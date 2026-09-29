@@ -38,7 +38,6 @@ import {
 } from '../../../group/membership-intent/received/received-membership-body.js';
 import { epochMillisSql } from '../../../group/membership-intent/received/mirror-membership-shared-sql.js';
 import {
-  compareEndpoints,
   ensureThreadShellInTx,
   lockOrMintUserPairInTx,
   lockUserIntentAccountsInTx,
@@ -54,6 +53,7 @@ import {
  * epoch milliseconds). REVOKED carries no thread heads. */
 interface ReceivedUserIntentBody {
   status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+  profileNamespaceId: number;
   profileRev: number;
   note: string;
   requestedAt: number | null;
@@ -96,7 +96,7 @@ export interface ReceivedUserIntentResult {
   threadId?: number;
 }
 
-/** The body after wire validation: an expired REQUESTED resolves to `undefined`
+/** The body after wireIntent validation: an expired REQUESTED resolves to `undefined`
  * (an ineffective input, not a transition — the pull cursor still advances). */
 interface ValidatedReceivedIntentBase {
   requestedAt: Date | null;
@@ -115,7 +115,7 @@ type Endpoint = UserIntentEndpoint;
 
 /** The receiving-side counterpart of the user intent family: the peer's
  * authored direction arrives as a RELATIONSHIP_INTENT state-feed item and is
- * applied with the same composed statements — the wire snapshot substituted
+ * applied with the same composed statements — the wireIntent snapshot substituted
  * for the authored write (the `authoredSql` seam), and no local-actor
  * authorization, because a live local direction or the cross of two live
  * directions is the authorization. */
@@ -204,7 +204,8 @@ export class ReceivedUserIntentService {
       domain: peerDomain,
       namespaceId,
     };
-    const wire = {
+    const wireIntent = {
+      profileNamespaceId: command.body.profileNamespaceId,
       profileRev: command.body.profileRev,
       note: command.body.note ?? '',
       messageEndSeq: command.body.messageEndSeq ?? 0,
@@ -230,12 +231,8 @@ export class ReceivedUserIntentService {
       located.pairId === null ? null : BigInt(located.pairId),
       localUser,
       peer,
-      namespaceId,
     );
     const pairId = locked.pairId;
-    const ourSide: 'A' | 'B' =
-      compareEndpoints(localUser, peer) < 0 ? 'A' : 'B';
-    const peerSide: 'A' | 'B' = ourSide === 'A' ? 'B' : 'A';
     // The retained P2P shell: minted on every positive direction (an incoming
     // REQUESTED or ACK can activate), entered without one on REVOKED.
     const threadId =
@@ -248,7 +245,13 @@ export class ReceivedUserIntentService {
       threadId,
     );
     await tx.execute(
-      sql`SELECT id FROM "RelationshipIntent" WHERE "pairId" = ${pairId} ORDER BY "authorSide" FOR NO KEY UPDATE`,
+      sql`SELECT 1 FROM "RelationshipIntent"
+      WHERE ("authorAccount" = ${localUser.account} AND "authorNamespaceId" = ${localUser.namespaceId}
+          AND "receiverAccount" = ${peer.account} AND "receiverNamespaceId" = ${peer.namespaceId})
+        OR ("authorAccount" = ${peer.account} AND "authorNamespaceId" = ${peer.namespaceId}
+          AND "receiverAccount" = ${localUser.account} AND "receiverNamespaceId" = ${localUser.namespaceId})
+      ORDER BY "authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId"
+      FOR NO KEY UPDATE`,
     );
     // Post-lock state read; our side is "own", the peer's retained direction is
     // "reverse". The routing decision reads only this row, never the locator.
@@ -257,10 +260,11 @@ export class ReceivedUserIntentService {
         userIntentAuthorizationSql({
           pairId,
           actorUserId: command.localUserId,
-          targetAccount: peerAccount,
-          targetDomain: peerDomain,
-          actorSide: ourSide,
-          reverseSide: peerSide,
+          actorAccount: localUser.account,
+          actorNamespaceId: localUser.namespaceId,
+          targetAccount: peer.account,
+          targetDomain: peer.domain,
+          targetNamespaceId: peer.namespaceId,
         }),
       )
     ).rows[0];
@@ -292,12 +296,10 @@ export class ReceivedUserIntentService {
       return this.activateInTx(tx, {
         command,
         intent,
-        wire,
+        wireIntent,
         pairId,
         threadId,
         threadLock,
-        ourSide,
-        peerSide,
         localUser,
         peer,
         row,
@@ -307,11 +309,9 @@ export class ReceivedUserIntentService {
     if (intent.status === 'REQUESTED')
       return this.recordRequestInTx(tx, {
         intent,
-        wire,
+        wireIntent,
         pairId,
         threadId,
-        ourSide,
-        peerSide,
         localUser,
         peer,
         row,
@@ -319,11 +319,9 @@ export class ReceivedUserIntentService {
       });
     if (intent.status === 'ACCEPTED') return { routed: 'noop:dropped-ack' };
     return this.applyRevocationInTx(tx, {
-      wire,
+      wireIntent,
       pairId,
       threadId,
-      ourSide,
-      peerSide,
       localUser,
       peer,
       row,
@@ -342,7 +340,8 @@ export class ReceivedUserIntentService {
     context: {
       command: ReceivedUserIntentCommand;
       intent: ValidatedReceivedIntent & { status: 'REQUESTED' | 'ACCEPTED' };
-      wire: {
+      wireIntent: {
+        profileNamespaceId: number;
         profileRev: number;
         note: string;
         messageEndSeq: number;
@@ -351,8 +350,6 @@ export class ReceivedUserIntentService {
       pairId: bigint;
       threadId: number;
       threadLock: ThreadContentLock;
-      ourSide: 'A' | 'B';
-      peerSide: 'A' | 'B';
       localUser: Endpoint;
       peer: Endpoint;
       row: UserIntentAuthorizationRow;
@@ -360,14 +357,12 @@ export class ReceivedUserIntentService {
       peers: Set<string>;
     },
   ): Promise<ReceivedUserIntentResult> {
-    const { command, intent, wire, pairId, threadId, ourSide, peerSide } =
-      context;
+    const { command, intent, wireIntent, pairId, threadId } = context;
     const namespaceId = context.peer.namespaceId;
-    const { keyA, keyB } = this.canonicalSideKeys(
+    const { actorKey, targetKey } = this.intentFeedKeys(
       namespaceId,
-      ourSide,
-      context.localUser,
       context.peer,
+      context.localUser,
     );
     const result = await tx.execute<{
       reverseUpgraded: boolean;
@@ -378,26 +373,33 @@ export class ReceivedUserIntentService {
         threadId,
         namespaceId,
         localDomain: 'local',
-        keyA,
-        keyB,
-        actorSide: peerSide,
-        reverseSide: ourSide,
+        actorKey,
+        targetKey,
         actorAccount: context.peer.account,
+        actorDomain: context.peer.domain,
+        actorNamespaceId: namespaceId,
         targetAccount: context.localUser.account,
         targetDomain: 'local',
         targetNamespaceId: 0,
-        note: wire.note,
+        note: wireIntent.note,
         acceptedAt: new Date(),
         authoredSql: receivedUserIntentWriteSql({
-          pairId,
-          authorSide: peerSide,
+          author: {
+            account: context.peer.account,
+            namespaceId: namespaceId,
+          },
+          receiver: {
+            account: context.localUser.account,
+            namespaceId: 0,
+          },
           status: 'ACCEPTED',
-          profileRev: wire.profileRev,
-          note: wire.note,
+          profileNamespaceId: wireIntent.profileNamespaceId,
+          profileRev: wireIntent.profileRev,
+          note: wireIntent.note,
           requestedAt: intent.requestedAt,
           expiresAt: null,
-          messageEndSeq: wire.messageEndSeq,
-          tombstoneEndSeq: wire.tombstoneEndSeq,
+          messageEndSeq: wireIntent.messageEndSeq,
+          tombstoneEndSeq: wireIntent.tombstoneEndSeq,
         }),
       }),
     );
@@ -409,20 +411,24 @@ export class ReceivedUserIntentService {
       result.rows[0]?.reverseUpgraded === true ||
       (intent.status === 'REQUESTED' && context.row.ownStatus === 'ACCEPTED');
     if (publishConfirmation) {
-      // The wire body carries epoch-millisecond numbers (state feed §4.1),
+      // The wireIntent body carries epoch-millisecond numbers (state feed §4.1),
       // so the timestamp converts in SQL — a raw timestamptz string would
       // fail the peer's envelope validation and freeze its pull cursor.
       const [ours] = (
         await tx.execute<{
           status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+          profileNamespaceId: number;
           profileRev: number;
           note: string | null;
           requestedAt: string | null;
         }>(sql`
-          SELECT status, "profileRev", note,
+          SELECT status, "profileNamespaceId", "profileRev", note,
             ${epochMillisSql(sql`"requestedAt"`)} AS "requestedAt"
           FROM "RelationshipIntent"
-          WHERE "pairId" = ${pairId} AND "authorSide" = ${ourSide}
+          WHERE "authorAccount" = ${context.localUser.account}
+            AND "authorNamespaceId" = ${context.localUser.namespaceId}
+            AND "receiverAccount" = ${context.peer.account}
+            AND "receiverNamespaceId" = ${context.peer.namespaceId}
         `)
       ).rows;
       if (!ours) throw new Error('local relationship direction disappeared');
@@ -438,6 +444,7 @@ export class ReceivedUserIntentService {
             eventType: 'RELATIONSHIP_INTENT',
             body: {
               status: ours.status,
+              namespaceId: ours.profileNamespaceId,
               profileRev: ours.profileRev,
               note: ours.note ?? '',
               requestedAt:
@@ -475,7 +482,8 @@ export class ReceivedUserIntentService {
     tx: DatabaseTransaction,
     context: {
       intent: ValidatedReceivedIntent & { status: 'REQUESTED' };
-      wire: {
+      wireIntent: {
+        profileNamespaceId: number;
         profileRev: number;
         note: string;
         messageEndSeq: number;
@@ -483,21 +491,18 @@ export class ReceivedUserIntentService {
       };
       pairId: bigint;
       threadId: number;
-      ourSide: 'A' | 'B';
-      peerSide: 'A' | 'B';
       localUser: Endpoint;
       peer: Endpoint;
       row: UserIntentAuthorizationRow;
       clientUpdates: PendingClientStateFeedUpdate[];
     },
   ): Promise<ReceivedUserIntentResult> {
-    const { intent, wire, pairId, threadId, ourSide, peerSide } = context;
+    const { intent, wireIntent, pairId, threadId } = context;
     const namespaceId = context.peer.namespaceId;
-    const { keyA, keyB } = this.canonicalSideKeys(
+    const { actorKey, targetKey } = this.intentFeedKeys(
       namespaceId,
-      ourSide,
-      context.localUser,
       context.peer,
+      context.localUser,
     );
     const result = await tx.execute<{
       intentChanged: boolean;
@@ -508,27 +513,34 @@ export class ReceivedUserIntentService {
         threadId,
         namespaceId,
         localDomain: 'local',
-        keyA,
-        keyB,
-        actorSide: peerSide,
-        reverseSide: ourSide,
+        actorKey,
+        targetKey,
         actorAccount: context.peer.account,
+        actorDomain: context.peer.domain,
+        actorNamespaceId: namespaceId,
         targetAccount: context.localUser.account,
         targetDomain: 'local',
         targetNamespaceId: 0,
-        note: wire.note,
+        note: wireIntent.note,
         requestedAt: intent.requestedAt,
         expiresAt: intent.expiresAt,
         authoredSql: receivedUserIntentWriteSql({
-          pairId,
-          authorSide: peerSide,
+          author: {
+            account: context.peer.account,
+            namespaceId: namespaceId,
+          },
+          receiver: {
+            account: context.localUser.account,
+            namespaceId: 0,
+          },
           status: 'REQUESTED',
-          profileRev: wire.profileRev,
-          note: wire.note,
+          profileNamespaceId: wireIntent.profileNamespaceId,
+          profileRev: wireIntent.profileRev,
+          note: wireIntent.note,
           requestedAt: intent.requestedAt,
           expiresAt: intent.expiresAt,
-          messageEndSeq: wire.messageEndSeq,
-          tombstoneEndSeq: wire.tombstoneEndSeq,
+          messageEndSeq: wireIntent.messageEndSeq,
+          tombstoneEndSeq: wireIntent.tombstoneEndSeq,
         }),
       }),
     );
@@ -553,7 +565,8 @@ export class ReceivedUserIntentService {
   private async applyRevocationInTx(
     tx: DatabaseTransaction,
     context: {
-      wire: {
+      wireIntent: {
+        profileNamespaceId: number;
         profileRev: number;
         note: string;
         messageEndSeq: number;
@@ -561,8 +574,6 @@ export class ReceivedUserIntentService {
       };
       pairId: bigint;
       threadId: number;
-      ourSide: 'A' | 'B';
-      peerSide: 'A' | 'B';
       localUser: Endpoint;
       peer: Endpoint;
       row: UserIntentAuthorizationRow;
@@ -571,13 +582,12 @@ export class ReceivedUserIntentService {
       localUserId: number;
     },
   ): Promise<ReceivedUserIntentResult> {
-    const { wire, pairId, threadId, ourSide, peerSide } = context;
+    const { wireIntent, pairId, threadId } = context;
     const namespaceId = context.peer.namespaceId;
-    const { keyA, keyB } = this.canonicalSideKeys(
+    const { actorKey, targetKey } = this.intentFeedKeys(
       namespaceId,
-      ourSide,
-      context.localUser,
       context.peer,
+      context.localUser,
     );
     const result = await tx.execute<{
       pairChanged: boolean;
@@ -588,23 +598,29 @@ export class ReceivedUserIntentService {
         threadId,
         namespaceId,
         localDomain: 'local',
-        keyA,
-        keyB,
-        actorSide: peerSide,
-        reverseSide: ourSide,
+        actorKey,
+        targetKey,
         actorAccount: context.peer.account,
         actorDomain: context.peer.domain,
+        actorNamespaceId: namespaceId,
         targetAccount: context.localUser.account,
         targetDomain: 'local',
         targetNamespaceId: 0,
         localActorId: context.localUserId,
         localTargetId: null,
         authoredSql: receivedUserIntentWriteSql({
-          pairId,
-          authorSide: peerSide,
+          author: {
+            account: context.peer.account,
+            namespaceId: namespaceId,
+          },
+          receiver: {
+            account: context.localUser.account,
+            namespaceId: 0,
+          },
           status: 'REVOKED',
-          profileRev: wire.profileRev,
-          note: wire.note,
+          profileNamespaceId: wireIntent.profileNamespaceId,
+          profileRev: wireIntent.profileRev,
+          note: wireIntent.note,
           requestedAt: null,
           expiresAt: null,
         }),
@@ -652,20 +668,16 @@ export class ReceivedUserIntentService {
     for (const peerDomain of result.peers.keys()) context.peers.add(peerDomain);
   }
 
-  /** Feed compaction keys derive from the canonical pair sides, never from
-   * the command's local/remote roles: a local-user-derived keyA swaps both
-   * slots whenever the local user sits on side B and splits the row. */
-  private canonicalSideKeys(
+  /** Feed compaction keys follow the direction each key names: the wire
+   * author (the peer) and the local target. */
+  private intentFeedKeys(
     namespaceId: number,
-    ourSide: 'A' | 'B',
-    localUser: Endpoint,
-    peer: Endpoint,
-  ): { keyA: string; keyB: string } {
-    const sideA = ourSide === 'A' ? localUser : peer;
-    const sideB = ourSide === 'A' ? peer : localUser;
+    actor: Endpoint,
+    target: Endpoint,
+  ): { actorKey: string; targetKey: string } {
     return {
-      keyA: userIntentCompactionKey(namespaceId, sideA, sideB),
-      keyB: userIntentCompactionKey(namespaceId, sideB, sideA),
+      actorKey: userIntentCompactionKey(namespaceId, actor, target),
+      targetKey: userIntentCompactionKey(namespaceId, target, actor),
     };
   }
 

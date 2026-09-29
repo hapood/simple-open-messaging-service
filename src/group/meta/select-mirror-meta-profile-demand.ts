@@ -9,12 +9,12 @@ import type {
 
 /**
  * Select the snapshot-only profile work caused by one committed mirrored Meta
- * item. The mirror group's namespace is the demand namespace: the member's
+ * item. The mirror group's namespace is the publisher namespace: the member's
  * address is the target, but the mirror is the server asking for the
  * group-member profile. Meta consumption never creates projection work.
  */
 export function selectMirrorMetaProfileDemand(
-  group: Pick<MirrorGroupAddress, 'account' | 'namespaceId'>,
+  group: Pick<MirrorGroupAddress, 'account' | 'publisherNamespaceId'>,
   item: MirrorMetaReplicatedItem,
 ): ProfilePrefetchDemand | null {
   // The item has already passed the mirror wire-boundary normalization. A
@@ -28,9 +28,10 @@ export function selectMirrorMetaProfileDemand(
     return null;
 
   return {
-    namespaceId: group.namespaceId,
+    publisherNamespaceId: group.publisherNamespaceId,
     lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
     target: {
+      profileNamespaceId: item.profileNamespaceId,
       account: item.account,
       domain: item.domain,
       rev: item.profileRev,

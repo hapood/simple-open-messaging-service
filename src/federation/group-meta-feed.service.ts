@@ -27,7 +27,7 @@ export type GroupMetaFeedItem =
   | {
       feedId: number;
       operation: 'GROUP_PROFILE';
-      body: { profileRev: number };
+      body: { namespaceId: number; profileRev: number };
     }
   | {
       feedId: number;
@@ -121,11 +121,33 @@ export class FederationGroupMetaFeedService {
         });
         return {
           ...page,
-          items: page.items.map((item) =>
-            'domain' in item && item.domain === 'local'
+          items: page.items.map((item): GroupMetaFeedItem => {
+            if (item.operation === 'GROUP_PROFILE')
+              return {
+                feedId: item.feedId,
+                operation: 'GROUP_PROFILE',
+                body: {
+                  namespaceId: item.body.profileNamespaceId,
+                  profileRev: item.body.profileRev,
+                },
+              };
+            if (item.operation === 'MEMBER_UPSERT') {
+              const { profileNamespaceId, ...body } = item.body;
+              return {
+                ...item,
+                ...('domain' in item && item.domain === 'local'
+                  ? { domain: this.ourDomain }
+                  : {}),
+                body: {
+                  ...body,
+                  namespaceId: Number(profileNamespaceId),
+                },
+              };
+            }
+            return 'domain' in item && item.domain === 'local'
               ? { ...item, domain: this.ourDomain }
-              : item,
-          ),
+              : item;
+          }),
         };
       },
       { isolationLevel: 'repeatable read', accessMode: 'read only' },

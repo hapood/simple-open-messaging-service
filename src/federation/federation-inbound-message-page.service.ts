@@ -133,6 +133,20 @@ export class FederationInboundMessagePageService {
       await tx.execute(sql.raw(`SAVEPOINT ${savepoint}`));
       try {
         this.assertFederatedMessageEnvelope(item);
+        if (
+          'author' in item &&
+          item.author.domain === 'local' &&
+          item.namespaceId > 0
+        ) {
+          this.logger.warn(
+            `discarded federated message with invalid local domain and positive namespace: ${federatedMessageLogContext(
+              domain,
+              item,
+              'LOCAL_DOMAIN_POSITIVE_NAMESPACE',
+            )}`,
+          );
+          continue;
+        }
         if ('author' in item && item.author.domain === 'local') {
           this.logger.warn(
             `normalized a federated group-message author from the local persistence domain to its authenticated peer domain: ${federatedMessageLogContext(
@@ -143,6 +157,7 @@ export class FederationInboundMessagePageService {
           );
         }
         const author = this.federatedMessageAuthor(item, domain);
+        let profileNamespaceId = item.namespaceId;
         if (!isValidSomfpDomain(author.domain)) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
@@ -163,6 +178,8 @@ export class FederationInboundMessagePageService {
         const hasOriginSeq = item.originSeq !== null;
         const hasOriginCreatedAt = item.originCreatedAt !== null;
         if (
+          !Number.isSafeInteger(item.namespaceId) ||
+          item.namespaceId < 0 ||
           !Number.isSafeInteger(item.seq) ||
           item.seq < 1 ||
           hasOriginSeq !== hasOriginCreatedAt ||
@@ -174,7 +191,7 @@ export class FederationInboundMessagePageService {
         ) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
-            'missed message has invalid seq coordinate',
+            'missed message has invalid namespace or seq coordinate',
             HttpStatus.BAD_REQUEST,
           );
         }
@@ -184,6 +201,16 @@ export class FederationInboundMessagePageService {
           domain,
           token.namespaceId,
         );
+        // The route resolver canonicalizes receipt/self-authored identities to
+        // this server's local persistence domain. Once the stored creator is
+        // local, the profile subject namespace is always zero; the remote wire
+        // namespace remains only the publisher/source coordinate.
+        if (
+          route.creatorDomain === 'local' ||
+          route.creatorDomain === this.config.domain
+        ) {
+          profileNamespaceId = 0;
+        }
         if (
           expectedThreadId !== undefined &&
           route.threadId !== expectedThreadId
@@ -473,6 +500,7 @@ export class FederationInboundMessagePageService {
           },
           fetchedFromDomain: domain,
           namespaceId: token.namespaceId,
+          profileNamespaceId,
           message: {
             originSeq: item.seq,
             profileRev: item.profileRev,
@@ -527,12 +555,14 @@ export class FederationInboundMessagePageService {
           item,
           stored.message,
           token.namespaceId,
+          profileNamespaceId,
         );
         const profileEvidenceProjection =
           selectInboundMessageProfileEvidenceProjection(
             item,
             stored.message,
             token.namespaceId,
+            profileNamespaceId,
           );
         effects.push({
           kind: 'message',

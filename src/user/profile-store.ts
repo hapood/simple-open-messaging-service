@@ -15,9 +15,10 @@ export async function writeProfileSnapshotInTx(
   if (inserted) return;
   const existing = await tx.query.profileTable.findFirst({
     where: and(
+      eq(profileTable.publisherNamespaceId, snapshot.publisherNamespaceId),
       eq(profileTable.account, snapshot.account),
       eq(profileTable.domain, snapshot.domain),
-      eq(profileTable.namespaceId, snapshot.namespaceId),
+      eq(profileTable.profileNamespaceId, snapshot.profileNamespaceId),
       eq(profileTable.profileRev, snapshot.profileRev),
     ),
   });

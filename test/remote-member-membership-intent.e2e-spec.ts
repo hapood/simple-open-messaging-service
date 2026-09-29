@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
@@ -106,13 +106,11 @@ describe('remote member membership intents on the authoritative group', () => {
         kind: 'GROUP_MEMBER',
         endpointAType: 'GROUP',
         endpointAAccount: group!.account,
-        endpointADomain: 'local',
+        // The locally hosted group always sits on side A at namespace 0; the
+        // remote member carries its own namespace on side B.
+        endpointANamespaceId: 0,
         endpointBType: 'USER',
         endpointBAccount: memberAccount,
-        endpointBDomain: PEER_DOMAIN,
-        // A remote member's pair federates through the member's namespace on
-        // both endpoints (matches mintGroupMemberPairInTx).
-        endpointANamespaceId: namespaceId,
         endpointBNamespaceId: namespaceId,
         threadId: thread!.id,
         active: completed,
@@ -123,8 +121,10 @@ describe('remote member membership intents on the authoritative group', () => {
     if (completed)
       await database.db.insert(tables.relationshipIntent).values([
         {
-          pairId: pair!.id,
-          authorSide: 'A',
+          authorAccount: group!.account,
+          authorNamespaceId: 0,
+          receiverAccount: memberAccount,
+          receiverNamespaceId: namespaceId,
           status: 'ACCEPTED',
           profileRev: 1,
           note: '',
@@ -134,8 +134,10 @@ describe('remote member membership intents on the authoritative group', () => {
           expiresAt: null,
         },
         {
-          pairId: pair!.id,
-          authorSide: 'B',
+          authorAccount: memberAccount,
+          authorNamespaceId: namespaceId,
+          receiverAccount: group!.account,
+          receiverNamespaceId: 0,
           status: 'ACCEPTED',
           profileRev: 3,
           note: 'op-apply',
@@ -164,11 +166,9 @@ describe('remote member membership intents on the authoritative group', () => {
       kind: 'GROUP_MEMBER',
       endpointAType: 'GROUP',
       endpointAAccount: group!.account,
-      endpointADomain: 'local',
       endpointANamespaceId: 0,
       endpointBType: 'USER',
       endpointBAccount: owner.account,
-      endpointBDomain: 'local',
       endpointBNamespaceId: 0,
       threadId: thread!.id,
       active: true,
@@ -191,19 +191,39 @@ describe('remote member membership intents on the authoritative group', () => {
   const intentsOf = (fixture: Fixture) =>
     database.db
       .select({
-        authorSide: tables.relationshipIntent.authorSide,
+        authorAccount: tables.relationshipIntent.authorAccount,
         status: tables.relationshipIntent.status,
         messageEndSeq: tables.relationshipIntent.messageEndSeq,
       })
       .from(tables.relationshipIntent)
-      .innerJoin(
-        tables.relationshipPair,
-        eq(tables.relationshipPair.id, tables.relationshipIntent.pairId),
-      )
       .where(
-        and(
-          eq(tables.relationshipPair.threadId, fixture.threadId),
-          eq(tables.relationshipPair.endpointBAccount, fixture.member.account),
+        or(
+          // group-authored direction
+          and(
+            eq(tables.relationshipIntent.authorAccount, fixture.groupAccount),
+            eq(tables.relationshipIntent.authorNamespaceId, 0),
+            eq(
+              tables.relationshipIntent.receiverAccount,
+              fixture.member.account,
+            ),
+            eq(
+              tables.relationshipIntent.receiverNamespaceId,
+              fixture.member.namespaceId,
+            ),
+          ),
+          // member-authored direction
+          and(
+            eq(
+              tables.relationshipIntent.authorAccount,
+              fixture.member.account,
+            ),
+            eq(
+              tables.relationshipIntent.authorNamespaceId,
+              fixture.member.namespaceId,
+            ),
+            eq(tables.relationshipIntent.receiverAccount, fixture.groupAccount),
+            eq(tables.relationshipIntent.receiverNamespaceId, 0),
+          ),
         ),
       );
 
@@ -272,8 +292,8 @@ describe('remote member membership intents on the authoritative group', () => {
   it('does not invent a group direction when a remote applicant withdraws', async () => {
     const fixture = await seedPendingApplication();
     expect(
-      (await intentsOf(fixture)).map((intent) => intent.authorSide),
-    ).toEqual(['B']);
+      (await intentsOf(fixture)).map((intent) => intent.authorAccount),
+    ).toEqual([fixture.member.account]);
     const [before] = await database.db
       .select({ endId: tables.identityNamespace.stateFeedEndId })
       .from(tables.identityNamespace)
@@ -286,10 +306,10 @@ describe('remote member membership intents on the authoritative group', () => {
     expect(result.routed).toBe('rejection');
     expect(
       (await intentsOf(fixture)).map((intent) => [
-        intent.authorSide,
+        intent.authorAccount,
         intent.status,
       ]),
-    ).toEqual([['B', 'REVOKED']]);
+    ).toEqual([[fixture.member.account, 'REVOKED']]);
     expect(await groupPeerIntentRows(fixture)).toEqual([]);
     const [after] = await database.db
       .select({ endId: tables.identityNamespace.stateFeedEndId })
@@ -315,8 +335,10 @@ describe('remote member membership intents on the authoritative group', () => {
       );
     const requestedAt = new Date();
     await database.db.insert(tables.relationshipIntent).values({
-      pairId: pair!.id,
-      authorSide: 'A',
+      authorAccount: fixture.groupAccount,
+      authorNamespaceId: 0,
+      receiverAccount: fixture.member.account,
+      receiverNamespaceId: fixture.member.namespaceId,
       status: 'REQUESTED',
       profileRev: 1,
       note: 'invitation',
@@ -333,12 +355,12 @@ describe('remote member membership intents on the authoritative group', () => {
     expect(result.routed).toBe('rejection');
     expect(
       (await intentsOf(fixture)).map((intent) => [
-        intent.authorSide,
+        intent.authorAccount,
         intent.status,
       ]),
     ).toEqual([
-      ['A', 'REVOKED'],
-      ['B', 'REVOKED'],
+      [fixture.groupAccount, 'REVOKED'],
+      [fixture.member.account, 'REVOKED'],
     ]);
     const feed = await groupPeerIntentRows(fixture);
     expect(feed).toHaveLength(1);
@@ -368,10 +390,13 @@ describe('remote member membership intents on the authoritative group', () => {
     expect(result.routed).toBe('completion');
 
     const intents = await intentsOf(fixture);
-    expect(intents.find((row) => row.authorSide === 'A')!.status).toBe(
-      'ACCEPTED',
-    );
-    expect(intents.find((row) => row.authorSide === 'B')).toMatchObject({
+    expect(
+      intents.find((row) => row.authorAccount === fixture.groupAccount)!
+        .status,
+    ).toBe('ACCEPTED');
+    expect(
+      intents.find((row) => row.authorAccount === fixture.member.account),
+    ).toMatchObject({
       status: 'ACCEPTED',
       messageEndSeq: 7,
     });
@@ -412,7 +437,22 @@ describe('remote member membership intents on the authoritative group', () => {
         requestedAt,
         expiresAt: new Date(requestedAt.getTime() + 60_000),
       })
-      .where(eq(tables.relationshipIntent.pairId, pair!.id));
+      .where(
+        or(
+          and(
+            eq(tables.relationshipIntent.authorAccount, fixture.groupAccount),
+            eq(tables.relationshipIntent.authorNamespaceId, 0),
+            eq(tables.relationshipIntent.receiverAccount, fixture.member.account),
+            eq(tables.relationshipIntent.receiverNamespaceId, fixture.member.namespaceId),
+          ),
+          and(
+            eq(tables.relationshipIntent.authorAccount, fixture.member.account),
+            eq(tables.relationshipIntent.authorNamespaceId, fixture.member.namespaceId),
+            eq(tables.relationshipIntent.receiverAccount, fixture.groupAccount),
+            eq(tables.relationshipIntent.receiverNamespaceId, 0),
+          ),
+        ),
+      );
     await database.db
       .delete(tables.groupMetaMemberFeed)
       .where(
@@ -463,8 +503,13 @@ describe('remote member membership intents on the authoritative group', () => {
       .set({ status: 'REVOKED' })
       .where(
         and(
-          eq(tables.relationshipIntent.pairId, pair!.id),
-          eq(tables.relationshipIntent.authorSide, 'A'),
+          eq(tables.relationshipIntent.authorAccount, fixture.groupAccount),
+          eq(tables.relationshipIntent.authorNamespaceId, 0),
+          eq(tables.relationshipIntent.receiverAccount, fixture.member.account),
+          eq(
+            tables.relationshipIntent.receiverNamespaceId,
+            fixture.member.namespaceId,
+          ),
         ),
       );
     await database.db
@@ -482,12 +527,14 @@ describe('remote member membership intents on the authoritative group', () => {
     });
     expect(result.routed).toBe('noop:dropped-ack');
     const intents = await intentsOf(fixture);
-    expect(intents.find((row) => row.authorSide === 'A')!.status).toBe(
-      'REVOKED',
-    );
-    expect(intents.find((row) => row.authorSide === 'B')!.status).toBe(
-      'ACCEPTED',
-    );
+    expect(
+      intents.find((row) => row.authorAccount === fixture.groupAccount)!
+        .status,
+    ).toBe('REVOKED');
+    expect(
+      intents.find((row) => row.authorAccount === fixture.member.account)!
+        .status,
+    ).toBe('ACCEPTED');
     expect((await pairOf(fixture)).active).toBe(false);
     expect(await groupPeerIntentRows(fixture)).toEqual([]);
     const [after] = await database.db

@@ -126,7 +126,7 @@ describe('account controls and exact profiles', () => {
       .where(
         and(
           eq(profileTable.account, state!.account),
-          eq(profileTable.namespaceId, 0),
+          eq(profileTable.profileNamespaceId, 0),
         ),
       )
       .orderBy(profileTable.profileRev);

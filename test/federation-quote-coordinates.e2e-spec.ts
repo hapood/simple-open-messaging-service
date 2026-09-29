@@ -124,8 +124,8 @@ describe('federation quote coordinates across three persisted node views', () =>
         creatorDomain: 'local',
         updatedAt: new Date(),
         ...overrides,
-        creatorNamespaceId:
-          overrides.creatorNamespaceId ??
+        profileNamespaceId:
+          overrides.profileNamespaceId ??
           (overrides.creatorDomain && overrides.creatorDomain !== 'local'
             ? Number(overrides.sourceNamespaceId)
             : 0),

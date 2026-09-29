@@ -69,7 +69,7 @@ describe('FederationPendingMediaPromoter', () => {
         sourceNamespaceId: namespace.id,
         creatorAccount: 'alice',
         creatorDomain: 'peer.test',
-        creatorNamespaceId: namespace.id,
+        profileNamespaceId: namespace.id,
         contentType: 'IMAGE',
         content: JSON.stringify({
           url: `/uploads/msg-assets/aa/aa/${digest}`,

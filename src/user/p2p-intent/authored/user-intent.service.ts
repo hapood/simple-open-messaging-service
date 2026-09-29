@@ -141,8 +141,6 @@ interface ValidatedIntentBase {
   readonly params: UserIntentCommand;
   readonly pairId: bigint;
   readonly threadId: number;
-  readonly actorSide: 'A' | 'B';
-  readonly reverseSide: 'A' | 'B';
   readonly actor: Endpoint;
   readonly target: Endpoint;
   readonly localActorId: number;
@@ -344,19 +342,9 @@ export class UserIntentService {
       },
     ]);
 
-    const lockedPair = await lockOrMintUserPairInTx(
-      tx,
-      pairId,
-      actor,
-      target,
-      targetNamespaceId,
-    );
+    const lockedPair = await lockOrMintUserPairInTx(tx, pairId, actor, target);
     pairId = lockedPair.pairId;
     located.pairThreadId = lockedPair.threadId;
-    const actorSide: 'A' | 'B' =
-      compareEndpoints(actor, target) < 0 ? 'A' : 'B';
-    const reverseSide: 'A' | 'B' = actorSide === 'A' ? 'B' : 'A';
-
     if (params.decision === 'REVOKED' && located.pairThreadId === null)
       return this.reject(
         'INTENT_NOT_FOUND',
@@ -381,7 +369,13 @@ export class UserIntentService {
       shell,
     );
     await tx.execute(
-      sql`SELECT id FROM "RelationshipIntent" WHERE "pairId" = ${pairId} ORDER BY "authorSide" FOR NO KEY UPDATE`,
+      sql`SELECT 1 FROM "RelationshipIntent"
+      WHERE ("authorAccount" = ${actor.account} AND "authorNamespaceId" = ${actor.namespaceId}
+          AND "receiverAccount" = ${target.account} AND "receiverNamespaceId" = ${target.namespaceId})
+        OR ("authorAccount" = ${target.account} AND "authorNamespaceId" = ${target.namespaceId}
+          AND "receiverAccount" = ${actor.account} AND "receiverNamespaceId" = ${actor.namespaceId})
+      ORDER BY "authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId"
+      FOR NO KEY UPDATE`,
     );
     // One post-lock authorization read; the participant reset below gates on it
     // so an already-active pair's no-op path leaves participant state alone.
@@ -390,10 +384,11 @@ export class UserIntentService {
         userIntentAuthorizationSql({
           pairId,
           actorUserId: params.userId,
+          actorAccount: actor.account,
+          actorNamespaceId: actor.namespaceId,
           targetAccount,
           targetDomain,
-          actorSide,
-          reverseSide,
+          targetNamespaceId: target.namespaceId,
         }),
       )
     ).rows[0];
@@ -432,8 +427,6 @@ export class UserIntentService {
       params,
       pairId,
       threadId: shell,
-      actorSide,
-      reverseSide,
       actor,
       target,
       localActorId: params.userId,
@@ -609,7 +602,6 @@ export class UserIntentService {
     clientUpdates: PendingClientStateFeedUpdate[],
   ): Promise<Map<string, bigint>> {
     const result = await context.tx.execute<{
-      requestId: string;
       intentChanged: boolean;
       clientUpdates: Array<{ userId: number; feedId: number }>;
       peerFeedId: string | null;
@@ -622,7 +614,6 @@ export class UserIntentService {
     clientUpdates: PendingClientStateFeedUpdate[],
   ): Promise<Map<string, bigint>> {
     const result = await context.tx.execute<{
-      requestId: string;
       intentChanged: boolean;
       reverseUpgraded: boolean;
       pairChanged: boolean;
@@ -648,7 +639,6 @@ export class UserIntentService {
     clientUpdates: PendingClientStateFeedUpdate[],
   ): Promise<Map<string, bigint>> {
     const result = await context.tx.execute<{
-      requestId: string;
       intentChanged: boolean;
       pairChanged: boolean;
       audienceChanged: boolean;
@@ -725,29 +715,22 @@ function feedInput(base: {
   threadId: number;
   actor: Endpoint;
   target: Endpoint;
-  actorSide: 'A' | 'B';
   localActorId: number;
   localTargetId: number | null;
 }) {
   const namespaceId = Math.max(base.actor.namespaceId, base.target.namespaceId);
-  // The per-side compaction keys are keyed by the canonical pair side, not by
-  // the command actor: side A's feed row names endpoint A as its author, and
-  // received-intent writes use the same display columns. Deriving keyA from
-  // the actor would swap both keys whenever the actor sits on side B and split
-  // the directional state.
-  const sideA = base.actorSide === 'A' ? base.actor : base.target;
-  const sideB = base.actorSide === 'A' ? base.target : base.actor;
   return {
     pairId: base.pairId,
     threadId: base.threadId,
     namespaceId,
     localDomain: base.actor.domain,
-    keyA: userIntentCompactionKey(namespaceId, sideA, sideB),
-    keyB: userIntentCompactionKey(namespaceId, sideB, sideA),
-    actorSide: base.actorSide,
-    reverseSide: (base.actorSide === 'A' ? 'B' : 'A') as 'A' | 'B',
+    // The compaction keys follow the direction each key names, independent of
+    // which canonical pair side the actor occupies.
+    actorKey: userIntentCompactionKey(namespaceId, base.actor, base.target),
+    targetKey: userIntentCompactionKey(namespaceId, base.target, base.actor),
     actorAccount: base.actor.account,
     actorDomain: base.actor.domain,
+    actorNamespaceId: base.actor.namespaceId,
     targetAccount: base.target.account,
     targetDomain: base.target.domain,
     targetNamespaceId: base.target.namespaceId,

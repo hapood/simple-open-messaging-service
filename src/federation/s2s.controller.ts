@@ -35,6 +35,7 @@ import {
   requireDomain,
   requireSafeDecimal,
   requireSha256Hex,
+  requireSubjectDomain,
   requireUserAccount,
 } from './federation-resource-request.js';
 
@@ -515,7 +516,11 @@ export class S2sController {
       path.memberAccount,
       'memberAccount',
     );
-    const memberDomain = requireDomain(path.memberDomain, 'memberDomain');
+    const memberDomain = requireSubjectDomain(
+      path.memberDomain,
+      'memberDomain',
+      profileNamespaceId,
+    );
     const rev = requireSafeDecimal(path.profileRev, 'profileRev');
     if (rev < 1) {
       throw new BusinessException(

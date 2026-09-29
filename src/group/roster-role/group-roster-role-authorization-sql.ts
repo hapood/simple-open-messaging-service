@@ -86,7 +86,7 @@ export function groupRosterRoleAuthorizationSql(input: {
         SELECT 1 FROM "RelationshipPair" pair
         WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = ${input.threadId}
           AND pair.active AND pair."endpointBType" = 'USER'
-          AND pair."endpointBDomain" = 'local'
+          AND pair."endpointBNamespaceId" = 0
           AND pair."endpointBAccount" = operator.account
       ) AND EXISTS (
         SELECT 1 FROM "AccountThreadState" participant
@@ -103,7 +103,6 @@ export function groupRosterRoleAuthorizationSql(input: {
         WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = ${input.threadId}
           AND pair.active AND pair."endpointBType" = 'USER'
           AND pair."endpointBAccount" = ${input.targetAccount}
-          AND pair."endpointBDomain" = ${input.targetDomain}
           AND pair."endpointBNamespaceId" = target_roster."namespaceId"
       ) AS "targetActive",
       local_target.id AS "localTargetId"

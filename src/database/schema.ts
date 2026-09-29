@@ -908,8 +908,8 @@ export const message = pgTable(
     /** Author identity snapshot. Server notifications use the reserved $system@local identity. */
     creatorAccount: varchar({ length: 31 }),
     creatorDomain: varchar({ length: 63 }),
-    /** Subject namespace is independent of the stream which delivered the message. */
-    creatorNamespaceId: integer().default(0).notNull(),
+    /** Publisher-scoped author profile namespace from the message envelope. */
+    profileNamespaceId: integer().default(0).notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -933,25 +933,25 @@ export const message = pgTable(
     localState: messageLocalState().default('READY').notNull(),
   },
   (table) => [
-    foreignKey({
-      columns: [table.creatorNamespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'Message_creatorNamespaceId_fkey',
-    }).onDelete('restrict'),
-    check(
-      'Message_creator_namespace_check',
-      sql`${table.creatorDomain} IS NULL OR ((${table.creatorDomain} = 'local') = (${table.creatorNamespaceId} = 0))`,
-    ),
     check('Message_seq_check', sql`${table.seq} > 0`),
     check('Message_profileRev_check', sql`${table.profileRev} >= 0`),
     check(
+      'Message_profile_namespace_check',
+      sql`${table.creatorDomain} IS NULL OR ((${table.creatorDomain} = 'local') = (${table.profileNamespaceId} = 0))`,
+    ),
+    check(
       'Message_system_creator_check',
-      sql`${table.creatorAccount} IS NOT NULL AND ${table.creatorDomain} IS NOT NULL AND ((${table.contentType} = 'SYSTEM' AND ${table.creatorAccount} = '$system' AND ${table.creatorDomain} = 'local' AND ${table.creatorNamespaceId} = 0 AND ${table.profileRev} = 0 AND ${table.sourceNamespaceId} = 0) OR (${table.contentType} <> 'SYSTEM' AND ${table.creatorAccount} <> '$system'))`,
+      sql`${table.creatorAccount} IS NOT NULL AND ${table.creatorDomain} IS NOT NULL AND ((${table.contentType} = 'SYSTEM' AND ${table.creatorAccount} = '$system' AND ${table.creatorDomain} = 'local' AND ${table.profileNamespaceId} = 0 AND ${table.profileRev} = 0 AND ${table.sourceNamespaceId} = 0) OR (${table.contentType} <> 'SYSTEM' AND ${table.creatorAccount} <> '$system'))`,
     ),
     check(
       'Message_origin_seq_check',
       sql`${table.sourceNamespaceId} = 0 OR (${table.originSeq} IS NOT NULL AND ${table.originSeq} > 0)`,
     ),
+    foreignKey({
+      columns: [table.profileNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'Message_profileNamespaceId_fkey',
+    }).onDelete('restrict'),
     uniqueIndex('Message_clientMessageId_key').using(
       'btree',
       table.clientMessageId.asc().nullsLast().op('text_ops'),
@@ -1553,7 +1553,10 @@ export const profileTable = pgTable(
   {
     account: varchar({ length: 31 }).notNull(),
     domain: varchar({ length: 63 }).notNull(),
-    namespaceId: integer().notNull(),
+    /** Local publisher namespace that disclosed or owns this immutable snapshot. */
+    publisherNamespaceId: integer().notNull(),
+    /** Publisher-scoped profile subject namespace. */
+    profileNamespaceId: integer().notNull(),
     profileRev: integer().notNull(),
     displayName: varchar({ length: 31 }).notNull(),
     avatar: text().default('').notNull(),
@@ -1565,17 +1568,18 @@ export const profileTable = pgTable(
   (table) => [
     primaryKey({
       columns: [
+        table.publisherNamespaceId,
         table.account,
         table.domain,
-        table.namespaceId,
+        table.profileNamespaceId,
         table.profileRev,
       ],
       name: 'Profile_pkey',
     }),
     foreignKey({
-      columns: [table.namespaceId],
+      columns: [table.publisherNamespaceId],
       foreignColumns: [identityNamespace.id],
-      name: 'Profile_namespaceId_fkey',
+      name: 'Profile_publisherNamespaceId_fkey',
     }).onDelete('restrict'),
     check('Profile_profileRev_check', sql`${table.profileRev} > 0`),
   ],
@@ -1961,16 +1965,24 @@ export const peerStateFeedPullCursor = pgTable(
   ],
 );
 
-/** One authoritative directed request. A and B may each retain an independent row and note. */
+/** One authoritative directed request as an independent fact: the initiator
+ * account requests the receiver account, both fully namespaced. Rows are not
+ * foreign-keyed to RelationshipPair — the pair is the relationship fact and
+ * is matched by endpoint coordinates. The '!' account prefix separates USER
+ * and GROUP endpoints, so no explicit endpoint type is stored. */
 export const relationshipIntent = pgTable(
   'RelationshipIntent',
   {
-    id: bigserial({ mode: 'bigint' }).notNull(),
-    pairId: bigint({ mode: 'bigint' }).notNull(),
-    authorSide: varchar({ length: 1 }).notNull(),
+    authorAccount: varchar({ length: 31 }).notNull(),
+    /** The initiator endpoint's own identity namespace; 0 for local authors. */
+    authorNamespaceId: integer().notNull(),
+    receiverAccount: varchar({ length: 31 }).notNull(),
+    /** The receiver endpoint's own identity namespace; 0 for local receivers. */
+    receiverNamespaceId: integer().notNull(),
     status: relationshipIntentStatus().notNull(),
     /** Immutable author profile reference retained for the current request flow. */
-    profileRev: integer().default(0).notNull(),
+    profileNamespaceId: integer().notNull(),
+    profileRev: integer().notNull(),
     messageEndSeq: integer().notNull(),
     tombstoneEndSeq: integer().notNull(),
     note: varchar({ length: 255 }).default('').notNull(),
@@ -1981,23 +1993,40 @@ export const relationshipIntent = pgTable(
       .notNull(),
   },
   (table) => [
-    uniqueIndex('RelationshipIntent_id_key').on(table.id),
     primaryKey({
-      columns: [table.pairId, table.authorSide],
+      columns: [
+        table.authorAccount,
+        table.authorNamespaceId,
+        table.receiverAccount,
+        table.receiverNamespaceId,
+      ],
       name: 'RelationshipIntent_pkey',
     }),
     foreignKey({
-      columns: [table.pairId],
-      foreignColumns: [relationshipPair.id],
-      name: 'RelationshipIntent_pairId_fkey',
-    }).onDelete('cascade'),
+      columns: [table.authorNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'RelationshipIntent_authorNamespaceId_fkey',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.receiverNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'RelationshipIntent_receiverNamespaceId_fkey',
+    }).onDelete('restrict'),
     check(
-      'RelationshipIntent_authorSide_check',
-      sql`${table.authorSide} IN ('A', 'B')`,
+      'RelationshipIntent_author_namespace_check',
+      sql`${table.authorNamespaceId} >= 0`,
+    ),
+    check(
+      'RelationshipIntent_receiver_namespace_check',
+      sql`${table.receiverNamespaceId} >= 0`,
     ),
     check(
       'RelationshipIntent_head_check',
       sql`${table.messageEndSeq} >= 0 AND ${table.tombstoneEndSeq} >= 0`,
+    ),
+    check(
+      'RelationshipIntent_profileNamespaceId_check',
+      sql`${table.profileNamespaceId} >= 0`,
     ),
     check('RelationshipIntent_profileRev_check', sql`${table.profileRev} >= 0`),
     check(
@@ -2016,11 +2045,13 @@ export const relationshipPair = pgTable(
     kind: varchar({ length: 16 }).notNull(),
     endpointAType: varchar({ length: 8 }).notNull(),
     endpointAAccount: varchar({ length: 31 }).notNull(),
-    endpointADomain: varchar({ length: 63 }).notNull(),
-    endpointANamespaceId: integer().default(0).notNull(),
     endpointBType: varchar({ length: 8 }).notNull(),
     endpointBAccount: varchar({ length: 31 }).notNull(),
-    endpointBDomain: varchar({ length: 63 }).notNull(),
+    /** Side A is always the local endpoint, so its namespace is pinned 0.
+     * Side B carries the remote peer's own namespace; 0 when both endpoints
+     * are local. Storing both sides symmetrically keeps coordinate joins free
+     * of which-side-is-local literals. */
+    endpointANamespaceId: integer().default(0).notNull(),
     endpointBNamespaceId: integer().default(0).notNull(),
     threadId: integer(),
     active: boolean().default(false).notNull(),
@@ -2033,25 +2064,18 @@ export const relationshipPair = pgTable(
     unique('RelationshipPair_endpoints_key').on(
       table.endpointAType,
       table.endpointAAccount,
-      table.endpointADomain,
-      table.endpointANamespaceId,
       table.endpointBType,
       table.endpointBAccount,
-      table.endpointBDomain,
       table.endpointBNamespaceId,
     ),
     index('RelationshipPair_endpointA_idx').on(
       table.endpointAType,
       table.endpointAAccount,
-      table.endpointADomain,
-      table.endpointANamespaceId,
       table.active,
     ),
     index('RelationshipPair_endpointB_idx').on(
       table.endpointBType,
       table.endpointBAccount,
-      table.endpointBDomain,
-      table.endpointBNamespaceId,
       table.active,
     ),
     uniqueIndex('RelationshipPair_p2p_threadId_key')
@@ -2086,8 +2110,16 @@ export const relationshipPair = pgTable(
       sql`${table.endpointAType} IN ('USER', 'GROUP') AND ${table.endpointBType} IN ('USER', 'GROUP') AND ((${table.kind} = 'P2P' AND ${table.endpointAType} = 'USER' AND ${table.endpointBType} = 'USER') OR (${table.kind} = 'GROUP_MEMBER' AND ${table.endpointAType} <> ${table.endpointBType}))`,
     ),
     check(
+      'RelationshipPair_local_side_check',
+      sql`${table.endpointANamespaceId} = 0`,
+    ),
+    check(
+      'RelationshipPair_endpoint_namespace_check',
+      sql`${table.endpointBNamespaceId} >= 0`,
+    ),
+    check(
       'RelationshipPair_distinct_endpoints_check',
-      sql`(${table.endpointAType}, ${table.endpointAAccount}, ${table.endpointADomain}) <> (${table.endpointBType}, ${table.endpointBAccount}, ${table.endpointBDomain})`,
+      sql`(${table.endpointAType}, ${table.endpointAAccount}) <> (${table.endpointBType}, ${table.endpointBAccount})`,
     ),
   ],
 );

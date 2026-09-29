@@ -19,7 +19,8 @@ describe('GroupRelationshipFoldService', () => {
     const relationshipIntents = {
       lockGroupMutationInTx: vi.fn().mockResolvedValue({
         id: 1n,
-        endpointB: { domain: 'local' },
+        endpointA: { type: 'GROUP', account: '!group', namespaceId: 0 },
+        endpointB: { type: 'USER', account: 'alice', namespaceId: 0 },
         threadLock: {},
       }),
       writeLockedGroupAuthoredIntentInTx: vi.fn().mockResolvedValue({
@@ -133,7 +134,8 @@ describe('GroupRelationshipFoldService', () => {
     const relationshipIntents = {
       lockGroupMutationInTx: vi.fn().mockResolvedValue({
         id: 1n,
-        endpointB: { domain: 'local' },
+        endpointA: { type: 'GROUP', account: '!group', namespaceId: 0 },
+        endpointB: { type: 'USER', account: 'alice', namespaceId: 0 },
         threadLock: {},
       }),
       writeLockedGroupAuthoredIntentInTx: vi.fn().mockResolvedValue({
@@ -197,7 +199,8 @@ describe('GroupRelationshipFoldService', () => {
     const relationshipIntents = {
       lockGroupMutationInTx: vi.fn().mockResolvedValue({
         id: 1n,
-        endpointB: { domain: 'local' },
+        endpointA: { type: 'GROUP', account: '!group', namespaceId: 0 },
+        endpointB: { type: 'USER', account: 'alice', namespaceId: 0 },
         threadLock: {},
       }),
       setGroupPairActiveInTx: vi
@@ -249,7 +252,8 @@ describe('GroupRelationshipFoldService', () => {
     const relationshipIntents = {
       lockGroupMutationInTx: vi.fn().mockResolvedValue({
         id: 1n,
-        endpointB: { domain: 'local' },
+        endpointA: { type: 'GROUP', account: '!group', namespaceId: 0 },
+        endpointB: { type: 'USER', account: 'alice', namespaceId: 0 },
         threadLock: {},
       }),
       setLockedGroupPairActiveInTx: vi.fn().mockResolvedValue(true),

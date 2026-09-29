@@ -255,7 +255,7 @@ describe('S2sController group member profiles', () => {
   it('passes canonical independent path variables and authenticated signer', async () => {
     const { controller, federation } = target();
     const req = mediaRequest('');
-    req.url = '/s2s/v1/group-member-profiles/%21team/0/alice/member.example/4';
+    req.url = '/s2s/v1/group-member-profiles/%21team/0/alice/local/4';
     expect(await controller.getGroupMemberProfile(req)).toEqual({
       account: 'alice',
       domain: 'member.example',
@@ -265,7 +265,7 @@ describe('S2sController group member profiles', () => {
     });
     expect(federation.getAuthorizedGroupMemberProfile).toHaveBeenCalledWith(
       '!team',
-      'member.example',
+      'local',
       'alice',
       0,
       4,
@@ -280,8 +280,10 @@ describe('S2sController group member profiles', () => {
     for (const url of [
       '/s2s/v1/group-member-profiles/alice/0/bob/member.example/4',
       '/s2s/v1/group-member-profiles/%21team/0/%61lice/member.example/4',
-      '/s2s/v1/group-member-profiles/%21team/0/alice/member.example/0',
-      '/s2s/v1/group-member-profiles/%21team/0/alice/member.example/4?seq=1',
+      '/s2s/v1/group-member-profiles/%21team/0/alice/member.example/4',
+      '/s2s/v1/group-member-profiles/%21team/7/alice/local/4',
+      '/s2s/v1/group-member-profiles/%21team/0/alice/local/0',
+      '/s2s/v1/group-member-profiles/%21team/0/alice/local/4?seq=1',
     ]) {
       req.url = url;
       await expect(controller.getGroupMemberProfile(req)).rejects.toMatchObject(

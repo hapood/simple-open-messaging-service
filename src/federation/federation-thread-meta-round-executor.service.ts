@@ -76,7 +76,7 @@ export class FederationThreadMetaRoundExecutorService {
     const group: MirrorGroupAddress = {
       account: plan.groupAccount,
       domain: peerDomain,
-      namespaceId,
+      publisherNamespaceId: namespaceId,
     };
     try {
       if (windowed) await this.runFullWindow(group, through, plan);
@@ -265,12 +265,16 @@ function validateItem(
   }
   if (item.operation === 'GROUP_PROFILE') {
     requireKeys(item, ['feedId', 'operation', 'body']);
-    requireKeys(item.body, ['profileRev']);
-    if (!isProfileRev(item.body.profileRev))
+    requireKeys(item.body, ['namespaceId', 'profileRev']);
+    if (
+      !isProfileRev(item.body.profileRev) ||
+      !isProfileNamespaceId(item.body.namespaceId)
+    )
       throw new Error('invalid group-meta profile item');
     return {
       feedId,
       operation: 'GROUP_PROFILE',
+      profileNamespaceId: item.body.namespaceId,
       profileRev: item.body.profileRev,
     };
   }
@@ -292,10 +296,11 @@ function validateItem(
     };
   }
   requireKeys(item, ['feedId', 'account', 'domain', 'operation', 'body']);
-  requireKeys(item.body, ['role', 'profileRev']);
+  requireKeys(item.body, ['role', 'namespaceId', 'profileRev']);
   if (
     !Object.values(GroupRole).includes(item.body.role as GroupRole) ||
-    !isProfileRev(item.body.profileRev)
+    !isProfileRev(item.body.profileRev) ||
+    !isProfileNamespaceId(item.body.namespaceId)
   )
     throw new Error('invalid group-meta member body');
   return {
@@ -304,6 +309,7 @@ function validateItem(
     account: item.account,
     domain: item.domain,
     role: item.body.role as GroupRole,
+    profileNamespaceId: item.body.namespaceId as number,
     profileRev: item.body.profileRev as number,
   };
 }
@@ -319,5 +325,9 @@ function requireKeys(value: object, expected: readonly string[]): void {
 }
 
 function isProfileRev(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isProfileNamespaceId(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }

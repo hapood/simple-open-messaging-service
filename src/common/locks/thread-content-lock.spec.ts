@@ -35,7 +35,7 @@ describe('content parent lock ordering', () => {
               },
             ],
           };
-        if (compiled.sql.includes('ORDER BY id'))
+        if (compiled.sql.includes('FROM "RelationshipPair"'))
           return {
             rows: [
               {

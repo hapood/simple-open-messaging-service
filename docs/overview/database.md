@@ -139,15 +139,16 @@ from the replicated Group Meta for a remote group.
 
 ### RelationshipPair and RelationshipIntent
 
-- **RelationshipIntent** — one authored direction (`authorSide=A|B`) per fixed
-  pair, with its own
-  `note`, `requestedAt`, and absolute `expiresAt`. `REQUESTED` is displayable and
-  acceptable only before expiry. Its publisher creates the stable query state
-  before publishing the direction, which immediately grants passive query access
-  to the target peer without enabling content-head notification. The reverse
-  direction remains independent. User/user pairs use P2P threads and user/group pairs use group
-  threads. A received one-sided federation request remains address-keyed and
-  creates no local thread until the user accepts or independently initiates.
+- **RelationshipIntent** — one authored direction identified by
+  `(authorAccount, authorNamespaceId, receiverAccount, receiverNamespaceId)`,
+  with its own `note`, `requestedAt`, and absolute `expiresAt`. `REQUESTED` is
+  displayable and acceptable only before expiry. Its publisher creates the stable
+  query state before publishing the direction, which immediately grants passive
+  query access to the target peer without enabling content-head notification.
+  The reverse direction remains independent. User/user pairs use P2P threads and
+  user/group pairs use group threads. A received one-sided federation request
+  remains address-keyed and creates no local thread until the user accepts or
+  independently initiates.
 - **RelationshipPair.active** — the materialized bilateral fact used by sends,
   content-head publication, and other mutually confirmed operations. It is
   folded from the two intents under a row lock; roster and participant presence

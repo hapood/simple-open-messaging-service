@@ -27,7 +27,6 @@ import {
   federatedPeer,
   peerStateFeed,
   peerStateFeedPullCursor,
-  relationshipIntent,
   relationshipPair,
   federationThreadHistoryGap,
   federationThreadSyncState,
@@ -166,16 +165,6 @@ export const messageAssetRelations = relations(messageAsset, ({ one }) => ({
     references: [messageThread.id],
   }),
 }));
-
-export const relationshipIntentRelations = relations(
-  relationshipIntent,
-  ({ one }) => ({
-    pair: one(relationshipPair, {
-      fields: [relationshipIntent.pairId],
-      references: [relationshipPair.id],
-    }),
-  }),
-);
 
 export const adminActionLogRelations = relations(adminActionLog, ({ one }) => ({
   admin: one(admin, {

@@ -26,6 +26,7 @@ import {
 } from './group-authored-membership-request-sql.js';
 import { admitGroupMembershipProjectionFanoutInTx } from '../shared/group-membership-projection-fanout.js';
 import { mintGroupMemberPairInTx } from '../shared/group-member-pair-mint.js';
+import { lockGroupMemberIntentRowsInTx } from '../shared/group-member-intent-lock.js';
 import { Logger } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { GroupRole } from '../../../database/enums.js';
@@ -320,8 +321,20 @@ export class GroupAuthoredMembershipIntentService {
       .for('no key update');
     if (!lockedPair || lockedPair.threadId !== params.threadId)
       throw new Error('group member pair changed');
-    await tx.execute(
-      sql`SELECT id FROM "RelationshipIntent" WHERE "pairId" = ${pairId} ORDER BY "authorSide" FOR NO KEY UPDATE`,
+    await lockGroupMemberIntentRowsInTx(
+      tx,
+      {
+        account: lockedPair.endpointAType === 'GROUP'
+          ? lockedPair.endpointAAccount : lockedPair.endpointBAccount,
+        namespaceId: lockedPair.endpointAType === 'GROUP'
+          ? lockedPair.endpointANamespaceId : lockedPair.endpointBNamespaceId,
+      },
+      {
+        account: lockedPair.endpointAType === 'GROUP'
+          ? lockedPair.endpointBAccount : lockedPair.endpointAAccount,
+        namespaceId: lockedPair.endpointAType === 'GROUP'
+          ? lockedPair.endpointBNamespaceId : lockedPair.endpointANamespaceId,
+      },
     );
     await this.lockParticipantsInTx(tx, params, member);
     await tx.execute(
@@ -455,13 +468,14 @@ export class GroupAuthoredMembershipIntentService {
     const pairId = await mintGroupMemberPairInTx(tx, {
       threadId: params.threadId,
       groupAccount: located.groupAccount,
-      groupDomain: located.groupDomain,
+      groupNamespaceId: 0,
       memberAccount: member.account,
-      memberDomain: member.domain,
-      namespaceId: member.namespaceId,
+      memberNamespaceId: member.namespaceId,
     });
-    await tx.execute(
-      sql`SELECT id FROM "RelationshipIntent" WHERE "pairId" = ${pairId} ORDER BY "authorSide" FOR NO KEY UPDATE`,
+    await lockGroupMemberIntentRowsInTx(
+      tx,
+      { account: located.groupAccount, namespaceId: 0 },
+      member,
     );
     await this.lockParticipantsInTx(tx, params, member);
     await tx.execute(
@@ -720,7 +734,11 @@ export class GroupAuthoredMembershipIntentService {
         memberNamespaceId: member.namespaceId,
         localMemberId: row.localMemberId,
         projectionDirections: row.projectionDirections,
-        authorSide: 'A',
+        author: { account: row.account, namespaceId: 0 },
+        receiver: {
+          account: member.account,
+          namespaceId: member.namespaceId,
+        },
       },
     });
   }

@@ -111,15 +111,8 @@ export class FederationInboundMessageRouteService {
               SELECT 1 FROM "RelationshipPair" pair
               WHERE pair."threadId" = thread.id
                 AND pair.kind = 'GROUP_MEMBER' AND pair.active = true
-                AND (
-                  (pair."endpointAType" = 'USER'
-                    AND pair."endpointADomain" = ${sourceDomain}
-                    AND pair."endpointANamespaceId" = ${namespaceId})
-                  OR
-                  (pair."endpointBType" = 'USER'
-                    AND pair."endpointBDomain" = ${sourceDomain}
-                    AND pair."endpointBNamespaceId" = ${namespaceId})
-                )
+                AND pair."endpointBType" = 'USER'
+                AND pair."endpointBNamespaceId" = ${namespaceId}
             )
           LIMIT 1
         `);
@@ -158,23 +151,11 @@ export class FederationInboundMessageRouteService {
             AND group_user.domain = 'local'
             AND group_user."namespaceId" = 0
             AND (
-              (pair."endpointAType" = 'GROUP'
-                AND pair."endpointAAccount" = group_user.account
-                AND pair."endpointADomain" = 'local'
-                AND pair."endpointANamespaceId" = ${namespaceId}
-                AND pair."endpointBType" = 'USER'
-                AND pair."endpointBAccount" = ${remoteMemberAccount}
-                AND pair."endpointBDomain" = ${sourceDomain}
-                AND pair."endpointBNamespaceId" = ${namespaceId})
-              OR
-              (pair."endpointBType" = 'GROUP'
-                AND pair."endpointBAccount" = group_user.account
-                AND pair."endpointBDomain" = 'local'
-                AND pair."endpointBNamespaceId" = ${namespaceId}
-                AND pair."endpointAType" = 'USER'
-                AND pair."endpointAAccount" = ${remoteMemberAccount}
-                AND pair."endpointADomain" = ${sourceDomain}
-                AND pair."endpointANamespaceId" = ${namespaceId})
+              pair."endpointAType" = 'GROUP'
+              AND pair."endpointAAccount" = group_user.account
+              AND pair."endpointBType" = 'USER'
+              AND pair."endpointBAccount" = ${remoteMemberAccount}
+              AND pair."endpointBNamespaceId" = ${namespaceId}
             )
           LIMIT 1
           FOR SHARE OF pair, thread
@@ -218,23 +199,11 @@ export class FederationInboundMessageRouteService {
           AND local_user."namespaceId" = 0
           AND local_user.account = ${normalizeAccount(item.thread.peerAccount)}
           AND (
-            (pair."endpointAType" = 'USER'
-              AND pair."endpointAAccount" = local_user.account
-              AND pair."endpointADomain" = 'local'
-              AND pair."endpointANamespaceId" = ${namespaceId}
-              AND pair."endpointBType" = 'USER'
-              AND pair."endpointBAccount" = ${normalizeAccount(item.thread.account)}
-              AND pair."endpointBDomain" = ${sourceDomain}
-              AND pair."endpointBNamespaceId" = ${namespaceId})
-            OR
-            (pair."endpointBType" = 'USER'
-              AND pair."endpointBAccount" = local_user.account
-              AND pair."endpointBDomain" = 'local'
-              AND pair."endpointBNamespaceId" = ${namespaceId}
-              AND pair."endpointAType" = 'USER'
-              AND pair."endpointAAccount" = ${normalizeAccount(item.thread.account)}
-              AND pair."endpointADomain" = ${sourceDomain}
-              AND pair."endpointANamespaceId" = ${namespaceId})
+            pair."endpointAType" = 'USER'
+            AND pair."endpointAAccount" = local_user.account
+            AND pair."endpointBType" = 'USER'
+            AND pair."endpointBAccount" = ${normalizeAccount(item.thread.account)}
+            AND pair."endpointBNamespaceId" = ${namespaceId}
           )
         LIMIT 1
         FOR SHARE OF pair, thread, local_participant

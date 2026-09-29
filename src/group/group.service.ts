@@ -104,7 +104,8 @@ export class GroupService {
         where: and(
           eq(profileTable.account, member.account),
           eq(profileTable.domain, member.domain),
-          eq(profileTable.namespaceId, member.namespaceId),
+          eq(profileTable.publisherNamespaceId, member.domain === 'local' ? 0 : member.namespaceId),
+          eq(profileTable.profileNamespaceId, member.namespaceId),
           eq(profileTable.profileRev, member.profileRev),
         ),
         columns: { displayName: true },
@@ -145,8 +146,8 @@ export class GroupService {
     }>(sql`
       SELECT friendship."threadId", friend.account, friend.domain, friend."namespaceId",
         COALESCE(peer_intent."profileRev", 0) AS "profileRev",
-        COALESCE(snapshot."displayName", friend.account) AS name,
-        COALESCE(snapshot.avatar, '') AS avatar, COALESCE(snapshot.bio, '') AS bio,
+        friend.account AS name,
+        '' AS avatar, '' AS bio,
         CASE WHEN member.operation = 'MEMBER_UPSERT' THEN 'MEMBER'
           WHEN invitation.status = 'REQUESTED' AND invitation."expiresAt" > CURRENT_TIMESTAMP THEN 'INVITED'
           ELSE 'AVAILABLE' END AS state
@@ -154,9 +155,11 @@ export class GroupService {
       JOIN "Account" actor ON actor.id = ${managerUserId}
       JOIN ${p2pPeerRelation(sql`friendship`, sql`actor`)} friend ON true
       JOIN "MessageThread" thread_scope ON thread_scope.id = ${threadId} AND thread_scope.type = 'GROUP'
-      LEFT JOIN "RelationshipIntent" peer_intent ON peer_intent."pairId" = friendship.id AND peer_intent."authorSide" = friend.side
-      LEFT JOIN "Profile" snapshot ON snapshot.account = friend.account AND snapshot.domain = friend.domain
-        AND snapshot."namespaceId" = friend."namespaceId" AND snapshot."profileRev" = peer_intent."profileRev"
+      LEFT JOIN "RelationshipIntent" peer_intent
+        ON peer_intent."authorAccount" = friend.account
+       AND peer_intent."authorNamespaceId" = friend."namespaceId"
+       AND peer_intent."receiverAccount" = actor.account
+       AND peer_intent."receiverNamespaceId" = 0
       LEFT JOIN LATERAL (
         SELECT member_fact.operation FROM "GroupMetaMemberFeed" member_fact
         WHERE member_fact."threadId" = thread_scope.id
@@ -171,7 +174,7 @@ export class GroupService {
         AND invitation.direction = 'INVITATION'
       WHERE friendship.kind = 'P2P' AND friendship.active = true AND friendship."threadId" IS NOT NULL
         ${afterThreadId === undefined ? sql.empty() : sql`AND friendship."threadId" > ${afterThreadId}`}
-        ${normalizedSearch === '' ? sql.empty() : sql`AND (COALESCE(snapshot."displayName", friend.account) ILIKE ${pattern} ESCAPE '\\' OR friend.account ILIKE ${pattern} ESCAPE '\\' OR (friend.account || '@' || friend.domain) ILIKE ${pattern} ESCAPE '\\')`}
+        ${normalizedSearch === '' ? sql.empty() : sql`AND (friend.account ILIKE ${pattern} ESCAPE '\\' OR (friend.account || '@' || friend.domain) ILIKE ${pattern} ESCAPE '\\')`}
       ORDER BY friendship."threadId" ASC LIMIT ${take + 1}
     `);
     const page = rows.rows.slice(0, take);
@@ -215,14 +218,10 @@ export class GroupService {
           THEN 'EXPIRED' ELSE projection.status END AS status,
         projection."memberAccount" AS account, projection."memberDomain" AS domain,
         projection."memberNamespaceId" AS "namespaceId", projection."memberProfileRev" AS "profileRev",
-        COALESCE(snapshot."displayName", projection."memberAccount") AS name, COALESCE(snapshot.avatar, '') AS avatar, projection.note,
+        projection."memberAccount" AS name, '' AS avatar, projection.note,
         (EXTRACT(EPOCH FROM projection."requestedAt") * 1000)::bigint AS "requestedAt",
         (EXTRACT(EPOCH FROM projection."expiresAt") * 1000)::bigint AS "expiresAt"
       FROM "GroupRequestProjection" projection
-      LEFT JOIN "Profile" snapshot ON snapshot.account = projection."memberAccount"
-        AND snapshot.domain = projection."memberDomain"
-        AND snapshot."namespaceId" = projection."memberNamespaceId"
-        AND snapshot."profileRev" = projection."memberProfileRev"
       WHERE projection."threadId" = ${threadId}
         AND projection.direction = ${direction}
         ${before === undefined ? sql.empty() : sql`AND projection."feedId" < ${before}`}
@@ -435,7 +434,8 @@ export class GroupService {
           await tx.insert(profileTable).values({
             account,
             domain: 'local',
-            namespaceId: 0,
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
             profileRev: 1,
             displayName: groupState.name,
             avatar: groupState.avatar,
@@ -477,7 +477,7 @@ export class GroupService {
             creator: {
               account: owner.account,
               domain: 'local',
-              namespaceId: 0,
+              profileNamespaceId: 0,
               profileRev: owner.defaultProfileRev,
             },
           });
@@ -847,7 +847,8 @@ export class GroupService {
       await tx.insert(profileTable).values({
         account: current.group.account,
         domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: nextRev,
         displayName: name,
         avatar,

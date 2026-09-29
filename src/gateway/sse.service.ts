@@ -500,7 +500,8 @@ export class SseService implements OnModuleDestroy {
   onProfileAvailable(
     sessionId: number,
     key: {
-      namespaceId: number;
+      publisherNamespaceId: number;
+      profileNamespaceId: number;
       account: string;
       domain: string;
       rev: number;
@@ -520,7 +521,8 @@ export class SseService implements OnModuleDestroy {
   onProfileUnavailable(
     sessionId: number,
     data: {
-      namespaceId: number;
+      publisherNamespaceId: number;
+      profileNamespaceId: number;
       account: string;
       domain: string;
       rev: number;

@@ -408,8 +408,14 @@ describe('CallsService terminal bubble persistence', () => {
     });
     // An unanswered call never connected → no startedAt/duration.
     const c = lastBubbleContent(m)!;
-    expect(c.caller).toMatchObject({ namespaceId: 0, profileRev: 0 });
-    expect(c.callee).toMatchObject({ namespaceId: 0, profileRev: 0 });
+    expect(c.caller).toMatchObject({
+      profileNamespaceId: 0,
+      profileRev: 0,
+    });
+    expect(c.callee).toMatchObject({
+      profileNamespaceId: 0,
+      profileRev: 0,
+    });
     expect(c.connectedAt).toBeUndefined();
     expect(
       c.connectedAt === undefined ? undefined : c.endedAt - c.connectedAt,
@@ -973,7 +979,11 @@ describe('CallsService federated initiate (outbound)', () => {
       new S2sResponseError('busy', 200, BusinessCode.CALL_BUSY),
     );
     await expect(
-      svc.initiate(1, { callSid: 'busy-remote', threadId: 10, callType: 'AUDIO' }),
+      svc.initiate(1, {
+        callSid: 'busy-remote',
+        threadId: 10,
+        callType: 'AUDIO',
+      }),
     ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY);
     expect(lastBubbleContent(m)?.outcome).toBe('unreachable');
     expect(m.federation.sendCallFrame).toHaveBeenCalledOnce();
@@ -1004,7 +1014,7 @@ describe('CallsService federated initiate (outbound)', () => {
     expect(lastBubbleContent(m)?.callee).toEqual({
       account: 'bob',
       domain: 'bbb.local',
-      namespaceId: 3,
+      profileNamespaceId: 0,
       profileRev: 0,
     });
     // Slots released → a fresh call can start.

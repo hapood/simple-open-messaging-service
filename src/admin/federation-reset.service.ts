@@ -59,7 +59,7 @@ export class FederationResetService {
       const namespaceId = peer.activeNamespaceId;
       const result = await tx.execute<PreviewCounts>(sql`
         WITH remote_users AS (
-          SELECT DISTINCT account, domain FROM "Profile" WHERE "namespaceId" = ${namespaceId} AND account NOT LIKE '!%'
+          SELECT DISTINCT account, domain FROM "Profile" WHERE "publisherNamespaceId" = ${namespaceId} AND account NOT LIKE '!%'
         ), remote_group_meta_facts AS (
           SELECT member_fact."threadId"
           FROM "GroupMetaMemberFeed" member_fact

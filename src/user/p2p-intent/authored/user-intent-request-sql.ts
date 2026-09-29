@@ -7,11 +7,6 @@ import {
 } from './user-intent-client-feed-sql.js';
 
 export interface UserIntentRequestInput extends UserIntentFeedInput {
-  actorSide: 'A' | 'B';
-  actorAccount: string;
-  targetAccount: string;
-  targetDomain: string;
-  targetNamespaceId: number;
   note: string;
   requestedAt: Date;
   expiresAt: Date;
@@ -29,8 +24,12 @@ export function userIntentRequestSql(input: UserIntentRequestInput): SQL {
   const authoredSql =
     input.authoredSql ??
     authoredIntentWriteSql({
-      pair: { id: input.pairId, threadId: input.threadId },
-      authorSide: input.actorSide,
+      author: { account: input.actorAccount, namespaceId: input.actorNamespaceId },
+      receiver: {
+        account: input.targetAccount,
+        namespaceId: input.targetNamespaceId,
+      },
+      threadId: input.threadId,
       status: 'REQUESTED',
       note: input.note,
       requestedAt: input.requestedAt,
@@ -40,11 +39,12 @@ export function userIntentRequestSql(input: UserIntentRequestInput): SQL {
     WITH authored AS (
       ${authoredSql}
     ), request_state AS MATERIALIZED (
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt"
-      FROM "RelationshipIntent" WHERE "pairId" = ${input.pairId}
-        AND "authorSide" = ${input.actorSide}
+      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt"
+      FROM "RelationshipIntent"
+      WHERE "authorAccount" = ${input.actorAccount} AND "authorNamespaceId" = ${input.actorNamespaceId}
+        AND "receiverAccount" = ${input.targetAccount} AND "receiverNamespaceId" = ${input.targetNamespaceId}
         AND NOT EXISTS (SELECT 1 FROM authored)
     ), ${userIntentClientBodiesSql({ ...input, ownState: 'request_state' })}${
       remote
@@ -57,7 +57,7 @@ export function userIntentRequestSql(input: UserIntentRequestInput): SQL {
           })}`
         : sql``
     }
-    SELECT v.id::text AS "requestId", v.status, v.note,
+    SELECT v.status, v.note,
       EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       COALESCE((SELECT jsonb_agg(jsonb_build_object('userId', r."userId", 'feedId', r."feedId")
         ORDER BY r."userId") FROM recipient_result r), '[]'::jsonb) AS "clientUpdates",

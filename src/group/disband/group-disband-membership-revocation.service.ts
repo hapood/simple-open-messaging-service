@@ -29,6 +29,7 @@ import {
   groupMembershipStateSql,
   type GroupMembershipStateRow,
 } from '../membership-intent/shared/group-membership-state-sql.js';
+import { lockGroupMemberIntentRowsInTx } from '../membership-intent/shared/group-member-intent-lock.js';
 import {
   groupDisbandMembershipRevocationLocatorSql,
   groupDisbandMembershipRevocationSql,
@@ -206,9 +207,15 @@ export class GroupDisbandMembershipRevocationService {
     if (!lockedPair) throw new Error('disband revocation pair not found');
     if (lockedPair.threadId !== params.threadId)
       throw new Error('disband revocation pair changed');
-    await tx.execute(
-      sql`SELECT id FROM "RelationshipIntent" WHERE "pairId" = ${pairId} ORDER BY "authorSide" FOR NO KEY UPDATE`,
-    );
+    const groupEndpoint =
+      lockedPair.endpointAType === 'GROUP'
+        ? { account: lockedPair.endpointAAccount, namespaceId: lockedPair.endpointANamespaceId }
+        : { account: lockedPair.endpointBAccount, namespaceId: lockedPair.endpointBNamespaceId };
+    const memberEndpoint =
+      lockedPair.endpointAType === 'GROUP'
+        ? { account: lockedPair.endpointBAccount, namespaceId: lockedPair.endpointBNamespaceId }
+        : { account: lockedPair.endpointAAccount, namespaceId: lockedPair.endpointANamespaceId };
+    await lockGroupMemberIntentRowsInTx(tx, groupEndpoint, memberEndpoint);
     // The membership authorization binds `authorized` to a calling member
     // account; a system caller has none, so the bind is a constant and the
     // column goes unconsumed. Everything else the composed statement needs —
@@ -221,6 +228,8 @@ export class GroupDisbandMembershipRevocationService {
           threadId: params.threadId,
           pairId,
           actorUserId: null,
+          groupAccount: groupEndpoint.account,
+          groupNamespaceId: groupEndpoint.namespaceId,
           memberAccount: member.account,
           memberDomain: member.domain,
           memberNamespaceId: member.namespaceId,

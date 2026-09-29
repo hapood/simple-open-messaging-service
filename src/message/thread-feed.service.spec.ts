@@ -10,7 +10,7 @@ describe('thread feed database previews', () => {
         createdAt: '2026-09-08T00:00:0' + (seq - 1) + 'Z',
         creatorAccount: 'peer',
         creatorDomain: 'local',
-        creatorNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: seq,
         isDeleted: seq !== 1,
         deletionType:
@@ -115,7 +115,7 @@ describe('thread feed database previews', () => {
         createdAt: '2026-09-08T00:00:02Z',
         creatorAccount: 'peer',
         creatorDomain: 'local',
-        creatorNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 3,
         isDeleted: false,
         deletionType: null,

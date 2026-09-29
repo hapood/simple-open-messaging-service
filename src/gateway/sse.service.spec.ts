@@ -110,7 +110,8 @@ describe('framework SSE streams', () => {
     const sameUserOtherSession = connect(svc, 7, 22);
     const otherUserSameSessionId = connect(svc, 8, 33);
     svc.onProfileAvailable(11, {
-      namespaceId: 4,
+      publisherNamespaceId: 4,
+      profileNamespaceId: 4,
       account: 'alice',
       domain: 'remote.test',
       rev: 9,
@@ -122,7 +123,8 @@ describe('framework SSE streams', () => {
 
     current.subscription.unsubscribe();
     svc.onProfileUnavailable(11, {
-      namespaceId: 4,
+      publisherNamespaceId: 4,
+      profileNamespaceId: 4,
       account: 'alice',
       domain: 'remote.test',
       rev: 9,

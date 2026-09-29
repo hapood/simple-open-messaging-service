@@ -1,13 +1,14 @@
 import { UserService } from '../src/user/user.service.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
 import { ThreadFeedService } from '../src/message/thread-feed.service.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
 import { ProfileResolutionCoordinatorService } from '../src/profile-resolution/profile-resolution-coordinator.service.js';
+import { ProfileLookup } from '../src/profile-resolution/profile-resolution-demand.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { resolveAuthorizedFederationThreadInTx } from '../src/federation/federation-thread-query-authorization.js';
@@ -44,7 +45,8 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     await database.db.insert(tables.profileTable).values({
       account: owner.account,
       domain: 'local',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       profileRev: 9,
       displayName: 'Resolved self',
       avatar: '',
@@ -75,7 +77,8 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     await database.db.insert(tables.profileTable).values({
       account: target,
       domain,
-      namespaceId,
+      publisherNamespaceId: namespaceId,
+      profileNamespaceId: namespaceId,
       profileRev: 7,
       displayName: 'Disclosed profile',
     });
@@ -95,25 +98,41 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         active: false,
         endpointAType: 'USER',
         endpointAAccount: owner.account,
-        endpointADomain: 'local',
-        endpointANamespaceId: namespaceId,
+        endpointANamespaceId: 0,
         endpointBType: 'USER',
         endpointBAccount: target,
-        endpointBDomain: domain,
         endpointBNamespaceId: namespaceId,
       })
       .returning();
     await database.db.insert(tables.relationshipIntent).values(
-      ['A', 'B'].map((authorSide) => ({
-        pairId: pair.id,
-        authorSide,
-        status: 'REVOKED' as const,
-        profileRev: authorSide === 'B' ? 7 : 0,
-        messageEndSeq: 0,
-        tombstoneEndSeq: 0,
-        requestedAt: new Date(),
-        expiresAt: null,
-      })),
+      [
+        {
+          authorAccount: owner.account,
+          authorNamespaceId: 0,
+          receiverAccount: target,
+          receiverNamespaceId: namespaceId,
+          status: 'REVOKED' as const,
+          profileNamespaceId: 0,
+          profileRev: 0,
+          messageEndSeq: 0,
+          tombstoneEndSeq: 0,
+          requestedAt: new Date(),
+          expiresAt: null,
+        },
+        {
+          authorAccount: target,
+          authorNamespaceId: namespaceId,
+          receiverAccount: owner.account,
+          receiverNamespaceId: 0,
+          status: 'REVOKED' as const,
+          profileNamespaceId: namespaceId,
+          profileRev: 7,
+          messageEndSeq: 0,
+          tombstoneEndSeq: 0,
+          requestedAt: new Date(),
+          expiresAt: null,
+        },
+      ],
     );
     await database.db
       .insert(tables.accountThreadState)
@@ -123,7 +142,22 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         await tx
           .update(tables.relationshipIntent)
           .set({ status: 'ACCEPTED' })
-          .where(eq(tables.relationshipIntent.pairId, pair.id));
+          .where(
+            or(
+              and(
+                eq(tables.relationshipIntent.authorAccount, owner.account),
+                eq(tables.relationshipIntent.authorNamespaceId, 0),
+                eq(tables.relationshipIntent.receiverAccount, target),
+                eq(tables.relationshipIntent.receiverNamespaceId, namespaceId),
+              ),
+              and(
+                eq(tables.relationshipIntent.authorAccount, target),
+                eq(tables.relationshipIntent.authorNamespaceId, namespaceId),
+                eq(tables.relationshipIntent.receiverAccount, owner.account),
+                eq(tables.relationshipIntent.receiverNamespaceId, 0),
+              ),
+            ),
+          );
         await tx
           .update(tables.relationshipPair)
           .set({ active: true, established: true })
@@ -191,8 +225,9 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         if (change === 'revocation') {
           await revocation.query(
             `UPDATE "RelationshipIntent" SET status = 'REVOKED'
-          WHERE "pairId" = $1 AND "authorSide" = 'A'`,
-            [f.pair.id.toString()],
+          WHERE "authorAccount" = $1 AND "authorNamespaceId" = 0
+            AND "receiverAccount" = $2 AND "receiverNamespaceId" = $3`,
+            [f.owner.account, f.target, f.namespaceId],
           );
         } else {
           await revocation.query(
@@ -252,11 +287,15 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     const f = await fixture();
     expect(await f.snapshot()).toBeUndefined();
     await expect(
-      resolver().start(f.owner.id, {
-        type: 'EXACT',
-        account: f.target,
-        domain: f.domain,
-        rev: 7,
+      resolver().start(f.owner.id, 1, {
+        publisherNamespaceId: f.namespaceId,
+        lookup: ProfileLookup.ACCOUNT_PROFILE,
+        target: {
+          profileNamespaceId: f.namespaceId,
+          account: f.target,
+          domain: f.domain,
+          rev: 7,
+        },
       }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
     await expect(
@@ -283,19 +322,23 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       await f.activate();
       const coordinator = resolver();
       const selector = {
-        type: 'EXACT' as const,
-        account: f.target,
-        domain: f.domain,
-        rev: 7,
+        publisherNamespaceId: f.namespaceId,
+        lookup: ProfileLookup.ACCOUNT_PROFILE,
+        target: {
+          profileNamespaceId: f.namespaceId,
+          account: f.target,
+          domain: f.domain,
+          rev: 7,
+        },
       };
       await expect(
-        coordinator.start(f.owner.id, selector),
+        coordinator.start(f.owner.id, 1, selector),
       ).resolves.toMatchObject({
         status: 'READY',
         profile: { rev: 7, namespaceId: f.namespaceId },
       });
       await expect(
-        coordinator.start(f.owner.id + 100000, selector),
+        coordinator.start(f.owner.id + 100000, 1, selector),
       ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
       await database.db
         .update(tables.relationshipPair)
@@ -304,13 +347,28 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       await database.db
         .update(tables.relationshipIntent)
         .set({ status: 'REVOKED', expiresAt: null, profileRev: 99 })
-        .where(eq(tables.relationshipIntent.pairId, f.pair.id));
+        .where(
+          or(
+            and(
+              eq(tables.relationshipIntent.authorAccount, f.owner.account),
+              eq(tables.relationshipIntent.authorNamespaceId, 0),
+              eq(tables.relationshipIntent.receiverAccount, f.target),
+              eq(tables.relationshipIntent.receiverNamespaceId, f.namespaceId),
+            ),
+            and(
+              eq(tables.relationshipIntent.authorAccount, f.target),
+              eq(tables.relationshipIntent.authorNamespaceId, f.namespaceId),
+              eq(tables.relationshipIntent.receiverAccount, f.owner.account),
+              eq(tables.relationshipIntent.receiverNamespaceId, 0),
+            ),
+          ),
+        );
       expect(await f.snapshot()).toMatchObject({
         conversationState: 'READ_ONLY',
         profile: { profileRev: 7 },
       });
       await expect(
-        resolver().start(f.owner.id, selector),
+        resolver().start(f.owner.id, 1, selector),
       ).resolves.toMatchObject({
         status: 'READY',
         profile: { rev: 7, name: 'Disclosed profile' },
@@ -336,7 +394,8 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     await database.db.insert(tables.profileTable).values({
       account: f.target,
       domain: 'local',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       profileRev: 8,
       displayName: 'Updated',
       avatar: '',
@@ -371,12 +430,16 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     const first = await f.snapshot();
     const coordinator = resolver();
     const exact = {
-      type: 'EXACT' as const,
-      account: f.target,
-      domain: f.domain,
-      rev: 7,
+      publisherNamespaceId: f.namespaceId,
+      lookup: ProfileLookup.ACCOUNT_PROFILE,
+      target: {
+        profileNamespaceId: f.namespaceId,
+        account: f.target,
+        domain: f.domain,
+        rev: 7,
+      },
     };
-    await coordinator.start(f.owner.id, exact);
+    await coordinator.start(f.owner.id, 1, exact);
     await database.db
       .update(tables.relationshipPair)
       .set({ active: false })
@@ -384,26 +447,40 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     await database.db
       .update(tables.relationshipIntent)
       .set({ status: 'REVOKED', profileRev: 8 })
-      .where(eq(tables.relationshipIntent.pairId, f.pair.id));
+      .where(
+        and(
+          eq(tables.relationshipIntent.authorAccount, f.owner.account),
+          eq(tables.relationshipIntent.authorNamespaceId, 0),
+          eq(tables.relationshipIntent.receiverAccount, f.target),
+          eq(tables.relationshipIntent.receiverNamespaceId, f.namespaceId),
+        ),
+      );
     await database.db.insert(tables.profileTable).values({
       account: f.target,
       domain: f.domain,
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       profileRev: 8,
       displayName: 'New establishment',
     });
     await expect(
-      coordinator.start(f.owner.id, { ...exact, rev: 8 }),
+      coordinator.start(f.owner.id, 1, {
+        ...exact,
+        target: { ...exact.target, rev: 8 },
+      }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
     await f.activate();
     const second = await f.snapshot();
     expect(second?.profile.profileRev).toBe(8);
     expect(second!.threadFeedId).toBeGreaterThan(first!.threadFeedId);
-    await expect(coordinator.start(f.owner.id, exact)).rejects.toMatchObject({
+    await expect(coordinator.start(f.owner.id, 1, exact)).rejects.toMatchObject({
       bizCode: BusinessCode.NOT_FOUND,
     });
     await expect(
-      coordinator.start(f.owner.id, { ...exact, rev: 8 }),
+      coordinator.start(f.owner.id, 1, {
+        ...exact,
+        target: { ...exact.target, rev: 8 },
+      }),
     ).resolves.toMatchObject({ status: 'READY', profile: { rev: 8 } });
   });
 
@@ -421,8 +498,12 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       .update(tables.relationshipIntent)
       .set({ status: 'REVOKED', profileRev: 5 })
       .where(
-        sql`${tables.relationshipIntent.pairId} = ${f.pair.id}
-          AND ${tables.relationshipIntent.authorSide} = 'B'`,
+        and(
+          eq(tables.relationshipIntent.authorAccount, f.target),
+          eq(tables.relationshipIntent.authorNamespaceId, f.namespaceId),
+          eq(tables.relationshipIntent.receiverAccount, f.owner.account),
+          eq(tables.relationshipIntent.receiverNamespaceId, 0),
+        ),
       );
     await f.activate();
 

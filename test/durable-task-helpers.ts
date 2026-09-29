@@ -101,10 +101,18 @@ export async function waitForLocalRelationshipRequest(
   }
   const intent = await database.query.relationshipIntent.findFirst({
     where: and(
-      eq(relationshipIntent.pairId, relationship.pair.id),
-      eq(relationshipIntent.authorSide, relationship.firstSide),
+      eq(relationshipIntent.authorAccount, relationship.firstEndpoint.account),
+      eq(
+        relationshipIntent.authorNamespaceId,
+        relationship.firstEndpoint.namespaceId,
+      ),
+      eq(relationshipIntent.receiverAccount, relationship.secondEndpoint.account),
+      eq(
+        relationshipIntent.receiverNamespaceId,
+        relationship.secondEndpoint.namespaceId,
+      ),
     ),
-    columns: { id: true },
+    columns: { status: true },
   });
   if (!intent) {
     throw new Error('friend task succeeded without an authored intent');

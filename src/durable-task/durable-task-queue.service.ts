@@ -304,12 +304,12 @@ function resolveMutationCoalescingKey(input: {
 }
 
 function mutationCoalescingKey(
-  authorSide: 'GROUP' | 'MEMBER',
+  author: 'GROUP' | 'MEMBER',
   memberUserId: AccountTarget,
 ): string {
   return JSON.stringify([
     'GROUP_MEMBER_INTENT',
-    authorSide,
+    author,
     typeof memberUserId === 'number'
       ? memberUserId
       : [memberUserId.namespaceId, memberUserId.domain, memberUserId.account],

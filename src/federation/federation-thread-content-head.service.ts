@@ -86,14 +86,8 @@ export class FederationThreadContentHeadService {
       peerAccount: string | null;
     }>(sql`
       SELECT COALESCE(audience."messageAccessAfterSeq", 0) AS "messageAccessAfterSeq",
-             CASE
-               WHEN pair."endpointADomain" = 'local' THEN pair."endpointAAccount"
-               WHEN pair."endpointBDomain" = 'local' THEN pair."endpointBAccount"
-             END AS account,
-             CASE
-               WHEN pair."endpointADomain" = ${peerDomain} THEN pair."endpointAAccount"
-               WHEN pair."endpointBDomain" = ${peerDomain} THEN pair."endpointBAccount"
-             END AS "peerAccount"
+             pair."endpointAAccount" AS account,
+             pair."endpointBAccount" AS "peerAccount"
       FROM "MessageThread" message_thread
       LEFT JOIN "ThreadAudience" audience
         ON audience."threadId" = message_thread.id
@@ -116,22 +110,11 @@ export class FederationThreadContentHeadService {
                   WHERE member_pair."threadId" = message_thread.id
                     AND member_pair.kind = 'GROUP_MEMBER'
                     AND member_pair.active = true
-                    AND (
-                      (member_pair."endpointAType" = 'USER'
-                        AND member_pair."endpointADomain" = ${peerDomain}
-                        AND member_pair."endpointANamespaceId" = ${namespaceId}
-                        AND member_pair."endpointBType" = 'GROUP'
-                        AND member_pair."endpointBAccount" = ${thread.groupAccount}
-                        AND member_pair."endpointBDomain" = 'local'
-                        AND member_pair."endpointBNamespaceId" = ${namespaceId})
-                      OR (member_pair."endpointBType" = 'USER'
-                        AND member_pair."endpointBDomain" = ${peerDomain}
-                        AND member_pair."endpointBNamespaceId" = ${namespaceId}
-                        AND member_pair."endpointAType" = 'GROUP'
-                        AND member_pair."endpointAAccount" = ${thread.groupAccount}
-                        AND member_pair."endpointADomain" = 'local'
-                        AND member_pair."endpointANamespaceId" = ${namespaceId})
-                    )
+                    AND member_pair."endpointBType" = 'USER'
+                    AND member_pair."endpointBNamespaceId" = ${namespaceId}
+                    AND member_pair."endpointAType" = 'GROUP'
+                    AND member_pair."endpointAAccount" = ${thread.groupAccount}
+                    AND member_pair."endpointANamespaceId" = 0
                 ))))
           OR (${thread.threadType} = 'GROUP'
             AND ${thread.groupDomain} = ${peerDomain}

@@ -30,7 +30,7 @@ export async function writeMirrorLocalGroupLeftInTx(
     member: {
       account: input.memberAccount,
       domain: 'local',
-      namespaceId: 0,
+      profileNamespaceId: 0,
       profileRev: member.defaultProfileRev,
     },
   });

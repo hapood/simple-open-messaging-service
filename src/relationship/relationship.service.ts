@@ -3,9 +3,6 @@ import {
   groupState as group,
   groupStateFields,
 } from '../group/shared/group-state.js';
-import { isGroupDissolvedInTx } from '../group/shared/group-state.js';
-import { lockBusinessAccountsInTx } from '../common/locks/account-business-lock.js';
-import { MeasureBusinessOperation } from '../diagnostics/execution-measurement.js';
 import {
   accountAddressInTx,
   type AccountTarget,
@@ -24,7 +21,6 @@ import {
   account as user,
 } from '../database/schema.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
-import { openFederatedAudienceInTx } from '../federation/federation-audience.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
 
 const RELATIONSHIP_SHELL_GC_INTERVAL_MS = 60 * 60 * 1000;
@@ -74,10 +70,28 @@ export class RelationshipService {
             WHERE message."threadId" = pair."threadId"
           )
           AND NOT EXISTS (
-            SELECT 1 FROM "RelationshipIntent" request
-            WHERE request."pairId" = pair.id
-              AND (request.status = 'ACCEPTED'
-                OR (request.status = 'REQUESTED' AND request."expiresAt" > CURRENT_TIMESTAMP))
+            SELECT 1
+            FROM (VALUES
+              (
+                pair."endpointAAccount",
+                pair."endpointANamespaceId",
+                pair."endpointBAccount",
+                pair."endpointBNamespaceId"
+              ),
+              (
+                pair."endpointBAccount",
+                pair."endpointBNamespaceId",
+                pair."endpointAAccount",
+                pair."endpointANamespaceId"
+              )
+            ) AS direction("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId")
+            JOIN "RelationshipIntent" request
+              ON request."authorAccount" = direction."authorAccount"
+              AND request."authorNamespaceId" = direction."authorNamespaceId"
+              AND request."receiverAccount" = direction."receiverAccount"
+              AND request."receiverNamespaceId" = direction."receiverNamespaceId"
+            WHERE request.status = 'ACCEPTED'
+              OR (request.status = 'REQUESTED' AND request."expiresAt" > CURRENT_TIMESTAMP)
           )
         FOR UPDATE OF pair, thread SKIP LOCKED
       `);
@@ -114,19 +128,12 @@ export class RelationshipService {
       .limit(1);
     if (!state?.groupId || state.domain !== 'local') return;
     const request = await tx.query.relationshipIntent.findFirst({
-      where: and(
-        eq(relationshipIntent.authorSide, 'A'),
-        sql`EXISTS (
-            SELECT 1 FROM "RelationshipPair" pair
-            JOIN "Account" identity ON identity.id = ${memberUserId}
-            WHERE pair.id = ${relationshipIntent.pairId}
-              AND pair."threadId" = ${threadId}
-              AND pair."endpointBAccount" = identity.account
-              AND pair."endpointBDomain" = identity.domain
-              AND pair."endpointANamespaceId" = pair."endpointBNamespaceId"
-              AND pair."endpointBNamespaceId" = identity."namespaceId"
-          )`,
-      ),
+      where: sql`
+        "authorNamespaceId" = 0
+        AND "authorAccount" = (SELECT thread."groupAccount" FROM "MessageThread" thread WHERE thread.id = ${threadId})
+        AND "receiverAccount" = (SELECT identity.account FROM "Account" identity WHERE identity.id = ${memberUserId})
+        AND "receiverNamespaceId" = (SELECT identity."namespaceId" FROM "Account" identity WHERE identity.id = ${memberUserId})
+      `,
     });
     const member = await tx.query.account.findFirst({
       where: eq(user.id, memberUserId),
@@ -181,72 +188,4 @@ export class RelationshipService {
     );
   }
 
-  /** Create or refresh one group membership invitation. */
-  @MeasureBusinessOperation('relationship.create-group-invite')
-  async createGroupInvite(
-    fromUserId: number,
-    threadId: number,
-    toUserId: AccountTarget,
-    note = '',
-    afterWrite?: (tx: DatabaseTransaction) => Promise<void>,
-  ): Promise<string | null> {
-    const trimmed = (note ?? '').slice(0, 255);
-    return this.database.db.transaction(async (tx) => {
-      if (await isGroupDissolvedInTx(tx, threadId)) return null;
-      const memberIdentity = await accountAddressInTx(tx, toUserId);
-      const target = await tx.query.messageThread.findFirst({
-        where: eq(messageThread.id, threadId),
-        columns: {
-          id: true,
-          type: true,
-          groupAccount: true,
-          groupDomain: true,
-        },
-      });
-      if (target?.type !== 'GROUP')
-        throw new Error('group invite target is invalid');
-      // Entry-scope advisory: held before the row locks below; nested writers
-      // never take advisories themselves.
-      await lockBusinessAccountsInTx(tx, [
-        { account: target.groupAccount!, domain: target.groupDomain! },
-      ]);
-      await this.relationshipIntents.lockGroupMutationInTx(tx, {
-        groupId: target.id,
-        memberUserId: toUserId,
-        threadId,
-        projectionUserIds: [fromUserId],
-      });
-      if (afterWrite) await afterWrite(tx);
-      else
-        await this.relationshipIntents.writeGroupAuthoredIntentInTx(tx, {
-          groupId: target.id,
-          memberUserId: toUserId,
-          threadId,
-          author: 'GROUP',
-          status: 'REQUESTED',
-          note: trimmed,
-        });
-      const request = await tx.query.relationshipIntent.findFirst({
-        where: and(
-          eq(relationshipIntent.authorSide, 'A'),
-          sql`EXISTS (
-            SELECT 1 FROM "RelationshipPair" pair
-            WHERE pair.id = ${relationshipIntent.pairId}
-              AND pair."threadId" = ${threadId}
-              AND pair."endpointBAccount" = ${memberIdentity.account}
-              AND pair."endpointBDomain" = ${memberIdentity.domain}
-              AND pair."endpointANamespaceId" = pair."endpointBNamespaceId"
-              AND pair."endpointBNamespaceId" = ${memberIdentity.namespaceId}
-          )`,
-        ),
-        columns: {
-          id: true,
-        },
-      });
-      if (!request) throw new Error('group request write disappeared');
-      if (memberIdentity.domain !== 'local')
-        await openFederatedAudienceInTx(tx, memberIdentity.domain, threadId);
-      return request.id.toString();
-    });
-  }
 }

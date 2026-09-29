@@ -53,14 +53,10 @@ describe('exact profile completion for a federated group member', () => {
       threadId,
       active: true,
       endpointAType: 'GROUP',
-      endpointAAccount: '!exact-profile-group',
-      endpointADomain: domain,
-      endpointANamespaceId: namespaceId,
-      endpointBType: 'USER',
-      endpointBAccount: viewer,
-      endpointBDomain: 'local',
-      // A mirror relationship is scoped to its publisher namespace, including
-      // the local endpoint. The local Account subject itself remains in zero.
+      endpointAAccount: viewer,
+      endpointANamespaceId: 0,
+      endpointBType: 'GROUP',
+      endpointBAccount: '!exact-profile-group',
       endpointBNamespaceId: namespaceId,
     });
     await database.db.insert(tables.groupMetaMemberFeed).values({

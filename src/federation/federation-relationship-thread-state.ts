@@ -26,16 +26,23 @@ export async function initializeRelationshipThreadStateInTx(
     FROM "RelationshipPair" pair
     JOIN "MessageThread" thread ON thread.id = pair."threadId"
     CROSS JOIN LATERAL (VALUES
-      ('A', pair."endpointADomain", pair."endpointANamespaceId"),
-      ('B', pair."endpointBDomain", pair."endpointBNamespaceId")
-    ) source(side, domain, "namespaceId")
+      (pair."endpointAAccount", pair."endpointANamespaceId",
+        pair."endpointBAccount", pair."endpointBNamespaceId"),
+      (pair."endpointBAccount", pair."endpointBNamespaceId",
+        pair."endpointAAccount", pair."endpointANamespaceId")
+    ) source("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId")
     JOIN "RelationshipIntent" intent
-      ON intent."pairId" = pair.id AND intent."authorSide" = source.side
+      ON intent."authorAccount" = source."authorAccount"
+        AND intent."authorNamespaceId" = source."authorNamespaceId"
+        AND intent."receiverAccount" = source."receiverAccount"
+        AND intent."receiverNamespaceId" = source."receiverNamespaceId"
+    JOIN "IdentityNamespace" source_ns ON source_ns.id = source."authorNamespaceId"
     WHERE pair.id = ${pairId} AND pair."threadId" = ${threadId} AND pair.active = true
-      AND source.domain <> 'local'
+      AND source_ns.domain <> 'local'
       AND (intent.status = 'ACCEPTED' OR
         (intent.status = 'REQUESTED' AND intent."expiresAt" > CURRENT_TIMESTAMP))
-    ORDER BY source."namespaceId", intent."updatedAt" DESC, intent.id DESC
+    ORDER BY source."authorNamespaceId", intent."updatedAt" DESC,
+      intent."authorAccount", intent."receiverAccount"
   `);
   for (const head of result.rows) {
     await FederationThreadSyncStateService.reconcileRelationshipAuthorizationInTx(

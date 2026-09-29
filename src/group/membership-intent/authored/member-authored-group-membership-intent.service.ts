@@ -10,6 +10,8 @@ import {
   type GroupMembershipAcceptanceInput,
 } from '../shared/group-membership-acceptance-sql.js';
 import { memberAuthoredMembershipLocatorSql } from './member-authored-membership-locator-sql.js';
+import { mintGroupMemberPairInTx } from '../shared/group-member-pair-mint.js';
+import { lockGroupMemberIntentRowsInTx } from '../shared/group-member-intent-lock.js';
 import {
   groupMembershipStateSql,
   type GroupMembershipStateRow,
@@ -392,11 +394,11 @@ export class MemberAuthoredGroupMembershipIntentService {
     const member = {
       account: located.memberAccount,
       domain: 'local',
-      // Mirror pair coordinates share the authority's namespace, while local
-      // roster and request-projection rows use the member's own namespace 0.
-      namespaceId:
-        located.groupDomain === 'local' ? 0 : located.groupNamespaceId,
+      // The member endpoint is always local on this server: namespace 0.
+      namespaceId: 0,
     };
+    const groupNamespaceId =
+      located.groupDomain === 'local' ? 0 : located.groupNamespaceId;
     // The group scope rides along with the member's: the thread row lock below
     // must never be held without it, or the nested mutation writers' late
     // advisory acquisition deadlocks against the advisory-holding fan-out tasks.
@@ -423,25 +425,24 @@ export class MemberAuthoredGroupMembershipIntentService {
     // canonical thread binding, so no separate pair select follows.
     let pairId: bigint;
     if (params.decision === 'REQUESTED') {
-      const minted = await tx.execute<{ id: string }>(sql`
-        INSERT INTO "RelationshipPair"
-          (kind, "endpointAType", "endpointAAccount", "endpointADomain", "endpointANamespaceId",
-           "endpointBType", "endpointBAccount", "endpointBDomain", "endpointBNamespaceId", "threadId")
-        VALUES ('GROUP_MEMBER', 'GROUP', ${located.groupAccount}, ${located.groupDomain}, ${member.namespaceId},
-          'USER', ${member.account}, 'local', ${member.namespaceId}, ${params.threadId})
-        ON CONFLICT ("endpointAType", "endpointAAccount", "endpointADomain", "endpointANamespaceId",
-          "endpointBType", "endpointBAccount", "endpointBDomain", "endpointBNamespaceId")
-        DO UPDATE SET "threadId" = EXCLUDED."threadId", "updatedAt" = CURRENT_TIMESTAMP
-        RETURNING id
-      `);
-      pairId = BigInt(minted.rows[0]!.id);
+      pairId = await mintGroupMemberPairInTx(tx, {
+        threadId: params.threadId,
+        groupAccount: located.groupAccount,
+        groupNamespaceId,
+        memberAccount: member.account,
+        memberNamespaceId: 0,
+      });
     } else {
+      // The pair's local endpoint is the member; the group sits on B with its
+      // own namespace (0 for a locally hosted group).
       const existing = (
         await tx.execute<{ id: string }>(sql`
         SELECT id::text FROM "RelationshipPair"
         WHERE kind = 'GROUP_MEMBER' AND "threadId" = ${params.threadId}
-          AND "endpointBType" = 'USER' AND "endpointBAccount" = ${member.account}
-          AND "endpointBDomain" = 'local'
+          AND "endpointAType" = 'USER' AND "endpointAAccount" = ${member.account}
+          AND "endpointANamespaceId" = 0
+          AND "endpointBType" = 'GROUP' AND "endpointBAccount" = ${located.groupAccount}
+          AND "endpointBNamespaceId" = ${groupNamespaceId}
       `)
       ).rows[0];
       if (!existing)
@@ -452,8 +453,10 @@ export class MemberAuthoredGroupMembershipIntentService {
         );
       pairId = BigInt(existing.id);
     }
-    await tx.execute(
-      sql`SELECT id FROM "RelationshipIntent" WHERE "pairId" = ${pairId} ORDER BY "authorSide" FOR NO KEY UPDATE`,
+    await lockGroupMemberIntentRowsInTx(
+      tx,
+      { account: located.groupAccount, namespaceId: groupNamespaceId },
+      { account: member.account, namespaceId: 0 },
     );
     // The member's own AccountThreadState is the only participant row these
     // commands write; manager watermarks move through the fan-out task.
@@ -482,6 +485,8 @@ export class MemberAuthoredGroupMembershipIntentService {
           threadId: params.threadId,
           pairId,
           actorUserId: params.memberUserId,
+          groupAccount: located.groupAccount,
+          groupNamespaceId,
           memberAccount: member.account,
           memberDomain: member.domain,
           memberNamespaceId: 0,
@@ -623,7 +628,7 @@ export class MemberAuthoredGroupMembershipIntentService {
         note: row.groupIntentNote ?? '',
         acceptedAt: new Date(),
         projectionDirections: ['INVITATION'],
-        authorMemberSide: true,
+        memberAck: true,
       },
     });
   }
@@ -681,7 +686,11 @@ export class MemberAuthoredGroupMembershipIntentService {
         memberNamespaceId: row.memberNamespaceId,
         localMemberId: row.localMemberId,
         projectionDirections: row.projectionDirections,
-        authorSide: 'B',
+        author: {
+          account: row.memberAccount,
+          namespaceId: row.memberNamespaceId,
+        },
+        receiver: { account: row.account, namespaceId: 0 },
       },
     });
   }

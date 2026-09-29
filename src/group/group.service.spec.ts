@@ -218,7 +218,8 @@ describe('GroupService membership lifecycle', () => {
         value: {
           account: '!group',
           domain: 'local',
-          namespaceId: 0,
+          publisherNamespaceId: 0,
+          profileNamespaceId: 0,
           profileRev: 4,
           displayName: 'New name',
           avatar: 'old-avatar',

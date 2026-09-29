@@ -1,4 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
+import { isGroupAccount } from '../../../common/account.js';
 
 /** Flips the shared request projection after a membership decision. The caller
  * owns the group and relationship business locks. No feed position is allocated. */
@@ -9,16 +10,19 @@ type RequestProjectionFlipParams = {
   memberNamespaceId: number;
   directions: readonly ('APPLICATION' | 'INVITATION')[];
 } & (
-  | { status: 'ACCEPTED'; authorSide?: never }
+  | { status: 'ACCEPTED'; authorAccount?: never }
   /** REVOKED is the relationship-intent decision. For projections it is
-   * translated to a direction-specific terminal status below. */
-  | { status: 'REVOKED'; authorSide: 'A' | 'B' }
+   * translated to a direction-specific terminal status below: the author's own
+   * direction withdraws, the other side rejects. The `!` sigil decides which
+   * endpoint authored the decision. */
+  | { status: 'REVOKED'; authorAccount: string }
 );
 
 export function requestProjectionFlipSql(
   params: RequestProjectionFlipParams,
 ): SQL {
-  const authorSide = params.status === 'REVOKED' ? params.authorSide : null;
+  const authorIsGroup =
+    params.status === 'REVOKED' && isGroupAccount(params.authorAccount);
   return sql`
     manager_requests AS MATERIALIZED (
       SELECT r.*
@@ -35,8 +39,8 @@ export function requestProjectionFlipSql(
       UPDATE "GroupRequestProjection" r SET status = (CASE
         WHEN ${params.status} = 'REVOKED'
           THEN CASE
-            WHEN ((${authorSide} = 'A' AND r.direction = 'INVITATION')
-              OR (${authorSide} = 'B' AND r.direction = 'APPLICATION'))
+            WHEN ((${authorIsGroup} AND r.direction = 'INVITATION')
+              OR (NOT ${authorIsGroup} AND r.direction = 'APPLICATION'))
               THEN 'WITHDRAWN' ELSE 'REJECTED' END
           ELSE ${params.status}
         END)::"RequestProjectionStatus"

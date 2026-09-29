@@ -3,23 +3,42 @@ import type { DatabaseTransaction } from '../../../database/database.service.js'
 import type { ThreadContentLock } from '../../../common/locks/thread-content-lock.js';
 import type { UserIntentAuthorizationRow } from '../authored/user-intent-authorization-sql.js';
 
-/** One P2P endpoint identity, fully namespaced. */
+/** One P2P endpoint identity. The domain is carried for feed keys and
+ * display only — locality is always judged by namespaceId === 0. Pairs
+ * persist no per-endpoint domain or namespace; the remote endpoint's
+ * namespace lives once in the pair's endpointBNamespaceId. */
 export interface UserIntentEndpoint {
   account: string;
   domain: string;
+  /** The endpoint's own identity namespace; local endpoints are always 0. */
   namespaceId: number;
 }
 
-/** Canonical side order: the lexicographically smaller endpoint is side A. */
+/** Canonical side order: a local–federated pair always puts the local
+ * endpoint (namespace 0) on side A; a local–local pair orders endpoints by
+ * account string. */
 export function compareEndpoints(
   left: UserIntentEndpoint,
   right: UserIntentEndpoint,
 ): number {
+  const leftLocal = left.namespaceId === 0;
+  const rightLocal = right.namespaceId === 0;
+  if (leftLocal !== rightLocal) return leftLocal ? -1 : 1;
   return (
-    left.domain.localeCompare(right.domain) ||
-    left.account.localeCompare(right.account) ||
-    left.namespaceId - right.namespaceId
+    left.account.localeCompare(right.account) || left.namespaceId - right.namespaceId
   );
+}
+
+/** The single peer namespace a pair persists: the remote endpoint's own
+ * namespace, or 0 when both endpoints are local. */
+export function pairPeerNamespaceId(
+  actor: UserIntentEndpoint,
+  target: UserIntentEndpoint,
+): number {
+  const actorLocal = actor.namespaceId === 0;
+  const targetLocal = target.namespaceId === 0;
+  if (actorLocal && targetLocal) return 0;
+  return actorLocal ? target.namespaceId : actor.namespaceId;
 }
 
 /** ClientStateFeedService.compactionKey's exact shape, keyed by the canonical
@@ -63,16 +82,15 @@ export function reverseEffective(row: UserIntentAuthorizationRow): boolean {
   );
 }
 
-/** Lock the canonical P2P pair row, minting it when absent. Both endpoints
- * share one relationship namespace; the
- * conflicting DO UPDATE always takes the row lock, so no separate select
+/** Lock the canonical P2P pair row, minting it when absent. Side A is the
+ * local endpoint for a mixed pair, and the pair stores one peer namespace.
+ * The conflicting DO UPDATE always takes the row lock, so no separate select
  * follows. Returns the locked pair id and its current thread binding. */
 export async function lockOrMintUserPairInTx(
   tx: DatabaseTransaction,
   pairId: bigint | null,
   actor: UserIntentEndpoint,
   target: UserIntentEndpoint,
-  namespaceId: number,
 ): Promise<{ pairId: bigint; threadId: number | null }> {
   if (pairId !== null) {
     const locked = await tx.execute<{ id: string; threadId: number | null }>(
@@ -85,12 +103,10 @@ export async function lockOrMintUserPairInTx(
     compareEndpoints(actor, target) < 0 ? [actor, target] : [target, actor];
   const minted = await tx.execute<{ id: string }>(sql`
     INSERT INTO "RelationshipPair"
-      (kind, "endpointAType", "endpointAAccount", "endpointADomain", "endpointANamespaceId",
-       "endpointBType", "endpointBAccount", "endpointBDomain", "endpointBNamespaceId")
-    VALUES ('P2P', 'USER', ${endpointA.account}, ${endpointA.domain}, ${namespaceId},
-      'USER', ${endpointB.account}, ${endpointB.domain}, ${namespaceId})
-    ON CONFLICT ("endpointAType", "endpointAAccount", "endpointADomain", "endpointANamespaceId",
-      "endpointBType", "endpointBAccount", "endpointBDomain", "endpointBNamespaceId")
+      (kind, "endpointAType", "endpointAAccount", "endpointBType", "endpointBAccount", "endpointBNamespaceId")
+    VALUES ('P2P', 'USER', ${endpointA.account}, 'USER', ${endpointB.account},
+      ${pairPeerNamespaceId(actor, target)})
+    ON CONFLICT ("endpointAType", "endpointAAccount", "endpointBType", "endpointBAccount", "endpointBNamespaceId")
     DO UPDATE SET "updatedAt" = CURRENT_TIMESTAMP
     RETURNING id
   `);

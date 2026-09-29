@@ -8,7 +8,7 @@ import {
   type ThreadContentLock,
 } from '../common/locks/thread-content-lock.js';
 import { Injectable } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import {
@@ -28,7 +28,6 @@ import { setLockedP2PPairActiveInTx } from './shared/p2p-pair-state.js';
 export type { RelationshipIntentStatus } from '../common/relationship-intent-state.js';
 
 export interface RelationshipIntentState extends Record<string, unknown> {
-  id: bigint;
   status: RelationshipIntentStatus;
   profileRev: number;
   note: string;
@@ -38,10 +37,12 @@ export interface RelationshipIntentState extends Record<string, unknown> {
   expiresAt: Date | null;
 }
 
+/** One relationship endpoint. namespaceId is the endpoint's own identity
+ * namespace — local endpoints are always 0; locality is never judged from a
+ * domain. */
 type RelationshipEndpoint = {
   type: 'USER' | 'GROUP';
   account: string;
-  domain: string;
   namespaceId: number;
 };
 
@@ -49,8 +50,32 @@ type PairKey = {
   kind: 'P2P' | 'GROUP_MEMBER';
   endpointA: RelationshipEndpoint;
   endpointB: RelationshipEndpoint;
+  /** The remote endpoint's own namespace; 0 when both endpoints are local.
+   * Side A is always the local endpoint of a mixed pair. */
+  endpointBNamespaceId: number;
   threadId: number | null;
 };
+
+/** The directed coordinates identifying one intent row: who requested whom. */
+export interface IntentDirection {
+  authorAccount: string;
+  authorNamespaceId: number;
+  receiverAccount: string;
+  receiverNamespaceId: number;
+}
+
+/** Build the direction from one endpoint's coordinates to the other's. */
+export function buildIntentDirection(
+  author: { account: string; namespaceId: number },
+  receiver: { account: string; namespaceId: number },
+): IntentDirection {
+  return {
+    authorAccount: author.account,
+    authorNamespaceId: author.namespaceId,
+    receiverAccount: receiver.account,
+    receiverNamespaceId: receiver.namespaceId,
+  };
+}
 
 export type LockedPair = PairKey & {
   id: bigint;
@@ -58,7 +83,6 @@ export type LockedPair = PairKey & {
 };
 
 type RawIntent = {
-  id: bigint;
   status: RelationshipIntentStatus;
   profileRev: number;
   note: string;
@@ -87,8 +111,12 @@ export class RelationshipIntentService {
       }
     | undefined
   > {
-    const key = await this.prepareP2PAddressKeyInTx(tx, localUserId, remote);
-    await lockBusinessAccountsInTx(tx, [key.endpointA, key.endpointB]);
+    const { key, local } = await this.prepareP2PAddressKeyInTx(
+      tx,
+      localUserId,
+      remote,
+    );
+    await lockBusinessAccountsInTx(tx, [local, remote]);
     const locked = await tx.execute<{
       id: string;
       active: boolean;
@@ -98,12 +126,9 @@ export class RelationshipIntentService {
       WHERE kind = 'P2P'
         AND "endpointAType" = 'USER'
         AND "endpointAAccount" = ${key.endpointA.account}
-        AND "endpointADomain" = ${key.endpointA.domain}
-        AND "endpointANamespaceId" = ${key.endpointA.namespaceId}
         AND "endpointBType" = 'USER'
         AND "endpointBAccount" = ${key.endpointB.account}
-        AND "endpointBDomain" = ${key.endpointB.domain}
-        AND "endpointBNamespaceId" = ${key.endpointB.namespaceId}
+        AND "endpointBNamespaceId" = ${key.endpointBNamespaceId}
       FOR NO KEY UPDATE
     `);
     const row = locked.rows[0];
@@ -114,13 +139,13 @@ export class RelationshipIntentService {
       active: row.active,
       threadId: row.threadId,
     };
-    await this.lockIntentRowsInTx(tx, pair.id);
+    await this.lockIntentRowsInTx(tx, pair);
     return {
       pair,
       localSide: key.localSide,
       remoteSide: key.remoteSide,
-      localIntent: await this.readIntentInTx(tx, pair.id, key.localSide),
-      remoteIntent: await this.readIntentInTx(tx, pair.id, key.remoteSide),
+      localIntent: await this.readIntentInTx(tx, pair, key.localSide),
+      remoteIntent: await this.readIntentInTx(tx, pair, key.remoteSide),
     };
   }
 
@@ -136,8 +161,14 @@ export class RelationshipIntentService {
     const pair = await this.lockGroupMutationInTx(tx, params);
     const intent = await this.readIntentInTx(
       tx,
-      pair.id,
-      params.author === 'GROUP' ? 'A' : 'B',
+      pair,
+      pair.endpointA.type === 'GROUP'
+        ? params.author === 'GROUP'
+          ? 'A'
+          : 'B'
+        : params.author === 'GROUP'
+          ? 'B'
+          : 'A',
     );
     return isEffectiveRelationshipIntent(intent, new Date());
   }
@@ -159,11 +190,15 @@ export class RelationshipIntentService {
     changed: boolean;
   }> {
     const pair = await this.lockGroupMutationInTx(tx, params);
+    const groupSide = pair.endpointA.type === 'GROUP' ? pair.endpointA : pair.endpointB;
+    const memberSide = groupSide === pair.endpointA ? pair.endpointB : pair.endpointA;
     return this.writeLockedGroupAuthoredIntentInTx(tx, {
-      pairId: pair.id,
+      direction:
+        params.author === 'GROUP'
+          ? buildIntentDirection(groupSide, memberSide)
+          : buildIntentDirection(memberSide, groupSide),
       threadId: params.threadId,
       threadLock: pair.threadLock,
-      authorSide: params.author === 'GROUP' ? 'A' : 'B',
       status: params.status,
       note: params.note,
       expiresAt: params.expiresAt,
@@ -175,10 +210,9 @@ export class RelationshipIntentService {
   async writeLockedGroupAuthoredIntentInTx(
     tx: DatabaseTransaction,
     params: {
-      pairId: bigint;
+      direction: IntentDirection;
       threadId: number;
       threadLock: ThreadContentLock;
-      authorSide: 'A' | 'B';
       status: RelationshipIntentStatus;
       note?: string;
       expiresAt?: Date | null;
@@ -191,8 +225,8 @@ export class RelationshipIntentService {
   }> {
     this.assertThreadLock(tx, params.threadId, params.threadLock);
     return this.writeAuthoredIntentOnPairInTx(tx, {
-      pair: { id: params.pairId, threadId: params.threadId },
-      authorSide: params.authorSide,
+      direction: params.direction,
+      threadId: params.threadId,
       status: params.status,
       note: params.note,
       expiresAt: params.expiresAt,
@@ -234,9 +268,12 @@ export class RelationshipIntentService {
       pair,
       firstSide,
       secondSide,
-      firstIntent: await this.readIntentInTx(tx, pair.id, firstSide),
-      secondIntent: await this.readIntentInTx(tx, pair.id, secondSide),
-      shouldBeActive: await this.shouldBeActiveInTx(tx, pair.id),
+      firstIntent: await this.readIntentInTx(tx, pair, firstSide),
+      secondIntent: await this.readIntentInTx(tx, pair, secondSide),
+      shouldBeActive: await this.shouldBeActiveInTx(
+        tx,
+        this.intentDirection(pair, 'A'),
+      ),
     };
   }
 
@@ -279,16 +316,17 @@ export class RelationshipIntentService {
       { account: group.groupAccount, domain: group.groupDomain },
     ]);
     const pair = await this.lockGroupMutationInTx(tx, params);
-    if (
-      pair.endpointA.account !== group.groupAccount ||
-      pair.endpointA.domain !== group.groupDomain
-    )
+    const groupEndpoint =
+      pair.endpointA.type === 'GROUP' ? pair.endpointA : pair.endpointB;
+    const memberEndpoint =
+      groupEndpoint === pair.endpointA ? pair.endpointB : pair.endpointA;
+    if (groupEndpoint.account !== group.groupAccount)
       throw new Error('group identity changed while acquiring business lock');
     const changed = await this.setLockedGroupPairActiveInTx(tx, {
       pairId: pair.id,
       threadId: params.threadId,
       threadLock: pair.threadLock,
-      memberDomain: pair.endpointB.domain,
+      memberLocal: memberEndpoint.namespaceId === 0,
       active: params.active,
     });
     return { changed, threadLock: pair.threadLock };
@@ -301,7 +339,7 @@ export class RelationshipIntentService {
       pairId: bigint;
       threadId: number;
       threadLock: ThreadContentLock;
-      memberDomain: string;
+      memberLocal: boolean;
       active: boolean;
     },
   ): Promise<boolean> {
@@ -311,13 +349,13 @@ export class RelationshipIntentService {
       params.pairId,
       params.active,
     );
-    if (changed && params.active && params.memberDomain === 'local')
+    if (changed && params.active && params.memberLocal)
       await tx.execute(sql`
         UPDATE "MessageThread"
         SET "federationRoundsEnabled" = true, "updatedAt" = CURRENT_TIMESTAMP
         WHERE id = ${params.threadId}
       `);
-    if (changed && !params.active && params.memberDomain === 'local')
+    if (changed && !params.active && params.memberLocal)
       await tx.execute(sql`
         UPDATE "MessageThread" thread
         SET "authorizationEpoch" = thread."authorizationEpoch" + 1,
@@ -336,15 +374,16 @@ export class RelationshipIntentService {
               AND (
                 (remaining_pair."endpointAType" = 'GROUP'
                   AND remaining_pair."endpointAAccount" = group_profile.account
-                  AND remaining_pair."endpointADomain" = group_profile.domain
+                  AND remaining_pair."endpointBNamespaceId" = group_profile."namespaceId"
                   AND remaining_pair."endpointBType" = 'USER'
-                  AND remaining_pair."endpointBDomain" = 'local')
+                  AND remaining_pair."endpointBNamespaceId" <> 0
+                  AND remaining_pair."endpointANamespaceId" = 0)
                 OR
                 (remaining_pair."endpointBType" = 'GROUP'
                   AND remaining_pair."endpointBAccount" = group_profile.account
-                  AND remaining_pair."endpointBDomain" = group_profile.domain
+                  AND remaining_pair."endpointBNamespaceId" = group_profile."namespaceId"
                   AND remaining_pair."endpointAType" = 'USER'
-                  AND remaining_pair."endpointADomain" = 'local')
+                  AND remaining_pair."endpointANamespaceId" = 0)
               )
           )
       `);
@@ -361,8 +400,14 @@ export class RelationshipIntentService {
     },
   ): Promise<number> {
     const pair = await this.lockGroupMutationInTx(tx, params);
+    const member = await accountAddressInTx(tx, params.memberUserId);
+    const group = this.otherPairEndpoint(
+      pair,
+      member.account,
+      member.namespaceId,
+    );
     return this.readLockedGroupMemberProfileRevInTx(tx, {
-      pairId: pair.id,
+      direction: buildIntentDirection(member, group),
       threadId: params.threadId,
       threadLock: pair.threadLock,
     });
@@ -371,13 +416,13 @@ export class RelationshipIntentService {
   async readLockedGroupMemberProfileRevInTx(
     tx: DatabaseTransaction,
     params: {
-      pairId: bigint;
+      direction: IntentDirection;
       threadId: number;
       threadLock: ThreadContentLock;
     },
   ): Promise<number> {
     this.assertThreadLock(tx, params.threadId, params.threadLock);
-    const intent = await this.readIntentInTx(tx, params.pairId, 'B');
+    const intent = await this.readIntentByDirectionInTx(tx, params.direction);
     if (!intent)
       throw new Error('active group member has no member-authored intent');
     if (!Number.isSafeInteger(intent.profileRev) || intent.profileRev < 0)
@@ -404,14 +449,12 @@ export class RelationshipIntentService {
       groupDomain: string;
       groupNamespaceId: number;
       memberAccount: string;
-      memberDomain: string;
       memberNamespaceId: number;
     }>(sql`
       SELECT group_profile.account AS "groupAccount",
         group_profile.domain AS "groupDomain",
         group_profile."namespaceId" AS "groupNamespaceId",
         ${member.account}::text AS "memberAccount",
-        ${member.domain}::text AS "memberDomain",
         ${member.namespaceId}::integer AS "memberNamespaceId"
       FROM ${groupStateSql} group_profile
       WHERE group_profile.id = ${params.groupId}
@@ -428,27 +471,23 @@ export class RelationshipIntentService {
       params.threadId,
     );
 
-    const relationshipNamespaceId = this.relationshipNamespaceId(
-      row.groupNamespaceId,
-      row.memberNamespaceId,
+    const pair = await this.lockCanonicalPairInTx(
+      tx,
+      this.prepareGroupMemberKey(
+        {
+          type: 'GROUP',
+          account: row.groupAccount,
+          namespaceId: row.groupNamespaceId,
+        },
+        {
+          type: 'USER',
+          account: row.memberAccount,
+          namespaceId: row.memberNamespaceId,
+        },
+        params.threadId,
+      ),
     );
-    const pair = await this.lockCanonicalPairInTx(tx, {
-      kind: 'GROUP_MEMBER',
-      endpointA: {
-        type: 'GROUP',
-        account: row.groupAccount,
-        domain: row.groupDomain,
-        namespaceId: relationshipNamespaceId,
-      },
-      endpointB: {
-        type: 'USER',
-        account: row.memberAccount,
-        domain: row.memberDomain,
-        namespaceId: relationshipNamespaceId,
-      },
-      threadId: params.threadId,
-    });
-    await this.lockIntentRowsInTx(tx, pair.id);
+    await this.lockIntentRowsInTx(tx, pair);
 
     const projectionUserIds = [...new Set(params.projectionUserIds ?? [])];
     await tx.execute(sql`
@@ -472,8 +511,8 @@ export class RelationshipIntentService {
   private async writeAuthoredIntentOnPairInTx(
     tx: DatabaseTransaction,
     params: {
-      pair: Pick<LockedPair, 'id' | 'threadId'>;
-      authorSide: 'A' | 'B';
+      direction: IntentDirection;
+      threadId: number | null;
       status: RelationshipIntentStatus;
       note?: string;
       expiresAt?: Date | null;
@@ -482,16 +521,13 @@ export class RelationshipIntentService {
   ) {
     let status = params.status;
     if (params.validatedPairActive === undefined) {
-      const reverseSide = params.authorSide === 'A' ? 'B' : 'A';
-      const reverse = await this.readIntentInTx(
+      const reverse = await this.readIntentByDirectionInTx(
         tx,
-        params.pair.id,
-        reverseSide,
+        this.reverseDirection(params.direction),
       );
-      const current = await this.readIntentInTx(
+      const current = await this.readIntentByDirectionInTx(
         tx,
-        params.pair.id,
-        params.authorSide,
+        params.direction,
       );
       const reverseIsCurrent = isEffectiveRelationshipIntent(
         reverse,
@@ -512,38 +548,33 @@ export class RelationshipIntentService {
         ? (params.expiresAt ??
           new Date(requestedAt!.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS))
         : null;
+    const direction = params.direction;
     const written = await tx.execute(sql`
       INSERT INTO "RelationshipIntent" (
-        "pairId", "authorSide", status, "profileRev", note, "messageEndSeq", "tombstoneEndSeq",
+        "authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId",
+        status, "profileNamespaceId", "profileRev", note, "messageEndSeq", "tombstoneEndSeq",
         "requestedAt", "expiresAt", "updatedAt"
-      ) VALUES (${params.pair.id}, ${params.authorSide},
-        ${status}::"RelationshipIntentStatus",
+      ) VALUES (${direction.authorAccount}, ${direction.authorNamespaceId},
+        ${direction.receiverAccount}, ${direction.receiverNamespaceId},
+        ${status}::"RelationshipIntentStatus", 0,
         COALESCE((
-          SELECT CASE
-            WHEN ${params.authorSide} = 'A' AND pair."endpointAType" = 'USER' THEN
-              (SELECT profile."defaultProfileRev" FROM "Account" profile
-                WHERE profile.account = pair."endpointAAccount" AND profile.domain = 'local'
-                  AND profile."namespaceId" = 0 LIMIT 1)
-            WHEN ${params.authorSide} = 'B' AND pair."endpointBType" = 'USER' THEN
-              (SELECT profile."defaultProfileRev" FROM "Account" profile
-                WHERE profile.account = pair."endpointBAccount" AND profile.domain = 'local'
-                  AND profile."namespaceId" = 0 LIMIT 1)
-            WHEN ${params.authorSide} = 'A' AND pair."endpointAType" = 'GROUP' THEN
+          SELECT CASE WHEN ${direction.authorAccount} LIKE '!%' THEN
               (SELECT profile."defaultProfileRev" FROM "GroupAccount" profile
-                WHERE profile.account = pair."endpointAAccount" LIMIT 1)
-            WHEN ${params.authorSide} = 'B' AND pair."endpointBType" = 'GROUP' THEN
-              (SELECT profile."defaultProfileRev" FROM "GroupAccount" profile
-                WHERE profile.account = pair."endpointBAccount" LIMIT 1)
+                WHERE profile.account = ${direction.authorAccount} LIMIT 1)
+            ELSE
+              (SELECT profile."defaultProfileRev" FROM "Account" profile
+                WHERE profile.account = ${direction.authorAccount}
+                  AND profile.domain = 'local'
+                  AND profile."namespaceId" = 0 LIMIT 1)
           END
-          FROM "RelationshipPair" pair WHERE pair.id = ${params.pair.id}
-         ), 0), ${(params.note ?? '').slice(0, 255)},
+        ), 0), ${(params.note ?? '').slice(0, 255)},
         COALESCE((SELECT MAX(m.seq) FROM "Message" m
-          WHERE m."threadId" = ${params.pair.threadId} AND m."contentType" <> 'SYSTEM'), 0),
+          WHERE m."threadId" = ${params.threadId} AND m."contentType" <> 'SYSTEM'), 0),
         COALESCE((SELECT MAX(d."deletionSeq") FROM "DeletedMessage" d
           JOIN "Message" m ON m."threadId" = d."threadId" AND m.seq = d."messageSeq"
-          WHERE d."threadId" = ${params.pair.threadId} AND d."sourceNamespaceId" = 0), 0),
+          WHERE d."threadId" = ${params.threadId} AND d."sourceNamespaceId" = 0), 0),
         ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP)
-      ON CONFLICT ("pairId", "authorSide") DO UPDATE SET
+      ON CONFLICT ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId") DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,
         "messageEndSeq" = CASE WHEN EXCLUDED.status = 'REVOKED'
           THEN "RelationshipIntent"."messageEndSeq" ELSE EXCLUDED."messageEndSeq" END,
@@ -563,17 +594,13 @@ export class RelationshipIntentService {
          OR "RelationshipIntent"."expiresAt" IS DISTINCT FROM EXCLUDED."expiresAt"
       RETURNING 1
     `);
-    const raw = await this.readIntentInTx(
-      tx,
-      params.pair.id,
-      params.authorSide,
-    );
+    const raw = await this.readIntentByDirectionInTx(tx, params.direction);
     if (!raw) throw new Error('relationship intent write disappeared');
     return {
       request: raw,
       shouldBeActive:
         params.validatedPairActive ??
-        (await this.shouldBeActiveInTx(tx, params.pair.id)),
+        (await this.shouldBeActiveInTx(tx, params.direction)),
       changed: (written.rowCount ?? 0) > 0,
     };
   }
@@ -587,7 +614,7 @@ export class RelationshipIntentService {
     const first = await accountAddressInTx(tx, firstUserId);
     const second = await accountAddressInTx(tx, secondUserId);
     const key = this.prepareP2PKey(first, second, threadId);
-    await lockBusinessAccountsInTx(tx, [key.endpointA, key.endpointB]);
+    await lockBusinessAccountsInTx(tx, [first, second]);
     const pair = await this.lockCanonicalPairInTx(tx, key);
     if (pair.threadId !== null) {
       const thread = await tx
@@ -598,7 +625,7 @@ export class RelationshipIntentService {
         .limit(1);
       if (!thread[0]) throw new Error('P2P relationship thread does not exist');
     }
-    await this.lockIntentRowsInTx(tx, pair.id);
+    await this.lockIntentRowsInTx(tx, pair);
     return pair;
   }
 
@@ -606,31 +633,36 @@ export class RelationshipIntentService {
     tx: DatabaseTransaction,
     localUserId: number,
     remote: { account: string; domain: string; namespaceId: number },
-  ): Promise<PairKey & { localSide: 'A' | 'B'; remoteSide: 'A' | 'B' }> {
+  ): Promise<{
+    key: PairKey & { localSide: 'A' | 'B'; remoteSide: 'A' | 'B' };
+    local: { account: string; domain: string };
+  }> {
     const local = await tx.query.account.findFirst({
       where: and(eq(user.id, localUserId), eq(user.domain, 'local')),
       columns: { account: true, domain: true, namespaceId: true },
     });
     if (!local) throw new Error('local relationship endpoint does not exist');
-    const key = this.prepareP2PKey(local, remote, null);
-    return { ...key, localSide: key.firstSide, remoteSide: key.secondSide };
+    const prepared = this.prepareP2PKey(local, remote, null);
+    return {
+      key: {
+        ...prepared,
+        localSide: prepared.firstSide,
+        remoteSide: prepared.secondSide,
+      },
+      local,
+    };
   }
 
   /** Build the same canonical identity for lookups and mutations, without creating rows or locking. */
   private prepareP2PKey(
-    first: { account: string; domain: string; namespaceId: number },
-    second: { account: string; domain: string; namespaceId: number },
+    first: { account: string; namespaceId: number },
+    second: { account: string; namespaceId: number },
     threadId: number | null,
   ): PairKey & { firstSide: 'A' | 'B'; secondSide: 'A' | 'B' } {
-    const namespaceId = this.relationshipNamespaceId(
-      first.namespaceId,
-      second.namespaceId,
-    );
     const endpoint = (address: typeof first): RelationshipEndpoint => ({
       type: 'USER',
       account: normalizeAccount(address.account),
-      domain: address.domain.trim().toLowerCase(),
-      namespaceId,
+      namespaceId: address.namespaceId,
     });
     const firstEndpoint = endpoint(first);
     const secondEndpoint = endpoint(second);
@@ -644,9 +676,29 @@ export class RelationshipIntentService {
       kind: 'P2P',
       endpointA: endpointA!,
       endpointB: endpointB!,
+      endpointBNamespaceId: this.pairPeerNamespaceId(firstEndpoint, secondEndpoint),
       threadId,
       firstSide,
       secondSide: firstSide === 'A' ? 'B' : 'A',
+    };
+  }
+
+  private prepareGroupMemberKey(
+    group: RelationshipEndpoint,
+    member: RelationshipEndpoint,
+    threadId: number | null,
+  ): PairKey {
+    if (this.compareEndpoints(group, member) === 0)
+      throw new Error('relationship endpoints must be distinct');
+    const [endpointA, endpointB] = [group, member].sort((left, right) =>
+      this.compareEndpoints(left, right),
+    );
+    return {
+      kind: 'GROUP_MEMBER',
+      endpointA: endpointA!,
+      endpointB: endpointB!,
+      endpointBNamespaceId: this.pairPeerNamespaceId(group, member),
+      threadId,
     };
   }
 
@@ -660,12 +712,9 @@ export class RelationshipIntentService {
         kind: key.kind,
         endpointAType: key.endpointA.type,
         endpointAAccount: key.endpointA.account,
-        endpointADomain: key.endpointA.domain,
-        endpointANamespaceId: key.endpointA.namespaceId,
         endpointBType: key.endpointB.type,
         endpointBAccount: key.endpointB.account,
-        endpointBDomain: key.endpointB.domain,
-        endpointBNamespaceId: key.endpointB.namespaceId,
+        endpointBNamespaceId: key.endpointBNamespaceId,
         threadId: key.threadId,
       })
       .onConflictDoNothing();
@@ -677,18 +726,9 @@ export class RelationshipIntentService {
           and(
             eq(relationshipPair.endpointAType, key.endpointA.type),
             eq(relationshipPair.endpointAAccount, key.endpointA.account),
-            eq(relationshipPair.endpointADomain, key.endpointA.domain),
-            eq(
-              relationshipPair.endpointANamespaceId,
-              key.endpointA.namespaceId,
-            ),
             eq(relationshipPair.endpointBType, key.endpointB.type),
             eq(relationshipPair.endpointBAccount, key.endpointB.account),
-            eq(relationshipPair.endpointBDomain, key.endpointB.domain),
-            eq(
-              relationshipPair.endpointBNamespaceId,
-              key.endpointB.namespaceId,
-            ),
+            eq(relationshipPair.endpointBNamespaceId, key.endpointBNamespaceId),
           ),
         );
     const locked = await tx.execute<{
@@ -699,12 +739,9 @@ export class RelationshipIntentService {
       SELECT id, active, "threadId" FROM "RelationshipPair"
       WHERE "endpointAType" = ${key.endpointA.type}
         AND "endpointAAccount" = ${key.endpointA.account}
-        AND "endpointADomain" = ${key.endpointA.domain}
-        AND "endpointANamespaceId" = ${key.endpointA.namespaceId}
         AND "endpointBType" = ${key.endpointB.type}
         AND "endpointBAccount" = ${key.endpointB.account}
-        AND "endpointBDomain" = ${key.endpointB.domain}
-        AND "endpointBNamespaceId" = ${key.endpointB.namespaceId}
+        AND "endpointBNamespaceId" = ${key.endpointBNamespaceId}
       FOR NO KEY UPDATE
     `);
     const row = locked.rows[0];
@@ -742,28 +779,98 @@ export class RelationshipIntentService {
 
   private async lockIntentRowsInTx(
     tx: DatabaseTransaction,
-    pairId: bigint,
+    pair: PairKey,
   ): Promise<void> {
     await tx
-      .select({ id: relationshipIntent.id })
+      .select({ authorAccount: relationshipIntent.authorAccount })
       .from(relationshipIntent)
-      .where(eq(relationshipIntent.pairId, pairId))
-      .orderBy(relationshipIntent.authorSide)
+      .where(
+        or(
+          and(
+            eq(relationshipIntent.authorAccount, pair.endpointA.account),
+            eq(
+              relationshipIntent.authorNamespaceId,
+              pair.endpointA.namespaceId,
+            ),
+            eq(relationshipIntent.receiverAccount, pair.endpointB.account),
+            eq(
+              relationshipIntent.receiverNamespaceId,
+              pair.endpointB.namespaceId,
+            ),
+          ),
+          and(
+            eq(relationshipIntent.authorAccount, pair.endpointB.account),
+            eq(
+              relationshipIntent.authorNamespaceId,
+              pair.endpointB.namespaceId,
+            ),
+            eq(relationshipIntent.receiverAccount, pair.endpointA.account),
+            eq(
+              relationshipIntent.receiverNamespaceId,
+              pair.endpointA.namespaceId,
+            ),
+          ),
+        ),
+      )
+      .orderBy(
+        relationshipIntent.authorAccount,
+        relationshipIntent.authorNamespaceId,
+        relationshipIntent.receiverAccount,
+        relationshipIntent.receiverNamespaceId,
+      )
       .for('no key update');
   }
 
-  private async readIntentInTx(
+  /** The directed coordinates from one pair endpoint to the other. */
+  private intentDirection(
+    pair: PairKey,
+    authorEndpoint: 'A' | 'B',
+  ): IntentDirection {
+    return buildIntentDirection(
+      authorEndpoint === 'A' ? pair.endpointA : pair.endpointB,
+      authorEndpoint === 'A' ? pair.endpointB : pair.endpointA,
+    );
+  }
+
+
+
+  private reverseDirection(direction: IntentDirection): IntentDirection {
+    return {
+      authorAccount: direction.receiverAccount,
+      authorNamespaceId: direction.receiverNamespaceId,
+      receiverAccount: direction.authorAccount,
+      receiverNamespaceId: direction.authorNamespaceId,
+    };
+  }
+
+  private otherPairEndpoint(
+    pair: PairKey,
+    account: string,
+    namespaceId: number,
+  ): RelationshipEndpoint {
+    return pair.endpointA.account === account &&
+      pair.endpointA.namespaceId === namespaceId
+      ? pair.endpointB
+      : pair.endpointA;
+  }
+
+  private async readIntentByDirectionInTx(
     tx: DatabaseTransaction,
-    pairId: bigint,
-    authorSide: 'A' | 'B',
+    direction: {
+      authorAccount: string;
+      authorNamespaceId: number;
+      receiverAccount: string;
+      receiverNamespaceId: number;
+    },
   ): Promise<RawIntent | undefined> {
     return tx.query.relationshipIntent.findFirst({
       where: and(
-        eq(relationshipIntent.pairId, pairId),
-        eq(relationshipIntent.authorSide, authorSide),
+        eq(relationshipIntent.authorAccount, direction.authorAccount),
+        eq(relationshipIntent.authorNamespaceId, direction.authorNamespaceId),
+        eq(relationshipIntent.receiverAccount, direction.receiverAccount),
+        eq(relationshipIntent.receiverNamespaceId, direction.receiverNamespaceId),
       ),
       columns: {
-        id: true,
         status: true,
         profileRev: true,
         note: true,
@@ -775,14 +882,25 @@ export class RelationshipIntentService {
     });
   }
 
+  private async readIntentInTx(
+    tx: DatabaseTransaction,
+    pair: PairKey,
+    authorEndpoint: 'A' | 'B',
+  ): Promise<RawIntent | undefined> {
+    return this.readIntentByDirectionInTx(
+      tx,
+      this.intentDirection(pair, authorEndpoint),
+    );
+  }
+
   private async shouldBeActiveInTx(
     tx: DatabaseTransaction,
-    pairId: bigint,
+    direction: IntentDirection,
   ): Promise<boolean> {
     const intents = await tx
       .select({
-        id: relationshipIntent.id,
-        authorSide: relationshipIntent.authorSide,
+        authorAccount: relationshipIntent.authorAccount,
+        authorNamespaceId: relationshipIntent.authorNamespaceId,
         status: relationshipIntent.status,
         profileRev: relationshipIntent.profileRev,
         note: relationshipIntent.note,
@@ -790,9 +908,42 @@ export class RelationshipIntentService {
         expiresAt: relationshipIntent.expiresAt,
       })
       .from(relationshipIntent)
-      .where(eq(relationshipIntent.pairId, pairId));
+      .where(
+        or(
+          and(
+            eq(relationshipIntent.authorAccount, direction.authorAccount),
+            eq(
+              relationshipIntent.authorNamespaceId,
+              direction.authorNamespaceId,
+            ),
+            eq(relationshipIntent.receiverAccount, direction.receiverAccount),
+            eq(
+              relationshipIntent.receiverNamespaceId,
+              direction.receiverNamespaceId,
+            ),
+          ),
+          and(
+            eq(relationshipIntent.authorAccount, direction.receiverAccount),
+            eq(
+              relationshipIntent.authorNamespaceId,
+              direction.receiverNamespaceId,
+            ),
+            eq(relationshipIntent.receiverAccount, direction.authorAccount),
+            eq(
+              relationshipIntent.receiverNamespaceId,
+              direction.authorNamespaceId,
+            ),
+          ),
+        ),
+      );
     const bySide = new Map(
-      intents.map((intent) => [intent.authorSide, intent]),
+      intents.map((intent) => [
+        intent.authorAccount === direction.authorAccount &&
+        intent.authorNamespaceId === direction.authorNamespaceId
+          ? 'A'
+          : 'B',
+        intent,
+      ]),
     );
     const now = new Date();
     return (
@@ -809,14 +960,12 @@ export class RelationshipIntentService {
     const identity = await accountAddressInTx(tx, userId);
     if (
       pair.endpointA.type === 'USER' &&
-      pair.endpointA.account === normalizeAccount(identity.account) &&
-      pair.endpointA.domain === identity.domain.trim().toLowerCase()
+      pair.endpointA.account === normalizeAccount(identity.account)
     )
       return 'A';
     if (
       pair.endpointB.type === 'USER' &&
-      pair.endpointB.account === normalizeAccount(identity.account) &&
-      pair.endpointB.domain === identity.domain.trim().toLowerCase()
+      pair.endpointB.account === normalizeAccount(identity.account)
     )
       return 'B';
     throw new Error('user is not a relationship endpoint');
@@ -830,30 +979,31 @@ export class RelationshipIntentService {
     );
   }
 
+  /** Canonical side order: the local endpoint (namespace 0) is side A; a
+   * local-local pair orders endpoints by account string. */
   private compareEndpoints(
     left: RelationshipEndpoint,
     right: RelationshipEndpoint,
   ): number {
+    const leftLocal = left.namespaceId === 0;
+    const rightLocal = right.namespaceId === 0;
+    if (leftLocal !== rightLocal) return leftLocal ? -1 : 1;
     return (
-      left.type.localeCompare(right.type) ||
-      left.domain.localeCompare(right.domain) ||
       left.account.localeCompare(right.account) ||
+      left.type.localeCompare(right.type) ||
       left.namespaceId - right.namespaceId
     );
   }
 
-  private relationshipNamespaceId(
-    firstNamespaceId: number,
-    secondNamespaceId: number,
+  /** The one namespace a pair persists: the remote endpoint's own namespace,
+   * or 0 when both endpoints are local. */
+  private pairPeerNamespaceId(
+    first: RelationshipEndpoint,
+    second: RelationshipEndpoint,
   ): number {
-    const federationNamespaceIds = new Set(
-      [firstNamespaceId, secondNamespaceId].filter(
-        (namespaceId) => namespaceId !== 0,
-      ),
-    );
-    if (federationNamespaceIds.size > 1) {
-      throw new Error('relationship endpoints span federation namespaces');
-    }
-    return federationNamespaceIds.values().next().value ?? 0;
+    const firstLocal = first.namespaceId === 0;
+    const secondLocal = second.namespaceId === 0;
+    if (firstLocal && secondLocal) return 0;
+    return firstLocal ? second.namespaceId : first.namespaceId;
   }
 }

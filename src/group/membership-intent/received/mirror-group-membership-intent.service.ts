@@ -28,6 +28,7 @@ import {
   type MirrorGroupPresentationInput,
 } from './mirror-membership-shared-sql.js';
 import { mintGroupMemberPairInTx } from '../shared/group-member-pair-mint.js';
+import { mirrorGroupDirection } from './mirror-membership-shared-sql.js';
 import {
   mirrorMembershipStateSql,
   type MirrorMembershipStateRow,
@@ -49,6 +50,7 @@ import {
  * heads; REVOKED carries none. */
 interface MirrorGroupMembershipIntentBody {
   status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+  profileNamespaceId: number;
   profileRev: number;
   note: string;
   requestedAt: number | null;
@@ -108,6 +110,7 @@ interface ActivationContext {
   persistStatus: 'REQUESTED' | 'ACCEPTED';
   promote: boolean;
   intent: {
+    profileNamespaceId: number;
     profileRev: number;
     note: string;
     requestedAt: Date | null;
@@ -241,8 +244,14 @@ export class MirrorGroupMembershipIntentService {
       if (!pair || pair.threadId !== threadId)
         throw new Error('mirror pair changed while acquiring locks');
       await tx.execute(
-        sql`SELECT id FROM "RelationshipIntent" WHERE "pairId" = ${lockedPairId}
-          ORDER BY "authorSide" FOR NO KEY UPDATE`,
+        sql`SELECT "authorAccount" FROM "RelationshipIntent" pair_intent
+          WHERE (pair_intent."authorAccount", pair_intent."authorNamespaceId",
+                 pair_intent."receiverAccount", pair_intent."receiverNamespaceId") IN (
+            (${memberAccount}, 0, ${group.account}, ${group.namespaceId}),
+            (${group.account}, ${group.namespaceId}, ${memberAccount}, 0)
+          )
+          ORDER BY pair_intent."authorAccount", pair_intent."receiverAccount"
+          FOR NO KEY UPDATE`,
       );
     }
     const fresh = await this.readStateInTx(tx, stateInput);
@@ -267,7 +276,8 @@ export class MirrorGroupMembershipIntentService {
         new Date(expiresAt) > new Date());
 
     const memberId = member.id;
-    const wire = {
+    const wireIntent = {
+      profileNamespaceId: command.body.profileNamespaceId,
       profileRev: command.body.profileRev,
       note: command.body.note ?? '',
       requestedAt: intent.requestedAt,
@@ -296,7 +306,7 @@ export class MirrorGroupMembershipIntentService {
           threadLock,
           persistStatus: 'REQUESTED',
           promote: fresh.memberIntentStatus === 'REQUESTED',
-          intent: wire,
+          intent: wireIntent,
           clientUpdates,
           peers,
           routed:
@@ -305,9 +315,8 @@ export class MirrorGroupMembershipIntentService {
               : 'completion',
         });
       }
-      const resolvedPairId =
-        lockedPairId ??
-        (await this.mintPair(tx, threadId, group, memberAccount));
+      if (lockedPairId === null)
+        await this.mintPair(tx, threadId, group, memberAccount);
       const result = await tx.execute<{
         intentChanged: boolean;
         recipientUserId: number | null;
@@ -315,17 +324,17 @@ export class MirrorGroupMembershipIntentService {
       }>(
         mirrorMembershipRequestSql({
           threadId,
-          pairId: resolvedPairId,
           presentation,
           memberAccount,
           localMemberId: memberId,
           intent: {
-            profileRev: wire.profileRev,
-            note: wire.note,
+            profileNamespaceId: wireIntent.profileNamespaceId,
+          profileRev: wireIntent.profileRev,
+            note: wireIntent.note,
             requestedAt: intent.requestedAt!,
             expiresAt: intent.expiresAt!,
-            messageEndSeq: wire.messageEndSeq,
-            tombstoneEndSeq: wire.tombstoneEndSeq,
+            messageEndSeq: wireIntent.messageEndSeq,
+            tombstoneEndSeq: wireIntent.tombstoneEndSeq,
           },
         }),
       );
@@ -340,15 +349,18 @@ export class MirrorGroupMembershipIntentService {
         // cannot revive the member's withdrawn direction or publish it again.
         await tx.execute(
           mirrorIntentWriteSql({
-            pairId: lockedPairId,
-            authorSide: 'A',
+            ...mirrorGroupDirection({
+          groupAccount: group.account,
+          groupNamespaceId: group.namespaceId,
+        }, memberAccount),
             status: 'ACCEPTED',
-            note: wire.note,
-            requestedAt: wire.requestedAt,
+            note: wireIntent.note,
+            requestedAt: wireIntent.requestedAt,
             expiresAt: null,
-            profileRev: wire.profileRev,
-            messageEndSeq: wire.messageEndSeq,
-            tombstoneEndSeq: wire.tombstoneEndSeq,
+            profileNamespaceId: wireIntent.profileNamespaceId,
+            profileRev: wireIntent.profileRev,
+            messageEndSeq: wireIntent.messageEndSeq,
+            tombstoneEndSeq: wireIntent.tombstoneEndSeq,
           }),
         );
         return { routed: 'noop:dropped-ack' };
@@ -358,15 +370,18 @@ export class MirrorGroupMembershipIntentService {
         // group-side confirmation without replaying the join transition.
         const confirmed = await tx.execute(
           mirrorIntentWriteSql({
-            pairId: lockedPairId,
-            authorSide: 'A',
+            ...mirrorGroupDirection({
+          groupAccount: group.account,
+          groupNamespaceId: group.namespaceId,
+        }, memberAccount),
             status: 'ACCEPTED',
-            note: wire.note,
-            requestedAt: wire.requestedAt,
+            note: wireIntent.note,
+            requestedAt: wireIntent.requestedAt,
             expiresAt: null,
-            profileRev: wire.profileRev,
-            messageEndSeq: wire.messageEndSeq,
-            tombstoneEndSeq: wire.tombstoneEndSeq,
+            profileNamespaceId: wireIntent.profileNamespaceId,
+            profileRev: wireIntent.profileRev,
+            messageEndSeq: wireIntent.messageEndSeq,
+            tombstoneEndSeq: wireIntent.tombstoneEndSeq,
           }),
         );
         if (!confirmed.rows[0]) return { routed: 'noop:already-member' };
@@ -379,8 +394,8 @@ export class MirrorGroupMembershipIntentService {
             memberAccount,
             localMemberId: memberId,
             status: 'ACCEPTED',
-            note: wire.note,
-            requestedAt: wire.requestedAt,
+            note: wireIntent.note,
+            requestedAt: wireIntent.requestedAt,
             expiresAt: null,
             threadId,
           }),
@@ -401,7 +416,7 @@ export class MirrorGroupMembershipIntentService {
         threadLock,
         persistStatus: 'ACCEPTED',
         promote: memberLive && fresh.memberIntentStatus === 'REQUESTED',
-        intent: wire,
+        intent: wireIntent,
         clientUpdates,
         peers,
         routed: memberLive
@@ -616,10 +631,9 @@ export class MirrorGroupMembershipIntentService {
     return mintGroupMemberPairInTx(tx, {
       threadId,
       groupAccount: group.account,
-      groupDomain: group.domain,
+      groupNamespaceId: group.namespaceId,
       memberAccount,
-      memberDomain: 'local',
-      namespaceId: group.namespaceId,
+      memberNamespaceId: 0,
     });
   }
 

@@ -112,7 +112,7 @@ export interface MessageAuthorAddress {
 }
 export type PublicMessage<T extends Message = Message> = Omit<
   T,
-  'id' | 'creatorAccount' | 'creatorDomain' | 'creatorNamespaceId'
+  'id' | 'creatorAccount' | 'creatorDomain' | 'profileNamespaceId'
 > & {
   creator: MessageAuthorAddress | null;
 };
@@ -144,8 +144,8 @@ export interface ClientMessageHistoryGap {
   recoverable: boolean;
 }
 
-function authorNamespaceId(message: { creatorNamespaceId: number }): number {
-  return message.creatorNamespaceId;
+function authorNamespaceId(message: { profileNamespaceId: number }): number {
+  return message.profileNamespaceId;
 }
 
 /**
@@ -160,18 +160,20 @@ export function stripMessageId<
     id: bigint;
     creatorAccount: string | null;
     creatorDomain: string | null;
-    creatorNamespaceId: number;
+    profileNamespaceId: number;
     sourceNamespaceId: number;
   },
 >(
   msg: T,
-): Omit<T, 'id' | 'creatorAccount' | 'creatorDomain' | 'creatorNamespaceId'> & {
+): Omit<T, 'id' | 'creatorAccount' | 'creatorDomain' | 'profileNamespaceId'> & {
+  namespaceId: number;
   creator: MessageAuthorAddress | null;
 } {
-  const { id, creatorAccount, creatorDomain, creatorNamespaceId, ...rest } =
+  const { id, creatorAccount, creatorDomain, profileNamespaceId, ...rest } =
     msg;
   return {
     ...rest,
+    namespaceId: authorNamespaceId(msg),
     creator:
       creatorAccount === null || creatorDomain === null
         ? null
@@ -228,13 +230,18 @@ export class MessageService {
   private async publishCommittedProfileWork(
     committed: PublicMessage,
   ): Promise<void> {
-    const creator = committed.creator;
-    if (!creator) return;
+    const publicCreator = committed.creator;
+    if (!publicCreator) return;
+    const creator = {
+      account: publicCreator.account,
+      domain: publicCreator.domain,
+      profileNamespaceId: publicCreator.namespaceId,
+      profileRev: committed.profileRev,
+    };
     const [thread] = await this.database.db
       .select({
         type: messageThread.type,
         groupAccount: messageThread.groupAccount,
-        groupDomain: messageThread.groupDomain,
       })
       .from(messageThread)
       .where(eq(messageThread.id, committed.threadId))
@@ -245,11 +252,10 @@ export class MessageService {
         ? [
             {
               threadType: 'GROUP',
+              publisherNamespaceId: committed.sourceNamespaceId,
               groupAccount: thread.groupAccount!,
-              groupOriginDomain: thread.groupDomain!,
               threadId: committed.threadId,
               seq: committed.seq,
-              profileRev: committed.profileRev,
               creator,
               contentType: committed.contentType,
               content: committed.content,
@@ -260,9 +266,9 @@ export class MessageService {
         : [
             {
               threadType: 'P2P',
+              publisherNamespaceId: committed.sourceNamespaceId,
               threadId: committed.threadId,
               seq: committed.seq,
-              profileRev: committed.profileRev,
               creator,
               contentType: committed.contentType,
               content: committed.content,
@@ -451,7 +457,8 @@ export class MessageService {
                     where: and(
                       eq(profileTable.account, row.creatorAccount),
                       eq(profileTable.domain, row.creatorDomain!),
-                      eq(profileTable.namespaceId, authorNamespaceId(row)),
+                      eq(profileTable.publisherNamespaceId, row.sourceNamespaceId),
+                      eq(profileTable.profileNamespaceId, authorNamespaceId(row)),
                       eq(profileTable.profileRev, row.profileRev),
                     ),
                     columns: { displayName: true },
@@ -627,7 +634,13 @@ export class MessageService {
           tombstoneEndSeq: tombstoneEndSeq,
         },
         event.type === SystemMessageType.FRIEND_REMOVED ? 'P2P' : 'GROUP',
-        event.type === SystemMessageType.GROUP_LEFT ? event.member : undefined,
+        event.type === SystemMessageType.GROUP_LEFT
+          ? {
+              account: event.member.account,
+              domain: event.member.domain,
+              namespaceId: event.member.profileNamespaceId,
+            }
+          : undefined,
       );
     }
     return { message: stripMessageId(stored), messageId: stored.id };
@@ -692,7 +705,7 @@ export class MessageService {
       columns: {
         creatorAccount: true,
         creatorDomain: true,
-        creatorNamespaceId: true,
+        profileNamespaceId: true,
         sourceNamespaceId: true,
       },
     });
@@ -1134,10 +1147,10 @@ export class MessageService {
               creatorAccount: stage.creatorAccount,
               creatorDomain: stage.creatorDomain,
               profileRev: sql`(
-              SELECT profile."defaultProfileRev" FROM "Account" profile
-              WHERE profile.account = ${stage.creatorAccount}
-                AND profile.domain = ${stage.creatorDomain}
-                AND profile."namespaceId" = ${stage.namespaceId}
+              SELECT account."defaultProfileRev" FROM "Account" account
+              WHERE account.account = ${stage.creatorAccount}
+                AND account.domain = ${stage.creatorDomain}
+                AND account."namespaceId" = ${stage.namespaceId}
               LIMIT 1
             )`,
               clientMessageId,
@@ -1590,7 +1603,8 @@ export class MessageService {
             {
               account: target.creatorAccount,
               domain: target.creatorDomain,
-              namespaceId: authorNamespaceId(target),
+              publisherNamespaceId: target.sourceNamespaceId,
+              profileNamespaceId: authorNamespaceId(target),
               profileRev: target.profileRev,
             },
           ],
@@ -1604,7 +1618,8 @@ export class MessageService {
                 and(
                   eq(profileTable.account, author.account),
                   eq(profileTable.domain, author.domain),
-                  eq(profileTable.namespaceId, author.namespaceId),
+                  eq(profileTable.publisherNamespaceId, author.publisherNamespaceId),
+                  eq(profileTable.profileNamespaceId, author.profileNamespaceId),
                   eq(profileTable.profileRev, author.profileRev),
                 ),
               ),
@@ -1612,7 +1627,8 @@ export class MessageService {
             columns: {
               account: true,
               domain: true,
-              namespaceId: true,
+              publisherNamespaceId: true,
+              profileNamespaceId: true,
               displayName: true,
               profileRev: true,
             },
@@ -1622,7 +1638,8 @@ export class MessageService {
         JSON.stringify([
           author.account,
           author.domain,
-          author.namespaceId,
+          author.publisherNamespaceId,
+          author.profileNamespaceId,
           author.profileRev,
         ]),
         author.displayName,
@@ -1656,6 +1673,7 @@ export class MessageService {
                 JSON.stringify([
                   target.creatorAccount,
                   target.creatorDomain,
+                  target.sourceNamespaceId,
                   authorNamespaceId(target),
                   target.profileRev,
                 ]),

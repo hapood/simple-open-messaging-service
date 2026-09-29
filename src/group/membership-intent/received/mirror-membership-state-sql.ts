@@ -24,7 +24,6 @@ export interface MirrorMembershipStateRow extends Record<string, unknown> {
 export function mirrorMembershipStateSql(input: {
   threadId: number;
   groupAccount: string;
-  groupDomain: string;
   groupNamespaceId: number;
   memberAccount: string;
 }) {
@@ -32,29 +31,33 @@ export function mirrorMembershipStateSql(input: {
     WITH pair AS MATERIALIZED (
       SELECT p.id, p.active, p.established FROM "RelationshipPair" p
       WHERE p."threadId" = ${input.threadId} AND p.kind = 'GROUP_MEMBER'
-        AND p."endpointAType" = 'GROUP' AND p."endpointAAccount" = ${input.groupAccount}
-        AND p."endpointADomain" = ${input.groupDomain}
-        AND p."endpointANamespaceId" = ${input.groupNamespaceId}
-        AND p."endpointBType" = 'USER' AND p."endpointBAccount" = ${input.memberAccount}
-        AND p."endpointBDomain" = 'local'
+        AND p."endpointAType" = 'USER' AND p."endpointAAccount" = ${input.memberAccount}
+        AND p."endpointANamespaceId" = 0
+        AND p."endpointBType" = 'GROUP' AND p."endpointBAccount" = ${input.groupAccount}
         AND p."endpointBNamespaceId" = ${input.groupNamespaceId}
       LIMIT 1
     ), intents AS MATERIALIZED (
-      SELECT i."authorSide", i.status, i."expiresAt", i.note, i."profileRev"
+      SELECT i."authorAccount", i.status, i."expiresAt", i.note, i."profileRev"
       FROM "RelationshipIntent" i
-      WHERE EXISTS (SELECT 1 FROM pair) AND i."pairId" = (SELECT id FROM pair)
+      WHERE EXISTS (SELECT 1 FROM pair)
+        AND (
+          (i."authorAccount" = ${input.groupAccount} AND i."authorNamespaceId" = ${input.groupNamespaceId}
+            AND i."receiverAccount" = ${input.memberAccount} AND i."receiverNamespaceId" = 0)
+          OR (i."authorAccount" = ${input.memberAccount} AND i."authorNamespaceId" = 0
+            AND i."receiverAccount" = ${input.groupAccount} AND i."receiverNamespaceId" = ${input.groupNamespaceId})
+        )
     )
     SELECT t.id AS "threadId", t."curSeq"::text AS "curSeq",
       t."groupDissolvedAt"::text AS "dissolvedAt",
       (SELECT id::text FROM pair) AS "pairId",
       COALESCE((SELECT active FROM pair), false) AS "pairActive",
       COALESCE((SELECT established FROM pair), false) AS established,
-      (SELECT status FROM intents WHERE "authorSide" = 'A') AS "groupIntentStatus",
-      (SELECT "expiresAt"::text FROM intents WHERE "authorSide" = 'A') AS "groupIntentExpiresAt",
-      (SELECT status FROM intents WHERE "authorSide" = 'B') AS "memberIntentStatus",
-      (SELECT "expiresAt"::text FROM intents WHERE "authorSide" = 'B') AS "memberIntentExpiresAt",
-      (SELECT note FROM intents WHERE "authorSide" = 'B') AS "memberNote",
-      (SELECT "profileRev" FROM intents WHERE "authorSide" = 'B') AS "memberProfileRev",
+      (SELECT status FROM intents WHERE "authorAccount" = ${input.groupAccount}) AS "groupIntentStatus",
+      (SELECT "expiresAt"::text FROM intents WHERE "authorAccount" = ${input.groupAccount}) AS "groupIntentExpiresAt",
+      (SELECT status FROM intents WHERE "authorAccount" = ${input.memberAccount}) AS "memberIntentStatus",
+      (SELECT "expiresAt"::text FROM intents WHERE "authorAccount" = ${input.memberAccount}) AS "memberIntentExpiresAt",
+      (SELECT note FROM intents WHERE "authorAccount" = ${input.memberAccount}) AS "memberNote",
+      (SELECT "profileRev" FROM intents WHERE "authorAccount" = ${input.memberAccount}) AS "memberProfileRev",
       (SELECT id FROM "Account"
         WHERE account = ${input.memberAccount} AND domain = 'local' AND "namespaceId" = 0
         LIMIT 1) AS "localMemberId"

@@ -11,19 +11,24 @@ import type { FederationMessageFeedMessage } from './federation-message-feed.ser
 export function selectInboundMessageProfileDemand(
   item: FederationMessageFeedMessage,
   message: Message,
-  namespaceId: number,
+  publisherNamespaceId: number,
+  profileNamespaceId: number,
 ): ProfilePrefetchDemand | undefined {
-  const profile = inboundMessageProfileWorkSubject(message, namespaceId);
+  const profile = inboundMessageProfileWorkSubject(
+    message,
+    publisherNamespaceId,
+    profileNamespaceId,
+  );
   if (!profile) return undefined;
   return item.thread.account.startsWith('!')
     ? {
-        namespaceId,
+        publisherNamespaceId,
         lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
         target: profile.target,
         groupAccount: normalizeAccount(item.thread.account),
       }
     : {
-        namespaceId,
+        publisherNamespaceId,
         lookup: ProfileLookup.ACCOUNT_PROFILE,
         target: profile.target,
       };
@@ -32,9 +37,14 @@ export function selectInboundMessageProfileDemand(
 export function selectInboundMessageProfileEvidenceProjection(
   item: FederationMessageFeedMessage,
   message: Message,
-  namespaceId: number,
+  publisherNamespaceId: number,
+  profileNamespaceId: number,
 ): ProfileEvidenceProjection | undefined {
-  const profile = inboundMessageProfileWorkSubject(message, namespaceId);
+  const profile = inboundMessageProfileWorkSubject(
+    message,
+    publisherNamespaceId,
+    profileNamespaceId,
+  );
   if (!profile) return undefined;
   const projection = { threadId: message.threadId, messageSeq: message.seq };
   return item.thread.account.startsWith('!')
@@ -53,15 +63,27 @@ export function selectInboundMessageProfileEvidenceProjection(
 
 function inboundMessageProfileWorkSubject(
   message: Message,
-  namespaceId: number,
+  publisherNamespaceId: number,
+  profileNamespaceId: number,
 ):
   | {
-      target: { account: string; domain: string; rev: number };
-      key: { namespaceId: number; account: string; domain: string; rev: number };
+      target: {
+        profileNamespaceId: number;
+        account: string;
+        domain: string;
+        rev: number;
+      };
+      key: {
+        publisherNamespaceId: number;
+        profileNamespaceId: number;
+        account: string;
+        domain: string;
+        rev: number;
+      };
     }
   | undefined {
   if (
-    namespaceId === 0 ||
+    publisherNamespaceId === 0 ||
     message.isDeleted ||
     message.profileRev < 1 ||
     message.creatorAccount === null ||
@@ -71,9 +93,10 @@ function inboundMessageProfileWorkSubject(
     return undefined;
 
   const target = {
+    profileNamespaceId,
     account: message.creatorAccount,
     domain: message.creatorDomain,
     rev: message.profileRev,
   };
-  return { target, key: { namespaceId, ...target } };
+  return { target, key: { publisherNamespaceId, ...target } };
 }

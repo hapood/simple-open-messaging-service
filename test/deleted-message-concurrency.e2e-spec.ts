@@ -253,7 +253,7 @@ describe('federated message deletion transaction ordering', () => {
         sourceNamespaceId: namespaceId,
         creatorAccount: 'bob',
         creatorDomain: peerDomain,
-        creatorNamespaceId: namespaceId,
+        profileNamespaceId: namespaceId,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'peer copy' }),
         updatedAt: new Date(),
@@ -312,7 +312,7 @@ describe('federated message deletion transaction ordering', () => {
     await insertIncoming();
     await database.db
       .update(message)
-      .set({ creatorDomain: 'local', creatorNamespaceId: 0 })
+      .set({ creatorDomain: 'local', profileNamespaceId: 0 })
       .where(eq(message.threadId, threadId));
     await expect(
       deletions.applyFederated({
@@ -432,7 +432,7 @@ describe('federated message deletion transaction ordering', () => {
           threadId,
           creatorAccount: 'bob',
           creatorDomain: peerDomain,
-          creatorNamespaceId: namespaceId,
+          profileNamespaceId: namespaceId,
           originSeq: 7,
           sourceNamespaceId: namespaceId,
           seq,
@@ -657,11 +657,9 @@ describe('federated message deletion transaction ordering', () => {
           active: true,
           endpointAType: 'USER',
           endpointAAccount: author.account,
-          endpointADomain: 'local',
-          endpointANamespaceId: namespaceId,
+          endpointANamespaceId: 0,
           endpointBType: 'USER',
           endpointBAccount: 'bob',
-          endpointBDomain: peerDomain,
           endpointBNamespaceId: namespaceId,
         });
       }
@@ -836,7 +834,7 @@ describe('federated message deletion transaction ordering', () => {
         seq: 1,
         creatorAccount: 'bob',
         creatorDomain: peerDomain,
-        creatorNamespaceId: namespaceId,
+        profileNamespaceId: namespaceId,
         sourceNamespaceId: namespaceId,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'missing coordinate' }),
@@ -901,7 +899,7 @@ describe('federated message deletion transaction ordering', () => {
         seq: 1,
         creatorAccount: 'bob',
         creatorDomain: peerDomain,
-        creatorNamespaceId: namespaceId,
+        profileNamespaceId: namespaceId,
         contentType: 'IMAGE',
         content: JSON.stringify({ digest: 'a'.repeat(64) }),
         originSeq: 7,

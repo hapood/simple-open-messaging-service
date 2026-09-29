@@ -1,6 +1,13 @@
 /** Client-to-server selectors. Federation endpoints retain their own wire contracts. */
 export type ProfileSelector =
-  | { type: 'EXACT'; account: string; domain: string; rev: number }
+  | {
+      type: 'EXACT';
+      publisherNamespaceId: number;
+      profileNamespaceId: number;
+      account: string;
+      domain: string;
+      rev: number;
+    }
   | {
       type: 'MESSAGE_AUTHOR';
       threadId: number;
@@ -18,7 +25,8 @@ export type ProfileSelector =
 
 /** Stable client/server identity of one immutable profile revision. */
 export interface ProfileKey {
-  namespaceId: number;
+  publisherNamespaceId: number;
+  profileNamespaceId: number;
   account: string;
   domain: string;
   rev: number;
@@ -37,7 +45,19 @@ export function isProfileSelector(value: unknown): value is ProfileSelector {
   switch (v['type']) {
     case 'EXACT':
       return (
-        keys('account', 'domain', 'rev') &&
+        keys(
+          'publisherNamespaceId',
+          'profileNamespaceId',
+          'account',
+          'domain',
+          'rev',
+        ) &&
+        typeof v['publisherNamespaceId'] === 'number' &&
+        Number.isSafeInteger(v['publisherNamespaceId']) &&
+        v['publisherNamespaceId'] >= 0 &&
+        typeof v['profileNamespaceId'] === 'number' &&
+        Number.isSafeInteger(v['profileNamespaceId']) &&
+        v['profileNamespaceId'] >= 0 &&
         address(v['account']) &&
         address(v['domain']) &&
         positive(v['rev'])

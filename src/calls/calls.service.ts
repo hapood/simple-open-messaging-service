@@ -1365,7 +1365,7 @@ export class CallsService implements OnModuleDestroy {
           return {
             account: call.peerAccount!,
             domain: call.peerDomain!,
-            namespaceId: call.peerNamespaceId!,
+            profileNamespaceId: 0,
             profileRev: 0,
           };
         const local = await this.database.db.query.account.findFirst({
@@ -1376,7 +1376,7 @@ export class CallsService implements OnModuleDestroy {
         return {
           account: local.account,
           domain: 'local',
-          namespaceId: 0,
+          profileNamespaceId: 0,
           profileRev: 0,
         };
       };
@@ -1389,7 +1389,7 @@ export class CallsService implements OnModuleDestroy {
       key: JSON.stringify([
         call.threadId,
         call.peerNamespaceId ?? 0,
-        call.historyIdentity.caller,
+        call.historyIdentity!.caller,
         call.callSid,
       ]),
       threadId: call.threadId,
@@ -1397,7 +1397,7 @@ export class CallsService implements OnModuleDestroy {
       content: {
         type: 'CALL_ENDED',
         callId: call.callSid,
-        ...call.historyIdentity,
+        ...call.historyIdentity!,
         mediaType: call.callType,
         outcome,
         initiatedAt: call.initiatedAt,

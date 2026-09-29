@@ -11,6 +11,7 @@ export class InvalidReceivedIntentError extends Error {
 
 export interface ReceivedIntentBodyShape {
   status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+  profileNamespaceId: number;
   profileRev: number;
   note: string;
   requestedAt: number | null;

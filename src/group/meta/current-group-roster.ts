@@ -151,7 +151,7 @@ export async function readCurrentLocalAuthorizedGroupMemberIdsInTx(
       AND EXISTS (
         SELECT 1 FROM "RelationshipPair" pair WHERE pair.kind = 'GROUP_MEMBER'
           AND pair."threadId" = thread.id AND pair.active = true
-          AND pair."endpointBType" = 'USER' AND pair."endpointBDomain" = 'local'
+          AND pair."endpointBType" = 'USER' AND pair."endpointBNamespaceId" = 0
           AND pair."endpointBAccount" = identity.account
       ) ORDER BY identity.id
   `);

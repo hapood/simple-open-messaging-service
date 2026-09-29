@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import * as tables from '../src/database/schema';
 import { BusinessCode } from '../src/common/business-code';
@@ -64,7 +64,7 @@ describe('User intent HTTP contract e2e', () => {
     ownerId: number,
     peerAccount: string,
   ): Promise<{ status: string; requestedAt: Date; expiresAt: Date } | null> {
-    const { pair, firstSide } = await findP2PRelationship(
+    const { pair, firstEndpoint } = await findP2PRelationship(
       database.db,
       ownerId,
       {
@@ -75,9 +75,12 @@ describe('User intent HTTP contract e2e', () => {
     );
     if (!pair) return null;
     const rows = await database.db.query.relationshipIntent.findMany({
-      where: eq(tables.relationshipIntent.pairId, pair.id),
+      where: and(
+        eq(tables.relationshipIntent.authorAccount, firstEndpoint.account),
+        eq(tables.relationshipIntent.authorNamespaceId, firstEndpoint.namespaceId),
+      ),
     });
-    const row = rows.find((candidate) => candidate.authorSide === firstSide);
+    const row = rows[0];
     return row
       ? {
           status: row.status,
@@ -312,18 +315,37 @@ describe('User intent HTTP contract e2e', () => {
       .send({ account: 'invitee', domain: 'local' });
 
     // Expire the pending direction behind the command's back.
-    const { pair } = await findP2PRelationship(database.db, inviter.id, {
-      account: 'invitee',
-      domain: 'local',
-      namespaceId: 0,
-    });
+    const { pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
+      database.db,
+      inviter.id,
+      {
+        account: 'invitee',
+        domain: 'local',
+        namespaceId: 0,
+      },
+    );
     await database.db
       .update(tables.relationshipIntent)
       .set({
         requestedAt: new Date(Date.now() - 8000),
         expiresAt: new Date(Date.now() - 1000),
       })
-      .where(eq(tables.relationshipIntent.pairId, pair!.id));
+      .where(
+        or(
+          and(
+            eq(tables.relationshipIntent.authorAccount, firstEndpoint.account),
+            eq(tables.relationshipIntent.authorNamespaceId, firstEndpoint.namespaceId),
+            eq(tables.relationshipIntent.receiverAccount, secondEndpoint.account),
+            eq(tables.relationshipIntent.receiverNamespaceId, secondEndpoint.namespaceId),
+          ),
+          and(
+            eq(tables.relationshipIntent.authorAccount, secondEndpoint.account),
+            eq(tables.relationshipIntent.authorNamespaceId, secondEndpoint.namespaceId),
+            eq(tables.relationshipIntent.receiverAccount, firstEndpoint.account),
+            eq(tables.relationshipIntent.receiverNamespaceId, firstEndpoint.namespaceId),
+          ),
+        ),
+      );
 
     // The identical request renews the window but cannot self-activate.
     const renewed = await request(http)
@@ -366,15 +388,26 @@ describe('User intent HTTP contract e2e', () => {
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
       .send({ account: 'invitee', domain: 'local' });
-    const { pair } = await findP2PRelationship(database.db, inviter.id, {
-      account: 'invitee',
-      domain: 'local',
-      namespaceId: 0,
-    });
+    const { pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
+      database.db,
+      inviter.id,
+      {
+        account: 'invitee',
+        domain: 'local',
+        namespaceId: 0,
+      },
+    );
     await database.db
       .update(tables.relationshipIntent)
       .set({ expiresAt: new Date(Date.now() - 1) })
-      .where(eq(tables.relationshipIntent.pairId, pair!.id));
+      .where(
+        and(
+          eq(tables.relationshipIntent.authorAccount, firstEndpoint.account),
+          eq(tables.relationshipIntent.authorNamespaceId, firstEndpoint.namespaceId),
+          eq(tables.relationshipIntent.receiverAccount, secondEndpoint.account),
+          eq(tables.relationshipIntent.receiverNamespaceId, secondEndpoint.namespaceId),
+        ),
+      );
 
     const response = await request(http)
       .post('/api/v1/relationship/revoke')

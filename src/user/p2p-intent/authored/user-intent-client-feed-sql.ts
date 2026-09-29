@@ -3,23 +3,23 @@ import {
   clientIntentFeedWriteSql,
   peerIntentFeedWriteSql,
 } from '../../../common/sql/relationship-intent-recipient-feed-sql.js';
-import { toFederationWireDomain } from '../../../federation/federation-wire-domain.js';
 
 /** Inputs shared by every composed user intent statement that publishes the
- * pair's current directions. Identities arrive normalized and lowercased. */
+ * pair's current directions. Identities arrive normalized and lowercased; the
+ * command actor and the addressed target name the two endpoints directly, so
+ * every direction below is addressed by its author coordinates. */
 export interface UserIntentFeedInput {
   pairId: bigint;
   threadId: number;
   namespaceId: number;
   localDomain: string;
-  /** ClientStateFeed compaction keys per pair side, built in TS exactly like
-   * ClientStateFeedService.compactionKey: [eventType, namespaceId, account,
-   * domain, subjectAccount, subjectDomain]. */
-  keyA: string;
-  keyB: string;
-  actorSide: 'A' | 'B';
-  reverseSide: 'A' | 'B';
+  /** Compaction key of the direction authored by the command actor. */
+  actorKey: string;
+  /** Compaction key of the direction authored by the addressed target. */
+  targetKey: string;
   actorAccount: string;
+  actorDomain: string;
+  actorNamespaceId: number;
   targetAccount: string;
   targetDomain: string;
   targetNamespaceId: number;
@@ -33,10 +33,10 @@ export interface UserIntentFeedInput {
  * injection). A missing reverse direction publishes nothing. */
 export function userIntentClientBodiesSql(
   input: UserIntentFeedInput & {
-    /** The statement's UNION ALL read-back of the authored direction (id,
-     * status, "profileRev", note, "requestedAt", "expiresAt"). Sibling CTEs
-     * cannot see one another's base-table writes, so the authored side must
-     * come from the read-back, never from the base table. */
+    /** The statement's UNION ALL read-back of the authored direction (status,
+     * "profileRev", note, "requestedAt", "expiresAt"). Sibling CTEs cannot see
+     * one another's base-table writes, so the authored direction must come
+     * from the read-back, never from the base table. */
     ownState: string;
     /** Optional read-back of an in-statement reverse-direction write (the
      * acceptance's reverse upgrade). The upgrade's base-table effect is
@@ -62,7 +62,8 @@ export function userIntentClientBodiesSql(
         CASE WHEN i."expiresAt" IS NULL THEN NULL
           ELSE floor(extract(epoch FROM i."expiresAt") * 1000)::bigint END AS "expiresAt"`;
   const reverseJoin = input.reverseState
-    ? sql`LEFT JOIN ${sql.raw(input.reverseState)} rv ON rv."authorSide" = s."authorSide"`
+    ? sql`LEFT JOIN ${sql.raw(input.reverseState)} rv
+        ON rv."authorAccount" = s."authorAccount" AND rv."authorNamespaceId" = s."authorNamespaceId"`
     : sql``;
   // Read the live request from the statement snapshot, before the revocation write.
   // Request authorship identifies withdrawal versus rejection; later relationship
@@ -70,74 +71,84 @@ export function userIntentClientBodiesSql(
   const requestOutcome = input.requestRevocation
     ? sql` || COALESCE((
         SELECT jsonb_build_object(
-          'requestStatus', CASE WHEN pending."authorSide" = ${input.actorSide}
+          'requestStatus', CASE WHEN pending."authorAccount" = ${input.actorAccount}
             THEN 'WITHDRAWN' ELSE 'REJECTED' END,
-          'requestDirection', CASE WHEN pending."authorSide" = cp."authorSide"
+          'requestDirection', CASE WHEN pending."authorAccount" = cp."authorAccount"
             THEN cp.direction ELSE CASE WHEN cp.direction = 'OUTGOING'
               THEN 'INCOMING' ELSE 'OUTGOING' END END)
         FROM "RelationshipIntent" pending
-        WHERE pending."pairId" = ${input.pairId} AND pending.status = 'REQUESTED'
+        WHERE (
+            (pending."authorAccount" = ${input.actorAccount} AND pending."authorNamespaceId" = ${input.actorNamespaceId}
+              AND pending."receiverAccount" = ${input.targetAccount} AND pending."receiverNamespaceId" = ${input.targetNamespaceId})
+            OR (pending."authorAccount" = ${input.targetAccount} AND pending."authorNamespaceId" = ${input.targetNamespaceId}
+              AND pending."receiverAccount" = ${input.actorAccount} AND pending."receiverNamespaceId" = ${input.actorNamespaceId})
+          )
+          AND pending.status = 'REQUESTED'
           AND pending."expiresAt" > CURRENT_TIMESTAMP
-          AND cp.status = 'REVOKED' AND cp."authorSide" = ${input.actorSide}
-        ORDER BY (pending."authorSide" = ${input.actorSide}) DESC
+          AND cp.status = 'REVOKED' AND cp."authorAccount" = ${input.actorAccount}
+        ORDER BY (pending."authorAccount" = ${input.actorAccount}) DESC
         LIMIT 1
       ), '{}'::jsonb)`
     : sql.empty();
   return sql`
     sides AS MATERIALIZED (
-      SELECT 'A'::text AS "authorSide", p."endpointAAccount" AS "actorAccount",
-        p."endpointADomain" AS "actorDomain", p."endpointBAccount" AS "peerAccount",
-        p."endpointBDomain" AS "peerDomain", 1 AS ordinal
-      FROM "RelationshipPair" p WHERE p.id = ${input.pairId}
+      SELECT ${input.actorAccount}::text AS "authorAccount",
+        ${input.actorDomain}::text AS "authorDomain",
+        ${input.actorNamespaceId}::int AS "authorNamespaceId",
+        ${input.targetAccount}::text AS "peerAccount",
+        ${input.targetDomain}::text AS "peerDomain",
+        ${input.targetNamespaceId}::int AS "peerNamespaceId",
+        1 AS ordinal
       UNION ALL
-      SELECT 'B'::text, p."endpointBAccount", p."endpointBDomain", p."endpointAAccount",
-        p."endpointADomain", 2
-      FROM "RelationshipPair" p WHERE p.id = ${input.pairId}
+      SELECT ${input.targetAccount}, ${input.targetDomain}, ${input.targetNamespaceId},
+        ${input.actorAccount}, ${input.actorDomain}, ${input.actorNamespaceId}, 2
     ), directions AS MATERIALIZED (
-      SELECT s."authorSide", s."actorAccount", s."actorDomain", s."peerAccount",
-        s."peerDomain", s.ordinal, ${reverseState},
+      SELECT s."authorAccount", s."authorDomain", s."peerAccount", s."peerDomain",
+        s.ordinal, ${reverseState},
         p."threadId" AS "localThreadId", ${established} AS established
       FROM sides s
       JOIN "RelationshipPair" p ON p.id = ${input.pairId}
-      JOIN "RelationshipIntent" i ON i."pairId" = ${input.pairId}
-        AND i."authorSide" = s."authorSide"
+      JOIN "RelationshipIntent" i
+        ON i."authorAccount" = s."authorAccount" AND i."authorNamespaceId" = s."authorNamespaceId"
+        AND i."receiverAccount" = s."peerAccount" AND i."receiverNamespaceId" = s."peerNamespaceId"
       ${reverseJoin}
-      WHERE s."authorSide" <> ${input.actorSide}
+      WHERE s."authorAccount" <> ${input.actorAccount}
       UNION ALL
-      SELECT s."authorSide", s."actorAccount", s."actorDomain", s."peerAccount",
-        s."peerDomain", s.ordinal, v.status, v.note, v."profileRev",
+      SELECT s."authorAccount", s."authorDomain", s."peerAccount", s."peerDomain",
+        s.ordinal, v.status, v.note, v."profileRev",
         floor(extract(epoch FROM v."requestedAt") * 1000)::bigint AS "requestedAt",
         CASE WHEN v."expiresAt" IS NULL THEN NULL
           ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END AS "expiresAt",
         p."threadId" AS "localThreadId", ${established} AS established
       FROM sides s
       JOIN "RelationshipPair" p ON p.id = ${input.pairId}
-      JOIN ${sql.raw(input.ownState)} v ON s."authorSide" = ${input.actorSide}
+      JOIN ${sql.raw(input.ownState)} v ON s."authorAccount" = ${input.actorAccount}
     ), recipient_directions AS MATERIALIZED (
       SELECT o.id AS "userId", d.*,
         k."compactionKey",
-        CASE WHEN o.account = d."actorAccount" THEN 'OUTGOING' ELSE 'INCOMING' END AS direction,
-        CASE WHEN o.account = d."actorAccount" THEN d."peerAccount" ELSE d."actorAccount" END
+        CASE WHEN o.account = d."authorAccount" THEN 'OUTGOING' ELSE 'INCOMING' END AS direction,
+        CASE WHEN o.account = d."authorAccount" THEN d."peerAccount" ELSE d."authorAccount" END
           AS "clientPeerAccount",
-        CASE WHEN o.account = d."actorAccount" THEN d."peerDomain" ELSE d."actorDomain" END
+        CASE WHEN o.account = d."authorAccount" THEN d."peerDomain" ELSE d."authorDomain" END
           AS "clientPeerDomain"
       FROM directions d
-      JOIN (VALUES ('A'::text, ${input.keyA}::text), ('B'::text, ${input.keyB}::text))
-        k("authorSide", "compactionKey") ON k."authorSide" = d."authorSide"
+      JOIN (VALUES (${input.actorAccount}::text, ${input.actorKey}::text),
+                   (${input.targetAccount}::text, ${input.targetKey}::text))
+        k("authorAccount", "compactionKey") ON k."authorAccount" = d."authorAccount"
       JOIN "Account" o ON o.domain = 'local' AND o."namespaceId" = 0
         AND o.availability = 'AVAILABLE'
-        AND ((o.account = d."actorAccount" AND d."actorDomain" = 'local')
+        AND ((o.account = d."authorAccount" AND d."authorDomain" = 'local')
           OR (o.account = d."peerAccount" AND d."peerDomain" = 'local'))
     ), client_peers AS MATERIALIZED (
       SELECT rd.*, COALESCE(peer_intent."profileRev", 0) AS "clientPeerProfileRev"
       FROM recipient_directions rd
       LEFT JOIN directions peer_intent
-        ON peer_intent."actorAccount" = rd."clientPeerAccount"
-        AND peer_intent."actorDomain" = rd."clientPeerDomain"
+        ON peer_intent."authorAccount" = rd."clientPeerAccount"
+        AND peer_intent."authorDomain" = rd."clientPeerDomain"
     ), candidate_bodies AS MATERIALIZED (
       SELECT cp."userId", ${input.namespaceId}::integer AS "namespaceId", cp.ordinal,
         cp."compactionKey",
-        cp."actorAccount" AS account, cp."actorDomain" AS domain,
+        cp."authorAccount" AS account, cp."authorDomain" AS domain,
         cp."peerAccount" AS "subjectAccount", cp."peerDomain" AS "subjectDomain",
         jsonb_build_object(
           'status', cp.status, 'note', cp.note,
@@ -145,15 +156,11 @@ export function userIntentClientBodiesSql(
           'direction', cp.direction,
           'localThreadId', cp."localThreadId", 'established', cp.established,
           'peer', jsonb_build_object('account', cp."clientPeerAccount", 'name',
-            COALESCE(pr."displayName", cp."clientPeerAccount"), 'avatar', COALESCE(pr.avatar, ''),
-            'bio', COALESCE(pr.bio, ''), 'domain', cp."clientPeerDomain",
+            cp."clientPeerAccount", 'avatar', '',
+            'bio', '', 'domain', cp."clientPeerDomain",
             'profileRev', cp."clientPeerProfileRev")
         )${requestOutcome} AS body
       FROM client_peers cp
-      LEFT JOIN "Profile" pr ON cp."clientPeerProfileRev" > 0
-        AND pr."profileRev" = cp."clientPeerProfileRev"
-        AND pr.account = cp."clientPeerAccount" AND pr.domain = cp."clientPeerDomain"
-        AND pr."namespaceId" = (CASE WHEN cp."clientPeerDomain" = 'local' THEN 0 ELSE ${input.namespaceId} END)
     ), ${clientIntentFeedWriteSql(
       input.requestRevocation
         ? {
@@ -181,7 +188,7 @@ export function userIntentPeerWriteSql(
     resultName: string;
   },
 ): SQL {
-  const wireLocalDomain = toFederationWireDomain(input.localDomain);
+  const wireLocalDomain = 'local';
   // `jsonb || '{}'` is the identity: REVOKED bodies keep the bare shape.
   const heads = input.revoked
     ? sql`'{}'::jsonb`

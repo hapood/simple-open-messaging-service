@@ -103,6 +103,7 @@ describe('GroupRelationshipMutationService', () => {
           findFirst: vi.fn().mockResolvedValue({
             account: 'local-user',
             domain: 'local',
+            namespaceId: 0,
           }),
         },
       },
@@ -216,6 +217,7 @@ describe('GroupRelationshipMutationService', () => {
           findFirst: vi.fn().mockResolvedValue({
             account: 'local-user',
             domain: 'local',
+            namespaceId: 0,
           }),
         },
       },
@@ -302,6 +304,7 @@ describe('GroupRelationshipMutationService', () => {
           findFirst: vi.fn().mockResolvedValue({
             account: 'member',
             domain: 'local',
+            namespaceId: 0,
           }),
         },
       },

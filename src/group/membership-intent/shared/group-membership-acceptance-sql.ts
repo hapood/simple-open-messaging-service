@@ -1,6 +1,5 @@
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../../../federation/federation-history-access-setting.js';
 import { sql, type SQL } from 'drizzle-orm';
-import { toFederationWireDomain } from '../../../federation/federation-wire-domain.js';
 import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fanout-admission-sql.js';
 import { requestProjectionFlipSql } from './group-membership-projection-sql.js';
@@ -22,10 +21,11 @@ export interface GroupMembershipAcceptanceInput {
   /** Which manager projection rows flip to ACCEPTED: the group's own ACK
    * accepts an application, the member's ACK completes an invitation. */
   projectionDirections: readonly ('APPLICATION' | 'INVITATION')[];
-  /** The member's ACK authors side B as well: it is the only writer in this
-   * business family of a side B ACCEPTED, and `join_source` reads the written
-   * row back so the roster fact sees this statement's own profile revision. */
-  authorMemberSide?: boolean;
+  /** The member's ACK authors the member direction as well: it is the only
+   * writer in this business family of a member-direction ACCEPTED, and
+   * `join_source` reads the written row back so the roster fact sees this
+   * statement's own profile revision. */
+  memberAck?: boolean;
   /** Alternate validated writer for that side B ACK: a received peer intent
    * substitutes the wire snapshot (profileRev and heads are the origin's, not
    * locally derivable). */
@@ -37,16 +37,16 @@ export interface GroupMembershipAcceptanceInput {
  * transaction owner. Only side A is authored here — plus side B for the
  * member's own ACK (`authorMemberSide`). */
 function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
-  const memberAuthored = input.authorMemberSide
+  const memberAuthored = input.memberAck
     ? sql`member_authored AS (
-      ${input.memberAuthoredSql ?? authoredIntentWriteSql({ pair: { id: input.pairId, threadId: input.threadId }, authorSide: 'B', status: 'ACCEPTED', note: input.note, requestedAt: input.acceptedAt, expiresAt: null })}
+      ${input.memberAuthoredSql ?? authoredIntentWriteSql({ author: { account: input.memberAccount, namespaceId: input.memberNamespaceId }, receiver: { account: input.groupAccount, namespaceId: 0 }, threadId: input.threadId, status: 'ACCEPTED', note: input.note, requestedAt: input.acceptedAt, expiresAt: null })}
     ), `
     : sql``;
-  const memberSideRead = input.authorMemberSide
+  const memberSideRead = input.memberAck
     ? sql`
       UNION ALL
       SELECT p.active, t."curSeq", t."authorizationEpoch",
-        m.id, m.note, m."requestedAt", m."expiresAt",
+        m.note, m."requestedAt", m."expiresAt",
         m."profileRev", m."messageEndSeq", m."tombstoneEndSeq"
       FROM member_authored m
       JOIN "RelationshipPair" p ON p.id = ${input.pairId}
@@ -54,25 +54,29 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
     : sql``;
   // Sibling CTEs read the pre-statement snapshot, so the table branch yields to
   // the written row whenever this statement authored side B itself.
-  const tableReadGuard = input.authorMemberSide
+  const tableReadGuard = input.memberAck
     ? sql` AND NOT EXISTS (SELECT 1 FROM member_authored)`
     : sql``;
   return sql`
     ${memberAuthored}join_source AS MATERIALIZED (
       SELECT p.active AS "wasActive", t."curSeq", t."authorizationEpoch",
-        b.id AS "requestId", b.note AS "requestNote", b."requestedAt", b."expiresAt",
+        b.note AS "requestNote", b."requestedAt", b."expiresAt",
         b."profileRev" AS "memberProfileRev", b."messageEndSeq" AS "sourceMessageEndSeq",
         b."tombstoneEndSeq" AS "sourceDeletionEndSeq"
       FROM "RelationshipPair" p JOIN "MessageThread" t ON t.id = p."threadId"
-      JOIN "RelationshipIntent" b ON b."pairId" = p.id AND b."authorSide" = 'B'
+      JOIN "RelationshipIntent" b
+        ON b."authorAccount" = ${input.memberAccount} AND b."authorNamespaceId" = ${input.memberNamespaceId}
+          AND b."receiverAccount" = ${input.groupAccount} AND b."receiverNamespaceId" = 0
       WHERE p.id = ${input.pairId} AND t.id = ${input.threadId}${tableReadGuard}${memberSideRead}
     ), authored_intent AS (
-      ${authoredIntentWriteSql({ pair: { id: input.pairId, threadId: input.threadId }, authorSide: 'A', status: 'ACCEPTED', note: input.note, requestedAt: input.acceptedAt, expiresAt: null })}
+      ${authoredIntentWriteSql({ author: { account: input.groupAccount, namespaceId: 0 }, receiver: { account: input.memberAccount, namespaceId: input.memberNamespaceId }, threadId: input.threadId, status: 'ACCEPTED', note: input.note, requestedAt: input.acceptedAt, expiresAt: null })}
     ), accepted_intent AS MATERIALIZED (
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt" FROM authored_intent
+      SELECT status, "profileRev", note, "requestedAt", "expiresAt" FROM authored_intent
       UNION ALL
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt"
-      FROM "RelationshipIntent" WHERE "pairId" = ${input.pairId} AND "authorSide" = 'A'
+      SELECT status, "profileRev", note, "requestedAt", "expiresAt"
+      FROM "RelationshipIntent"
+      WHERE "authorAccount" = ${input.groupAccount} AND "authorNamespaceId" = 0
+        AND "receiverAccount" = ${input.memberAccount} AND "receiverNamespaceId" = ${input.memberNamespaceId}
         AND NOT EXISTS (SELECT 1 FROM authored_intent)
     ), ${prepareRecipient(input)}, pair_change AS (
       UPDATE "RelationshipPair" SET active = true, established = true, "updatedAt" = CURRENT_TIMESTAMP
@@ -102,7 +106,11 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
     ), member_fact AS (
       INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "memberDomain", operation, body)
       SELECT ${input.threadId}, h."metaEndId" - p."profileChanged"::integer, ${input.memberAccount}, ${input.memberDomain},
-        'MEMBER_UPSERT', jsonb_build_object('role', p.role, 'profileRev', s."memberProfileRev")
+        'MEMBER_UPSERT', jsonb_build_object(
+          'role', p.role,
+          'profileNamespaceId', ${input.memberDomain === 'local' ? 0 : input.memberNamespaceId}::integer,
+          'profileRev', s."memberProfileRev"
+        )
       FROM meta_head h CROSS JOIN roster_plan p CROSS JOIN join_source s
       CROSS JOIN meta_allocation
       WHERE p."memberChanged"
@@ -115,7 +123,7 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "memberDomain", operation, body)
       SELECT ${input.threadId}, h."metaEndId", ${input.groupAccount}, 'local',
         'GROUP_PROFILE'::"GroupMetaMemberOperation",
-        jsonb_build_object('profileRev', ${input.groupProfileRev}::integer)
+        jsonb_build_object('profileNamespaceId', 0, 'profileRev', ${input.groupProfileRev}::integer)
       FROM meta_head h CROSS JOIN roster_plan p
       CROSS JOIN meta_allocation
       WHERE p."profileChanged"
@@ -145,7 +153,7 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
         jsonb_build_object('type', 'GROUP_JOINED', 'member',
           jsonb_build_object('account', ${input.memberAccount}::text,
             'domain', ${input.memberDomain}::text,
-            'namespaceId', ${input.memberNamespaceId}::integer,
+            'profileNamespaceId', ${input.memberDomain === 'local' ? 0 : input.memberNamespaceId}::integer,
             'profileRev', (SELECT "memberProfileRev" FROM join_source))),
         '$system', 'local', CURRENT_TIMESTAMP
       FROM seq_alloc s CROSS JOIN roster_plan p
@@ -210,7 +218,7 @@ function localMember(input: GroupMembershipAcceptanceInput): SQL {
 /** This branch only handles a local group receiving a remote member, so reverseEnabled=false.
  * Preserve processed coordinates on re-entry; an epoch change may require deletion recovery. */
 function remoteMember(input: GroupMembershipAcceptanceInput): SQL {
-  const wireLocalDomain = toFederationWireDomain(input.localDomain);
+  const wireLocalDomain = 'local';
   return sql`
     history_policy AS MATERIALIZED (
       SELECT COALESCE((SELECT value <> 'false' FROM "SystemSetting"
@@ -285,7 +293,7 @@ function prepareRecipient(input: GroupMembershipAcceptanceInput): SQL {
 }
 
 function peerRecipient(input: GroupMembershipAcceptanceInput): SQL {
-  const wireLocalDomain = toFederationWireDomain(input.localDomain);
+  const wireLocalDomain = 'local';
   return sql`
     audience_floor AS MATERIALIZED (
       SELECT "messageAccessAfterSeq" FROM audience_change

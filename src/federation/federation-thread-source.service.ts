@@ -83,16 +83,6 @@ export class FederationThreadSourceService {
         WHERE pair.kind = 'GROUP_MEMBER'
           AND pair.active = true
           AND pair."threadId" = ${threadId}
-          AND EXISTS (
-            SELECT 1 FROM (VALUES
-              (pair."endpointAType", pair."endpointADomain"),
-              (pair."endpointBType", pair."endpointBDomain")
-            ) member(kind, domain)
-            WHERE member.kind = 'USER'
-              AND ((${groupThread.domain} = ${peerDomain} AND member.domain = 'local')
-                OR (${groupThread.domain} = 'local' AND member.domain = ${peerDomain}))
-          )
-          AND pair."endpointANamespaceId" = ${namespaceId}
           AND pair."endpointBNamespaceId" = ${namespaceId}
         LIMIT 1
       `);
@@ -116,21 +106,9 @@ export class FederationThreadSourceService {
       remoteDomain: string;
       localAccount: string;
     }>(sql`
-      SELECT CASE
-               WHEN pair."endpointADomain" = 'local'
-                 THEN pair."endpointBAccount"
-               ELSE pair."endpointAAccount"
-             END AS "remoteAccount",
-             CASE
-               WHEN pair."endpointADomain" = 'local'
-                 THEN pair."endpointBDomain"
-               ELSE pair."endpointADomain"
-             END AS "remoteDomain",
-             CASE
-               WHEN pair."endpointADomain" = 'local'
-                 THEN pair."endpointAAccount"
-               ELSE pair."endpointBAccount"
-             END AS "localAccount"
+      SELECT pair."endpointBAccount" AS "remoteAccount",
+        ${peerDomain}::text AS "remoteDomain",
+        pair."endpointAAccount" AS "localAccount"
       FROM "RelationshipPair" pair
       JOIN "MessageThread" thread ON thread.id = pair."threadId"
       WHERE pair."threadId" = ${threadId}
@@ -138,14 +116,7 @@ export class FederationThreadSourceService {
         AND pair.active = true
         AND thread.type = 'P2P'
         AND thread."federationRoundsEnabled" = true
-        AND (pair."endpointADomain" = ${peerDomain}
-          OR pair."endpointBDomain" = ${peerDomain})
-        AND pair."endpointANamespaceId" = ${namespaceId}
         AND pair."endpointBNamespaceId" = ${namespaceId}
-        AND ((pair."endpointADomain" = 'local'
-              AND pair."endpointBDomain" <> 'local')
-          OR (pair."endpointBDomain" = 'local'
-              AND pair."endpointADomain" <> 'local'))
       LIMIT 1
     `);
     const p2p = pair.rows[0];

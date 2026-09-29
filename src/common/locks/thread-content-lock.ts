@@ -108,9 +108,13 @@ export async function lockThreadContentInTx(
       endpointBAccount: string;
       endpointBDomain: string;
     }>(sql`
-      SELECT id, "endpointAAccount", "endpointADomain", "endpointBAccount", "endpointBDomain"
-      FROM "RelationshipPair" WHERE kind = 'P2P' AND "threadId" = ${threadId}
-      ORDER BY id
+      SELECT pair.id::text AS id, pair."endpointAAccount", a_ns.domain AS "endpointADomain",
+        pair."endpointBAccount", b_ns.domain AS "endpointBDomain"
+      FROM "RelationshipPair" pair
+      JOIN "IdentityNamespace" a_ns ON a_ns.id = pair."endpointANamespaceId"
+      JOIN "IdentityNamespace" b_ns ON b_ns.id = pair."endpointBNamespaceId"
+      WHERE pair.kind = 'P2P' AND pair."threadId" = ${threadId}
+      ORDER BY pair.id
     `);
     if (pairs.rows.length > 1)
       throw new Error('P2P content has multiple relationship pairs');

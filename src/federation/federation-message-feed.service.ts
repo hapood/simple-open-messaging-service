@@ -39,7 +39,6 @@ import {
   federatedContentDigests,
   toFederatedMessageContent,
 } from './federated-message-content.js';
-import { loadFederationConfig } from './federation.config.js';
 import type {
   FederationAddress,
   FederationByteDescriptor,
@@ -66,6 +65,8 @@ type FederationMessageFeedAsset = FederationByteDescriptor;
 
 interface FederationMessageFeedMessageBase
   extends FederatedMessagePayload<string> {
+  /** Identity namespace that published this message copy. */
+  namespaceId: number;
   seq: number;
   profileRev: number;
   originSeq: number | null;
@@ -95,7 +96,7 @@ export interface FederationMessageQueryPage {
 export class FederationMessageFeedService {
   private readonly logger = new Logger(FederationMessageFeedService.name);
 
-  private readonly localDomain = loadFederationConfig().domain;
+  private readonly localDomain = 'local';
 
   constructor(private readonly database: DatabaseService) {}
 
@@ -246,6 +247,7 @@ export class FederationMessageFeedService {
                 authorityNamespaceId: messageThread.authorityNamespaceId,
                 authorAccount: sql<string>`${message.creatorAccount}`,
                 authorDomain: sql<string>`${message.creatorDomain}`,
+                profileNamespaceId: message.profileNamespaceId,
               })
               .from(message)
               .innerJoin(messageThread, eq(messageThread.id, message.threadId))
@@ -360,6 +362,7 @@ export class FederationMessageFeedService {
       authorityNamespaceId: number;
       authorAccount: string;
       authorDomain: string;
+      profileNamespaceId: number;
     }>,
     peerDomain: string,
     peerNamespaceId: number,
@@ -450,6 +453,7 @@ export class FederationMessageFeedService {
         row.originServerTime !== null &&
         row.sourceNamespaceId === peerNamespaceId;
       const envelope = {
+        namespaceId: row.profileNamespaceId,
         seq: row.seq,
         profileRev: row.profileRev,
         originSeq: isProcessingReceipt ? row.originSeq : null,
@@ -543,6 +547,6 @@ export class FederationMessageFeedService {
   }
 
   private wireDomain(domain: string): string {
-    return domain === 'local' ? this.localDomain : domain;
+    return domain;
   }
 }

@@ -94,18 +94,18 @@ export function groupAuthoredMembershipAddressLocatorSql(input: {
 }) {
   return sql`
     SELECT pair.id::text AS "pairId",
-      pair."endpointBAccount" AS account, pair."endpointBDomain" AS domain,
+      pair."endpointBAccount" AS account, ${input.targetDomain}::text AS domain,
       pair."endpointBNamespaceId" AS "namespaceId",
       g.account AS "groupAccount", g.domain AS "groupDomain"
     FROM ${groupStateSql} g
     JOIN "RelationshipPair" pair ON pair."threadId" = g.id
       AND pair.kind = 'GROUP_MEMBER'
+      AND pair."endpointAType" = 'GROUP'
       AND pair."endpointAAccount" = g.account
-      AND pair."endpointADomain" = g.domain
-      AND pair."endpointANamespaceId" = pair."endpointBNamespaceId"
+      AND pair."endpointANamespaceId" = 0
+      AND pair."endpointBType" = 'USER'
     WHERE g.id = ${input.threadId}
       AND pair."endpointBAccount" = ${input.targetAccount}
-      AND pair."endpointBDomain" = ${input.targetDomain}
       AND pair."endpointBNamespaceId" = CASE
         WHEN ${input.targetDomain} = 'local' THEN 0
         ELSE (SELECT peer."activeNamespaceId" FROM "FederatedPeer" peer
@@ -128,13 +128,21 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
 }) {
   return sql`
     WITH reverse AS MATERIALIZED (
-      SELECT status, note, "profileRev", "requestedAt", "expiresAt"
-      FROM "RelationshipIntent"
-      WHERE "pairId" = ${input.pairId} AND "authorSide" = 'B'
+      SELECT i.status, i.note, i."profileRev", i."requestedAt", i."expiresAt"
+      FROM "RelationshipIntent" i
+      JOIN "RelationshipPair" p ON p.id = ${input.pairId}
+        AND i."authorAccount" = p."endpointBAccount"
+        AND i."authorNamespaceId" = p."endpointBNamespaceId"
+        AND i."receiverAccount" = p."endpointAAccount"
+        AND i."receiverNamespaceId" = p."endpointANamespaceId"
     ), side_a AS MATERIALIZED (
       SELECT a.status, a.note, a."updatedAt", a."expiresAt"
       FROM "RelationshipIntent" a
-      WHERE a."pairId" = ${input.pairId} AND a."authorSide" = 'A'
+      JOIN "RelationshipPair" p ON p.id = ${input.pairId}
+        AND a."authorAccount" = p."endpointAAccount"
+        AND a."authorNamespaceId" = p."endpointANamespaceId"
+        AND a."receiverAccount" = p."endpointBAccount"
+        AND a."receiverNamespaceId" = p."endpointBNamespaceId"
     ), roster AS MATERIALIZED (
       SELECT * FROM "GroupMetaMemberFeed"
       WHERE "threadId" = ${input.threadId}
@@ -150,17 +158,22 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
       -- target names its own pair here, so the exemption keys on the address.
       SELECT COUNT(*)::integer AS "authorizedCount", COALESCE(BOOL_OR(
           pair."endpointBAccount" = ${input.targetAccount}
-          AND pair."endpointBDomain" = ${input.targetDomain}
+          AND pair."endpointBNamespaceId" = CASE
+            WHEN ${input.targetDomain} = 'local' THEN 0
+            ELSE ${input.targetNamespaceId} END
         ), false) AS "alreadyAuthorized"
       FROM ${groupStateSql} scope
       JOIN "RelationshipPair" pair ON pair.kind = 'GROUP_MEMBER'
         AND pair."threadId" = ${input.threadId}
         AND pair."endpointAType" = 'GROUP'
         AND pair."endpointAAccount" = scope.account
-        AND pair."endpointADomain" = scope.domain
+        AND pair."endpointANamespaceId" = 0
         AND pair."endpointBType" = 'USER'
-      JOIN "RelationshipIntent" slot_intent ON slot_intent."pairId" = pair.id
-        AND slot_intent."authorSide" = 'A'
+      JOIN "RelationshipIntent" slot_intent
+        ON slot_intent."authorAccount" = pair."endpointAAccount"
+          AND slot_intent."authorNamespaceId" = pair."endpointANamespaceId"
+          AND slot_intent."receiverAccount" = pair."endpointBAccount"
+          AND slot_intent."receiverNamespaceId" = pair."endpointBNamespaceId"
         AND (slot_intent.status = 'ACCEPTED' OR (slot_intent.status = 'REQUESTED'
           AND slot_intent."expiresAt" > CURRENT_TIMESTAMP))
       WHERE scope.id = ${input.threadId}
@@ -192,7 +205,7 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
         WHERE m.id = ${input.managerUserId} AND EXISTS (
           SELECT 1 FROM "RelationshipPair" p WHERE p."threadId" = ${input.threadId}
             AND p.kind = 'GROUP_MEMBER' AND p.active AND p."endpointBType" = 'USER'
-            AND p."endpointBAccount" = a.account AND p."endpointBDomain" = 'local'
+            AND p."endpointBAccount" = a.account AND p."endpointBNamespaceId" = 0
         )) AS authorized,
       COALESCE((SELECT jsonb_agg(id ORDER BY id) FROM managers
         WHERE id IS DISTINCT FROM local_member.id), '[]'::jsonb) AS "managerIds",

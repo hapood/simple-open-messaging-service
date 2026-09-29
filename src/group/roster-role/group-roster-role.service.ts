@@ -68,8 +68,8 @@ interface RosterRoleChange {
   namespaceId: number;
   previousRole: GroupRole;
   role: GroupRole;
+  profileNamespaceId: number;
   profileRev: number;
-  /** Local Account.id to project the role onto, or null for a peer member. */
   localId: number | null;
 }
 
@@ -90,13 +90,13 @@ interface ValidatedRosterRole {
         previousOwner: {
           account: string;
           domain: string;
-          namespaceId: number;
+          profileNamespaceId: number;
           profileRev: number;
         };
         newOwner: {
           account: string;
           domain: string;
-          namespaceId: number;
+          profileNamespaceId: number;
           profileRev: number;
         };
       }
@@ -107,7 +107,7 @@ interface ValidatedRosterRole {
         member: {
           account: string;
           domain: string;
-          namespaceId: number;
+          profileNamespaceId: number;
           profileRev: number;
         };
       };
@@ -220,6 +220,7 @@ export class GroupRosterRoleService {
       namespaceId: 0,
       previousRole: GroupRole.OWNER,
       role: GroupRole.ADMIN,
+      profileNamespaceId: 0,
       profileRev: requireProfileRev(row.operatorProfileRev, 'operator'),
       localId: params.operatorUserId,
     };
@@ -248,6 +249,7 @@ export class GroupRosterRoleService {
         namespaceId: row.targetNamespaceId!,
         previousRole: row.targetRole!,
         role: GroupRole.OWNER,
+        profileNamespaceId: row.targetNamespaceId!,
         profileRev: requireProfileRev(row.targetProfileRev, 'target'),
         localId: row.localTargetId,
       };
@@ -263,14 +265,14 @@ export class GroupRosterRoleService {
           previousOwner: {
             account: operator.account,
             domain: 'local',
-            namespaceId: 0,
-            profileRev: operator.profileRev,
+            profileNamespaceId: 0,
+            profileRev: 0,
           },
           newOwner: {
             account: newOwner.account,
             domain: newOwner.domain,
-            namespaceId: newOwner.namespaceId,
-            profileRev: newOwner.profileRev,
+            profileNamespaceId: 0,
+            profileRev: 0,
           },
         },
       };
@@ -298,6 +300,7 @@ export class GroupRosterRoleService {
       namespaceId: row.targetNamespaceId!,
       previousRole: row.targetRole!,
       role: params.role,
+      profileNamespaceId: row.targetNamespaceId!,
       profileRev: requireProfileRev(row.targetProfileRev, 'target'),
       localId: row.localTargetId,
     };
@@ -316,8 +319,8 @@ export class GroupRosterRoleService {
         member: {
           account: change.account,
           domain: change.domain,
-          namespaceId: change.namespaceId,
-          profileRev: change.profileRev,
+          profileNamespaceId: 0,
+          profileRev: 0,
         },
       },
     };
@@ -336,7 +339,11 @@ export class GroupRosterRoleService {
         account: change.account,
         domain: change.domain,
         operation: 'MEMBER_UPSERT' as const,
-        body: { role: change.role, profileRev: change.profileRev },
+        body: {
+          role: change.role,
+          profileNamespaceId: change.profileNamespaceId,
+          profileRev: change.profileRev,
+        },
       })),
     );
     // Local role projections, in account order.

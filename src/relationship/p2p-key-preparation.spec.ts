@@ -98,8 +98,8 @@ describe('P2P lookup and mutation key preparation', () => {
     expect(written.endpointA).toEqual(read!.pair.endpointA);
     expect(written.endpointB).toEqual(read!.pair.endpointB);
     expect(written.endpointB).toMatchObject({
+      type: 'USER',
       account: 'bob',
-      domain: 'peer.test',
       namespaceId: 9,
     });
     expect(lookup.queries.slice(0, 2)).toEqual(mutation.queries.slice(0, 2));

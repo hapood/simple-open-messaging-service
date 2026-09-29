@@ -16,7 +16,6 @@ import {
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { STATE_FEED_PAGE_MAX_BYTES } from '../common/feed-page.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
-import { toFederationWireDomain } from './federation-wire-domain.js';
 
 export type PeerStateEventType = (typeof peerStateEventType.enumValues)[number];
 /** The `/s2s/v1` route is the schema version; bodies contain business state only. */
@@ -35,7 +34,11 @@ export type PeerStateFeedWrite = PeerStateFeedWriteBase &
   (
     | {
         eventType: 'RELATIONSHIP_INTENT';
-        body: PeerStateBody & { status: unknown; profileRev: number };
+        body: PeerStateBody & {
+          status: unknown;
+          namespaceId: number;
+          profileRev: number;
+        };
       }
     | {
         eventType: 'THREAD_CONTENT_HEAD';
@@ -102,9 +105,10 @@ const snapshotRevision = (
 export class PeerStateFeedService {
   constructor(private readonly database: DatabaseService) {}
 
-  /** Translate an internal account domain at the outbound protocol boundary. */
+  /** General state-feed addresses are already wire addresses. Profile path
+   * conversion is handled by the profile transport helper. */
   toWireDomain(domain: string): string {
-    return toFederationWireDomain(domain);
+    return domain;
   }
 
   private normalizeAddressDomains<
@@ -179,12 +183,12 @@ export class PeerStateFeedService {
         ? await tx.execute<{ threadId: number | null }>(sql`
           SELECT "threadId" FROM "RelationshipPair"
           WHERE kind = 'P2P'
-            AND "endpointANamespaceId" = ${write.namespaceId}
+            AND "endpointAType" = 'USER'
+            AND "endpointAAccount" = ${write.account}
+            AND "endpointANamespaceId" = 0
+            AND "endpointBType" = 'USER'
+            AND "endpointBAccount" = ${write.subjectAccount}
             AND "endpointBNamespaceId" = ${write.namespaceId}
-            AND ((("endpointAAccount", "endpointADomain") = (${write.account}, 'local')
-              AND ("endpointBAccount", "endpointBDomain") = (${write.subjectAccount}, ${write.peerDomain}))
-              OR (("endpointBAccount", "endpointBDomain") = (${write.account}, 'local')
-              AND ("endpointAAccount", "endpointADomain") = (${write.subjectAccount}, ${write.peerDomain})))
         `)
         : await tx.execute<{ threadId: number | null }>(sql`
           SELECT id AS "threadId" FROM "MessageThread"

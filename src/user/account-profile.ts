@@ -10,7 +10,9 @@ export function accountProfileFields(
   const field = (column: string) => sql<string>`(
     SELECT snapshot.${sql.identifier(column)} FROM "Profile" snapshot
     WHERE snapshot.account = ${owner.account} AND snapshot.domain = 'local'
-      AND snapshot."namespaceId" = 0 AND snapshot."profileRev" = ${owner.defaultProfileRev}
+      AND snapshot."publisherNamespaceId" = 0
+      AND snapshot."profileNamespaceId" = 0
+      AND snapshot."profileRev" = ${owner.defaultProfileRev}
   )`;
   return {
     name: sql<string>`COALESCE(${field('displayName')}, ${owner.account})`,

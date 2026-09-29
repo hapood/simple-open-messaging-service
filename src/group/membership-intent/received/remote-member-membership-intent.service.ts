@@ -36,6 +36,7 @@ import {
 } from '../shared/group-membership-revocation-sql.js';
 import { admitGroupMembershipProjectionFanoutInTx } from '../shared/group-membership-projection-fanout.js';
 import { mintGroupMemberPairInTx } from '../shared/group-member-pair-mint.js';
+import { lockGroupMemberIntentRowsInTx } from '../shared/group-member-intent-lock.js';
 import {
   InvalidReceivedIntentError,
   validateReceivedIntentBody,
@@ -48,6 +49,7 @@ import type { RelationshipIntentStatus } from '../../../common/relationship-inte
  * heads; REVOKED carries none. */
 interface RemoteMemberMembershipIntentBody {
   status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+  profileNamespaceId: number;
   profileRev: number;
   note: string;
   requestedAt: number | null;
@@ -92,7 +94,7 @@ export interface RemoteMemberMembershipIntentResult {
 /** The origin-side counterpart of the group intent family: a remote member's
  * authored intent arrives as a group-keyed RELATIONSHIP_INTENT state-feed item
  * and is applied to this server's authoritative group with the same composed
- * statements — the wire snapshot substituted for the authored side-B write
+ * statements — the wireIntent snapshot substituted for the authored side-B write
  * (the `authoredSql`/`memberAuthoredSql` seams), and no manager authorization,
  * because the consume rules are the authorization: a recorded application
  * waits for a local manager, while a cross of two live directions completes
@@ -202,11 +204,10 @@ export class RemoteMemberMembershipIntentService {
           SELECT id::text AS id, "threadId", active
           FROM "RelationshipPair"
           WHERE kind = 'GROUP_MEMBER'
+            AND "endpointAType" = 'GROUP'
             AND "endpointAAccount" = ${group.groupAccount}
-            AND "endpointADomain" = ${group.groupDomain}
+            AND "endpointBType" = 'USER'
             AND "endpointBAccount" = ${member.account}
-            AND "endpointBDomain" = ${member.domain}
-            AND "endpointANamespaceId" = ${member.namespaceId}
             AND "endpointBNamespaceId" = ${member.namespaceId}
           LIMIT 1
         `,
@@ -224,14 +225,15 @@ export class RemoteMemberMembershipIntentService {
         ? await mintGroupMemberPairInTx(tx, {
             threadId: command.threadId,
             groupAccount: group.groupAccount,
-            groupDomain: group.groupDomain,
+            groupNamespaceId: 0,
             memberAccount: member.account,
-            memberDomain: member.domain,
-            namespaceId: member.namespaceId,
+            memberNamespaceId: member.namespaceId,
           })
         : await this.lockExistingPairInTx(tx, existing, command.threadId);
-    await tx.execute(
-      sql`SELECT id FROM "RelationshipIntent" WHERE "pairId" = ${pairId} ORDER BY "authorSide" FOR NO KEY UPDATE`,
+    await lockGroupMemberIntentRowsInTx(
+      tx,
+      { account: group.groupAccount, namespaceId: 0 },
+      member,
     );
     // One statement both creates the group allocator row and takes its row
     // lock, keeping the allocator-before-Account ordering without a second
@@ -274,7 +276,8 @@ export class RemoteMemberMembershipIntentService {
         sql`SELECT "threadId" FROM "FederationThreadSyncState" WHERE "threadId" = ${command.threadId} AND "namespaceId" = ${member.namespaceId} FOR NO KEY UPDATE`,
       );
 
-    const wire = {
+    const wireIntent = {
+      profileNamespaceId: command.body.profileNamespaceId,
       profileRev: command.body.profileRev,
       note: command.body.note ?? '',
       messageEndSeq: command.body.messageEndSeq ?? 0,
@@ -292,7 +295,7 @@ export class RemoteMemberMembershipIntentService {
           requestedAt: intent.requestedAt,
           expiresAt: intent.expiresAt,
         },
-        wire,
+        wireIntent,
         pairId,
         threadId: command.threadId,
         threadLock,
@@ -306,7 +309,7 @@ export class RemoteMemberMembershipIntentService {
     if (intent.status === 'ACCEPTED')
       return this.routeAcceptanceInTx(tx, {
         command,
-        wire,
+        wireIntent,
         pairId,
         threadId: command.threadId,
         threadLock,
@@ -317,7 +320,7 @@ export class RemoteMemberMembershipIntentService {
         peers,
       });
     return this.applyRevocationInTx(tx, {
-      wire,
+      wireIntent,
       pairId,
       threadId: command.threadId,
       group,
@@ -359,7 +362,8 @@ export class RemoteMemberMembershipIntentService {
     context: {
       command: RemoteMemberMembershipIntentCommand;
       intent: { status: 'REQUESTED'; requestedAt: Date; expiresAt: Date };
-      wire: {
+      wireIntent: {
+        profileNamespaceId: number;
         profileRev: number;
         note: string;
         messageEndSeq: number;
@@ -404,15 +408,18 @@ export class RemoteMemberMembershipIntentService {
         memberDomain: context.member.domain,
         memberNamespaceId: context.member.namespaceId,
         localMemberId: null,
-        note: context.wire.note,
+        note: context.wireIntent.note,
         requestedAt: context.intent.requestedAt,
         expiresAt: context.intent.expiresAt,
         authoredSql: this.memberWireWriteSql(
-          context.pairId,
           'REQUESTED',
-          context.wire,
+          context.wireIntent,
           context.intent.requestedAt,
           context.intent.expiresAt,
+          {
+            member: context.member,
+            group: { account: context.group.groupAccount, namespaceId: 0 },
+          },
         ),
       }),
     );
@@ -439,7 +446,8 @@ export class RemoteMemberMembershipIntentService {
     tx: DatabaseTransaction,
     context: {
       command: RemoteMemberMembershipIntentCommand;
-      wire: {
+      wireIntent: {
+        profileNamespaceId: number;
         profileRev: number;
         note: string;
         messageEndSeq: number;
@@ -467,9 +475,9 @@ export class RemoteMemberMembershipIntentService {
       // Retain the member's late ACK without reauthoring the group's revoke.
       await this.recordMismatchInTx(tx, {
         command: context.command,
-        wire: context.wire,
-        pairId: context.pairId,
+        wireIntent: context.wireIntent,
         member: context.member,
+        group: context.group,
       });
       return { routed: 'noop:dropped-ack' };
     }
@@ -480,9 +488,9 @@ export class RemoteMemberMembershipIntentService {
     if (!live || this.capacityFull(context.row)) {
       const changed = await this.recordMismatchInTx(tx, {
         command: context.command,
-        wire: context.wire,
-        pairId: context.pairId,
+        wireIntent: context.wireIntent,
         member: context.member,
+        group: context.group,
       });
       if (!changed) return { routed: 'noop:mismatch-replayed' };
       await this.concludeGroupDirectionInTx(tx, context);
@@ -491,7 +499,7 @@ export class RemoteMemberMembershipIntentService {
     return this.activateInTx(tx, context);
   }
 
-  /** The membership completes: the member's side is persisted from the wire
+  /** The membership completes: the member's side is persisted from the wireIntent
    * snapshot, the group's side is authored by system proxy, and the composed
    * statement minting the roster fact, the GROUP_JOINED message, the fan-out
    * admissions, and the member's synchronization state runs with the local
@@ -501,7 +509,8 @@ export class RemoteMemberMembershipIntentService {
     context: {
       command: RemoteMemberMembershipIntentCommand;
       intent?: { status: 'REQUESTED'; requestedAt: Date; expiresAt: Date };
-      wire: {
+      wireIntent: {
+        profileNamespaceId: number;
         profileRev: number;
         note: string;
         messageEndSeq: number;
@@ -517,7 +526,7 @@ export class RemoteMemberMembershipIntentService {
       peers: Set<string>;
     },
   ): Promise<RemoteMemberMembershipIntentResult> {
-    const { command, wire, pairId, threadId, member } = context;
+    const { command, wireIntent, pairId, threadId, member } = context;
     const input: GroupMembershipAcceptanceInput = {
       pairId,
       threadId,
@@ -535,15 +544,18 @@ export class RemoteMemberMembershipIntentService {
       note: context.row.groupIntentNote ?? '',
       acceptedAt: new Date(),
       projectionDirections: context.row.projectionDirections,
-      authorMemberSide: true,
+      memberAck: true,
       memberAuthoredSql: this.memberWireWriteSql(
-        pairId,
         'ACCEPTED',
-        wire,
+        wireIntent,
         command.body.requestedAt === null
           ? null
           : new Date(command.body.requestedAt),
         null,
+        {
+          member,
+          group: { account: context.group.groupAccount, namespaceId: 0 },
+        },
       ),
     };
     const result = await tx.execute<{
@@ -570,13 +582,14 @@ export class RemoteMemberMembershipIntentService {
   }
 
   /** The member's REVOKE: a leave, an invitation decline, or an application
-   * withdrawal. The composed statement mirrors side B from the wire snapshot
+   * withdrawal. The composed statement mirrors side B from the wireIntent snapshot
    * and gates departure effects on the pair's active transition. A still-positive
    * group-owned side A is concluded by its separate authored writer. */
   private async applyRevocationInTx(
     tx: DatabaseTransaction,
     context: {
-      wire: {
+      wireIntent: {
+        profileNamespaceId: number;
         profileRev: number;
         note: string;
         messageEndSeq: number;
@@ -591,7 +604,7 @@ export class RemoteMemberMembershipIntentService {
       peers: Set<string>;
     },
   ): Promise<RemoteMemberMembershipIntentResult> {
-    const { wire, pairId, threadId, member } = context;
+    const { wireIntent, pairId, threadId, member } = context;
     const input: GroupMembershipRevocationInput = {
       threadId,
       pairId,
@@ -606,8 +619,15 @@ export class RemoteMemberMembershipIntentService {
       memberNamespaceId: member.namespaceId,
       localMemberId: null,
       projectionDirections: context.row.projectionDirections,
-      authorSide: 'B',
-      authoredSql: this.memberWireWriteSql(pairId, 'REVOKED', wire, null, null),
+      author: {
+        account: member.account,
+        namespaceId: member.namespaceId,
+      },
+      receiver: { account: context.group.groupAccount, namespaceId: 0 },
+      authoredSql: this.memberWireWriteSql('REVOKED', wireIntent, null, null, {
+        member,
+        group: { account: context.group.groupAccount, namespaceId: 0 },
+      }),
     };
     const result = await tx.execute<{
       intentChanged: boolean;
@@ -666,36 +686,41 @@ export class RemoteMemberMembershipIntentService {
     tx: DatabaseTransaction,
     context: {
       command: RemoteMemberMembershipIntentCommand;
-      wire: {
+      wireIntent: {
+        profileNamespaceId: number;
         profileRev: number;
         note: string;
         messageEndSeq: number;
         tombstoneEndSeq: number;
       };
-      pairId: bigint;
       member: { account: string; domain: string; namespaceId: number };
+      group: { groupAccount: string; groupDomain: string };
     },
   ): Promise<boolean> {
-    const result = await tx.execute<{ id: string | null }>(
+    const result = await tx.execute(
       this.memberWireWriteSql(
-        context.pairId,
         'ACCEPTED',
-        context.wire,
+        context.wireIntent,
         context.command.body.requestedAt === null
           ? null
           : new Date(context.command.body.requestedAt),
         null,
+        {
+          member: context.member,
+          group: { account: context.group.groupAccount, namespaceId: 0 },
+        },
       ),
     );
-    return (result.rows[0]?.id ?? null) !== null;
+    return result.rows.length > 0;
   }
 
-  /** The wire snapshot writer for the member's authored side: coordinates are
-   * bound parameters taken from the item body, never derived locally. */
+  /** The wireIntent snapshot writer for the member's authored direction: the
+   * data coordinates are bound parameters taken from the item body, never
+   * derived locally, while the address is the pair's member→group direction. */
   private memberWireWriteSql(
-    pairId: bigint,
     status: RelationshipIntentStatus,
-    wire: {
+    wireIntent: {
+      profileNamespaceId: number;
       profileRev: number;
       note: string;
       messageEndSeq: number;
@@ -703,17 +728,22 @@ export class RemoteMemberMembershipIntentService {
     },
     requestedAt: Date | null,
     expiresAt: Date | null,
+    endpoints: {
+      member: { account: string; namespaceId: number };
+      group: { account: string; namespaceId: number };
+    },
   ) {
     return mirrorIntentWriteSql({
-      pairId,
-      authorSide: 'B',
+      author: endpoints.member,
+      receiver: endpoints.group,
       status,
-      note: wire.note,
+      note: wireIntent.note,
       requestedAt,
       expiresAt,
-      profileRev: wire.profileRev,
-      messageEndSeq: wire.messageEndSeq,
-      tombstoneEndSeq: wire.tombstoneEndSeq,
+      profileNamespaceId: wireIntent.profileNamespaceId,
+      profileRev: wireIntent.profileRev,
+      messageEndSeq: wireIntent.messageEndSeq,
+      tombstoneEndSeq: wireIntent.tombstoneEndSeq,
     });
   }
 

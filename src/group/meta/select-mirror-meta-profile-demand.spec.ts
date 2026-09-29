@@ -10,7 +10,7 @@ process.env.SOMS_DOMAIN ??= 'mirror.example';
 
 const group = {
   account: '!mirror-group',
-  namespaceId: 17,
+  publisherNamespaceId: 17,
 };
 
 const member: MirrorMetaReplicatedItem = {
@@ -19,17 +19,19 @@ const member: MirrorMetaReplicatedItem = {
   account: 'remote-member',
   domain: 'member.example',
   role: GroupRole.MEMBER,
+  profileNamespaceId: 23,
   profileRev: 9,
 };
 
 describe('selectMirrorMetaProfileDemand', () => {
   it('uses the mirror group namespace for a non-local member snapshot', () => {
     expect(selectMirrorMetaProfileDemand(group, member)).toEqual({
-      namespaceId: 17,
+      publisherNamespaceId: 17,
       lookup: 'GROUP_MEMBER_PROFILE',
       target: {
         account: 'remote-member',
         domain: 'member.example',
+        profileNamespaceId: 23,
         rev: 9,
       },
       groupAccount: '!mirror-group',
@@ -65,14 +67,31 @@ describe('selectMirrorMetaProfileDemand', () => {
     },
   );
 
-  it('depends on canonical boundary conversion for local wire domains', () => {
+  it('preserves a foreign domain and namespace coordinate', () => {
     const canonical = normalizeMirrorMetaReplicatedItem(group, {
       ...member,
       domain: 'mirror.example',
+      profileNamespaceId: 23,
       profileRev: 4,
     });
 
-    expect(canonical).toMatchObject({ domain: 'local' });
-    expect(selectMirrorMetaProfileDemand(group, canonical)).toBeNull();
+    expect(canonical).toMatchObject({
+      domain: 'mirror.example',
+      profileNamespaceId: 23,
+    });
+    expect(selectMirrorMetaProfileDemand(group, canonical)).not.toBeNull();
+  });
+
+  it('accepts the local marker only with namespace zero', () => {
+    const canonical = normalizeMirrorMetaReplicatedItem(group, {
+      ...member,
+      domain: 'local',
+      profileNamespaceId: 0,
+    });
+
+    expect(canonical).toMatchObject({
+      domain: 'local',
+      profileNamespaceId: 0,
+    });
   });
 });

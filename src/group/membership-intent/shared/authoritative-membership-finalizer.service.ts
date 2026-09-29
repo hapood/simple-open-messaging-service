@@ -111,8 +111,8 @@ export class AuthoritativeMembershipFinalizerService {
           WHERE pair.kind = 'GROUP_MEMBER'
             AND pair."threadId" = ${params.threadId}
             AND pair.active = true
-            AND pair."endpointBDomain" = ${member.domain}
             AND pair."endpointBNamespaceId" = ${member.namespaceId}
+            AND pair."endpointBType" = 'USER'
         ) AS active
       `);
       audienceChanged = activePeerMembership.rows[0]?.active

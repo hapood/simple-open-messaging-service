@@ -70,8 +70,8 @@ describe('relationship client profile references', () => {
             const params = new PgDialect().sqlToQuery(where).params;
             if (!available) return undefined;
             return {
-              displayName: `Selected ${params[3]}`,
-              avatar: `avatar-${params[3]}`,
+              displayName: `Selected ${params[4]}`,
+              avatar: `avatar-${params[4]}`,
               bio: 'selected',
             };
           }),
@@ -124,8 +124,8 @@ describe('relationship client profile references', () => {
         ([arg]) => new PgDialect().sqlToQuery(arg.where).params,
       ),
     ).toEqual([
-      ['bob', 'remote.test', 4, 7],
-      ['bob', 'remote.test', 4, 7],
+      ['bob', 'remote.test', 4, 4, 7],
+      ['bob', 'remote.test', 4, 4, 7],
     ]);
   });
 

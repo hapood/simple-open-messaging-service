@@ -29,7 +29,7 @@ export async function mergeMirrorGroupMetaTargetInTx(
     and(
       eq(groupStateFields.account, account),
       eq(groupStateFields.domain, input.group.domain),
-      eq(groupStateFields.namespaceId, input.group.namespaceId),
+      eq(groupStateFields.namespaceId, input.group.publisherNamespaceId),
     ),
   );
   if (!mirror) return null;

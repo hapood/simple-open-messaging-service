@@ -74,6 +74,7 @@ export class FederationStateFeedConsumerService {
     status?: unknown;
     messageEndSeq?: unknown;
     tombstoneEndSeq?: unknown;
+    namespaceId?: unknown;
     profileRev?: unknown;
     note?: unknown;
     requestedAt?: unknown;
@@ -83,6 +84,9 @@ export class FederationStateFeedConsumerService {
     // only restate them.
     return {
       status: body.status as 'REQUESTED' | 'ACCEPTED' | 'REVOKED',
+      // State-feed body.namespaceId is the wire profile-subject namespace;
+      // the authenticated feed namespace remains the publisher namespace.
+      profileNamespaceId: Number(body.namespaceId),
       profileRev: Number(body.profileRev),
       note: body.note as string,
       requestedAt: body.requestedAt as number | null,
@@ -161,6 +165,7 @@ export class FederationStateFeedConsumerService {
             status?: unknown;
             messageEndSeq?: unknown;
             tombstoneEndSeq?: unknown;
+            namespaceId?: unknown;
             profileRev?: unknown;
             note?: unknown;
             requestedAt?: unknown;
@@ -179,6 +184,8 @@ export class FederationStateFeedConsumerService {
                 Number(body.tombstoneEndSeq) < 0 ||
                 Number(body.tombstoneEndSeq) >
                   FEDERATION_THREAD_SEQUENCE_MAX)) ||
+            !Number.isSafeInteger(body.namespaceId) ||
+            Number(body.namespaceId) < 0 ||
             !Number.isSafeInteger(body.profileRev) ||
             Number(body.profileRev) < 0 ||
             Number(body.profileRev) > 2_147_483_647 ||
@@ -194,6 +201,7 @@ export class FederationStateFeedConsumerService {
               (key) =>
                 ![
                   'status',
+                  'namespaceId',
                   'profileRev',
                   'messageEndSeq',
                   'tombstoneEndSeq',
@@ -253,9 +261,10 @@ export class FederationStateFeedConsumerService {
           statePushDomains.push(...peers);
           if (body.status !== 'REVOKED' && Number(body.profileRev) > 0) {
             profileDemands.push({
-              namespaceId,
+              publisherNamespaceId: namespaceId,
               lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
               target: {
+                profileNamespaceId: Number(body.namespaceId),
                 account: normalizeAccount(item.account),
                 domain: peerDomain,
                 rev: Number(body.profileRev),
@@ -287,6 +296,7 @@ export class FederationStateFeedConsumerService {
             status?: unknown;
             messageEndSeq?: unknown;
             tombstoneEndSeq?: unknown;
+            namespaceId?: unknown;
             profileRev?: unknown;
             note?: unknown;
             requestedAt?: unknown;
@@ -304,6 +314,8 @@ export class FederationStateFeedConsumerService {
                 Number(body.tombstoneEndSeq) < 0 ||
                 Number(body.tombstoneEndSeq) >
                   FEDERATION_THREAD_SEQUENCE_MAX)) ||
+            !Number.isSafeInteger(body.namespaceId) ||
+            Number(body.namespaceId) < 0 ||
             !Number.isSafeInteger(body.profileRev) ||
             Number(body.profileRev) < 0 ||
             Number(body.profileRev) > 2_147_483_647 ||
@@ -319,6 +331,7 @@ export class FederationStateFeedConsumerService {
               (key) =>
                 ![
                   'status',
+                  'namespaceId',
                   'profileRev',
                   'messageEndSeq',
                   'tombstoneEndSeq',
@@ -390,9 +403,10 @@ export class FederationStateFeedConsumerService {
               );
               if (body.status !== 'REVOKED' && Number(body.profileRev) > 0) {
                 profileDemands.push({
-                  namespaceId,
+                  publisherNamespaceId: namespaceId,
                   lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
                   target: {
+                    profileNamespaceId: Number(body.namespaceId),
                     account: normalizeAccount(item.account),
                     domain: peerDomain,
                     rev: Number(body.profileRev),
@@ -409,9 +423,10 @@ export class FederationStateFeedConsumerService {
           statePushDomains.push(...peers);
           if (inviteDirection && Number(body.profileRev) > 0) {
             profileDemands.push({
-              namespaceId,
+              publisherNamespaceId: namespaceId,
               lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
               target: {
+                profileNamespaceId: Number(body.namespaceId),
                 account: normalizeAccount(item.account),
                 domain: peerDomain,
                 rev: Number(body.profileRev),
@@ -456,7 +471,7 @@ export class FederationStateFeedConsumerService {
               group: {
                 account: item.account,
                 domain: peerDomain,
-                namespaceId,
+                publisherNamespaceId: namespaceId,
               },
               metaTargetId: Number(groupMetaFeedEndId),
             });
@@ -576,14 +591,12 @@ export class FederationStateFeedConsumerService {
           AND pair."threadId" IS NOT NULL
           AND (pair."endpointANamespaceId" = ${namespaceId}
             OR pair."endpointBNamespaceId" = ${namespaceId})
-          AND (((pair."endpointAAccount", pair."endpointADomain") =
-                (${normalizeAccount(thread.peerAccount)}, 'local')
-                AND (pair."endpointBAccount", pair."endpointBDomain") =
-                (${normalizeAccount(thread.account)}, ${sourceDomain}))
-            OR ((pair."endpointBAccount", pair."endpointBDomain") =
-                (${normalizeAccount(thread.peerAccount)}, 'local')
-                AND (pair."endpointAAccount", pair."endpointADomain") =
-                (${normalizeAccount(thread.account)}, ${sourceDomain})))
+          AND pair."endpointAType" = 'USER'
+          AND pair."endpointAAccount" = ${normalizeAccount(thread.peerAccount)}
+          AND pair."endpointANamespaceId" = 0
+          AND pair."endpointBType" = 'USER'
+          AND pair."endpointBAccount" = ${normalizeAccount(thread.account)}
+          AND pair."endpointBNamespaceId" = ${namespaceId}
         LIMIT 1
       `);
       const threadId = result.rows[0]?.threadId;
@@ -623,8 +636,8 @@ export class FederationStateFeedConsumerService {
               WHERE membership."threadId" = message_thread.id
                 AND membership.kind = 'GROUP_MEMBER'
                 AND membership.active = true
-                AND membership."endpointBType" = 'USER'
-                AND membership."endpointBDomain" = 'local'
+                AND membership."endpointAType" = 'USER'
+                AND membership."endpointANamespaceId" = 0
             ))
         )
       LIMIT 1

@@ -21,7 +21,7 @@ type GroupMetaFeedItem =
   | {
       feedId: number;
       operation: 'GROUP_PROFILE';
-      body: { profileRev: number };
+      body: { profileNamespaceId: number; profileRev: number };
     }
   | {
       feedId: number;
@@ -166,7 +166,10 @@ export async function readGroupMetaPageInTx(
         return {
           feedId: row.feedId,
           operation: 'GROUP_PROFILE',
-          body: { profileRev: Number(row.body.profileRev) },
+          body: {
+            profileNamespaceId: Number(row.body.profileNamespaceId),
+            profileRev: Number(row.body.profileRev),
+          },
         };
       const namespaceId = namespaceByAddress.get(
         JSON.stringify([row.memberDomain, row.memberAccount]),

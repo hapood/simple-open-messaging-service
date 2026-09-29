@@ -20,6 +20,7 @@ import { FederationPeerHttp } from './federation-peer-http.js';
 import type { S2SProfile } from './federation-profile.js';
 import { encodeFederationResourceComponent } from './federation-resource-request.js';
 import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
+import { toProfileWireDomain } from './federation-wire-domain.js';
 
 const FEDERATED_PROFILE_NAME_MAX_CODE_POINTS = 31;
 const FEDERATED_PROFILE_BIO_MAX_CODE_POINTS = 120;
@@ -80,7 +81,7 @@ export class FederationProfileService {
   ): Promise<S2SProfile | null> {
     if (rev < 1) return null;
     const storedDomain =
-      publisherNamespaceId === 0 && domain === this.config.domain
+      publisherNamespaceId === 0 && profileNamespaceId === 0
         ? 'local'
         : domain;
     const row = await this.database.db.query.profileTable.findFirst({
@@ -209,6 +210,7 @@ export class FederationProfileService {
         FROM "Profile" profile
         WHERE profile.account = ${normalizeAccount(account)}
           AND profile.domain = 'local'
+          AND profile."publisherNamespaceId" = 0
           AND profile."profileNamespaceId" = ${profileNamespaceId}
           AND profile."profileRev" = ${rev}
           AND (
@@ -224,28 +226,15 @@ export class FederationProfileService {
           )
           AND EXISTS (
             SELECT 1 FROM "RelationshipIntent" intent
-            JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
             WHERE intent."profileNamespaceId" = ${profileNamespaceId}
               AND intent."profileRev" = ${rev}
               AND (intent.status = 'ACCEPTED'
                 OR (intent.status = 'REQUESTED'
                   AND intent."expiresAt" > CURRENT_TIMESTAMP))
-              AND (
-                (intent."authorSide" = 'A'
-                  AND pair."endpointAAccount" = profile.account
-                  AND pair."endpointADomain" = 'local'
-                  AND pair."endpointANamespaceId" = 0
-                  AND pair."endpointBAccount" = ${normalizeAccount(peerAccount)}
-                  AND pair."endpointBDomain" = ${peerDomain}
-                  AND pair."endpointBNamespaceId" = ${namespaceId})
-                OR (intent."authorSide" = 'B'
-                  AND pair."endpointBAccount" = profile.account
-                  AND pair."endpointBDomain" = 'local'
-                  AND pair."endpointBNamespaceId" = 0
-                  AND pair."endpointAAccount" = ${normalizeAccount(peerAccount)}
-                  AND pair."endpointADomain" = ${peerDomain}
-                  AND pair."endpointANamespaceId" = ${namespaceId})
-              )
+              AND intent."authorAccount" = profile.account
+                AND intent."authorNamespaceId" = 0
+                AND intent."receiverAccount" = ${normalizeAccount(peerAccount)}
+                AND intent."receiverNamespaceId" = ${namespaceId}
           )
         LIMIT 1
       `),
@@ -256,6 +245,7 @@ export class FederationProfileService {
       ? this.toS2SProfile({
           profileNamespaceId: row.profileNamespaceId,
           account: row.account,
+          domain: 'local',
           name: row.displayName,
           avatar: row.avatar,
           bio: row.bio,
@@ -313,11 +303,12 @@ export class FederationProfileService {
               AND meta."profileRev" = ${rev}
             JOIN "GroupMetaMemberFeed" fact ON fact."threadId" = meta."threadId"
               AND fact.operation = 'GROUP_PROFILE'
-              AND (fact.body ->> 'namespaceId')::integer = ${profileNamespaceId}
+              AND (fact.body ->> 'profileNamespaceId')::integer = ${profileNamespaceId}
               AND (fact.body ->> 'profileRev')::integer = ${rev}
             JOIN "Profile" profile ON profile.account = group_account.account
               AND profile.domain = 'local'
-          AND profile."profileNamespaceId" = ${profileNamespaceId}
+              AND profile."publisherNamespaceId" = 0
+              AND profile."profileNamespaceId" = ${profileNamespaceId}
           AND profile."profileRev" = ${rev}
             WHERE group_account.account = ${owner}
               AND group_account."dissolvedAt" IS NULL
@@ -339,6 +330,7 @@ export class FederationProfileService {
         ? this.toS2SProfile({
             profileNamespaceId: row.profileNamespaceId,
             account: row.account,
+            domain: 'local',
             name: row.displayName,
             avatar: row.avatar,
             bio: row.bio,
@@ -364,14 +356,23 @@ export class FederationProfileService {
         AND owner.domain = 'local' AND owner."namespaceId" = 0
         AND owner.kind = 'USER' AND owner.availability = 'AVAILABLE'
       WHERE profile.account = ${owner} AND profile.domain = 'local'
+        AND profile."publisherNamespaceId" = 0
         AND profile."profileNamespaceId" = ${profileNamespaceId}
         AND profile."profileRev" = ${rev}
         AND EXISTS (
           SELECT 1 FROM "Message" m
           JOIN "MessageThread" thread ON thread.id = m."threadId"
           JOIN "RelationshipPair" pair ON pair."threadId" = thread.id
-            AND pair.established
-          JOIN "RelationshipIntent" intent ON intent."pairId" = pair.id
+            AND pair.active
+          JOIN "RelationshipIntent" intent
+            ON intent."authorAccount" = CASE WHEN thread.type = 'P2P'
+              THEN pair."endpointAAccount" ELSE pair."endpointBAccount" END
+            AND intent."authorNamespaceId" = CASE WHEN thread.type = 'P2P'
+              THEN pair."endpointANamespaceId" ELSE pair."endpointBNamespaceId" END
+            AND intent."receiverAccount" = CASE WHEN thread.type = 'P2P'
+              THEN pair."endpointBAccount" ELSE pair."endpointAAccount" END
+            AND intent."receiverNamespaceId" = CASE WHEN thread.type = 'P2P'
+              THEN pair."endpointBNamespaceId" ELSE pair."endpointANamespaceId" END
           JOIN "PeerStateFeed" head ON head."peerDomain" = ${peerDomain}
             AND head."namespaceId" = ${namespaceId}
             AND head.domain = ${this.config.domain}
@@ -380,7 +381,6 @@ export class FederationProfileService {
               THEN profile.account ELSE thread."groupAccount" END
             AND head."subjectAccount" = CASE WHEN thread.type = 'P2P'
               THEN CASE WHEN pair."endpointAAccount" = profile.account
-                AND pair."endpointADomain" = 'local'
                 THEN pair."endpointBAccount" ELSE pair."endpointAAccount" END
               ELSE '' END
             AND head."subjectDomain" = CASE WHEN thread.type = 'P2P'
@@ -394,58 +394,31 @@ export class FederationProfileService {
             AND m."profileNamespaceId" = profile."profileNamespaceId"
             AND m."profileRev" = ${rev} AND m."sourceNamespaceId" = 0
             AND m."contentType" <> 'SYSTEM'
+            AND m."localState" = 'READY'
             AND m.seq > COALESCE(audience."messageAccessAfterSeq", 0)
             AND m.seq::numeric <= CASE
               WHEN (head.body ->> 'messageEndSeq') ~ '^[0-9]{1,10}$'
               THEN (head.body ->> 'messageEndSeq')::numeric ELSE 0 END
             AND (
               (thread.type = 'P2P' AND pair.kind = 'P2P'
-                AND (
-                  (pair."endpointAType" = 'USER'
-                    AND pair."endpointAAccount" = profile.account
-                    AND pair."endpointADomain" = 'local'
-                    AND pair."endpointANamespaceId" = ${namespaceId}
-                    AND pair."endpointBType" = 'USER'
-                    AND pair."endpointBDomain" = ${peerDomain}
-                    AND pair."endpointBNamespaceId" = ${namespaceId}
-                    AND intent."authorSide" = 'A')
-                  OR
-                  (pair."endpointBType" = 'USER'
-                    AND pair."endpointBAccount" = profile.account
-                    AND pair."endpointBDomain" = 'local'
-                    AND pair."endpointBNamespaceId" = ${namespaceId}
-                    AND pair."endpointAType" = 'USER'
-                    AND pair."endpointADomain" = ${peerDomain}
-                    AND pair."endpointANamespaceId" = ${namespaceId}
-                    AND intent."authorSide" = 'B')
-                )
-              )
+                AND pair."endpointAType" = 'USER'
+                AND pair."endpointAAccount" = profile.account
+                AND pair."endpointBType" = 'USER'
+                AND pair."endpointBNamespaceId" = ${namespaceId}
+                AND intent."authorAccount" = profile.account
+                AND intent."authorNamespaceId" = 0)
               OR
               (thread.type = 'GROUP' AND pair.kind = 'GROUP_MEMBER'
                 AND thread."groupDomain" = ${peerDomain}
                 AND thread."authorityNamespaceId" = ${namespaceId}
                 AND thread."groupAccountId" IS NULL
-                AND (
-                  (pair."endpointAType" = 'GROUP'
-                    AND pair."endpointAAccount" = thread."groupAccount"
-                    AND pair."endpointADomain" = ${peerDomain}
-                    AND pair."endpointANamespaceId" = ${namespaceId}
-                    AND pair."endpointBType" = 'USER'
-                    AND pair."endpointBAccount" = profile.account
-                    AND pair."endpointBDomain" = 'local'
-                    AND pair."endpointBNamespaceId" = ${namespaceId}
-                    AND intent."authorSide" = 'B')
-                  OR
-                  (pair."endpointBType" = 'GROUP'
-                    AND pair."endpointBAccount" = thread."groupAccount"
-                    AND pair."endpointBDomain" = ${peerDomain}
-                    AND pair."endpointBNamespaceId" = ${namespaceId}
-                    AND pair."endpointAType" = 'USER'
-                    AND pair."endpointAAccount" = profile.account
-                    AND pair."endpointADomain" = 'local'
-                    AND pair."endpointANamespaceId" = ${namespaceId}
-                    AND intent."authorSide" = 'A')
-                )
+                AND pair."endpointBType" = 'GROUP'
+                AND pair."endpointBAccount" = thread."groupAccount"
+                AND pair."endpointAType" = 'USER'
+                AND pair."endpointAAccount" = profile.account
+                AND pair."endpointBNamespaceId" = ${namespaceId}
+                AND intent."authorAccount" = pair."endpointBAccount"
+                AND intent."authorNamespaceId" = pair."endpointBNamespaceId"
                 AND EXISTS (SELECT 1 FROM "AccountThreadState" state
                   WHERE state."threadId" = thread.id
                     AND state."accountId" = owner.id)
@@ -461,6 +434,7 @@ export class FederationProfileService {
       ? this.toS2SProfile({
           profileNamespaceId: row.profileNamespaceId,
           account: row.account,
+          domain: 'local',
           name: row.displayName,
           avatar: row.avatar,
           bio: row.bio,
@@ -488,8 +462,7 @@ export class FederationProfileService {
       rev < 1
     )
       return null;
-    const storedDomain =
-      memberDomain === this.config.domain ? 'local' : memberDomain;
+    const storedDomain = profileNamespaceId === 0 ? 'local' : memberDomain;
     let row;
     try {
       row = await this.database.db.transaction(
@@ -543,6 +516,7 @@ export class FederationProfileService {
             AND thread."groupAccount" = ${normalizeAccount(groupAccount)}
             AND profile.account = ${normalizeAccount(memberAccount)}
             AND profile.domain = ${storedDomain}
+            AND profile."publisherNamespaceId" = CASE WHEN ${storedDomain} = 'local' THEN 0 ELSE ${profileNamespaceId} END
             AND profile."profileNamespaceId" = ${profileNamespaceId}
             AND profile."profileRev" = ${rev}
             AND EXISTS (
@@ -551,17 +525,23 @@ export class FederationProfileService {
                 AND fact."memberAccount" = profile.account
                 AND fact."memberDomain" = profile.domain
                 AND fact.operation = 'MEMBER_UPSERT'
-                AND (fact.body ->> 'namespaceId')::integer = ${profileNamespaceId}
-              AND (fact.body ->> 'profileRev')::integer = ${rev}
+                AND fact.feedId = (
+                  SELECT MAX(current_fact.feedId)
+                  FROM "GroupMetaMemberFeed" current_fact
+                  WHERE current_fact."threadId" = fact."threadId"
+                    AND current_fact."memberAccount" = fact."memberAccount"
+                    AND current_fact."memberDomain" = fact."memberDomain"
+                )
+                AND (fact.body ->> 'profileNamespaceId')::integer = ${profileNamespaceId}
+                AND (fact.body ->> 'profileRev')::integer = ${rev}
                 AND (profile.domain <> 'local' OR profile."profileNamespaceId" = 0)
                 AND (profile.domain = 'local' OR EXISTS (
                   SELECT 1 FROM "RelationshipPair" pair
                   WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = thread.id
-                    AND pair.established
+                    AND pair.active
                     AND pair."endpointBType" = 'USER'
                     AND pair."endpointBAccount" = profile.account
-                    AND pair."endpointBDomain" = profile.domain
-                    AND pair."endpointBNamespaceId" = profile."profileNamespaceId"
+                    AND pair."endpointBNamespaceId" = ${namespaceId}
                 ))
             )
             AND EXISTS (
@@ -575,6 +555,7 @@ export class FederationProfileService {
                 AND message."profileNamespaceId" = ${profileNamespaceId}
                 AND message."profileRev" = ${rev}
                 AND message."contentType" <> 'SYSTEM'
+                AND message."localState" = 'READY'
             )
           LIMIT 1
         `);
@@ -698,7 +679,9 @@ export class FederationProfileService {
       `/s2s/v1/group-member-profiles/${encodeFederationResourceComponent(groupAccount)}` +
         `/${expectedProfileNamespaceId}` +
         `/${encodeFederationResourceComponent(memberAccount)}` +
-        `/${encodeFederationResourceComponent(memberDomain)}/${rev}`,
+        `/${encodeFederationResourceComponent(
+          toProfileWireDomain(memberDomain, expectedProfileNamespaceId),
+        )}/${rev}`,
       memberAccount,
       memberDomain,
       rev,
@@ -715,7 +698,10 @@ export class FederationProfileService {
     publisherDomain = expectedDomain,
     expectedProfileNamespaceId = 0,
   ): Promise<S2SProfile | null> {
-    this.assertPositiveRevision(rev);
+    const expectedWireDomain = toProfileWireDomain(
+      expectedDomain,
+      expectedProfileNamespaceId,
+    );
     let body: unknown;
     try {
       body = await this.peerHttp.get<unknown>(
@@ -739,7 +725,7 @@ export class FederationProfileService {
       Object.keys(fields).sort().join(',') !==
         'account,avatar,bio,displayName,domain' ||
       fields.account !== expectedAccount ||
-      fields.domain !== expectedDomain ||
+      fields.domain !== expectedWireDomain ||
       typeof fields.displayName !== 'string' ||
       !this.validWireText(fields.displayName, 1, 31) ||
       typeof fields.bio !== 'string' ||
@@ -749,6 +735,7 @@ export class FederationProfileService {
       return this.invalidExactProfile(publisherDomain);
     return {
       ...(body as Omit<S2SProfile, 'namespaceId' | 'profileRev'>),
+      domain: expectedWireDomain,
       namespaceId: expectedProfileNamespaceId,
       profileRev: rev,
     };

@@ -192,6 +192,18 @@ export function requireDomain(value: string, name: string): string {
   return value;
 }
 
+export function requireSubjectDomain(
+  value: string,
+  name: string,
+  profileNamespaceId: number,
+): string {
+  if (profileNamespaceId === 0) {
+    if (value !== 'local') malformed(`${name} must be local for namespaceId 0`);
+    return value;
+  }
+  return requireDomain(value, name);
+}
+
 export function requireSha256Hex(value: string, name: string): string {
   if (!SHA256_HEX_RE.test(value)) malformed(`${name} is not a Sha256Hex`);
   return value;

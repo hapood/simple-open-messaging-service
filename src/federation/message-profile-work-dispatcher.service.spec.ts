@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ProfileLookup } from '../profile-resolution/profile-resolution-demand.js';
+import {
+  ProfileLookup,
+  type ProfileEvidenceProjection,
+  type ProfilePrefetchDemand,
+} from '../profile-resolution/profile-resolution-demand.js';
 import { MessageProfileWorkDispatcherService } from './message-profile-work-dispatcher.service.js';
 
 describe('MessageProfileWorkDispatcherService', () => {
@@ -11,20 +15,21 @@ describe('MessageProfileWorkDispatcherService', () => {
       { resolve: resolveEvidence } as never,
     );
     const demand = {
-      namespaceId: 7,
+      publisherNamespaceId: 7,
       lookup: ProfileLookup.ACCOUNT_PROFILE,
-      target: { account: 'alice', domain: 'remote.test', rev: 3 },
-    };
+      target: { profileNamespaceId: 7, account: 'alice', domain: 'remote.test', rev: 3 },
+    } satisfies ProfilePrefetchDemand;
     const evidence = {
       profile: {
-        namespaceId: 7,
+        publisherNamespaceId: 7,
+        profileNamespaceId: 7,
         account: 'alice',
         domain: 'remote.test',
         rev: 3,
       },
       lookup: ProfileLookup.ACCOUNT_PROFILE,
       projection: { threadId: 11, messageSeq: 5 },
-    };
+    } satisfies ProfileEvidenceProjection;
 
     service.dispatch({ demands: [demand], evidenceProjections: [evidence] });
     await Promise.resolve();

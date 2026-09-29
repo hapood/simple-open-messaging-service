@@ -9,7 +9,8 @@ import { BusinessCode } from '../common/business-code.js';
 const selectedProfile = and(
   eq(profileTable.account, accountTable.account),
   eq(profileTable.domain, 'local'),
-  eq(profileTable.namespaceId, 0),
+  eq(profileTable.publisherNamespaceId, 0),
+  eq(profileTable.profileNamespaceId, 0),
   eq(profileTable.profileRev, accountTable.defaultProfileRev),
 );
 
@@ -97,7 +98,8 @@ export class UserService {
         where: and(
           eq(profileTable.account, current.account),
           eq(profileTable.domain, 'local'),
-          eq(profileTable.namespaceId, 0),
+          eq(profileTable.publisherNamespaceId, 0),
+          eq(profileTable.profileNamespaceId, 0),
           eq(profileTable.profileRev, current.defaultProfileRev),
         ),
       });
@@ -105,7 +107,8 @@ export class UserService {
       await tx.insert(profileTable).values({
         account: current.account,
         domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: nextRev,
         displayName: data.name,
         bio: data.bio,
@@ -214,7 +217,8 @@ export class UserService {
       await tx.insert(profileTable).values({
         account: address,
         domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 1,
         displayName: params.name,
         avatar: '',

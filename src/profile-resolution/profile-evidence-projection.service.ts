@@ -28,7 +28,7 @@ export class ProfileEvidenceProjectionService {
   ) {}
 
   async resolve(projection: ProfileEvidenceProjection): Promise<void> {
-    if (projection.profile.rev < 1 || projection.profile.namespaceId === 0)
+    if (projection.profile.rev < 1 || projection.profile.profileNamespaceId === 0)
       return;
     const key = evidenceSlotKeyString(projection);
     const evidenceValue = projection.projection.messageSeq;
@@ -109,7 +109,8 @@ export class ProfileEvidenceProjectionService {
           threadLock,
           account: normalizeAccount(projection.profile.account),
           domain: projection.profile.domain,
-          namespaceId: projection.profile.namespaceId,
+          publisherNamespaceId: projection.profile.publisherNamespaceId,
+          namespaceId: projection.profile.profileNamespaceId,
           messageSeq: projection.projection.messageSeq,
           profileRev: projection.profile.rev,
         });
@@ -118,7 +119,8 @@ export class ProfileEvidenceProjectionService {
         threadLock,
         account: normalizeAccount(projection.profile.account),
         domain: projection.profile.domain,
-        namespaceId: projection.profile.namespaceId,
+        publisherNamespaceId: projection.profile.publisherNamespaceId,
+        namespaceId: projection.profile.profileNamespaceId,
         messageSeq: projection.projection.messageSeq,
         profileRev: projection.profile.rev,
       }))
@@ -146,7 +148,8 @@ export class ProfileEvidenceProjectionService {
 function evidenceSlotKeyString(projection: ProfileEvidenceProjection): string {
   return JSON.stringify([
     projection.lookup,
-    projection.profile.namespaceId,
+    projection.profile.publisherNamespaceId,
+    projection.profile.profileNamespaceId,
     projection.profile.account,
     projection.profile.domain,
     projection.projection.threadId,

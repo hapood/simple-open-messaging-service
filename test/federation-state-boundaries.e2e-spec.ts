@@ -4,7 +4,7 @@ import { requireThreadContentLockInTx } from '../src/common/locks/thread-content
 import type { AccountTarget } from '../src/user/account-address.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { MessageThreadType } from '../src/database/enums.js';
@@ -17,6 +17,7 @@ import {
   groupAccount as group,
   messageThread,
   accountThreadState,
+  user,
 } from '../src/database/schema.js';
 import { RelationshipService } from '../src/relationship/relationship.service.js';
 import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
@@ -31,6 +32,26 @@ import { findP2PRelationship, seedFederatedPeerNamespace } from './seed.js';
 describe('federation directed-state boundaries', () => {
   let mod: TestingModule;
   let database: DatabaseService;
+  function p2pIntentFilter(
+    local: { account: string; namespaceId: number },
+    peer: { account: string; namespaceId: number },
+  ) {
+    return or(
+      and(
+        eq(relationshipIntent.authorAccount, local.account),
+        eq(relationshipIntent.authorNamespaceId, local.namespaceId),
+        eq(relationshipIntent.receiverAccount, peer.account),
+        eq(relationshipIntent.receiverNamespaceId, peer.namespaceId),
+      ),
+      and(
+        eq(relationshipIntent.authorAccount, peer.account),
+        eq(relationshipIntent.authorNamespaceId, peer.namespaceId),
+        eq(relationshipIntent.receiverAccount, local.account),
+        eq(relationshipIntent.receiverNamespaceId, local.namespaceId),
+      ),
+    );
+  }
+
   let relationships: RelationshipService;
   let relationshipIntents: RelationshipIntentService;
   let userIntents: UserIntentService;
@@ -109,13 +130,25 @@ describe('federation directed-state boundaries', () => {
       localId,
       peerId,
     );
+    const localIdentity = await database.db.query.account.findFirst({
+      where: eq(user.id, localId),
+      columns: { account: true, namespaceId: true },
+    });
     await database.db.insert(relationshipIntent).values(
       rows.map((row) => ({
-        pairId: relationship.pair!.id,
-        authorSide:
+        authorAccount:
           row.author === 'local'
-            ? relationship.firstSide
-            : relationship.secondSide,
+            ? localIdentity!.account
+            : peer.account,
+        authorNamespaceId:
+          row.author === 'local' ? 0 : peer.namespaceId,
+        receiverAccount:
+          row.author === 'local'
+            ? peer.account
+            : localIdentity!.account,
+        receiverNamespaceId:
+          row.author === 'local' ? peer.namespaceId : 0,
+        profileNamespaceId: 0,
         status: row.status,
         messageEndSeq: row.messageEndSeq ?? 0,
         tombstoneEndSeq: row.tombstoneEndSeq ?? 0,
@@ -280,14 +313,21 @@ describe('federation directed-state boundaries', () => {
         expiresAt: new Date(Date.now() + 60_000),
       },
     ]);
+    const localRow = await database.db.query.account.findFirst({
+      where: eq(user.id, local.id),
+      columns: { account: true, namespaceId: true },
+    });
     await expect(
       database.db.execute(sql`
       UPDATE "RelationshipIntent" SET "messageEndSeq" = NULL, "tombstoneEndSeq" = NULL
-      WHERE "pairId" = ${relationship.pair!.id}
+      WHERE ("authorAccount" = ${localRow!.account} AND "authorNamespaceId" = 0
+          AND "receiverAccount" = ${peer.account} AND "receiverNamespaceId" = ${peer.namespaceId})
+        OR ("authorAccount" = ${peer.account} AND "authorNamespaceId" = ${peer.namespaceId}
+          AND "receiverAccount" = ${localRow!.account} AND "receiverNamespaceId" = 0)
     `),
     ).rejects.toThrow();
     const stored = await database.db.query.relationshipIntent.findFirst({
-      where: eq(relationshipIntent.pairId, relationship.pair!.id),
+      where: p2pIntentFilter(localRow!, peer),
     });
     expect(stored).toMatchObject({ messageEndSeq: 0, tombstoneEndSeq: 0 });
     await database.db.transaction((tx) =>
@@ -377,9 +417,12 @@ describe('federation directed-state boundaries', () => {
       }),
     );
 
-    const relationship = await findP2PRelationship(database.db, local.id, peer);
+    const revokedLocal = await database.db.query.account.findFirst({
+      where: eq(user.id, local.id),
+      columns: { account: true, namespaceId: true },
+    });
     const intents = await database.db.query.relationshipIntent.findMany({
-      where: eq(relationshipIntent.pairId, relationship.pair!.id),
+      where: p2pIntentFilter(revokedLocal!, peer),
     });
     expect(intents.every((intent) => intent.status === 'REVOKED')).toBe(true);
   });
@@ -423,10 +466,16 @@ describe('federation directed-state boundaries', () => {
       ),
     );
 
+    const refreshedLocal = await database.db.query.account.findFirst({
+      where: eq(user.id, local.id),
+      columns: { account: true, namespaceId: true },
+    });
     const refreshed = await database.db.query.relationshipIntent.findFirst({
       where: and(
-        eq(relationshipIntent.pairId, relationship.pair!.id),
-        eq(relationshipIntent.authorSide, relationship.firstSide),
+        eq(relationshipIntent.authorAccount, refreshedLocal!.account),
+        eq(relationshipIntent.authorNamespaceId, 0),
+        eq(relationshipIntent.receiverAccount, peer.account),
+        eq(relationshipIntent.receiverNamespaceId, peer.namespaceId),
       ),
     });
     expect(refreshed).toMatchObject({
@@ -457,13 +506,37 @@ describe('federation directed-state boundaries', () => {
       })
       .returning({ id: messageThread.id });
 
-    // A just-created group cannot be dissolved, so the invite id is present.
-    const firstId = (await relationships.createGroupInvite(
-      owner.id,
-      thread.id,
-      target,
-      'same note',
-    ))!;
+    const inviteDirection = {
+      authorAccount: `!boundary-${suffix}`,
+      authorNamespaceId: 0,
+      receiverAccount: target.account,
+      receiverNamespaceId: target.namespaceId,
+    };
+    const inviteRow = () =>
+      database.db.query.relationshipIntent.findFirst({
+        where: and(
+          eq(relationshipIntent.authorAccount, inviteDirection.authorAccount),
+          eq(relationshipIntent.authorNamespaceId, 0),
+          eq(relationshipIntent.receiverAccount, inviteDirection.receiverAccount),
+          eq(relationshipIntent.receiverNamespaceId, inviteDirection.receiverNamespaceId),
+        ),
+      });
+    const writeInvite = () =>
+      database.db.transaction((tx) =>
+        relationshipIntents.writeGroupAuthoredIntentInTx(tx, {
+          groupId: thread.id,
+          memberUserId: target,
+          threadId: thread.id,
+          author: 'GROUP',
+          status: 'REQUESTED',
+          note: 'same note',
+        }),
+      );
+
+    // A just-created group cannot be dissolved, so the invite row is present.
+    await writeInvite();
+    const first = await inviteRow();
+    expect(first).toBeDefined();
     const requestedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     await database.db
       .update(relationshipIntent)
@@ -471,19 +544,27 @@ describe('federation directed-state boundaries', () => {
         requestedAt,
         expiresAt: new Date(requestedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
       })
-      .where(eq(relationshipIntent.id, BigInt(firstId)));
-    const secondId = await relationships.createGroupInvite(
-      owner.id,
-      thread.id,
-      target,
-      'same note',
-    );
+      .where(
+        and(
+          eq(relationshipIntent.authorAccount, inviteDirection.authorAccount),
+          eq(relationshipIntent.authorNamespaceId, 0),
+          eq(relationshipIntent.receiverAccount, inviteDirection.receiverAccount),
+          eq(relationshipIntent.receiverNamespaceId, inviteDirection.receiverNamespaceId),
+        ),
+      );
+    await writeInvite();
 
-    expect(secondId).toBe(firstId);
-    const refreshed = await database.db.query.relationshipIntent.findFirst({
-      where: eq(relationshipIntent.id, BigInt(firstId)),
+    // Refreshing reuses the single invitation row rather than creating one.
+    const rows = await database.db.query.relationshipIntent.findMany({
+      where: and(
+        eq(relationshipIntent.authorAccount, inviteDirection.authorAccount),
+        eq(relationshipIntent.authorNamespaceId, 0),
+        eq(relationshipIntent.receiverAccount, inviteDirection.receiverAccount),
+        eq(relationshipIntent.receiverNamespaceId, inviteDirection.receiverNamespaceId),
+      ),
     });
-    expect(refreshed).toMatchObject({ status: 'REQUESTED' });
-    expect(refreshed!.expiresAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'REQUESTED' });
+    expect(rows[0]!.expiresAt!.getTime()).toBeGreaterThan(Date.now());
   });
 });

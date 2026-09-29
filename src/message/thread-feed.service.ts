@@ -101,13 +101,11 @@ export class ThreadFeedService {
                CASE WHEN pair.active THEN 'ACTIVE' ELSE 'READ_ONLY' END AS "conversationState",
                s.blocked, CASE WHEN pair.active THEN s.role ELSE NULL END AS role,
                CASE WHEN t.type = 'GROUP' THEN t."groupAccount"
-                 WHEN pair."endpointAAccount" = self.account AND pair."endpointADomain" = 'local'
+                 WHEN pair."endpointAAccount" = self.account
                    THEN pair."endpointBAccount" ELSE pair."endpointAAccount" END AS "profileAccount",
-               CASE WHEN t.type = 'GROUP' THEN t."groupDomain"
-                 WHEN pair."endpointAAccount" = self.account AND pair."endpointADomain" = 'local'
-                   THEN pair."endpointBDomain" ELSE pair."endpointADomain" END AS "profileDomain",
+               peer_ns.domain AS "profileDomain",
                CASE WHEN t.type = 'GROUP' THEN t."authorityNamespaceId"
-                 WHEN pair."endpointAAccount" = self.account AND pair."endpointADomain" = 'local'
+                 WHEN pair."endpointAAccount" = self.account
                    THEN pair."endpointBNamespaceId" ELSE pair."endpointANamespaceId" END AS "profileNamespaceId",
                s."threadProfileRev" AS "profileRev"
         FROM "AccountThreadState" s
@@ -115,9 +113,13 @@ export class ThreadFeedService {
         JOIN "MessageThread" t ON t.id = s."threadId"
         JOIN "RelationshipPair" pair ON pair."threadId" = t.id AND pair.established
           AND ((pair."endpointAType" = 'USER' AND pair."endpointAAccount" = self.account
-            AND pair."endpointADomain" = 'local')
+            AND pair."endpointANamespaceId" = 0)
             OR (pair."endpointBType" = 'USER' AND pair."endpointBAccount" = self.account
-              AND pair."endpointBDomain" = 'local'))
+              AND pair."endpointBNamespaceId" = 0))
+        LEFT JOIN "IdentityNamespace" peer_ns
+          ON peer_ns.id = CASE WHEN t.type = 'GROUP' THEN t."authorityNamespaceId"
+            WHEN pair."endpointAAccount" = self.account
+              THEN pair."endpointBNamespaceId" ELSE pair."endpointANamespaceId" END
         WHERE s."accountId" = ${accountId}
           AND s."threadFeedId" > ${request.after} AND s."threadFeedId" <= ${through}
         ORDER BY s."threadFeedId" LIMIT ${take + 1}`);
@@ -154,7 +156,7 @@ export class ThreadFeedService {
                 sender: {
                   account: preview.creatorAccount,
                   domain: preview.creatorDomain,
-                  namespaceId: preview.creatorNamespaceId,
+                  namespaceId: preview.profileNamespaceId,
                   profileRev: preview.profileRev,
                 },
                 status: preview.isDeleted ? preview.deletionType! : 'LIVE',

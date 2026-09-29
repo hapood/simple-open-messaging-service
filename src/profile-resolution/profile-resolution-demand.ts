@@ -6,15 +6,16 @@ export enum ProfileLookup {
 
 /** The profile subject and exact revision within a demand namespace. */
 export interface ProfileTarget {
+  profileNamespaceId: number;
   account: string;
   domain: string;
   rev: number;
 }
 
-/** The complete immutable profile cache and notification identity. */
-export type ProfileKey = ProfileTarget & {
-  namespaceId: number;
-};
+/** The complete profile resolution cache and notification identity. */
+export interface ProfileKey extends ProfileTarget {
+  publisherNamespaceId: number;
+}
 
 /** Local evidence coordinates used after an exact snapshot has been stored. */
 export interface ProfileProjectionKey {
@@ -24,18 +25,18 @@ export interface ProfileProjectionKey {
 
 export type ProfilePrefetchDemand =
   | {
-      namespaceId: number;
+      publisherNamespaceId: number;
       lookup: ProfileLookup.ACCOUNT_PROFILE;
       target: ProfileTarget;
     }
   | {
-      namespaceId: number;
+      publisherNamespaceId: number;
       lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE;
       target: ProfileTarget;
       peerAccount: string;
     }
   | {
-      namespaceId: number;
+      publisherNamespaceId: number;
       lookup: ProfileLookup.GROUP_MEMBER_PROFILE;
       target: ProfileTarget;
       groupAccount: string;

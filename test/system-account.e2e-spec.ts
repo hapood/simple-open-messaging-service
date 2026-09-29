@@ -72,7 +72,7 @@ describe('system account attribution', () => {
     expect(stored).toMatchObject({
       creatorAccount: '$system',
       creatorDomain: 'local',
-      creatorNamespaceId: 0,
+      profileNamespaceId: 0,
       profileRev: 0,
       sourceNamespaceId: 0,
     });

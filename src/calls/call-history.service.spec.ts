@@ -15,10 +15,15 @@ const snapshot: CallHistorySnapshot = {
     caller: {
       account: 'alice',
       domain: 'a.test',
-      namespaceId: 1,
+      profileNamespaceId: 1,
       profileRev: 0,
     },
-    callee: { account: 'bob', domain: 'b.test', namespaceId: 2, profileRev: 0 },
+    callee: {
+      account: 'bob',
+      domain: 'b.test',
+      profileNamespaceId: 2,
+      profileRev: 0,
+    },
     mediaType: 'AUDIO',
     outcome: 'missed',
     initiatedAt: 100,

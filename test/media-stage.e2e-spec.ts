@@ -172,18 +172,18 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
         and(
           eq(relationshipPair.endpointAType, 'USER'),
           eq(relationshipPair.endpointAAccount, userAccount),
-          eq(relationshipPair.endpointADomain, 'local'),
+          eq(relationshipPair.endpointANamespaceId, 0),
           eq(relationshipPair.endpointBType, 'USER'),
           eq(relationshipPair.endpointBAccount, targetAccounts[1]),
-          eq(relationshipPair.endpointBDomain, 'local'),
+          eq(relationshipPair.endpointBNamespaceId, 0),
         ),
         and(
           eq(relationshipPair.endpointAType, 'USER'),
           eq(relationshipPair.endpointAAccount, targetAccounts[1]),
-          eq(relationshipPair.endpointADomain, 'local'),
+          eq(relationshipPair.endpointANamespaceId, 0),
           eq(relationshipPair.endpointBType, 'USER'),
           eq(relationshipPair.endpointBAccount, userAccount),
-          eq(relationshipPair.endpointBDomain, 'local'),
+          eq(relationshipPair.endpointBNamespaceId, 0),
         ),
       ),
     });

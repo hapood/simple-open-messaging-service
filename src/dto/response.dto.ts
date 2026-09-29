@@ -201,6 +201,12 @@ export class MessageAuthorAddressResponseDto {
 
 export class MessageResponseDto {
   @ApiProperty({
+    example: 0,
+    description: 'Namespace of the message author identity.',
+  })
+  namespaceId!: number;
+
+  @ApiProperty({
     example: 42,
     description:
       'Per-thread monotonic seq (0-indexed) — the message ordering key + identity. Allocated per-thread ' +

@@ -24,12 +24,10 @@ export function userIntentLocatorSql(params: {
       FROM "RelationshipPair" p CROSS JOIN actor a
       WHERE p.kind = 'P2P'
         AND p."endpointAType" = 'USER' AND p."endpointBType" = 'USER'
-        AND p."endpointANamespaceId" = p."endpointBNamespaceId"
-        AND p."endpointANamespaceId" = ${params.targetNamespaceId}
-        AND (p."endpointAAccount" = a.account AND p."endpointADomain" = 'local'
-          AND p."endpointBAccount" = ${params.targetAccount} AND p."endpointBDomain" = ${params.targetDomain}
-        OR p."endpointBAccount" = a.account AND p."endpointBDomain" = 'local'
-          AND p."endpointAAccount" = ${params.targetAccount} AND p."endpointADomain" = ${params.targetDomain})
+        AND p."endpointAAccount" = a.account AND p."endpointANamespaceId" = 0
+        AND p."endpointBAccount" = ${params.targetAccount}
+        AND p."endpointBNamespaceId" = CASE WHEN ${params.targetDomain} = 'local'
+          THEN 0 ELSE ${params.targetNamespaceId} END
     )
     SELECT a.account AS "actorAccount",
       a.availability AS "actorAvailability", a."disabledAt"::text AS "actorDisabledAt",
@@ -70,15 +68,23 @@ export interface UserIntentAuthorizationRow extends Record<string, unknown> {
 
 /** One post-lock authorization statement. The pair and both intent rows are
  * already FOR NO KEY UPDATE locked by the preamble; this reads the branch state
- * the three commands dispatch on. */
+ * the three commands dispatch on. Both directions are addressed by the
+ * actor/target coordinates the caller already holds. */
 export function userIntentAuthorizationSql(params: {
   pairId: bigint;
   actorUserId: number;
+  actorAccount: string;
+  actorNamespaceId: number;
   targetAccount: string;
   targetDomain: string;
-  actorSide: 'A' | 'B';
-  reverseSide: 'A' | 'B';
+  targetNamespaceId: number;
 }): SQL {
+  const {
+    actorAccount,
+    actorNamespaceId,
+    targetAccount,
+    targetNamespaceId,
+  } = params;
   return sql`
     SELECT p.active AS "pairActive", p.established AS "pairEstablished",
       p."threadId", t."authorizationEpoch", t."curSeq" AS "threadCurSeq",
@@ -92,10 +98,12 @@ export function userIntentAuthorizationSql(params: {
       tgt.id::integer AS "localTargetId", tgt.availability AS "targetAvailability"
     FROM "RelationshipPair" p
     JOIN "MessageThread" t ON t.id = p."threadId"
-    LEFT JOIN "RelationshipIntent" own ON own."pairId" = p.id
-      AND own."authorSide" = ${params.actorSide}
-    LEFT JOIN "RelationshipIntent" rev ON rev."pairId" = p.id
-      AND rev."authorSide" = ${params.reverseSide}
+    LEFT JOIN "RelationshipIntent" own
+      ON own."authorAccount" = ${actorAccount} AND own."authorNamespaceId" = ${actorNamespaceId}
+      AND own."receiverAccount" = ${targetAccount} AND own."receiverNamespaceId" = ${targetNamespaceId}
+    LEFT JOIN "RelationshipIntent" rev
+      ON rev."authorAccount" = ${targetAccount} AND rev."authorNamespaceId" = ${targetNamespaceId}
+      AND rev."receiverAccount" = ${actorAccount} AND rev."receiverNamespaceId" = ${actorNamespaceId}
     CROSS JOIN "Account" a
     LEFT JOIN "Account" tgt ON tgt.account = ${params.targetAccount}
       AND tgt.domain = ${params.targetDomain} AND tgt."namespaceId" = 0

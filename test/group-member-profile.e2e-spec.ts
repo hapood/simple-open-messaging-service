@@ -81,14 +81,16 @@ describe('exact group-member profile disclosure', () => {
       {
         account: memberAccount,
         domain: memberDomain,
-        namespaceId: memberNs,
+        publisherNamespaceId: memberNs,
+        profileNamespaceId: memberNs,
         profileRev: 4,
         displayName: 'Old snapshot',
       },
       {
         account: memberAccount,
         domain: memberDomain,
-        namespaceId: memberNs,
+        publisherNamespaceId: memberNs,
+        profileNamespaceId: memberNs,
         profileRev: 7,
         displayName: 'Message snapshot',
       },
@@ -101,11 +103,9 @@ describe('exact group-member profile disclosure', () => {
           threadId,
           endpointAType: 'GROUP',
           endpointAAccount: groupName,
-          endpointADomain: 'local',
-          endpointANamespaceId: signerNs,
+          endpointANamespaceId: 0,
           endpointBType: 'USER',
           endpointBAccount: signerAccount,
-          endpointBDomain: signerDomain,
           endpointBNamespaceId: signerNs,
           active: true,
           established: true,
@@ -115,11 +115,9 @@ describe('exact group-member profile disclosure', () => {
           threadId,
           endpointAType: 'GROUP',
           endpointAAccount: groupName,
-          endpointADomain: 'local',
-          endpointANamespaceId: memberNs,
+          endpointANamespaceId: 0,
           endpointBType: 'USER',
           endpointBAccount: memberAccount,
-          endpointBDomain: memberDomain,
           endpointBNamespaceId: memberNs,
           active: true,
           established: true,
@@ -128,8 +126,10 @@ describe('exact group-member profile disclosure', () => {
       .returning({ id: relationshipPair.id });
     pairIds = pairs.map((pair) => pair.id);
     await database.db.insert(relationshipIntent).values({
-      pairId: pairIds[0],
-      authorSide: 'A',
+      authorAccount: groupName,
+      authorNamespaceId: 0,
+      receiverAccount: signerAccount,
+      receiverNamespaceId: signerNs,
       status: 'ACCEPTED',
       profileRev: 0,
       note: '',
@@ -164,7 +164,12 @@ describe('exact group-member profile disclosure', () => {
     await database.db.delete(message).where(eq(message.threadId, threadId));
     await database.db
       .delete(relationshipIntent)
-      .where(eq(relationshipIntent.pairId, pairIds[0]));
+      .where(
+        and(
+          eq(relationshipIntent.authorAccount, groupName),
+          eq(relationshipIntent.receiverAccount, signerAccount),
+        ),
+      );
     for (const id of pairIds)
       await database.db
         .delete(relationshipPair)
@@ -203,7 +208,7 @@ describe('exact group-member profile disclosure', () => {
       profileRev: 7,
       creatorAccount: memberAccount,
       creatorDomain: memberDomain,
-      creatorNamespaceId: memberNs,
+      profileNamespaceId: memberNs,
       contentType: 'PURE_TEXT',
       content: JSON.stringify({ text: 'hello' }),
       updatedAt: new Date(),
@@ -268,7 +273,14 @@ describe('exact group-member profile disclosure', () => {
     await database.db
       .update(relationshipIntent)
       .set({ status: 'REVOKED' })
-      .where(eq(relationshipIntent.pairId, pairIds[0]));
+      .where(
+        and(
+          eq(relationshipIntent.authorAccount, groupName),
+          eq(relationshipIntent.authorNamespaceId, 0),
+          eq(relationshipIntent.receiverAccount, signerAccount),
+          eq(relationshipIntent.receiverNamespaceId, signerNs),
+        ),
+      );
     expect(await lookup(4)).toBeNull();
     expect(await lookup(7)).toBeNull();
     expect(await lookup(8)).toBeNull();

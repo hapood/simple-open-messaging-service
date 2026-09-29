@@ -29,12 +29,9 @@ export class ClientGroupMetaFeedService {
         AND EXISTS (
           SELECT 1 FROM "RelationshipPair" pair
           WHERE pair."threadId" = thread.id AND pair.active = true
-            AND ((pair."endpointAType" = 'USER'
-                  AND pair."endpointAAccount" = local_user.account
-                  AND pair."endpointADomain" = 'local')
-              OR (pair."endpointBType" = 'USER'
-                  AND pair."endpointBAccount" = local_user.account
-                  AND pair."endpointBDomain" = 'local'))
+            AND pair."endpointAType" = 'USER'
+            AND pair."endpointAAccount" = local_user.account
+            AND pair."endpointANamespaceId" = 0
         )
         AND (${selector.threadId ?? null}::integer IS NULL OR thread.id = ${selector.threadId ?? null})
         AND (${selector.account ?? null}::text IS NULL OR group_state.account = ${selector.account ?? null})
@@ -67,12 +64,9 @@ export class ClientGroupMetaFeedService {
           AND EXISTS (
             SELECT 1 FROM "RelationshipPair" pair
             WHERE pair."threadId" = thread.id AND pair.active = true
-              AND ((pair."endpointAType" = 'USER'
-                    AND pair."endpointAAccount" = local_user.account
-                    AND pair."endpointADomain" = 'local')
-                OR (pair."endpointBType" = 'USER'
-                    AND pair."endpointBAccount" = local_user.account
-                    AND pair."endpointBDomain" = 'local'))
+              AND pair."endpointAType" = 'USER'
+              AND pair."endpointAAccount" = local_user.account
+              AND pair."endpointANamespaceId" = 0
           )
         LIMIT 1
       `);

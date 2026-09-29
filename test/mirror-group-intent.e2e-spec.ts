@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, or, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
@@ -157,21 +157,51 @@ describe('mirror group intent application', () => {
     const pair = await database.db.query.relationshipPair.findFirst({
       where: and(
         eq(tables.relationshipPair.kind, 'GROUP_MEMBER'),
-        eq(tables.relationshipPair.endpointAAccount, group.account),
-        eq(tables.relationshipPair.endpointADomain, group.domain),
-        eq(tables.relationshipPair.endpointANamespaceId, group.namespaceId),
-        eq(tables.relationshipPair.endpointBType, 'USER'),
-        eq(tables.relationshipPair.endpointBAccount, memberAccount),
-        eq(tables.relationshipPair.endpointBDomain, 'local'),
+        eq(tables.relationshipPair.endpointAType, 'USER'),
+        eq(tables.relationshipPair.endpointAAccount, memberAccount),
+        eq(tables.relationshipPair.endpointANamespaceId, 0),
+        eq(tables.relationshipPair.endpointBType, 'GROUP'),
+        eq(tables.relationshipPair.endpointBAccount, group.account),
+        eq(tables.relationshipPair.endpointBNamespaceId, group.namespaceId),
       ),
     });
+    // The group account's '!' prefix sorts before member accounts, matching
+    // the historical group-authored (side A) first ordering.
     const intents = pair
-      ? await database.db.query.relationshipIntent.findMany({
-          where: eq(tables.relationshipIntent.pairId, pair.id),
-          orderBy: tables.relationshipIntent.authorSide,
-        })
+      ? await database.db.query.relationshipIntent
+          .findMany({
+            where: or(
+              and(
+                eq(tables.relationshipIntent.authorAccount, group.account),
+                eq(
+                  tables.relationshipIntent.authorNamespaceId,
+                  group.namespaceId,
+                ),
+                eq(tables.relationshipIntent.receiverAccount, memberAccount),
+                eq(tables.relationshipIntent.receiverNamespaceId, 0),
+              ),
+              and(
+                eq(tables.relationshipIntent.authorAccount, memberAccount),
+                eq(tables.relationshipIntent.authorNamespaceId, 0),
+                eq(tables.relationshipIntent.receiverAccount, group.account),
+                eq(
+                  tables.relationshipIntent.receiverNamespaceId,
+                  group.namespaceId,
+                ),
+              ),
+            ),
+          })
+          .then((rows) =>
+            rows.sort((left, right) =>
+              left.authorAccount.localeCompare(right.authorAccount),
+            ),
+          )
       : [];
-    return { pair, intents, sideA: intents.find((i) => i.authorSide === 'A') };
+    return {
+      pair,
+      intents,
+      sideA: intents.find((i) => i.authorAccount === group.account),
+    };
   }
 
   function feedRows(userId: number) {
@@ -283,8 +313,11 @@ describe('mirror group intent application', () => {
     // The member accepted on this server: side B ACCEPTED authored locally,
     // pair still inactive — the origin's confirmation is pending.
     await database.db.insert(tables.relationshipIntent).values({
-      pairId: pair!.id,
-      authorSide: 'B',
+      authorAccount: bob.account,
+      authorNamespaceId: 0,
+      receiverAccount: group.account,
+      receiverNamespaceId: group.namespaceId,
+      profileNamespaceId: 0,
       status: 'ACCEPTED',
       profileRev: 1,
       note: '',
@@ -352,8 +385,11 @@ describe('mirror group intent application', () => {
     const { pair } = await findPair(bob.account);
     // The member applied first; the invitation crossed it in flight.
     await database.db.insert(tables.relationshipIntent).values({
-      pairId: pair!.id,
-      authorSide: 'B',
+      authorAccount: bob.account,
+      authorNamespaceId: 0,
+      receiverAccount: group.account,
+      receiverNamespaceId: group.namespaceId,
+      profileNamespaceId: 0,
       status: 'REQUESTED',
       profileRev: 1,
       note: 'let me in',
@@ -366,7 +402,7 @@ describe('mirror group intent application', () => {
     expect(routed).toBe('activated');
     const after = await findPair(bob.account);
     expect(after.pair!.active).toBe(true);
-    const sideB = after.intents.find((i) => i.authorSide === 'B');
+    const sideB = after.intents.find((i) => i.authorAccount === bob.account);
     // The acknowledgement conclusion rewrites side B with its own empty note.
     expect(sideB).toMatchObject({ status: 'ACCEPTED' });
     expect(sideB!.expiresAt).toBeNull();
@@ -378,8 +414,11 @@ describe('mirror group intent application', () => {
     await run(bob, invitationBody());
     const { pair } = await findPair(bob.account);
     await database.db.insert(tables.relationshipIntent).values({
-      pairId: pair!.id,
-      authorSide: 'B',
+      authorAccount: bob.account,
+      authorNamespaceId: 0,
+      receiverAccount: group.account,
+      receiverNamespaceId: group.namespaceId,
+      profileNamespaceId: 0,
       status: 'ACCEPTED',
       profileRev: 1,
       note: '',
@@ -413,8 +452,11 @@ describe('mirror group intent application', () => {
     const { pair } = await findPair(bob.account);
     // The member withdrew before the origin's acceptance landed.
     await database.db.insert(tables.relationshipIntent).values({
-      pairId: pair!.id,
-      authorSide: 'B',
+      authorAccount: bob.account,
+      authorNamespaceId: 0,
+      receiverAccount: group.account,
+      receiverNamespaceId: group.namespaceId,
+      profileNamespaceId: 0,
       status: 'REVOKED',
       profileRev: 1,
       note: '',
@@ -435,7 +477,7 @@ describe('mirror group intent application', () => {
     expect(after.pair!.active).toBe(false);
     expect(after.sideA!.status).toBe('ACCEPTED');
     expect(
-      after.intents.find((intent) => intent.authorSide === 'B')?.status,
+      after.intents.find((intent) => intent.authorAccount === bob.account)?.status,
     ).toBe('REVOKED');
     expect(await peerItems(group.namespaceId)).toEqual(outboundBefore);
     const [namespaceAfter] = await database.db
@@ -452,8 +494,11 @@ describe('mirror group intent application', () => {
     await run(bob, invitationBody());
     const { pair } = await findPair(bob.account);
     await database.db.insert(tables.relationshipIntent).values({
-      pairId: pair!.id,
-      authorSide: 'B',
+      authorAccount: bob.account,
+      authorNamespaceId: 0,
+      receiverAccount: group.account,
+      receiverNamespaceId: group.namespaceId,
+      profileNamespaceId: 0,
       status: 'ACCEPTED',
       profileRev: 1,
       note: '',
@@ -481,7 +526,7 @@ describe('mirror group intent application', () => {
       }),
     ).toHaveLength(0);
     expect(
-      after.intents.find((intent) => intent.authorSide === 'B')?.status,
+      after.intents.find((intent) => intent.authorAccount === bob.account)?.status,
     ).toBe('REVOKED');
     const feeds = await feedRows(bob.id);
     expect(feeds.some((f) => bodyOf(f).status === 'REVOKED')).toBe(true);
@@ -512,8 +557,11 @@ describe('mirror group intent application', () => {
     await run(bob, invitationBody());
     const { pair } = await findPair(bob.account);
     await database.db.insert(tables.relationshipIntent).values({
-      pairId: pair!.id,
-      authorSide: 'B',
+      authorAccount: bob.account,
+      authorNamespaceId: 0,
+      receiverAccount: group.account,
+      receiverNamespaceId: group.namespaceId,
+      profileNamespaceId: 0,
       status: 'REQUESTED',
       profileRev: 1,
       note: 'let me in',
@@ -526,7 +574,7 @@ describe('mirror group intent application', () => {
     expect(routed).toBe('application-rejected');
     const after = await findPair(bob.account);
     expect(after.sideA!.status).toBe('REVOKED');
-    const sideB = after.intents.find((i) => i.authorSide === 'B');
+    const sideB = after.intents.find((i) => i.authorAccount === bob.account);
     expect(sideB!.status).toBe('REVOKED');
     const terminalFeeds = (await feedRows(bob.id)).filter(
       (f) => bodyOf(f).status === 'REVOKED',
@@ -552,7 +600,7 @@ describe('mirror group intent application', () => {
     );
     const renewed = await findPair(bob.account);
     expect(
-      renewed.intents.find((intent) => intent.authorSide === 'B'),
+      renewed.intents.find((intent) => intent.authorAccount === bob.account),
     ).toMatchObject({ status: 'REQUESTED', note: 'new application' });
   });
 
@@ -562,8 +610,11 @@ describe('mirror group intent application', () => {
     await run(bob, invitationBody());
     const { pair } = await findPair(bob.account);
     await database.db.insert(tables.relationshipIntent).values({
-      pairId: pair!.id,
-      authorSide: 'B',
+      authorAccount: bob.account,
+      authorNamespaceId: 0,
+      receiverAccount: group.account,
+      receiverNamespaceId: group.namespaceId,
+      profileNamespaceId: 0,
       status: 'ACCEPTED',
       profileRev: 1,
       note: '',
@@ -601,7 +652,7 @@ describe('mirror group intent application', () => {
     const rejoined = await findPair(bob.account);
     expect(rejoined.pair?.active).toBe(true);
     expect(
-      rejoined.intents.find((intent) => intent.authorSide === 'B'),
+      rejoined.intents.find((intent) => intent.authorAccount === bob.account),
     ).toMatchObject({ status: 'ACCEPTED' });
   });
 
@@ -747,27 +798,24 @@ describe('mirror group intent application', () => {
         lastReadSeq: 0,
       });
     }
-    const bobPairId = await database.db
-      .insert(tables.relationshipPair)
-      .values({
-        kind: 'GROUP_MEMBER',
-        endpointAType: 'GROUP',
-        endpointAAccount: group.account,
-        endpointADomain: group.domain,
-        endpointANamespaceId: group.namespaceId,
-        endpointBType: 'USER',
-        endpointBAccount: bob.account,
-        endpointBDomain: 'local',
-        endpointBNamespaceId: group.namespaceId,
-        threadId,
-        active: true,
-        established: true,
-      })
-      .returning({ id: tables.relationshipPair.id });
+    await database.db.insert(tables.relationshipPair).values({
+      kind: 'GROUP_MEMBER',
+      endpointAType: 'USER',
+      endpointAAccount: bob.account,
+      endpointANamespaceId: 0,
+      endpointBType: 'GROUP',
+      endpointBAccount: group.account,
+      endpointBNamespaceId: group.namespaceId,
+      threadId,
+      active: true,
+      established: true,
+    });
     await database.db.insert(tables.relationshipIntent).values([
       {
-        pairId: bobPairId[0]!.id,
-        authorSide: 'A',
+        authorAccount: group.account,
+        authorNamespaceId: group.namespaceId,
+        receiverAccount: bob.account,
+        receiverNamespaceId: 0,
         status: 'ACCEPTED',
         profileRev: 3,
         note: '',
@@ -777,8 +825,10 @@ describe('mirror group intent application', () => {
         expiresAt: null,
       },
       {
-        pairId: bobPairId[0]!.id,
-        authorSide: 'B',
+        authorAccount: bob.account,
+        authorNamespaceId: 0,
+        receiverAccount: group.account,
+        receiverNamespaceId: group.namespaceId,
         status: 'ACCEPTED',
         profileRev: 1,
         note: '',
@@ -791,8 +841,10 @@ describe('mirror group intent application', () => {
     // Activate Alice's pair the same way for the epoch gate: her acceptance is
     // pending (side B ACCEPTED seeded), the origin's ACK completes it.
     const aliceSideB = {
-      pairId: alicePair!.id,
-      authorSide: 'B' as const,
+      authorAccount: alice.account,
+      authorNamespaceId: 0,
+      receiverAccount: group.account,
+      receiverNamespaceId: group.namespaceId,
       status: 'ACCEPTED' as const,
       profileRev: 1,
       note: '',

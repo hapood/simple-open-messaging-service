@@ -2,6 +2,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { clientIntentFeedWriteSql } from '../../../common/sql/relationship-intent-recipient-feed-sql.js';
 import {
   epochMillisSql,
+  mirrorGroupDirection,
   mirrorIntentCompactionKey,
   mirrorIntentFeedBodySql,
   mirrorIntentReadBackSql,
@@ -27,15 +28,20 @@ export interface MirrorMembershipRevocationInput {
 export function mirrorMembershipRevocationSql(
   input: MirrorMembershipRevocationInput,
 ): SQL {
+  const { author, receiver } = mirrorGroupDirection(
+    input.presentation,
+    input.memberAccount,
+  );
   return sql`
     WITH authored AS (
       ${mirrorIntentWriteSql({
-        pairId: input.pairId,
-        authorSide: 'A',
+        author,
+        receiver,
         status: 'REVOKED',
         note: '',
         requestedAt: null,
         expiresAt: null,
+        profileNamespaceId: 0,
         profileRev: 0,
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
@@ -43,8 +49,8 @@ export function mirrorMembershipRevocationSql(
     ), ${mirrorIntentReadBackSql({
       writeName: 'authored',
       readBackName: 'persisted_intent',
-      pairId: input.pairId,
-      authorSide: 'A',
+      author,
+      receiver,
     })}, pair_change AS (
       UPDATE "RelationshipPair" SET active = false, "updatedAt" = CURRENT_TIMESTAMP
       WHERE id = ${input.pairId} AND active IS DISTINCT FROM false
@@ -58,11 +64,10 @@ export function mirrorMembershipRevocationSql(
           SELECT 1 FROM "RelationshipPair" remaining
           WHERE remaining."threadId" = ${input.threadId}
             AND remaining.kind = 'GROUP_MEMBER' AND remaining.active
-            AND remaining."endpointAType" = 'GROUP'
-            AND remaining."endpointAAccount" = ${input.presentation.groupAccount}
-            AND remaining."endpointADomain" = ${input.presentation.groupDomain}
-            AND remaining."endpointBType" = 'USER'
-            AND remaining."endpointBDomain" = 'local'
+            AND remaining."endpointBType" = 'GROUP'
+            AND remaining."endpointBAccount" = ${input.presentation.groupAccount}
+            AND remaining."endpointBNamespaceId" = ${input.presentation.groupNamespaceId}
+            AND remaining."endpointAType" = 'USER'
             AND remaining.id <> ${input.pairId}
         )
       RETURNING t.id

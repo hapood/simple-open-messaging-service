@@ -700,7 +700,7 @@ describe('departure system message paths', () => {
       expect(rows[0]).toMatchObject({
         creatorAccount: '$system',
         creatorDomain: 'local',
-        creatorNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 0,
       });
       const body = JSON.parse(rows[0].content);

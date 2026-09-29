@@ -113,7 +113,7 @@ describe('GroupService creation', () => {
       creator: {
         account: 'owner',
         domain: 'local',
-        namespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 2,
       },
     });

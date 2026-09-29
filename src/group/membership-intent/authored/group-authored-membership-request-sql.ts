@@ -5,7 +5,6 @@ import {
   clientIntentFeedWriteSql,
   peerIntentFeedWriteSql,
 } from '../../../common/sql/relationship-intent-recipient-feed-sql.js';
-import { toFederationWireDomain } from '../../../federation/federation-wire-domain.js';
 
 export interface GroupAuthoredMembershipRequestInput {
   threadId: number;
@@ -56,8 +55,12 @@ export function groupAuthoredMembershipRequestSql(
   return sql`
     WITH authored AS (
       ${authoredIntentWriteSql({
-        pair: { id: input.pairId, threadId: input.threadId },
-        authorSide: 'A',
+        author: { account: input.groupAccount, namespaceId: 0 },
+        receiver: {
+          account: input.targetAccount,
+          namespaceId: input.targetNamespaceId,
+        },
+        threadId: input.threadId,
         status: 'REQUESTED',
         note: input.note,
         requestedAt: input.requestedAt,
@@ -69,11 +72,15 @@ export function groupAuthoredMembershipRequestSql(
       UNION ALL
       SELECT id, status, "profileRev", note, "requestedAt", "expiresAt",
         "messageEndSeq", "tombstoneEndSeq"
-      FROM "RelationshipIntent" WHERE "pairId" = ${input.pairId} AND "authorSide" = 'A'
+      FROM "RelationshipIntent"
+      WHERE "authorAccount" = ${input.groupAccount} AND "authorNamespaceId" = 0
+        AND "receiverAccount" = ${input.targetAccount}
+        AND "receiverNamespaceId" = ${input.targetNamespaceId}
         AND NOT EXISTS (SELECT 1 FROM authored)
     ), member_rev AS MATERIALIZED (
       SELECT COALESCE((SELECT i."profileRev" FROM "RelationshipIntent" i
-        WHERE i."pairId" = ${input.pairId} AND i."authorSide" = 'B'), 0) AS rev
+        WHERE i."authorAccount" = ${input.targetAccount} AND i."authorNamespaceId" = ${input.targetNamespaceId}
+          AND i."receiverAccount" = ${input.groupAccount} AND i."receiverNamespaceId" = 0), 0) AS rev
     ), projection_alloc AS (
       UPDATE "GroupMeta" f
         SET "invitationEndId" = f."invitationEndId" + 1,
@@ -110,7 +117,7 @@ export function groupAuthoredMembershipRequestSql(
       ON CONFLICT ("targetNamespaceId", "threadId") WHERE "targetDomain" <> 'local' DO NOTHING
       RETURNING id
     )
-    SELECT v.id::text AS "requestId", v.status, v.note,
+    SELECT v.status, v.note,
       EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       EXISTS (SELECT 1 FROM request_projection) AS "projectionChanged",
       EXISTS (SELECT 1 FROM audience_open) AS "audienceChanged",
@@ -151,7 +158,7 @@ function localRecipient(input: GroupAuthoredMembershipRequestInput): SQL {
 /** Peer invitee: one RELATIONSHIP_INTENT REQUESTED event, suppressed when the
  * peer already holds the identical body (no feed id is consumed). */
 function peerRecipient(input: GroupAuthoredMembershipRequestInput): SQL {
-  const wireLocalDomain = toFederationWireDomain(input.localDomain);
+  const wireLocalDomain = 'local';
   return sql`
     peer_write AS MATERIALIZED (
       SELECT jsonb_build_object('status', v.status, 'profileRev', v."profileRev", 'note', v.note,

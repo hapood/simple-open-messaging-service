@@ -68,28 +68,32 @@ describe('exact account profile by current account evidence', () => {
       {
         account: localUser,
         domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 4,
         displayName: 'P2P revision',
       },
       {
         account: localUser,
         domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 7,
         displayName: 'Group message revision',
       },
       {
         account: localGroup,
         domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 3,
         displayName: 'Group revision',
       },
       {
         account: localGroup,
         domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 5,
         displayName: 'Unselected group revision',
       },
@@ -144,6 +148,8 @@ describe('exact account profile by current account evidence', () => {
       body: { profileRev: 3 },
       updatedAt: new Date(),
     });
+    // Local endpoints sit on side A at namespace 0; remote signers and the
+    // mirrored remote group carry their own namespaces on side B.
     const pairs = await database.db
       .insert(relationshipPair)
       .values([
@@ -152,11 +158,9 @@ describe('exact account profile by current account evidence', () => {
           threadId: p2pThreadId,
           endpointAType: 'USER',
           endpointAAccount: localUser,
-          endpointADomain: 'local',
-          endpointANamespaceId: ns,
+          endpointANamespaceId: 0,
           endpointBType: 'USER',
           endpointBAccount: signerUser,
-          endpointBDomain: signer,
           endpointBNamespaceId: ns,
           active: true,
           established: true,
@@ -164,13 +168,11 @@ describe('exact account profile by current account evidence', () => {
         {
           kind: 'GROUP_MEMBER',
           threadId: mirrorThreadId,
-          endpointAType: 'GROUP',
-          endpointAAccount: remoteGroup,
-          endpointADomain: signer,
-          endpointANamespaceId: ns,
-          endpointBType: 'USER',
-          endpointBAccount: localUser,
-          endpointBDomain: 'local',
+          endpointAType: 'USER',
+          endpointAAccount: localUser,
+          endpointANamespaceId: 0,
+          endpointBType: 'GROUP',
+          endpointBAccount: remoteGroup,
           endpointBNamespaceId: ns,
           active: true,
           established: true,
@@ -180,11 +182,9 @@ describe('exact account profile by current account evidence', () => {
           threadId: originThreadId,
           endpointAType: 'GROUP',
           endpointAAccount: localGroup,
-          endpointADomain: 'local',
-          endpointANamespaceId: ns,
+          endpointANamespaceId: 0,
           endpointBType: 'USER',
           endpointBAccount: signerUser,
-          endpointBDomain: signer,
           endpointBNamespaceId: ns,
           active: true,
           established: true,
@@ -194,8 +194,10 @@ describe('exact account profile by current account evidence', () => {
     pairIds = pairs.map((pair) => pair.id);
     await database.db.insert(relationshipIntent).values([
       {
-        pairId: pairIds[0],
-        authorSide: 'A',
+        authorAccount: localUser,
+        authorNamespaceId: 0,
+        receiverAccount: signerUser,
+        receiverNamespaceId: ns,
         status: 'ACCEPTED',
         profileRev: 0,
         note: '',
@@ -204,8 +206,10 @@ describe('exact account profile by current account evidence', () => {
         requestedAt: new Date(),
       },
       {
-        pairId: pairIds[1],
-        authorSide: 'B',
+        authorAccount: localUser,
+        authorNamespaceId: 0,
+        receiverAccount: remoteGroup,
+        receiverNamespaceId: ns,
         status: 'ACCEPTED',
         profileRev: 0,
         note: '',
@@ -214,8 +218,10 @@ describe('exact account profile by current account evidence', () => {
         requestedAt: new Date(),
       },
       {
-        pairId: pairIds[2],
-        authorSide: 'A',
+        authorAccount: localGroup,
+        authorNamespaceId: 0,
+        receiverAccount: signerUser,
+        receiverNamespaceId: ns,
         status: 'ACCEPTED',
         profileRev: 0,
         note: '',
@@ -285,10 +291,12 @@ describe('exact account profile by current account evidence', () => {
     await database.db
       .delete(accountThreadState)
       .where(eq(accountThreadState.accountId, userId));
-    for (const pairId of pairIds)
-      await database.db
-        .delete(relationshipIntent)
-        .where(eq(relationshipIntent.pairId, pairId));
+    await database.db
+      .delete(relationshipIntent)
+      .where(eq(relationshipIntent.authorAccount, localUser));
+    await database.db
+      .delete(relationshipIntent)
+      .where(eq(relationshipIntent.authorAccount, localGroup));
     for (const pairId of pairIds)
       await database.db
         .delete(relationshipPair)
@@ -356,7 +364,14 @@ describe('exact account profile by current account evidence', () => {
     await database.db
       .update(relationshipIntent)
       .set({ status: 'REVOKED' })
-      .where(eq(relationshipIntent.pairId, pairIds[1]));
+      .where(
+        and(
+          eq(relationshipIntent.authorAccount, localUser),
+          eq(relationshipIntent.authorNamespaceId, 0),
+          eq(relationshipIntent.receiverAccount, remoteGroup),
+          eq(relationshipIntent.receiverNamespaceId, ns),
+        ),
+      );
     expect(await userProfile(7)).toBeNull();
   });
 
@@ -378,7 +393,14 @@ describe('exact account profile by current account evidence', () => {
     await database.db
       .update(relationshipIntent)
       .set({ status: 'REVOKED' })
-      .where(eq(relationshipIntent.pairId, pairIds[0]));
+      .where(
+        and(
+          eq(relationshipIntent.authorAccount, localUser),
+          eq(relationshipIntent.authorNamespaceId, 0),
+          eq(relationshipIntent.receiverAccount, signerUser),
+          eq(relationshipIntent.receiverNamespaceId, ns),
+        ),
+      );
     expect(await userProfile(4)).toBeNull();
   });
 
@@ -393,7 +415,14 @@ describe('exact account profile by current account evidence', () => {
     await database.db
       .update(relationshipIntent)
       .set({ status: 'REVOKED' })
-      .where(eq(relationshipIntent.pairId, pairIds[2]));
+      .where(
+        and(
+          eq(relationshipIntent.authorAccount, localGroup),
+          eq(relationshipIntent.authorNamespaceId, 0),
+          eq(relationshipIntent.receiverAccount, signerUser),
+          eq(relationshipIntent.receiverNamespaceId, ns),
+        ),
+      );
     expect(await groupProfile(3)).toBeNull();
   });
 });

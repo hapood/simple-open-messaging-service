@@ -7,16 +7,22 @@ export function addressRelation(address: NamespacedAddress) {
     ${address.namespaceId}::integer AS "namespaceId")`;
 }
 
-/** Derive the other endpoint directly from the retained pair, without a remote Account row. */
+/** Derive the other endpoint directly from the retained pair, without a remote
+ * Account row. The display domain resolves through IdentityNamespace (namespace
+ * 0 is local), so both sides of the pair share one resolution rule. */
 export function p2pPeerRelation(pair: SQLWrapper, self: SQLWrapper) {
   const selfIsA = relationshipEndpointMatchesUserSql(pair, 'A', self);
   const selfIsB = relationshipEndpointMatchesUserSql(pair, 'B', self);
   return sql`LATERAL (
-    SELECT CASE WHEN ${selfIsA} THEN ${pair}."endpointBAccount" ELSE ${pair}."endpointAAccount" END AS account,
-      CASE WHEN ${selfIsA} THEN ${pair}."endpointBDomain" ELSE ${pair}."endpointADomain" END AS domain,
-      CASE WHEN (CASE WHEN ${selfIsA} THEN ${pair}."endpointBDomain" ELSE ${pair}."endpointADomain" END) = 'local'
-        THEN 0 ELSE ${pair}."endpointANamespaceId" END AS "namespaceId",
-      CASE WHEN ${selfIsA} THEN 'B' ELSE 'A' END AS side
+    SELECT CASE WHEN ${selfIsA} THEN ${pair}."endpointBAccount"
+        ELSE ${pair}."endpointAAccount" END AS account,
+      CASE WHEN ${selfIsA} THEN ${pair}."endpointBNamespaceId"
+        ELSE ${pair}."endpointANamespaceId" END AS "namespaceId",
+      peer_ns.domain AS domain
+    FROM (SELECT 1) probe
+    LEFT JOIN "IdentityNamespace" peer_ns ON peer_ns.id =
+      CASE WHEN ${selfIsA} THEN ${pair}."endpointBNamespaceId"
+        ELSE ${pair}."endpointANamespaceId" END
     WHERE (${selfIsA}) OR (${selfIsB})
   )`;
 }

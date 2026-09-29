@@ -42,7 +42,8 @@ const query = new QueryBuilder()
     and(
       eq(profileTable.account, messageThread.groupAccount),
       eq(profileTable.domain, messageThread.groupDomain),
-      eq(profileTable.namespaceId, messageThread.authorityNamespaceId),
+      eq(profileTable.publisherNamespaceId, 0),
+      eq(profileTable.profileNamespaceId, messageThread.authorityNamespaceId),
       eq(profileTable.profileRev, revision),
     ),
   )

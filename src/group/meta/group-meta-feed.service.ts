@@ -192,7 +192,7 @@ export class GroupMetaFeedService {
         memberAccount: source.account,
         memberDomain: 'local',
         operation: 'GROUP_PROFILE',
-        body: { profileRev },
+        body: { profileNamespaceId: 0, profileRev },
         updatedAt: new Date(),
       },
     ]);

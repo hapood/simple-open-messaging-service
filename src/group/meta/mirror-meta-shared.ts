@@ -1,6 +1,8 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../../common/account.js';
-import { toClientIdentity } from '../../common/client-identity.js';
+import { toClientIdentityOrNull } from '../../common/client-identity.js';
+import type { ThreadContentLock } from '../../common/locks/thread-content-lock.js';
+import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 import { GroupRole } from '../../database/enums.js';
 import {
@@ -8,16 +10,13 @@ import {
   groupMetaMemberFeed,
   messageThread,
 } from '../../database/schema.js';
-import { loadFederationConfig } from '../../federation/federation.config.js';
-import type { ThreadContentLock } from '../../common/locks/thread-content-lock.js';
-import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
 import { groupStateFields, groupStateSql } from '../shared/group-state.js';
 import { upsertCurrentGroupMetaFactsInTx } from './current-group-meta-fact.js';
 
 export interface MirrorGroupAddress {
   account: string;
   domain: string;
-  namespaceId: number;
+  publisherNamespaceId: number;
 }
 
 /** One validated replica item pulled from the origin's Group Meta feed. */
@@ -28,6 +27,7 @@ export type MirrorMetaReplicatedItem =
       account: string;
       domain: string;
       role: GroupRole;
+      profileNamespaceId: number;
       profileRev: number;
     }
   | {
@@ -39,6 +39,7 @@ export type MirrorMetaReplicatedItem =
   | {
       feedId: number;
       operation: 'GROUP_PROFILE';
+      profileNamespaceId: number;
       profileRev: number;
     }
   | {
@@ -52,31 +53,44 @@ export type MirrorMetaReplicatedItem =
  * wire domain is this server's domain is local here; every other domain remains
  * remote. */
 export function normalizeMirrorMetaMemberAddress(
-  group: Pick<MirrorGroupAddress, 'namespaceId'>,
   account: string,
   domain: string,
-): { account: string; domain: string } {
-  const identity = toClientIdentity(
-    { account, domain, namespaceId: group.namespaceId },
-    loadFederationConfig().domain,
-  );
-  return { account: identity.account, domain: identity.domain };
+  profileNamespaceId: number,
+): { account: string; domain: string; profileNamespaceId: number } {
+  const identity = toClientIdentityOrNull({
+    account,
+    domain,
+    namespaceId: profileNamespaceId,
+  });
+  if (!identity) throw new Error('invalid local subject namespace');
+  return {
+    account: identity.account,
+    domain: identity.domain,
+    profileNamespaceId: identity.namespaceId,
+  };
 }
 
 /** Normalize member addresses at the mirror wire boundary. All downstream
  * persistence, roster, and profile-demand code consumes this canonical item. */
 export function normalizeMirrorMetaReplicatedItem(
-  group: Pick<MirrorGroupAddress, 'namespaceId'>,
+  group: Pick<MirrorGroupAddress, 'publisherNamespaceId'>,
   item: MirrorMetaReplicatedItem,
 ): MirrorMetaReplicatedItem {
   if (item.operation !== 'MEMBER_UPSERT' && item.operation !== 'MEMBER_DEPART')
     return item;
   const member = normalizeMirrorMetaMemberAddress(
-    group,
     item.account,
     item.domain,
+    item.operation === 'MEMBER_UPSERT' ? item.profileNamespaceId : 0,
   );
-  return { ...item, ...member };
+  return {
+    ...item,
+    account: member.account,
+    domain: member.domain,
+    ...(item.operation === 'MEMBER_UPSERT'
+      ? { profileNamespaceId: member.profileNamespaceId }
+      : {}),
+  };
 }
 
 export interface MirrorMetaCursor {
@@ -121,7 +135,7 @@ async function readMirrorMetaInTx(
     LEFT JOIN "GroupMeta" feed ON feed."threadId" = thread.id
     WHERE ${groupStateFields.account} = ${normalizeAccount(group.account)}
       AND ${groupStateFields.domain} = ${group.domain}
-      AND ${groupStateFields.namespaceId} = ${group.namespaceId}
+      AND ${groupStateFields.namespaceId} = ${group.publisherNamespaceId}
     LIMIT 1
   `);
   const row = result.rows[0];
@@ -176,7 +190,7 @@ export async function applyMirrorMetaFactInTx(
       {
         account: item.account,
         domain: item.domain,
-        namespaceId: group.namespaceId,
+        namespaceId: group.publisherNamespaceId,
       },
       loadFederationConfig().domain,
     );
@@ -213,20 +227,27 @@ export function currentMirrorMetaFact(
 ): typeof groupMetaMemberFeed.$inferInsert {
   const body =
     item.operation === 'MEMBER_UPSERT'
-      ? { role: item.role, profileRev: item.profileRev }
-      : { profileRev: item.profileRev };
+      ? {
+          role: item.role,
+          profileNamespaceId: item.profileNamespaceId,
+          profileRev: item.profileRev,
+        }
+      : {
+          profileNamespaceId: item.profileNamespaceId,
+          profileRev: item.profileRev,
+        };
   const subject =
     item.operation === 'GROUP_PROFILE'
       ? {
           account: group.account,
           domain: group.domain,
-          namespaceId: group.namespaceId,
+          namespaceId: group.publisherNamespaceId,
         }
       : toClientIdentity(
           {
             account: item.account,
             domain: item.domain,
-            namespaceId: group.namespaceId,
+            namespaceId: group.publisherNamespaceId,
           },
           loadFederationConfig().domain,
         );
@@ -341,7 +362,7 @@ export async function finalizeMirrorMetaRecoveryInTx(
       SELECT 1 FROM "RelationshipPair" pair
       WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = ${input.threadId}
         AND pair.active = true AND pair."endpointBType" = 'USER'
-        AND pair."endpointBDomain" = 'local'
+        AND pair."endpointANamespaceId" = 0
     ) AS active
   `);
   const dissolved = !membership.rows[0]?.active;

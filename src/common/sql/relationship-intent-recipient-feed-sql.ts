@@ -1,5 +1,4 @@
 import { sql, type SQL } from 'drizzle-orm';
-import { toFederationWireDomain } from '../../federation/federation-wire-domain.js';
 
 /** Relationship-intent client feed writes → body dedupe, one allocation block per recipient, upsert,
  * result. `candidate_bodies` must select "userId", "namespaceId", ordinal,
@@ -50,8 +49,8 @@ export function peerIntentFeedWriteSql(params: {
   resultName?: string;
 }): SQL {
   const resultName = params.resultName ?? 'recipient_result';
-  const selfDomain = toFederationWireDomain(params.selfDomain);
-  const wireLocalDomain = toFederationWireDomain('local');
+  const selfDomain = 'local';
+  const wireLocalDomain = 'local';
   return sql`
     peer_alloc AS (
       UPDATE "IdentityNamespace" SET "stateFeedEndId" = "stateFeedEndId" + (SELECT count(*) FROM peer_changes)

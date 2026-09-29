@@ -116,7 +116,8 @@ describe('AdminBootstrapService', () => {
     const userCreate = userInsert.mock.calls[0][0] as Record<string, unknown>;
     expect(userCreate.account).toBe('admin');
     expect(userCreate.domain).toBe('local');
-    expect(userCreate.namespaceId).toBe(0);
+    expect(userCreate.publisherNamespaceId).toBe(0);
+    expect(userCreate.profileNamespaceId).toBe(0);
 
     expect(accountInsert).toHaveBeenCalledTimes(1);
     const accountCreate = accountInsert.mock.calls[0][0] as Record<

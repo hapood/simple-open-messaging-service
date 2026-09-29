@@ -1,6 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { clientIntentFeedWriteSql } from '../../../common/sql/relationship-intent-recipient-feed-sql.js';
 import {
+  mirrorGroupDirection,
   mirrorIntentCompactionKey,
   mirrorIntentFeedBodySql,
   mirrorIntentReadBackSql,
@@ -17,6 +18,7 @@ export interface MirrorMembershipActivationInput {
   localMemberId: number;
   /** Wire coordinates from the received item body (side A's). */
   intent: {
+    profileNamespaceId: number;
     profileRev: number;
     note: string;
     requestedAt: Date | null;
@@ -43,21 +45,29 @@ export interface MirrorMembershipActivationInput {
 export function mirrorMembershipActivationSql(
   input: MirrorMembershipActivationInput,
 ): SQL {
+  const { author, receiver } = mirrorGroupDirection(
+    input.presentation,
+    input.memberAccount,
+  );
   return sql`
     WITH join_source AS MATERIALIZED (
       SELECT p.active AS "wasActive", t."curSeq",
         b.status AS "memberStatus", b."expiresAt" AS "memberExpiresAt"
       FROM "RelationshipPair" p JOIN "MessageThread" t ON t.id = p."threadId"
-      LEFT JOIN "RelationshipIntent" b ON b."pairId" = p.id AND b."authorSide" = 'B'
+      LEFT JOIN "RelationshipIntent" b
+        ON b."authorAccount" = ${input.memberAccount} AND b."authorNamespaceId" = 0
+          AND b."receiverAccount" = ${input.presentation.groupAccount}
+          AND b."receiverNamespaceId" = ${input.presentation.groupNamespaceId}
       WHERE p.id = ${input.pairId} AND t.id = ${input.threadId}
     ), authored AS (
       ${mirrorIntentWriteSql({
-        pairId: input.pairId,
-        authorSide: 'A',
+        author,
+        receiver,
         status: input.persistStatus,
         note: input.intent.note,
         requestedAt: input.intent.requestedAt,
         expiresAt: input.intent.expiresAt,
+        profileNamespaceId: input.intent.profileNamespaceId,
         profileRev: input.intent.profileRev,
         messageEndSeq: input.intent.messageEndSeq,
         tombstoneEndSeq: input.intent.tombstoneEndSeq,
@@ -65,8 +75,8 @@ export function mirrorMembershipActivationSql(
     ), ${mirrorIntentReadBackSql({
       writeName: 'authored',
       readBackName: 'persisted_intent',
-      pairId: input.pairId,
-      authorSide: 'A',
+      author,
+      receiver,
     })}, side_a_effective AS MATERIALIZED (
       SELECT (status = 'ACCEPTED' OR (status = 'REQUESTED'
           AND "expiresAt" > CURRENT_TIMESTAMP)) AS effective
@@ -74,7 +84,9 @@ export function mirrorMembershipActivationSql(
     ), promotion AS (
       UPDATE "RelationshipIntent" b
         SET status = 'ACCEPTED', "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
-      WHERE b."pairId" = ${input.pairId} AND b."authorSide" = 'B'
+      WHERE b."authorAccount" = ${input.memberAccount} AND b."authorNamespaceId" = 0
+        AND b."receiverAccount" = ${input.presentation.groupAccount}
+        AND b."receiverNamespaceId" = ${input.presentation.groupNamespaceId}
         AND b.status = 'REQUESTED' AND b."expiresAt" > CURRENT_TIMESTAMP
         AND ${input.promote ? sql`true` : sql`false`}
       RETURNING 1

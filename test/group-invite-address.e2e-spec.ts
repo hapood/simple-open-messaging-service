@@ -54,11 +54,9 @@ describe('group invitations by public address', () => {
       threadId: thread.id,
       endpointAType: 'USER',
       endpointAAccount: local.account,
-      endpointADomain: 'local',
-      endpointANamespaceId: directNs,
+      endpointANamespaceId: 0,
       endpointBType: 'USER',
       endpointBAccount: direct.account,
-      endpointBDomain: direct.domain,
       endpointBNamespaceId: directNs,
     });
     const executeIntent = vi.fn().mockResolvedValue({ status: 'APPLIED' });

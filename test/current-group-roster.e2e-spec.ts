@@ -79,10 +79,8 @@ describe('current Group Meta roster', () => {
       threadId: groupId,
       endpointAType: 'GROUP',
       endpointAAccount: `!roster-${suffix}`,
-      endpointADomain: 'local',
       endpointBType: 'USER',
       endpointBAccount: `owner-${suffix}`,
-      endpointBDomain: 'local',
       active: true,
       established: true,
     }).returning({ id: relationshipPair.id });
@@ -247,7 +245,7 @@ describe('current Group Meta roster', () => {
     const commitMessage = (seq: number, profileRev: number) =>
       database.db.insert(message).values({
         threadId: groupId, seq, creatorAccount: memberAccount,
-        creatorDomain: 'local', creatorNamespaceId: 0, profileRev,
+        creatorDomain: 'local', profileNamespaceId: 0, profileRev,
         contentType: 'PURE_TEXT', content: JSON.stringify({ text: `message ${seq}` }),
         updatedAt: new Date(),
       });
@@ -324,8 +322,7 @@ describe('current Group Meta roster', () => {
     const [pair] = await database.db.insert(relationshipPair).values({
       kind: 'GROUP_MEMBER', threadId: groupId,
       endpointAType: 'GROUP', endpointAAccount: `!roster-${suffix}`,
-      endpointADomain: 'local', endpointBType: 'USER',
-      endpointBAccount: account, endpointBDomain: domain,
+      endpointBAccount: account,
       endpointBNamespaceId: namespaceId, active: true, established: true,
     }).returning({ id: relationshipPair.id });
     remotePairId = pair.id;
@@ -337,7 +334,7 @@ describe('current Group Meta roster', () => {
     );
     await database.db.insert(message).values({
       threadId: groupId, seq: 8, creatorAccount: account,
-      creatorDomain: domain, creatorNamespaceId: namespaceId,
+      creatorDomain: domain, profileNamespaceId: namespaceId,
       profileRev: 4, contentType: 'PURE_TEXT',
       content: JSON.stringify({ text: 'remote member' }),
       updatedAt: new Date(),
@@ -370,7 +367,7 @@ describe('current Group Meta roster', () => {
     expect(await publish()).toBe(false); // Prior membership cannot leak forward.
     await database.db.insert(message).values({
       threadId: groupId, seq: 10, creatorAccount: account, creatorDomain: domain,
-      creatorNamespaceId: namespaceId, profileRev: 4, contentType: 'PURE_TEXT',
+      profileNamespaceId: namespaceId, profileRev: 4, contentType: 'PURE_TEXT',
       content: JSON.stringify({ text: 'new membership' }), updatedAt: new Date(),
     });
     expect(await publish(10)).toBe(true);

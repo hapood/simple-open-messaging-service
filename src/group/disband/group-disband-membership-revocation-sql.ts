@@ -6,7 +6,6 @@ import {
   clientIntentFeedWriteSql,
   peerIntentFeedWriteSql,
 } from '../../common/sql/relationship-intent-recipient-feed-sql.js';
-import { toFederationWireDomain } from '../../federation/federation-wire-domain.js';
 
 /** Disband sweep command: depart one member of an already-dissolved local
  * group. The member is addressed directly (the sweep enumerates pairs, not
@@ -48,9 +47,7 @@ export function groupDisbandMembershipRevocationLocatorSql(input: {
     LEFT JOIN "RelationshipPair" pair ON pair.kind = 'GROUP_MEMBER'
       AND pair."threadId" = g.id AND pair."endpointBType" = 'USER'
       AND pair."endpointBAccount" = ${input.member.account}
-      AND pair."endpointBDomain" = ${input.member.domain}
-      AND (${input.member.namespaceId} = 0
-        OR pair."endpointBNamespaceId" = ${input.member.namespaceId})
+      AND pair."endpointBNamespaceId" = ${input.member.namespaceId}
     WHERE g.id = ${input.threadId}
     LIMIT 1
   `;
@@ -102,8 +99,12 @@ export function groupDisbandMembershipRevocationSql(
       localMember
         ? sql`authored_b AS (
       ${authoredIntentWriteSql({
-        pair: { id: input.pairId, threadId: input.threadId },
-        authorSide: 'B',
+        author: {
+          account: input.memberAccount,
+          namespaceId: input.memberNamespaceId,
+        },
+        receiver: { account: input.groupAccount, namespaceId: 0 },
+        threadId: input.threadId,
         status: 'REVOKED',
         note: '',
         requestedAt: null,
@@ -113,18 +114,25 @@ export function groupDisbandMembershipRevocationSql(
         : sql``
     }authored AS (
       ${authoredIntentWriteSql({
-        pair: { id: input.pairId, threadId: input.threadId },
-        authorSide: 'A',
+        author: { account: input.groupAccount, namespaceId: 0 },
+        receiver: {
+          account: input.memberAccount,
+          namespaceId: input.memberNamespaceId,
+        },
+        threadId: input.threadId,
         status: 'REVOKED',
         note: '',
         requestedAt: null,
         expiresAt: null,
       })}
     ), revocation AS MATERIALIZED (
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt"
-      FROM "RelationshipIntent" WHERE "pairId" = ${input.pairId} AND "authorSide" = 'A'
+      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt"
+      FROM "RelationshipIntent"
+      WHERE "authorAccount" = ${input.groupAccount} AND "authorNamespaceId" = 0
+        AND "receiverAccount" = ${input.memberAccount}
+        AND "receiverNamespaceId" = ${input.memberNamespaceId}
         AND NOT EXISTS (SELECT 1 FROM authored)
     ), pair_change AS (
       UPDATE "RelationshipPair" SET active = false, "updatedAt" = CURRENT_TIMESTAMP
@@ -137,7 +145,7 @@ export function groupDisbandMembershipRevocationSql(
       memberDomain: input.memberDomain,
       memberNamespaceId: input.memberNamespaceId,
       status: 'REVOKED',
-      authorSide: 'A',
+      authorAccount: input.groupAccount,
       directions: input.projectionDirections,
     })}, audience_close AS (
       DELETE FROM "ThreadAudience" ta
@@ -149,12 +157,11 @@ export function groupDisbandMembershipRevocationSql(
           AND ta."targetNamespaceId" = ${input.memberNamespaceId}
           AND NOT EXISTS (SELECT 1 FROM "RelationshipPair" p
             WHERE p.kind = 'GROUP_MEMBER' AND p."threadId" = ${input.threadId}
-              AND p.active AND p."endpointBDomain" = ${input.memberDomain}
-              AND p."endpointBNamespaceId" = ${input.memberNamespaceId}
+              AND p.active AND p."endpointBNamespaceId" = ${input.memberNamespaceId}
               AND p.id <> ${input.pairId})))
       RETURNING ta.id
     ), ${localMember ? localRecipients(input) : peerRecipient(input)}
-    SELECT v.id::text AS "requestId", v.status, v.note,
+    SELECT v.status, v.note,
       EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",
       EXISTS (SELECT 1 FROM audience_close) AS "audienceChanged",
@@ -211,7 +218,7 @@ function localRecipients(input: GroupDisbandMembershipRevocationInput): SQL {
  * suppressed when the peer already holds the identical body (no feed id is
  * consumed). */
 function peerRecipient(input: GroupDisbandMembershipRevocationInput): SQL {
-  const wireLocalDomain = toFederationWireDomain(input.localDomain);
+  const wireLocalDomain = 'local';
   return sql`
     peer_write AS MATERIALIZED (
       SELECT jsonb_build_object('status', v.status, 'profileRev', v."profileRev", 'note', v.note,

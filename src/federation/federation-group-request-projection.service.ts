@@ -36,39 +36,49 @@ export class FederationGroupRequestProjectionService {
         requestedAt: tables.relationshipIntent.requestedAt,
         expiresAt: tables.relationshipIntent.expiresAt,
       })
-      .from(tables.relationshipPair)
-      .innerJoin(
-        tables.relationshipIntent,
-        eq(tables.relationshipIntent.pairId, tables.relationshipPair.id),
-      )
+      .from(tables.relationshipIntent)
+      .innerJoin(tables.messageThread, eq(tables.messageThread.id, threadId))
       .where(
-        and(
-          eq(tables.relationshipPair.threadId, threadId),
-          eq(tables.relationshipPair.kind, 'GROUP_MEMBER'),
-          eq(tables.relationshipPair.endpointBType, 'USER'),
-          eq(tables.relationshipPair.endpointBAccount, member.account),
-          eq(tables.relationshipPair.endpointBDomain, member.domain),
-          eq(
-            tables.relationshipIntent.authorSide,
-            direction === 'APPLICATION' ? 'B' : 'A',
-          ),
-        ),
+        direction === 'APPLICATION'
+          ? and(
+              eq(tables.relationshipIntent.authorAccount, member.account),
+              eq(
+                tables.relationshipIntent.authorNamespaceId,
+                member.namespaceId,
+              ),
+              eq(
+                tables.relationshipIntent.receiverAccount,
+                tables.messageThread.groupAccount,
+              ),
+              eq(tables.relationshipIntent.receiverNamespaceId, 0),
+            )
+          : and(
+              eq(
+                tables.relationshipIntent.authorAccount,
+                tables.messageThread.groupAccount,
+              ),
+              eq(tables.relationshipIntent.authorNamespaceId, 0),
+              eq(tables.relationshipIntent.receiverAccount, member.account),
+              eq(
+                tables.relationshipIntent.receiverNamespaceId,
+                member.namespaceId,
+              ),
+            ),
       )
       .limit(1);
     const [memberIntent] = await tx
       .select({ profileRev: tables.relationshipIntent.profileRev })
       .from(tables.relationshipIntent)
-      .innerJoin(
-        tables.relationshipPair,
-        eq(tables.relationshipIntent.pairId, tables.relationshipPair.id),
-      )
+      .innerJoin(tables.messageThread, eq(tables.messageThread.id, threadId))
       .where(
         and(
-          eq(tables.relationshipPair.threadId, threadId),
-          eq(tables.relationshipPair.kind, 'GROUP_MEMBER'),
-          eq(tables.relationshipPair.endpointBAccount, member.account),
-          eq(tables.relationshipPair.endpointBDomain, member.domain),
-          eq(tables.relationshipIntent.authorSide, 'B'),
+          eq(tables.relationshipIntent.authorAccount, member.account),
+          eq(tables.relationshipIntent.authorNamespaceId, member.namespaceId),
+          eq(
+            tables.relationshipIntent.receiverAccount,
+            tables.messageThread.groupAccount,
+          ),
+          eq(tables.relationshipIntent.receiverNamespaceId, 0),
         ),
       )
       .limit(1);

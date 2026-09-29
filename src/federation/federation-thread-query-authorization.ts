@@ -51,29 +51,17 @@ export async function resolveAuthorizedFederationThreadInTx(
       JOIN "RelationshipPair" pair
         ON pair."threadId" = thread.id
        AND pair.kind = 'GROUP_MEMBER'
+       AND pair.active = true
+       AND pair."endpointAType" = 'GROUP'
+       AND pair."endpointAAccount" = group_state.account
+       AND pair."endpointANamespaceId" = 0
+       AND pair."endpointBType" = 'USER'
+       AND pair."endpointBNamespaceId" = ${namespaceId}
       JOIN "RelationshipIntent" intent
-        ON intent."pairId" = pair.id
-       AND (
-         (
-           pair."endpointAType" = 'GROUP'
-           AND pair."endpointAAccount" = group_state.account
-           AND pair."endpointADomain" = 'local'
-           AND pair."endpointANamespaceId" = ${namespaceId}
-           AND pair."endpointBType" = 'USER'
-           AND pair."endpointBDomain" = ${peerDomain}
-           AND pair."endpointBNamespaceId" = ${namespaceId}
-           AND intent."authorSide" = 'A'
-         ) OR (
-           pair."endpointBType" = 'GROUP'
-           AND pair."endpointBAccount" = group_state.account
-           AND pair."endpointBDomain" = 'local'
-           AND pair."endpointBNamespaceId" = ${namespaceId}
-           AND pair."endpointAType" = 'USER'
-           AND pair."endpointADomain" = ${peerDomain}
-           AND pair."endpointANamespaceId" = ${namespaceId}
-           AND intent."authorSide" = 'B'
-         )
-       )
+        ON intent."authorAccount" = pair."endpointAAccount"
+       AND intent."authorNamespaceId" = pair."endpointANamespaceId"
+       AND intent."receiverAccount" = pair."endpointBAccount"
+       AND intent."receiverNamespaceId" = pair."endpointBNamespaceId"
       LEFT JOIN "ThreadAudience" audience
         ON audience."threadId" = thread.id
        AND audience."targetDomain" = ${peerDomain}
@@ -117,29 +105,18 @@ export async function resolveAuthorizedFederationThreadInTx(
       JOIN "RelationshipPair" pair
         ON pair."threadId" = thread.id
        AND pair.kind = 'GROUP_MEMBER'
+       AND pair.active = true
+       AND pair."endpointAType" = 'USER'
+       AND pair."endpointAAccount" = local_identity.account
+       AND pair."endpointANamespaceId" = 0
+       AND pair."endpointBType" = 'GROUP'
+       AND pair."endpointBAccount" = group_state.account
+       AND pair."endpointBNamespaceId" = ${namespaceId}
       JOIN "RelationshipIntent" intent
-        ON intent."pairId" = pair.id
-       AND (
-         (pair."endpointAType" = 'GROUP'
-          AND pair."endpointAAccount" = group_state.account
-          AND pair."endpointADomain" = group_state.domain
-          AND pair."endpointANamespaceId" = ${namespaceId}
-          AND pair."endpointBType" = 'USER'
-          AND pair."endpointBAccount" = local_identity.account
-          AND pair."endpointBDomain" = 'local'
-          AND pair."endpointBNamespaceId" = ${namespaceId}
-          AND intent."authorSide" = 'B')
-         OR
-         (pair."endpointBType" = 'GROUP'
-          AND pair."endpointBAccount" = group_state.account
-          AND pair."endpointBDomain" = group_state.domain
-          AND pair."endpointBNamespaceId" = ${namespaceId}
-          AND pair."endpointAType" = 'USER'
-          AND pair."endpointAAccount" = local_identity.account
-          AND pair."endpointADomain" = 'local'
-          AND pair."endpointANamespaceId" = ${namespaceId}
-          AND intent."authorSide" = 'A')
-       )
+        ON intent."authorAccount" = pair."endpointBAccount"
+       AND intent."authorNamespaceId" = pair."endpointBNamespaceId"
+       AND intent."receiverAccount" = pair."endpointAAccount"
+       AND intent."receiverNamespaceId" = pair."endpointANamespaceId"
       WHERE thread.type = 'GROUP'
         AND group_state.account = ${selector.account}
         AND group_state.domain = ${peerDomain}
@@ -172,36 +149,17 @@ export async function resolveAuthorizedFederationThreadInTx(
           FROM "RelationshipPair" pair
           JOIN "MessageThread" thread ON thread.id = pair."threadId"
           JOIN "RelationshipIntent" intent
-            ON intent."pairId" = pair.id
-           AND (
-             (
-               pair."endpointAType" = 'USER'
-               AND pair."endpointAAccount" = ${selector.account}
-               AND pair."endpointADomain" = 'local'
-               AND pair."endpointANamespaceId" = ${namespaceId}
-               AND pair."endpointBType" = 'USER'
-               AND pair."endpointBAccount" = ${selector.peerAccount}
-               AND pair."endpointBDomain" = ${peerDomain}
-               AND pair."endpointBNamespaceId" = ${namespaceId}
-               AND intent."authorSide" = 'A'
-             ) OR (
-               pair."endpointBType" = 'USER'
-               AND pair."endpointBAccount" = ${selector.account}
-               AND pair."endpointBDomain" = 'local'
-               AND pair."endpointBNamespaceId" = ${namespaceId}
-               AND pair."endpointAType" = 'USER'
-               AND pair."endpointAAccount" = ${selector.peerAccount}
-               AND pair."endpointADomain" = ${peerDomain}
-               AND pair."endpointANamespaceId" = ${namespaceId}
-               AND intent."authorSide" = 'B'
-             )
-           )
+            ON intent."authorAccount" = pair."endpointAAccount"
+           AND intent."authorNamespaceId" = pair."endpointANamespaceId"
+           AND intent."receiverAccount" = pair."endpointBAccount"
+           AND intent."receiverNamespaceId" = pair."endpointBNamespaceId"
           LEFT JOIN "ThreadAudience" audience
             ON audience."threadId" = thread.id
            AND audience."targetDomain" = ${peerDomain}
            AND audience."targetNamespaceId" = ${namespaceId}
            AND audience."localUserId" IS NULL
           WHERE pair.kind = 'P2P'
+            AND pair.active = true
             AND thread.type = 'P2P'
             AND (
               intent.status = 'ACCEPTED'

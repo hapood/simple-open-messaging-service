@@ -41,19 +41,30 @@ export function groupMembershipStateSql(input: {
   threadId: number;
   pairId: bigint;
   actorUserId: number | null;
+  groupAccount: string;
+  /** The group endpoint's own namespace; 0 when the group is hosted here. */
+  groupNamespaceId: number;
   memberAccount: string;
   memberDomain: string;
   memberNamespaceId: number;
 }) {
+  const memberNamespaceId = sql`CASE WHEN ${input.memberDomain} = 'local'
+    THEN 0 ELSE ${input.memberNamespaceId} END`;
   return sql`
     WITH side_b AS MATERIALIZED (
       SELECT status, note, "profileRev", "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
-      WHERE "pairId" = ${input.pairId} AND "authorSide" = 'B'
+      WHERE "authorAccount" = ${input.memberAccount}
+        AND "authorNamespaceId" = ${memberNamespaceId}
+        AND "receiverAccount" = ${input.groupAccount}
+        AND "receiverNamespaceId" = ${input.groupNamespaceId}
     ), side_a AS MATERIALIZED (
       SELECT a.status, a.note, a."updatedAt", a."expiresAt"
       FROM "RelationshipIntent" a
-      WHERE a."pairId" = ${input.pairId} AND a."authorSide" = 'A'
+      WHERE a."authorAccount" = ${input.groupAccount}
+        AND a."authorNamespaceId" = ${input.groupNamespaceId}
+        AND a."receiverAccount" = ${input.memberAccount}
+        AND a."receiverNamespaceId" = ${memberNamespaceId}
     ), roster AS MATERIALIZED (
       SELECT * FROM "GroupMetaMemberFeed"
       WHERE "threadId" = ${input.threadId}
@@ -70,17 +81,22 @@ export function groupMembershipStateSql(input: {
       -- member's own pair is its already-reserved slot.
       SELECT COUNT(*)::integer AS "authorizedCount", COALESCE(BOOL_OR(
           pair."endpointBAccount" = ${input.memberAccount}
-          AND pair."endpointBDomain" = ${input.memberDomain}
+          AND pair."endpointBNamespaceId" = CASE
+            WHEN ${input.memberDomain} = 'local' THEN 0
+            ELSE ${input.memberNamespaceId} END
         ), false) AS "alreadyAuthorized"
       FROM ${groupStateSql} scope
       JOIN "RelationshipPair" pair ON pair.kind = 'GROUP_MEMBER'
         AND pair."threadId" = ${input.threadId}
         AND pair."endpointAType" = 'GROUP'
         AND pair."endpointAAccount" = scope.account
-        AND pair."endpointADomain" = scope.domain
+        AND pair."endpointANamespaceId" = 0
         AND pair."endpointBType" = 'USER'
-      JOIN "RelationshipIntent" slot_intent ON slot_intent."pairId" = pair.id
-        AND slot_intent."authorSide" = 'A'
+      JOIN "RelationshipIntent" slot_intent
+        ON slot_intent."authorAccount" = pair."endpointAAccount"
+          AND slot_intent."authorNamespaceId" = pair."endpointANamespaceId"
+          AND slot_intent."receiverAccount" = pair."endpointBAccount"
+          AND slot_intent."receiverNamespaceId" = pair."endpointBNamespaceId"
         AND (slot_intent.status = 'ACCEPTED' OR (slot_intent.status = 'REQUESTED'
           AND slot_intent."expiresAt" > CURRENT_TIMESTAMP))
       WHERE scope.id = ${input.threadId}

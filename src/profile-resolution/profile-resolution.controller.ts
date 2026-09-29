@@ -27,9 +27,9 @@ export class ProfileResolutionController {
   @ApiBody({
     schema: {
       type: 'object',
-      required: ['namespaceId', 'lookup', 'target'],
+      required: ['publisherNamespaceId', 'lookup', 'target'],
       properties: {
-        namespaceId: { type: 'integer', minimum: 0 },
+        publisherNamespaceId: { type: 'integer', minimum: 0 },
         lookup: {
           type: 'string',
           enum: [
@@ -56,7 +56,8 @@ export class ProfileResolutionController {
             profile: {
               type: 'object',
               required: [
-                'namespaceId',
+                'publisherNamespaceId',
+                'profileNamespaceId',
                 'account',
                 'domain',
                 'rev',
@@ -65,7 +66,8 @@ export class ProfileResolutionController {
                 'avatarBase64',
               ],
               properties: {
-                namespaceId: { type: 'integer', minimum: 0 },
+                publisherNamespaceId: { type: 'integer', minimum: 0 },
+                profileNamespaceId: { type: 'integer', minimum: 0 },
                 account: { type: 'string' },
                 domain: { type: 'string' },
                 rev: { type: 'integer', minimum: 1 },
@@ -85,9 +87,16 @@ export class ProfileResolutionController {
             status: { type: 'string', enum: ['PENDING'] },
             key: {
               type: 'object',
-              required: ['namespaceId', 'account', 'domain', 'rev'],
+              required: [
+                'publisherNamespaceId',
+                'profileNamespaceId',
+                'account',
+                'domain',
+                'rev',
+              ],
               properties: {
-                namespaceId: { type: 'integer', minimum: 0 },
+                publisherNamespaceId: { type: 'integer', minimum: 0 },
+                profileNamespaceId: { type: 'integer', minimum: 0 },
                 account: { type: 'string' },
                 domain: { type: 'string' },
                 rev: { type: 'integer', minimum: 1 },
@@ -115,15 +124,15 @@ export class ProfileResolutionController {
 function toProfileClientResolutionDemand(
   body: ProfileResolutionDto,
 ): ProfileClientResolutionDemand {
-  if (
-    (body.namespaceId === 0 && body.target.domain !== 'local') ||
-    (body.namespaceId !== 0 && body.target.domain === 'local')
-  )
+  if (!Number.isSafeInteger(body.target.profileNamespaceId))
+    throw new BadRequestException('profile demand has invalid profile namespace');
+  if (body.publisherNamespaceId === 0 && body.target.domain !== 'local')
     throw new BadRequestException(
-      'profile demand domain must use local for namespace 0 and a remote domain otherwise',
+      'local publisher profile demand must target the local domain',
     );
 
   const target = {
+    profileNamespaceId: body.target.profileNamespaceId,
     account: body.target.account,
     domain: body.target.domain,
     rev: body.target.rev,
@@ -131,20 +140,20 @@ function toProfileClientResolutionDemand(
   switch (body.lookup) {
     case 'ACCOUNT_PROFILE':
       return {
-        namespaceId: body.namespaceId,
+        publisherNamespaceId: body.publisherNamespaceId,
         lookup: ProfileLookup.ACCOUNT_PROFILE,
         target,
       };
     case 'RELATIONSHIP_INTENT_PROFILE':
       return {
-        namespaceId: body.namespaceId,
+        publisherNamespaceId: body.publisherNamespaceId,
         lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
         target,
         peerAccount: body.peerAccount!,
       };
     case 'GROUP_MEMBER_PROFILE':
       return {
-        namespaceId: body.namespaceId,
+        publisherNamespaceId: body.publisherNamespaceId,
         lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
         target,
         groupAccount: body.groupAccount!,

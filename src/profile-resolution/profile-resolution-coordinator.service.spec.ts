@@ -46,9 +46,10 @@ function createSubject(options?: {
 }
 
 const accountDemand = {
-  namespaceId: 7,
+  publisherNamespaceId: 7,
   lookup: ProfileLookup.ACCOUNT_PROFILE,
   target: {
+    profileNamespaceId: 12,
     account: 'alice',
     domain: 'member.test',
     rev: 4,
@@ -56,6 +57,7 @@ const accountDemand = {
 } as const;
 
 const wireProfile = {
+  namespaceId: 12,
   account: 'alice',
   domain: 'member.test',
   displayName: 'Alice',
@@ -90,7 +92,7 @@ describe('ProfileResolutionCoordinatorService', () => {
     profiles.getStoredProfile.mockResolvedValue(wireProfile);
 
     await subject['fetch'](
-      { namespaceId: 7, account: 'alice', domain: 'member.test', rev: 4 },
+      { publisherNamespaceId: 7, profileNamespaceId: 12, account: 'alice', domain: 'member.test', rev: 4 },
       accountDemand,
     );
 
@@ -98,6 +100,7 @@ describe('ProfileResolutionCoordinatorService', () => {
       'alice',
       4,
       'publisher.test',
+      12,
     );
     expect(profiles.materializeExactForeignProfile).toHaveBeenCalledWith(
       wireProfile,
@@ -111,14 +114,14 @@ describe('ProfileResolutionCoordinatorService', () => {
     profiles.fetchExactIntentProfile.mockResolvedValue(wireProfile);
     profiles.getStoredProfile.mockResolvedValue(wireProfile);
     const demand = {
-      namespaceId: 7,
+      publisherNamespaceId: 7,
       lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
       target: accountDemand.target,
       peerAccount: 'bob',
     } as const;
 
     await subject['fetch'](
-      { namespaceId: 7, account: 'alice', domain: 'member.test', rev: 4 },
+      { publisherNamespaceId: 7, profileNamespaceId: 12, account: 'alice', domain: 'member.test', rev: 4 },
       demand,
     );
 
@@ -127,6 +130,7 @@ describe('ProfileResolutionCoordinatorService', () => {
       'bob',
       4,
       'publisher.test',
+      12,
     );
   });
 
@@ -137,14 +141,14 @@ describe('ProfileResolutionCoordinatorService', () => {
     profiles.fetchExactGroupMemberProfile.mockResolvedValue(wireProfile);
     profiles.getStoredProfile.mockResolvedValue(wireProfile);
     const demand = {
-      namespaceId: 7,
+      publisherNamespaceId: 7,
       lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
       target: accountDemand.target,
       groupAccount: '!group',
     } as const;
 
     await subject['fetch'](
-      { namespaceId: 7, account: 'alice', domain: 'member.test', rev: 4 },
+      { publisherNamespaceId: 7, profileNamespaceId: 12, account: 'alice', domain: 'member.test', rev: 4 },
       demand,
     );
 
@@ -154,6 +158,7 @@ describe('ProfileResolutionCoordinatorService', () => {
       'alice',
       4,
       'group-origin.test',
+      12,
     );
   });
 
@@ -169,14 +174,59 @@ describe('ProfileResolutionCoordinatorService', () => {
     expect(query).toMatch(
       /pair\."endpointAAccount" = self\.account[\s\S]+pair\."endpointBAccount" = \$\d+/,
     );
-    expect(query).toMatch(
-      /pair\."endpointBAccount" = self\.account[\s\S]+pair\."endpointAAccount" = \$\d+/,
-    );
-    expect(query).toContain('message.seq > COALESCE(state."clearedSeq", 0)');
+    expect(query).toContain('message.seq > COALESCE(thread."clearedSeq", 0)');
     expect(query).toContain('message.seq <= state."messageEndSeq"');
-    expect(query).not.toContain('message."creatorNamespaceId"');
-    expect(query).not.toContain('message."localState"');
+    expect(query).toContain('message."sourceNamespaceId"');
+    expect(query).toContain('message."profileNamespaceId"');
+    expect(query).toContain('message."localState" = \'READY\'');
     expect(query).not.toContain('message."isDeleted"');
+  });
+
+  it('requires exact namespace/revision matches for local disclosure proofs', async () => {
+    const { subject, database } = createSubject();
+
+    await subject['authorizeGroupMemberDemand'](
+      3,
+      {
+        publisherNamespaceId: 7,
+        lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
+        target: accountDemand.target,
+        groupAccount: '!team',
+      },
+      'publisher.test',
+    );
+    let query = new PgDialect().sqlToQuery(
+      database.db.execute.mock.calls.at(-1)![0] as SQL,
+    ).sql;
+    expect(query).toContain("latest.body ->> 'profileNamespaceId'");
+    expect(query).toContain("latest.body ->> 'profileRev'");
+    expect(query).toContain('message."localState" = \'READY\'');
+    expect(query).not.toContain('message."isDeleted"');
+
+    await subject['authorizeIntentDemand'](3, {
+      publisherNamespaceId: 7,
+      lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
+      target: accountDemand.target,
+      peerAccount: 'bob',
+    });
+    query = new PgDialect().sqlToQuery(
+      database.db.execute.mock.calls.at(-1)![0] as SQL,
+    ).sql;
+    expect(query).toContain('intent."profileNamespaceId"');
+    expect(query).toContain('intent."profileRev"');
+    expect(query).toContain('pair."endpointAAccount" = self.account');
+    expect(query).toContain('pair."endpointANamespaceId" = 0');
+
+    await subject['authorizeAccountDemand'](3, {
+      ...accountDemand,
+      target: { ...accountDemand.target, account: '!team' },
+    });
+    query = new PgDialect().sqlToQuery(
+      database.db.execute.mock.calls.at(-1)![0] as SQL,
+    ).sql;
+    expect(query).toContain("latest.body ->> 'profileNamespaceId'");
+    expect(query).toContain("latest.body ->> 'profileRev'");
+    expect(query).toContain('thread."authorityNamespaceId"');
   });
 
   it('registers only the invoking session and deduplicates it per exact key', async () => {
@@ -237,8 +287,8 @@ describe('ProfileResolutionCoordinatorService', () => {
 
     await subject.resolveDemand({
       ...accountDemand,
-      namespaceId: 0,
-      target: { ...accountDemand.target, domain: 'local' },
+      publisherNamespaceId: 0,
+      target: { ...accountDemand.target, profileNamespaceId: 0, domain: 'local' },
     });
 
     expect(subject['pending'].size).toBe(0);
@@ -278,8 +328,8 @@ describe('ProfileResolutionCoordinatorService', () => {
     expect(order.indexOf('materialized')).toBeLessThan(order.indexOf('sse'));
     expect(order.indexOf('read-durable')).toBeLessThan(order.indexOf('sse'));
     expect(sse.onProfileAvailable.mock.calls).toEqual([
-      [41, { namespaceId: 7, account: 'alice', domain: 'member.test', rev: 4 }],
-      [42, { namespaceId: 7, account: 'alice', domain: 'member.test', rev: 4 }],
+      [41, { publisherNamespaceId: 7, profileNamespaceId: 12, account: 'alice', domain: 'member.test', rev: 4 }],
+      [42, { publisherNamespaceId: 7, profileNamespaceId: 12, account: 'alice', domain: 'member.test', rev: 4 }],
     ]);
   });
 
@@ -296,12 +346,13 @@ describe('ProfileResolutionCoordinatorService', () => {
     profiles.getStoredProfile.mockResolvedValue(wireProfile);
 
     await subject['fetch'](
-      { namespaceId: 7, account: 'alice', domain: 'member.test', rev: 4 },
+      { publisherNamespaceId: 7, profileNamespaceId: 12, account: 'alice', domain: 'member.test', rev: 4 },
       accountDemand,
     );
 
-    expect(subject['cache'].get('[7,"alice","member.test",4]')).toEqual({
-      namespaceId: 7,
+    expect(subject['cache'].get('[7,12,"alice","member.test",4]')).toEqual({
+      publisherNamespaceId: 7,
+      profileNamespaceId: 12,
       account: 'alice',
       domain: 'member.test',
       rev: 4,

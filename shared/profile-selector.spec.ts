@@ -3,7 +3,14 @@ import { isProfileSelector } from './profile-selector.js';
 
 describe('profile selector contract', () => {
   it.each([
-    { type: 'EXACT', account: 'alice', domain: 'local', rev: 1 },
+    {
+      type: 'EXACT',
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
+      account: 'alice',
+      domain: 'local',
+      rev: 1,
+    },
     { type: 'MESSAGE_AUTHOR', threadId: 1, messageSeq: 2, rev: 3 },
     {
       type: 'GROUP_META',

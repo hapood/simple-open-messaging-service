@@ -63,7 +63,7 @@ export async function applyDeltaMirrorMetaItemInTx(
   const previousFact = await readCurrentMirrorMemberOperationInTx(
     tx,
     mirror.threadId,
-    input.group.namespaceId,
+    input.group.publisherNamespaceId,
     input.item,
   );
   await applyMirrorMetaFactInTx(
@@ -146,11 +146,14 @@ export async function applyDeltaMirrorMetaItemInTx(
 function selectChangedMirrorMemberProfileDemand(
   group: DeltaMirrorMetaItemInput['group'],
   item: MirrorMetaReplicatedItem,
-  previousFact: { operation: string; profileRev: number | null } | undefined,
+  previousFact:
+    | { operation: string; profileNamespaceId: number | null; profileRev: number | null }
+    | undefined,
 ): ProfilePrefetchDemand | null {
   if (
     item.operation === 'MEMBER_UPSERT' &&
     previousFact?.operation === 'MEMBER_UPSERT' &&
+    previousFact.profileNamespaceId === item.profileNamespaceId &&
     previousFact.profileRev === item.profileRev
   )
     return null;
@@ -198,7 +201,10 @@ async function readCurrentMirrorMemberOperationInTx(
   threadId: number,
   namespaceId: number,
   item: MirrorMetaReplicatedItem,
-): Promise<{ operation: string; profileRev: number | null } | undefined> {
+): Promise<
+  | { operation: string; profileNamespaceId: number | null; profileRev: number | null }
+  | undefined
+> {
   if (
     item.operation === 'GROUP_PROFILE' ||
     item.operation === 'GROUP_ANNOUNCEMENT'
@@ -210,10 +216,14 @@ async function readCurrentMirrorMemberOperationInTx(
   );
   const previous = await tx.execute<{
     operation: string;
+    profileNamespaceId: number | null;
     profileRev: number | null;
   }>(sql`
-    SELECT operation, CASE WHEN operation = 'MEMBER_UPSERT'
-      THEN (body ->> 'profileRev')::integer ELSE NULL END AS "profileRev"
+    SELECT operation,
+      CASE WHEN operation = 'MEMBER_UPSERT'
+        THEN (body ->> 'profileNamespaceId')::integer ELSE NULL END AS "profileNamespaceId",
+      CASE WHEN operation = 'MEMBER_UPSERT'
+        THEN (body ->> 'profileRev')::integer ELSE NULL END AS "profileRev"
     FROM "GroupMetaMemberFeed"
     WHERE "threadId" = ${threadId} AND "memberAccount" = ${member.account}
       AND "memberDomain" = ${member.domain}
@@ -230,7 +240,9 @@ async function writeObservedMembershipTransitionInTx(
   threadId: number,
   group: MirrorGroupAddress,
   item: MirrorMetaReplicatedItem,
-  previousFact: { operation: string; profileRev: number | null } | undefined,
+  previousFact:
+    | { operation: string; profileNamespaceId: number | null; profileRev: number | null }
+    | undefined,
   deps: {
     threadLock: Awaited<
       ReturnType<typeof requireGroupThreadContentLockUnderGroupInTx>
@@ -250,7 +262,7 @@ async function writeObservedMembershipTransitionInTx(
     {
       account: item.account,
       domain: item.domain,
-      namespaceId: group.namespaceId,
+      namespaceId: group.publisherNamespaceId,
     },
     loadFederationConfig().domain,
   );
@@ -262,12 +274,18 @@ async function writeObservedMembershipTransitionInTx(
     previousFact?.operation === 'MEMBER_UPSERT';
   if (!joined && !left) return { transitioned: false };
   if (left && member.domain === 'local') return { transitioned: false };
+  const profileNamespaceId =
+    item.operation === 'MEMBER_UPSERT'
+      ? item.profileNamespaceId
+      : previousFact?.profileNamespaceId;
   const profileRev =
     item.operation === 'MEMBER_UPSERT'
       ? item.profileRev
       : previousFact?.profileRev;
   if (profileRev === null || profileRev === undefined)
     throw new Error('departing member has no previous profile revision');
+  if (profileRev > 0 && profileNamespaceId === null)
+    throw new Error('member profile revision has no profile namespace');
   const identity = await tx.execute<{ namespaceId: number }>(sql`
     SELECT group_meta_member_namespace(${threadId}, ${member.account},
       ${member.domain}) AS "namespaceId"
@@ -278,8 +296,8 @@ async function writeObservedMembershipTransitionInTx(
     const pair = await tx.execute<{ active: boolean }>(sql`
       SELECT active FROM "RelationshipPair"
       WHERE kind = 'GROUP_MEMBER' AND "threadId" = ${threadId}
-        AND "endpointBType" = 'USER' AND "endpointBAccount" = ${member.account}
-        AND "endpointBDomain" = 'local'
+        AND "endpointAType" = 'USER' AND "endpointAAccount" = ${member.account}
+        AND "endpointANamespaceId" = 0
       LIMIT 1
     `);
     const current = pair.rows[0];
@@ -299,7 +317,7 @@ async function writeObservedMembershipTransitionInTx(
         : SystemMessageType.GROUP_LEFT,
       member: {
         ...member,
-        namespaceId: identity.rows[0].namespaceId,
+        profileNamespaceId: profileNamespaceId ?? 0,
         profileRev,
       },
     },
@@ -310,14 +328,18 @@ async function writeObservedMembershipTransitionInTx(
       threadType: 'GROUP',
       threadId,
       seq: result.message.seq,
-      profileRev: result.message.profileRev,
-      creator: result.message.creator!,
+      publisherNamespaceId: group.publisherNamespaceId,
+      creator: {
+        account: result.message.creator!.account,
+        domain: result.message.creator!.domain,
+        profileNamespaceId: result.message.creator!.namespaceId,
+        profileRev: result.message.profileRev,
+      },
       contentType: result.message.contentType,
       content: result.message.content,
       isDeleted: result.message.isDeleted,
       localState: result.message.localState,
       groupAccount: group.account,
-      groupOriginDomain: group.domain,
     },
   ]);
   if (work.demands.length === 0 && work.evidenceProjections.length === 0)

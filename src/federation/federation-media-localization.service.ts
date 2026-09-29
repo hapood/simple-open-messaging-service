@@ -450,8 +450,6 @@ export class FederationMediaLocalizationService {
     const [pair] = await this.database.db
       .select({
         endpointAAccount: tables.relationshipPair.endpointAAccount,
-        endpointADomain: tables.relationshipPair.endpointADomain,
-        endpointANamespaceId: tables.relationshipPair.endpointANamespaceId,
         endpointBAccount: tables.relationshipPair.endpointBAccount,
       })
       .from(tables.relationshipPair)
@@ -460,26 +458,20 @@ export class FederationMediaLocalizationService {
           eq(tables.relationshipPair.threadId, threadId),
           eq(tables.relationshipPair.kind, 'P2P'),
           eq(tables.relationshipPair.active, true),
-          or(
-            and(
-              eq(tables.relationshipPair.endpointAType, 'USER'),
-              eq(tables.relationshipPair.endpointAAccount, creatorAccount),
-              eq(tables.relationshipPair.endpointADomain, creatorDomain),
-              eq(
-                tables.relationshipPair.endpointANamespaceId,
-                authorNamespaceId,
+          authorNamespaceId === 0
+            ? and(
+                eq(tables.relationshipPair.endpointAType, 'USER'),
+                eq(tables.relationshipPair.endpointAAccount, creatorAccount),
+                eq(tables.relationshipPair.endpointBNamespaceId, 0),
+              )
+            : and(
+                eq(tables.relationshipPair.endpointBType, 'USER'),
+                eq(tables.relationshipPair.endpointBAccount, creatorAccount),
+                eq(
+                  tables.relationshipPair.endpointBNamespaceId,
+                  authorNamespaceId,
+                ),
               ),
-            ),
-            and(
-              eq(tables.relationshipPair.endpointBType, 'USER'),
-              eq(tables.relationshipPair.endpointBAccount, creatorAccount),
-              eq(tables.relationshipPair.endpointBDomain, creatorDomain),
-              eq(
-                tables.relationshipPair.endpointBNamespaceId,
-                authorNamespaceId,
-              ),
-            ),
-          ),
         ),
       )
       .limit(1);
@@ -491,11 +483,7 @@ export class FederationMediaLocalizationService {
     }
     return {
       toAccount:
-        pair.endpointAAccount === creatorAccount &&
-        pair.endpointADomain === creatorDomain &&
-        pair.endpointANamespaceId === authorNamespaceId
-          ? pair.endpointBAccount
-          : pair.endpointAAccount,
+        authorNamespaceId === 0 ? pair.endpointBAccount : pair.endpointAAccount,
       peerDomain: creatorDomain,
     };
   }

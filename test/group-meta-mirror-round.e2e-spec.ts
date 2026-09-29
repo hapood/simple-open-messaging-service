@@ -73,7 +73,8 @@ describe('mirror Group Meta rounds', () => {
     await database.db.insert(profileTable).values({
       account: localMemberAccount,
       domain: 'local',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       profileRev: 1,
       displayName: 'Local member',
     });
@@ -93,14 +94,12 @@ describe('mirror Group Meta rounds', () => {
     // third-party transitions notify the current local authorized roster.
     await database.db.insert(relationshipPair).values({
       kind: 'GROUP_MEMBER',
-      endpointAType: 'GROUP',
-      endpointAAccount: groupAccount,
-      endpointADomain: originDomain,
-      endpointANamespaceId: originNamespaceId,
-      endpointBType: 'USER',
-      endpointBAccount: localMemberAccount,
-      endpointBDomain: 'local',
-      endpointBNamespaceId: 0,
+      endpointAType: 'USER',
+      endpointAAccount: localMemberAccount,
+      endpointANamespaceId: 0,
+      endpointBType: 'GROUP',
+      endpointBAccount: groupAccount,
+      endpointBNamespaceId: originNamespaceId,
       threadId,
       active: true,
       established: true,

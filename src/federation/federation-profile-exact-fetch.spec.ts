@@ -5,7 +5,7 @@ import { S2sResponseError } from './federation-errors.js';
 
 const evidence = {
   account: 'alice',
-  domain: 'member.example',
+  domain: 'local',
   displayName: 'Alice',
   bio: '',
   avatar: null,
@@ -63,7 +63,7 @@ describe('exact signed profile operations', () => {
       'group.example',
     );
     expect(get).toHaveBeenCalledWith(
-      '/s2s/v1/group-member-profiles/%21group/0/alice/member.example/4',
+      '/s2s/v1/group-member-profiles/%21group/0/alice/local/4',
       'group.example',
       expect.any(Number),
     );
@@ -94,7 +94,7 @@ describe('exact signed profile operations', () => {
     const { get, profiles } = target();
     for (const body of [
       { ...evidence, account: 'other' },
-      { ...evidence, domain: 'group.example' },
+      { ...evidence, domain: 'member.example' },
       { ...evidence, namespaceId: 0 },
       { ...evidence, profileRev: 9 },
       { ...evidence, displayName: '' },

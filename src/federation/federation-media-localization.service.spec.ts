@@ -66,8 +66,6 @@ describe('FederationMediaLocalizationService', () => {
     const pairLimit = vi.fn().mockResolvedValue([
       {
         endpointAAccount: 'alice',
-        endpointADomain: 'peer.example',
-        endpointANamespaceId: 4,
         endpointBAccount: 'alice',
       },
     ]);

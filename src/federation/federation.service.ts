@@ -230,7 +230,6 @@ export class FederationService {
     const result = await this.database.db.transaction(async (tx) => {
       const expired = await tx.execute<{
         pairId: string;
-        authorSide: 'A' | 'B';
         kind: 'P2P' | 'GROUP_MEMBER';
         authorAccount: string;
         authorDomain: string;
@@ -242,26 +241,30 @@ export class FederationService {
         profileNamespaceId: number;
         profileRev: number;
       }>(sql`
-        SELECT intent."pairId", intent."authorSide", intent."profileNamespaceId", intent."profileRev", pair.kind, pair."threadId",
-          CASE WHEN intent."authorSide" = 'A' THEN pair."endpointAAccount"
-            ELSE pair."endpointBAccount" END AS "authorAccount",
-          CASE WHEN intent."authorSide" = 'A' THEN pair."endpointADomain"
-            ELSE pair."endpointBDomain" END AS "authorDomain",
-          CASE WHEN intent."authorSide" = 'A' THEN pair."endpointANamespaceId"
-            ELSE pair."endpointBNamespaceId" END AS "authorNamespaceId",
-          CASE WHEN intent."authorSide" = 'A' THEN pair."endpointBAccount"
-            ELSE pair."endpointAAccount" END AS "subjectAccount",
-          CASE WHEN intent."authorSide" = 'A' THEN pair."endpointBDomain"
-            ELSE pair."endpointADomain" END AS "subjectDomain",
-          CASE WHEN intent."authorSide" = 'A' THEN pair."endpointBNamespaceId"
-            ELSE pair."endpointANamespaceId" END AS "subjectNamespaceId"
+        SELECT pair.id::text AS "pairId", pair.kind, pair."threadId",
+          intent."authorAccount", intent."authorNamespaceId",
+          ans.domain AS "authorDomain",
+          intent."receiverAccount" AS "subjectAccount",
+          intent."receiverNamespaceId" AS "subjectNamespaceId",
+          sns.domain AS "subjectDomain",
+          intent."profileNamespaceId", intent."profileRev"
         FROM "RelationshipIntent" intent
-        JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
-        WHERE (CASE WHEN intent."authorSide" = 'A'
-            THEN pair."endpointADomain" ELSE pair."endpointBDomain" END) = 'local'
+        JOIN "RelationshipPair" pair
+          ON (pair."endpointAAccount" = intent."authorAccount"
+              AND pair."endpointANamespaceId" = intent."authorNamespaceId"
+              AND pair."endpointBAccount" = intent."receiverAccount"
+              AND pair."endpointBNamespaceId" = intent."receiverNamespaceId")
+            OR (pair."endpointBAccount" = intent."authorAccount"
+              AND pair."endpointBNamespaceId" = intent."authorNamespaceId"
+              AND pair."endpointAAccount" = intent."receiverAccount"
+              AND pair."endpointANamespaceId" = intent."receiverNamespaceId")
+        JOIN "IdentityNamespace" ans ON ans.id = intent."authorNamespaceId"
+        JOIN "IdentityNamespace" sns ON sns.id = intent."receiverNamespaceId"
+        WHERE ans.domain = 'local'
           AND intent.status = 'REQUESTED'
           AND intent."expiresAt" <= CURRENT_TIMESTAMP
-        ORDER BY intent."expiresAt", intent."pairId", intent."authorSide"
+        ORDER BY intent."expiresAt", intent."authorAccount", intent."authorNamespaceId",
+          intent."receiverAccount", intent."receiverNamespaceId"
       `);
       const businessAddresses: BusinessScopeAddress[] = [];
       for (const request of expired.rows) {
@@ -277,8 +280,9 @@ export class FederationService {
             },
           );
         } else {
+          const groupIsAuthor = request.authorAccount.startsWith('!');
           businessAddresses.push(
-            request.authorSide === 'A'
+            groupIsAuthor
               ? {
                   account: request.authorAccount,
                   domain: request.authorDomain,
@@ -312,26 +316,29 @@ export class FederationService {
           UPDATE "RelationshipIntent"
           SET status = 'REVOKED', note = '', "requestedAt" = NULL,
             "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
-          WHERE "pairId" = ${pairId}
-            AND "authorSide" = ${request.authorSide}
+          WHERE "authorAccount" = ${request.authorAccount}
+            AND "authorNamespaceId" = ${request.authorNamespaceId}
+            AND "receiverAccount" = ${request.subjectAccount}
+            AND "receiverNamespaceId" = ${request.subjectNamespaceId}
             AND status = 'REQUESTED' AND "expiresAt" <= CURRENT_TIMESTAMP
           RETURNING 1
         `);
         if ((updated.rowCount ?? 0) === 0) continue;
         count += 1;
         if (request.kind === 'GROUP_MEMBER' && request.threadId !== null) {
+          const groupIsAuthor = request.authorAccount.startsWith('!');
           const groupState = await readGroupState(
             tx,
             and(
               eq(
                 groupStateFields.account,
-                request.authorSide === 'A'
+                groupIsAuthor
                   ? request.authorAccount
                   : request.subjectAccount,
               ),
               eq(
                 groupStateFields.domain,
-                request.authorSide === 'A'
+                groupIsAuthor
                   ? request.authorDomain
                   : request.subjectDomain,
               ),
@@ -339,18 +346,15 @@ export class FederationService {
           );
           const member = toClientIdentity(
             {
-              account:
-                request.authorSide === 'B'
-                  ? request.authorAccount
-                  : request.subjectAccount,
-              domain:
-                request.authorSide === 'B'
-                  ? request.authorDomain
-                  : request.subjectDomain,
-              namespaceId:
-                request.authorSide === 'B'
-                  ? request.authorNamespaceId
-                  : request.subjectNamespaceId,
+              account: groupIsAuthor
+                ? request.subjectAccount
+                : request.authorAccount,
+              domain: groupIsAuthor
+                ? request.subjectDomain
+                : request.authorDomain,
+              namespaceId: groupIsAuthor
+                ? request.subjectNamespaceId
+                : request.authorNamespaceId,
             },
             this.config.domain,
           );
@@ -369,7 +373,7 @@ export class FederationService {
               request.threadId,
               member,
               'EXPIRED',
-              request.authorSide === 'A' ? 'INVITATION' : 'APPLICATION',
+              groupIsAuthor ? 'INVITATION' : 'APPLICATION',
               false,
             );
           const [localMember] = await localAccountsForTargetsInTx(tx, [member]);

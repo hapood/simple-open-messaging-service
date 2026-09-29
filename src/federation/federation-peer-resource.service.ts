@@ -50,30 +50,21 @@ function currentThreadResourceAuthorizationSql(
       JOIN "RelationshipPair" pair
         ON pair."threadId" = mirror_thread.id
        AND pair.kind = 'GROUP_MEMBER'
+       AND pair."endpointAType" = 'USER'
+       AND pair."endpointAAccount" = local_identity.account
+       AND pair."endpointANamespaceId" = 0
+       AND pair."endpointBType" = 'GROUP'
+       AND pair."endpointBAccount" = mirror_group.account
+       AND pair."endpointBNamespaceId" = ${signerNamespaceId}
       JOIN "RelationshipIntent" intent
-        ON intent."pairId" = pair.id
-       AND ((pair."endpointAType" = 'GROUP'
-             AND pair."endpointAAccount" = mirror_group.account
-             AND pair."endpointADomain" = mirror_group.domain
-             AND pair."endpointANamespaceId" = ${signerNamespaceId}
-             AND pair."endpointBType" = 'USER'
-             AND pair."endpointBAccount" = local_identity.account
-             AND pair."endpointBDomain" = 'local'
-             AND pair."endpointBNamespaceId" = ${signerNamespaceId}
-             AND intent."authorSide" = 'B')
-         OR (pair."endpointBType" = 'GROUP'
-             AND pair."endpointBAccount" = mirror_group.account
-             AND pair."endpointBDomain" = mirror_group.domain
-             AND pair."endpointBNamespaceId" = ${signerNamespaceId}
-             AND pair."endpointAType" = 'USER'
-             AND pair."endpointAAccount" = local_identity.account
-             AND pair."endpointADomain" = 'local'
-             AND pair."endpointANamespaceId" = ${signerNamespaceId}
-             AND intent."authorSide" = 'A'))
+        ON intent."authorAccount" = pair."endpointAAccount"
+       AND intent."authorNamespaceId" = pair."endpointANamespaceId"
+       AND intent."receiverAccount" = pair."endpointBAccount"
+       AND intent."receiverNamespaceId" = pair."endpointBNamespaceId"
       WHERE mirror_thread.id = ${threadId}
         AND mirror_thread.type = 'GROUP'
         AND mirror_group.domain = ${signerDomain}
-        AND mirror_group."namespaceId" = ${signerNamespaceId}
+        AND mirror_group."profileNamespaceId" = ${signerNamespaceId}
         AND (intent.status = 'ACCEPTED'
           OR (intent.status = 'REQUESTED'
             AND intent."expiresAt" > CURRENT_TIMESTAMP))
@@ -299,32 +290,12 @@ export class FederationPeerResourceService {
         and(
           eq(tables.relationshipPair.threadId, threadId),
           eq(tables.relationshipPair.kind, 'P2P'),
-          or(
-            and(
-              eq(tables.relationshipPair.endpointAType, 'USER'),
-              eq(
-                tables.relationshipPair.endpointAAccount,
-                normalizeAccount(toAccount),
-              ),
-              eq(tables.relationshipPair.endpointADomain, signerDomain),
-              eq(
-                tables.relationshipPair.endpointANamespaceId,
-                signerNamespaceId,
-              ),
-            ),
-            and(
-              eq(tables.relationshipPair.endpointBType, 'USER'),
-              eq(
-                tables.relationshipPair.endpointBAccount,
-                normalizeAccount(toAccount),
-              ),
-              eq(tables.relationshipPair.endpointBDomain, signerDomain),
-              eq(
-                tables.relationshipPair.endpointBNamespaceId,
-                signerNamespaceId,
-              ),
-            ),
+          eq(tables.relationshipPair.endpointBType, 'USER'),
+          eq(
+            tables.relationshipPair.endpointBAccount,
+            normalizeAccount(toAccount),
           ),
+          eq(tables.relationshipPair.endpointBNamespaceId, signerNamespaceId),
         ),
       )
       .limit(1);

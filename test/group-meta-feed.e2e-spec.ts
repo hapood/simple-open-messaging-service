@@ -74,7 +74,8 @@ describe('canonical Group Meta feed', () => {
     await database.db.insert(profileTable).values({
       account: ownerAccount,
       domain: 'local',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       profileRev: 1,
       displayName: 'Owner',
     });
@@ -98,11 +99,9 @@ describe('canonical Group Meta feed', () => {
       kind: 'GROUP_MEMBER',
       endpointAType: 'GROUP',
       endpointAAccount: groupAccount,
-      endpointADomain: 'local',
       endpointANamespaceId: 0,
       endpointBType: 'USER',
       endpointBAccount: ownerAccount,
-      endpointBDomain: 'local',
       endpointBNamespaceId: 0,
       threadId,
       active: true,
@@ -149,11 +148,9 @@ describe('canonical Group Meta feed', () => {
         kind: 'GROUP_MEMBER',
         endpointAType: 'GROUP',
         endpointAAccount: groupAccount,
-        endpointADomain: 'local',
-        endpointANamespaceId: namespaceId,
+        endpointANamespaceId: 0,
         endpointBType: 'USER',
         endpointBAccount: remoteAccount,
-        endpointBDomain: domain,
         endpointBNamespaceId: namespaceId,
         threadId,
         active: true,
@@ -161,10 +158,12 @@ describe('canonical Group Meta feed', () => {
       })
       .returning({ id: relationshipPair.id });
     await database.db.insert(relationshipIntent).values({
-      pairId: pair.id,
+      authorAccount: groupAccount,
+      authorNamespaceId: 0,
+      receiverAccount: remoteAccount,
+      receiverNamespaceId: namespaceId,
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      authorSide: 'A',
       status: 'ACCEPTED',
       profileRev: 1,
       note: '',
@@ -189,7 +188,8 @@ describe('canonical Group Meta feed', () => {
       [1, 2, 3].map((profileRev) => ({
         account: groupAccount,
         domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev,
         displayName: `Group revision ${profileRev}`,
         avatar: '',
@@ -239,7 +239,7 @@ describe('canonical Group Meta feed', () => {
           and(
             eq(profileTable.account, groupAccount),
             eq(profileTable.domain, 'local'),
-            eq(profileTable.namespaceId, 0),
+            eq(profileTable.profileNamespaceId, 0),
           ),
         );
     }

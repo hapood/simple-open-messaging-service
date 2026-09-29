@@ -17,15 +17,19 @@ describe('group presentation joins', () => {
         and(
           eq(profileTable.account, groupStateFields.account),
           eq(profileTable.domain, groupStateFields.domain),
-          eq(profileTable.namespaceId, groupStateFields.namespaceId),
+          eq(profileTable.publisherNamespaceId, 0),
+          eq(profileTable.profileNamespaceId, groupStateFields.namespaceId),
           eq(profileTable.profileRev, groupStateFields.profileRev),
         ),
       )
       .toSQL();
-    for (const field of ['account', 'domain', 'namespaceId', 'profileRev']) {
+    for (const field of ['account', 'domain', 'profileNamespaceId', 'profileRev']) {
       expect(query.sql).toContain(
-        `"Profile"."${field}" = "group_state"."${field}"`,
+        field === 'profileNamespaceId'
+          ? '"Profile"."profileNamespaceId" = "group_state"."namespaceId"'
+          : `"Profile"."${field}" = "group_state"."${field}"`,
       );
     }
+    expect(query.sql).toContain('"Profile"."publisherNamespaceId" = $3');
   });
 });

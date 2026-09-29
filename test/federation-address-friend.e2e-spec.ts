@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import {
   messageThread,
   clientStateFeed,
@@ -116,6 +116,11 @@ describe('federated Address friend requests', () => {
       .limit(1);
     expect(requesterShell).toBeDefined();
 
+    const aliceNamespaceOnB = (
+      await appB.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.domain, FED_DOMAIN_A),
+      })
+    )!;
     const incoming = await vi.waitFor(
       async () => {
         const rows = await appB.database.execute<{
@@ -124,18 +129,11 @@ describe('federated Address friend requests', () => {
         }>(sql`
           SELECT intent."requestedAt", intent."expiresAt"
           FROM "RelationshipIntent" intent
-          JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
-          WHERE pair.kind = 'P2P' AND intent.status = 'REQUESTED'
-            AND ((intent."authorSide" = 'A'
-                AND pair."endpointAAccount" = 'address-alice'
-                AND pair."endpointADomain" = ${FED_DOMAIN_A}
-                AND pair."endpointBAccount" = 'address-bob'
-                AND pair."endpointBDomain" = 'local')
-              OR (intent."authorSide" = 'B'
-                AND pair."endpointBAccount" = 'address-alice'
-                AND pair."endpointBDomain" = ${FED_DOMAIN_A}
-                AND pair."endpointAAccount" = 'address-bob'
-                AND pair."endpointADomain" = 'local'))
+          WHERE intent.status = 'REQUESTED'
+            AND intent."authorAccount" = 'address-alice'
+            AND intent."authorNamespaceId" = ${aliceNamespaceOnB.id}
+            AND intent."receiverAccount" = 'address-bob'
+            AND intent."receiverNamespaceId" = 0
           LIMIT 1
         `);
         const row = rows.rows[0];
@@ -235,10 +233,7 @@ describe('federated Address friend requests', () => {
           },
         );
         expect(acceptingSideNotice).toBeDefined();
-        const remoteNamespaceId =
-          pairB!.endpointADomain === FED_DOMAIN_A
-            ? pairB!.endpointANamespaceId
-            : pairB!.endpointBNamespaceId;
+        const remoteNamespaceId = pairB!.endpointBNamespaceId;
         expect(JSON.parse(acceptingSideNotice!.content).participants).toEqual(
           expect.arrayContaining([
             {
@@ -303,8 +298,10 @@ describe('federated Address friend requests', () => {
     const readRequest = () =>
       appA.database.query.relationshipIntent.findFirst({
         where: and(
-          eq(relationshipIntent.pairId, relationship.pair!.id),
-          eq(relationshipIntent.authorSide, relationship.firstSide),
+          eq(relationshipIntent.authorAccount, relationship.firstEndpoint.account),
+          eq(relationshipIntent.authorNamespaceId, relationship.firstEndpoint.namespaceId),
+          eq(relationshipIntent.receiverAccount, relationship.secondEndpoint.account),
+          eq(relationshipIntent.receiverNamespaceId, relationship.secondEndpoint.namespaceId),
         ),
       });
     const before = await readRequest();
@@ -355,8 +352,10 @@ describe('federated Address friend requests', () => {
       expect(mirrored.pair).toBeDefined();
       return await appB.database.query.relationshipIntent.findFirst({
         where: and(
-          eq(relationshipIntent.pairId, mirrored.pair!.id),
-          eq(relationshipIntent.authorSide, mirrored.secondSide),
+          eq(relationshipIntent.authorAccount, mirrored.secondEndpoint.account),
+          eq(relationshipIntent.authorNamespaceId, mirrored.secondEndpoint.namespaceId),
+          eq(relationshipIntent.receiverAccount, mirrored.firstEndpoint.account),
+          eq(relationshipIntent.receiverNamespaceId, mirrored.firstEndpoint.namespaceId),
         ),
       });
     };
@@ -617,7 +616,20 @@ describe('federated Address friend requests', () => {
         );
         expect(relationship.pair?.active).toBe(false);
         const intents = await appB.database.query.relationshipIntent.findMany({
-          where: eq(relationshipIntent.pairId, relationship.pair!.id),
+          where: or(
+            and(
+              eq(relationshipIntent.authorAccount, relationship.groupEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, relationship.groupEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, relationship.memberEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, relationship.memberEndpoint.namespaceId),
+            ),
+            and(
+              eq(relationshipIntent.authorAccount, relationship.memberEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, relationship.memberEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, relationship.groupEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, relationship.groupEndpoint.namespaceId),
+            ),
+          ),
         });
         expect(intents).toHaveLength(2);
         expect(intents.every((intent) => intent.status === 'REVOKED')).toBe(
@@ -672,7 +684,20 @@ describe('federated Address friend requests', () => {
           namespaceId: nsOnA.id,
         });
         const intents = await appA.database.query.relationshipIntent.findMany({
-          where: eq(relationshipIntent.pairId, relation.pair!.id),
+          where: or(
+            and(
+              eq(relationshipIntent.authorAccount, relation.firstEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, relation.firstEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, relation.secondEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, relation.secondEndpoint.namespaceId),
+            ),
+            and(
+              eq(relationshipIntent.authorAccount, relation.secondEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, relation.secondEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, relation.firstEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, relation.firstEndpoint.namespaceId),
+            ),
+          ),
         });
         // The composed revocation already revoked both directions when the
         // request answered, so the peer's reverse lands as a convergence no-op:
@@ -709,8 +734,10 @@ describe('federated Address friend requests', () => {
         expect(
           await appB.database.query.relationshipIntent.findFirst({
             where: and(
-              eq(relationshipIntent.pairId, rel.pair!.id),
-              eq(relationshipIntent.authorSide, rel.secondSide),
+              eq(relationshipIntent.authorAccount, rel.secondEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, rel.secondEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, rel.firstEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, rel.firstEndpoint.namespaceId),
             ),
           }),
         ).toMatchObject({ status: 'REQUESTED' });

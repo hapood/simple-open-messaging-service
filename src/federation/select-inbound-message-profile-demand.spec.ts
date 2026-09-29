@@ -15,8 +15,14 @@ const stored = {
   seq: 70,
 } as Message;
 
-function item(thread: FederationMessageFeedMessage['thread']) {
-  return { thread } as FederationMessageFeedMessage;
+function item(
+  thread: FederationMessageFeedMessage['thread'],
+  profileNamespaceId = 12,
+) {
+  return {
+    namespaceId: profileNamespaceId,
+    thread,
+  } as FederationMessageFeedMessage;
 }
 
 describe('selectInboundMessageProfileDemand', () => {
@@ -26,11 +32,13 @@ describe('selectInboundMessageProfileDemand', () => {
         item({ account: 'alice', peerAccount: 'bob' }),
         stored,
         7,
+        12,
       ),
     ).toEqual({
-      namespaceId: 7,
+      publisherNamespaceId: 7,
       lookup: 'ACCOUNT_PROFILE',
       target: {
+        profileNamespaceId: 12,
         account: 'alice',
         domain: 'member.test',
         rev: 4,
@@ -40,11 +48,17 @@ describe('selectInboundMessageProfileDemand', () => {
 
   it('selects GROUP_MEMBER_PROFILE from the group-account prefix', () => {
     expect(
-      selectInboundMessageProfileDemand(item({ account: '!GROUP' }), stored, 7),
+      selectInboundMessageProfileDemand(
+        item({ account: '!GROUP' }),
+        stored,
+        7,
+        12,
+      ),
     ).toEqual({
-      namespaceId: 7,
+      publisherNamespaceId: 7,
       lookup: 'GROUP_MEMBER_PROFILE',
       target: {
+        profileNamespaceId: 12,
         account: 'alice',
         domain: 'member.test',
         rev: 4,
@@ -59,10 +73,12 @@ describe('selectInboundMessageProfileDemand', () => {
         item({ account: 'alice', peerAccount: 'bob' }),
         stored,
         7,
+        12,
       ),
     ).toEqual({
       profile: {
-        namespaceId: 7,
+        publisherNamespaceId: 7,
+        profileNamespaceId: 12,
         account: 'alice',
         domain: 'member.test',
         rev: 4,
@@ -78,10 +94,12 @@ describe('selectInboundMessageProfileDemand', () => {
         item({ account: '!GROUP' }),
         stored,
         7,
+        12,
       ),
     ).toEqual({
       profile: {
-        namespaceId: 7,
+        publisherNamespaceId: 7,
+        profileNamespaceId: 12,
         account: 'alice',
         domain: 'member.test',
         rev: 4,
@@ -92,26 +110,45 @@ describe('selectInboundMessageProfileDemand', () => {
     });
   });
 
+  it('keeps a remote profile namespace zero distinct from its publisher', () => {
+    expect(
+      selectInboundMessageProfileDemand(
+        item({ account: 'alice', peerAccount: 'bob' }, 0),
+        stored,
+        7,
+        0,
+      ),
+    ).toMatchObject({
+      publisherNamespaceId: 7,
+      target: { profileNamespaceId: 0 },
+    });
+  });
+
   it.each([
-    ['namespace zero', stored, 0],
+    ['publisher namespace zero', stored, 0],
     ['local creator', { ...stored, creatorDomain: 'local' }, 7],
     ['zero revision', { ...stored, profileRev: 0 }, 7],
     ['deleted message', { ...stored, isDeleted: true }, 7],
-  ])('does not create demand or evidence for %s', (_label, message, namespaceId) => {
-    const thread = item({ account: 'alice', peerAccount: 'bob' });
-    expect(
-      selectInboundMessageProfileDemand(
-        thread,
-        message as Message,
-        namespaceId as number,
-      ),
-    ).toBeUndefined();
-    expect(
-      selectInboundMessageProfileEvidenceProjection(
-        thread,
-        message as Message,
-        namespaceId as number,
-      ),
-    ).toBeUndefined();
-  });
+  ])(
+    'does not create demand or evidence for %s',
+    (_label, message, namespaceId) => {
+      const thread = item({ account: 'alice', peerAccount: 'bob' });
+      expect(
+        selectInboundMessageProfileDemand(
+          thread,
+          message as Message,
+          namespaceId as number,
+          12,
+        ),
+      ).toBeUndefined();
+      expect(
+        selectInboundMessageProfileEvidenceProjection(
+          thread,
+          message as Message,
+          namespaceId as number,
+          12,
+        ),
+      ).toBeUndefined();
+    },
+  );
 });

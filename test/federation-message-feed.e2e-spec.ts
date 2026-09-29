@@ -220,7 +220,7 @@ describe('FederationMessageFeedService thread query', () => {
               }),
               creatorAccount: '$system',
               creatorDomain: 'local',
-              creatorNamespaceId: 0,
+              profileNamespaceId: 0,
               sourceNamespaceId: 0,
               profileRev: 0,
             })

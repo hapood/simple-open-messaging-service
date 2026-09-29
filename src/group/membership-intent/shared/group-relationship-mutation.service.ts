@@ -25,7 +25,10 @@ import {
   RelationshipService,
   type FederatedPendingProfileSnapshot,
 } from '../../../relationship/relationship.service.js';
-import { RelationshipIntentService } from '../../../relationship/relationship-intent.service.js';
+import {
+  buildIntentDirection,
+  RelationshipIntentService,
+} from '../../../relationship/relationship-intent.service.js';
 import { loadFederationConfig } from '../../../federation/federation.config.js';
 import { FederationGroupRequestProjectionService } from '../../../federation/federation-group-request-projection.service.js';
 import { GroupRelationshipFoldService } from './group-relationship-fold.service.js';
@@ -148,9 +151,9 @@ export class GroupRelationshipMutationService {
     );
     const member = await tx.query.account.findFirst({
       where: eq(tables.account.id, memberUserId),
-      columns: { account: true, domain: true },
+      columns: { account: true, namespaceId: true },
     });
-    if (!group || !member || member.domain !== 'local')
+    if (!group || !member || member.namespaceId !== 0)
       throw new Error('group join identities are invalid');
     if (
       expectedAuthorization &&
@@ -165,16 +168,22 @@ export class GroupRelationshipMutationService {
       { name: group.name, avatar: group.avatar },
       groupSnapshot,
     );
+    const memberDirection = buildIntentDirection(
+      member,
+      group,
+    );
     const membership =
       await this.groupRelationships.writeLockedAuthoredIntentInTx(tx, {
         threadId,
         groupId: thread.groupId,
         memberUserId,
         pairId: 'pairId' in locked ? locked.pairId : locked.id,
-        memberDomain: member.domain,
+        memberLocal: member.namespaceId === 0,
+        memberDirection,
+        direction: memberDirection,
         threadLock: locked.threadLock,
         author: 'MEMBER',
-        hostedLocally: group.domain === 'local',
+        hostedLocally: group.namespaceId === 0,
         status,
         note,
         expiresAt:
@@ -282,6 +291,7 @@ export class GroupRelationshipMutationService {
       eventType: 'RELATIONSHIP_INTENT',
       body: {
         status: membership.request.status,
+        namespaceId: 0,
         profileRev: membership.request.profileRev,
         note: membership.request.note,
         messageEndSeq: membership.request.messageEndSeq,
@@ -493,6 +503,7 @@ export class GroupRelationshipMutationService {
       eventType: 'RELATIONSHIP_INTENT',
       body: {
         status: membership.request.status,
+        namespaceId: 0,
         profileRev: membership.request.profileRev,
         note: membership.request.note,
         messageEndSeq: membership.request.messageEndSeq,

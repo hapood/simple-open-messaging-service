@@ -6,7 +6,7 @@ import {
   clientIntentFeedWriteSql,
   peerIntentFeedWriteSql,
 } from '../../../common/sql/relationship-intent-recipient-feed-sql.js';
-import { toFederationWireDomain } from '../../../federation/federation-wire-domain.js';
+import { isGroupAccount } from '../../../common/account.js';
 
 export interface GroupMembershipRevocationInput {
   threadId: number;
@@ -24,9 +24,11 @@ export interface GroupMembershipRevocationInput {
   localMemberId: number | null;
   /** Existing non-REVOKED projection directions for this member, from authorization. */
   projectionDirections: readonly ('APPLICATION' | 'INVITATION')[];
-  /** The group's own decision authors side A; the member's self-authored
-   * withdrawal, invitation decline, and leave author side B. */
-  authorSide: 'A' | 'B';
+  /** The REVOKED decision's author coordinates; the receiver is the other
+   * endpoint. The `!` sigil distinguishes the group endpoint from the member,
+   * so both the direction and the role derive from these two identities. */
+  author: { account: string; namespaceId: number };
+  receiver: { account: string; namespaceId: number };
   /** Alternate validated writer used by received peer intents: the wire
    * snapshot replaces the locally derived authored write. */
   authoredSql?: SQL;
@@ -64,38 +66,43 @@ export function groupMembershipRevocationSql(
   input: GroupMembershipRevocationInput,
 ): SQL {
   const localMember = input.memberDomain === 'local';
-  // A remote member's received side B has no group-authored recipient event.
-  // A still-positive side A is concluded and published by its own writer.
+  const authorIsMember = !isGroupAccount(input.author.account);
+  const memberEndpoint = authorIsMember ? input.author : input.receiver;
+  const groupEndpoint = authorIsMember ? input.receiver : input.author;
+  // A remote member's received member direction has no group-authored recipient
+  // event. A still-positive group direction is concluded and published by its
+  // own writer.
   const recipient = localMember
-    ? localRecipient(input)
-    : input.authorSide === 'A'
-      ? peerRecipient(input)
-      : sql`recipient_result AS MATERIALIZED (
+    ? localRecipient(input, authorIsMember)
+    : authorIsMember
+      ? sql`recipient_result AS MATERIALIZED (
           SELECT NULL::integer AS "userId", NULL::text AS "feedId"
-        )`;
+        )`
+      : peerRecipient(input);
   const accountScope =
     input.localMemberId === null
       ? ''
       : accountFanoutScopeKey(input.threadId, input.localMemberId);
   // The compacted MEMBER_DEPART fact no longer contains a profile revision. Capture
   // the member's authored direction in the same transaction as the notice.
-  const memberProfileRev =
-    input.authorSide === 'B'
-      ? sql`(SELECT "profileRev" FROM revocation)`
-      : sql`(SELECT "profileRev" FROM "RelationshipIntent"
-        WHERE "pairId" = ${input.pairId} AND "authorSide" = 'B' LIMIT 1)`;
+  const memberProfileRev = authorIsMember
+    ? sql`(SELECT "profileRev" FROM revocation)`
+    : sql`(SELECT "profileRev" FROM "RelationshipIntent"
+      WHERE "authorAccount" = ${memberEndpoint.account} AND "authorNamespaceId" = ${memberEndpoint.namespaceId}
+        AND "receiverAccount" = ${groupEndpoint.account} AND "receiverNamespaceId" = ${groupEndpoint.namespaceId} LIMIT 1)`;
   const content = sql`jsonb_build_object('type', 'GROUP_LEFT', 'member',
     jsonb_build_object('account', ${input.memberAccount}::text,
       'domain', ${input.memberDomain}::text,
-      'namespaceId', ${input.memberNamespaceId}::integer,
+      'profileNamespaceId', ${input.memberDomain === 'local' ? 0 : input.memberNamespaceId}::integer,
       'profileRev', COALESCE(${memberProfileRev}, 0)))`;
   return sql`
     WITH authored AS (
       ${
         input.authoredSql ??
         authoredIntentWriteSql({
-          pair: { id: input.pairId, threadId: input.threadId },
-          authorSide: input.authorSide,
+          author: input.author,
+          receiver: input.receiver,
+          threadId: input.threadId,
           status: 'REVOKED',
           note: '',
           requestedAt: null,
@@ -103,10 +110,12 @@ export function groupMembershipRevocationSql(
         })
       }
     ), revocation AS MATERIALIZED (
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt"
-      FROM "RelationshipIntent" WHERE "pairId" = ${input.pairId} AND "authorSide" = ${input.authorSide}
+      SELECT status, "profileRev", note, "requestedAt", "expiresAt"
+      FROM "RelationshipIntent"
+      WHERE "authorAccount" = ${input.author.account} AND "authorNamespaceId" = ${input.author.namespaceId}
+        AND "receiverAccount" = ${input.receiver.account} AND "receiverNamespaceId" = ${input.receiver.namespaceId}
         AND NOT EXISTS (SELECT 1 FROM authored)
     ), pair_change AS (
       UPDATE "RelationshipPair" SET active = false, "updatedAt" = CURRENT_TIMESTAMP
@@ -173,7 +182,7 @@ export function groupMembershipRevocationSql(
       memberDomain: input.memberDomain,
       memberNamespaceId: input.memberNamespaceId,
       status: 'REVOKED',
-      authorSide: input.authorSide,
+      authorAccount: input.author.account,
       directions: input.projectionDirections,
     })}, audience_close AS (
       DELETE FROM "ThreadAudience" ta
@@ -185,12 +194,12 @@ export function groupMembershipRevocationSql(
           AND ta."targetNamespaceId" = ${input.memberNamespaceId}
           AND NOT EXISTS (SELECT 1 FROM "RelationshipPair" p
             WHERE p.kind = 'GROUP_MEMBER' AND p."threadId" = ${input.threadId}
-              AND p.active AND p."endpointBDomain" = ${input.memberDomain}
-              AND p."endpointBNamespaceId" = ${input.memberNamespaceId}
+              AND p.active AND p."endpointBNamespaceId" = ${input.memberNamespaceId}
+              AND p."endpointBType" = 'USER'
               AND p.id <> ${input.pairId})))
       RETURNING ta.id
     ), ${recipient}
-    SELECT v.id::text AS "requestId", v.status, v.note,
+    SELECT v.status, v.note,
       EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",
       EXISTS (SELECT 1 FROM depart_fact) AS "departed",
@@ -207,7 +216,10 @@ export function groupMembershipRevocationSql(
 /** Local recipient: the compacted RELATIONSHIP_INTENT feed row with body-level
  * dedupe, so a repeated revocation neither allocates a feed id nor wakes anyone.
  * `established` is false: the pair is already inactive within this statement. */
-function localRecipient(input: GroupMembershipRevocationInput): SQL {
+function localRecipient(
+  input: GroupMembershipRevocationInput,
+  authorIsMember: boolean,
+): SQL {
   const projection = input.projectionDirections[0];
   const direction =
     input.clientRequestDirection ??
@@ -216,13 +228,13 @@ function localRecipient(input: GroupMembershipRevocationInput): SQL {
     input.clientRequestStatus ??
     (projection === undefined
       ? null
-      : input.authorSide === 'A'
+      : authorIsMember
         ? projection === 'APPLICATION'
-          ? 'REJECTED'
-          : 'WITHDRAWN'
-        : projection === 'APPLICATION'
           ? 'WITHDRAWN'
-          : 'REJECTED');
+          : 'REJECTED'
+        : projection === 'APPLICATION'
+          ? 'REJECTED'
+          : 'WITHDRAWN');
   return sql`
     recipient_body AS MATERIALIZED (
       SELECT ${localRecipientKey(input.groupAccount, input.memberAccount)}::text AS "compactionKey",
@@ -251,7 +263,7 @@ function localRecipient(input: GroupMembershipRevocationInput): SQL {
 /** Group-authored peer recipient: one side-A RELATIONSHIP_INTENT REVOKED event, suppressed when the
  * peer already holds the identical body (no feed id is consumed). */
 function peerRecipient(input: GroupMembershipRevocationInput): SQL {
-  const wireLocalDomain = toFederationWireDomain(input.localDomain);
+  const wireLocalDomain = 'local';
   return sql`
     peer_write AS MATERIALIZED (
       SELECT jsonb_build_object('status', v.status, 'profileRev', v."profileRev", 'note', v.note,

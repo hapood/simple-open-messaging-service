@@ -5,17 +5,22 @@ import {
   SystemMessageType,
 } from './system-message.js';
 
-const me = { account: 'alice', domain: 'local', namespaceId: 0, profileRev: 2 };
+const me = {
+  account: 'alice',
+  domain: 'local',
+  profileNamespaceId: 0,
+  profileRev: 2,
+};
 const peer = {
   account: 'bob',
   domain: 'peer.test',
-  namespaceId: 12,
+  profileNamespaceId: 12,
   profileRev: 3,
 };
 const system = {
   account: '$system',
   domain: 'local',
-  namespaceId: 0,
+  profileNamespaceId: 0,
   profileRev: 0,
 };
 
@@ -59,7 +64,8 @@ describe('system message content', () => {
     { type: 'FRIEND_REMOVED', initiator: me },
     { type: 'FRIEND_REMOVED', initiator: system, participants: [me] },
     { type: 'GROUP_LEFT', member: { account: 'bob', domain: 'peer.test' } },
-    { type: 'GROUP_LEFT', member: { ...peer, namespaceId: 0 } },
+    { type: 'GROUP_LEFT', member: { ...peer, publisherNamespaceId: 0 } },
+    { type: 'GROUP_LEFT', member: { ...peer, namespaceId: 12 } },
     { type: 'GROUP_LEFT', member: { ...peer, profileRev: -1 } },
     { type: 'GROUP_LEFT', member: peer, action: true },
     { type: 'GROUP_CREATED', member: me },

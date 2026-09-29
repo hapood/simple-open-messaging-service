@@ -47,11 +47,9 @@ describe('account feed notification delivery', () => {
       threadId,
       endpointAType: 'USER',
       endpointAAccount: 'peer',
-      endpointADomain: 'local',
       endpointANamespaceId: 0,
       endpointBType: 'USER',
       endpointBAccount: 'wake-reader',
-      endpointBDomain: 'local',
       endpointBNamespaceId: 0,
       updatedAt: new Date(),
     });

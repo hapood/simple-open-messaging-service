@@ -104,7 +104,7 @@ export class GroupMembershipProjectionService {
         account: identity.account,
         domain: identity.domain,
         operation: 'MEMBER_UPSERT',
-        body: { role, profileRev },
+        body: { role, profileNamespaceId: identity.namespaceId, profileRev },
       });
       canonicalRosterChanged = true;
     }

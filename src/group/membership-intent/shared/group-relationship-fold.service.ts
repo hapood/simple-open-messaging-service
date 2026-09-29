@@ -5,6 +5,8 @@ import { ThreadPreviewService } from '../../../message/thread-preview.service.js
 import type { DatabaseTransaction } from '../../../database/database.service.js';
 import { GroupRole } from '../../../database/enums.js';
 import {
+  buildIntentDirection,
+  type IntentDirection,
   RelationshipIntentService,
   type RelationshipIntentStatus,
 } from '../../../relationship/relationship-intent.service.js';
@@ -13,6 +15,26 @@ import { AuthoritativeMembershipFinalizerService } from './authoritative-members
 import type { ThreadContentLock } from '../../../common/locks/thread-content-lock.js';
 
 /** Applies an authored group intent and synchronizes every projection derived from pair.active. */
+/** Split a locked GROUP_MEMBER pair into its group and member endpoints plus
+ * the member-to-group intent direction. */
+function splitGroupPair(pair: {
+  endpointA: { type: string; account: string; namespaceId: number };
+  endpointB: { type: string; account: string; namespaceId: number };
+}): {
+  group: { account: string; namespaceId: number };
+  member: { account: string; namespaceId: number };
+  memberDirection: IntentDirection;
+} {
+  const group =
+    pair.endpointA.type === 'GROUP' ? pair.endpointA : pair.endpointB;
+  const member = group === pair.endpointA ? pair.endpointB : pair.endpointA;
+  return {
+    group: { account: group.account, namespaceId: group.namespaceId },
+    member: { account: member.account, namespaceId: member.namespaceId },
+    memberDirection: buildIntentDirection(member, group),
+  };
+}
+
 @Injectable()
 export class GroupRelationshipFoldService {
   @Inject(ThreadPreviewService)
@@ -44,10 +66,16 @@ export class GroupRelationshipFoldService {
       groupId: params.groupId,
       memberUserId: params.memberUserId,
     });
+    const { group, member, memberDirection } = splitGroupPair(locked);
     return this.writeLockedAuthoredIntentInTx(tx, {
       ...params,
       pairId: locked.id,
-      memberDomain: locked.endpointB.domain,
+      memberLocal: member.namespaceId === 0,
+      memberDirection,
+      direction:
+        params.author === 'GROUP'
+          ? buildIntentDirection(group, member)
+          : memberDirection,
       threadLock: locked.threadLock,
     });
   }
@@ -61,7 +89,11 @@ export class GroupRelationshipFoldService {
       groupId: number;
       memberUserId: AccountTarget;
       pairId: bigint;
-      memberDomain: string;
+      memberLocal: boolean;
+      /** The member-to-group direction, used for member profile evidence. */
+      memberDirection: IntentDirection;
+      /** The direction this write authors. */
+      direction: IntentDirection;
       threadLock: ThreadContentLock;
       author: 'GROUP' | 'MEMBER';
       hostedLocally: boolean;
@@ -76,10 +108,9 @@ export class GroupRelationshipFoldService {
   ) {
     const membership =
       await this.relationshipIntents.writeLockedGroupAuthoredIntentInTx(tx, {
-        pairId: params.pairId,
+        direction: params.direction,
         threadId: params.threadId,
         threadLock: params.threadLock,
-        authorSide: params.author === 'GROUP' ? 'A' : 'B',
         status: params.status,
         note: params.note,
         expiresAt: params.expiresAt,
@@ -118,10 +149,12 @@ export class GroupRelationshipFoldService {
       groupId: params.groupId,
       memberUserId: params.memberUserId,
     });
+    const { member, memberDirection } = splitGroupPair(locked);
     return this.syncLockedActiveInTx(tx, {
       ...params,
       pairId: locked.id,
-      memberDomain: locked.endpointB.domain,
+      memberLocal: member.namespaceId === 0,
+      memberDirection,
       threadLock: locked.threadLock,
     });
   }
@@ -133,7 +166,8 @@ export class GroupRelationshipFoldService {
       groupId: number;
       memberUserId: AccountTarget;
       pairId: bigint;
-      memberDomain: string;
+      memberLocal: boolean;
+      memberDirection: IntentDirection;
       threadLock: ThreadContentLock;
       active: boolean;
       hostedLocally: boolean;
@@ -152,7 +186,7 @@ export class GroupRelationshipFoldService {
         pairId: params.pairId,
         threadId: params.threadId,
         threadLock: params.threadLock,
-        memberDomain: params.memberDomain,
+        memberLocal: params.memberLocal,
         active: params.active,
       });
     const memberProfileRev =
@@ -160,7 +194,7 @@ export class GroupRelationshipFoldService {
         ? await this.relationshipIntents.readLockedGroupMemberProfileRevInTx(
             tx,
             {
-              pairId: params.pairId,
+              direction: params.memberDirection,
               threadId: params.threadId,
               threadLock: params.threadLock,
             },

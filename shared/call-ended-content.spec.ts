@@ -4,8 +4,18 @@ import { deriveMessagePreview } from './message-preview.js';
 const base = {
   type: 'CALL_ENDED',
   callId: '550e8400-e29b-41d4-a716-446655440000',
-  caller: { account: 'alice', domain: 'a.test', namespaceId: 1, profileRev: 0 },
-  callee: { account: 'bob', domain: 'b.test', namespaceId: 2, profileRev: 0 },
+  caller: {
+    account: 'alice',
+    domain: 'a.test',
+    profileNamespaceId: 1,
+    profileRev: 0,
+  },
+  callee: {
+    account: 'bob',
+    domain: 'b.test',
+    profileNamespaceId: 2,
+    profileRev: 0,
+  },
   mediaType: 'AUDIO',
   initiatedAt: 100,
   endedAt: 500,

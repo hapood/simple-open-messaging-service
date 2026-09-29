@@ -33,7 +33,7 @@ describe('MessageService local system messages', () => {
         member: {
           account: 'alice',
           domain: 'local',
-          namespaceId: 0,
+          profileNamespaceId: 0,
           profileRev: 2,
         },
       }),
@@ -85,7 +85,7 @@ describe('MessageService local system messages', () => {
       member: {
         account: 'alice',
         domain: 'local',
-        namespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 2,
       },
     });
@@ -105,7 +105,7 @@ describe('MessageService local system messages', () => {
       member: {
         account: 'alice',
         domain: 'local',
-        namespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 2,
       },
     });
@@ -126,7 +126,7 @@ describe('MessageService local system messages', () => {
         member: {
           account: 'alice',
           domain: 'local',
-          namespaceId: 0,
+          profileNamespaceId: 0,
           profileRev: 2,
         },
       }),
@@ -151,12 +151,22 @@ describe('MessageService local system messages', () => {
         initiator: {
           account: 'bob',
           domain: 'local',
-          namespaceId: 0,
+          profileNamespaceId: 0,
           profileRev: 1,
         },
         participants: [
-          { account: 'bob', domain: 'local', namespaceId: 0, profileRev: 1 },
-          { account: 'alice', domain: 'local', namespaceId: 0, profileRev: 2 },
+          {
+            account: 'bob',
+            domain: 'local',
+            profileNamespaceId: 0,
+            profileRev: 1,
+          },
+          {
+            account: 'alice',
+            domain: 'local',
+            profileNamespaceId: 0,
+            profileRev: 2,
+          },
         ],
       }),
       isDeleted: false,
@@ -192,12 +202,22 @@ describe('MessageService local system messages', () => {
       initiator: {
         account: 'bob',
         domain: 'local',
-        namespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 1,
       },
       participants: [
-        { account: 'bob', domain: 'local', namespaceId: 0, profileRev: 1 },
-        { account: 'alice', domain: 'local', namespaceId: 0, profileRev: 2 },
+        {
+          account: 'bob',
+          domain: 'local',
+          profileNamespaceId: 0,
+          profileRev: 1,
+        },
+        {
+          account: 'alice',
+          domain: 'local',
+          profileNamespaceId: 0,
+          profileRev: 2,
+        },
       ],
     });
 

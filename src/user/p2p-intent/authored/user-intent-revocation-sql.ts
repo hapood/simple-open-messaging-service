@@ -12,13 +12,6 @@ function threadFanoutScopeKey(threadId: number): string {
 }
 
 export interface UserIntentRevocationInput extends UserIntentFeedInput {
-  actorSide: 'A' | 'B';
-  reverseSide: 'A' | 'B';
-  actorAccount: string;
-  actorDomain: string;
-  targetAccount: string;
-  targetDomain: string;
-  targetNamespaceId: number;
   /** Local Account.id of the actor (always set: the actor is authenticated locally). */
   localActorId: number;
   /** Local Account.id of the target, or null for a peer-hosted target. */
@@ -38,17 +31,25 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
   const threadScope = threadFanoutScopeKey(input.threadId);
   const participants = userIntentSystemParticipantsSql({
     pairId: input.pairId,
-    actorSide: input.actorSide,
     actorState: 'revocation',
   });
+  // The initiator is whichever pair endpoint the command actor occupies.
   const content = sql`jsonb_build_object('type', 'FRIEND_REMOVED',
     'participants', ${participants},
-    'initiator', ${participants}->${input.actorSide === 'A' ? 0 : 1}::integer)`;
+    'initiator', ${participants}->(
+      SELECT CASE WHEN p."endpointAAccount" = ${input.actorAccount}
+          AND p."endpointANamespaceId" = ${input.actorNamespaceId}
+        THEN 0 ELSE 1 END
+      FROM "RelationshipPair" p WHERE p.id = ${input.pairId}))`;
   const authoredSql =
     input.authoredSql ??
     authoredIntentWriteSql({
-      pair: { id: input.pairId, threadId: input.threadId },
-      authorSide: input.actorSide,
+      author: { account: input.actorAccount, namespaceId: input.actorNamespaceId },
+      receiver: {
+        account: input.targetAccount,
+        namespaceId: input.targetNamespaceId,
+      },
+      threadId: input.threadId,
       status: 'REVOKED',
       note: '',
       requestedAt: null,
@@ -58,11 +59,12 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
     WITH authored AS (
       ${authoredSql}
     ), revocation AS MATERIALIZED (
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt"
-      FROM "RelationshipIntent" WHERE "pairId" = ${input.pairId}
-        AND "authorSide" = ${input.actorSide}
+      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt"
+      FROM "RelationshipIntent"
+      WHERE "authorAccount" = ${input.actorAccount} AND "authorNamespaceId" = ${input.actorNamespaceId}
+        AND "receiverAccount" = ${input.targetAccount} AND "receiverNamespaceId" = ${input.targetNamespaceId}
         AND NOT EXISTS (SELECT 1 FROM authored)
     ), pair_change AS (
       UPDATE "RelationshipPair" SET active = false, "updatedAt" = CURRENT_TIMESTAMP
@@ -89,8 +91,8 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
         "updatedAt" = CURRENT_TIMESTAMP
       FROM system_message m, "RelationshipPair" p, "Account" a
       WHERE s."threadId" = ${input.threadId} AND a.id = s."accountId" AND a.domain = 'local'
-        AND ((p.id = ${input.pairId} AND p."endpointAAccount" = a.account AND p."endpointADomain" = 'local')
-          OR (p.id = ${input.pairId} AND p."endpointBAccount" = a.account AND p."endpointBDomain" = 'local'))
+        AND ((p.id = ${input.pairId} AND p."endpointAAccount" = a.account AND p."endpointANamespaceId" = 0)
+          OR (p.id = ${input.pairId} AND p."endpointBAccount" = a.account AND p."endpointBNamespaceId" = 0))
       RETURNING s."accountId"
     ), thread_fanout_merge AS (
       UPDATE "DurableTask" d SET payload = jsonb_build_object(
@@ -127,8 +129,8 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
       FROM "Account" a, departed d
       WHERE d.departed AND EXISTS (SELECT 1 FROM system_message) AND a.domain = 'local'
         AND EXISTS (SELECT 1 FROM "RelationshipPair" p WHERE p.id = ${input.pairId}
-          AND ((p."endpointAAccount" = a.account AND p."endpointADomain" = 'local')
-            OR (p."endpointBAccount" = a.account AND p."endpointBDomain" = 'local')))
+          AND ((p."endpointAAccount" = a.account AND p."endpointANamespaceId" = 0)
+            OR (p."endpointBAccount" = a.account AND p."endpointBNamespaceId" = 0)))
       RETURNING id
     ), audience_close AS (
       DELETE FROM "ThreadAudience" ta
@@ -167,7 +169,7 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
           })}`
         : sql``
     }
-    SELECT v.id::text AS "requestId", v.status, v.note,
+    SELECT v.status, v.note,
       EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",
       EXISTS (SELECT 1 FROM audience_close) AS "audienceChanged",

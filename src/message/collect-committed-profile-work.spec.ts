@@ -4,25 +4,51 @@ import {
   type CommittedProfileMessage,
 } from './collect-committed-profile-work.js';
 
-const alice = { account: 'alice', domain: 'local', namespaceId: 0 };
-const bob = { account: 'bob', domain: 'remote.test', namespaceId: 3 };
+const aliceCreator = {
+  account: 'alice',
+  domain: 'local',
+  profileNamespaceId: 0,
+  profileRev: 0,
+};
+const bobCreator = {
+  account: 'bob',
+  domain: 'remote.test',
+  profileNamespaceId: 3,
+  profileRev: 7,
+};
+const aliceParticipant = {
+  account: 'alice',
+  domain: 'local',
+  profileNamespaceId: 0,
+};
+const bobParticipant = {
+  account: 'bob',
+  domain: 'remote.test',
+  profileNamespaceId: 3,
+};
 
 function committed(
   seq: number,
-  profileRev: number,
+  creatorProfileRev: number,
   options: Partial<CommittedProfileMessage> = {},
 ): CommittedProfileMessage {
+  const creator = {
+    ...aliceCreator,
+    ...(options.creator ?? {}),
+    profileRev: options.creator?.profileRev ?? creatorProfileRev,
+  };
   return {
     threadId: 11,
-    threadType: 'P2P',
-    content: JSON.stringify({ text: 'hello' }),
     seq,
-    profileRev,
-    creator: alice,
+    threadType: 'P2P',
+    publisherNamespaceId: 0,
+    creator,
     contentType: 'PURE_TEXT',
+    content: JSON.stringify({ text: 'hello' }),
     isDeleted: false,
     localState: 'READY',
     ...options,
+    creator,
   };
 }
 
@@ -32,51 +58,57 @@ describe('collectCommittedProfileWork', () => {
       committed(2, 30),
       committed(4, 0),
       committed(3, 40),
-      committed(8, 7, { creator: bob }),
-      committed(9, 4, { creator: { ...bob, namespaceId: 4 } }),
+      committed(8, 7, {
+        publisherNamespaceId: 3,
+        creator: bobCreator,
+      }),
+      committed(9, 4, {
+        publisherNamespaceId: 4,
+        creator: { ...bobCreator, profileNamespaceId: 4, profileRev: 4 },
+      }),
       committed(5, 1, { threadId: 12 }),
     ]);
     expect(selected).toEqual({
       demands: [
         {
-          namespaceId: 0,
+          publisherNamespaceId: 0,
           lookup: 'ACCOUNT_PROFILE',
-          target: { account: 'alice', domain: 'local', rev: 0 },
+          target: { profileNamespaceId: 0, account: 'alice', domain: 'local', rev: 0 },
         },
         {
-          namespaceId: 3,
+          publisherNamespaceId: 3,
           lookup: 'ACCOUNT_PROFILE',
-          target: { account: 'bob', domain: 'remote.test', rev: 7 },
+          target: { profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 7 },
         },
         {
-          namespaceId: 4,
+          publisherNamespaceId: 4,
           lookup: 'ACCOUNT_PROFILE',
-          target: { account: 'bob', domain: 'remote.test', rev: 4 },
+          target: { profileNamespaceId: 4, account: 'bob', domain: 'remote.test', rev: 4 },
         },
         {
-          namespaceId: 0,
+          publisherNamespaceId: 0,
           lookup: 'ACCOUNT_PROFILE',
-          target: { account: 'alice', domain: 'local', rev: 1 },
+          target: { profileNamespaceId: 0, account: 'alice', domain: 'local', rev: 1 },
         },
       ],
       evidenceProjections: [
         {
-          profile: { namespaceId: 0, account: 'alice', domain: 'local', rev: 0 },
+          profile: { publisherNamespaceId: 0, profileNamespaceId: 0, account: 'alice', domain: 'local', rev: 0 },
           lookup: 'ACCOUNT_PROFILE',
           projection: { threadId: 11, messageSeq: 4 },
         },
         {
-          profile: { namespaceId: 3, account: 'bob', domain: 'remote.test', rev: 7 },
+          profile: { publisherNamespaceId: 3, profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 7 },
           lookup: 'ACCOUNT_PROFILE',
           projection: { threadId: 11, messageSeq: 8 },
         },
         {
-          profile: { namespaceId: 4, account: 'bob', domain: 'remote.test', rev: 4 },
+          profile: { publisherNamespaceId: 4, profileNamespaceId: 4, account: 'bob', domain: 'remote.test', rev: 4 },
           lookup: 'ACCOUNT_PROFILE',
           projection: { threadId: 11, messageSeq: 9 },
         },
         {
-          profile: { namespaceId: 0, account: 'alice', domain: 'local', rev: 1 },
+          profile: { publisherNamespaceId: 0, profileNamespaceId: 0, account: 'alice', domain: 'local', rev: 1 },
           lookup: 'ACCOUNT_PROFILE',
           projection: { threadId: 12, messageSeq: 5 },
         },
@@ -97,14 +129,14 @@ describe('collectCommittedProfileWork', () => {
     ).toEqual({
       demands: [
         {
-          namespaceId: 0,
+          publisherNamespaceId: 0,
           lookup: 'ACCOUNT_PROFILE',
-          target: { account: 'alice', domain: 'local', rev: 5 },
+          target: { profileNamespaceId: 0, account: 'alice', domain: 'local', rev: 5 },
         },
       ],
       evidenceProjections: [
         {
-          profile: { namespaceId: 0, account: 'alice', domain: 'local', rev: 5 },
+          profile: { publisherNamespaceId: 0, profileNamespaceId: 0, account: 'alice', domain: 'local', rev: 5 },
           lookup: 'ACCOUNT_PROFILE',
           projection: { threadId: 11, messageSeq: 10 },
         },
@@ -114,12 +146,18 @@ describe('collectCommittedProfileWork', () => {
 
   it('uses intent prefetch for a remote friend-add participant', () => {
     const participants = [
-      { ...alice, profileRev: 3 },
-      { ...bob, profileRev: 7 },
+      { ...aliceParticipant, profileRev: 3 },
+      { ...bobParticipant, profileRev: 7 },
     ];
     const system = (seq: number, revision: number) =>
       committed(seq, 0, {
-        creator: { account: '$system', domain: 'local', namespaceId: 0 },
+        publisherNamespaceId: 3,
+        creator: {
+          account: '$system',
+          domain: 'local',
+          profileNamespaceId: 0,
+          profileRev: 0,
+        },
         contentType: 'SYSTEM',
         content: JSON.stringify({
           type: 'FRIEND_ADDED',
@@ -140,15 +178,15 @@ describe('collectCommittedProfileWork', () => {
     ).toEqual({
       demands: [
         {
+          publisherNamespaceId: 3,
           lookup: 'RELATIONSHIP_INTENT_PROFILE',
-          namespaceId: 3,
-          target: { account: 'bob', domain: 'remote.test', rev: 7 },
+          target: { profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 7 },
           peerAccount: 'alice',
         },
         {
+          publisherNamespaceId: 3,
           lookup: 'RELATIONSHIP_INTENT_PROFILE',
-          namespaceId: 3,
-          target: { account: 'bob', domain: 'remote.test', rev: 2 },
+          target: { profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 2 },
           peerAccount: 'alice',
         },
       ],
@@ -157,37 +195,48 @@ describe('collectCommittedProfileWork', () => {
   });
 
   it('returns group-member hints without turning a system seq into projection evidence', () => {
-    const member = { ...bob, profileRev: 4 };
+    const member = { ...bobParticipant, profileRev: 4 };
     const selected = collectCommittedProfileWork([
       committed(2, 10, {
         threadType: 'GROUP',
+        publisherNamespaceId: 3,
         groupAccount: '!group',
-        groupOriginDomain: 'group-owner.test',
-        creator: bob,
+        creator: { ...bobCreator, profileRev: 10 },
       }),
       committed(3, 0, {
         threadType: 'GROUP',
+        publisherNamespaceId: 3,
         groupAccount: '!group',
-        groupOriginDomain: 'group-owner.test',
         contentType: 'SYSTEM',
-        creator: { account: '$system', domain: 'local', namespaceId: 0 },
+        creator: {
+          account: '$system',
+          domain: 'local',
+          profileNamespaceId: 0,
+          profileRev: 0,
+        },
         content: JSON.stringify({ type: 'GROUP_JOINED', member }),
       }),
       committed(4, 0, {
         threadType: 'GROUP',
+        publisherNamespaceId: 3,
         groupAccount: '!group',
-        groupOriginDomain: 'group-owner.test',
         contentType: 'SYSTEM',
+        creator: {
+          account: '$system',
+          domain: 'local',
+          profileNamespaceId: 0,
+          profileRev: 0,
+        },
         content: JSON.stringify({
           type: 'GROUP_OWNER_TRANSFERRED',
-          previousOwner: { ...alice, profileRev: 0 },
+          previousOwner: { ...aliceParticipant, profileRev: 0 },
           newOwner: member,
         }),
       }),
       committed(5, 0, {
         threadType: 'GROUP',
+        publisherNamespaceId: 3,
         groupAccount: '!group',
-        groupOriginDomain: 'group-owner.test',
         contentType: 'SYSTEM',
         content: JSON.stringify({ type: 'GROUP_DISSOLVED' }),
       }),
@@ -195,21 +244,21 @@ describe('collectCommittedProfileWork', () => {
     expect(selected).toEqual({
       demands: [
         {
-          namespaceId: 3,
+          publisherNamespaceId: 3,
           lookup: 'GROUP_MEMBER_PROFILE',
           groupAccount: '!group',
-          target: { account: 'bob', domain: 'remote.test', rev: 10 },
+          target: { profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 10 },
         },
         {
+          publisherNamespaceId: 3,
           lookup: 'GROUP_MEMBER_PROFILE',
-          namespaceId: 3,
-          target: { account: 'bob', domain: 'remote.test', rev: 4 },
+          target: { profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 4 },
           groupAccount: '!group',
         },
       ],
       evidenceProjections: [
         {
-          profile: { namespaceId: 3, account: 'bob', domain: 'remote.test', rev: 10 },
+          profile: { publisherNamespaceId: 3, profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 10 },
           lookup: 'GROUP_MEMBER_PROFILE',
           groupAccount: '!group',
           projection: { threadId: 11, messageSeq: 2 },
@@ -221,40 +270,46 @@ describe('collectCommittedProfileWork', () => {
   it('does not prefetch local members, own-group members, departures or unfriends', () => {
     const groupEvent = (
       seq: number,
-      origin: string,
+      publisherNamespaceId: number,
       type: string,
       member: object,
     ) =>
       committed(seq, 0, {
         threadType: 'GROUP',
+        publisherNamespaceId,
         groupAccount: '!group',
-        groupOriginDomain: origin,
+        creator: {
+          account: '$system',
+          domain: 'local',
+          profileNamespaceId: 0,
+          profileRev: 0,
+        },
         contentType: 'SYSTEM',
         content: JSON.stringify({ type, member }),
       });
     expect(
       collectCommittedProfileWork([
-        groupEvent(1, 'local', 'GROUP_JOINED', { ...bob, profileRev: 3 }),
-        groupEvent(2, 'group-owner.test', 'GROUP_JOINED', {
-          ...alice,
+        groupEvent(1, 0, 'GROUP_JOINED', { ...bobParticipant, profileRev: 3 }),
+        groupEvent(2, 3, 'GROUP_JOINED', {
+          ...aliceParticipant,
           profileRev: 4,
         }),
-        groupEvent(3, 'group-owner.test', 'GROUP_JOINED', {
-          ...bob,
+        groupEvent(3, 3, 'GROUP_JOINED', {
+          ...bobParticipant,
           profileRev: 0,
         }),
-        groupEvent(4, 'group-owner.test', 'GROUP_LEFT', {
-          ...bob,
+        groupEvent(4, 3, 'GROUP_LEFT', {
+          ...bobParticipant,
           profileRev: 3,
         }),
         committed(5, 0, {
           contentType: 'SYSTEM',
           content: JSON.stringify({
             type: 'FRIEND_REMOVED',
-            initiator: { ...alice, profileRev: 0 },
+            initiator: { ...aliceParticipant, profileRev: 0 },
             participants: [
-              { ...alice, profileRev: 4 },
-              { ...bob, profileRev: 3 },
+              { ...aliceParticipant, profileRev: 4 },
+              { ...bobParticipant, profileRev: 3 },
             ],
           }),
         }),

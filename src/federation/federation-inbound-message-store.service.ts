@@ -53,6 +53,7 @@ export interface FederationInboundMessageStoreParams {
   creator: S2SAddress;
   fetchedFromDomain: string;
   namespaceId: number;
+  profileNamespaceId: number;
   message: {
     originSeq: number;
     profileRev: number;
@@ -106,6 +107,7 @@ export class FederationInboundMessageStoreService {
       creator: incomingCreator,
       fetchedFromDomain,
       namespaceId,
+      profileNamespaceId,
       message: incoming,
       expectedFederationVersion,
       incomingText,
@@ -118,7 +120,7 @@ export class FederationInboundMessageStoreService {
       sequencePolicy,
     } = params;
     const creator = toClientIdentity(
-      { ...incomingCreator, namespaceId },
+      { ...incomingCreator, namespaceId: profileNamespaceId },
       this.config.domain,
     );
     if (sequencePolicy) {
@@ -207,7 +209,7 @@ export class FederationInboundMessageStoreService {
           threadId,
           creatorAccount: creator.account,
           creatorDomain: creator.domain,
-          creatorNamespaceId: creator.namespaceId,
+          profileNamespaceId: creator.namespaceId,
           seq,
           originSeq: incoming.originSeq,
           profileRev: incoming.profileRev,
@@ -290,7 +292,7 @@ export class FederationInboundMessageStoreService {
         threadId,
         creatorAccount: creator.account,
         creatorDomain: creator.domain,
-        creatorNamespaceId: creator.namespaceId,
+        profileNamespaceId: creator.namespaceId,
         seq,
         originSeq: incoming.originSeq,
         profileRev: incoming.profileRev,

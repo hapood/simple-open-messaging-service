@@ -10,12 +10,6 @@ import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fan
 import { userIntentSystemParticipantsSql } from './user-intent-system-participants-sql.js';
 
 export interface UserIntentAcceptanceInput extends UserIntentFeedInput {
-  actorSide: 'A' | 'B';
-  reverseSide: 'A' | 'B';
-  actorAccount: string;
-  targetAccount: string;
-  targetDomain: string;
-  targetNamespaceId: number;
   /** '' for an ACK entry; the crossed requester's note survives the REQ collapse. */
   note: string;
   acceptedAt: Date;
@@ -29,14 +23,19 @@ export interface UserIntentAcceptanceInput extends UserIntentFeedInput {
  * fresh read windows, and the FRIEND_ADDED system message whose thread fan-out
  * is admitted here. The retained-history audiences stay untouched; only missing
  * rows are inserted. Remote-peer synchronization state is prepared by the
- * existing relationship initializer inside the same transaction. */
+ * existing relationship initializer inside the same transaction. Every intent
+ * row is addressed by the actor/target coordinates the caller holds. */
 export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
   const remote = input.targetDomain !== 'local';
   const authoredSql =
     input.authoredSql ??
     authoredIntentWriteSql({
-      pair: { id: input.pairId, threadId: input.threadId },
-      authorSide: input.actorSide,
+      author: { account: input.actorAccount, namespaceId: input.actorNamespaceId },
+      receiver: {
+        account: input.targetAccount,
+        namespaceId: input.targetNamespaceId,
+      },
+      threadId: input.threadId,
       status: 'ACCEPTED',
       note: input.note,
       requestedAt: input.acceptedAt,
@@ -50,19 +49,21 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
     ), authored AS (
       ${authoredSql}
     ), accepted AS MATERIALIZED (
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt"
-      FROM "RelationshipIntent" WHERE "pairId" = ${input.pairId}
-        AND "authorSide" = ${input.actorSide}
+      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt"
+      FROM "RelationshipIntent"
+      WHERE "authorAccount" = ${input.actorAccount} AND "authorNamespaceId" = ${input.actorNamespaceId}
+        AND "receiverAccount" = ${input.targetAccount} AND "receiverNamespaceId" = ${input.targetNamespaceId}
         AND NOT EXISTS (SELECT 1 FROM authored)
     ), reverse_upgrade AS (
       UPDATE "RelationshipIntent" SET status = 'ACCEPTED', "expiresAt" = NULL,
         "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "pairId" = ${input.pairId} AND "authorSide" = ${input.reverseSide}
+      WHERE "authorAccount" = ${input.targetAccount} AND "authorNamespaceId" = ${input.targetNamespaceId}
+        AND "receiverAccount" = ${input.actorAccount} AND "receiverNamespaceId" = ${input.actorNamespaceId}
         AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
         AND ${remote ? sql`false` : sql`true`} AND EXISTS (SELECT 1 FROM authored)
-      RETURNING "authorSide", status, "profileRev", note, "requestedAt", "expiresAt"
+      RETURNING "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt"
     ), pair_change AS (
       UPDATE "RelationshipPair" SET active = true, established = true,
         "updatedAt" = CURRENT_TIMESTAMP
@@ -83,8 +84,8 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
       SELECT ${input.threadId}, 'local', 0, a.id
       FROM "RelationshipPair" p, "Account" a
       WHERE p.id = ${input.pairId} AND a.domain = 'local' AND a."namespaceId" = 0
-        AND ((p."endpointAAccount" = a.account AND p."endpointADomain" = 'local')
-          OR (p."endpointBAccount" = a.account AND p."endpointBDomain" = 'local'))
+        AND ((p."endpointAAccount" = a.account AND p."endpointANamespaceId" = 0)
+          OR (p."endpointBAccount" = a.account AND p."endpointBNamespaceId" = 0))
         AND EXISTS (SELECT 1 FROM pair_change)
       ON CONFLICT ("targetDomain", "localUserId", "threadId") WHERE "targetDomain" = 'local' DO NOTHING
       RETURNING id
@@ -109,7 +110,7 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
       INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "creatorDomain", "updatedAt")
       SELECT ${input.threadId}, s."curSeq", 'SYSTEM'::"ContentType",
         jsonb_build_object('type', 'FRIEND_ADDED', 'participants',
-          ${userIntentSystemParticipantsSql({ pairId: input.pairId, actorSide: input.actorSide, actorState: 'accepted' })}),
+          ${userIntentSystemParticipantsSql({ pairId: input.pairId, actorState: 'accepted' })}),
         '$system', 'local', CURRENT_TIMESTAMP
       FROM seq_alloc s
       RETURNING seq
@@ -133,7 +134,7 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
           })}`
         : sql``
     }
-    SELECT v.id::text AS "requestId", v.status, v.note,
+    SELECT v.status, v.note,
       EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       EXISTS (SELECT 1 FROM reverse_upgrade) AS "reverseUpgraded",
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",

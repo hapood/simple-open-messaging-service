@@ -41,8 +41,12 @@ export function memberAuthoredMembershipRequestSql(
       ${
         input.authoredSql ??
         authoredIntentWriteSql({
-          pair: { id: input.pairId, threadId: input.threadId },
-          authorSide: 'B',
+          author: {
+            account: input.memberAccount,
+            namespaceId: input.memberNamespaceId,
+          },
+          receiver: { account: input.groupAccount, namespaceId: 0 },
+          threadId: input.threadId,
           status: 'REQUESTED',
           note: input.note,
           requestedAt: input.requestedAt,
@@ -53,7 +57,9 @@ export function memberAuthoredMembershipRequestSql(
       SELECT id, status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
       SELECT id, status, "profileRev", note, "requestedAt", "expiresAt"
-      FROM "RelationshipIntent" WHERE "pairId" = ${input.pairId} AND "authorSide" = 'B'
+      FROM "RelationshipIntent"
+      WHERE "authorAccount" = ${input.memberAccount} AND "authorNamespaceId" = ${input.memberNamespaceId}
+        AND "receiverAccount" = ${input.groupAccount} AND "receiverNamespaceId" = 0
         AND NOT EXISTS (SELECT 1 FROM authored)
     ), projection_alloc AS (
       UPDATE "GroupMeta" f
@@ -100,7 +106,7 @@ export function memberAuthoredMembershipRequestSql(
       FROM recipient_body b
       WHERE ${input.localMemberId}::integer IS NOT NULL
     ), ${clientIntentFeedWriteSql()}
-    SELECT v.id::text AS "requestId", v.status, v.note,
+    SELECT v.status, v.note,
       EXISTS (SELECT 1 FROM authored) AS "intentChanged",
       EXISTS (SELECT 1 FROM request_projection) AS "projectionChanged",
       (SELECT "userId" FROM recipient_result) AS "recipientUserId",

@@ -17,7 +17,7 @@ function createSubject() {
 }
 
 const accountProjection = {
-  profile: { namespaceId: 7, account: 'alice', domain: 'member.test', rev: 4 },
+  profile: { publisherNamespaceId: 7, profileNamespaceId: 7, account: 'alice', domain: 'member.test', rev: 4 },
   lookup: ProfileLookup.ACCOUNT_PROFILE,
   projection: { threadId: 9, messageSeq: 6 },
 } as const;

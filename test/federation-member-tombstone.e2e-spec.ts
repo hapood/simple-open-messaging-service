@@ -73,11 +73,9 @@ describe('member-home tombstone authority', () => {
       kind: 'GROUP_MEMBER',
       endpointAType: 'GROUP',
       endpointAAccount: groupAccount,
-      endpointADomain: 'local',
-      endpointANamespaceId: namespaceId,
+      endpointANamespaceId: 0,
       endpointBType: 'USER',
       endpointBAccount: 'alice',
-      endpointBDomain: peerDomain,
       endpointBNamespaceId: namespaceId,
       threadId,
       active: true,
@@ -90,7 +88,7 @@ describe('member-home tombstone authority', () => {
       sourceNamespaceId: namespaceId,
       creatorAccount: 'alice',
       creatorDomain: peerDomain,
-      creatorNamespaceId: namespaceId,
+      profileNamespaceId: namespaceId,
       contentType: 'PURE_TEXT',
       content: JSON.stringify({ text: 'member submission' }),
       updatedAt: new Date(),
@@ -173,7 +171,7 @@ describe('member-home tombstone authority', () => {
         .set({
           sourceNamespaceId: 0,
           creatorDomain: 'local',
-          creatorNamespaceId: 0,
+          profileNamespaceId: 0,
           originSeq: null,
         })
         .where(eq(tables.message.threadId, threadId))
@@ -222,7 +220,7 @@ describe('member-home tombstone authority', () => {
       .set({
         sourceNamespaceId: 0,
         creatorDomain: 'local',
-        creatorNamespaceId: 0,
+        profileNamespaceId: 0,
         originSeq: null,
         isDeleted: true,
       })
@@ -276,7 +274,7 @@ describe('member-home tombstone authority', () => {
         .set({
           sourceNamespaceId: 0,
           creatorDomain: 'local',
-          creatorNamespaceId: 0,
+          profileNamespaceId: 0,
           originSeq: null,
         })
         .where(eq(tables.message.threadId, threadId))
@@ -331,7 +329,7 @@ describe('member-home tombstone authority', () => {
     async (type) => {
       await database.db
         .update(tables.message)
-        .set({ creatorDomain: 'local', creatorNamespaceId: 0 })
+        .set({ creatorDomain: 'local', profileNamespaceId: 0 })
         .where(eq(tables.message.threadId, threadId));
       await expect(apply(type)).rejects.toThrow(
         'tombstone has no retained local group thread',

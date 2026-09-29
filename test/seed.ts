@@ -76,15 +76,17 @@ export async function seedFederatedPeerNamespace(
   return namespaceId;
 }
 
-function relationshipNamespaceForFixture(
-  namespaceIds: readonly number[],
+/** The local endpoint (namespace 0) is always pair side A; two local
+ * endpoints fall back to account order for a deterministic layout. */
+function localEndpointFirst(
+  left: { account: string; namespaceId: number },
+  right: { account: string; namespaceId: number },
 ): number {
-  const federationNamespaceIds = new Set(
-    namespaceIds.filter((namespaceId) => namespaceId !== 0),
+  const leftRemote = left.namespaceId !== 0 ? 1 : 0;
+  const rightRemote = right.namespaceId !== 0 ? 1 : 0;
+  return (
+    leftRemote - rightRemote || left.account.localeCompare(right.account)
   );
-  if (federationNamespaceIds.size > 1)
-    throw new Error('relationship fixture spans federation namespaces');
-  return federationNamespaceIds.values().next().value ?? 0;
 }
 
 /** Resolve the fixed GROUP(A) -> USER(B) relationship pair used by roster assertions. */
@@ -99,24 +101,28 @@ export async function findGroupRelationship(
   ]);
   if (!groupIdentity || !memberIdentity)
     throw new Error('group relationship endpoint missing');
-  const relationshipNamespaceId = relationshipNamespaceForFixture([
-    groupIdentity.namespaceId,
-    memberIdentity.namespaceId,
-  ]);
   const pair = await database.query.relationshipPair.findFirst({
     where: and(
       eq(relationshipPair.kind, 'GROUP_MEMBER'),
       eq(relationshipPair.endpointAType, 'GROUP'),
       eq(relationshipPair.endpointAAccount, groupIdentity.account),
-      eq(relationshipPair.endpointADomain, groupIdentity.domain),
-      eq(relationshipPair.endpointANamespaceId, relationshipNamespaceId),
+      eq(relationshipPair.endpointANamespaceId, groupIdentity.namespaceId),
       eq(relationshipPair.endpointBType, 'USER'),
       eq(relationshipPair.endpointBAccount, memberIdentity.account),
-      eq(relationshipPair.endpointBDomain, memberIdentity.domain),
-      eq(relationshipPair.endpointBNamespaceId, relationshipNamespaceId),
+      eq(relationshipPair.endpointBNamespaceId, memberIdentity.namespaceId),
     ),
   });
-  return { pair, groupSide: 'A' as const, memberSide: 'B' as const };
+  return {
+    pair,
+    groupEndpoint: {
+      account: groupIdentity.account,
+      namespaceId: groupIdentity.namespaceId,
+    },
+    memberEndpoint: {
+      account: memberIdentity.account,
+      namespaceId: memberIdentity.namespaceId,
+    },
+  };
 }
 
 /** Resolve the canonical address pair and authored sides used by relationship assertions. */
@@ -135,31 +141,24 @@ export async function findP2PRelationship(
     first.namespaceId === second.namespaceId
   )
     throw new Error('relationship endpoints must differ');
-  const relationshipNamespaceId = relationshipNamespaceForFixture([
-    first.namespaceId,
-    second.namespaceId,
-  ]);
-  const endpoints = [first, second].sort(
-    (left, right) =>
-      left.domain.localeCompare(right.domain) ||
-      left.account.localeCompare(right.account),
-  );
+  const endpoints = [first, second].sort(localEndpointFirst);
   const pair = await database.query.relationshipPair.findFirst({
     where: and(
       eq(relationshipPair.endpointAType, 'USER'),
       eq(relationshipPair.endpointAAccount, endpoints[0].account),
-      eq(relationshipPair.endpointADomain, endpoints[0].domain),
-      eq(relationshipPair.endpointANamespaceId, relationshipNamespaceId),
+      eq(relationshipPair.endpointANamespaceId, endpoints[0].namespaceId),
       eq(relationshipPair.endpointBType, 'USER'),
       eq(relationshipPair.endpointBAccount, endpoints[1].account),
-      eq(relationshipPair.endpointBDomain, endpoints[1].domain),
-      eq(relationshipPair.endpointBNamespaceId, relationshipNamespaceId),
+      eq(relationshipPair.endpointBNamespaceId, endpoints[1].namespaceId),
     ),
   });
   return {
     pair,
-    firstSide: endpoints[0] === first ? ('A' as const) : ('B' as const),
-    secondSide: endpoints[0] === second ? ('A' as const) : ('B' as const),
+    firstEndpoint: { account: first.account, namespaceId: first.namespaceId },
+    secondEndpoint: {
+      account: second.account,
+      namespaceId: second.namespaceId,
+    },
   };
 }
 
@@ -176,18 +175,10 @@ export async function seedAcceptedRelationship(
       accountAddressInTx(tx, firstUserId),
       accountAddressInTx(tx, secondUserId),
     ]);
-    const identities = [first, second];
-    const relationshipNamespaceId = relationshipNamespaceForFixture(
-      identities.map((identity) => identity.namespaceId),
-    );
     const localAccountIds = [firstUserId, secondUserId]
       .filter((target): target is number => typeof target === 'number')
       .map((id) => ({ id }));
-    const endpoints = [first, second].sort(
-      (left, right) =>
-        left.domain.localeCompare(right.domain) ||
-        left.account.localeCompare(right.account),
-    );
+    const endpoints = [first, second].sort(localEndpointFirst);
     const revisions = await Promise.all(
       endpoints.map(async (identity) => {
         if (identity.domain !== 'local') return 0;
@@ -204,12 +195,10 @@ export async function seedAcceptedRelationship(
         kind: 'P2P',
         endpointAType: 'USER',
         endpointAAccount: endpoints[0].account,
-        endpointADomain: endpoints[0].domain,
-        endpointANamespaceId: relationshipNamespaceId,
+        endpointANamespaceId: endpoints[0].namespaceId,
         endpointBType: 'USER',
         endpointBAccount: endpoints[1].account,
-        endpointBDomain: endpoints[1].domain,
-        endpointBNamespaceId: relationshipNamespaceId,
+        endpointBNamespaceId: endpoints[1].namespaceId,
         threadId,
         active: true,
         updatedAt,
@@ -218,11 +207,8 @@ export async function seedAcceptedRelationship(
         target: [
           relationshipPair.endpointAType,
           relationshipPair.endpointAAccount,
-          relationshipPair.endpointADomain,
-          relationshipPair.endpointANamespaceId,
           relationshipPair.endpointBType,
           relationshipPair.endpointBAccount,
-          relationshipPair.endpointBDomain,
           relationshipPair.endpointBNamespaceId,
         ],
         set: { threadId, active: true, updatedAt },
@@ -230,30 +216,28 @@ export async function seedAcceptedRelationship(
       .returning({ id: relationshipPair.id });
     await tx
       .insert(relationshipIntent)
-      .values([
-        {
-          pairId: pair.id,
-          authorSide: 'A',
-          profileRev: revisions[0],
+      .values(
+        [0, 1].map((index) => ({
+          authorAccount: endpoints[index].account,
+          authorNamespaceId: endpoints[index].namespaceId,
+          receiverAccount: endpoints[1 - index].account,
+          receiverNamespaceId: endpoints[1 - index].namespaceId,
+          profileNamespaceId: endpoints[index].namespaceId,
+          profileRev: revisions[index],
           status: 'ACCEPTED',
           messageEndSeq: 0,
           tombstoneEndSeq: 0,
           requestedAt: updatedAt,
           updatedAt,
-        },
-        {
-          pairId: pair.id,
-          authorSide: 'B',
-          profileRev: revisions[1],
-          status: 'ACCEPTED',
-          messageEndSeq: 0,
-          tombstoneEndSeq: 0,
-          requestedAt: updatedAt,
-          updatedAt,
-        },
-      ])
+        })),
+      )
       .onConflictDoUpdate({
-        target: [relationshipIntent.pairId, relationshipIntent.authorSide],
+        target: [
+          relationshipIntent.authorAccount,
+          relationshipIntent.authorNamespaceId,
+          relationshipIntent.receiverAccount,
+          relationshipIntent.receiverNamespaceId,
+        ],
         set: {
           status: 'ACCEPTED',
           messageEndSeq: 0,
@@ -306,7 +290,8 @@ export async function seedUser(
     await tx.insert(profileTable).values({
       account: created.account,
       domain: 'local',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       profileRev: 1,
       displayName: opts.name ?? account,
       avatar: '',

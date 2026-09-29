@@ -54,7 +54,7 @@ import {
   GroupRole,
   MessageThreadType,
 } from '../src/database/enums.js';
-import { and, count, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, count, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import {
   account,
   federatedPeer,
@@ -134,14 +134,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         AND pair.active = true
         AND (
           (pair."endpointAAccount" = ${identity.account}
-            AND pair."endpointADomain" = ${identity.domain}
-            AND (${identity.namespaceId} = 0
-              OR pair."endpointANamespaceId" = ${identity.namespaceId}))
+            AND pair."endpointANamespaceId" = ${identity.namespaceId})
           OR
           (pair."endpointBAccount" = ${identity.account}
-            AND pair."endpointBDomain" = ${identity.domain}
-            AND (${identity.namespaceId} = 0
-              OR pair."endpointBNamespaceId" = ${identity.namespaceId}))
+            AND pair."endpointBNamespaceId" = ${identity.namespaceId})
         )
       LIMIT 1
     `);
@@ -424,16 +420,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const rows = await appB.database.execute<{ profileRev: number }>(sql`
           SELECT intent."profileRev"
           FROM "RelationshipIntent" intent
-          JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
+          JOIN "RelationshipPair" pair
+            ON pair."endpointAAccount" = intent."receiverAccount"
+           AND pair."endpointANamespaceId" = intent."receiverNamespaceId"
+           AND pair."endpointBAccount" = intent."authorAccount"
+           AND pair."endpointBNamespaceId" = intent."authorNamespaceId"
           WHERE pair.kind = 'P2P'
-            AND pair."endpointANamespaceId" = ${namespaceAOnB}
+            AND pair."endpointBAccount" = 'alice'
             AND pair."endpointBNamespaceId" = ${namespaceAOnB}
-            AND ((intent."authorSide" = 'A'
-                AND pair."endpointAAccount" = 'alice'
-                AND pair."endpointADomain" = ${DOM_A})
-              OR (intent."authorSide" = 'B'
-                AND pair."endpointBAccount" = 'alice'
-                AND pair."endpointBDomain" = ${DOM_A}))
           LIMIT 1
         `);
         const row = rows.rows[0];
@@ -465,7 +459,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           where: and(
             eq(profileTable.account, 'alice'),
             eq(profileTable.domain, DOM_A),
-            eq(profileTable.namespaceId, namespaceAOnB),
+            eq(profileTable.profileNamespaceId, namespaceAOnB),
             eq(profileTable.profileRev, incoming.profileRev),
           ),
         });
@@ -480,14 +474,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     }>(sql`
       SELECT intent."requestedAt", intent."expiresAt"
       FROM "RelationshipIntent" intent
-      JOIN "RelationshipPair" pair ON pair.id = intent."pairId"
       WHERE intent."profileRev" = ${incoming.profileRev}
-        AND ((intent."authorSide" = 'A'
-            AND pair."endpointAAccount" = 'alice'
-            AND pair."endpointADomain" = ${DOM_A})
-          OR (intent."authorSide" = 'B'
-            AND pair."endpointBAccount" = 'alice'
-            AND pair."endpointBDomain" = ${DOM_A}))
+        AND intent."authorAccount" = 'alice'
+        AND intent."authorNamespaceId" = ${namespaceAOnB}
       LIMIT 1
     `);
     const incomingTiming = incomingTimings.rows[0];
@@ -547,7 +536,22 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           const rows = await app.database
             .select()
             .from(relationshipIntent)
-            .where(eq(relationshipIntent.pairId, relationship.pair!.id));
+            .where(
+            or(
+              and(
+                eq(relationshipIntent.authorAccount, relationship.firstEndpoint.account),
+                eq(relationshipIntent.authorNamespaceId, relationship.firstEndpoint.namespaceId),
+                eq(relationshipIntent.receiverAccount, relationship.secondEndpoint.account),
+                eq(relationshipIntent.receiverNamespaceId, relationship.secondEndpoint.namespaceId),
+              ),
+              and(
+                eq(relationshipIntent.authorAccount, relationship.secondEndpoint.account),
+                eq(relationshipIntent.authorNamespaceId, relationship.secondEndpoint.namespaceId),
+                eq(relationshipIntent.receiverAccount, relationship.firstEndpoint.account),
+                eq(relationshipIntent.receiverNamespaceId, relationship.firstEndpoint.namespaceId),
+              ),
+            ),
+          );
           expect(rows).toHaveLength(2);
           expect(rows.map((row) => row.note).sort()).toEqual([
             '',
@@ -576,7 +580,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           where: and(
             eq(profileTable.account, bobAddressOnA.account),
             eq(profileTable.domain, bobAddressOnA.domain),
-            eq(profileTable.namespaceId, bobAddressOnA.namespaceId),
+            eq(profileTable.profileNamespaceId, bobAddressOnA.namespaceId),
           ),
         });
         expect(bobProfileA?.avatar).toMatch(
@@ -653,13 +657,32 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           );
           const directions =
             await appA.database.query.relationshipIntent.findMany({
-              where: eq(relationshipIntent.pairId, relationship.pair!.id),
+              where: or(
+              and(
+                eq(relationshipIntent.authorAccount, relationship.firstEndpoint.account),
+                eq(relationshipIntent.authorNamespaceId, relationship.firstEndpoint.namespaceId),
+                eq(relationshipIntent.receiverAccount, relationship.secondEndpoint.account),
+                eq(relationshipIntent.receiverNamespaceId, relationship.secondEndpoint.namespaceId),
+              ),
+              and(
+                eq(relationshipIntent.authorAccount, relationship.secondEndpoint.account),
+                eq(relationshipIntent.authorNamespaceId, relationship.secondEndpoint.namespaceId),
+                eq(relationshipIntent.receiverAccount, relationship.firstEndpoint.account),
+                eq(relationshipIntent.receiverNamespaceId, relationship.firstEndpoint.namespaceId),
+              ),
+            ),
             });
           expect(
-            directions.find((row) => row.authorSide === relationship.firstSide),
+            directions.find(
+              (row) =>
+                row.authorAccount === relationship.firstEndpoint.account &&
+                row.authorNamespaceId === relationship.firstEndpoint.namespaceId,
+            ),
           ).toMatchObject({ status: 'ACCEPTED', expiresAt: null });
           const secondDirection = directions.find(
-            (row) => row.authorSide === relationship.secondSide,
+            (row) =>
+              row.authorAccount === relationship.secondEndpoint.account &&
+              row.authorNamespaceId === relationship.secondEndpoint.namespaceId,
           );
           // A crossed local request can collapse the second direction before
           // its peer acknowledgement is delivered.
@@ -688,7 +711,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           );
           const directions =
             await app.database.query.relationshipIntent.findMany({
-              where: eq(relationshipIntent.pairId, relationship.pair!.id),
+              where: or(
+              and(
+                eq(relationshipIntent.authorAccount, relationship.firstEndpoint.account),
+                eq(relationshipIntent.authorNamespaceId, relationship.firstEndpoint.namespaceId),
+                eq(relationshipIntent.receiverAccount, relationship.secondEndpoint.account),
+                eq(relationshipIntent.receiverNamespaceId, relationship.secondEndpoint.namespaceId),
+              ),
+              and(
+                eq(relationshipIntent.authorAccount, relationship.secondEndpoint.account),
+                eq(relationshipIntent.authorNamespaceId, relationship.secondEndpoint.namespaceId),
+                eq(relationshipIntent.receiverAccount, relationship.firstEndpoint.account),
+                eq(relationshipIntent.receiverNamespaceId, relationship.firstEndpoint.namespaceId),
+              ),
+            ),
             });
           expect(directions).toHaveLength(2);
           expect(directions.every((row) => row.status === 'ACCEPTED')).toBe(
@@ -1389,7 +1425,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         content: string;
         childBundleId?: string;
       }>;
-      children: Array<{ id: string; messages: Array<{ contentType: ContentType }> }>;
+      children: Array<{
+        id: string;
+        messages: Array<{ contentType: ContentType }>;
+      }>;
       assets: Array<{ digest: string; bytes: number }>;
       accessContext: { threadId: number; seq: number };
     };
@@ -1504,9 +1543,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         mode: 'HISTORY',
         clientMessageId: depth4ClientMessageId,
       });
-    expect(nestedOnA.body.code).toBe(
-      BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED,
-    );
+    expect(nestedOnA.body.code).toBe(BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED);
     expect(
       await countMessages(
         appA,
@@ -1709,7 +1746,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           and(
             eq(profileTable.account, aliceAddressOnB.account),
             eq(profileTable.domain, aliceAddressOnB.domain),
-            eq(profileTable.namespaceId, aliceAddressOnB.namespaceId),
+            eq(profileTable.profileNamespaceId, aliceAddressOnB.namespaceId),
           ),
           eq(profileTable.profileRev, source!.defaultProfileRev),
         ),
@@ -1735,7 +1772,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             and(
               eq(profileTable.account, aliceAddressOnB.account),
               eq(profileTable.domain, aliceAddressOnB.domain),
-              eq(profileTable.namespaceId, aliceAddressOnB.namespaceId),
+              eq(profileTable.profileNamespaceId, aliceAddressOnB.namespaceId),
             ),
             eq(profileTable.profileRev, source!.defaultProfileRev),
           ),
@@ -1800,7 +1837,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           and(
             eq(profileTable.account, 'alice'),
             eq(profileTable.domain, 'local'),
-            eq(profileTable.namespaceId, 0),
+            eq(profileTable.profileNamespaceId, 0),
           ),
           eq(profileTable.profileRev, afterUser!.defaultProfileRev),
         ),
@@ -1865,8 +1902,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const pendingInvite =
           await appB.database.query.relationshipIntent.findFirst({
             where: and(
-              eq(relationshipIntent.pairId, relationship.pair!.id),
-              eq(relationshipIntent.authorSide, relationship.groupSide),
+              eq(relationshipIntent.authorAccount, relationship.groupEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, relationship.groupEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, relationship.memberEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, relationship.memberEndpoint.namespaceId),
               eq(relationshipIntent.status, 'REQUESTED'),
             ),
           });
@@ -1948,12 +1987,33 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     );
     const originMembershipRows =
       await appA.database.query.relationshipIntent.findMany({
-        where: eq(relationshipIntent.pairId, originMembership.pair!.id),
+        where: or(
+          and(
+            eq(relationshipIntent.authorAccount, originMembership.groupEndpoint.account),
+            eq(relationshipIntent.authorNamespaceId, originMembership.groupEndpoint.namespaceId),
+            eq(relationshipIntent.receiverAccount, originMembership.memberEndpoint.account),
+            eq(relationshipIntent.receiverNamespaceId, originMembership.memberEndpoint.namespaceId),
+          ),
+          and(
+            eq(relationshipIntent.authorAccount, originMembership.memberEndpoint.account),
+            eq(relationshipIntent.authorNamespaceId, originMembership.memberEndpoint.namespaceId),
+            eq(relationshipIntent.receiverAccount, originMembership.groupEndpoint.account),
+            eq(relationshipIntent.receiverNamespaceId, originMembership.groupEndpoint.namespaceId),
+          ),
+        ),
       });
     expect(originMembershipRows).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ authorSide: 'A', status: 'ACCEPTED' }),
-        expect.objectContaining({ authorSide: 'B', status: 'ACCEPTED' }),
+        expect.objectContaining({
+          authorAccount: originMembership.groupEndpoint.account,
+          authorNamespaceId: originMembership.groupEndpoint.namespaceId,
+          status: 'ACCEPTED',
+        }),
+        expect.objectContaining({
+          authorAccount: originMembership.memberEndpoint.account,
+          authorNamespaceId: originMembership.memberEndpoint.namespaceId,
+          status: 'ACCEPTED',
+        }),
       ]),
     );
     expect(originMembership.pair?.active).toBe(true);
@@ -2014,21 +2074,39 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         );
         const confirmedMemberships = await appB.database
           .select({
-            authorSide: relationshipIntent.authorSide,
+            authorAccount: relationshipIntent.authorAccount,
+            authorNamespaceId: relationshipIntent.authorNamespaceId,
             status: relationshipIntent.status,
             expiresAt: relationshipIntent.expiresAt,
           })
           .from(relationshipIntent)
-          .where(eq(relationshipIntent.pairId, relationship.pair!.id));
+          .where(
+            or(
+              and(
+                eq(relationshipIntent.authorAccount, relationship.firstEndpoint.account),
+                eq(relationshipIntent.authorNamespaceId, relationship.firstEndpoint.namespaceId),
+                eq(relationshipIntent.receiverAccount, relationship.secondEndpoint.account),
+                eq(relationshipIntent.receiverNamespaceId, relationship.secondEndpoint.namespaceId),
+              ),
+              and(
+                eq(relationshipIntent.authorAccount, relationship.secondEndpoint.account),
+                eq(relationshipIntent.authorNamespaceId, relationship.secondEndpoint.namespaceId),
+                eq(relationshipIntent.receiverAccount, relationship.firstEndpoint.account),
+                eq(relationshipIntent.receiverNamespaceId, relationship.firstEndpoint.namespaceId),
+              ),
+            ),
+          );
         expect(confirmedMemberships).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
-              authorSide: relationship.groupSide,
+              authorAccount: relationship.groupEndpoint.account,
+              authorNamespaceId: relationship.groupEndpoint.namespaceId,
               status: 'ACCEPTED',
               expiresAt: null,
             }),
             expect.objectContaining({
-              authorSide: relationship.memberSide,
+              authorAccount: relationship.memberEndpoint.account,
+              authorNamespaceId: relationship.memberEndpoint.namespaceId,
               status: 'ACCEPTED',
               expiresAt: null,
             }),
@@ -2248,7 +2326,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           erinLocalIdB,
         );
         const intents = await appB.database.query.relationshipIntent.findMany({
-          where: eq(relationshipIntent.pairId, relation.pair!.id),
+          where: or(
+          and(
+            eq(relationshipIntent.authorAccount, relation.groupEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, relation.groupEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, relation.memberEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, relation.memberEndpoint.namespaceId),
+          ),
+          and(
+            eq(relationshipIntent.authorAccount, relation.memberEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, relation.memberEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, relation.groupEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, relation.groupEndpoint.namespaceId),
+          ),
+        ),
         });
         expect(intents).toHaveLength(2);
         expect(intents.every((intent) => intent.status === 'REVOKED')).toBe(
@@ -2265,7 +2356,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         );
         const originIntents =
           await appA.database.query.relationshipIntent.findMany({
-            where: eq(relationshipIntent.pairId, origin.pair!.id),
+            where: or(
+          and(
+            eq(relationshipIntent.authorAccount, origin.groupEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, origin.groupEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, origin.memberEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, origin.memberEndpoint.namespaceId),
+          ),
+          and(
+            eq(relationshipIntent.authorAccount, origin.memberEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, origin.memberEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, origin.groupEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, origin.groupEndpoint.namespaceId),
+          ),
+        ),
           });
         expect(
           originIntents.every((intent) => intent.status === 'REVOKED'),
@@ -2425,7 +2529,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await appB.database.insert(profileTable).values({
       account: 'stale-roster-member',
       domain: 'stale.test',
-      namespaceId: namespaceAOnB,
+      publisherNamespaceId: namespaceAOnB,
+      profileNamespaceId: namespaceAOnB,
       profileRev: 1,
       displayName: 'Stale roster member',
     });
@@ -2464,8 +2569,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         );
         const pending = await appB.database.query.relationshipIntent.findFirst({
           where: and(
-            eq(relationshipIntent.pairId, relationship.pair!.id),
-            eq(relationshipIntent.authorSide, relationship.groupSide),
+            eq(relationshipIntent.authorAccount, relationship.groupEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, relationship.groupEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, relationship.memberEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, relationship.memberEndpoint.namespaceId),
             eq(relationshipIntent.status, 'REQUESTED'),
           ),
         });
@@ -2529,7 +2636,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             where: and(
               eq(profileTable.account, 'stale-roster-member'),
               eq(profileTable.domain, 'stale.test'),
-              eq(profileTable.namespaceId, namespaceAOnB),
+              eq(profileTable.profileNamespaceId, namespaceAOnB),
               eq(profileTable.profileRev, 1),
             ),
           }),
@@ -2587,7 +2694,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const [pair, intents] = await Promise.all([
           relationship.pair,
           appA.database.query.relationshipIntent.findMany({
-            where: eq(relationshipIntent.pairId, relationship.pair!.id),
+            where: or(
+              and(
+                eq(relationshipIntent.authorAccount, relationship.groupEndpoint.account),
+                eq(relationshipIntent.authorNamespaceId, relationship.groupEndpoint.namespaceId),
+                eq(relationshipIntent.receiverAccount, relationship.memberEndpoint.account),
+                eq(relationshipIntent.receiverNamespaceId, relationship.memberEndpoint.namespaceId),
+              ),
+              and(
+                eq(relationshipIntent.authorAccount, relationship.memberEndpoint.account),
+                eq(relationshipIntent.authorNamespaceId, relationship.memberEndpoint.namespaceId),
+                eq(relationshipIntent.receiverAccount, relationship.groupEndpoint.account),
+                eq(relationshipIntent.receiverNamespaceId, relationship.groupEndpoint.namespaceId),
+              ),
+            ),
           }),
         ]);
         expect(
@@ -2772,8 +2892,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const joinDirection =
           await appB.database.query.relationshipIntent.findFirst({
             where: and(
-              eq(relationshipIntent.pairId, relationship.pair!.id),
-              eq(relationshipIntent.authorSide, relationship.memberSide),
+              eq(relationshipIntent.authorAccount, relationship.memberEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, relationship.memberEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, relationship.groupEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, relationship.groupEndpoint.namespaceId),
             ),
           });
         expect(joinDirection?.status).toBe('REVOKED');
@@ -2908,8 +3030,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const requestRow =
           await appB.database.query.relationshipIntent.findFirst({
             where: and(
-              eq(relationshipIntent.pairId, relationship.pair!.id),
-              eq(relationshipIntent.authorSide, relationship.groupSide),
+              eq(relationshipIntent.authorAccount, relationship.groupEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, relationship.groupEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, relationship.memberEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, relationship.memberEndpoint.namespaceId),
             ),
           });
         expect(requestRow?.status).toBe('REQUESTED');
@@ -3104,8 +3228,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         );
         const invite = await appB.database.query.relationshipIntent.findFirst({
           where: and(
-            eq(relationshipIntent.pairId, relationship.pair?.id ?? 0n),
-            eq(relationshipIntent.authorSide, relationship.groupSide),
+            eq(relationshipIntent.authorAccount, relationship.groupEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, relationship.groupEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, relationship.memberEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, relationship.memberEndpoint.namespaceId),
           ),
         });
         expect(invite?.status).toBe('REQUESTED');
@@ -3234,8 +3360,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       );
       const pending = await appB.database.query.relationshipIntent.findFirst({
         where: and(
-          eq(relationshipIntent.pairId, relationship.pair!.id),
-          eq(relationshipIntent.authorSide, relationship.memberSide),
+          eq(relationshipIntent.authorAccount, relationship.memberEndpoint.account),
+          eq(relationshipIntent.authorNamespaceId, relationship.memberEndpoint.namespaceId),
+          eq(relationshipIntent.receiverAccount, relationship.groupEndpoint.account),
+          eq(relationshipIntent.receiverNamespaceId, relationship.groupEndpoint.namespaceId),
         ),
       });
       // The observed group-side ACCEPTED immediately satisfies this request
@@ -3269,8 +3397,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         );
         const join = await appB.database.query.relationshipIntent.findFirst({
           where: and(
-            eq(relationshipIntent.pairId, relationship.pair!.id),
-            eq(relationshipIntent.authorSide, relationship.memberSide),
+            eq(relationshipIntent.authorAccount, relationship.memberEndpoint.account),
+            eq(relationshipIntent.authorNamespaceId, relationship.memberEndpoint.namespaceId),
+            eq(relationshipIntent.receiverAccount, relationship.groupEndpoint.account),
+            eq(relationshipIntent.receiverNamespaceId, relationship.groupEndpoint.namespaceId),
           ),
         });
         expect(join?.status).toBe('ACCEPTED');
@@ -3320,11 +3450,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       kind: 'GROUP_MEMBER',
       endpointAType: 'GROUP',
       endpointAAccount: groupAccount,
-      endpointADomain: 'local',
-      endpointANamespaceId: bobAddressOnA.namespaceId,
+      endpointANamespaceId: 0,
       endpointBType: 'USER',
       endpointBAccount: 'bob',
-      endpointBDomain: DOM_B,
       endpointBNamespaceId: bobAddressOnA.namespaceId,
       threadId: originThreadId,
       active: false,
@@ -3334,13 +3462,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .insert(relationshipPair)
       .values({
         kind: 'GROUP_MEMBER',
-        endpointAType: 'GROUP',
-        endpointAAccount: mirror.group.account,
-        endpointADomain: mirror.group.domain,
-        endpointANamespaceId: mirror.group.namespaceId,
-        endpointBType: 'USER',
-        endpointBAccount: 'bob',
-        endpointBDomain: 'local',
+        endpointAType: 'USER',
+        endpointAAccount: 'bob',
+        endpointANamespaceId: 0,
+        endpointBType: 'GROUP',
+        endpointBAccount: mirror.group.account,
         endpointBNamespaceId: mirror.group.namespaceId,
         threadId: mirror.id,
         active: false,
@@ -3350,21 +3476,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         target: [
           relationshipPair.endpointAType,
           relationshipPair.endpointAAccount,
-          relationshipPair.endpointADomain,
-          relationshipPair.endpointANamespaceId,
           relationshipPair.endpointBType,
           relationshipPair.endpointBAccount,
-          relationshipPair.endpointBDomain,
           relationshipPair.endpointBNamespaceId,
         ],
         set: { threadId: mirror.id, updatedAt: requestedAt },
       })
       .returning({ id: relationshipPair.id });
     await appB.database.insert(relationshipIntent).values({
-      pairId: dishonestPair.id,
+      authorAccount: mirror.group.account,
+      authorNamespaceId: mirror.group.namespaceId,
+      receiverAccount: 'bob',
+      receiverNamespaceId: 0,
+      profileNamespaceId: 0,
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
-      authorSide: 'A',
       status: 'REQUESTED',
       note: '',
       requestedAt,
@@ -3412,8 +3538,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         expect(origin.pair).toBeDefined();
         const denial = await appA.database.query.relationshipIntent.findFirst({
           where: and(
-            eq(relationshipIntent.pairId, origin.pair!.id),
-            eq(relationshipIntent.authorSide, origin.groupSide),
+            eq(relationshipIntent.authorAccount, origin.groupEndpoint.account),
+              eq(relationshipIntent.authorNamespaceId, origin.groupEndpoint.namespaceId),
+              eq(relationshipIntent.receiverAccount, origin.memberEndpoint.account),
+              eq(relationshipIntent.receiverNamespaceId, origin.memberEndpoint.namespaceId),
           ),
         });
         expect(denial?.status).toBe('REVOKED');
@@ -3426,14 +3554,18 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const [invite, join] = await Promise.all([
           appB.database.query.relationshipIntent.findFirst({
             where: and(
-              eq(relationshipIntent.pairId, dishonestPair.id),
-              eq(relationshipIntent.authorSide, 'A'),
+              eq(relationshipIntent.authorAccount, mirror.group.account),
+              eq(relationshipIntent.authorNamespaceId, mirror.group.namespaceId),
+              eq(relationshipIntent.receiverAccount, 'bob'),
+              eq(relationshipIntent.receiverNamespaceId, 0),
             ),
           }),
           appB.database.query.relationshipIntent.findFirst({
             where: and(
-              eq(relationshipIntent.pairId, dishonestPair.id),
-              eq(relationshipIntent.authorSide, 'B'),
+              eq(relationshipIntent.authorAccount, 'bob'),
+              eq(relationshipIntent.authorNamespaceId, 0),
+              eq(relationshipIntent.receiverAccount, mirror.group.account),
+              eq(relationshipIntent.receiverNamespaceId, mirror.group.namespaceId),
             ),
           }),
         ]);

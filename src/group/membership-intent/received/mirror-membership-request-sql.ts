@@ -2,6 +2,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { clientIntentFeedWriteSql } from '../../../common/sql/relationship-intent-recipient-feed-sql.js';
 import {
   epochMillisSql,
+  mirrorGroupDirection,
   mirrorIntentCompactionKey,
   mirrorIntentFeedBodySql,
   mirrorIntentReadBackSql,
@@ -11,13 +12,12 @@ import {
 
 export interface MirrorMembershipRequestInput {
   threadId: number;
-  /** Minted by the transaction owner's lock preamble when the pair is absent. */
-  pairId: bigint;
   presentation: MirrorGroupPresentationInput;
   memberAccount: string;
   localMemberId: number;
   /** Wire coordinates from the received item body. */
   intent: {
+    profileNamespaceId: number;
     profileRev: number;
     note: string;
     requestedAt: Date;
@@ -37,15 +37,20 @@ export interface MirrorMembershipRequestInput {
 export function mirrorMembershipRequestSql(
   input: MirrorMembershipRequestInput,
 ): SQL {
+  const { author, receiver } = mirrorGroupDirection(
+    input.presentation,
+    input.memberAccount,
+  );
   return sql`
     WITH authored AS (
       ${mirrorIntentWriteSql({
-        pairId: input.pairId,
-        authorSide: 'A',
+        author,
+        receiver,
         status: 'REQUESTED',
         note: input.intent.note,
         requestedAt: input.intent.requestedAt,
         expiresAt: input.intent.expiresAt,
+        profileNamespaceId: input.intent.profileNamespaceId,
         profileRev: input.intent.profileRev,
         messageEndSeq: input.intent.messageEndSeq,
         tombstoneEndSeq: input.intent.tombstoneEndSeq,
@@ -53,8 +58,8 @@ export function mirrorMembershipRequestSql(
     ), ${mirrorIntentReadBackSql({
       writeName: 'authored',
       readBackName: 'persisted_intent',
-      pairId: input.pairId,
-      authorSide: 'A',
+      author,
+      receiver,
     })}, candidate_bodies AS MATERIALIZED (
       SELECT ${input.localMemberId}::integer AS "userId",
         ${input.presentation.groupNamespaceId}::integer AS "namespaceId", 1 AS ordinal,

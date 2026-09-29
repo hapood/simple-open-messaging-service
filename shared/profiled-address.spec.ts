@@ -6,14 +6,15 @@ describe('profiled system-event identity', () => {
     const participant = {
       account: 'alice',
       domain: 'peer.test',
-      namespaceId: 12,
+      profileNamespaceId: 12,
       profileRev: 3,
     };
     expect(isProfiledAddress(participant)).toBe(true);
-    expect(profileKeyForAddress(participant)).toEqual({
+    expect(profileKeyForAddress(participant, 17)).toEqual({
       account: 'alice',
       domain: 'peer.test',
-      namespaceId: 12,
+      publisherNamespaceId: 17,
+      profileNamespaceId: 12,
       rev: 3,
     });
   });
@@ -23,7 +24,7 @@ describe('profiled system-event identity', () => {
       isProfiledAddress({
         account: '$system',
         domain: 'local',
-        namespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 0,
       }),
     ).toBe(true);
@@ -31,7 +32,7 @@ describe('profiled system-event identity', () => {
       isProfiledAddress({
         account: '$system',
         domain: 'local',
-        namespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 1,
       }),
     ).toBe(false);
@@ -39,17 +40,20 @@ describe('profiled system-event identity', () => {
       isProfiledAddress({
         account: 'alice',
         domain: 'local',
-        namespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 0,
       }),
     ).toBe(true);
     expect(
-      profileKeyForAddress({
-        account: '$system',
-        domain: 'local',
-        namespaceId: 0,
-        profileRev: 0,
-      }),
+      profileKeyForAddress(
+        {
+          account: '$system',
+          domain: 'local',
+          profileNamespaceId: 0,
+          profileRev: 0,
+        },
+        0,
+      ),
     ).toBeUndefined();
   });
 
@@ -65,7 +69,7 @@ describe('profiled system-event identity', () => {
       isProfiledAddress({
         account: 'alice',
         domain: 'local',
-        namespaceId: 7,
+        profileNamespaceId: 7,
         profileRev: 2,
       }),
     ).toBe(false);
@@ -73,7 +77,7 @@ describe('profiled system-event identity', () => {
       isProfiledAddress({
         account: 'alice',
         domain: 'peer.test',
-        namespaceId: 7,
+        profileNamespaceId: 7,
         profileRev: 2,
         name: 'Alice',
       }),

@@ -78,21 +78,25 @@ export class GroupRevokeFanoutService {
         namespaceId: number;
         active: boolean;
       }>(sql`
-        SELECT pair.id AS "pairId", pair."endpointBAccount" AS account,
-          pair."endpointBDomain" AS domain,
+        SELECT pair.id AS "pairId", member.account AS account,
+          member_ns.domain AS domain,
           pair.active AS active,
-          CASE WHEN pair."endpointBDomain" = 'local' THEN 0 ELSE pair."endpointBNamespaceId" END AS "namespaceId"
+          member."namespaceId" AS "namespaceId"
         FROM "RelationshipPair" pair
+        CROSS JOIN LATERAL (VALUES
+          (pair."endpointAType", pair."endpointAAccount", pair."endpointANamespaceId"),
+          (pair."endpointBType", pair."endpointBAccount", pair."endpointBNamespaceId")
+        ) member(kind, account, "namespaceId")
+        JOIN "IdentityNamespace" member_ns ON member_ns.id = member."namespaceId"
         WHERE pair."threadId" = ${threadId}
           AND pair.kind = 'GROUP_MEMBER'
+          AND member.kind = 'USER'
           ${denial ? sql`AND pair.active = true` : sql``}
           AND pair.id > ${afterPairId}
           ${
             denial
               ? sql`
-            AND pair."endpointBDomain" = ${group.domain === 'local' ? denial.peerDomain : 'local'}
-            AND pair."endpointANamespaceId" = ${denial.namespaceId}
-            AND pair."endpointBNamespaceId" = ${denial.namespaceId}
+            AND member_ns.domain = ${group.domain === 'local' ? denial.peerDomain : 'local'}
           `
               : sql``
           }

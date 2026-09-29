@@ -6,7 +6,7 @@ import {
 } from './profile-resolution-demand.js';
 import { groupStateSql } from '../group/shared/group-state.js';
 import { Injectable, Logger } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -18,7 +18,8 @@ import type { S2SProfile } from '../federation/federation-profile.js';
 import { FederationProfileService } from '../federation/federation-profile.service.js';
 
 export interface ResolvedClientProfile {
-  namespaceId: number;
+  publisherNamespaceId: number;
+  profileNamespaceId: number;
   account: string;
   domain: string;
   rev: number;
@@ -74,7 +75,7 @@ export class ProfileResolutionCoordinatorService {
   }
 
   async resolveDemand(demand: ProfileResolutionDemand): Promise<void> {
-    if (demand.target.rev < 1 || demand.namespaceId === 0) return;
+    if (demand.target.rev < 1 || demand.publisherNamespaceId === 0) return;
     await this.enqueueResolution(demand);
   }
 
@@ -83,7 +84,8 @@ export class ProfileResolutionCoordinatorService {
     options: ResolutionEnqueueOptions = {},
   ): Promise<ProfileResolutionStart> {
     const key: ProfileKey = {
-      namespaceId: demand.namespaceId,
+      publisherNamespaceId: demand.publisherNamespaceId,
+      profileNamespaceId: demand.target.profileNamespaceId,
       account: demand.target.account,
       domain: demand.target.domain,
       rev: demand.target.rev,
@@ -99,7 +101,7 @@ export class ProfileResolutionCoordinatorService {
       this.touch(keyString, durable);
       return { status: 'READY', profile: durable };
     }
-    if (key.domain === 'local' && key.namespaceId === 0) {
+    if (key.publisherNamespaceId === 0 && key.domain === 'local') {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'local profile revision is unavailable',
@@ -129,7 +131,7 @@ export class ProfileResolutionCoordinatorService {
     demand: ProfileClientResolutionDemand,
   ): Promise<void> {
     const namespace = await this.database.db.query.identityNamespace.findFirst({
-      where: eq(tables.identityNamespace.id, demand.namespaceId),
+      where: eq(tables.identityNamespace.id, demand.publisherNamespaceId),
       columns: { domain: true },
     });
     if (!namespace)
@@ -177,32 +179,31 @@ export class ProfileResolutionCoordinatorService {
         AND thread.type = 'GROUP'
         AND group_state.account = ${normalizeAccount(demand.groupAccount)}
         AND group_state.domain = ${publisherDomain}
-        AND group_state."namespaceId" = ${demand.namespaceId}
+        AND group_state."namespaceId" = ${demand.publisherNamespaceId}
         AND latest.operation = 'MEMBER_UPSERT'
+        AND (latest.body ->> 'profileNamespaceId')::integer = ${demand.target.profileNamespaceId}
         AND (latest.body ->> 'profileRev')::integer = ${demand.target.rev}
         AND EXISTS (
           SELECT 1 FROM "RelationshipPair" pair
           WHERE pair."threadId" = thread.id
             AND pair.kind = 'GROUP_MEMBER'
             AND pair.established = true
-            AND ((pair."endpointAType" = 'USER'
-              AND pair."endpointAAccount" = viewer.account
-              AND pair."endpointADomain" = viewer.domain
-              AND pair."endpointANamespaceId" = viewer."namespaceId")
-              OR (pair."endpointBType" = 'USER'
-              AND pair."endpointBAccount" = viewer.account
-              AND pair."endpointBDomain" = viewer.domain
-              AND pair."endpointBNamespaceId" = viewer."namespaceId"))
+            AND pair."endpointAType" = 'USER'
+            AND pair."endpointAAccount" = viewer.account
+            AND pair."endpointANamespaceId" = 0
         )
         AND EXISTS (
           SELECT 1 FROM "Message" message
           WHERE message."threadId" = thread.id
-            AND message.seq > COALESCE(state."clearedSeq", 0)
+            AND message.seq > COALESCE(thread."clearedSeq", 0)
             AND message.seq <= state."messageEndSeq"
             AND message."creatorAccount" = ${normalizeAccount(demand.target.account)}
             AND message."creatorDomain" = ${memberDomain}
+            AND message."sourceNamespaceId" = ${demand.publisherNamespaceId}
+            AND message."profileNamespaceId" = ${demand.target.profileNamespaceId}
             AND message."profileRev" = ${demand.target.rev}
             AND message."contentType" <> 'SYSTEM'
+            AND message."localState" = 'READY'
         )
       LIMIT 1
     `);
@@ -223,24 +224,29 @@ export class ProfileResolutionCoordinatorService {
     const rows = await this.database.db.execute(sql`
       SELECT 1
       FROM "Account" self
-      JOIN "RelationshipPair" pair ON (
-        (pair."endpointAAccount" = ${normalizeAccount(demand.target.account)}
-          AND pair."endpointADomain" = ${demand.target.domain}
-          AND pair."endpointBAccount" = ${normalizeAccount(demand.peerAccount)} )
-        OR (pair."endpointBAccount" = ${normalizeAccount(demand.target.account)}
-          AND pair."endpointBDomain" = ${demand.target.domain}
-          AND pair."endpointAAccount" = ${normalizeAccount(demand.peerAccount)} )
-      )
-      JOIN "RelationshipIntent" intent ON intent."pairId" = pair.id
+      JOIN "RelationshipIntent" intent
+        ON intent."authorAccount" = ${normalizeAccount(demand.target.account)}
+        AND intent."authorNamespaceId" = ${demand.publisherNamespaceId}
+        AND intent."receiverAccount" = ${normalizeAccount(demand.peerAccount)}
+      JOIN "RelationshipPair" pair
+        ON (pair."endpointAAccount" = intent."authorAccount"
+          AND pair."endpointANamespaceId" = intent."authorNamespaceId"
+          AND pair."endpointBAccount" = intent."receiverAccount"
+          AND pair."endpointBNamespaceId" = intent."receiverNamespaceId")
+          OR (pair."endpointBAccount" = intent."authorAccount"
+          AND pair."endpointBNamespaceId" = intent."authorNamespaceId"
+          AND pair."endpointAAccount" = intent."receiverAccount"
+          AND pair."endpointANamespaceId" = intent."receiverNamespaceId")
       WHERE self.id = ${userId}
+        AND intent."profileNamespaceId" = ${demand.target.profileNamespaceId}
         AND intent."profileRev" = ${demand.target.rev}
         AND (intent.status = 'ACCEPTED' OR
           (intent.status = 'REQUESTED' AND intent."expiresAt" > CURRENT_TIMESTAMP))
         AND (pair."endpointAType" = 'USER' OR pair."endpointBType" = 'USER')
-        AND (pair."endpointANamespaceId" = ${demand.namespaceId}
-          OR pair."endpointBNamespaceId" = ${demand.namespaceId})
         AND (pair."endpointAAccount" = self.account
-          OR pair."endpointBAccount" = self.account)
+          AND pair."endpointANamespaceId" = 0
+          OR pair."endpointBAccount" = self.account
+          AND pair."endpointBNamespaceId" = 0)
       LIMIT 1
     `);
     if (rows.rows.length === 0)
@@ -265,30 +271,19 @@ export class ProfileResolutionCoordinatorService {
         AND (
           (self.account = ${account}
             AND self.domain = ${demand.target.domain}
-            AND self."namespaceId" = ${demand.namespaceId})
+            AND self."namespaceId" = ${demand.target.profileNamespaceId})
           OR EXISTS (
             SELECT 1 FROM "RelationshipPair" pair
             WHERE pair.kind = 'P2P'
               AND pair.established = true
-              AND (
-                (pair."endpointAType" = 'USER'
-                  AND pair."endpointAAccount" = self.account
-                  AND pair."endpointADomain" = self.domain
-                  AND pair."endpointANamespaceId" = self."namespaceId"
-                  AND pair."endpointBType" = 'USER'
-                  AND pair."endpointBAccount" = ${account}
-                  AND pair."endpointBDomain" = ${demand.target.domain}
-                  AND pair."endpointBNamespaceId" = ${demand.namespaceId})
-                OR
-                (pair."endpointBType" = 'USER'
-                  AND pair."endpointBAccount" = self.account
-                  AND pair."endpointBDomain" = self.domain
-                  AND pair."endpointBNamespaceId" = self."namespaceId"
-                  AND pair."endpointAType" = 'USER'
-                  AND pair."endpointAAccount" = ${account}
-                  AND pair."endpointADomain" = ${demand.target.domain}
-                  AND pair."endpointANamespaceId" = ${demand.namespaceId})
-              )
+              AND pair."endpointAType" = 'USER'
+              AND pair."endpointAAccount" = self.account
+              AND pair."endpointANamespaceId" = 0
+              AND pair."endpointBType" = 'USER'
+              AND pair."endpointBAccount" = ${account}
+              AND pair."endpointBNamespaceId" = CASE
+                WHEN ${demand.target.domain} = 'local' THEN 0
+                ELSE ${demand.publisherNamespaceId} END
           )
           OR EXISTS (
             SELECT 1
@@ -296,12 +291,15 @@ export class ProfileResolutionCoordinatorService {
             JOIN "MessageThread" thread ON thread.id = state."threadId"
             JOIN "Message" message ON message."threadId" = thread.id
             WHERE state."accountId" = self.id
-              AND message.seq > COALESCE(state."clearedSeq", 0)
+              AND message.seq > COALESCE(thread."clearedSeq", 0)
               AND message.seq <= state."messageEndSeq"
               AND message."creatorAccount" = ${account}
               AND message."creatorDomain" = ${demand.target.domain}
+              AND message."sourceNamespaceId" = ${demand.publisherNamespaceId}
+              AND message."profileNamespaceId" = ${demand.target.profileNamespaceId}
               AND message."profileRev" = ${demand.target.rev}
               AND message."contentType" <> 'SYSTEM'
+              AND message."localState" = 'READY'
           )
           OR EXISTS (
             SELECT 1
@@ -319,8 +317,9 @@ export class ProfileResolutionCoordinatorService {
               AND thread.type = 'GROUP'
               AND thread."groupAccount" = ${account}
               AND thread."groupDomain" = ${demand.target.domain}
-              AND thread."authorityNamespaceId" = ${demand.namespaceId}
+              AND thread."authorityNamespaceId" = ${demand.publisherNamespaceId}
               AND latest.operation = 'GROUP_PROFILE'
+              AND (latest.body ->> 'profileNamespaceId')::integer = ${demand.target.profileNamespaceId}
               AND (latest.body ->> 'profileRev')::integer = ${demand.target.rev}
           )
         )
@@ -335,12 +334,15 @@ export class ProfileResolutionCoordinatorService {
 
   private async readDurable(key: ProfileKey) {
     const profile = await this.profiles.getStoredProfile(
+      key.publisherNamespaceId,
       key.account,
       key.domain,
-      key.namespaceId,
+      key.profileNamespaceId,
       key.rev,
     );
-    return profile ? this.clientProfile(profile, key.namespaceId) : null;
+    return profile
+      ? this.clientProfile(profile, key.publisherNamespaceId, key.profileNamespaceId)
+      : null;
   }
 
   private drain(): void {
@@ -386,7 +388,8 @@ export class ProfileResolutionCoordinatorService {
     // committing transaction. Nothing below can run before the exact snapshot
     // is durable in PostgreSQL.
     const actualKey: ProfileKey = {
-      namespaceId: profile.namespaceId,
+      publisherNamespaceId: profile.publisherNamespaceId,
+      profileNamespaceId: profile.profileNamespaceId,
       account: profile.account,
       domain: profile.domain,
       rev: profile.rev,
@@ -394,7 +397,7 @@ export class ProfileResolutionCoordinatorService {
     this.touch(profileKeyString(actualKey), profile);
 
     // A durable exact snapshot satisfies every method waiting for this same
-    // four-tuple. Remove the pending key only after persistence, then notify
+    // five-tuple. Remove the pending key only after persistence, then notify
     // the union of its session listeners. Internal prefetches have no listener.
     const listeners = [...item.listeners];
     this.removeItem(expectedKeyString, item);
@@ -442,12 +445,6 @@ export class ProfileResolutionCoordinatorService {
     expected: ProfileKey,
     demand: ProfileResolutionDemand,
   ): Promise<ResolvedClientProfile> {
-    if (expected.namespaceId === 0) {
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'profile revision is unavailable',
-      );
-    }
     const profile = await this.fetchExactProfile(expected, demand);
     if (!profile.profile) {
       throw new BusinessException(
@@ -455,12 +452,22 @@ export class ProfileResolutionCoordinatorService {
         'profile revision is unavailable',
       );
     }
-    const fetched = this.clientProfile(profile.profile, expected.namespaceId);
+    if (profile.profile.namespaceId !== expected.profileNamespaceId) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'profile namespace does not match the requested target',
+      );
+    }
+    const fetched = this.clientProfile(
+      profile.profile,
+      expected.publisherNamespaceId,
+      expected.profileNamespaceId,
+    );
     this.touch(profileKeyString(expected), fetched);
     await this.profiles.materializeExactForeignProfile(
       profile.profile,
       profile.sourceDomain,
-      expected.namespaceId,
+      expected.publisherNamespaceId,
     );
     const materialized = await this.readDurable(expected);
     if (!materialized) {
@@ -477,10 +484,13 @@ export class ProfileResolutionCoordinatorService {
     demand: ProfileResolutionDemand,
   ) {
     const namespace = await this.database.db.query.identityNamespace.findFirst({
-      where: eq(tables.identityNamespace.id, demand.namespaceId),
+      where: and(
+        eq(tables.identityNamespace.id, demand.publisherNamespaceId),
+        isNull(tables.identityNamespace.retiredAt),
+      ),
       columns: { domain: true },
     });
-    if (!namespace || demand.namespaceId === 0)
+    if (!namespace || demand.publisherNamespaceId === 0)
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'profile namespace is unavailable',
@@ -492,6 +502,7 @@ export class ProfileResolutionCoordinatorService {
           demand.target.account,
           demand.target.rev,
           publisherDomain,
+          expected.profileNamespaceId,
         ),
         sourceDomain: publisherDomain,
       };
@@ -503,6 +514,7 @@ export class ProfileResolutionCoordinatorService {
           demand.target.account,
           demand.target.rev,
           publisherDomain,
+          expected.profileNamespaceId,
         ),
         sourceDomain: publisherDomain,
       };
@@ -512,6 +524,7 @@ export class ProfileResolutionCoordinatorService {
         demand.peerAccount,
         demand.target.rev,
         publisherDomain,
+        expected.profileNamespaceId,
       ),
       sourceDomain: publisherDomain,
     };
@@ -527,10 +540,12 @@ export class ProfileResolutionCoordinatorService {
 
   private clientProfile(
     profile: S2SProfile,
-    namespaceId: number,
+    publisherNamespaceId: number,
+    profileNamespaceId: number,
   ): ResolvedClientProfile {
     return {
-      namespaceId,
+      publisherNamespaceId,
+      profileNamespaceId,
       account: profile.account,
       domain: profile.domain,
       rev: profile.profileRev,
@@ -565,5 +580,11 @@ export class ProfileResolutionCoordinatorService {
 }
 
 function profileKeyString(key: ProfileKey): string {
-  return JSON.stringify([key.namespaceId, key.account, key.domain, key.rev]);
+  return JSON.stringify([
+    key.publisherNamespaceId,
+    key.profileNamespaceId,
+    key.account,
+    key.domain,
+    key.rev,
+  ]);
 }

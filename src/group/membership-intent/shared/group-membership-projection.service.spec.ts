@@ -102,7 +102,11 @@ describe('GroupMembershipProjectionService', () => {
         account: 'alice',
         domain: 'local',
         operation: 'MEMBER_UPSERT',
-        body: { role: 'MEMBER', profileRev: 3 },
+        body: {
+          role: 'MEMBER',
+          profileNamespaceId: 0,
+          profileRev: 3,
+        },
       },
     );
     expect(target.reconcileProfileInTx).toHaveBeenCalledWith(target.tx, 5, 1);
@@ -135,7 +139,11 @@ describe('GroupMembershipProjectionService', () => {
       5,
       expect.objectContaining({
         operation: 'MEMBER_UPSERT',
-        body: { role: 'OWNER', profileRev: 3 },
+        body: {
+          role: 'OWNER',
+          profileNamespaceId: 0,
+          profileRev: 3,
+        },
       }),
     );
     expect(target.participantValues).toHaveBeenCalledWith(
@@ -147,6 +155,39 @@ describe('GroupMembershipProjectionService', () => {
       }),
     );
     expect(target.tx.query.groupMeta.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('records the handshake member namespace for an authoritative remote member fact', async () => {
+    const target = harness();
+
+    await target.service.syncFromActiveInTx(target.tx as never, {
+      threadId: 7,
+      groupId: 5,
+      memberUserId: {
+        account: 'remote-member',
+        domain: 'member.example',
+        namespaceId: 23,
+      },
+      active: true,
+      pairChanged: true,
+      hostedLocally: true,
+      memberProfileRev: 9,
+    });
+
+    expect(target.appendMemberTransitionInTx).toHaveBeenCalledWith(
+      target.tx,
+      5,
+      {
+        account: 'remote-member',
+        domain: 'member.example',
+        operation: 'MEMBER_UPSERT',
+        body: {
+          role: 'MEMBER',
+          profileNamespaceId: 23,
+          profileRev: 9,
+        },
+      },
+    );
   });
 
   it('keeps the canonical role and profile revision while membership remains active', async () => {

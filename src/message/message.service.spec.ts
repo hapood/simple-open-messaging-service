@@ -50,7 +50,8 @@ function databaseMock(queries: {
                   {
                     account: 'alice',
                     domain: 'local',
-                    namespaceId: 0,
+                    publisherNamespaceId: 0,
+                    profileNamespaceId: 0,
                     name: 'Alice',
                   },
                 ]) as Array<{ name: string }>;
@@ -74,7 +75,8 @@ function databaseMock(queries: {
               {
                 account: 'alice',
                 domain: 'local',
-                namespaceId: 0,
+                publisherNamespaceId: 0,
+                profileNamespaceId: 0,
                 name: 'Alice',
               },
             ]),
@@ -93,7 +95,8 @@ function mk(
     threadId: 1,
     creatorAccount: 'alice',
     creatorDomain: 'local',
-    creatorNamespaceId: 0,
+    profileNamespaceId: 0,
+    sourceNamespaceId: 0,
     profileRev: 1,
     contentType: 'IMAGE' as ContentType,
     createdAt: new Date(),
@@ -117,7 +120,7 @@ describe('stripMessageId author projection namespace', () => {
         seq: 1,
         content: '{}',
         creatorDomain: 'local',
-        creatorNamespaceId: 0,
+        profileNamespaceId: 0,
         sourceNamespaceId: 7,
       }),
     );
@@ -132,7 +135,7 @@ describe('stripMessageId author projection namespace', () => {
         seq: 1,
         content: '{}',
         creatorDomain: 'remote.test',
-        creatorNamespaceId: 7,
+        profileNamespaceId: 7,
         sourceNamespaceId: 11,
       }),
     );
@@ -185,13 +188,13 @@ describe('MessageService committed profile work', () => {
         {
           account: 'alice',
           domain: 'remote.test',
-          namespaceId: 7,
+          profileNamespaceId: 7,
           profileRev: 3,
         },
         {
           account: 'bob',
           domain: 'local',
-          namespaceId: 0,
+          profileNamespaceId: 0,
           profileRev: 2,
         },
       ] as const,
@@ -203,6 +206,7 @@ describe('MessageService committed profile work', () => {
         seq: 4,
         profileRev: 0,
         creator: { account: '$system', domain: 'local', namespaceId: 0 },
+        sourceNamespaceId: 7,
         contentType: 'SYSTEM',
         content: JSON.stringify(systemContent),
         isDeleted: false,
@@ -216,9 +220,9 @@ describe('MessageService committed profile work', () => {
     const event = emit.mock.calls[0][1] as MessageProfileWorkCommittedEvent;
     expect(event.demands).toEqual([
       {
-        namespaceId: 7,
+        publisherNamespaceId: 7,
         lookup: 'RELATIONSHIP_INTENT_PROFILE',
-        target: { account: 'alice', domain: 'remote.test', rev: 3 },
+        target: { profileNamespaceId: 7, account: 'alice', domain: 'remote.test', rev: 3 },
         peerAccount: 'bob',
       },
     ]);
@@ -256,6 +260,7 @@ describe('MessageService committed profile work', () => {
       seq: 4,
       profileRev: 3,
       creator: { account: 'alice', domain: 'remote.test', namespaceId: 7 },
+      sourceNamespaceId: 7,
       contentType: 'PURE_TEXT',
       content: JSON.stringify({ text: 'hello' }),
       isDeleted: false,
@@ -267,15 +272,16 @@ describe('MessageService committed profile work', () => {
     const event = emit.mock.calls[0][1] as MessageProfileWorkCommittedEvent;
     expect(event.demands).toEqual([
       {
-        namespaceId: 7,
+        publisherNamespaceId: 7,
         lookup: 'ACCOUNT_PROFILE',
-        target: { account: 'alice', domain: 'remote.test', rev: 3 },
+        target: { profileNamespaceId: 7, account: 'alice', domain: 'remote.test', rev: 3 },
       },
     ]);
     expect(event.evidenceProjections).toEqual([
       {
         profile: {
-          namespaceId: 7,
+          publisherNamespaceId: 7,
+          profileNamespaceId: 7,
           account: 'alice',
           domain: 'remote.test',
           rev: 3,
@@ -907,7 +913,8 @@ describe('MessageService quote previews', () => {
           {
             account: 'bob',
             domain: 'local',
-            namespaceId: 0,
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
             name: 'Bob',
           },
         ]),

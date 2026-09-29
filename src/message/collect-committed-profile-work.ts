@@ -9,27 +9,23 @@ import {
   type ProfilePrefetchDemand,
 } from '../profile-resolution/profile-resolution-demand.js';
 
-interface CommittedProfileMessageBase {
+export interface CommittedProfileMessage {
   threadId: number;
   seq: number;
-  profileRev: number;
-  creator: { account: string; domain: string; namespaceId: number };
+  threadType: 'P2P' | 'GROUP';
+  creator: {
+    account: string;
+    domain: string;
+    profileNamespaceId: number;
+    profileRev: number;
+  };
+  publisherNamespaceId: number;
   contentType: string;
   content: string;
   isDeleted: boolean;
   localState: string;
+  groupAccount?: string;
 }
-
-export type CommittedProfileMessage =
-  | (CommittedProfileMessageBase & {
-      threadType: 'P2P';
-    })
-  | (CommittedProfileMessageBase & {
-      threadType: 'GROUP';
-      groupAccount: string;
-      /** 'local' at the origin, remote domain on a mirror. */
-      groupOriginDomain: string;
-    });
 
 export type MessageProfileProjectionCandidate = {
   demand: ProfilePrefetchDemand;
@@ -99,36 +95,37 @@ export function collectCommittedProfileWork(
           address.domain === 'local'
         )
           continue;
-        // A local member has their own snapshot. A group origin publishes its
-        // member reference itself; only a mirror prefetches remote members
-        // from that group's origin after applying the Meta fact.
-        if (item.threadType === 'GROUP' && item.groupOriginDomain === 'local') {
-          continue;
-        }
+        // A local publisher already owns the profile snapshot. Remote
+        // publishers require a federation profile lookup.
+        if (item.publisherNamespaceId === 0) continue;
         let thread = hints.get(item.threadId);
         if (!thread) {
           thread = new Map();
           hints.set(item.threadId, thread);
         }
+        const publisherNamespaceId = item.publisherNamespaceId;
         const key = JSON.stringify([
-          address.namespaceId,
+          publisherNamespaceId,
+          address.profileNamespaceId,
           address.account,
           address.domain,
           address.profileRev,
         ]);
         const previous = thread.get(key);
         if (!previous || item.seq > previous.eventSeq) {
+          const target = {
+            profileNamespaceId: address.profileNamespaceId,
+            account: address.account,
+            domain: address.domain,
+            rev: address.profileRev,
+          };
           if (item.threadType === 'GROUP') {
             thread.set(key, {
               demand: {
-                namespaceId: address.namespaceId,
+                publisherNamespaceId,
                 lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
-                target: {
-                  account: address.account,
-                  domain: address.domain,
-                  rev: address.profileRev,
-                },
-                groupAccount: item.groupAccount,
+                target,
+                groupAccount: item.groupAccount!,
               },
               eventSeq: item.seq,
             });
@@ -138,13 +135,9 @@ export function collectCommittedProfileWork(
           ) {
             thread.set(key, {
               demand: {
-                namespaceId: address.namespaceId,
+                publisherNamespaceId,
                 lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
-                target: {
-                  account: address.account,
-                  domain: address.domain,
-                  rev: address.profileRev,
-                },
+                target,
                 peerAccount: eventParticipants(event, item.threadType).find(
                   (participant) => participant.domain === 'local',
                 )!.account,
@@ -154,13 +147,9 @@ export function collectCommittedProfileWork(
           } else {
             thread.set(key, {
               demand: {
-                namespaceId: address.namespaceId,
+                publisherNamespaceId,
                 lookup: ProfileLookup.ACCOUNT_PROFILE,
-                target: {
-                  account: address.account,
-                  domain: address.domain,
-                  rev: address.profileRev,
-                },
+                target,
               },
               eventSeq: item.seq,
             });
@@ -177,17 +166,25 @@ export function collectCommittedProfileWork(
       evidenceByThread.set(item.threadId, thread);
     }
     const key = JSON.stringify([
-      author.namespaceId,
+      item.publisherNamespaceId,
+      author.profileNamespaceId,
       author.account,
       author.domain,
     ]);
     const previous = thread.get(key);
     if (!previous || item.seq > previous.evidence.projection.messageSeq) {
       const profile = {
-        namespaceId: author.namespaceId,
+        publisherNamespaceId: item.publisherNamespaceId,
+        profileNamespaceId: author.profileNamespaceId,
         account: author.account,
         domain: author.domain,
-        rev: item.profileRev,
+        rev: author.profileRev,
+      };
+      const target = {
+        profileNamespaceId: author.profileNamespaceId,
+        account: author.account,
+        domain: author.domain,
+        rev: author.profileRev,
       };
       const projection = {
         threadId: item.threadId,
@@ -198,31 +195,23 @@ export function collectCommittedProfileWork(
         item.threadType === 'GROUP'
           ? {
               demand: {
-                namespaceId: author.namespaceId,
+                publisherNamespaceId: item.publisherNamespaceId,
                 lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
-                target: {
-                  account: author.account,
-                  domain: author.domain,
-                  rev: item.profileRev,
-                },
-                groupAccount: item.groupAccount,
+                target,
+                groupAccount: item.groupAccount!,
               },
               evidence: {
                 profile,
                 lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
-                groupAccount: item.groupAccount,
+                groupAccount: item.groupAccount!,
                 projection,
               },
             }
           : {
               demand: {
-                namespaceId: author.namespaceId,
+                publisherNamespaceId: item.publisherNamespaceId,
                 lookup: ProfileLookup.ACCOUNT_PROFILE,
-                target: {
-                  account: author.account,
-                  domain: author.domain,
-                  rev: item.profileRev,
-                },
+                target,
               },
               evidence: {
                 profile,

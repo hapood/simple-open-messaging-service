@@ -38,22 +38,16 @@ export class FederationThreadQueryDenialService {
         remoteAccount: string;
       }>(sql`
         SELECT local_identity.id AS "localUserId",
-          CASE WHEN pair."endpointADomain" = ${peerDomain}
-            THEN pair."endpointAAccount" ELSE pair."endpointBAccount" END AS "remoteAccount"
+          pair."endpointBAccount" AS "remoteAccount"
         FROM "RelationshipPair" pair
         JOIN "Account" local_identity
           ON local_identity.domain = 'local'
          AND local_identity."namespaceId" = 0
-         AND ((pair."endpointAType" = 'USER'
-               AND pair."endpointAAccount" = local_identity.account
-               AND pair."endpointADomain" = local_identity.domain)
-           OR (pair."endpointBType" = 'USER'
-               AND pair."endpointBAccount" = local_identity.account
-               AND pair."endpointBDomain" = local_identity.domain))
+         AND pair."endpointAType" = 'USER'
+         AND pair."endpointAAccount" = local_identity.account
         WHERE pair.kind = 'P2P'
-          AND (pair."endpointADomain" = ${peerDomain} OR pair."endpointBDomain" = ${peerDomain})
           AND pair."threadId" = ${threadId}
-          AND pair."endpointANamespaceId" = ${namespaceId}
+          AND pair."endpointANamespaceId" = 0
           AND pair."endpointBNamespaceId" = ${namespaceId}
         LIMIT 1
       `);
@@ -122,7 +116,7 @@ export class FederationThreadQueryDenialService {
           SELECT group_profile.id AS "groupId",
             group_profile.domain AS "groupDomain",
             member_identity.id AS "memberUserId",
-            member.account AS "memberAccount", member.domain AS "memberDomain"
+            member.account AS "memberAccount", member_ns.domain AS "memberDomain"
           FROM "MessageThread" thread
           JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
           JOIN "RelationshipPair" pair
@@ -130,23 +124,23 @@ export class FederationThreadQueryDenialService {
            AND pair.kind = 'GROUP_MEMBER'
            AND pair.active = true
           CROSS JOIN LATERAL (VALUES
-            (pair."endpointAType", pair."endpointAAccount", pair."endpointADomain"),
-            (pair."endpointBType", pair."endpointBAccount", pair."endpointBDomain")
-          ) member(kind, account, domain)
+            (pair."endpointAType", pair."endpointAAccount", pair."endpointANamespaceId"),
+            (pair."endpointBType", pair."endpointBAccount", pair."endpointBNamespaceId")
+          ) member(kind, account, "namespaceId")
+          JOIN "IdentityNamespace" member_ns ON member_ns.id = member."namespaceId"
           LEFT JOIN "Account" member_identity
-            ON member.domain = 'local' AND member_identity.account = member.account
+            ON member_ns.domain = 'local' AND member_identity.account = member.account
           WHERE member.kind = 'USER' AND thread.id = ${threadId}
             AND thread.type = 'GROUP'
             AND ((group_profile.domain = ${peerDomain}
                   AND group_profile."namespaceId" = ${namespaceId}
-                  AND member.domain = 'local'
+                  AND member_ns.domain = 'local'
                   AND member_identity.id IS NOT NULL)
               OR (group_profile.domain = 'local'
                   AND group_profile."namespaceId" = 0
-                  AND member.domain = ${peerDomain}))
-            AND pair."endpointANamespaceId" = ${namespaceId}
-            AND pair."endpointBNamespaceId" = ${namespaceId}
-          ORDER BY member.domain, member.account
+                  AND member_ns.domain = ${peerDomain}))
+            AND member."namespaceId" IN (0, ${namespaceId})
+          ORDER BY member_ns.domain, member.account
           LIMIT 1
         `);
         if (groupMembers.rows.length === 0)

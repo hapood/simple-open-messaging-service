@@ -18,9 +18,9 @@ export const relationshipEndpointMatchesUserSql = (
   const prefix = side === 'A' ? 'endpointA' : 'endpointB';
   return sql`${pairAlias}.${sql.identifier(`${prefix}Type`)} = 'USER'
     AND ${pairAlias}.${sql.identifier(`${prefix}Account`)} = ${identityAlias}.account
-    AND ${pairAlias}.${sql.identifier(`${prefix}Domain`)} = ${identityAlias}.domain
-    AND (${identityAlias}."namespaceId" = 0
-      OR ${pairAlias}.${sql.identifier(`${prefix}NamespaceId`)} = ${identityAlias}."namespaceId")`;
+    AND ${pairAlias}.${sql.identifier(`${prefix}NamespaceId`)} = CASE
+      WHEN ${identityAlias}.domain = 'local' THEN 0
+      ELSE ${identityAlias}."namespaceId" END`;
 };
 
 const pairNamespaceMatchesUsersSql = (

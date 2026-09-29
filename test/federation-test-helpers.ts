@@ -133,7 +133,8 @@ export async function registerAndLogin(
     await tx.insert(profileTable).values({
       account,
       domain: 'local',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       profileRev: 1,
       displayName: name,
       avatar: '',
@@ -224,20 +225,18 @@ export async function establishFederatedFriendship(params: {
     const incoming = await params.remote.database.execute(sql`
       SELECT 1
       FROM "RelationshipPair" pair
-      JOIN "RelationshipIntent" intent ON intent."pairId" = pair.id
+      JOIN "RelationshipIntent" intent
+        ON intent."authorAccount" = pair."endpointAAccount"
+       AND intent."authorNamespaceId" = pair."endpointANamespaceId"
+       AND intent."receiverAccount" = pair."endpointBAccount"
+       AND intent."receiverNamespaceId" = pair."endpointBNamespaceId"
       WHERE pair.kind = 'P2P'
         AND intent.status = 'REQUESTED'
         AND intent."expiresAt" > CURRENT_TIMESTAMP
-        AND ((intent."authorSide" = 'A'
-          AND pair."endpointAAccount" = ${params.localAccount}
-          AND pair."endpointADomain" = ${params.localDomain}
-          AND pair."endpointBAccount" = ${params.remoteAccount}
-          AND pair."endpointBDomain" = 'local')
-        OR (intent."authorSide" = 'B'
-          AND pair."endpointBAccount" = ${params.localAccount}
-          AND pair."endpointBDomain" = ${params.localDomain}
-          AND pair."endpointAAccount" = ${params.remoteAccount}
-          AND pair."endpointADomain" = 'local'))
+        AND pair."endpointAAccount" = ${params.remoteAccount}
+        AND pair."endpointBAccount" = ${params.localAccount}
+        AND pair."endpointANamespaceId" <> 0
+        AND pair."endpointBNamespaceId" = 0
       LIMIT 1
     `);
     incomingFound = incoming.rows.length > 0;
@@ -260,43 +259,24 @@ export async function establishFederatedFriendship(params: {
   // multi-worker run.
   const convergenceDeadline = Date.now() + 30_000;
   while (Date.now() < convergenceDeadline) {
-    const canonicalUserPair = (
-      first: { account: string; domain: string },
-      second: { account: string; domain: string },
-    ) =>
-      [first, second].sort(
-        (left, right) =>
-          left.domain.localeCompare(right.domain) ||
-          left.account.localeCompare(right.account),
-      );
-    const [localA, localB] = canonicalUserPair(
-      { account: params.localAccount, domain: 'local' },
-      { account: params.remoteAccount, domain: params.remoteDomain },
-    );
-    const [remoteA, remoteB] = canonicalUserPair(
-      { account: params.remoteAccount, domain: 'local' },
-      { account: params.localAccount, domain: params.localDomain },
-    );
+    // The local endpoint is always side A, so each server's own account
+    // names the A side of the same canonical pair.
     const [localPair, remotePair] = await Promise.all([
       params.local.database.query.relationshipPair.findFirst({
         where: and(
           eq(relationshipPair.endpointAType, 'USER'),
-          eq(relationshipPair.endpointAAccount, localA.account),
-          eq(relationshipPair.endpointADomain, localA.domain),
+          eq(relationshipPair.endpointAAccount, params.localAccount),
           eq(relationshipPair.endpointBType, 'USER'),
-          eq(relationshipPair.endpointBAccount, localB.account),
-          eq(relationshipPair.endpointBDomain, localB.domain),
+          eq(relationshipPair.endpointBAccount, params.remoteAccount),
           eq(relationshipPair.active, true),
         ),
       }),
       params.remote.database.query.relationshipPair.findFirst({
         where: and(
           eq(relationshipPair.endpointAType, 'USER'),
-          eq(relationshipPair.endpointAAccount, remoteA.account),
-          eq(relationshipPair.endpointADomain, remoteA.domain),
+          eq(relationshipPair.endpointAAccount, params.remoteAccount),
           eq(relationshipPair.endpointBType, 'USER'),
-          eq(relationshipPair.endpointBAccount, remoteB.account),
-          eq(relationshipPair.endpointBDomain, remoteB.domain),
+          eq(relationshipPair.endpointBAccount, params.localAccount),
           eq(relationshipPair.active, true),
         ),
       }),
@@ -366,7 +346,8 @@ export async function getAdminCookie(
       .values({
         account,
         domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 1,
         displayName: account,
         avatar: '',

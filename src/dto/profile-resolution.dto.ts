@@ -12,6 +12,12 @@ import {
 } from 'class-validator';
 
 export class ProfileResolutionTargetDto {
+  @ApiProperty({ minimum: 0 })
+  @IsDefined()
+  @IsInt()
+  @Min(0)
+  profileNamespaceId!: number;
+
   @ApiProperty()
   @IsDefined()
   @IsString()
@@ -37,7 +43,7 @@ export class ProfileResolutionDto {
   @IsDefined()
   @IsInt()
   @Min(0)
-  namespaceId!: number;
+  publisherNamespaceId!: number;
 
   @ApiProperty({
     enum: [

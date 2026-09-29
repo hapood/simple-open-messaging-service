@@ -69,11 +69,40 @@ function pairScope(
     kind: pair.kind as PairAddressScope['kind'],
     // Lowercase the parts, not the assembled address: toLowerCase on the
     // template erases the `${string}@${string}` literal type the scope wants.
+    // This suite hosts every pair endpoint locally; namespace zero is local.
     addresses: [
-      `${pair.endpointAAccount.toLowerCase()}@${pair.endpointADomain.toLowerCase()}`,
-      `${pair.endpointBAccount.toLowerCase()}@${pair.endpointBDomain.toLowerCase()}`,
+      `${pair.endpointAAccount.toLowerCase()}@local`,
+      `${pair.endpointBAccount.toLowerCase()}@local`,
     ],
   };
+}
+
+/** This suite hosts every group locally, so the group endpoint authors from
+ * namespace 0 while members carry their own namespaces. */
+function groupDirection(
+  groupAccount: string,
+  memberAccount: string,
+  memberNamespaceId = 0,
+) {
+  return and(
+    eq(tables.relationshipIntent.authorAccount, groupAccount),
+    eq(tables.relationshipIntent.authorNamespaceId, 0),
+    eq(tables.relationshipIntent.receiverAccount, memberAccount),
+    eq(tables.relationshipIntent.receiverNamespaceId, memberNamespaceId),
+  );
+}
+
+function memberDirection(
+  groupAccount: string,
+  memberAccount: string,
+  memberNamespaceId = 0,
+) {
+  return and(
+    eq(tables.relationshipIntent.authorAccount, memberAccount),
+    eq(tables.relationshipIntent.authorNamespaceId, memberNamespaceId),
+    eq(tables.relationshipIntent.receiverAccount, groupAccount),
+    eq(tables.relationshipIntent.receiverNamespaceId, 0),
+  );
 }
 
 /** Flow-entry group advisory: the mutation writers hold row locks only. */
@@ -182,17 +211,14 @@ describe('group join decision', () => {
       applicant.id,
     );
     const intent = await database.db.query.relationshipIntent.findFirst({
-      where: and(
-        eq(tables.relationshipIntent.pairId, pair!.id),
-        eq(tables.relationshipIntent.authorSide, 'B'),
-      ),
+      where: memberDirection(group.account, applicant.account),
     });
     return {
       owner,
       applicant,
       group,
       pair: pair!,
-      requestId: intent!.id,
+      requestDirection: memberDirection(group.account, applicant.account),
       params: {
         threadId: group.threadId,
         managerUserId: owner.id,
@@ -210,8 +236,10 @@ describe('group join decision', () => {
       f.applicant.id,
     );
     const intents = await database.db.query.relationshipIntent.findMany({
-      where: eq(tables.relationshipIntent.pairId, pair!.id),
-      orderBy: tables.relationshipIntent.authorSide,
+      where: or(
+        groupDirection(f.group.account, f.applicant.account),
+        memberDirection(f.group.account, f.applicant.account),
+      ),
     });
     const roster = await database.db.transaction((tx) =>
       readCurrentGroupMemberInTx(tx, f.group.threadId, f.applicant.id),
@@ -356,16 +384,17 @@ describe('group join decision', () => {
   ): Promise<void> {
     await database.db.execute(sql`
       WITH inserted AS (
-        INSERT INTO "RelationshipPair" (kind, "endpointAType", "endpointAAccount", "endpointADomain",
-          "endpointANamespaceId", "endpointBType", "endpointBAccount", "endpointBDomain",
+        INSERT INTO "RelationshipPair" (kind, "endpointAType", "endpointAAccount",
+          "endpointANamespaceId", "endpointBType", "endpointBAccount",
           "endpointBNamespaceId", "threadId")
-        SELECT 'GROUP_MEMBER', 'GROUP', ${groupAccount}, 'local', 0, 'USER', 'capacity-' || i, 'local', 0, ${threadId}
+        SELECT 'GROUP_MEMBER', 'GROUP', ${groupAccount}, 0, 'USER', 'capacity-' || i, 0, ${threadId}
         FROM generate_series(1, ${count}) i
         RETURNING id
       )
       INSERT INTO "RelationshipIntent"
-        ("pairId", "authorSide", status, "profileRev", note, "messageEndSeq", "tombstoneEndSeq", "requestedAt", "updatedAt")
-      SELECT id, 'A', 'ACCEPTED', 0, '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM inserted
+        ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId",
+         status, "profileNamespaceId", "profileRev", note, "messageEndSeq", "tombstoneEndSeq", "requestedAt", "updatedAt")
+      SELECT ${groupAccount}, 0, 'capacity-' || i, 0, 'ACCEPTED', 0, 0, '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM inserted
     `);
   }
 
@@ -387,11 +416,15 @@ describe('group join decision', () => {
       const result = await state(f);
       expect(result.pair?.active).toBe(decision === 'ACCEPTED');
       expect(
-        result.intents.map((intent) => [intent.authorSide, intent.status]),
-      ).toEqual([
-        ['A', decision],
-        ['B', 'REQUESTED'],
-      ]);
+        result.intents
+          .map((intent) => [intent.authorAccount, intent.status])
+          .sort(),
+      ).toEqual(
+        [
+          [f.group.account, decision],
+          [f.applicant.account, 'REQUESTED'],
+        ].sort(),
+      );
       expect(result.projection).toMatchObject({
         direction: 'APPLICATION',
         status: decision === 'ACCEPTED' ? 'ACCEPTED' : 'REJECTED',
@@ -488,17 +521,18 @@ describe('group join decision', () => {
         bio: '',
       });
       await database.db.transaction(async (tx) => {
-        const mintedPairId = await mintGroupMemberPairInTx(tx, {
+        await mintGroupMemberPairInTx(tx, {
           threadId: group.threadId,
           groupAccount: group.account,
-          groupDomain: group.domain,
+          groupNamespaceId: 0,
           memberAccount: member.account,
-          memberDomain: member.domain,
-          namespaceId,
+          memberNamespaceId: namespaceId,
         });
         await tx.insert(tables.relationshipIntent).values({
-          pairId: mintedPairId,
-          authorSide: 'B',
+          authorAccount: member.account,
+          authorNamespaceId: namespaceId,
+          receiverAccount: group.account,
+          receiverNamespaceId: 0,
           status: 'REQUESTED',
           messageEndSeq: 0,
           tombstoneEndSeq: 0,
@@ -524,10 +558,7 @@ describe('group join decision', () => {
         member,
       );
       const request = await database.db.query.relationshipIntent.findFirst({
-        where: and(
-          eq(tables.relationshipIntent.pairId, pair!.id),
-          eq(tables.relationshipIntent.authorSide, 'B'),
-        ),
+        where: memberDirection(group.account, member.account, namespaceId),
       });
       const locks = vi.spyOn(
         RelationshipIntentService.prototype,
@@ -649,7 +680,8 @@ describe('group join decision', () => {
         profile: { account: f.group.account, domain: 'local', profileRev: 1 },
       });
       expect(threadState?.profile.profileRev).toBe(
-        result.intents.find((intent) => intent.authorSide === 'A')?.profileRev,
+        result.intents.find((intent) => intent.authorAccount === f.group.account)
+        ?.profileRev,
       );
       expect(result.feed?.body).toMatchObject({ established: true });
       expect(
@@ -804,7 +836,7 @@ describe('group join decision', () => {
     await database.db
       .update(tables.relationshipIntent)
       .set({ requestedAt: new Date(0), expiresAt: new Date(1) })
-      .where(eq(tables.relationshipIntent.id, f.requestId));
+      .where(f.requestDirection);
     await expect(authoredIntents.execute(f.params)).resolves.toMatchObject({
       status: 'REJECTED',
       code: BusinessCode.INVITE_EXPIRED,
@@ -1492,17 +1524,18 @@ describe('group join decision', () => {
       bio: '',
     });
     await database.db.transaction(async (tx) => {
-      const mintedPairId = await mintGroupMemberPairInTx(tx, {
+      await mintGroupMemberPairInTx(tx, {
         threadId: group.threadId,
         groupAccount: group.account,
-        groupDomain: group.domain,
+        groupNamespaceId: 0,
         memberAccount: member.account,
-        memberDomain: member.domain,
-        namespaceId: namespaceId,
+        memberNamespaceId: namespaceId,
       });
       await tx.insert(tables.relationshipIntent).values({
-        pairId: mintedPairId,
-        authorSide: 'B',
+        authorAccount: member.account,
+        authorNamespaceId: namespaceId,
+        receiverAccount: group.account,
+        receiverNamespaceId: 0,
         status: 'REQUESTED',
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
@@ -1528,10 +1561,7 @@ describe('group join decision', () => {
       member,
     );
     const request = await database.db.query.relationshipIntent.findFirst({
-      where: and(
-        eq(tables.relationshipIntent.pairId, pair!.id),
-        eq(tables.relationshipIntent.authorSide, 'B'),
-      ),
+      where: memberDirection(group.account, member.account, namespaceId),
     });
     const params = {
       threadId: group.threadId,
@@ -1685,11 +1715,13 @@ describe('group join decision', () => {
     });
     const after = await state(rejected);
     expect(
-      after.intents.map((intent) => [intent.authorSide, intent.status]),
-    ).toEqual([
-      ['A', 'REVOKED'],
-      ['B', 'REQUESTED'],
-    ]);
+      after.intents.map((intent) => [intent.authorAccount, intent.status]).sort(),
+    ).toEqual(
+      [
+        [rejected.group.account, 'REVOKED'],
+        [rejected.applicant.account, 'REQUESTED'],
+      ].sort(),
+    );
     expect(after.roster).toBeUndefined();
     expect(after.pair?.active).toBe(false);
   });
@@ -1721,16 +1753,13 @@ describe('group join decision', () => {
     await database.db
       .update(tables.relationshipIntent)
       .set({ status: 'ACCEPTED', expiresAt: null, updatedAt: new Date() })
-      .where(
-        and(
-          eq(tables.relationshipIntent.pairId, pair!.id),
-          eq(tables.relationshipIntent.authorSide, 'B'),
-        ),
-      );
+      .where(memberDirection(invited.group.account, invited.applicant.account));
     const requestedAt = new Date();
     await database.db.insert(tables.relationshipIntent).values({
-      pairId: pair!.id,
-      authorSide: 'A',
+      authorAccount: invited.group.account,
+      authorNamespaceId: 0,
+      receiverAccount: invited.applicant.account,
+      receiverNamespaceId: 0,
       status: 'REQUESTED',
       profileRev: 0,
       note: '',
@@ -1807,16 +1836,13 @@ describe('group join decision', () => {
         expiresAt: null,
         updatedAt: new Date(),
       })
-      .where(
-        and(
-          eq(tables.relationshipIntent.pairId, pair!.id),
-          eq(tables.relationshipIntent.authorSide, 'B'),
-        ),
-      );
+      .where(memberDirection(f.group.account, f.applicant.account));
     const invitationRequestedAt = new Date();
     await database.db.insert(tables.relationshipIntent).values({
-      pairId: pair!.id,
-      authorSide: 'A',
+      authorAccount: f.group.account,
+      authorNamespaceId: 0,
+      receiverAccount: f.applicant.account,
+      receiverNamespaceId: 0,
       status: 'REQUESTED',
       profileRev: 0,
       note: 'you are invited',
@@ -1836,16 +1862,19 @@ describe('group join decision', () => {
     const result = await state(f);
     expect(result.pair?.active).toBe(true);
     expect(
-      result.intents.map((intent) => [intent.authorSide, intent.status]),
-    ).toEqual([
-      ['A', 'ACCEPTED'],
-      ['B', 'ACCEPTED'],
-    ]);
+      result.intents.map((intent) => [intent.authorAccount, intent.status]).sort(),
+    ).toEqual(
+      [
+        [f.group.account, 'ACCEPTED'],
+        [f.applicant.account, 'ACCEPTED'],
+      ].sort(),
+    );
     expect(result.roster).toMatchObject({ role: 'MEMBER' });
     expect(result.audience).toBeDefined();
     // The group's invitation note survives the promotion.
     expect(
-      result.intents.find((intent) => intent.authorSide === 'A')?.note,
+      result.intents.find((intent) => intent.authorAccount === f.group.account)
+        ?.note,
     ).toBe('you are invited');
   });
 
@@ -1864,11 +1893,13 @@ describe('group join decision', () => {
     const result = await state(f);
     expect(result.pair?.active).toBe(true);
     expect(
-      result.intents.map((intent) => [intent.authorSide, intent.status]),
-    ).toEqual([
-      ['A', 'ACCEPTED'],
-      ['B', 'REQUESTED'],
-    ]);
+      result.intents.map((intent) => [intent.authorAccount, intent.status]).sort(),
+    ).toEqual(
+      [
+        [f.group.account, 'ACCEPTED'],
+        [f.applicant.account, 'REQUESTED'],
+      ].sort(),
+    );
     expect(result.roster).toMatchObject({ role: 'MEMBER' });
     // The applicant's own note wins, exactly like a direct ACK; no INVITATION
     // projection row is created on the way in.
@@ -1900,16 +1931,13 @@ describe('group join decision', () => {
         expiresAt: null,
         updatedAt: new Date(),
       })
-      .where(
-        and(
-          eq(tables.relationshipIntent.pairId, pair!.id),
-          eq(tables.relationshipIntent.authorSide, 'B'),
-        ),
-      );
+      .where(memberDirection(f.group.account, f.applicant.account));
     const requestedAt = new Date();
     await database.db.insert(tables.relationshipIntent).values({
-      pairId: pair!.id,
-      authorSide: 'A',
+      authorAccount: f.group.account,
+      authorNamespaceId: 0,
+      receiverAccount: f.applicant.account,
+      receiverNamespaceId: 0,
       status: 'REQUESTED',
       profileRev: 0,
       note: 'you are invited',
@@ -1929,13 +1957,16 @@ describe('group join decision', () => {
     const result = await state(f);
     expect(result.pair?.active).toBe(true);
     expect(
-      result.intents.map((intent) => [intent.authorSide, intent.status]),
-    ).toEqual([
-      ['A', 'ACCEPTED'],
-      ['B', 'ACCEPTED'],
-    ]);
+      result.intents.map((intent) => [intent.authorAccount, intent.status]).sort(),
+    ).toEqual(
+      [
+        [f.group.account, 'ACCEPTED'],
+        [f.applicant.account, 'ACCEPTED'],
+      ].sort(),
+    );
     expect(
-      result.intents.find((intent) => intent.authorSide === 'A')?.note,
+      result.intents.find((intent) => intent.authorAccount === f.group.account)
+        ?.note,
     ).toBe('you are invited');
     expect(result.roster).toMatchObject({ role: 'MEMBER' });
   });
@@ -1987,11 +2018,11 @@ describe('group join decision', () => {
     );
     expect(pair).toMatchObject({ active: false, established: false });
     const intents = await database.db.query.relationshipIntent.findMany({
-      where: eq(tables.relationshipIntent.pairId, pair!.id),
+      where: groupDirection(group.account, invitee.account),
     });
-    expect(intents.map((intent) => [intent.authorSide, intent.status])).toEqual(
-      [['A', 'REQUESTED']],
-    );
+    expect(
+      intents.map((intent) => [intent.authorAccount, intent.status]),
+    ).toEqual([[group.account, 'REQUESTED']]);
     expect(intents[0].note).toBe('join us');
     expect(intents[0].expiresAt).toBeInstanceOf(Date);
     // No membership, no system message, no meta facts.
@@ -2107,7 +2138,7 @@ describe('group join decision', () => {
     );
     expect(pair).toMatchObject({
       active: false,
-      endpointANamespaceId: namespaceId,
+      endpointANamespaceId: 0,
       endpointBNamespaceId: namespaceId,
     });
     const peerFeed = await database.db.query.peerStateFeed.findFirst({
@@ -2167,13 +2198,16 @@ describe('group join decision', () => {
     let result = await state(f);
     expect(result.pair?.active).toBe(false);
     expect(
-      result.intents.map((intent) => [intent.authorSide, intent.status]),
-    ).toEqual([
-      ['A', 'REQUESTED'],
-      ['B', 'REVOKED'],
-    ]);
+      result.intents.map((intent) => [intent.authorAccount, intent.status]).sort(),
+    ).toEqual(
+      [
+        [f.group.account, 'REQUESTED'],
+        [f.applicant.account, 'REVOKED'],
+      ].sort(),
+    );
     expect(
-      result.intents.find((intent) => intent.authorSide === 'A')?.note,
+      result.intents.find((intent) => intent.authorAccount === f.group.account)
+        ?.note,
     ).toBe('again');
 
     // A rostered member is already satisfied: silent no-op, no tasks.
@@ -2188,11 +2222,13 @@ describe('group join decision', () => {
     });
     result = await state(g);
     expect(
-      result.intents.map((intent) => [intent.authorSide, intent.status]),
-    ).toEqual([
-      ['A', 'ACCEPTED'],
-      ['B', 'REQUESTED'],
-    ]);
+      result.intents.map((intent) => [intent.authorAccount, intent.status]).sort(),
+    ).toEqual(
+      [
+        [g.group.account, 'ACCEPTED'],
+        [g.applicant.account, 'REQUESTED'],
+      ].sort(),
+    );
     expect(
       (await database.db.query.durableTask.findMany()).filter(
         (task) => !tasksBefore.some((previous) => previous.id === task.id),
@@ -2214,7 +2250,7 @@ describe('group join decision', () => {
     });
     const ghostPair = await database.pool.query(
       `SELECT id FROM "RelationshipPair" WHERE kind = 'GROUP_MEMBER'
-         AND "endpointBAccount" = $1 AND "endpointBDomain" = 'local' AND "threadId" = $2`,
+         AND "endpointBAccount" = $1 AND "endpointBNamespaceId" = 0 AND "threadId" = $2`,
       [ghost, g.group.threadId],
     );
     expect(ghostPair.rowCount).toBe(0);
@@ -2294,11 +2330,21 @@ describe('group join decision', () => {
       return { owner, member, group };
     }
 
-    const intentsOf = (pairId: bigint) =>
-      database.db.query.relationshipIntent.findMany({
-        where: eq(tables.relationshipIntent.pairId, pairId),
-        orderBy: tables.relationshipIntent.authorSide,
-      });
+    // The group account's '!' prefix sorts before member accounts, matching
+    // the historical side-letter order of group-authored first.
+    const intentsOf = (f: Awaited<ReturnType<typeof memberFixture>>) =>
+      database.db.query.relationshipIntent
+        .findMany({
+          where: or(
+            groupDirection(f.group.account, f.member.account),
+            memberDirection(f.group.account, f.member.account),
+          ),
+        })
+        .then((rows) =>
+          rows.sort((left, right) =>
+            left.authorAccount.localeCompare(right.authorAccount),
+          ),
+        );
 
     it('applies to join, refreshes the application, and admits the projection fan-out', async () => {
       const f = await memberFixture();
@@ -2322,9 +2368,9 @@ describe('group join decision', () => {
         f.member.id,
       );
       expect(pair).toMatchObject({ active: false, established: false });
-      const intents = await intentsOf(pair!.id);
-      expect(intents.map((i) => [i.authorSide, i.status])).toEqual([
-        ['B', 'REQUESTED'],
+      const intents = await intentsOf(f);
+      expect(intents.map((i) => [i.authorAccount, i.status])).toEqual([
+        [f.member.account, 'REQUESTED'],
       ]);
       expect(intents[0].note).toBe('let me in');
       expect(intents[0].expiresAt).toBeInstanceOf(Date);
@@ -2445,10 +2491,10 @@ describe('group join decision', () => {
         f.member.id,
       );
       expect(pair).toMatchObject({ active: true, established: true });
-      const intents = await intentsOf(pair!.id);
-      expect(intents.map((i) => [i.authorSide, i.status])).toEqual([
-        ['A', 'ACCEPTED'],
-        ['B', 'ACCEPTED'],
+      const intents = await intentsOf(f);
+      expect(intents.map((i) => [i.authorAccount, i.status])).toEqual([
+        [f.group.account, 'ACCEPTED'],
+        [f.member.account, 'ACCEPTED'],
       ]);
       // Completing the invitation preserves the group's own note on both sides.
       expect(intents[0].note).toBe('join us');
@@ -2501,10 +2547,10 @@ describe('group join decision', () => {
         f.member.id,
       );
       expect(pair).toMatchObject({ active: true, established: true });
-      const intents = await intentsOf(pair!.id);
-      expect(intents.map((i) => [i.authorSide, i.status])).toEqual([
-        ['A', 'ACCEPTED'],
-        ['B', 'ACCEPTED'],
+      const intents = await intentsOf(f);
+      expect(intents.map((i) => [i.authorAccount, i.status])).toEqual([
+        [f.group.account, 'ACCEPTED'],
+        [f.member.account, 'ACCEPTED'],
       ]);
       const rows = await database.db.query.groupRequestProjection.findMany({
         where: and(
@@ -2539,9 +2585,9 @@ describe('group join decision', () => {
         f.group.threadId,
         f.member.id,
       );
-      const intents = await intentsOf(pair!.id);
-      expect(intents.map((i) => [i.authorSide, i.status])).toEqual([
-        ['B', 'REVOKED'],
+      const intents = await intentsOf(f);
+      expect(intents.map((i) => [i.authorAccount, i.status])).toEqual([
+        [f.member.account, 'REVOKED'],
       ]);
       const projection =
         await database.db.query.groupRequestProjection.findFirst({
@@ -2586,10 +2632,10 @@ describe('group join decision', () => {
         f.group.threadId,
         f.member.id,
       );
-      const intents = await intentsOf(pair!.id);
-      expect(intents.map((i) => [i.authorSide, i.status])).toEqual([
-        ['A', 'REQUESTED'],
-        ['B', 'REVOKED'],
+      const intents = await intentsOf(f);
+      expect(intents.map((i) => [i.authorAccount, i.status])).toEqual([
+        [f.group.account, 'REQUESTED'],
+        [f.member.account, 'REVOKED'],
       ]);
       const projection =
         await database.db.query.groupRequestProjection.findFirst({
@@ -2615,10 +2661,7 @@ describe('group join decision', () => {
         f.member.id,
       );
       const sideB = await database.db.query.relationshipIntent.findFirst({
-        where: and(
-          eq(tables.relationshipIntent.pairId, applied.pair!.id),
-          eq(tables.relationshipIntent.authorSide, 'B'),
-        ),
+        where: memberDirection(f.group.account, f.member.account),
       });
       await authoredIntents.execute({
         threadId: f.group.threadId,

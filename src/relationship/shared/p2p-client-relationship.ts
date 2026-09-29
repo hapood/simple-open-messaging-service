@@ -86,7 +86,8 @@ async function clientInviteUser(
           where: and(
             eq(profileTable.account, value.account),
             eq(profileTable.domain, value.domain),
-            eq(profileTable.namespaceId, value.namespaceId),
+            eq(profileTable.publisherNamespaceId, value.domain === 'local' ? 0 : value.namespaceId),
+            eq(profileTable.profileNamespaceId, value.namespaceId),
             eq(profileTable.profileRev, rev),
           ),
         })

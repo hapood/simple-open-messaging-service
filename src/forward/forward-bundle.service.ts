@@ -336,7 +336,8 @@ export class ForwardBundleService {
                 : await this.exactProfileForMessage({
                     account: row.creatorAccount,
                     domain: row.creatorDomain,
-                    namespaceId: row.creatorNamespaceId,
+                    publisherNamespaceId: row.sourceNamespaceId,
+                    profileNamespaceId: row.profileNamespaceId,
                     profileRev: row.profileRev,
                   });
             return {
@@ -1200,7 +1201,8 @@ export class ForwardBundleService {
   private async exactProfileForMessage(selector: {
     account: string;
     domain: string;
-    namespaceId: number;
+    publisherNamespaceId: number;
+    profileNamespaceId: number;
     profileRev: number;
   }): Promise<{ displayName: string; avatar: string } | null> {
     const result = await this.database.db.execute<{
@@ -1211,7 +1213,8 @@ export class ForwardBundleService {
       FROM "Profile" snapshot
       WHERE snapshot.account = ${selector.account}
         AND snapshot.domain = ${selector.domain}
-        AND snapshot."namespaceId" = ${selector.namespaceId}
+        AND snapshot."publisherNamespaceId" = ${selector.publisherNamespaceId}
+        AND snapshot."profileNamespaceId" = ${selector.profileNamespaceId}
         AND snapshot."profileRev" = ${selector.profileRev}
       LIMIT 1
     `);

@@ -24,7 +24,6 @@ describe('exact directed intent profile disclosure', () => {
   let userId: number;
   let groupId: number;
   let threadId: number;
-  let pairIds: bigint[];
 
   beforeAll(async () => {
     database = new DatabaseService();
@@ -42,14 +41,16 @@ describe('exact directed intent profile disclosure', () => {
       {
         account: localUser,
         domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 1,
         displayName: 'First',
       },
       {
         account: localUser,
         domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 2,
         displayName: 'Second',
       },
@@ -66,7 +67,8 @@ describe('exact directed intent profile disclosure', () => {
     await database.db.insert(profileTable).values({
       account: groupName,
       domain: 'local',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       profileRev: 3,
       displayName: 'Local group',
     });
@@ -81,40 +83,34 @@ describe('exact directed intent profile disclosure', () => {
       })
       .returning({ id: messageThread.id });
     threadId = thread.id;
-    const pairs = await database.db
-      .insert(relationshipPair)
-      .values([
-        {
-          kind: 'P2P',
-          endpointAType: 'USER',
-          endpointAAccount: localUser,
-          endpointADomain: 'local',
-          endpointANamespaceId: 0,
-          endpointBType: 'USER',
-          endpointBAccount: remoteUser,
-          endpointBDomain: remoteDomain,
-          endpointBNamespaceId: namespaceId,
-        },
-        {
-          kind: 'GROUP_MEMBER',
-          threadId,
-          endpointAType: 'GROUP',
-          endpointAAccount: groupName,
-          endpointADomain: 'local',
-          endpointANamespaceId: 0,
-          endpointBType: 'USER',
-          endpointBAccount: remoteUser,
-          endpointBDomain: remoteDomain,
-          endpointBNamespaceId: namespaceId,
-        },
-      ])
-      .returning({ id: relationshipPair.id });
-    pairIds = pairs.map(({ id }) => id);
+    await database.db.insert(relationshipPair).values([
+      {
+        kind: 'P2P',
+        endpointAType: 'USER',
+        endpointAAccount: localUser,
+        endpointANamespaceId: 0,
+        endpointBType: 'USER',
+        endpointBAccount: remoteUser,
+        endpointBNamespaceId: namespaceId,
+      },
+      {
+        kind: 'GROUP_MEMBER',
+        threadId,
+        endpointAType: 'GROUP',
+        endpointAAccount: groupName,
+        endpointANamespaceId: 0,
+        endpointBType: 'USER',
+        endpointBAccount: remoteUser,
+        endpointBNamespaceId: namespaceId,
+      },
+    ]);
     const now = new Date();
     await database.db.insert(relationshipIntent).values([
       {
-        pairId: pairIds[0],
-        authorSide: 'A',
+        authorAccount: localUser,
+        authorNamespaceId: 0,
+        receiverAccount: remoteUser,
+        receiverNamespaceId: namespaceId,
         status: 'REQUESTED',
         profileRev: 1,
         note: '',
@@ -124,8 +120,10 @@ describe('exact directed intent profile disclosure', () => {
         expiresAt: new Date(now.getTime() + 60_000),
       },
       {
-        pairId: pairIds[1],
-        authorSide: 'A',
+        authorAccount: groupName,
+        authorNamespaceId: 0,
+        receiverAccount: remoteUser,
+        receiverNamespaceId: namespaceId,
         status: 'ACCEPTED',
         profileRev: 3,
         note: '',
@@ -139,16 +137,23 @@ describe('exact directed intent profile disclosure', () => {
   afterAll(async () => {
     await database.db
       .delete(relationshipIntent)
-      .where(eq(relationshipIntent.pairId, pairIds[0]));
+      .where(
+        and(
+          eq(relationshipIntent.authorAccount, localUser),
+          eq(relationshipIntent.receiverAccount, remoteUser),
+        ),
+      );
     await database.db
       .delete(relationshipIntent)
-      .where(eq(relationshipIntent.pairId, pairIds[1]));
+      .where(
+        and(
+          eq(relationshipIntent.authorAccount, groupName),
+          eq(relationshipIntent.receiverAccount, remoteUser),
+        ),
+      );
     await database.db
       .delete(relationshipPair)
-      .where(eq(relationshipPair.id, pairIds[0]));
-    await database.db
-      .delete(relationshipPair)
-      .where(eq(relationshipPair.id, pairIds[1]));
+      .where(eq(relationshipPair.kind, 'P2P'));
     await database.db
       .delete(messageThread)
       .where(eq(messageThread.id, threadId));
@@ -201,7 +206,14 @@ describe('exact directed intent profile disclosure', () => {
     await database.db
       .update(relationshipIntent)
       .set({ status: 'REVOKED', expiresAt: null })
-      .where(eq(relationshipIntent.pairId, pairIds[0]));
+      .where(
+        and(
+          eq(relationshipIntent.authorAccount, localUser),
+          eq(relationshipIntent.authorNamespaceId, 0),
+          eq(relationshipIntent.receiverAccount, remoteUser),
+          eq(relationshipIntent.receiverNamespaceId, namespaceId),
+        ),
+      );
     expect(
       await profiles.getAuthorizedIntentProfile(
         localUser,

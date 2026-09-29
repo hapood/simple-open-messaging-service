@@ -205,8 +205,22 @@ describe('federation reverse thread rounds (two nodes)', () => {
         const invitation = relationship.pair
           ? await appB.database.query.relationshipIntent.findFirst({
               where: and(
-                eq(relationshipIntent.pairId, relationship.pair.id),
-                eq(relationshipIntent.authorSide, relationship.groupSide),
+                eq(
+                  relationshipIntent.authorAccount,
+                  relationship.groupEndpoint.account,
+                ),
+                eq(
+                  relationshipIntent.authorNamespaceId,
+                  relationship.groupEndpoint.namespaceId,
+                ),
+                eq(
+                  relationshipIntent.receiverAccount,
+                  relationship.memberEndpoint.account,
+                ),
+                eq(
+                  relationshipIntent.receiverNamespaceId,
+                  relationship.memberEndpoint.namespaceId,
+                ),
               ),
             })
           : undefined;
@@ -342,7 +356,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         sourceNamespaceId: mirrorGroup!.namespaceId,
         creatorAccount: 'third-member',
         creatorDomain: 'third.test',
-        creatorNamespaceId: mirrorGroup!.namespaceId,
+        profileNamespaceId: mirrorGroup!.namespaceId,
         profileRev: 0,
         contentType: ContentType.PURE_TEXT,
         content: JSON.stringify({ text: 'third-party-copy' }),
@@ -677,8 +691,22 @@ describe('federation reverse thread rounds (two nodes)', () => {
         const intent = relationship.pair
           ? await appB.database.query.relationshipIntent.findFirst({
               where: and(
-                eq(relationshipIntent.pairId, relationship.pair.id),
-                eq(relationshipIntent.authorSide, relationship.groupSide),
+                eq(
+                  relationshipIntent.authorAccount,
+                  relationship.groupEndpoint.account,
+                ),
+                eq(
+                  relationshipIntent.authorNamespaceId,
+                  relationship.groupEndpoint.namespaceId,
+                ),
+                eq(
+                  relationshipIntent.receiverAccount,
+                  relationship.memberEndpoint.account,
+                ),
+                eq(
+                  relationshipIntent.receiverNamespaceId,
+                  relationship.memberEndpoint.namespaceId,
+                ),
               ),
             })
           : undefined;
@@ -959,8 +987,22 @@ describe('federation reverse thread rounds (two nodes)', () => {
           const invitation = relationship.pair
             ? await appB.database.query.relationshipIntent.findFirst({
                 where: and(
-                  eq(relationshipIntent.pairId, relationship.pair.id),
-                  eq(relationshipIntent.authorSide, relationship.groupSide),
+                  eq(
+                    relationshipIntent.authorAccount,
+                    relationship.groupEndpoint.account,
+                  ),
+                  eq(
+                    relationshipIntent.authorNamespaceId,
+                    relationship.groupEndpoint.namespaceId,
+                  ),
+                  eq(
+                    relationshipIntent.receiverAccount,
+                    relationship.memberEndpoint.account,
+                  ),
+                  eq(
+                    relationshipIntent.receiverNamespaceId,
+                    relationship.memberEndpoint.namespaceId,
+                  ),
                 ),
               })
             : undefined;
@@ -1654,8 +1696,22 @@ describe('federation reverse thread rounds (two nodes)', () => {
         const invitation = relationship.pair
           ? await appB.database.query.relationshipIntent.findFirst({
               where: and(
-                eq(relationshipIntent.pairId, relationship.pair.id),
-                eq(relationshipIntent.authorSide, relationship.groupSide),
+                eq(
+                  relationshipIntent.authorAccount,
+                  relationship.groupEndpoint.account,
+                ),
+                eq(
+                  relationshipIntent.authorNamespaceId,
+                  relationship.groupEndpoint.namespaceId,
+                ),
+                eq(
+                  relationshipIntent.receiverAccount,
+                  relationship.memberEndpoint.account,
+                ),
+                eq(
+                  relationshipIntent.receiverNamespaceId,
+                  relationship.memberEndpoint.namespaceId,
+                ),
               ),
             })
           : undefined;

@@ -7,6 +7,7 @@ export interface MemberMessageProfileCandidate {
   threadLock: ThreadContentLock;
   account: string;
   domain: string;
+  publisherNamespaceId: number;
   namespaceId: number;
   messageSeq: number;
   profileRev: number;
@@ -18,11 +19,13 @@ export async function publishMemberMessageProfileInTx(
   tx: DatabaseTransaction,
   candidate: MemberMessageProfileCandidate,
 ): Promise<boolean> {
-  const { threadLock, account, domain, namespaceId, messageSeq, profileRev } =
+  const { threadLock, account, domain, publisherNamespaceId, namespaceId, messageSeq, profileRev } =
     candidate;
   if (
     !Number.isSafeInteger(messageSeq) ||
     messageSeq < 1 ||
+    !Number.isSafeInteger(publisherNamespaceId) ||
+    publisherNamespaceId < 0 ||
     !Number.isSafeInteger(namespaceId) ||
     namespaceId < 0 ||
     !Number.isSafeInteger(profileRev) ||
@@ -49,11 +52,11 @@ export async function publishMemberMessageProfileInTx(
       AND EXISTS (
         SELECT 1 FROM "RelationshipPair" pair
         WHERE pair."threadId" = ${groupId} AND pair.kind = 'GROUP_MEMBER'
-          AND pair.active AND pair.established
+          AND pair.active
           AND pair."endpointBType" = 'USER'
           AND pair."endpointBAccount" = ${account}
-          AND pair."endpointBDomain" = ${domain}
-          AND pair."endpointBNamespaceId" = ${namespaceId}
+          AND pair."endpointBNamespaceId" = CASE WHEN ${domain} = 'local'
+            THEN 0 ELSE ${namespaceId} END
       )
     FOR NO KEY UPDATE
   `);
@@ -73,10 +76,9 @@ export async function publishMemberMessageProfileInTx(
     SELECT 1 FROM "Message" m
     WHERE m."threadId" = ${groupId} AND m.seq = ${messageSeq}
       AND m."creatorAccount" = ${account} AND m."creatorDomain" = ${domain}
-      AND m."creatorNamespaceId" = ${namespaceId}
+      AND m."profileNamespaceId" = ${namespaceId}
       AND m."profileRev" = ${profileRev}
       AND m."contentType" <> 'SYSTEM' AND m."localState" = 'READY'
-      AND NOT m."isDeleted"
       AND m.seq > COALESCE((
         SELECT MAX(joined.seq) FROM "Message" joined
         WHERE joined."threadId" = m."threadId"
@@ -84,21 +86,22 @@ export async function publishMemberMessageProfileInTx(
           AND joined.content ->> 'type' = 'GROUP_JOINED'
           AND joined.content -> 'member' ->> 'account' = ${account}
           AND joined.content -> 'member' ->> 'domain' = ${domain}
-          AND (joined.content -> 'member' ->> 'namespaceId')::integer = ${namespaceId}
+          AND (joined.content -> 'member' ->> 'profileNamespaceId')::integer = ${namespaceId}
       ), 0)
       AND NOT EXISTS (
         SELECT 1 FROM "Message" newer
         WHERE newer."threadId" = m."threadId" AND newer.seq > m.seq
           AND newer."creatorAccount" = m."creatorAccount"
           AND newer."creatorDomain" = m."creatorDomain"
-          AND newer."creatorNamespaceId" = m."creatorNamespaceId"
+          AND newer."profileNamespaceId" = m."profileNamespaceId"
           AND newer."contentType" <> 'SYSTEM'
-          AND newer."localState" = 'READY' AND NOT newer."isDeleted"
+          AND newer."localState" = 'READY'
       )
       AND (${profileRev} = 0 OR EXISTS (
         SELECT 1 FROM "Profile" p
         WHERE p.account = m."creatorAccount" AND p.domain = m."creatorDomain"
-          AND p."namespaceId" = m."creatorNamespaceId"
+          AND p."publisherNamespaceId" = ${publisherNamespaceId}
+          AND p."profileNamespaceId" = m."profileNamespaceId"
           AND p."profileRev" = ${profileRev}
       ))
     LIMIT 1

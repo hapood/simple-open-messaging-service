@@ -1,9 +1,10 @@
 import { sql, type SQL } from 'drizzle-orm';
 
 export interface ReceivedUserIntentWriteInput {
-  pairId: bigint;
-  authorSide: 'A' | 'B';
+  author: { account: string; namespaceId: number };
+  receiver: { account: string; namespaceId: number };
   status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+  profileNamespaceId: number;
   profileRev: number;
   note: string;
   requestedAt: Date | null;
@@ -12,23 +13,26 @@ export interface ReceivedUserIntentWriteInput {
   tombstoneEndSeq?: number;
 }
 
-/** Persist one peer-authored wire snapshot under the pair/intent locks held by
- * the received-intent transaction. REVOKED retains the last positive thread
- * heads; profile identity advances only when a revoked direction starts a new
- * request interval, matching the established remote-apply contract. */
+/** Persist one peer-authored wire snapshot. The row is identified by its
+ * author/receiver coordinates alone — no pair reference is stored. REVOKED
+ * retains the last positive thread heads; profile identity advances only when
+ * a revoked direction starts a new request interval, matching the established
+ * remote-apply contract. The caller owns the pair/intent locks. */
 export function receivedUserIntentWriteSql(
   input: ReceivedUserIntentWriteInput,
 ): SQL {
   const revoked = input.status === 'REVOKED';
   return sql`
     INSERT INTO "RelationshipIntent" (
-      "pairId", "authorSide", status, "profileRev", note, "messageEndSeq", "tombstoneEndSeq",
+      "authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId",
+      status, "profileNamespaceId", "profileRev", note, "messageEndSeq", "tombstoneEndSeq",
       "requestedAt", "expiresAt", "updatedAt"
-    ) VALUES (${input.pairId}, ${input.authorSide},
-      ${input.status}::"RelationshipIntentStatus", ${input.profileRev}, ${input.note.slice(0, 255)},
+    ) VALUES (${input.author.account}, ${input.author.namespaceId},
+      ${input.receiver.account}, ${input.receiver.namespaceId},
+      ${input.status}::"RelationshipIntentStatus", ${input.profileNamespaceId}, ${input.profileRev}, ${input.note.slice(0, 255)},
       ${revoked ? 0 : input.messageEndSeq!}, ${revoked ? 0 : input.tombstoneEndSeq!},
       ${input.requestedAt}, ${input.expiresAt}, CURRENT_TIMESTAMP)
-    ON CONFLICT ("pairId", "authorSide") DO UPDATE SET
+    ON CONFLICT ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId") DO UPDATE SET
       status = EXCLUDED.status, note = EXCLUDED.note,
       "messageEndSeq" = CASE WHEN EXCLUDED.status = 'REVOKED'
         THEN "RelationshipIntent"."messageEndSeq" ELSE EXCLUDED."messageEndSeq" END,
@@ -48,7 +52,7 @@ export function receivedUserIntentWriteSql(
        OR "RelationshipIntent".note IS DISTINCT FROM EXCLUDED.note
        OR "RelationshipIntent"."requestedAt" IS DISTINCT FROM EXCLUDED."requestedAt"
        OR "RelationshipIntent"."expiresAt" IS DISTINCT FROM EXCLUDED."expiresAt"
-    RETURNING id, "authorSide", status, "profileRev", note, "requestedAt", "expiresAt",
+    RETURNING status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
       "messageEndSeq", "tombstoneEndSeq"
   `;
 }

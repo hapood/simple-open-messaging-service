@@ -134,12 +134,20 @@ describe('GroupRosterRoleService', () => {
         expect.objectContaining({
           account: 'owner',
           operation: 'MEMBER_UPSERT',
-          body: { role: GroupRole.ADMIN, profileRev: 3 },
+          body: {
+            role: GroupRole.ADMIN,
+            profileNamespaceId: 0,
+            profileRev: 3,
+          },
         }),
         expect.objectContaining({
           account: 'member',
           operation: 'MEMBER_UPSERT',
-          body: { role: GroupRole.OWNER, profileRev: 6 },
+          body: {
+            role: GroupRole.OWNER,
+            profileNamespaceId: 0,
+            profileRev: 6,
+          },
         }),
       ]),
     );
@@ -151,14 +159,14 @@ describe('GroupRosterRoleService', () => {
         previousOwner: {
           account: 'owner',
           domain: 'local',
-          namespaceId: 0,
-          profileRev: 3,
+          profileNamespaceId: 0,
+          profileRev: 0,
         },
         newOwner: {
           account: 'member',
           domain: 'local',
-          namespaceId: 0,
-          profileRev: 6,
+          profileNamespaceId: 0,
+          profileRev: 0,
         },
       },
       { threadLock: { tx, threadId: 10 } },
@@ -248,7 +256,11 @@ describe('GroupRosterRoleService', () => {
     expect(groupMeta.reconcileMembersInTx).toHaveBeenCalledWith(tx, 10, [
       expect.objectContaining({
         account: 'member',
-        body: { role: GroupRole.ADMIN, profileRev: 6 },
+        body: {
+          role: GroupRole.ADMIN,
+          profileNamespaceId: 0,
+          profileRev: 6,
+        },
       }),
     ]);
     expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(

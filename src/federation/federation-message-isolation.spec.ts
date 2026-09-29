@@ -35,6 +35,7 @@ const item = (
     peerAccount: 'bob',
   },
   authorRef: 'THREAD_PEER_ACCOUNT',
+  namespaceId: 12,
   seq: Number(sequence),
   profileRev: 3,
   originSeq: Number(sequence),
@@ -239,6 +240,7 @@ describe('federation message context isolation', () => {
         creator: { account: 'bob', domain: 'origin.test' },
         fetchedFromDomain: 'origin.test',
         namespaceId: 12,
+        profileNamespaceId: 12,
         message: {
           originSeq: 70,
           profileRev: 0,
@@ -821,6 +823,59 @@ describe('federation message context isolation', () => {
     ).resolves.toEqual([]);
     expect(logger.error).toHaveBeenCalledWith(
       expect.stringContaining('unresolved context after state recovery'),
+    );
+  });
+
+  it('stores a local P2P author with profile namespace zero after inbound normalization', async () => {
+    const service = createMessagePageService();
+    const store = vi.fn().mockResolvedValue({
+      kind: 'message',
+      message: {
+        threadId: 9,
+        seq: 1,
+        profileRev: 3,
+        creatorAccount: 'bob',
+        creatorDomain: 'local',
+        isDeleted: false,
+      },
+    });
+    Object.assign(service, {
+      inboundMessageStore: { store },
+      resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
+        threadId: 9,
+        creatorAccount: 'bob',
+        creatorDomain: 'local',
+        authority: 'PEER',
+        federationVersion: 1,
+        recipients: [7],
+        toAccount: 'alice',
+      }),
+    });
+    const inbound = {
+      ...item('1'),
+      namespaceId: 17,
+      originSeq: null,
+      originCreatedAt: null,
+    };
+    const tx = {
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
+      query: {
+        message: { findFirst: vi.fn().mockResolvedValue(undefined) },
+        deletedMessage: { findFirst: vi.fn() },
+      },
+    };
+
+    await service.apply(tx as never, 'peer.test', [inbound], {
+      namespaceId: 7,
+    } as never);
+
+    expect(store).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        creator: { account: 'bob', domain: 'local' },
+        namespaceId: 7,
+        profileNamespaceId: 0,
+      }),
     );
   });
 

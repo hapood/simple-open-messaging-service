@@ -92,20 +92,10 @@ export async function closeFederatedAudienceInTx(
     LEFT JOIN "RelationshipPair" pair
       ON pair."threadId" = thread.id AND pair.kind = 'P2P'
     LEFT JOIN LATERAL (
-      SELECT CASE
-               WHEN pair."endpointADomain" = 'local' THEN pair."endpointAAccount"
-               WHEN pair."endpointBDomain" = 'local' THEN pair."endpointBAccount"
-             END AS account
+      SELECT pair."endpointAAccount" AS account
     ) local_user ON true
     LEFT JOIN LATERAL (
-      SELECT CASE
-               WHEN pair."endpointADomain" = ${peerDomain}
-                 AND pair."endpointANamespaceId" = ${namespaceId}
-                 THEN pair."endpointAAccount"
-               WHEN pair."endpointBDomain" = ${peerDomain}
-                 AND pair."endpointBNamespaceId" = ${namespaceId}
-                 THEN pair."endpointBAccount"
-             END AS account
+      SELECT pair."endpointBAccount" AS account
     ) peer_user ON true
     WHERE thread.id = ${threadId}
     LIMIT 1
@@ -147,12 +137,11 @@ async function resolveAudienceNamespaceInTx(
   const candidates = await tx.execute<{ namespaceId: number }>(sql`
     SELECT DISTINCT candidate."namespaceId"
     FROM (
-      SELECT pair."endpointANamespaceId" AS "namespaceId"
+      SELECT pair."endpointBNamespaceId" AS "namespaceId"
       FROM "RelationshipPair" pair
       WHERE pair."threadId" = ${threadId}
-        AND pair."endpointANamespaceId" = pair."endpointBNamespaceId"
-        AND (pair."endpointADomain" = ${peerDomain}
-          OR pair."endpointBDomain" = ${peerDomain})
+        AND pair."endpointANamespaceId" = 0
+        AND pair."endpointBNamespaceId" <> 0
       UNION
       SELECT group_profile."namespaceId"
       FROM "MessageThread" thread

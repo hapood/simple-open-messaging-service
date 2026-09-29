@@ -19,6 +19,7 @@ function groupMessage(authorDomain = 'local'): FederationMessageFeedMessage {
   return {
     thread: { account: '!group' },
     author: { account: 'alice', domain: authorDomain },
+    namespaceId: authorDomain === 'local' ? 0 : 12,
     seq: 7,
     profileRev: 1,
     originSeq: null,
@@ -104,7 +105,7 @@ describe('FederationInboundMessageRouteService', () => {
     expect(query.sql).toContain('m."creatorDomain" =');
     expect(query.sql).toContain('m."sourceNamespaceId" =');
     expect(query.sql).toContain('m."originSeq" =');
-    expect(query.params).toEqual(['GROUP', '!group', 9, 7, 'peer.test']);
+    expect(query.params).toEqual([0, 'GROUP', '!group', 9, 7, 'peer.test']);
   });
 
   it('rejects unknown or foreign-authored member retractions without inventing pending facts', async () => {
@@ -150,7 +151,6 @@ describe('FederationInboundMessageRouteService', () => {
     expect(query.sql).toContain("pair.kind = 'GROUP_MEMBER'");
     expect(query.sql).toContain('pair.active = true');
     expect(query.params).toContain('alice');
-    expect(query.params).toContain('peer.test');
     expect(query.params).toContain(9);
   });
 
