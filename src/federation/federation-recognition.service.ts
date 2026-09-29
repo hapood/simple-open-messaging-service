@@ -214,9 +214,14 @@ export class FederationRecognitionService {
         throw error;
       }
       if (response.status !== 200) {
-        if (response.status === HttpStatus.SERVICE_UNAVAILABLE) {
-          await this.markTransportDegraded(domain, 'Health HTTP 503');
-        }
+        // Any non-200 Health — including 401 FEDERATION_BAD_SIGNATURE — only removes
+        // current reachability. It never halts, never drops pins or acceptance
+        // evidence, and must not trigger a well-known refresh in the hope of
+        // repairing the peer's cache of the local key.
+        await this.markTransportDegraded(
+          domain,
+          `Health HTTP ${response.status}`,
+        );
         throw new Error(`Health ${domain} returned HTTP ${response.status}`);
       }
       let value: unknown;
