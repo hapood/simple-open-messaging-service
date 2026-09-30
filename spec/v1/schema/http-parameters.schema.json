@@ -5,10 +5,16 @@
   "$defs": {
     "accountProfileParameters": {
       "type": "object",
-      "required": ["account"],
+      "required": ["account", "publicKey", "challenge"],
       "properties": {
         "account": {
           "$ref": "urn:somfp:v1:common#/$defs/account"
+        },
+        "publicKey": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
+        },
+        "challenge": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64SealedChallenge"
         }
       },
       "additionalProperties": false

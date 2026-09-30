@@ -58,11 +58,12 @@ verification; Section 11 keeps its activation administrative.
 | Method                 | `POST`                                                 | `GET`                                                                       |
 | Path                   | `/s2s/v1/recognize`                                    | `/s2s/v1/health`                                                            |
 | Query                  | None; signed `@query` is `?`                           | None; signed `@query` is `?`                                                |
-| Request                | Closed empty object, sender-assigned local namespace, or rotation proof | Zero-byte body                                                              |
+| Request                | Closed empty object or sender-assigned local namespace | Zero-byte body                                                              |
 | Request auth           | bootstrap signed                                       | status signed                                                               |
 | Success                | HTTP `200`, bare `RecognizeResult`                     | HTTP `200`, bare `HealthResult`                                             |
-| Idempotency coordinate | `(signerRootKey, recipientDomain)`                      | No new identity may be pinned by the query                                  |
+| Idempotency coordinate | `(signerDomain, recipientDomain)`                      | No new identity may be pinned by the query                                  |
 | State effect           | Commits local recognition and receive readiness        | A positive result confirms responder acceptance and may update reachability |
+
 Both operations carry the `S2S-Root-Key` header required by [Transport and Security, Section 3.3](./transport-security.md#33-signed-request-headers); it names the root the sender claims and signs under, and never enters the signature base.
 
 ```ts
@@ -74,35 +75,12 @@ interface SenderAssignedLocalNamespaceRequest {
   namespaceId: PositiveSafeInteger;
 }
 
-/** Proof of possession of the root private key already pinned by the recipient,
-    authorizing the rotation claim it accompanies. The object is self-contained:
-    removing `signature` and serializing the remaining members in the fixed
-    order challenge, claimedRoot, created, domain, roots yields exactly the
-    UTF-8 statement covered by `signature` (Section 4.5). */
-interface RotationProof {
-  challenge: Base64UrlNonce;
-  claimedRoot: Base64Ed25519Key;
-  created: EpochMilliseconds;
-  domain: Domain;
-  roots: RootKeyEntry[];
-  signature: Base64Ed25519Signature;
-}
-
-interface RotationProofRequest {
-  rotationProof: RotationProof;
-}
-
-type RecognizeRequest =
-  | EmptyRequest
-  | SenderAssignedLocalNamespaceRequest
-  | RotationProofRequest
-  | (SenderAssignedLocalNamespaceRequest & RotationProofRequest);
+type RecognizeRequest = EmptyRequest | SenderAssignedLocalNamespaceRequest;
 
 type RecognizeResult =
   | {
       ok: true;
       status: 'pending';
-      challenge?: Base64UrlNonce;
       message?: string;
     }
   | {
@@ -149,13 +127,11 @@ previous identity epoch is retired.
 `RecognizeResult.status` distinguishes the recognition attempt outcome.
 `recognized` is the only success result that carries peer-acceptance evidence
 and discloses `peerAssignedLocalNamespaceId`. `pending` means the responder
-has accepted the attempt for asynchronous validation or local review — or,
-when `challenge` is present, awaits the rotation proof answering that
-single-use challenge under Section 4.5. A `pending` result MUST
+has accepted the attempt for asynchronous validation or local review,
+including a rotation or re-binding arrival awaiting administrator approval.
+A `pending` result MUST
 NOT include `peerAssignedLocalNamespaceId`, carries no identity or acceptance
-evidence, and the caller MUST NOT begin ordinary traffic from it. `challenge`
-MUST be issued only for a rotation arrival; a `pending` result without
-`challenge` covers ordinary asynchronous validation and review. `failed`
+evidence, and the caller MUST NOT begin ordinary traffic from it. `failed`
 reports a durable result of an earlier accepted asynchronous recognition
 attempt; `code` is from the stable federation error registry and `message` is
 diagnostic only.
@@ -320,7 +296,7 @@ order; [Transport and Security, Section 3.5](./transport-security.md#35-validati
 governs request validation:
 
 - Extract canonical signer domain A from the HTTP Message Signature `keyid`, and A's claimed root from the `S2S-Root-Key` header.
-- Require the body to be one of the closed shapes of Section 5.1: the empty JSON object `{}`, the sender-assigned local namespace, a rotation proof, or the namespace and rotation proof together.
+- Require the body to be one of the two closed shapes of Section 5.1: the empty JSON object `{}` or the sender-assigned local namespace.
 - Accept the attempt into the recognition verifier, or reject before entry using the common error envelope when the request is malformed, locally rate-limited, or cannot be queued.
 - Before producing `recognized`, use A's hostname-verified HTTPS well-known document to validate A's root group, certificate, and request signature; the claimed root MUST byte-equal a currently valid `roots` entry and MUST authorize the request's certificate.
 - If a root pin or prior authenticated record exists for A, resolve the signer by root identity under Section 4.4 before allocating any new peer or namespace.
@@ -339,7 +315,7 @@ Recognize, or B's valid `available` or `degraded` Health result.
 
 ### 4.3 Root and signing-key continuity
 
-Every root public key — in `roots`, in `keys[].root`, in `S2S-Root-Key`, and in a `rotationProof` — MUST be strictly decoded as RFC 4648 padded base64. Non-canonical base64, invalid padding, and trailing data MUST be rejected, and the result MUST be exactly 32 bytes. When first recognizing the signer, the recipient MUST atomically store the claimed root with that recognition decision; the pin is one root public key, never the whole group.
+Every root public key — in `roots`, in `keys[].root`, in `S2S-Root-Key`, and in a sealed challenge — MUST be strictly decoded as RFC 4648 padded base64. Non-canonical base64, invalid padding, and trailing data MUST be rejected, and the result MUST be exactly 32 bytes. When first recognizing the signer, the recipient MUST atomically store the claimed root with that recognition decision; the pin is one root public key, never the whole group.
 
 On every later well-known read of an established peer, the pinned root MUST remain present in the fetched `roots` group byte for byte, and the receiver MUST keep authenticating requests only against certificates authorized by the pinned root. A group that no longer contains the pin is an identity contradiction, not rotation: the node MUST retain the old pin, record the identity-contradiction reason, enter `halted`, revoke `available`, and reject the ordinary data plane. The sole exception is a root rotation completed through Section 4.5, which requires proof of possession of the pinned root's private key. Normal addition, overlap, expiration, and removal of root-authorized signing certificates MUST NOT clear recognition or acceptance evidence.
 
@@ -361,7 +337,9 @@ key, so the match is unique whenever it exists. The resolution outcomes are:
 - No pinned root matches the claimed root, but the fetched group contains a
   currently valid root `R` that matches a pinned, unretired namespace of this
   signer: a root rotation arrival; resolve it under Section 4.5 before any
-  other outcome.
+  other outcome. The Recognize interface itself is unchanged by rotation:
+  the body remains one of the two closed shapes and carries no
+  rotation-specific member.
 - The claimed root matches the pinned root and the match is bound to the
   signer domain: ordinary idempotent re-recognition; the disclosed
   `peerAssignedLocalNamespaceId` is the matched namespace's id.
@@ -406,75 +384,71 @@ stable sender-assigned local namespace. Key possession without the well-known
 fetch does not establish domain control; domain control without the key
 cannot match a pin.
 
-### 4.5 Root rotation arrival, challenge, and proof
+### 4.5 Root rotation arrival
 
 A root rotation arrival is a Recognize whose claimed root is not pinned,
 while the fetched well-known group still contains the currently valid pinned
 root of the same signer. Publication of the successor root alone establishes
-nothing (Transport and Security, Section 1.5): the recipient MUST NOT adopt
-the new root, disclose a namespace, or commit any acceptance from the arrival
-alone. The recipient MUST instead verify possession of the pinned root's
-private key through one single-use challenge round trip:
+nothing (Transport and Security, Section 1.5), and the Recognize interface
+carries no rotation-specific member: continuity is judged from what the
+arrival already presents — a request authenticated under a
+successor-root-authorized certificate that the hostname-verified well-known
+fetch validates, and a fetched group that still contains the root the
+recipient has pinned.
 
-1. The recipient returns `RecognizeResult` `{ok: true, status: 'pending',
-   challenge: <nonce>}` and stores the challenge as single-use, bound to the
-   signer's pinned namespace, expiring within 300 seconds of issuance. The
-   nonce is 32 random bytes, base64url encoded without padding. Issuing a
-   challenge MUST NOT commit acceptance, change data-plane admission, or
-   disclose a namespace.
-2. The sender re-issues Recognize carrying the `rotationProof` member. The
-   proof object is closed and self-contained; its canonical statement is
-   produced by removing `signature` and serializing the remaining members in
-   the fixed field order below — UTF-8 JSON, no extra whitespace. The
-   `signature` is an Ed25519 signature by the private key of the root the
-   recipient has pinned over exactly those bytes:
+The recipient resolves a rotation arrival as follows:
 
-```text
-{"challenge":"<base64url-nonce>","claimedRoot":"<base64-root-key>","created":<epoch-ms>,"domain":"<signer-domain>","roots":[{"ed25519":"<base64>","notBefore":<epoch-ms>,"notAfter":<epoch-ms>},...]}
-```
+1. Authenticate the request under the bootstrap rules of Section 4.1: the
+   claimed successor root must be a currently valid entry of the fetched
+   group, and the signing certificate must be authorized by it and valid.
+2. Match the fetched group against the local pins: exactly one pinned,
+   unretired root of the matched namespace must appear in the group as a
+   currently valid entry. No match is an ordinary identity mismatch under
+   the rules already given, not a rotation.
+3. When the request carries the `namespaceId` member, the Section 4.4
+   coordinate-consistency rule applies unchanged, and
+   `FEDERATION_DOMAIN_CONFLICT` still applies when the signer domain is
+   bound to another peer or under review for another peer.
+4. Record a rotation review for the matched namespace — the claimed root,
+   the fetched group snapshot, and the signer domain together, as one
+   review fact — and return `pending`. An incoherent arrival (a group
+   without the pin, a certificate not authorized by the claimed root)
+   never reaches this step; it fails authentication or resolves as an
+   identity mismatch under the rules already given.
+5. Until administrator approval, the recipient MUST keep authenticating the
+   signer only against the pinned root's certificates, MUST NOT disclose a
+   namespace, and MUST NOT commit acceptance. Ordinary signed requests
+   claiming the successor root fail authentication with HTTP `401` for the
+   same reason. After approval, the matched namespace's identity epoch is
+   retired and replaced in one indivisible local commit: the pin is swapped
+   to the claimed root, the domain binding is updated to the arrival
+   domain, and a new identity epoch with a new peer-assigned namespace
+   begins while recognition facts, cursors, mirrors, and authorizations
+   carry over; a later Recognize may then return `recognized` with the new
+   `peerAssignedLocalNamespaceId`. After rejection, a later Recognize
+   attempt returns `failed` with `FEDERATION_ROOT_CHANGE_REJECTED`; the pin
+   is retained, successor-root traffic stays unauthenticated, and the
+   relationship continues only through the predecessor epoch or an explicit
+   local reset.
 
-3. The recipient verifies the proof by requiring all of the following, and
-   MUST treat any failure as failed authentication of the arrival (Section 8),
-   never as an identity contradiction:
-   - The object shape is closed: exactly `challenge`, `claimedRoot`,
-     `created`, `domain`, `roots`, `signature`.
-   - `challenge` equals a stored, unconsumed, unexpired challenge issued to
-     this signer; consume it on evaluation regardless of outcome.
-   - `domain` equals the canonical signer domain from `keyid`, and
-     `claimedRoot` byte-equals the request's `S2S-Root-Key` and a currently
-     valid entry of `roots`.
-   - `roots` value-equals the well-known group the recipient fetched for this
-     arrival: identical `ed25519`, `notBefore`, and `notAfter` for every
-     entry, in document order. A group altered in transit cannot match the
-     statement the sender signed.
-   - `created` is within 300 seconds of the recipient's current UTC clock.
-   - `signature` verifies under the pinned root public key.
-   - When the request also carries the `namespaceId` member, the Section 4.4
-     coordinate-consistency rule applies unchanged.
-   - `FEDERATION_DOMAIN_CONFLICT` still applies when the signer domain is
-     bound to another peer or under review for another peer.
-4. On a verified proof, the recipient records a rotation review for the
-   matched namespace — the claimed root, the signed group, and the signer
-   domain together, as one review fact — and returns `pending` without a
-   challenge while the review is open. Until administrator approval, the
-   recipient MUST keep authenticating the signer only against the pinned
-   root's certificates and MUST NOT disclose a namespace or commit
-   acceptance. After approval, the pin is swapped to the claimed root and the
-   domain binding is updated to the signed domain in the same indivisible
-   local commit; a later Recognize may then return `recognized`. After
-   rejection, a later Recognize attempt returns `failed` with
-   `FEDERATION_ROOT_CHANGE_REJECTED`.
-5. A rotation arrival for a signer with no pinned root is not a rotation: it
-   is ordinary first recognition under Section 4.2.
+A rotation arrival for a signer with no pinned root is not a rotation: it
+is ordinary first recognition under Section 4.2.
 
-The proof proves, together: possession of the pinned root's private key (the
-signature), continuity with the recipient's pin (the verifying key), and the
-sender's own assertion of the complete new group and domain (the signed
-statement). Publication control alone — including an altered well-known
-transit — cannot produce it. Administration of a recorded rotation is local
-(Section 11). While the review is open, the sender SHOULD continue claiming
-and signing under the predecessor root; the successor root's published
-overlap MUST cover the review latency plus the clock-skew budget.
+The continuity evidence available to a rotation review is: control of a
+signing key authorized by the successor root, plus publication of a group
+that chains the successor to the still-pinned predecessor, both obtained
+from the signer's domain over hostname-verified TLS. It is deliberately not
+an on-the-wire proof of possession of the predecessor root's private key;
+the recipient's administration verifies that separately, when it chooses,
+through the generic sealed-challenge service of Section 12 — the responder
+proves continued possession of any retained key, including the pinned
+predecessor root, by opening a challenge sealed under it. Approval of a
+rotation SHOULD be supported by such a predecessor-key check or an
+out-of-band confirmation when a domain compromise is plausible. A server
+whose predecessor private key is compromised MUST rotate and have each peer
+approve the rotation, after which signatures under the predecessor are
+worthless even though the key leaked. Administration of a recorded rotation
+is local (Section 11).
 
 ## 5. Recognize request and successful commit
 
@@ -486,33 +460,23 @@ For a request from A to B, the exact application body bytes used by the fixed ve
 {}
 ```
 
-The body is one of four closed objects: the empty object for a sender whose
-local store has not allocated a namespace for the recipient and is answering
-no challenge; the sender-assigned local namespace
+The body is one of two closed objects: the empty object for a sender whose
+local store has not allocated a namespace for the recipient; the
+sender-assigned local namespace
 
 ```text
 {"namespaceId":7}
 ```
 
-carrying the namespace id A's local store allocated for B's identity epoch; a
-rotation proof answering an open challenge under Section 4.5
-
-```text
-{"rotationProof":{"challenge":"<nonce>","claimedRoot":"<base64-root-key>","created":1699999999000,"domain":"a.example","roots":[{"ed25519":"<base64>","notBefore":1699990000000,"notAfter":1899990000000}],"signature":"<base64>"}}
-```
-
-or the namespace and rotation proof together, since a rotation arrival
-carries the same coordinate-consistency obligation for `namespaceId` as a
-domain re-binding arrival. The proof object is closed and self-contained: it
-repeats the claimed root and signer domain that the request also carries in
-`S2S-Root-Key` and `keyid`, and the recipient MUST require all three to
-agree — the redundancy is the binding.
+carrying the namespace id A's local store allocated for B's identity epoch.
+The Recognize body carries no rotation-specific member: a sender that has
+rotated its root sends the same two shapes, claims and signs under the
+successor root, and the recipient resolves the rotation arrival under
+Section 4.5.
 
 A MUST include the `namespaceId` member whenever its local store holds such an
 allocation; B validates it under Section 4.4 when present and MUST NOT treat
-its absence alone as an identity failure. A MUST include the `rotationProof`
-member exactly when answering an unexpired challenge previously issued to it
-for this recipient; B validates it under Section 4.5. The signer domain is
+its absence alone as an identity failure. The signer domain is
 established by the validated `keyid`, the recipient domain by the signed
 `@authority`, the protocol version by `/s2s/v1`, and the claimed root by the
 `S2S-Root-Key` header; the body repeats none of them.
@@ -658,9 +622,9 @@ The application-level idempotency coordinate for Recognize is `(signerRootKey, r
 - Concurrent Recognize and Health: MAY commit independently. A valid `recognized` result and a valid positive Health result are equivalent peer-acceptance evidence; the final recognition and reachability state MUST equal a valid serial ordering.
 - Lost response: retain facts already committed by the recipient. The sender MAY obtain peer acceptance through positive Health or safely retry Recognize while acceptance remains unknown.
 
-Each HTTP retry uses the same JSON application semantics but MUST regenerate `Date`, `created`, `expires`, and the HTTP signature. Because the body contains neither time nor nonce, its bytes and `Content-Digest` MAY remain unchanged — with one exception: a retry answering a rotation challenge carries the `rotationProof` member whose `challenge` is the recipient-issued single-use nonce, so its body bytes differ from the challenge-free attempt.
+Each HTTP retry uses the same JSON application semantics but MUST regenerate `Date`, `created`, `expires`, and the HTTP signature. The body contains neither time nor nonce, so its bytes and `Content-Digest` MAY remain unchanged across retries.
 
-A rotation challenge is single-use and expires within 300 seconds of issuance; a proof replay, an expired challenge, or a proof for another recipient's challenge MUST be rejected under Section 8 without halting the peer. A rotation review that is already open stays pending; a repeated arrival re-enters the same review idempotently and MAY be answered with a fresh challenge when the sender presents none.
+A rotation review that is already open stays pending; a repeated rotation arrival re-enters the same review idempotently. Rotation arrivals fail closed on ordinary authentication errors without halting the peer: they are one attempt's outcome, not an identity contradiction.
 
 ## 8. Pending, failed, and error handling
 
@@ -680,24 +644,23 @@ attempt has reached a definitive recognition failure, B returns HTTP `200` with
 A request that cannot be parsed, accepted into the recognition verifier,
 queued, or processed as a recognition attempt uses the common error envelope:
 
-| Condition observed by B                                                                       | HTTP | Stable code                               | B's local action                                                                                          |
-| --------------------------------------------------------------------------------------------- | ---: | ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Malformed JSON, header, or type                                                               |  400 | `FEDERATION_MALFORMED`                    | Do not commit new recognition effects                                                                     |
-| Path version disabled or no common version                                                    |  409 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` | Record the version reason and enter `halted`; do not commit a new fact                                    |
-| Invalid certificate or HTTP signature                                                         |  401 | `FEDERATION_BAD_SIGNATURE`                | Do not commit recognition effects; do not replace a root pin merely because signature verification failed |
-| Recognize body is not one of the four closed shapes of Section 5.1, or `rotationProof` is structurally invalid |  400 | `FEDERATION_MALFORMED`                    | Reject the malformed request without committing recognition effects                                       |
-| Rotation proof verification fails: unknown, expired, or already-used `challenge`; `roots` not value-equal to the fetched group; `created` outside its window; or signature fails under the pinned root |  401 | `FEDERATION_BAD_SIGNATURE`                | Consume the challenge; do not commit recognition effects; retain the pin and lifecycle; do not halt        |
-| Local policy blocks A                                                                         |  409 | `FEDERATION_PEER_BLOCKED`                 | Record the policy reason and enter `halted`; do not commit a new fact                                     |
-| A root obtained through hostname-verified HTTPS differs from its old pin                      |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Retain the old pin, record an identity contradiction, and enter `halted`                                  |
-| A is already halted for an identity contradiction                                             |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Remain `halted`                                                                                           |
-| Arrival sender-assigned local namespace conflicts with the recorded value                     |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Retain the pin, record the identity contradiction, and enter `halted`                                     |
-| Arrival signer domain bound to or pending on another peer                                     |  409 | `FEDERATION_DOMAIN_CONFLICT`              | Record no re-binding; retain all pins, recognition, and lifecycle                                         |
-| Administration rejected the pending re-binding for this domain       |  409 | `FEDERATION_DOMAIN_CHANGE_REJECTED`       | Retain the current binding; keep returning the rejection until cleared by local administration            |
-| Administration rejected the pending root rotation for this signer    |  409 | `FEDERATION_ROOT_CHANGE_REJECTED`         | Retain the current pin; keep returning the rejection until cleared by local administration                |
-| Request rate is too high                                                                      |  503 | `RATE_LIMITED`                            | Do not commit recognition effects; apply rate-limit policy                                                |
-| Well-known is temporarily unavailable                                                         |  503 | `INTERNAL`                                | Retain any existing pin and lifecycle; do not infer identity loss                                         |
-| B's local identity material is unavailable                                                    |  503 | `FEDERATION_LOCAL_IDENTITY_LOST`          | Do not commit new recognition effects                                                                     |
-| Commit failure or transient internal error                                                    |  503 | `INTERNAL`                                | Do not expose uncommitted facts; retain previously committed state                                        |
+| Condition observed by B                                                   | HTTP | Stable code                               | B's local action                                                                                          |
+| ------------------------------------------------------------------------- | ---: | ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Malformed JSON, header, or type                                           |  400 | `FEDERATION_MALFORMED`                    | Do not commit new recognition effects                                                                     |
+| Path version disabled or no common version                                |  409 | `FEDERATION_PROTOCOL_VERSION_UNSUPPORTED` | Record the version reason and enter `halted`; do not commit a new fact                                    |
+| Invalid certificate or HTTP signature                                     |  401 | `FEDERATION_BAD_SIGNATURE`                | Do not commit recognition effects; do not replace a root pin merely because signature verification failed |
+| Recognize body is not one of the two closed shapes of Section 5.1         |  400 | `FEDERATION_MALFORMED`                    | Reject the malformed request without committing recognition effects                                       |
+| Local policy blocks A                                                     |  409 | `FEDERATION_PEER_BLOCKED`                 | Record the policy reason and enter `halted`; do not commit a new fact                                     |
+| A root obtained through hostname-verified HTTPS differs from its old pin  |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Retain the old pin, record an identity contradiction, and enter `halted`                                  |
+| A is already halted for an identity contradiction                         |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Remain `halted`                                                                                           |
+| Arrival sender-assigned local namespace conflicts with the recorded value |  409 | `FEDERATION_IDENTITY_MISMATCH`            | Retain the pin, record the identity contradiction, and enter `halted`                                     |
+| Arrival signer domain bound to or pending on another peer                 |  409 | `FEDERATION_DOMAIN_CONFLICT`              | Record no re-binding; retain all pins, recognition, and lifecycle                                         |
+| Administration rejected the pending re-binding for this domain            |  409 | `FEDERATION_DOMAIN_CHANGE_REJECTED`       | Retain the current binding; keep returning the rejection until cleared by local administration            |
+| Administration rejected the pending root rotation for this signer         |  409 | `FEDERATION_ROOT_CHANGE_REJECTED`         | Retain the current pin; keep returning the rejection until cleared by local administration                |
+| Request rate is too high                                                  |  503 | `RATE_LIMITED`                            | Do not commit recognition effects; apply rate-limit policy                                                |
+| Well-known is temporarily unavailable                                     |  503 | `INTERNAL`                                | Retain any existing pin and lifecycle; do not infer identity loss                                         |
+| B's local identity material is unavailable                                |  503 | `FEDERATION_LOCAL_IDENTITY_LOST`          | Do not commit new recognition effects                                                                     |
+| Commit failure or transient internal error                                |  503 | `INTERNAL`                                | Do not expose uncommitted facts; retain previously committed state                                        |
 
 When returning any error envelope or `failed` result, B MUST NOT create
 acceptance evidence or open the lightweight gate because of this request.
@@ -821,10 +784,10 @@ This `unavailable` result is only an external privacy projection; it does not er
 
 ### 9.2 Requester A: consuming a Health result
 
-| Result observed by A                                | Protocol action A MUST take                                                                                                                                                                         |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Valid `available` or `degraded`                     | Adopt B's acceptance and prepared receive path, refresh reachability and the retained `peerAssignedLocalNamespaceId`, and become `available` if local recognition, version, and policy remain valid |
-| Valid `unavailable`                                 | Treat current reachability as absent; retain pins and acceptance evidence. Remain `establishing` if acceptance is unknown, otherwise become or remain `degraded`                                    |
+| Result observed by A                                                    | Protocol action A MUST take                                                                                                                                                                         |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Valid `available` or `degraded`                                         | Adopt B's acceptance and prepared receive path, refresh reachability and the retained `peerAssignedLocalNamespaceId`, and become `available` if local recognition, version, and policy remain valid |
+| Valid `unavailable`                                                     | Treat current reachability as absent; retain pins and acceptance evidence. Remain `establishing` if acceptance is unknown, otherwise become or remain `degraded`                                    |
 | Timeout, network error, HTTP `503`, invalid body, or any other response | Treat reachability like `unavailable`; adopt no assertion from the response                                                                                                                         |
 
 A receiving valid `available` or `degraded` MUST recognize that B accepts A
@@ -952,13 +915,7 @@ A pending response body is:
 { "ok": true, "status": "pending", "message": "verification in progress" }
 ```
 
-A rotation-arrival pending response carries the single-use challenge of Section 4.5:
-
-```json
-{ "ok": true, "status": "pending", "challenge": "c2FtcGxlLWNoYWxsZW5nZS1ub25jZS0zMi1ieXRlcy1iYXNlNjQ" }
-```
-
-The rotation proof answering it repeats the challenge, the claimed successor root, the signer domain, and the sender's complete published root group; removing `signature` and serializing the remaining members in the order `challenge`, `claimedRoot`, `created`, `domain`, `roots` yields the exact statement the old root signs. The publisher's group during the rotation overlap is:
+A rotation arrival is an ordinary-shape Recognize under the successor root; its resolution (Section 4.5) is invisible on the wire. After the rotation switch the publisher keeps only successor-authorized certificates in `keys[]` — removing the predecessor-authorized certificates is the revocation channel — while the predecessor root entry stays in `roots` so peers can still resolve the chain to their pin. The publisher's group during the rotation transition is:
 
 ```json
 {
@@ -977,39 +934,39 @@ The rotation proof answering it repeats the challenge, the claimed successor roo
   ],
   "keys": [
     {
-      "keyId": "a.example/key-1",
-      "ed25519": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
-      "root": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
-      "notBefore": 1699990000000,
-      "notAfter": 1899990000000,
-      "authorizationSignature": "xyJJS+reShl4dW0H10b0KXCD40MuXk9L9fsuwSU051gU2ldnijgi7jVbqF5e+759z4cUY3BG+864jdV/DIsJAw=="
+      "keyId": "a.example/key-2",
+      "ed25519": "1CwF+0mIZPnj4dAFuy/aabG6Ro+sbcKMZQEoDqEG3oM=",
+      "root": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
+      "notBefore": 1699995000000,
+      "notAfter": 1999990000000,
+      "authorizationSignature": "eHQbhwHzj6WTsBFz3+DbHrCdX2bZZe2ZqtZGdShx95VehKEZ6J/Rddsi9WM6ZLXSDOOF1V/ewyV4WZzzAVWDCg=="
     }
   ]
 }
 ```
 
-A complete rotation-proof Recognize, still claiming and signing under the predecessor root until acceptance:
+The additional public test signing private key for `key-2` is the 32 ASCII bytes `SOMFP-TEST-SIGNING-KEY-2-PRIVATE`, which MUST NEVER be deployed as a production secret. A complete rotation-arrival Recognize claims and signs under the successor root with the ordinary empty body:
 
 ```http
 POST /s2s/v1/recognize HTTP/1.1
 Host: b.example
 Content-Type: application/json
 Date: Tue, 14 Nov 2023 22:13:20 GMT
-S2S-Root-Key: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
-Content-Digest: sha-256=:QRbyuvN2QLJJgb+qQSTO114IZVg305hTpv4Hh5Gg1yE=:
-Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-1";alg="ed25519"
-Signature: sig1=:1bin3Ip5bQ8XctGwTWIUycVCL6wLQQWQgxqc4bN9N3T00z3SK+f2HBgr1S0Bsc37xRKQYvdTHOTKW45AJt/xDw==:
+S2S-Root-Key: JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=
+Content-Digest: sha-256=:RBNvo1WzZ4oRRq0W9+hknpT7T8If536DEMBg9hyq/4o=:
+Signature-Input: sig1=("@method" "@path" "@query" "@authority" "date" "content-digest");created=1700000000;expires=1700000300;keyid="a.example/key-2";alg="ed25519"
+Signature: sig1=:s4ZNPXgRlXNeLtD9O+FZfjCPaYsUJrS/4Xp4ezUCztsjlYLBH7S6HvPJ7dUA8dmqlP7QzjMUVFebZvw/EGdKBw==:
 
-{"rotationProof":{"challenge":"c2FtcGxlLWNoYWxsZW5nZS1ub25jZS0zMi1ieXRlcy1iYXNlNjQ","claimedRoot":"JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=","created":1699999999000,"domain":"a.example","roots":[{"ed25519":"A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=","notBefore":1699990000000,"notAfter":1899990000000},{"ed25519":"JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=","notBefore":1699995000000,"notAfter":1999990000000}],"signature":"Vst671/Ru56e4kwPY6QhqpJb8MFQB01ex7Am4VYuzZRLrVrOCesG8DtXj+f0kdHQTw1jpNQdRsnJvmp53zT9DQ=="}}
+{}
 ```
 
-The proof's `signature` covers exactly:
+The recipient authenticates `key-2` against the fetched group, finds its pinned root `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=` still present in `roots`, records a rotation review for the matched namespace, and answers:
 
-```text
-{"challenge":"c2FtcGxlLWNoYWxsZW5nZS1ub25jZS0zMi1ieXRlcy1iYXNlNjQ","claimedRoot":"JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=","created":1699999999000,"domain":"a.example","roots":[{"ed25519":"A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=","notBefore":1699990000000,"notAfter":1899990000000},{"ed25519":"JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=","notBefore":1699995000000,"notAfter":1999990000000}]}
+```json
+{ "ok": true, "status": "pending", "message": "root rotation review opened" }
 ```
 
-and verifies with the pinned root `A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=`. A verified proof still returns `pending` without a challenge until an administrator approves the rotation; only after approval may a later Recognize return `recognized`.
+Ordinary traffic signed under `key-2` stays unauthenticated (HTTP `401`) until the recipient's administration approves the rotation, at which point a later Recognize returns `recognized` with the new identity epoch's `peerAssignedLocalNamespaceId`. The reviewing administration verifies continued possession of the predecessor root's private key through the sealed-challenge service of Section 12 before approving.
 
 A failed recognition result body is:
 
@@ -1050,14 +1007,98 @@ without resetting recognition facts, cursors, mirrors, authorizations, or the
 disclosed peer-assigned namespace. Rejecting it MUST surface to the peer as
 `FEDERATION_DOMAIN_CHANGE_REJECTED` on its next arrival for that domain.
 
-A root rotation recorded through a verified rotation proof (Section 4.5) is
-local administration of the same kind. Approving it swaps the namespace's pin
-to the claimed root and updates the domain binding to the signed domain in
-one indivisible local commit, without retiring the namespace and without
-resetting recognition facts, cursors, mirrors, authorizations, or the
-disclosed peer-assigned namespace. Rejecting it MUST surface to the peer as
-`FEDERATION_ROOT_CHANGE_REJECTED` on its next arrival. The publisher keeps
-the predecessor root published and valid until every recognized peer has
-accepted the rotation or the rotation is abandoned (Transport and Security,
-Section 1.5). The protocol defines no automation, queueing, or multi-party
-coordination for any of these decisions.
+A root rotation recorded through a rotation arrival (Section 4.5) is local
+administration of the same kind. The reviewer SHOULD verify continued
+possession of the pinned predecessor root's private key through the
+sealed-challenge service of Section 12 before approving. Approving it
+retires the matched identity epoch and begins a new one in a single
+indivisible local commit: the pin is swapped to the claimed root, the
+domain binding is updated to the arrival domain, and a new peer-assigned
+namespace is allocated, while recognition facts, cursors, mirrors, and
+authorizations carry over. Rejecting it MUST surface to the peer as
+`FEDERATION_ROOT_CHANGE_REJECTED` on its next arrival as an operation-level
+result: the pin and lifecycle are retained, and nothing is halted by the
+rejection itself. The publisher keeps the predecessor root entry — but no
+predecessor-authorized certificates — published until every recognized peer
+has accepted the rotation or the rotation is abandoned (Transport and
+Security, Section 1.5). The protocol defines no automation, queueing, or
+multi-party coordination for any of these decisions.
+
+## 12. Sealed-challenge verification and namespace identity service
+
+`POST /s2s/v1/verify` is a stateless challenge-answering service every
+server offers to its recognized peers. It answers two questions using the
+responder's retained key history: whether the responder still holds the
+private counterpart of a supplied public key (proven by opening a sealed
+challenge), and which root public key the responder has pinned for a
+namespace id in its own namespace space.
+
+The request body is one of two closed objects:
+
+```ts
+interface SealedChallengeRequest {
+  publicKey: Base64Ed25519Key; // a root or signing key of the responder, current or retired
+  encryptedValue: Base64SealedChallenge; // sealed under that key
+}
+
+interface NamespaceIdentityRequest {
+  namespaceId: SafeNonNegativeInteger; // 0 = the responder's current root
+}
+
+type VerifyRequest = SealedChallengeRequest | NamespaceIdentityRequest;
+```
+
+For `SealedChallengeRequest` the responder looks the public key up in its
+retained key history — every root and signing key it has ever published,
+current or retired. An unknown key returns the error envelope with
+`FEDERATION_PUBLIC_KEY_UNRECOGNIZED`. A known key opens the sealed box with
+the corresponding retained private key and returns the recovered plaintext
+as `value`. The responder MUST treat the plaintext as opaque bytes: it MUST
+NOT validate, interpret, or reject it by content, and returns exactly what
+it recovered. A box that fails to open under the supplied key returns
+`400 FEDERATION_MALFORMED`.
+
+The caller controls the entire challenge semantics. It seals a value of its
+own choosing — the protocol does not require any particular content; a
+caller MAY bind the plaintext to the artifact it is verifying, for example
+the canonical JSON `{"account":"<account>","domain":"<domain>"}` when
+checking a profile card. The caller MUST be able to compare the returned
+`value` byte-for-byte with what it sealed, SHOULD generate each challenge
+fresh (never reusing a sealed value), and SHOULD discard the value after
+comparing: the value has no downstream use, and only the comparison outcome
+— which public key, when, opened or not — is worth recording. Because the
+service is stateless, replay protection is the caller's fresh challenge,
+not server memory.
+
+The sealed-challenge success `data` is the closed object
+`{ "value": string }`.
+
+For `NamespaceIdentityRequest` with `namespaceId > 0` the responder answers
+from the namespace currently pinned at that id; `namespaceId` `0` answers
+with the responder's own currently claimable root. Its success `data` is a
+closed object:
+
+```ts
+interface NamespaceIdentityResult {
+  root: Base64Ed25519Key;
+  domain: Domain;
+}
+```
+
+`root` and `domain` are the current pin of the requested namespace. A
+rotation changes a later answer, and verifiers MUST treat a mismatch with
+an older artifact as rotation, not forgery. An unknown, retired, or
+unallocated namespace returns HTTP `200 NOT_FOUND` with `data: null`
+without disclosing which condition held.
+
+To keep both answers possible, a server MUST retain every root and signing
+key it has ever published — private key material included, since sealed
+challenges under retired keys must stay openable forever. Publication
+removal from well-known and internal retention are separate acts
+(Transport and Security, Section 1.5). The service discloses nothing about
+peers beyond identities the requester could already name, and MUST NOT
+reveal pins of halted or blocked namespaces beyond the uniform `NOT_FOUND`.
+
+The sealed-box construction itself — key conversion and the exact
+cryptographic format of `Base64SealedChallenge` — is defined in
+[Transport and Security, Section 3.7](./transport-security.md#37-sealed-challenge-construction).

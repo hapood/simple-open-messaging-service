@@ -78,14 +78,21 @@ observable requirements:
   root-authorized certificate named by the request's `keyid`. It does not try
   multiple certificates for one request or infer preference from discovery
   document order.
+- The public current-profile lookup carries the `publicKey` and `challenge`
+  query parameters, and the `proof` member is the recovered plaintext of the
+  sealed challenge; the sealed-challenge verification and namespace identity
+  service opens challenges under retained keys and discloses namespace pins
+  without server-side challenge state.
 - Normal signing-key rotation under the pinned root preserves recognition,
   peer acceptance, cursors, mirrors, and authorization. It does not restart
   Recognize for an already accepted peer.
 - Health emits no error envelope: every authentication, resolution, and
   disclosure failure uniformly returns `200 unavailable`, which preserves
   pins and acceptance, marks an accepted peer `degraded`, and does not halt
-  it. A root rotation is adopted only after a verified rotation proof and
-  administrator approval; publishing a successor root alone changes nothing.
+  it. A root rotation is adopted only after a rotation arrival that resolves
+  through the still-pinned root and administrator approval supported by a
+  sealed-challenge predecessor-key check; publishing a successor root alone
+  changes nothing.
 
 ## Synchronization and deletion checks
 

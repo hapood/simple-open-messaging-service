@@ -12,8 +12,11 @@ GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:mem
 GET /s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev
 ```
 
-All four operations use `recognized signed` authentication, have no request body,
-and accept no query parameters. Resource identity is carried by path variables.
+All four operations use `recognized signed` authentication and have no
+request body. Resource identity is carried by path variables. The three
+exact profile-validation operations accept no query parameters; the public
+current-profile lookup accepts exactly two required query parameters,
+`publicKey` and `challenge` (Section 3).
 
 The public current-profile lookup has no `namespaceId` path variable because it
 resolves only the responding server's authoritative current profile for the
@@ -89,6 +92,7 @@ interface PublicAccountProfile {
   bio: string;
   avatar: InlineProfileAvatar | null;
   profileRev: PositiveSafeInteger;
+  proof: string;
 }
 ```
 
@@ -96,6 +100,26 @@ The public current-profile response includes `profileRev` because the requester
 must learn which current snapshot was selected. It does not include
 `namespaceId`; this lookup is only for the responding server's authoritative
 local account namespace.
+
+`proof` is the answer to the request's sealed challenge: the responder opens
+the `challenge` box with the private counterpart of the supplied `publicKey`
+and returns exactly the recovered plaintext. The lookup therefore doubles as
+a possession proof — the card is served by the holder of the named key's
+private counterpart, not merely by the current domain endpoint, so a
+temporary domain takeover that lost the key material cannot serve a
+verifiable card under the old root. The responder treats the plaintext as
+opaque bytes and MUST NOT validate, interpret, or reject it by content.
+
+The caller controls the challenge semantics. The protocol does not require
+any particular plaintext; a caller MAY bind it to this lookup, for example
+by sealing the canonical JSON `{"account":"<account>","domain":"<domain>"}`,
+so the answer is specific to exactly this card. The caller MUST be able to
+compare the returned `proof` byte-for-byte with what it sealed, SHOULD seal
+a fresh value for each lookup, and SHOULD discard the value after
+comparing. The sealed-box construction is defined in
+[Transport and Security, Section 3.7](./transport-security.md#37-sealed-challenge-construction);
+the stateless possession-proof discipline is defined in
+[Peer Recognition, Section 12](./recognition.md#12-sealed-challenge-verification-and-namespace-identity-service).
 
 ### 2.2 Exact evidence profiles
 
@@ -139,6 +163,17 @@ select another domain. It returns the account's current public profile only
 when the profile is currently public. Any `recognized signed` peer MAY query
 this public profile, but the query grants no P2P, group, message, media, or
 subsequent profile permission. A dissolved group is unavailable.
+
+The request MUST carry exactly two query parameters. `publicKey` is a
+`Base64Ed25519Key` naming one of the responder's published keys — current or
+retired — that the caller wants the card bound to; `challenge` is a
+`Base64SealedChallenge` sealed under that key (Transport and Security,
+Section 3.7). A public key not present in the responder's retained key
+history returns the error envelope with `FEDERATION_PUBLIC_KEY_UNRECOGNIZED`;
+a missing, duplicated, malformed, or unknown additional query parameter, or
+a challenge that fails to open under the supplied key, returns
+`400 FEDERATION_MALFORMED`. Both parameters travel in the URL, so they are
+covered by the signed `@query` component and cannot be altered in transit.
 
 An account that is not an existing local user or live group, or whose current
 public profile is unavailable to the signer, returns HTTP `200 NOT_FOUND` with
@@ -193,13 +228,13 @@ GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:mem
 
 Path variables are:
 
-| Variable        | Requirement                                                  |
-| --------------- | ------------------------------------------------------------ |
-| `groupAccount`  | `GroupAccount` owned by the responding origin                |
-| `namespaceId`   | Profile namespace in the responding origin's namespace space |
-| `memberAccount` | `UserAccount` of the member                                  |
+| Variable        | Requirement                                                                            |
+| --------------- | -------------------------------------------------------------------------------------- |
+| `groupAccount`  | `GroupAccount` owned by the responding origin                                          |
+| `namespaceId`   | Profile namespace in the responding origin's namespace space                           |
+| `memberAccount` | `UserAccount` of the member                                                            |
 | `memberDomain`  | Canonical `Domain` of the member account, or `local` exactly when `namespaceId` is `0` |
-| `profileRev`    | Positive canonical decimal profile revision                  |
+| `profileRev`    | Positive canonical decimal profile revision                                            |
 
 The group origin serves complete member profile snapshots for both the
 current Group Meta member reference and serviceable group messages. The

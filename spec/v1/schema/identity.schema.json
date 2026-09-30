@@ -3,38 +3,6 @@
   "$id": "urn:somfp:v1:identity",
   "title": "Federation v1 recognition and feed-head objects",
   "$defs": {
-    "rotationProof": {
-      "type": "object",
-      "required": [
-        "challenge",
-        "claimedRoot",
-        "created",
-        "domain",
-        "roots",
-        "signature"
-      ],
-      "properties": {
-        "challenge": {
-          "$ref": "urn:somfp:v1:common#/$defs/base64UrlNonce"
-        },
-        "claimedRoot": {
-          "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
-        },
-        "created": {
-          "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
-        },
-        "domain": {
-          "$ref": "urn:somfp:v1:common#/$defs/domain"
-        },
-        "roots": {
-          "$ref": "urn:somfp:v1:discovery#/$defs/rootGroup"
-        },
-        "signature": {
-          "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Signature"
-        }
-      },
-      "additionalProperties": false
-    },
     "recognizeRequest": {
       "oneOf": [
         {
@@ -51,23 +19,48 @@
             }
           },
           "additionalProperties": false
-        },
+        }
+      ]
+    },
+    "verifyRequest": {
+      "oneOf": [
         {
           "type": "object",
-          "required": ["rotationProof"],
+          "required": ["publicKey", "encryptedValue"],
           "properties": {
-            "rotationProof": { "$ref": "#/$defs/rotationProof" }
+            "publicKey": { "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key" },
+            "encryptedValue": { "$ref": "urn:somfp:v1:common#/$defs/base64SealedChallenge" }
           },
           "additionalProperties": false
         },
         {
           "type": "object",
-          "required": ["namespaceId", "rotationProof"],
+          "required": ["namespaceId"],
           "properties": {
             "namespaceId": {
-              "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
-            },
-            "rotationProof": { "$ref": "#/$defs/rotationProof" }
+              "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "verifyResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["value"],
+          "properties": {
+            "value": { "type": "string", "minLength": 0, "maxLength": 4096 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["root", "domain"],
+          "properties": {
+            "root": { "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key" },
+            "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" }
           },
           "additionalProperties": false
         }
@@ -81,9 +74,6 @@
           "properties": {
             "ok": { "const": true },
             "status": { "const": "pending" },
-            "challenge": {
-              "$ref": "urn:somfp:v1:common#/$defs/base64UrlNonce"
-            },
             "message": { "type": "string" }
           },
           "additionalProperties": false

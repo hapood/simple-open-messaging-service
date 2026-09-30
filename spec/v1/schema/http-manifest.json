@@ -32,6 +32,18 @@
       "responseSchema": "urn:somfp:v1:identity#/$defs/healthResult"
     },
     {
+      "id": "verify",
+      "method": "POST",
+      "path": "/s2s/v1/verify",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "requestMediaType": "application/json",
+      "requestSchema": "urn:somfp:v1:identity#/$defs/verifyRequest",
+      "requestHeaders": ["Date", "Content-Digest", "Signature-Input", "Signature"],
+      "responseSchema": "urn:somfp:v1:identity#/$defs/verifyResult",
+      "responseEnvelope": true
+    },
+    {
       "id": "feedHeads",
       "method": "POST",
       "path": "/s2s/v1/feed-heads",

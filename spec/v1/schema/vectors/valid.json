@@ -127,49 +127,6 @@
         {},
         {
           "namespaceId": 7
-        },
-        {
-          "rotationProof": {
-            "challenge": "c2FtcGxlLWNoYWxsZW5nZS1ub25jZS0zMi1ieXRlcy1iYXNlNjQ",
-            "claimedRoot": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
-            "created": 1699999999000,
-            "domain": "a.example",
-            "roots": [
-              {
-                "ed25519": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
-                "notBefore": 1699990000000,
-                "notAfter": 1899990000000
-              },
-              {
-                "ed25519": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
-                "notBefore": 1699995000000,
-                "notAfter": 1999990000000
-              }
-            ],
-            "signature": "Vst671/Ru56e4kwPY6QhqpJb8MFQB01ex7Am4VYuzZRLrVrOCesG8DtXj+f0kdHQTw1jpNQdRsnJvmp53zT9DQ=="
-          }
-        },
-        {
-          "namespaceId": 7,
-          "rotationProof": {
-            "challenge": "c2FtcGxlLWNoYWxsZW5nZS1ub25jZS0zMi1ieXRlcy1iYXNlNjQ",
-            "claimedRoot": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
-            "created": 1699999999000,
-            "domain": "a.example",
-            "roots": [
-              {
-                "ed25519": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
-                "notBefore": 1699990000000,
-                "notAfter": 1899990000000
-              },
-              {
-                "ed25519": "JUO5L/EJVRFHatyDadtt3JM2ZaEZeN2hQE7hBmypVZ0=",
-                "notBefore": 1699995000000,
-                "notAfter": 1999990000000
-              }
-            ],
-            "signature": "Vst671/Ru56e4kwPY6QhqpJb8MFQB01ex7Am4VYuzZRLrVrOCesG8DtXj+f0kdHQTw1jpNQdRsnJvmp53zT9DQ=="
-          }
         }
       ]
     },
@@ -727,7 +684,8 @@
           "width": 1,
           "height": 1
         },
-        "profileRev": 1
+        "profileRev": 1,
+        "proof": "{\"account\":\"alice\",\"domain\":\"a.example\"}"
       }
     },
     {
@@ -929,11 +887,6 @@
         {
           "ok": true,
           "status": "pending",
-          "challenge": "c2FtcGxlLWNoYWxsZW5nZS1ub25jZS0zMi1ieXRlcy1iYXNlNjQ"
-        },
-        {
-          "ok": true,
-          "status": "pending",
           "message": "verification in progress"
         },
         {
@@ -946,6 +899,35 @@
           "status": "failed",
           "code": 50029,
           "message": "root rotation rejected"
+        }
+      ]
+    },
+    {
+      "name": "verify request",
+      "schema": "urn:somfp:v1:identity#/$defs/verifyRequest",
+      "values": [
+        {
+          "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+          "encryptedValue": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk="
+        },
+        {
+          "namespaceId": 0
+        },
+        {
+          "namespaceId": 42
+        }
+      ]
+    },
+    {
+      "name": "verify result",
+      "schema": "urn:somfp:v1:identity#/$defs/verifyResult",
+      "values": [
+        {
+          "value": "{\"account\":\"alice\",\"domain\":\"a.example\"}"
+        },
+        {
+          "root": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+          "domain": "a.example"
         }
       ]
     }

@@ -1587,33 +1587,37 @@
       }
     },
     {
-      "name": "rotation proof is closed over its six members",
-      "schema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
-      "value": {
-        "rotationProof": {
-          "challenge": "c2FtcGxlLWNoYWxsZW5nZS1ub25jZS0zMi1ieXRlcy1iYXNlNjQ",
-          "claimedRoot": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-          "created": 1,
-          "domain": "a.example",
-          "roots": [
-            {
-              "ed25519": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-              "notBefore": 1,
-              "notAfter": 2
-            }
-          ],
-          "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-          "extra": 1
-        }
-      }
-    },
-    {
       "name": "pending result cannot disclose a namespace",
       "schema": "urn:somfp:v1:identity#/$defs/recognizeResult",
       "value": {
         "ok": true,
         "status": "pending",
         "peerAssignedLocalNamespaceId": 7
+      }
+    },
+    {
+      "name": "pending result cannot carry a challenge",
+      "schema": "urn:somfp:v1:identity#/$defs/recognizeResult",
+      "value": {
+        "ok": true,
+        "status": "pending",
+        "challenge": "c2FtcGxlLWNoYWxsZW5nZS1ub25jZS0zMi1ieXRlcy1iYXNlNjQ"
+      }
+    },
+    {
+      "name": "verify request is closed over its members",
+      "schema": "urn:somfp:v1:identity#/$defs/verifyRequest",
+      "value": {
+        "namespaceId": 1,
+        "extra": 1
+      }
+    },
+    {
+      "name": "recognize body stays closed",
+      "schema": "urn:somfp:v1:identity#/$defs/recognizeRequest",
+      "value": {
+        "namespaceId": 7,
+        "rotationProof": {}
       }
     }
   ]

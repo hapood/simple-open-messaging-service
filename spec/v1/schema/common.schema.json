@@ -132,6 +132,12 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{22,128}$"
     },
+    "base64SealedChallenge": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+      "minLength": 48,
+      "maxLength": 8192
+    },
     "safeInteger": {
       "type": "integer",
       "minimum": -9007199254740991,

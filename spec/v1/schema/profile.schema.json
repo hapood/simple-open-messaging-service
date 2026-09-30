@@ -3,7 +3,7 @@
   "$id": "urn:somfp:v1:profile",
   "title": "GET /s2s/v1/accounts/:account response data",
   "type": "object",
-  "required": ["account", "domain", "displayName", "bio", "avatar", "profileRev"],
+  "required": ["account", "domain", "displayName", "bio", "avatar", "profileRev", "proof"],
   "properties": {
     "account": {
       "$ref": "urn:somfp:v1:common#/$defs/account"
@@ -19,6 +19,10 @@
     },
     "profileRev": {
       "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
+    },
+    "proof": {
+      "type": "string",
+      "maxLength": 4096
     }
   },
   "additionalProperties": false
