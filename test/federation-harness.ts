@@ -115,6 +115,7 @@ export function makeInMemoryKeypair(domain: string): InMemoryKeypair {
   const unsignedCertificate = {
     keyId: `${domain}/key-1`,
     ed25519: signingPublicKeyB64,
+    root: rootPublicKeyB64,
     notBefore: 1_700_000_000_000,
     notAfter: 253_402_300_799_999,
   };

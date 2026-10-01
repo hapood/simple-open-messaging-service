@@ -117,32 +117,11 @@ ALTER TABLE "Profile"
   ADD CONSTRAINT "Profile_pkey"
   PRIMARY KEY ("publisherNamespaceId", account, "profileNamespaceId", "profileRev");
 
--- Group request/member identity uses profile namespace, not domain.
-ALTER TABLE "GroupRequestProjection"
-  DROP CONSTRAINT IF EXISTS "GroupRequestProjection_memberNamespaceId_fkey",
-  DROP CONSTRAINT IF EXISTS "GroupRequestProjection_pkey";
-ALTER TABLE "GroupRequestProjection"
-  DROP COLUMN IF EXISTS "memberDomain";
-ALTER TABLE "GroupRequestProjection"
-  RENAME COLUMN "memberNamespaceId" TO "profileNamespaceId";
-ALTER TABLE "GroupRequestProjection"
-  ADD CONSTRAINT "GroupRequestProjection_pkey"
-  PRIMARY KEY ("threadId", "memberAccount", "profileNamespaceId", direction),
-  ADD CONSTRAINT "GroupRequestProjection_profileNamespaceId_fkey"
-  FOREIGN KEY ("profileNamespaceId") REFERENCES "IdentityNamespace"(id)
-  ON DELETE CASCADE;
-
-DROP INDEX IF EXISTS "GroupMetaMemberFeed_member_key";
-ALTER TABLE "GroupMetaMemberFeed"
-  DROP COLUMN IF EXISTS "memberDomain";
-ALTER TABLE "GroupMetaMemberFeed"
-  ADD COLUMN "profileNamespaceId" integer NOT NULL;
-CREATE UNIQUE INDEX "GroupMetaMemberFeed_member_key"
-  ON "GroupMetaMemberFeed" USING btree ("threadId", "memberAccount", "profileNamespaceId");
-ALTER TABLE "GroupMetaMemberFeed"
-  ADD CONSTRAINT "GroupMetaMemberFeed_profileNamespaceId_fkey"
-  FOREIGN KEY ("profileNamespaceId") REFERENCES "IdentityNamespace"(id)
-  ON DELETE RESTRICT;
+-- Group request/member identity already uses profile namespace coordinates
+-- in the base schema (GroupRequestProjection.profileNamespaceId,
+-- GroupMetaMemberFeed.profileNamespaceId); no cutover rename is needed here.
+-- The earlier domain-based columns were removed when the base schema adopted
+-- the final namespace-coordinate model.
 
 -- No runtime path derives member identity from domain after the cutover.
 DROP FUNCTION IF EXISTS public.group_meta_member_namespace(integer, text, text);

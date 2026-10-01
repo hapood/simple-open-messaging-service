@@ -132,7 +132,6 @@ export async function registerAndLogin(
       .returning({ id: user.id });
     await tx.insert(profileTable).values({
       account,
-      domain: 'local',
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,
@@ -345,7 +344,6 @@ export async function getAdminCookie(
       .insert(profileTable)
       .values({
         account,
-        domain: 'local',
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 1,
