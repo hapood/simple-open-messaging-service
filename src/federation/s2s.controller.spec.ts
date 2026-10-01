@@ -15,7 +15,6 @@ function target() {
     getLocalAccountProfile: vi.fn().mockResolvedValue({
       namespaceId: 0,
       account: 'alice',
-      domain: 'local',
       profileRev: 5,
       displayName: 'Alice',
       bio: '',
@@ -23,7 +22,6 @@ function target() {
     }),
     getAuthorizedAccountProfile: vi.fn().mockResolvedValue({
       account: 'alice',
-      domain: 'local.example',
       profileRev: 4,
       displayName: 'Alice',
       bio: '',
@@ -31,7 +29,6 @@ function target() {
     }),
     getAuthorizedGroupMemberProfile: vi.fn().mockResolvedValue({
       account: 'alice',
-      domain: 'member.example',
       profileRev: 4,
       displayName: 'Alice',
       bio: '',
@@ -39,7 +36,6 @@ function target() {
     }),
     getAuthorizedIntentProfile: vi.fn().mockResolvedValue({
       account: '!team',
-      domain: 'local.example',
       profileRev: 7,
       displayName: 'Team',
       bio: '',
@@ -84,14 +80,31 @@ function target() {
   const groupMeta = {
     serve: vi.fn().mockResolvedValue({}),
   };
+  const profileNamespaceFeed = {
+    serve: vi.fn().mockResolvedValue({}),
+    resolveBindings: vi.fn().mockResolvedValue({}),
+  };
+  const profileNamespacePull = {
+    wake: vi.fn(),
+    wakeIfBehind: vi.fn().mockResolvedValue(undefined),
+    pullFromPeer: vi.fn().mockResolvedValue(0n),
+  };
+  const keypair = {
+    openCardChallenge: vi
+      .fn()
+      .mockReturnValue('{"account":"alice","domain":"local.example"}'),
+  };
   const controller = new S2sController(
     federation as never,
     messageFeed as never,
     tombstoneFeed as never,
     {} as never,
     peerStateFeed as never,
+    profileNamespaceFeed as never,
+    profileNamespacePull as never,
     roundScheduler as never,
     groupMeta as never,
+    keypair as never,
   );
   return {
     controller,
@@ -121,7 +134,11 @@ function mediaRequest(range: string): FastifyRequest {
 }
 
 function setRequestUrl(req: FastifyRequest, url: string): void {
-  Object.defineProperty(req, 'url', { value: url, writable: true, configurable: true });
+  Object.defineProperty(req, 'url', {
+    value: url,
+    writable: true,
+    configurable: true,
+  });
 }
 
 function replyTarget() {
@@ -152,14 +169,19 @@ describe('S2sController public account profiles', () => {
   it('uses only the account path and omits the internal namespace from the response', async () => {
     const { controller, federation } = target();
     const req = mediaRequest('');
-    setRequestUrl(req, '/s2s/v1/accounts/alice');
+    setRequestUrl(
+      req,
+      `/s2s/v1/accounts/alice?publicKey=${encodeURIComponent(
+        'A'.repeat(43) + '=',
+      )}&challenge=${encodeURIComponent('B'.repeat(64))}`,
+    );
     await expect(controller.getAccountProfile(req)).resolves.toEqual({
       account: 'alice',
-      domain: 'local',
       displayName: 'Alice',
       bio: '',
       avatar: null,
       profileRev: 5,
+      proof: '{"account":"alice","domain":"local.example"}',
     });
     expect(federation.getLocalAccountProfile).toHaveBeenCalledWith({
       account: 'alice',
@@ -185,7 +207,6 @@ describe('S2sController intent profiles', () => {
     setRequestUrl(req, '/s2s/v1/intent-profiles/0/%21team/alice/7');
     expect(await controller.getIntentProfile(req)).toEqual({
       account: '!team',
-      domain: 'local.example',
       displayName: 'Team',
       bio: '',
       avatar: null,
@@ -222,7 +243,6 @@ describe('S2sController account profiles', () => {
     setRequestUrl(req, '/s2s/v1/account-profiles/0/alice/4');
     expect(await controller.getExactAccountProfile(req)).toMatchObject({
       account: 'alice',
-      domain: 'local.example',
       displayName: 'Alice',
     });
     expect(federation.getAuthorizedAccountProfile).toHaveBeenCalledWith(
@@ -258,17 +278,15 @@ describe('S2sController group member profiles', () => {
   it('passes canonical independent path variables and authenticated signer', async () => {
     const { controller, federation } = target();
     const req = mediaRequest('');
-    setRequestUrl(req, '/s2s/v1/group-member-profiles/%21team/0/alice/local/4');
+    setRequestUrl(req, '/s2s/v1/group-member-profiles/%21team/0/alice/4');
     expect(await controller.getGroupMemberProfile(req)).toEqual({
       account: 'alice',
-      domain: 'member.example',
       displayName: 'Alice',
       bio: '',
       avatar: null,
     });
     expect(federation.getAuthorizedGroupMemberProfile).toHaveBeenCalledWith(
       '!team',
-      'local',
       'alice',
       0,
       4,
@@ -281,12 +299,11 @@ describe('S2sController group member profiles', () => {
     const { controller, federation } = target();
     const req = mediaRequest('');
     for (const url of [
-      '/s2s/v1/group-member-profiles/alice/0/bob/member.example/4',
-      '/s2s/v1/group-member-profiles/%21team/0/%61lice/member.example/4',
+      '/s2s/v1/group-member-profiles/alice/0/bob/4',
+      '/s2s/v1/group-member-profiles/%21team/0/%61lice/4',
+      '/s2s/v1/group-member-profiles/%21team/0/alice/0',
+      '/s2s/v1/group-member-profiles/%21team/0/alice/4?seq=1',
       '/s2s/v1/group-member-profiles/%21team/0/alice/member.example/4',
-      '/s2s/v1/group-member-profiles/%21team/7/alice/local/4',
-      '/s2s/v1/group-member-profiles/%21team/0/alice/local/0',
-      '/s2s/v1/group-member-profiles/%21team/0/alice/local/4?seq=1',
     ]) {
       setRequestUrl(req, url);
       await expect(controller.getGroupMemberProfile(req)).rejects.toMatchObject(
@@ -655,7 +672,11 @@ describe('S2sController feed-head recovery', () => {
   it('rejects unknown fields without scheduling work', async () => {
     const { controller, roundScheduler } = target();
     const req = {
-      body: { origin: 'a.example', stateFeedEndId: '7' },
+      body: {
+        origin: 'a.example',
+        stateFeedEndId: '7',
+        profileNamespaceFeedEndId: '1',
+      },
       peer: { domain: 'a.example', keyId: 'a.example/key-1' },
     } as unknown as FastifyRequest;
 
@@ -669,7 +690,10 @@ describe('S2sController feed-head recovery', () => {
   it('validates and forwards the publisher target to the global scheduler', async () => {
     const { controller, roundScheduler } = target();
     const req = {
-      body: { stateFeedEndId: '11' },
+      body: {
+        stateFeedEndId: '11',
+        profileNamespaceFeedEndId: '4',
+      },
       peer: { domain: 'a.example', keyId: 'a.example/key-1' },
     } as unknown as FastifyRequest;
 
@@ -679,5 +703,19 @@ describe('S2sController feed-head recovery', () => {
       'a.example',
       11n,
     );
+  });
+
+  it('rejects a merged hint with a missing profile namespace head', async () => {
+    const { controller, roundScheduler } = target();
+    const req = {
+      body: { stateFeedEndId: '11' },
+      peer: { domain: 'a.example', keyId: 'a.example/key-1' },
+    } as unknown as FastifyRequest;
+
+    await expect(controller.postDiscoveryHwm(req)).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
+    });
+    expect(roundScheduler.wakeStateFeed).not.toHaveBeenCalled();
   });
 });

@@ -64,14 +64,12 @@ describe('ThreadAudience schema', () => {
     expect(names).toContain('messageAccessAfterSeq');
     expect(names).not.toContain('messageScannedThroughSeq');
 
-    const peerColumns = await database.pool.query<{ column_name: string }>(
-      `SELECT column_name
-       FROM information_schema.columns
-       WHERE table_name = 'FederatedPeer'`,
+    // FederatedPeer is gone: peer state lives on IdentityNamespace, and the
+    // addedBy column was removed with it.
+    const peerTable = await database.pool.query<{ exists: boolean }>(
+      `SELECT to_regclass('public."FederatedPeer"') IS NOT NULL AS exists`,
     );
-    expect(peerColumns.rows.map((row) => row.column_name)).not.toContain(
-      'addedBy',
-    );
+    expect(peerTable.rows[0]?.exists).toBe(false);
   });
 
   it('installs both audience lookup paths and the message-id join index', async () => {
@@ -122,7 +120,8 @@ describe('ThreadAudience schema', () => {
           'FederationTombstoneCheckpoint',
           'FederationP2PHistoryGrant',
           'PeerStateFeed',
-          'PeerStateFeedPullCursor',
+          'ProfileNamespaceFeed',
+          'ProfileNamespaceInfo',
           'FederationThreadSyncState',
         ],
       ],
@@ -131,7 +130,8 @@ describe('ThreadAudience schema', () => {
       [
         'FederationThreadSyncState',
         'PeerStateFeed',
-        'PeerStateFeedPullCursor',
+        'ProfileNamespaceFeed',
+        'ProfileNamespaceInfo',
       ].sort(),
     );
 
@@ -160,7 +160,8 @@ describe('ThreadAudience schema', () => {
        FROM pg_constraint
        WHERE conrelid IN (
          '"IdentityNamespace"'::regclass,
-         '"PeerStateFeedPullCursor"'::regclass,
+         '"ProfileNamespaceFeed"'::regclass,
+         '"ProfileNamespaceInfo"'::regclass,
          '"FederationThreadSyncState"'::regclass
        )`,
     );
@@ -171,8 +172,14 @@ describe('ThreadAudience schema', () => {
       cursorChecks.get('IdentityNamespace_stateFeedEndId_check'),
     ).toContain('stateFeedEndId');
     expect(
-      cursorChecks.get('PeerStateFeedPullCursor_committedThrough_check'),
-    ).toContain('committedThrough');
+      cursorChecks.get('IdentityNamespace_stateFeedPulledThrough_check'),
+    ).toContain('stateFeedPulledThrough');
+    expect(
+      cursorChecks.get('ProfileNamespaceFeed_feedId_check'),
+    ).toContain('feedId');
+    expect(
+      cursorChecks.get('ProfileNamespaceInfo_bindings_check'),
+    ).toContain('rootPublicKey');
     expect(
       cursorChecks.get('FederationThreadSyncState_messageSeqs_check'),
     ).toContain('messageProcessedThroughSeq');

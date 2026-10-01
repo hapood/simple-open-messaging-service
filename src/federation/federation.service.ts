@@ -54,6 +54,7 @@ export type {
 } from '../calls/federated-call-protocol.js';
 export type { S2SAddress } from './federation-address.js';
 export type { S2SProfile } from './federation-profile.js';
+export type { PossessionKey } from './federation-profile.service.js';
 import {
   type FederationMessageFeedMessage,
   type FederationMessageQueryPage,
@@ -76,6 +77,7 @@ import { FederationCallBridgeService } from './federation-call-bridge.service.js
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
 import { type FederationThreadResourceResponse } from './federation-thread-resource-client.service.js';
 import { FederationProfileService } from './federation-profile.service.js';
+import type { PossessionKey } from './federation-profile.service.js';
 import type { S2SProfile } from './federation-profile.js';
 import { FederationMediaLocalizationService } from './federation-media-localization.service.js';
 import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
@@ -201,7 +203,8 @@ export class FederationService {
   async pushStateFeedDomains(domains: Iterable<string>): Promise<void> {
     const namespaceIds: number[] = [];
     for (const peerDomain of new Set(domains)) {
-      const context = await this.threadAccess.capturePeerResponseToken(peerDomain);
+      const context =
+        await this.threadAccess.capturePeerResponseToken(peerDomain);
       namespaceIds.push(context.namespaceId);
     }
     this.pushStateFeedNamespaces(namespaceIds);
@@ -212,7 +215,9 @@ export class FederationService {
       this.eventEmitter.emit(FEDERATION_STATE_FEED_PUSH, { namespaceId });
   }
 
-  async activePeerDomainForNamespace(namespaceId: number): Promise<string | null> {
+  async activePeerDomainForNamespace(
+    namespaceId: number,
+  ): Promise<string | null> {
     const [peer] = await this.database.db
       .select({ domain: tables.identityNamespace.domain })
       .from(tables.identityNamespace)
@@ -311,7 +316,7 @@ export class FederationService {
       await this.stateFeed.lockOutboundStateFeedNamespacesInTx(
         tx,
         expired.rows
-          .filter((request) => request.subjectDomain !== 'local')
+          .filter((request) => request.subjectNamespaceId !== 0)
           .map((request) => ({
             peerDomain: request.subjectDomain,
             namespaceId: request.subjectNamespaceId,
@@ -346,15 +351,13 @@ export class FederationService {
             and(
               eq(
                 groupStateFields.account,
-                groupIsAuthor
-                  ? request.authorAccount
-                  : request.subjectAccount,
+                groupIsAuthor ? request.authorAccount : request.subjectAccount,
               ),
               eq(
                 groupStateFields.domain,
                 groupIsAuthor
                   ? request.authorDomain
-                  : request.subjectDomain,
+                  : request.subjectNamespaceId,
               ),
             ),
           );
@@ -362,7 +365,9 @@ export class FederationService {
             account: groupIsAuthor
               ? request.subjectAccount
               : request.authorAccount,
-            domain: groupIsAuthor ? request.subjectDomain : request.authorDomain,
+            domain: groupIsAuthor
+              ? request.subjectDomain
+              : request.authorDomain,
             namespaceId: groupIsAuthor
               ? request.subjectNamespaceId
               : request.authorNamespaceId,
@@ -418,16 +423,14 @@ export class FederationService {
             )),
           );
         }
-        if (request.subjectDomain === 'local') continue;
+        if (request.subjectNamespaceId === 0) continue;
         namespaceIds.add(request.subjectNamespaceId!);
         const revisions = await this.stateFeed.writeManyInTx(tx, [
           {
-            peerDomain: request.subjectDomain,
             namespaceId: request.subjectNamespaceId!,
             account: request.authorAccount,
-            domain: 'local',
             subjectAccount: request.subjectAccount,
-            subjectDomain: request.subjectDomain,
+            subjectNamespaceId: request.subjectNamespaceId,
             eventType: 'RELATIONSHIP_INTENT',
             body: {
               status: 'REVOKED',
@@ -492,7 +495,6 @@ export class FederationService {
 
   async getAuthorizedGroupMemberProfile(
     groupAccount: string,
-    memberDomain: string,
     memberAccount: string,
     profileNamespaceId: number,
     rev: number,
@@ -501,7 +503,6 @@ export class FederationService {
   ): Promise<S2SProfile | null> {
     return this.profiles.getAuthorizedGroupMemberProfile(
       groupAccount,
-      memberDomain,
       memberAccount,
       profileNamespaceId,
       rev,
@@ -513,14 +514,12 @@ export class FederationService {
   async getStoredProfile(
     publisherNamespaceId: number,
     account: string,
-    domain: string,
     profileNamespaceId: number,
     rev: number,
   ): Promise<S2SProfile | null> {
     return this.profiles.getStoredProfile(
       publisherNamespaceId,
       account,
-      domain,
       profileNamespaceId,
       rev,
     );
@@ -919,7 +918,7 @@ export class FederationService {
             domain,
             digest,
             effect.author.account,
-            effect.author.domain,
+            domain,
             effect.toAccount,
             effect.originSeq,
             offset,
@@ -986,7 +985,7 @@ export class FederationService {
     item: FederationMessageFeedMessage,
     sourceDomain: string,
     peerAssignedLocalNamespaceId: number,
-  ): S2SAddress {
+  ): { account: string; namespaceId: number } {
     return this.inboundMessageRoutes.messageAuthor(
       item,
       sourceDomain,
@@ -1181,11 +1180,16 @@ export class FederationService {
   /**
    * Fetch a peer user or group's public profile (signed GET /s2s/v1/accounts/:account). Used by
    * federated resolve, ensureForeignUserLocalized (send-friend-request safety net), and initial
-   * invite/profile localization. Throws on any non-success (the caller
+   * invite/profile localization. `possession` selects the possession-proof
+   * challenge key: PIN for address-based resolution, VOUCH for card/roster
+   * references. Throws on any non-success (the caller
    * surfaces FEDERATION_DELIVERY_FAILED → user retries / inits).
    */
-  async fetchRemoteAccount(address: S2SAddress): Promise<S2SProfile> {
-    return this.profiles.fetchRemoteAccount(address);
+  async fetchRemoteAccount(
+    address: S2SAddress,
+    possession: PossessionKey,
+  ): Promise<S2SProfile> {
+    return this.profiles.fetchRemoteAccount(address, possession);
   }
 }
 import type { ThreadContentLock } from '../common/locks/thread-content-lock.js';

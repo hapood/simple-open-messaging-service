@@ -1,4 +1,4 @@
-import type { ProfileKey } from './profile-selector.js';
+import type { ProfileKey } from './profile-demand.js';
 
 /** An event participant's immutable identity and profile revision at the event boundary.
  * The enclosing message supplies the publisher namespace. Revision zero means no disclosed profile. */
@@ -40,7 +40,6 @@ export function profileKeyForAddress(
     publisherNamespaceId,
     profileNamespaceId: value.profileNamespaceId,
     account: value.account,
-    domain: value.domain,
     rev: value.profileRev,
   };
 }

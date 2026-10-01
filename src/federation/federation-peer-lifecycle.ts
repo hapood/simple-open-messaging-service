@@ -274,7 +274,6 @@ export class FederationPeerLifecycle {
         trustLevel: tables.identityNamespace.trustLevel,
         haltCode: tables.identityNamespace.haltCode,
         id: tables.identityNamespace.id,
-        rootKeyFingerprint: tables.identityNamespace.rootKeyFingerprint,
         rootPublicKey: tables.identityNamespace.rootPublicKey,
       })
       .from(tables.identityNamespace)
@@ -284,7 +283,6 @@ export class FederationPeerLifecycle {
       peer?.trustLevel !== 'halted' ||
       peer.haltCode !== BusinessCode.FEDERATION_IDENTITY_MISMATCH ||
       peer.id === null ||
-      !peer.rootKeyFingerprint ||
       !peer.rootPublicKey
     ) {
       throw new BusinessException(
@@ -297,10 +295,13 @@ export class FederationPeerLifecycle {
     this.discovery.invalidateBase(domain);
     const doc = await this.discovery.fetchWellKnown(domain);
     const publishedKey = doc.keys[0];
+    // The original pinned identity returned when the fetched group still
+    // contains the pinned root (a rotation whose predecessor entry is still
+    // published also satisfies this and resolves through review, not reset).
     const originalIdentityReturned =
       selectFederationProtocolVersion(doc.protocolVersions) ===
         FEDERATION_PROTOCOL_VERSION &&
-      doc.rootKey.ed25519 === peer.rootPublicKey;
+      doc.roots.some((entry) => entry.ed25519 === peer.rootPublicKey);
     if (!originalIdentityReturned || !publishedKey) {
       throw new BusinessException(
         BusinessCode.FEDERATION_IDENTITY_MISMATCH,

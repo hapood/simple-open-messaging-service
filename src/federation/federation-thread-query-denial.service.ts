@@ -111,12 +111,12 @@ export class FederationThreadQueryDenialService {
           groupDomain: string;
           memberUserId: number | null;
           memberAccount: string;
-          memberDomain: string;
+          profileNamespaceId: number;
         }>(sql`
           SELECT group_profile.id AS "groupId",
             group_profile.domain AS "groupDomain",
             member_identity.id AS "memberUserId",
-            member.account AS "memberAccount", member_ns.domain AS "memberDomain"
+            member.account AS "memberAccount", member."namespaceId" AS "profileNamespaceId"
           FROM "MessageThread" thread
           JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
           JOIN "RelationshipPair" pair

@@ -113,7 +113,9 @@ export class CallHistoryService implements OnModuleInit {
         seq,
         contentType: ContentType.SYSTEM,
         creatorAccount: '$system',
-        creatorDomain: 'local',
+        profileNamespaceId: 0,
+        profileRev: 0,
+        publisherNamespaceId: 0,
         content: JSON.stringify(terminalContent),
         updatedAt: new Date(),
       });

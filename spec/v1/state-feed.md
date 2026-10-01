@@ -30,6 +30,7 @@ interface StateFeedPage {
   items: StateFeedItem[];
   scannedThrough: DecimalString;
   stateFeedEndId: DecimalString;
+  profileNamespaceFeedEndId: DecimalString;
   hasMore: boolean;
 }
 ```
@@ -50,6 +51,13 @@ The publisher retains one newest item per stable key. A semantic change
 allocates a greater `feedId` and may immediately replace the older version.
 Current non-deletion projections MUST remain available for a complete rebuild.
 Reading is not acknowledgement and the source stores no consumer cursor.
+
+Every page also discloses the publisher's current `profileNamespaceFeedEndId`:
+the end of its Profile Namespace Feed defined by
+[Profile Namespace Feed](./profile-namespace-feed.md). The field is a counter
+disclosure only. It never participates in State Feed scanning, cursoring, or
+item semantics, and a consumer MAY use it solely to detect that its Profile
+Namespace Feed progress for this publisher is behind.
 
 ## 3. Items
 

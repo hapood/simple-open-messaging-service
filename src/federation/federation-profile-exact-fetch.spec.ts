@@ -5,7 +5,6 @@ import { S2sResponseError } from './federation-errors.js';
 
 const evidence = {
   account: 'alice',
-  domain: 'local',
   displayName: 'Alice',
   bio: '',
   avatar: null,
@@ -19,6 +18,7 @@ function target() {
       {} as never,
       {} as never,
       { get } as never,
+      {} as never,
     ),
   };
 }
@@ -57,13 +57,12 @@ describe('exact signed profile operations', () => {
     const { get, profiles } = target();
     await profiles.fetchExactGroupMemberProfile(
       '!group',
-      'member.example',
       'alice',
       4,
       'group.example',
     );
     expect(get).toHaveBeenCalledWith(
-      '/s2s/v1/group-member-profiles/%21group/0/alice/local/4',
+      '/s2s/v1/group-member-profiles/%21group/0/alice/4',
       'group.example',
       expect.any(Number),
     );

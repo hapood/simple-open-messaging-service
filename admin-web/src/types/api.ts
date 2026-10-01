@@ -251,26 +251,78 @@ export interface FederationPeerStateListResult {
   total: number;
 }
 
+/** Peer identity review: an administrator-gated domain re-bind or root
+ *  rotation arrival awaiting decision. */
+export interface FederationIdentityReview {
+  id: number;
+  kind: 'domain-rebind' | 'root-rotation';
+  matchedNamespaceId: number;
+  matchedDomain: string;
+  nextDomain: string;
+  claimedRoot: string;
+  claim: Record<string, unknown>;
+  status: 'pending' | 'approved' | 'rejected';
+  verifiedAt: number;
+  reviewedAt: number | null;
+  createdAt: number;
+}
+
+/** One identity epoch of a federated peer. A rotation replaces epochs; only
+ *  the unretired epoch authenticates ordinary traffic. */
 export interface FederationNamespace {
   id: number;
   domain: string;
-  rootKeyFingerprint: string | null;
   rootPublicKey: string | null;
   peerAssignedLocalNamespaceId: number | null;
   identityPinnedAt: number | null;
   createdAt: number;
   retiredAt: number | null;
   active: boolean;
-  candidate: boolean;
-  candidateStatus: 'pending' | 'failed' | null;
-  failedCode: number | null;
-  failedMessage: string | null;
+  trustLevel: string;
+  halted: boolean;
+  pendingReview: FederationIdentityReview | null;
 }
 
-export interface FederationNamespaceSwitchResult {
+export interface LocalFederationRootEpoch {
+  id: number;
   domain: string;
-  activeNamespaceId: number;
-  status: 'active_namespace_switched';
+  rootPublicKey: string;
+  notBefore: number;
+  notAfter: number;
+  claimable: boolean;
+  unpublishedAt: number | null;
+  signingKeyCount: number;
+  claimableKeyCount: number;
+}
+
+export interface LocalFederationRootRotationResult {
+  previousRootId: number;
+  newRootId: number;
+  newRootPublicKey: string;
+}
+
+export interface LocalFederationRootUnpublishResult {
+  rootId: number;
+  status: 'unpublished';
+}
+
+export interface FederationPeerNamespacesResult {
+  namespaces: FederationNamespace[];
+  reviews: FederationIdentityReview[];
+}
+
+export interface FederationReviewDecisionResult {
+  reviewId: number;
+  status: 'approved' | 'rejected';
+  domain: string;
+  activeNamespaceId: number | null;
+}
+
+export interface FederationPredecessorCheckResult {
+  reviewId: number;
+  checkedRoot: string;
+  ok: boolean;
+  detail: string;
 }
 
 // ─── Federated peer daily quotas (POST /admin/quota/nodes) ───

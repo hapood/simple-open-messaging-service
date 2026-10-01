@@ -103,21 +103,24 @@ export class FederationMediaLocalizationService {
       return this.relocalizeForwardMessage(msg);
     }
     if (!isFederatedMediaContentType(msg.contentType)) return 'ready';
-    if (msg.creatorAccount === null || msg.creatorDomain === null) {
+    if (msg.creatorAccount === null) {
       throw new Error('user-authored media message has no creator');
     }
     if (msg.localState === 'STUB') {
       return this.readInboundMediaJobStatus(msg.id);
     }
 
+    const sourcePeerDomain =
+      msg.publisherNamespaceId === 0
+        ? null
+        : await this.readSourceDomain(msg.publisherNamespaceId);
     const { toAccount, peerDomain: threadPeerDomain } =
       await this.resolveMediaContext(
         msg.threadId,
         msg.creatorAccount,
-        msg.creatorDomain,
-        msg.creatorDomain === 'local' ? 0 : msg.sourceNamespaceId,
+        msg.profileNamespaceId,
+        sourcePeerDomain ?? 'local',
       );
-    const sourcePeerDomain = await this.readSourceDomain(msg.sourceNamespaceId);
     const peerDomain = sourcePeerDomain ?? threadPeerDomain;
     if (msg.localState === 'FAILED') {
       if (msg.originSeq === null || sourcePeerDomain === null) {
@@ -129,7 +132,7 @@ export class FederationMediaLocalizationService {
       const batchId = await this.restageFailedInboundMessage(msg, {
         peerDomain,
         fromAccount: msg.creatorAccount,
-        fromDomain: msg.creatorDomain,
+        fromDomain: peerDomain,
         toAccount,
       });
       if (batchId) {
@@ -139,7 +142,7 @@ export class FederationMediaLocalizationService {
               peerDomain,
               digest,
               msg.creatorAccount!,
-              msg.creatorDomain!,
+              peerDomain,
               toAccount,
               msg.originSeq!,
               offset,
@@ -159,7 +162,7 @@ export class FederationMediaLocalizationService {
       msg,
       peerDomain,
       msg.creatorAccount,
-      msg.creatorDomain,
+      peerDomain,
       toAccount,
       msg.originSeq ?? msg.seq,
       federationVersion,
@@ -172,18 +175,22 @@ export class FederationMediaLocalizationService {
   async resolveForwardAssetAuth(
     msg: Message,
   ): Promise<FederationForwardAssetAuthorization> {
-    if (msg.creatorAccount === null || msg.creatorDomain === null) {
+    if (msg.creatorAccount === null) {
       throw new Error('user-authored forward message has no creator');
     }
-    const { toAccount } = await this.resolveMediaContext(
+    const sourcePeerDomain =
+      msg.publisherNamespaceId === 0
+        ? null
+        : await this.readSourceDomain(msg.publisherNamespaceId);
+    const { toAccount, peerDomain } = await this.resolveMediaContext(
       msg.threadId,
       msg.creatorAccount,
-      msg.creatorDomain,
-      msg.creatorDomain === 'local' ? 0 : msg.sourceNamespaceId,
+      msg.profileNamespaceId,
+      sourcePeerDomain ?? 'local',
     );
     return {
       fromAccount: msg.creatorAccount,
-      fromDomain: msg.creatorDomain,
+      fromDomain: sourcePeerDomain ?? peerDomain,
       toAccount,
       sourceSeq: msg.originSeq ?? msg.seq,
     };
@@ -297,10 +304,10 @@ export class FederationMediaLocalizationService {
   ): Promise<string | null> {
     const digests = extractDigestEntries(msg.content);
     if (digests.length === 0) return null;
-    if (msg.sourceNamespaceId === 0) {
-      throw new Error('failed inbound message has no source namespace');
+    if (msg.publisherNamespaceId === 0) {
+      throw new Error('failed inbound message has no publisher namespace');
     }
-    const namespaceId = msg.sourceNamespaceId;
+    const namespaceId = msg.publisherNamespaceId;
     return this.database.db.transaction(async (tx) => {
       const [locked] = await tx
         .select({
@@ -336,7 +343,7 @@ export class FederationMediaLocalizationService {
           failReason: null,
           fileCnt: digests.length,
           originDomain: authorization.peerDomain,
-          namespaceId,
+          publisherNamespaceId: namespaceId,
           expectedAuthorizationEpoch: locked.authorizationEpoch,
           updatedAt: new Date(),
         })
@@ -350,7 +357,7 @@ export class FederationMediaLocalizationService {
           status: 'PENDING',
           bytesTotal: BigInt(size ?? 0),
           originDomain: authorization.peerDomain,
-          namespaceId,
+          publisherNamespaceId: namespaceId,
           payload: authorization,
         });
       }
@@ -414,8 +421,8 @@ export class FederationMediaLocalizationService {
   private async resolveMediaContext(
     threadId: number,
     creatorAccount: string,
-    creatorDomain: string,
     authorNamespaceId: number,
+    sourceDomain: string,
   ): Promise<{ toAccount: string; peerDomain: string }> {
     const [thread] = await this.database.db
       .select({
@@ -475,7 +482,7 @@ export class FederationMediaLocalizationService {
     return {
       toAccount:
         authorNamespaceId === 0 ? pair.endpointBAccount : pair.endpointAAccount,
-      peerDomain: creatorDomain,
+      peerDomain: sourceDomain,
     };
   }
 
@@ -486,7 +493,7 @@ export class FederationMediaLocalizationService {
       columns: { domain: true },
     });
     if (!source)
-      throw new Error(`message source namespace ${namespaceId} is missing`);
+      throw new Error(`message publisher namespace ${namespaceId} is missing`);
     return source.domain;
   }
 }

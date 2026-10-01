@@ -107,12 +107,11 @@ interface ReplyPreview {
 export type Message = typeof message.$inferSelect;
 export interface MessageAuthorAddress {
   account: string;
-  domain: string;
   namespaceId: number;
 }
 export type PublicMessage<T extends Message = Message> = Omit<
   T,
-  'id' | 'creatorAccount' | 'creatorDomain' | 'profileNamespaceId'
+  'id' | 'creatorAccount' | 'profileNamespaceId'
 > & {
   creator: MessageAuthorAddress | null;
 };
@@ -159,27 +158,24 @@ export function stripMessageId<
   T extends {
     id: bigint;
     creatorAccount: string | null;
-    creatorDomain: string | null;
     profileNamespaceId: number;
-    sourceNamespaceId: number;
+    publisherNamespaceId: number;
   },
 >(
   msg: T,
-): Omit<T, 'id' | 'creatorAccount' | 'creatorDomain' | 'profileNamespaceId'> & {
+): Omit<T, 'id' | 'creatorAccount' | 'profileNamespaceId'> & {
   namespaceId: number;
   creator: MessageAuthorAddress | null;
 } {
-  const { id, creatorAccount, creatorDomain, profileNamespaceId, ...rest } =
-    msg;
+  const { id, creatorAccount, profileNamespaceId, ...rest } = msg;
   return {
     ...rest,
     namespaceId: authorNamespaceId(msg),
     creator:
-      creatorAccount === null || creatorDomain === null
+      creatorAccount === null
         ? null
         : {
             account: creatorAccount,
-            domain: creatorDomain,
             namespaceId: authorNamespaceId(msg),
           },
   };
@@ -234,7 +230,6 @@ export class MessageService {
     if (!publicCreator) return;
     const creator = {
       account: publicCreator.account,
-      domain: publicCreator.domain,
       profileNamespaceId: publicCreator.namespaceId,
       profileRev: committed.profileRev,
     };
@@ -252,7 +247,7 @@ export class MessageService {
         ? [
             {
               threadType: 'GROUP',
-              publisherNamespaceId: committed.sourceNamespaceId,
+              publisherNamespaceId: committed.publisherNamespaceId,
               groupAccount: thread.groupAccount!,
               threadId: committed.threadId,
               seq: committed.seq,
@@ -266,7 +261,7 @@ export class MessageService {
         : [
             {
               threadType: 'P2P',
-              publisherNamespaceId: committed.sourceNamespaceId,
+              publisherNamespaceId: committed.publisherNamespaceId,
               threadId: committed.threadId,
               seq: committed.seq,
               creator,
@@ -310,7 +305,6 @@ export class MessageService {
     const author = await this.localAuthor(userId);
     return (
       creator.account === author.account &&
-      creator.domain === author.domain &&
       creator.namespaceId === author.namespaceId
     );
   }
@@ -358,208 +352,213 @@ export class MessageService {
       if (existing !== null) return existing; // retry → return the original message (already dispatched)
     }
     try {
-      const created = await this.previews.commitMessage(threadId, async (tx) => {
-        if (beforeMessageCreate) await beforeMessageCreate(tx);
-        // Atomic per-thread seq allocation: increment curSeq and read back the new value. The row lock
-        // held to commit serializes concurrent sends to this thread (a brief wait, never an error) and
-        // keeps curSeq == MAX(seq) by construction — no MAX() aggregate, no allocation race, no retry.
-        // curSeq is the last allocated sequence and defaults to the pre-first cursor 0, so the
-        // first message gets seq 1. Implementations may retain a larger watermark after migration.
-        const [{ curSeq: seq }] = await tx
-          .update(messageThread)
-          .set({ curSeq: sql`${messageThread.curSeq} + 1` })
-          .where(eq(messageThread.id, threadId))
-          .returning({ curSeq: messageThread.curSeq });
-        // The thread-row update above is also the relationship leave lock.
-        // Re-check membership after acquiring it so a concurrent unfriend can
-        // never commit between the HTTP guard and the actual message insert.
-        const [writeAccess] = await tx
-          .select({
-            type: messageThread.type,
-            creatorAccount: user.account,
-            creatorDomain: user.domain,
-            profileRev: user.defaultProfileRev,
-          })
-          .from(messageThread)
-          .innerJoin(
-            accountThreadState,
-            and(
-              eq(accountThreadState.threadId, messageThread.id),
-              eq(accountThreadState.accountId, userId),
-            ),
-          )
-          .innerJoin(user, eq(user.id, userId))
-          .where(eq(messageThread.id, threadId))
-          .limit(1);
-        if (
-          !writeAccess ||
-          !(await isThreadMutuallyAuthorized(tx, userId, threadId))
-        ) {
-          throw new BusinessException(
-            writeAccess?.type === MessageThreadType.GROUP
-              ? BusinessCode.GROUP_FORBIDDEN
-              : BusinessCode.FRIEND_NOT_FOUND,
-            'conversation is read-only',
-          );
-        }
-        const textContent =
-          type === ContentType.PURE_TEXT
-            ? parseTextMessageContent(content)
-            : null;
-        if (type === ContentType.PURE_TEXT && !textContent) {
-          throw new BusinessException(
-            BusinessCode.VALIDATION_FAILED,
-            'invalid text message content',
-          );
-        }
-        if (textContent) {
-          for (const segment of parseMessageEntities(textContent.text)) {
-            if (segment.kind !== 'entity' || segment.entityType !== 'user')
-              continue;
-            const localAccount = segment.entityId.endsWith('@local')
-              ? segment.entityId.slice(0, -'@local'.length)
+      const created = await this.previews.commitMessage(
+        threadId,
+        async (tx) => {
+          if (beforeMessageCreate) await beforeMessageCreate(tx);
+          // Atomic per-thread seq allocation: increment curSeq and read back the new value. The row lock
+          // held to commit serializes concurrent sends to this thread (a brief wait, never an error) and
+          // keeps curSeq == MAX(seq) by construction — no MAX() aggregate, no allocation race, no retry.
+          // curSeq is the last allocated sequence and defaults to the pre-first cursor 0, so the
+          // first message gets seq 1. Implementations may retain a larger watermark after migration.
+          const [{ curSeq: seq }] = await tx
+            .update(messageThread)
+            .set({ curSeq: sql`${messageThread.curSeq} + 1` })
+            .where(eq(messageThread.id, threadId))
+            .returning({ curSeq: messageThread.curSeq });
+          // The thread-row update above is also the relationship leave lock.
+          // Re-check membership after acquiring it so a concurrent unfriend can
+          // never commit between the HTTP guard and the actual message insert.
+          const [writeAccess] = await tx
+            .select({
+              type: messageThread.type,
+              creatorAccount: user.account,
+              profileRev: user.defaultProfileRev,
+            })
+            .from(messageThread)
+            .innerJoin(
+              accountThreadState,
+              and(
+                eq(accountThreadState.threadId, messageThread.id),
+                eq(accountThreadState.accountId, userId),
+              ),
+            )
+            .innerJoin(user, eq(user.id, userId))
+            .where(eq(messageThread.id, threadId))
+            .limit(1);
+          if (
+            !writeAccess ||
+            !(await isThreadMutuallyAuthorized(tx, userId, threadId))
+          ) {
+            throw new BusinessException(
+              writeAccess?.type === MessageThreadType.GROUP
+                ? BusinessCode.GROUP_FORBIDDEN
+                : BusinessCode.FRIEND_NOT_FOUND,
+              'conversation is read-only',
+            );
+          }
+          const textContent =
+            type === ContentType.PURE_TEXT
+              ? parseTextMessageContent(content)
               : null;
-            if (
-              (localAccount === null ||
-                !isValidSomfpUserAccount(localAccount)) &&
-              !parseSomfpUserAddress(segment.entityId)
-            ) {
-              throw new BusinessException(
-                BusinessCode.VALIDATION_FAILED,
-                'user mention must use a valid full address',
+          if (type === ContentType.PURE_TEXT && !textContent) {
+            throw new BusinessException(
+              BusinessCode.VALIDATION_FAILED,
+              'invalid text message content',
+            );
+          }
+          if (textContent) {
+            for (const segment of parseMessageEntities(textContent.text)) {
+              if (segment.kind !== 'entity' || segment.entityType !== 'user')
+                continue;
+              const localAccount = segment.entityId.endsWith('@local')
+                ? segment.entityId.slice(0, -'@local'.length)
+                : null;
+              if (
+                (localAccount === null ||
+                  !isValidSomfpUserAccount(localAccount)) &&
+                !parseSomfpUserAddress(segment.entityId)
+              ) {
+                throw new BusinessException(
+                  BusinessCode.VALIDATION_FAILED,
+                  'user mention must use a valid full address',
+                );
+              }
+            }
+          }
+          if (
+            type === ContentType.SYSTEM &&
+            !parseSystemMessageContent(content)
+          ) {
+            throw new BusinessException(
+              BusinessCode.VALIDATION_FAILED,
+              'invalid system message content',
+            );
+          }
+          const quoteSeq = textContent?.quote?.seq;
+          const quoteTarget =
+            quoteSeq === undefined || quoteSeq === 0
+              ? null
+              : await tx.query.message
+                  .findFirst({
+                    where: and(
+                      eq(message.threadId, threadId),
+                      eq(message.seq, quoteSeq),
+                    ),
+                  })
+                  .then(async (row) => {
+                    if (!row || row.creatorAccount === null) return row;
+                    const snapshot = await tx.query.profileTable.findFirst({
+                      where: and(
+                        eq(profileTable.account, row.creatorAccount),
+                        eq(
+                          profileTable.publisherNamespaceId,
+                          row.publisherNamespaceId,
+                        ),
+                        eq(
+                          profileTable.profileNamespaceId,
+                          authorNamespaceId(row),
+                        ),
+                        eq(profileTable.profileRev, row.profileRev),
+                      ),
+                      columns: { displayName: true },
+                    });
+                    return {
+                      ...row,
+                      creatorItem: snapshot
+                        ? { name: snapshot.displayName }
+                        : undefined,
+                    };
+                  });
+          if (quoteSeq !== undefined && quoteSeq > 0 && !quoteTarget) {
+            throw new BusinessException(
+              BusinessCode.NOT_FOUND,
+              'quoted message not found',
+            );
+          }
+          if (
+            quoteTarget &&
+            (quoteTarget.isDeleted ||
+              quoteTarget.contentType === ContentType.SYSTEM ||
+              (quoteVisibility?.clearedThroughSeq !== null &&
+                quoteVisibility?.clearedThroughSeq !== undefined &&
+                quoteTarget.seq <= quoteVisibility.clearedThroughSeq) ||
+              (quoteTarget.creatorAccount !== null &&
+                quoteVisibility?.hideCreators?.some(
+                  (creator) =>
+                    creator.account === quoteTarget.creatorAccount &&
+                    creator.namespaceId === authorNamespaceId(quoteTarget),
+                )))
+          ) {
+            throw new BusinessException(
+              BusinessCode.NOT_FOUND,
+              'quoted message not found',
+            );
+          }
+          const storedContent =
+            textContent && quoteSeq !== undefined
+              ? stringifyTextMessageContent({
+                  text: textContent.text,
+                  quote: { seq: quoteSeq, namespaceId: 0 },
+                })
+              : content;
+          const [msg] = await tx
+            .insert(message)
+            .values({
+              content: storedContent,
+              contentType: type,
+              threadId,
+              creatorAccount: writeAccess.creatorAccount,
+              profileRev: writeAccess.profileRev,
+              clientMessageId,
+              seq,
+              originSeq: seq,
+              updatedAt: new Date(),
+            })
+            .returning();
+          if (type === ContentType.FORWARD) {
+            if (!forwardBundleId) {
+              throw new Error('FORWARD message requires forwardBundleId');
+            }
+            await tx
+              .insert(forwardMessage)
+              .values({ messageId: msg.id, bundleId: forwardBundleId });
+          }
+          await tx
+            .update(messageThread)
+            .set({
+              updatedAt: new Date(),
+            })
+            .where(eq(messageThread.id, threadId));
+          // Per-object media authz: record the CAS digest this message references so the /uploads/cas/*
+          // gate can authorize readers against thread membership (one indexed row). One message carries
+          // one media (MediaMessage is 1:1). PURE_TEXT/
+          // INVITE reference no media.
+          if (
+            type === ContentType.IMAGE ||
+            type === ContentType.FILE ||
+            type === ContentType.VIDEO ||
+            type === ContentType.AUDIO ||
+            type === ContentType.LINK ||
+            type === ContentType.CONTACT_CARD ||
+            type === ContentType.GALLERY
+          ) {
+            const digests = extractDigests(storedContent);
+            if (digests.length) {
+              await tx.insert(messageAsset).values(
+                digests.map((digest) => ({
+                  messageId: msg.id,
+                  threadId,
+                  digest,
+                })),
               );
             }
           }
-        }
-        if (
-          type === ContentType.SYSTEM &&
-          !parseSystemMessageContent(content)
-        ) {
-          throw new BusinessException(
-            BusinessCode.VALIDATION_FAILED,
-            'invalid system message content',
-          );
-        }
-        const quoteSeq = textContent?.quote?.seq;
-        const quoteTarget =
-          quoteSeq === undefined || quoteSeq === 0
-            ? null
-            : await tx.query.message
-                .findFirst({
-                  where: and(
-                    eq(message.threadId, threadId),
-                    eq(message.seq, quoteSeq),
-                  ),
-                })
-                .then(async (row) => {
-                  if (!row || row.creatorAccount === null) return row;
-                  const snapshot = await tx.query.profileTable.findFirst({
-                    where: and(
-                      eq(profileTable.account, row.creatorAccount),
-                      eq(profileTable.domain, row.creatorDomain!),
-                      eq(profileTable.publisherNamespaceId, row.sourceNamespaceId),
-                      eq(profileTable.profileNamespaceId, authorNamespaceId(row)),
-                      eq(profileTable.profileRev, row.profileRev),
-                    ),
-                    columns: { displayName: true },
-                  });
-                  return {
-                    ...row,
-                    creatorItem: snapshot
-                      ? { name: snapshot.displayName }
-                      : undefined,
-                  };
-                });
-        if (quoteSeq !== undefined && quoteSeq > 0 && !quoteTarget) {
-          throw new BusinessException(
-            BusinessCode.NOT_FOUND,
-            'quoted message not found',
-          );
-        }
-        if (
-          quoteTarget &&
-          (quoteTarget.isDeleted ||
-            quoteTarget.contentType === ContentType.SYSTEM ||
-            (quoteVisibility?.clearedThroughSeq !== null &&
-              quoteVisibility?.clearedThroughSeq !== undefined &&
-              quoteTarget.seq <= quoteVisibility.clearedThroughSeq) ||
-            (quoteTarget.creatorAccount !== null &&
-              quoteVisibility?.hideCreators?.some(
-                (creator) =>
-                  creator.account === quoteTarget.creatorAccount &&
-                  creator.domain === quoteTarget.creatorDomain &&
-                  creator.namespaceId === authorNamespaceId(quoteTarget),
-              )))
-        ) {
-          throw new BusinessException(
-            BusinessCode.NOT_FOUND,
-            'quoted message not found',
-          );
-        }
-        const storedContent =
-          textContent && quoteSeq !== undefined
-            ? stringifyTextMessageContent({
-                text: textContent.text,
-                quote: { seq: quoteSeq, namespaceId: 0 },
-              })
-            : content;
-        const [msg] = await tx
-          .insert(message)
-          .values({
-            content: storedContent,
-            contentType: type,
-            threadId,
-            creatorAccount: writeAccess.creatorAccount,
-            creatorDomain: writeAccess.creatorDomain,
-            profileRev: writeAccess.profileRev,
-            clientMessageId,
-            seq,
-            originSeq: seq,
-            updatedAt: new Date(),
-          })
-          .returning();
-        if (type === ContentType.FORWARD) {
-          if (!forwardBundleId) {
-            throw new Error('FORWARD message requires forwardBundleId');
-          }
-          await tx
-            .insert(forwardMessage)
-            .values({ messageId: msg.id, bundleId: forwardBundleId });
-        }
-        await tx
-          .update(messageThread)
-          .set({
-            updatedAt: new Date(),
-          })
-          .where(eq(messageThread.id, threadId));
-        // Per-object media authz: record the CAS digest this message references so the /uploads/cas/*
-        // gate can authorize readers against thread membership (one indexed row). One message carries
-        // one media (MediaMessage is 1:1). PURE_TEXT/
-        // INVITE reference no media.
-        if (
-          type === ContentType.IMAGE ||
-          type === ContentType.FILE ||
-          type === ContentType.VIDEO ||
-          type === ContentType.AUDIO ||
-          type === ContentType.LINK ||
-          type === ContentType.CONTACT_CARD ||
-          type === ContentType.GALLERY
-        ) {
-          const digests = extractDigests(storedContent);
-          if (digests.length) {
-            await tx.insert(messageAsset).values(
-              digests.map((digest) => ({
-                messageId: msg.id,
-                threadId,
-                digest,
-              })),
-            );
-          }
-        }
-        // Strip the internal BigInt id — a throughput side-channel that must never be serialized.
-        // (msg.id is consumed above for the MediaMessage FK; the strip is the LAST use of the full row.)
-        return stripMessageId(msg);
-      });
+          // Strip the internal BigInt id — a throughput side-channel that must never be serialized.
+          // (msg.id is consumed above for the MediaMessage FK; the strip is the LAST use of the full row.)
+          return stripMessageId(msg);
+        },
+      );
       await this.publishCommittedProfileWork(created);
       return created;
     } catch (e) {
@@ -602,7 +601,8 @@ export class MessageService {
         content,
         contentType: ContentType.SYSTEM,
         creatorAccount: '$system',
-        creatorDomain: 'local',
+        profileNamespaceId: 0,
+        publisherNamespaceId: 0,
         threadId,
         seq,
         updatedAt: new Date(),
@@ -704,15 +704,13 @@ export class MessageService {
       where: eq(message.clientMessageId, clientMessageId),
       columns: {
         creatorAccount: true,
-        creatorDomain: true,
         profileNamespaceId: true,
-        sourceNamespaceId: true,
+        publisherNamespaceId: true,
       },
     });
     if (committed) {
       if (
         committed.creatorAccount !== author.account ||
-        committed.creatorDomain !== author.domain ||
         authorNamespaceId(committed) !== author.namespaceId
       ) {
         throw new BusinessException(
@@ -734,8 +732,7 @@ export class MessageService {
           await tx.insert(pendingMedia).values({
             threadId,
             creatorAccount: author.account,
-            creatorDomain: author.domain,
-            namespaceId: author.namespaceId,
+            publisherNamespaceId: author.namespaceId,
             contentType,
             content: '{}',
             clientMessageId,
@@ -755,8 +752,7 @@ export class MessageService {
         if (
           !winner ||
           winner.creatorAccount !== author.account ||
-          winner.creatorDomain !== author.domain ||
-          winner.namespaceId !== author.namespaceId ||
+          winner.publisherNamespaceId !== author.namespaceId ||
           winner.threadId !== threadId ||
           winner.contentType !== contentType
         ) {
@@ -770,8 +766,7 @@ export class MessageService {
     }
     if (
       existing.creatorAccount !== author.account ||
-      existing.creatorDomain !== author.domain ||
-      existing.namespaceId !== author.namespaceId ||
+      existing.publisherNamespaceId !== author.namespaceId ||
       existing.threadId !== threadId ||
       existing.contentType !== contentType
     ) {
@@ -821,8 +816,7 @@ export class MessageService {
         and(
           eq(pendingMedia.clientMessageId, clientMessageId),
           eq(pendingMedia.creatorAccount, author.account),
-          eq(pendingMedia.creatorDomain, author.domain),
-          eq(pendingMedia.namespaceId, author.namespaceId),
+          eq(pendingMedia.publisherNamespaceId, author.namespaceId),
           eq(pendingMedia.status, 'pending'),
         ),
       );
@@ -835,8 +829,7 @@ export class MessageService {
       where: and(
         eq(pendingMedia.threadId, threadId),
         eq(pendingMedia.creatorAccount, author.account),
-        eq(pendingMedia.creatorDomain, author.domain),
-        eq(pendingMedia.namespaceId, author.namespaceId),
+        eq(pendingMedia.publisherNamespaceId, author.namespaceId),
         isNotNull(pendingMedia.clientMessageId),
       ),
       columns: {
@@ -866,8 +859,7 @@ export class MessageService {
           eq(pendingMedia.threadId, threadId),
           eq(pendingMedia.clientMessageId, clientMessageId),
           eq(pendingMedia.creatorAccount, author.account),
-          eq(pendingMedia.creatorDomain, author.domain),
-          eq(pendingMedia.namespaceId, author.namespaceId),
+          eq(pendingMedia.publisherNamespaceId, author.namespaceId),
         ),
       )
       .returning({ id: pendingMedia.id });
@@ -906,8 +898,7 @@ export class MessageService {
       where: and(
         eq(pendingMedia.clientMessageId, clientMessageId),
         eq(pendingMedia.creatorAccount, author.account),
-        eq(pendingMedia.creatorDomain, author.domain),
-        eq(pendingMedia.namespaceId, author.namespaceId),
+        eq(pendingMedia.publisherNamespaceId, author.namespaceId),
       ),
       columns: {
         id: true,
@@ -955,7 +946,7 @@ export class MessageService {
         status: 'SUCCEEDED',
         bytesTotal: BigInt(payload.size),
         bytesReceived: BigInt(payload.size),
-        namespaceId: author.namespaceId,
+        publisherNamespaceId: author.namespaceId,
         payload: payload as unknown as Record<string, unknown>,
         updatedAt: new Date(),
       })
@@ -976,8 +967,7 @@ export class MessageService {
       where: and(
         eq(pendingMedia.clientMessageId, clientMessageId),
         eq(pendingMedia.creatorAccount, author.account),
-        eq(pendingMedia.creatorDomain, author.domain),
-        eq(pendingMedia.namespaceId, author.namespaceId),
+        eq(pendingMedia.publisherNamespaceId, author.namespaceId),
       ),
       columns: { contentType: true, status: true },
     });
@@ -1018,8 +1008,7 @@ export class MessageService {
         !(await this.localAuthor(userId).then(
           (author) =>
             author.account === stage.creatorAccount &&
-            author.domain === stage.creatorDomain &&
-            author.namespaceId === stage.namespaceId,
+            author.namespaceId === stage.publisherNamespaceId,
         )))
     ) {
       return null;
@@ -1071,8 +1060,7 @@ export class MessageService {
           const creator = await tx.query.account.findFirst({
             where: and(
               eq(user.account, stage.creatorAccount),
-              eq(user.domain, stage.creatorDomain),
-              eq(user.namespaceId, stage.namespaceId),
+              eq(user.namespaceId, stage.publisherNamespaceId),
             ),
             columns: { id: true },
           });
@@ -1145,12 +1133,11 @@ export class MessageService {
               contentType: stage.contentType,
               threadId: stage.threadId,
               creatorAccount: stage.creatorAccount,
-              creatorDomain: stage.creatorDomain,
+              profileNamespaceId: stage.publisherNamespaceId,
               profileRev: sql`(
               SELECT account."defaultProfileRev" FROM "Account" account
               WHERE account.account = ${stage.creatorAccount}
-                AND account.domain = ${stage.creatorDomain}
-                AND account."namespaceId" = ${stage.namespaceId}
+                AND account."namespaceId" = ${stage.publisherNamespaceId}
               LIMIT 1
             )`,
               clientMessageId,
@@ -1563,7 +1550,8 @@ export class MessageService {
     if (
       msgs.some(
         (m) =>
-          m.sourceNamespaceId > 0 && parseTextMessageContent(m.content)?.quote,
+          m.publisherNamespaceId > 0 &&
+          parseTextMessageContent(m.content)?.quote,
       )
     ) {
       msgs = await this.database.db.transaction(
@@ -1597,13 +1585,12 @@ export class MessageService {
       where: and(...targetConditions),
     });
     const authorAddresses = targets.flatMap((target) =>
-      target.creatorAccount === null || target.creatorDomain === null
+      target.creatorAccount === null
         ? []
         : [
             {
               account: target.creatorAccount,
-              domain: target.creatorDomain,
-              publisherNamespaceId: target.sourceNamespaceId,
+              publisherNamespaceId: target.publisherNamespaceId,
               profileNamespaceId: authorNamespaceId(target),
               profileRev: target.profileRev,
             },
@@ -1617,16 +1604,20 @@ export class MessageService {
               ...authorAddresses.map((author) =>
                 and(
                   eq(profileTable.account, author.account),
-                  eq(profileTable.domain, author.domain),
-                  eq(profileTable.publisherNamespaceId, author.publisherNamespaceId),
-                  eq(profileTable.profileNamespaceId, author.profileNamespaceId),
+                  eq(
+                    profileTable.publisherNamespaceId,
+                    author.publisherNamespaceId,
+                  ),
+                  eq(
+                    profileTable.profileNamespaceId,
+                    author.profileNamespaceId,
+                  ),
                   eq(profileTable.profileRev, author.profileRev),
                 ),
               ),
             ),
             columns: {
               account: true,
-              domain: true,
               publisherNamespaceId: true,
               profileNamespaceId: true,
               displayName: true,
@@ -1637,7 +1628,6 @@ export class MessageService {
       authors.map((author) => [
         JSON.stringify([
           author.account,
-          author.domain,
           author.publisherNamespaceId,
           author.profileNamespaceId,
           author.profileRev,
@@ -1659,7 +1649,6 @@ export class MessageService {
           viewerFilters?.hideCreators?.some(
             (creator) =>
               creator.account === target.creatorAccount &&
-              creator.domain === target.creatorDomain &&
               creator.namespaceId === authorNamespaceId(target),
           ))
       );
@@ -1672,8 +1661,7 @@ export class MessageService {
             : (authorNames.get(
                 JSON.stringify([
                   target.creatorAccount,
-                  target.creatorDomain,
-                  target.sourceNamespaceId,
+                  target.publisherNamespaceId,
                   authorNamespaceId(target),
                   target.profileRev,
                 ]),
@@ -1920,18 +1908,18 @@ export class MessageService {
                   AND (
                     (COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer,
                         CASE WHEN m.content::jsonb -> 'quote' ? 'sourceSeq'
-                          THEN m."sourceNamespaceId" ELSE 0 END) = 0
+                          THEN m."publisherNamespaceId" ELSE 0 END) = 0
                       AND source.seq = COALESCE((m.content::jsonb -> 'quote' ->> 'sourceSeq')::integer,
                         (m.content::jsonb -> 'quote' ->> 'seq')::integer))
                     OR (
                       COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer,
                         CASE WHEN m.content::jsonb -> 'quote' ? 'sourceSeq'
-                          THEN m."sourceNamespaceId" ELSE 0 END) > 0
+                          THEN m."publisherNamespaceId" ELSE 0 END) > 0
                       AND (
-                        (source."sourceNamespaceId" = COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer, m."sourceNamespaceId")
+                        (source."publisherNamespaceId" = COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer, m."publisherNamespaceId")
                           AND source."originSeq" = COALESCE((m.content::jsonb -> 'quote' ->> 'sourceSeq')::integer,
                             (m.content::jsonb -> 'quote' ->> 'seq')::integer))
-                        OR (receipt."namespaceId" = COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer, m."sourceNamespaceId")
+                        OR (receipt."namespaceId" = COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer, m."publisherNamespaceId")
                           AND receipt."peerSeq" = COALESCE((m.content::jsonb -> 'quote' ->> 'sourceSeq')::integer,
                             (m.content::jsonb -> 'quote' ->> 'seq')::integer))
                       )

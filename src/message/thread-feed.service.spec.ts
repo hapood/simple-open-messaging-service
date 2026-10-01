@@ -9,7 +9,6 @@ describe('thread feed database previews', () => {
         seq,
         createdAt: '2026-09-08T00:00:0' + (seq - 1) + 'Z',
         creatorAccount: 'peer',
-        creatorDomain: 'local',
         profileNamespaceId: 0,
         profileRev: seq,
         isDeleted: seq !== 1,
@@ -72,7 +71,7 @@ describe('thread feed database previews', () => {
       type: 'P2P',
       blocked: false,
       profileSourceId: 12,
-      profile: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 3 },
+      profile: { account: 'peer', namespaceId: 0, profileRev: 3 },
     });
     expect(read).not.toHaveBeenCalled();
   });
@@ -87,20 +86,20 @@ describe('thread feed database previews', () => {
       {
         seq: 1,
         createdAt: '2026-09-08T00:00:00.000Z',
-        sender: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 1 },
+        sender: { account: 'peer', namespaceId: 0, profileRev: 1 },
         status: 'LIVE',
         text: 'hello',
       },
       {
         seq: 2,
         createdAt: '2026-09-08T00:00:01.000Z',
-        sender: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 2 },
+        sender: { account: 'peer', namespaceId: 0, profileRev: 2 },
         status: 'USER_RETRACTION',
       },
       {
         seq: 3,
         createdAt: '2026-09-08T00:00:02.000Z',
-        sender: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 3 },
+        sender: { account: 'peer', namespaceId: 0, profileRev: 3 },
         status: 'MODERATION_REMOVAL',
       },
     ]);
@@ -114,7 +113,6 @@ describe('thread feed database previews', () => {
         seq: 3,
         createdAt: '2026-09-08T00:00:02Z',
         creatorAccount: 'peer',
-        creatorDomain: 'local',
         profileNamespaceId: 0,
         profileRev: 3,
         isDeleted: false,

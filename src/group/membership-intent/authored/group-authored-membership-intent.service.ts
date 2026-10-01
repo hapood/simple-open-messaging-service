@@ -464,7 +464,7 @@ export class GroupAuthoredMembershipIntentService {
       groupAccount: located.groupAccount,
       groupNamespaceId: 0,
       memberAccount: member.account,
-      memberNamespaceId: member.namespaceId,
+      profileNamespaceId: member.namespaceId,
     });
     await lockGroupMemberIntentRowsInTx(
       tx,
@@ -591,7 +591,7 @@ export class GroupAuthoredMembershipIntentService {
           `group invitations, including pending invitations, have reached the ${SERVER_MAX_GROUP_MEMBERS}-person limit`,
         ),
       );
-    if (row.memberDomain === 'local' && row.localMemberId === null)
+    if (row.profileNamespaceId === 0 && row.localMemberId === null)
       return Promise.resolve(
         this.reject(
           'TARGET_NOT_FOUND',
@@ -602,7 +602,7 @@ export class GroupAuthoredMembershipIntentService {
     const member: Applicant = {
       account: row.memberAccount!,
       domain: row.memberDomain!,
-      namespaceId: row.memberNamespaceId!,
+      namespaceId: row.profileNamespaceId!,
     };
     const memberNote: string = row.memberNote ?? '';
     return this.finalizeValidationInTx(tx, {
@@ -626,7 +626,7 @@ export class GroupAuthoredMembershipIntentService {
         localDomain: 'local',
         memberAccount: member.account,
         memberDomain: member.domain,
-        memberNamespaceId: member.namespaceId,
+        profileNamespaceId: member.namespaceId,
         // An application keeps the applicant's note; completing an invitation
         // preserves the group's own invitation note through the promotion.
         note:
@@ -702,7 +702,7 @@ export class GroupAuthoredMembershipIntentService {
     const member: Applicant = {
       account: row.memberAccount!,
       domain: row.memberDomain!,
-      namespaceId: row.memberNamespaceId!,
+      namespaceId: row.profileNamespaceId!,
     };
     return this.finalizeValidationInTx(tx, {
       [validated]: true,
@@ -725,7 +725,7 @@ export class GroupAuthoredMembershipIntentService {
         localDomain: 'local',
         memberAccount: member.account,
         memberDomain: member.domain,
-        memberNamespaceId: member.namespaceId,
+        profileNamespaceId: member.namespaceId,
         localMemberId: row.localMemberId,
         projectionDirections: row.projectionDirections,
         author: { account: row.account, namespaceId: 0 },
@@ -775,7 +775,7 @@ export class GroupAuthoredMembershipIntentService {
       row.invitationOutstanding
     )
       return this.validateAcceptanceInTx(tx, params, pairId, threadLock, row);
-    if (row.memberDomain === 'local' && row.localMemberId === null)
+    if (row.profileNamespaceId === 0 && row.localMemberId === null)
       return Promise.resolve(
         this.reject(
           'TARGET_NOT_FOUND',
@@ -790,7 +790,7 @@ export class GroupAuthoredMembershipIntentService {
     const member: Applicant = {
       account: row.memberAccount!,
       domain: row.memberDomain!,
-      namespaceId: row.memberNamespaceId!,
+      namespaceId: row.profileNamespaceId!,
     };
     return this.finalizeValidationInTx(tx, {
       [validated]: true,
@@ -840,7 +840,6 @@ export class GroupAuthoredMembershipIntentService {
     if (context.member.domain !== 'local')
       await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
         {
-          peerDomain: context.member.domain,
           namespaceId: context.member.namespaceId,
         },
       ]);

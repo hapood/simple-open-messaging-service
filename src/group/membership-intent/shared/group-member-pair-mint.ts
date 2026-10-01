@@ -15,11 +15,11 @@ export async function mintGroupMemberPairInTx(
     groupNamespaceId: number;
     memberAccount: string;
     /** The member's own identity namespace; 0 for a local member. */
-    memberNamespaceId: number;
+    profileNamespaceId: number;
   },
 ): Promise<bigint> {
   const groupLocal = input.groupNamespaceId === 0;
-  const memberLocal = input.memberNamespaceId === 0;
+  const memberLocal = input.profileNamespaceId === 0;
   if (groupLocal !== memberLocal) {
     const local = groupLocal
       ? { type: 'GROUP', account: input.groupAccount }
@@ -28,7 +28,7 @@ export async function mintGroupMemberPairInTx(
       ? { type: 'USER', account: input.memberAccount }
       : { type: 'GROUP', account: input.groupAccount };
     const peerNamespaceId = groupLocal
-      ? input.memberNamespaceId
+      ? input.profileNamespaceId
       : input.groupNamespaceId;
     return mint(tx, input.threadId, local, remote, peerNamespaceId);
   }

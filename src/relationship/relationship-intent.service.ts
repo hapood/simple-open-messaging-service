@@ -449,13 +449,13 @@ export class RelationshipIntentService {
       groupDomain: string;
       groupNamespaceId: number;
       memberAccount: string;
-      memberNamespaceId: number;
+      profileNamespaceId: number;
     }>(sql`
       SELECT group_profile.account AS "groupAccount",
         group_profile.domain AS "groupDomain",
         group_profile."namespaceId" AS "groupNamespaceId",
         ${member.account}::text AS "memberAccount",
-        ${member.namespaceId}::integer AS "memberNamespaceId"
+        ${member.namespaceId}::integer AS "profileNamespaceId"
       FROM ${groupStateSql} group_profile
       WHERE group_profile.id = ${params.groupId}
     `);
@@ -482,7 +482,7 @@ export class RelationshipIntentService {
         {
           type: 'USER',
           account: row.memberAccount,
-          namespaceId: row.memberNamespaceId,
+          namespaceId: row.profileNamespaceId,
         },
         params.threadId,
       ),
@@ -564,7 +564,6 @@ export class RelationshipIntentService {
             ELSE
               (SELECT profile."defaultProfileRev" FROM "Account" profile
                 WHERE profile.account = ${direction.authorAccount}
-                  AND profile.domain = 'local'
                   AND profile."namespaceId" = 0 LIMIT 1)
           END
         ), 0), ${(params.note ?? '').slice(0, 255)},
@@ -572,7 +571,7 @@ export class RelationshipIntentService {
           WHERE m."threadId" = ${params.threadId} AND m."contentType" <> 'SYSTEM'), 0),
         COALESCE((SELECT MAX(d."deletionSeq") FROM "DeletedMessage" d
           JOIN "Message" m ON m."threadId" = d."threadId" AND m.seq = d."messageSeq"
-          WHERE d."threadId" = ${params.threadId} AND d."sourceNamespaceId" = 0), 0),
+          WHERE d."threadId" = ${params.threadId} AND d."publisherNamespaceId" = 0), 0),
         ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP)
       ON CONFLICT ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId") DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,

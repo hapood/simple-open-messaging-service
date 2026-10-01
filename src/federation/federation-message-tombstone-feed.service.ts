@@ -31,8 +31,6 @@ export interface FederationMessageTombstoneQueryPage {
 
 @Injectable()
 export class FederationMessageTombstoneFeedService {
-  private readonly localDomain = 'local';
-
   constructor(private readonly database: DatabaseService) {}
 
   async rejectMissingQueryAfter(
@@ -126,12 +124,14 @@ export class FederationMessageTombstoneFeedService {
           .where(
             and(
               eq(deletedMessage.threadId, threadId),
-              eq(deletedMessage.sourceNamespaceId, 0),
+              eq(deletedMessage.publisherNamespaceId, 0),
               groupQueryDirection === 'MIRROR_TO_ORIGIN' ||
                 selector.type === 'P2P'
-                ? eq(message.creatorDomain, 'local')
+                ? eq(message.profileNamespaceId, 0)
                 : undefined,
-              includeSelf ? undefined : ne(message.creatorDomain, peerDomain),
+              includeSelf
+                ? undefined
+                : ne(message.profileNamespaceId, namespaceId),
               maxMessageSeq !== undefined
                 ? lte(message.seq, maxMessageSeq)
                 : undefined,
@@ -172,19 +172,17 @@ export class FederationMessageTombstoneFeedService {
       .from(peerStateFeed)
       .where(
         and(
-          eq(peerStateFeed.peerDomain, peerDomain),
           eq(peerStateFeed.namespaceId, namespaceId),
           eq(peerStateFeed.account, selector.account),
-          eq(peerStateFeed.domain, this.localDomain),
           eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
           selector.type === 'P2P'
             ? and(
                 eq(peerStateFeed.subjectAccount, selector.peerAccount),
-                eq(peerStateFeed.subjectDomain, peerDomain),
+                eq(peerStateFeed.subjectNamespaceId, namespaceId),
               )
             : and(
                 eq(peerStateFeed.subjectAccount, ''),
-                eq(peerStateFeed.subjectDomain, 'local'),
+                eq(peerStateFeed.subjectNamespaceId, 0),
               ),
         ),
       )

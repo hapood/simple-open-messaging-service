@@ -36,13 +36,11 @@ export class FederationThreadContentHeadService {
     if (!projection) return false;
     await this.stateFeed.writeManyInTx(tx, [
       {
-        peerDomain,
         namespaceId,
         account: projection.account,
-        domain: 'local',
         eventType: 'THREAD_CONTENT_HEAD',
         subjectAccount: projection.peerAccount ?? '',
-        subjectDomain: projection.peerAccount ? peerDomain : 'local',
+        subjectNamespaceId: projection.peerAccount ? namespaceId : 0,
         body: {
           messageEndSeq: projection.messageEndSeq,
           tombstoneEndSeq: projection.tombstoneEndSeq,
@@ -91,7 +89,6 @@ export class FederationThreadContentHeadService {
       FROM "MessageThread" message_thread
       LEFT JOIN "ThreadAudience" audience
         ON audience."threadId" = message_thread.id
-       AND audience."targetDomain" = ${peerDomain}
        AND audience."targetNamespaceId" = ${namespaceId}
        AND audience."localUserId" IS NULL
       LEFT JOIN "RelationshipPair" pair

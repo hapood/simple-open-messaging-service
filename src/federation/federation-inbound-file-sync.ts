@@ -98,8 +98,8 @@ export class FederationInboundFileSync {
         ),
       });
       const originDomain = rows[0]?.originDomain;
-      const namespaceId = rows[0]?.namespaceId;
-      if (namespaceId && this.quota.isTripped(namespaceId)) return;
+      const publisherNamespaceId = rows[0]?.publisherNamespaceId;
+      if (publisherNamespaceId && this.quota.isTripped(publisherNamespaceId)) return;
       if (rows.length > 0) await start?.(batchId);
       const results = await Promise.allSettled(
         rows.map((row) => {
@@ -147,7 +147,7 @@ export class FederationInboundFileSync {
       columns: {
         bytesTotal: true,
         originDomain: true,
-        namespaceId: true,
+        publisherNamespaceId: true,
         quotaCounted: true,
       },
     });
@@ -162,7 +162,7 @@ export class FederationInboundFileSync {
         columns: { digest: true },
       });
       if (!have) {
-        await this.chargeQuota(progressId, row?.namespaceId, declaredBytes, row);
+        await this.chargeQuota(progressId, row?.publisherNamespaceId, declaredBytes, row);
         await this.claim(progressId, declaredBytes);
         await this.publishProgress(progressId, 0);
         await this.publishMessageProgress(progressId, true);
@@ -200,7 +200,7 @@ export class FederationInboundFileSync {
       await this.publishMessageProgress(progressId, false);
       this.progressTargets.delete(progressId.toString());
     } catch (error) {
-      await this.handleFailure(progressId, row?.namespaceId, error);
+      await this.handleFailure(progressId, row?.publisherNamespaceId, error);
       throw error;
     }
   }

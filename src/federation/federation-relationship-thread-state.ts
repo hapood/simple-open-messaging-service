@@ -20,7 +20,7 @@ export async function initializeRelationshipThreadStateInTx(
     tombstoneEndSeq: number;
     reverseEnabled: boolean;
   }>(sql`
-    SELECT DISTINCT ON (source."namespaceId") source."namespaceId",
+    SELECT DISTINCT ON (source."authorNamespaceId") source."authorNamespaceId" AS "namespaceId",
       intent."messageEndSeq", intent."tombstoneEndSeq",
       (thread.type = 'P2P' OR thread."groupDomain" <> 'local') AS "reverseEnabled"
     FROM "RelationshipPair" pair
@@ -36,9 +36,8 @@ export async function initializeRelationshipThreadStateInTx(
         AND intent."authorNamespaceId" = source."authorNamespaceId"
         AND intent."receiverAccount" = source."receiverAccount"
         AND intent."receiverNamespaceId" = source."receiverNamespaceId"
-    JOIN "IdentityNamespace" source_ns ON source_ns.id = source."authorNamespaceId"
     WHERE pair.id = ${pairId} AND pair."threadId" = ${threadId} AND pair.active = true
-      AND source_ns.domain <> 'local'
+      AND source."authorNamespaceId" > 0
       AND (intent.status = 'ACCEPTED' OR
         (intent.status = 'REQUESTED' AND intent."expiresAt" > CURRENT_TIMESTAMP))
     ORDER BY source."authorNamespaceId", intent."updatedAt" DESC,

@@ -2,7 +2,7 @@ import { sql, type SQL } from 'drizzle-orm';
 
 /** Relationship-intent client feed writes → body dedupe, one allocation block per recipient, upsert,
  * result. `candidate_bodies` must select "userId", "namespaceId", ordinal,
- * "compactionKey", account, domain, "subjectAccount", "subjectDomain", body —
+ * "compactionKey", account, domain, "subjectAccount", "subjectNamespaceId", body —
  * one row per (recipient, direction); a recipient may hold several. A repeated
  * identical body neither allocates a feed id nor wakes anyone, matching
  * ClientStateFeedService.writeInTx's body-level dedupe. Callers may force a
@@ -23,9 +23,9 @@ export function clientIntentFeedWriteSql(options?: { force?: SQL }): SQL {
       RETURNING a.id AS "userId", a."clientStateFeedEndId" AS "allocatedThrough"
     ), recipient_feed AS (
       INSERT INTO "ClientStateFeed"
-        ("userId", account, domain, "namespaceId", "eventType", "subjectAccount", "subjectDomain", "feedId", "compactionKey", body)
+        ("userId", account, domain, "namespaceId", "eventType", "subjectAccount", "subjectNamespaceId", "feedId", "compactionKey", body)
       SELECT f."userId", f.account, f.domain, f."namespaceId", 'RELATIONSHIP_INTENT',
-        f."subjectAccount", f."subjectDomain",
+        f."subjectAccount", f."subjectNamespaceId",
         a."allocatedThrough" - f.total + f.position, f."compactionKey", f.body
       FROM fresh_bodies f JOIN recipient_alloc a ON a."userId" = f."userId"
       ON CONFLICT ("userId", "compactionKey") DO UPDATE SET
@@ -43,29 +43,24 @@ export function clientIntentFeedWriteSql(options?: { force?: SQL }): SQL {
  * statement publishes both a local recipient and a peer event. */
 export function peerIntentFeedWriteSql(params: {
   namespaceId: number;
-  peerDomain: string;
   selfAccount: string;
-  selfDomain: string;
   resultName?: string;
 }): SQL {
   const resultName = params.resultName ?? 'recipient_result';
-  const selfDomain = 'local';
-  const wireLocalDomain = 'local';
   return sql`
     peer_alloc AS (
       UPDATE "IdentityNamespace" SET "stateFeedEndId" = "stateFeedEndId" + (SELECT count(*) FROM peer_changes)
-      WHERE id = ${params.namespaceId} AND domain = ${params.peerDomain} AND "retiredAt" IS NULL
+      WHERE id = ${params.namespaceId} AND "retiredAt" IS NULL
       RETURNING "stateFeedEndId" AS "allocatedThrough"
     ), peer_feed AS (
       INSERT INTO "PeerStateFeed"
-        ("peerDomain", "namespaceId", account, domain, "eventType", "subjectAccount", "subjectDomain", "feedId", body)
-      SELECT ${params.peerDomain}, ${params.namespaceId}, ${params.selfAccount}, ${selfDomain},
+        ("namespaceId", account, "eventType", "subjectAccount", "subjectNamespaceId", "feedId", body)
+      SELECT ${params.namespaceId}, ${params.selfAccount},
         'RELATIONSHIP_INTENT', c."subjectAccount",
-        CASE WHEN c."subjectDomain" = 'local' THEN ${wireLocalDomain}
-          ELSE c."subjectDomain" END,
+        c."subjectNamespaceId",
         a."allocatedThrough" - (SELECT count(*) FROM peer_changes) + c.position, c.body
       FROM peer_changes c CROSS JOIN peer_alloc a
-      ON CONFLICT ("namespaceId", account, domain, "eventType", "subjectAccount", "subjectDomain") DO UPDATE SET
+      ON CONFLICT ("namespaceId", account, "eventType", "subjectAccount", "subjectNamespaceId") DO UPDATE SET
         "feedId" = EXCLUDED."feedId", body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
     ), ${sql.raw(resultName)} AS MATERIALIZED (

@@ -35,14 +35,14 @@ export type GroupRosterRoleCommand =
       threadId: number;
       operatorUserId: number;
       kind: 'TRANSFER_OWNERSHIP';
-      target: { account: string; domain: string };
+      target: { account: string; namespaceId: number };
       role?: never;
     }
   | {
       threadId: number;
       operatorUserId: number;
       kind: 'SET_ROLE';
-      target: { account: string; domain: string };
+      target: { account: string; namespaceId: number };
       role: GroupRole;
     };
 
@@ -139,7 +139,7 @@ export class GroupRosterRoleService {
   ): Promise<ValidatedRosterRole | { outcome: RosterRoleRefusal }> {
     const target = {
       account: normalizeAccount(params.target.account),
-      domain: params.target.domain.trim().toLowerCase(),
+      namespaceId: params.target.namespaceId,
     };
     if (params.kind === 'SET_ROLE' && params.role === GroupRole.OWNER)
       return {
@@ -175,7 +175,7 @@ export class GroupRosterRoleService {
         JOIN "Account" owner ON owner.id = participant."accountId"
         WHERE participant."threadId" = ${params.threadId}
           AND (owner.id = ${params.operatorUserId}
-            OR (owner.account = ${target.account} AND ${target.domain} = 'local'))
+            OR (owner.account = ${target.account} AND ${target.namespaceId} = 0))
         ORDER BY participant."accountId" FOR NO KEY UPDATE OF participant
       `,
     );
@@ -185,7 +185,7 @@ export class GroupRosterRoleService {
           threadId: params.threadId,
           operatorUserId: params.operatorUserId,
           targetAccount: target.account,
-          targetDomain: target.domain,
+          targetNamespaceId: target.namespaceId,
         }),
       )
     ).rows[0];
@@ -225,7 +225,7 @@ export class GroupRosterRoleService {
       localId: params.operatorUserId,
     };
     const selfTarget =
-      target.domain === 'local' && target.account === row.operatorAccount;
+      target.namespaceId === 0 && target.account === row.operatorAccount;
     if (params.kind === 'TRANSFER_OWNERSHIP') {
       if (selfTarget)
         return { outcome: forbidden('cannot transfer ownership to yourself') };
@@ -337,7 +337,7 @@ export class GroupRosterRoleService {
       context.threadId,
       context.changes.map((change) => ({
         account: change.account,
-        domain: change.domain,
+        profileNamespaceId: change.profileNamespaceId,
         operation: 'MEMBER_UPSERT' as const,
         body: {
           role: change.role,

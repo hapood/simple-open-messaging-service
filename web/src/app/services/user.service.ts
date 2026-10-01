@@ -590,10 +590,13 @@ export class UserService {
     const epoch = this.sessionLifecycle.accountEpoch;
     return this.profileRepo
       .resolve({
-        type: 'EXACT',
-        account: user.account,
-        domain: user.domain,
-        rev: user.profileRev,
+        publisherNamespaceId: 0,
+        lookup: 'ACCOUNT_PROFILE',
+        target: {
+          profileNamespaceId: 0,
+          account: user.account,
+          rev: user.profileRev,
+        },
       })
       .pipe(
         map((profile) => {
@@ -640,25 +643,36 @@ export class UserService {
   async refreshCommittedStateFeed(): Promise<number | undefined> {
     const userId = this.sessionUserId();
     if (userId === null) return undefined;
-    const [cursor, requestRevision, intentRevision, readHead] = await Promise.all([
-      this.webdb.getMeta('stateFeedId'),
-      this.webdb.getMeta('relationshipRequestStateRevision'),
-      this.webdb.getMeta('relationshipIntentStateRevision'),
-      this.webdb.getMeta('relationshipRequestReadHead'),
-    ]);
+    const [cursor, requestRevision, intentRevision, readHead] =
+      await Promise.all([
+        this.webdb.getMeta('stateFeedId'),
+        this.webdb.getMeta('relationshipRequestStateRevision'),
+        this.webdb.getMeta('relationshipIntentStateRevision'),
+        this.webdb.getMeta('relationshipRequestReadHead'),
+      ]);
     if (this.sessionUserId() !== userId) return undefined;
     const committed = cursor === undefined ? 0 : cursor;
-    if (typeof committed !== 'number' || !Number.isSafeInteger(committed) || committed < 0)
+    if (
+      typeof committed !== 'number' ||
+      !Number.isSafeInteger(committed) ||
+      committed < 0
+    )
       return undefined;
     this.seedStateFeedCursor(committed);
     this.relationshipRequestStateRevision.set(
-      typeof requestRevision === 'number' && requestRevision >= 0 ? requestRevision : 0,
+      typeof requestRevision === 'number' && requestRevision >= 0
+        ? requestRevision
+        : 0,
     );
     this.relationshipIntentStateRevision.set(
-      typeof intentRevision === 'number' && intentRevision >= 0 ? intentRevision : 0,
+      typeof intentRevision === 'number' && intentRevision >= 0
+        ? intentRevision
+        : 0,
     );
-    const readThrough = readHead && typeof readHead === 'object'
-      ? (readHead as { readThroughFeedId?: unknown }).readThroughFeedId : undefined;
+    const readThrough =
+      readHead && typeof readHead === 'object'
+        ? (readHead as { readThroughFeedId?: unknown }).readThroughFeedId
+        : undefined;
     this.relationshipRequestReadThroughFeedId.set(
       typeof readThrough === 'number' && readThrough >= 0 ? readThrough : 0,
     );
@@ -831,6 +845,7 @@ export class UserService {
   requestRelationship(params: {
     account: string;
     domain: string;
+    namespaceId?: number;
     displayName?: string;
     avatar?: string;
     note?: string;
@@ -910,7 +925,11 @@ export class UserService {
   }
 
   /** Accept a stored user relationship request or group invitation. */
-  acceptRelationship(params: { account: string; domain: string }) {
+  acceptRelationship(params: {
+    account: string;
+    domain: string;
+    namespaceId?: number;
+  }) {
     return this.http.post<
       StandardResponse<
         | RelationshipIntentApplied
@@ -931,7 +950,11 @@ export class UserService {
   }
 
   /** Revoke the current user relationship or pending request toward one exact Address. */
-  revokeRelationship(params: { account: string; domain: string }) {
+  revokeRelationship(params: {
+    account: string;
+    domain: string;
+    namespaceId?: number;
+  }) {
     return this.http.post<
       StandardResponse<
         | RelationshipIntentApplied

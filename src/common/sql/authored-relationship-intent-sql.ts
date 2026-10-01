@@ -31,7 +31,6 @@ export function authoredIntentWriteSql(params: {
             ELSE
               (SELECT profile."defaultProfileRev" FROM "Account" profile
                 WHERE profile.account = ${params.author.account}
-                  AND profile.domain = 'local'
                   AND profile."namespaceId" = 0 LIMIT 1)
           END
         ), 0), ${(params.note ?? '').slice(0, 255)},
@@ -39,7 +38,7 @@ export function authoredIntentWriteSql(params: {
           WHERE m."threadId" = ${params.threadId} AND m."contentType" <> 'SYSTEM'), 0),
         COALESCE((SELECT MAX(d."deletionSeq") FROM "DeletedMessage" d
           JOIN "Message" m ON m."threadId" = d."threadId" AND m.seq = d."messageSeq"
-          WHERE d."threadId" = ${params.threadId} AND d."sourceNamespaceId" = 0), 0),
+          WHERE d."threadId" = ${params.threadId} AND d."publisherNamespaceId" = 0), 0),
         ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP)
       ON CONFLICT ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId") DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,

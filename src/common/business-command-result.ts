@@ -11,6 +11,7 @@ export interface BusinessRejection {
     | 'THREAD_NOT_FOUND'
     | 'INVALID_READ_POSITION'
     | 'PEER_UNAVAILABLE'
+    | 'IDENTITY_MISMATCH'
     | 'INTENT_NOT_FOUND'
     | 'INTENT_EXPIRED'
     | 'GROUP_NOT_FOUND'

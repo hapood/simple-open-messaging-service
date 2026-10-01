@@ -1,4 +1,3 @@
-import { toClientIdentity } from '../common/client-identity.js';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
@@ -24,7 +23,6 @@ import {
   parseTextMessageContent,
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
-import type { S2SAddress } from './federation-address.js';
 import {
   federationFileSyncKind,
   isFederatedMediaContentType,
@@ -49,7 +47,7 @@ export interface FederatedForwardCard {
 export interface FederationInboundMessageStoreParams {
   threadLock?: ThreadContentLock;
   threadId: number;
-  creator: S2SAddress;
+  creator: { account: string; namespaceId: number };
   fetchedFromDomain: string;
   namespaceId: number;
   profileNamespaceId: number;
@@ -116,10 +114,7 @@ export class FederationInboundMessageStoreService {
       downloadAuth,
       sequencePolicy,
     } = params;
-    const creator = toClientIdentity({
-      ...incomingCreator,
-      namespaceId: profileNamespaceId,
-    });
+    const creator = incomingCreator;
     if (sequencePolicy) {
       mapFederationOriginSequence(incoming.originSeq, sequencePolicy);
     }
@@ -140,7 +135,7 @@ export class FederationInboundMessageStoreService {
     const racedMessage = await tx.query.message.findFirst({
       where: and(
         eq(tables.message.threadId, threadId),
-        eq(tables.message.sourceNamespaceId, namespaceId),
+        eq(tables.message.publisherNamespaceId, namespaceId),
         eq(tables.message.originSeq, incoming.originSeq),
       ),
     });
@@ -173,7 +168,7 @@ export class FederationInboundMessageStoreService {
     const tombstone = await tx.query.federatedMessageTombstone.findFirst({
       where: and(
         eq(tables.federatedMessageTombstone.threadId, threadId),
-        eq(tables.federatedMessageTombstone.sourceNamespaceId, namespaceId),
+        eq(tables.federatedMessageTombstone.publisherNamespaceId, namespaceId),
         eq(tables.federatedMessageTombstone.messageSeq, incoming.originSeq),
       ),
       columns: { type: true },
@@ -205,13 +200,12 @@ export class FederationInboundMessageStoreService {
           content: storedContent,
           threadId,
           creatorAccount: creator.account,
-          creatorDomain: creator.domain,
           profileNamespaceId: creator.namespaceId,
           seq,
           originSeq: incoming.originSeq,
           profileRev: incoming.profileRev,
           originServerTime: originTime,
-          sourceNamespaceId: namespaceId,
+          publisherNamespaceId: namespaceId,
           localState: 'STUB',
           updatedAt: new Date(),
         })
@@ -226,7 +220,7 @@ export class FederationInboundMessageStoreService {
         batchId,
         fileCnt: digests.length,
         originDomain: fetchedFromDomain,
-        namespaceId,
+        publisherNamespaceId: namespaceId,
         expectedAuthorizationEpoch: thread.authorizationEpoch,
         dependsOnOriginSeq: null,
         updatedAt: new Date(),
@@ -242,7 +236,7 @@ export class FederationInboundMessageStoreService {
             status: 'PENDING',
             bytesTotal: BigInt(assetBytes?.get(digest) ?? size ?? 0),
             originDomain: fetchedFromDomain,
-            namespaceId,
+            publisherNamespaceId: namespaceId,
             payload: downloadAuth ?? null,
           })
           .onConflictDoNothing();
@@ -288,13 +282,12 @@ export class FederationInboundMessageStoreService {
         content: storedContent,
         threadId,
         creatorAccount: creator.account,
-        creatorDomain: creator.domain,
         profileNamespaceId: creator.namespaceId,
         seq,
         originSeq: incoming.originSeq,
         profileRev: incoming.profileRev,
         originServerTime: originTime,
-        sourceNamespaceId: namespaceId,
+        publisherNamespaceId: namespaceId,
         isDeleted: tombstone !== undefined,
         localState: sequencePolicy ? 'STUB' : 'READY',
         updatedAt: new Date(),
@@ -306,7 +299,7 @@ export class FederationInboundMessageStoreService {
         threadId,
         messageSeq: seq,
         type: tombstone.type,
-        sourceNamespaceId: namespaceId,
+        publisherNamespaceId: namespaceId,
         updatedAt: new Date(),
       });
       await tx
@@ -314,7 +307,7 @@ export class FederationInboundMessageStoreService {
         .where(
           and(
             eq(tables.federatedMessageTombstone.threadId, threadId),
-            eq(tables.federatedMessageTombstone.sourceNamespaceId, namespaceId),
+            eq(tables.federatedMessageTombstone.publisherNamespaceId, namespaceId),
             eq(tables.federatedMessageTombstone.messageSeq, incoming.originSeq),
           ),
         );

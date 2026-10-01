@@ -216,9 +216,6 @@ export class AdminSettingsController {
         publicKey: federation.available
           ? this.keypair.getRootPublicKeyB64()
           : undefined,
-        fingerprint: federation.available
-          ? this.keypair.getRootKeyFingerprint()
-          : undefined,
       },
       {
         id: 'federation-signing',

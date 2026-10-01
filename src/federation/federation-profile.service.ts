@@ -18,8 +18,18 @@ import { S2sResponseError } from './federation-errors.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import type { S2SProfile } from './federation-profile.js';
 import { encodeFederationResourceComponent } from './federation-resource-request.js';
+import { sealBox } from './sealed-box.js';
+import type { ProfileNamespaceInfoService } from './profile-namespace-info.service.js';
+
+/** Possession-proof key source for `fetchRemoteAccount` (see there). */
+export type PossessionKey =
+  | { kind: 'PIN' }
+  | {
+      kind: 'VOUCH';
+      publisherNamespaceId: number;
+      profileNamespaceId: number;
+    };
 import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
-import { toProfileWireDomain } from './federation-wire-domain.js';
 
 const FEDERATED_PROFILE_NAME_MAX_CODE_POINTS = 31;
 const FEDERATED_PROFILE_BIO_MAX_CODE_POINTS = 120;
@@ -35,12 +45,12 @@ export class FederationProfileService {
     private readonly database: DatabaseService,
     private readonly upload: UploadService,
     private readonly peerHttp: FederationPeerHttp,
+    private readonly profileNamespaceInfo: ProfileNamespaceInfoService,
   ) {}
 
   async toS2SProfile(user: {
     profileNamespaceId: number;
     account: string;
-    domain?: string;
     name: string;
     avatar: string;
     bio: string;
@@ -61,7 +71,6 @@ export class FederationProfileService {
     return {
       namespaceId: user.profileNamespaceId,
       account: user.account,
-      domain: user.domain ?? 'local',
       displayName: user.name,
       avatar,
       bio: user.bio,
@@ -72,20 +81,14 @@ export class FederationProfileService {
   async getStoredProfile(
     publisherNamespaceId: number,
     account: string,
-    domain: string,
     profileNamespaceId: number,
     rev: number,
   ): Promise<S2SProfile | null> {
     if (rev < 1) return null;
-    const storedDomain =
-      publisherNamespaceId === 0 && profileNamespaceId === 0
-        ? 'local'
-        : domain;
     const row = await this.database.db.query.profileTable.findFirst({
       where: and(
         eq(tables.profileTable.publisherNamespaceId, publisherNamespaceId),
         eq(tables.profileTable.account, normalizeAccount(account)),
-        eq(tables.profileTable.domain, storedDomain),
         eq(tables.profileTable.profileNamespaceId, profileNamespaceId),
         eq(tables.profileTable.profileRev, rev),
       ),
@@ -94,7 +97,6 @@ export class FederationProfileService {
     return this.toS2SProfile({
       profileNamespaceId: row.profileNamespaceId,
       account: row.account,
-      domain,
       name: row.displayName,
       avatar: row.avatar,
       bio: row.bio,
@@ -118,7 +120,6 @@ export class FederationProfileService {
       await writeProfileSnapshotInTx(tx, {
         publisherNamespaceId,
         account: normalizeAccount(profile.account),
-        domain: profile.domain,
         profileNamespaceId: profile.namespaceId,
         profileRev: profile.profileRev,
         displayName: prepared.name,
@@ -147,7 +148,6 @@ export class FederationProfileService {
       return this.getStoredProfile(
         0,
         group.account,
-        'local',
         profileNamespaceId,
         group.profileRev,
       );
@@ -164,7 +164,6 @@ export class FederationProfileService {
     return this.getStoredProfile(
       0,
       user.account,
-      'local',
       profileNamespaceId,
       user.defaultProfileRev,
     );
@@ -202,7 +201,6 @@ export class FederationProfileService {
           profile.bio, profile."profileNamespaceId", profile."profileRev"
         FROM "Profile" profile
         WHERE profile.account = ${normalizeAccount(account)}
-          AND profile.domain = 'local'
           AND profile."publisherNamespaceId" = 0
           AND profile."profileNamespaceId" = ${profileNamespaceId}
           AND profile."profileRev" = ${rev}
@@ -238,7 +236,6 @@ export class FederationProfileService {
       ? this.toS2SProfile({
           profileNamespaceId: row.profileNamespaceId,
           account: row.account,
-          domain: 'local',
           name: row.displayName,
           avatar: row.avatar,
           bio: row.bio,
@@ -299,7 +296,6 @@ export class FederationProfileService {
               AND (fact.body ->> 'profileNamespaceId')::integer = ${profileNamespaceId}
               AND (fact.body ->> 'profileRev')::integer = ${rev}
             JOIN "Profile" profile ON profile.account = group_account.account
-              AND profile.domain = 'local'
               AND profile."publisherNamespaceId" = 0
               AND profile."profileNamespaceId" = ${profileNamespaceId}
           AND profile."profileRev" = ${rev}
@@ -323,7 +319,6 @@ export class FederationProfileService {
         ? this.toS2SProfile({
             profileNamespaceId: row.profileNamespaceId,
             account: row.account,
-            domain: 'local',
             name: row.displayName,
             avatar: row.avatar,
             bio: row.bio,
@@ -348,7 +343,7 @@ export class FederationProfileService {
       JOIN "Account" owner ON owner.account = profile.account
         AND owner.domain = 'local' AND owner."namespaceId" = 0
         AND owner.kind = 'USER' AND owner.availability = 'AVAILABLE'
-      WHERE profile.account = ${owner} AND profile.domain = 'local'
+      WHERE profile.account = ${owner}
         AND profile."publisherNamespaceId" = 0
         AND profile."profileNamespaceId" = ${profileNamespaceId}
         AND profile."profileRev" = ${rev}
@@ -366,9 +361,7 @@ export class FederationProfileService {
               THEN pair."endpointBAccount" ELSE pair."endpointAAccount" END
             AND intent."receiverNamespaceId" = CASE WHEN thread.type = 'P2P'
               THEN pair."endpointBNamespaceId" ELSE pair."endpointANamespaceId" END
-          JOIN "PeerStateFeed" head ON head."peerDomain" = ${peerDomain}
-            AND head."namespaceId" = ${namespaceId}
-            AND head.domain = 'local'
+          JOIN "PeerStateFeed" head ON head."namespaceId" = ${namespaceId}
             AND head."eventType" = 'THREAD_CONTENT_HEAD'
             AND head.account = CASE WHEN thread.type = 'P2P'
               THEN profile.account ELSE thread."groupAccount" END
@@ -376,16 +369,14 @@ export class FederationProfileService {
               THEN CASE WHEN pair."endpointAAccount" = profile.account
                 THEN pair."endpointBAccount" ELSE pair."endpointAAccount" END
               ELSE '' END
-            AND head."subjectDomain" = CASE WHEN thread.type = 'P2P'
-              THEN ${peerDomain} ELSE 'local' END
+            AND head."subjectNamespaceId" = CASE WHEN thread.type = 'P2P'
+              THEN ${namespaceId} ELSE 0 END
           LEFT JOIN "ThreadAudience" audience ON audience."threadId" = thread.id
-            AND audience."targetDomain" = ${peerDomain}
             AND audience."targetNamespaceId" = ${namespaceId}
             AND audience."localUserId" IS NULL
           WHERE m."creatorAccount" = profile.account
-            AND m."creatorDomain" = 'local'
             AND m."profileNamespaceId" = profile."profileNamespaceId"
-            AND m."profileRev" = ${rev} AND m."sourceNamespaceId" = 0
+            AND m."profileRev" = ${rev} AND m."publisherNamespaceId" = 0
             AND m."contentType" <> 'SYSTEM'
             AND m."localState" = 'READY'
             AND m.seq > COALESCE(audience."messageAccessAfterSeq", 0)
@@ -427,7 +418,6 @@ export class FederationProfileService {
       ? this.toS2SProfile({
           profileNamespaceId: row.profileNamespaceId,
           account: row.account,
-          domain: 'local',
           name: row.displayName,
           avatar: row.avatar,
           bio: row.bio,
@@ -441,7 +431,6 @@ export class FederationProfileService {
    * profile bytes are read from the same read-only MVCC snapshot. */
   async getAuthorizedGroupMemberProfile(
     groupAccount: string,
-    memberDomain: string,
     memberAccount: string,
     profileNamespaceId: number,
     rev: number,
@@ -455,7 +444,6 @@ export class FederationProfileService {
       rev < 1
     )
       return null;
-    const storedDomain = profileNamespaceId === 0 ? 'local' : memberDomain;
     let row;
     try {
       row = await this.database.db.transaction(
@@ -473,16 +461,14 @@ export class FederationProfileService {
             .from(tables.peerStateFeed)
             .where(
               and(
-                eq(tables.peerStateFeed.peerDomain, peerDomain),
                 eq(tables.peerStateFeed.namespaceId, namespaceId),
                 eq(
                   tables.peerStateFeed.account,
                   normalizeAccount(groupAccount),
                 ),
-                eq(tables.peerStateFeed.domain, 'local'),
                 eq(tables.peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
                 eq(tables.peerStateFeed.subjectAccount, ''),
-                eq(tables.peerStateFeed.subjectDomain, 'local'),
+                eq(tables.peerStateFeed.subjectNamespaceId, 0),
               ),
             )
             .limit(1);
@@ -508,33 +494,31 @@ export class FederationProfileService {
           WHERE thread.type = 'GROUP' AND thread."groupDomain" = 'local'
             AND thread."groupAccount" = ${normalizeAccount(groupAccount)}
             AND profile.account = ${normalizeAccount(memberAccount)}
-            AND profile.domain = ${storedDomain}
-            AND profile."publisherNamespaceId" = CASE WHEN ${storedDomain} = 'local' THEN 0 ELSE ${profileNamespaceId} END
+            AND profile."publisherNamespaceId" = CASE WHEN ${profileNamespaceId} = 0 THEN 0 ELSE ${profileNamespaceId} END
             AND profile."profileNamespaceId" = ${profileNamespaceId}
             AND profile."profileRev" = ${rev}
             AND EXISTS (
               SELECT 1 FROM "GroupMetaMemberFeed" fact
               WHERE fact."threadId" = thread.id
                 AND fact."memberAccount" = profile.account
-                AND fact."memberDomain" = profile.domain
+                AND (fact.body ->> 'profileNamespaceId')::integer = profile."profileNamespaceId"
                 AND fact.operation = 'MEMBER_UPSERT'
                 AND fact.feedId = (
                   SELECT MAX(current_fact.feedId)
                   FROM "GroupMetaMemberFeed" current_fact
                   WHERE current_fact."threadId" = fact."threadId"
                     AND current_fact."memberAccount" = fact."memberAccount"
-                    AND current_fact."memberDomain" = fact."memberDomain"
+                    AND (current_fact.body ->> 'profileNamespaceId')::integer = (fact.body ->> 'profileNamespaceId')::integer
                 )
                 AND (fact.body ->> 'profileNamespaceId')::integer = ${profileNamespaceId}
                 AND (fact.body ->> 'profileRev')::integer = ${rev}
-                AND (profile.domain <> 'local' OR profile."profileNamespaceId" = 0)
-                AND (profile.domain = 'local' OR EXISTS (
+                AND (profile."profileNamespaceId" = 0 OR EXISTS (
                   SELECT 1 FROM "RelationshipPair" pair
                   WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = thread.id
                     AND pair.active
                     AND pair."endpointBType" = 'USER'
                     AND pair."endpointBAccount" = profile.account
-                    AND pair."endpointBNamespaceId" = ${namespaceId}
+                    AND pair."endpointBNamespaceId" = ${profileNamespaceId}
                 ))
             )
             AND EXISTS (
@@ -543,7 +527,6 @@ export class FederationProfileService {
                 AND message.seq > ${authorized.messageAccessAfterSeq}
                 AND message.seq <= ${messageEnd}
                 AND message."creatorAccount" = profile.account
-                AND message."creatorDomain" = profile.domain
                 AND message."profileNamespaceId" = profile."profileNamespaceId"
                 AND message."profileNamespaceId" = ${profileNamespaceId}
                 AND message."profileRev" = ${rev}
@@ -568,7 +551,6 @@ export class FederationProfileService {
       ? this.toS2SProfile({
           profileNamespaceId: row.profileNamespaceId,
           account: row.account,
-          domain: memberDomain,
           name: row.displayName,
           avatar: row.avatar,
           bio: row.bio,
@@ -584,9 +566,43 @@ export class FederationProfileService {
     );
   }
 
-  async fetchRemoteAccount(address: S2SAddress): Promise<S2SProfile> {
+  /** Fetch a peer account's public card, binding the answer to a possession
+   *  proof (Profiles 2.1/3): the request carries a sealed challenge under the
+   *  responder key named by `possession`, and the returned `proof` must equal
+   *  the sealed plaintext byte-for-byte.
+   *
+   *  - `PIN` challenges under this server's current handshake pin for the
+   *    target domain: the proof ties the card to the identity this server
+   *    already recognizes.
+   *  - `VOUCH` challenges under the root key a publisher's profile-namespace
+   *    bindings name for the referenced identity: contact cards and group
+   *    rosters come with a vouched lineage, and the proof must tie the card
+   *    to that lineage — not to whatever this server's local pin happens to
+   *    be. An uncertifiable vouch (tomb, expired, or failed refresh) is a
+   *    business rejection, never a silently weaker fetch.
+   *
+   *  The challenge plaintext is the canonical JSON `{"account","domain"}` of
+   *  the lookup itself; it is fresh per call and discarded after comparing. */
+  async fetchRemoteAccount(
+    address: S2SAddress,
+    possession: PossessionKey,
+  ): Promise<S2SProfile> {
+    const rootPublicKey = await this.possessionRootKey(address, possession);
+    const plaintext = JSON.stringify({
+      account: address.account,
+      domain: address.domain,
+    });
+    const sealed = Buffer.from(
+      sealBox(
+        Uint8Array.from(Buffer.from(plaintext, 'utf8')),
+        Uint8Array.from(Buffer.from(rootPublicKey, 'base64')),
+      ),
+    ).toString('base64');
     const profile = await this.peerHttp.get<unknown>(
-      `/s2s/v1/accounts/${encodeFederationResourceComponent(address.account)}`,
+      `/s2s/v1/accounts/${encodeFederationResourceComponent(
+        address.account,
+      )}?publicKey=${encodeURIComponent(rootPublicKey)}` +
+        `&challenge=${encodeURIComponent(sealed)}`,
       address.domain,
     );
     if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
@@ -599,16 +615,16 @@ export class FederationProfileService {
     const fields = profile as Record<string, unknown>;
     if (
       Object.keys(fields).sort().join(',') !==
-        'account,avatar,bio,displayName,domain,profileRev' ||
+        'account,avatar,bio,displayName,profileRev,proof' ||
       fields.account !== address.account ||
-      fields.domain !== address.domain ||
       typeof fields.displayName !== 'string' ||
       !this.validWireText(fields.displayName, 1, 31) ||
       typeof fields.bio !== 'string' ||
       !this.validWireText(fields.bio, 0, 120) ||
       !this.validWireAvatar(fields.avatar) ||
       !Number.isSafeInteger(fields.profileRev) ||
-      Number(fields.profileRev) < 1
+      Number(fields.profileRev) < 1 ||
+      typeof fields.proof !== 'string'
     ) {
       throw new S2sResponseError(
         `S2S profile from ${address.domain} has an invalid response`,
@@ -616,10 +632,68 @@ export class FederationProfileService {
         BusinessCode.FEDERATION_MALFORMED,
       );
     }
+    // Byte-for-byte possession check (Profiles 2.1): a mismatch is a hostile
+    // or broken responder, never a retryable condition.
+    if (fields.proof !== plaintext) {
+      throw new S2sResponseError(
+        `S2S profile from ${address.domain} failed the possession proof`,
+        HttpStatus.OK,
+        BusinessCode.FEDERATION_MALFORMED,
+      );
+    }
     return {
-      ...(profile as Omit<S2SProfile, 'namespaceId'>),
+      account: fields.account as string,
+      displayName: fields.displayName as string,
+      bio: fields.bio as string,
+      avatar: fields.avatar as S2SProfile['avatar'],
+      profileRev: fields.profileRev as number,
       namespaceId: 0,
     };
+  }
+
+  /** Resolves the responder key a possession challenge is sealed under. The
+   *  PIN path reads the current handshake pin; the VOUCH path reads the
+   *  publisher's bindings row, rejecting when the vouch is uncertifiable. */
+  private async possessionRootKey(
+    address: S2SAddress,
+    possession: PossessionKey,
+  ): Promise<string> {
+    if (possession.kind === 'PIN') {
+      const [row] = await this.database.db
+        .select({ rootPublicKey: tables.identityNamespace.rootPublicKey })
+        .from(tables.identityNamespace)
+        .where(
+          and(
+            eq(tables.identityNamespace.domain, address.domain),
+            eq(tables.identityNamespace.active, true),
+          ),
+        )
+        .limit(1);
+      if (!row || row.rootPublicKey === null)
+        throw new BusinessException(
+          BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+          `federation peer ${address.domain} has no pinned root key`,
+        );
+      return row.rootPublicKey;
+    }
+    const [entry] = await this.profileNamespaceInfo.resolveBatch([
+      {
+        publisherNamespaceId: possession.publisherNamespaceId,
+        profileNamespaceId: possession.profileNamespaceId,
+      },
+    ]);
+    if (
+      !entry ||
+      entry.expired ||
+      entry.domain === null ||
+      entry.rootPublicKey === null ||
+      entry.domain !== address.domain
+    )
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+        `vouched root key for namespace ${possession.profileNamespaceId} is uncertifiable`,
+      );
+    return entry.rootPublicKey;
   }
 
   /** Fetch an exact signed profile. The path names its namespace and revision;
@@ -636,7 +710,6 @@ export class FederationProfileService {
         `/${encodeFederationResourceComponent(account)}` +
         `/${encodeFederationResourceComponent(peerAccount)}/${rev}`,
       account,
-      publisherDomain,
       rev,
       publisherDomain,
       expectedProfileNamespaceId,
@@ -653,7 +726,6 @@ export class FederationProfileService {
       `/s2s/v1/account-profiles/${expectedProfileNamespaceId}` +
         `/${encodeFederationResourceComponent(account)}/${rev}`,
       account,
-      publisherDomain,
       rev,
       publisherDomain,
       expectedProfileNamespaceId,
@@ -662,7 +734,6 @@ export class FederationProfileService {
 
   async fetchExactGroupMemberProfile(
     groupAccount: string,
-    memberDomain: string,
     memberAccount: string,
     rev: number,
     groupDomain: string,
@@ -671,12 +742,8 @@ export class FederationProfileService {
     return this.fetchExactProfile(
       `/s2s/v1/group-member-profiles/${encodeFederationResourceComponent(groupAccount)}` +
         `/${expectedProfileNamespaceId}` +
-        `/${encodeFederationResourceComponent(memberAccount)}` +
-        `/${encodeFederationResourceComponent(
-          toProfileWireDomain(memberDomain, expectedProfileNamespaceId),
-        )}/${rev}`,
+        `/${encodeFederationResourceComponent(memberAccount)}/${rev}`,
       memberAccount,
-      memberDomain,
       rev,
       groupDomain,
       expectedProfileNamespaceId,
@@ -686,15 +753,10 @@ export class FederationProfileService {
   private async fetchExactProfile(
     path: string,
     expectedAccount: string,
-    expectedDomain: string,
     rev: number,
-    publisherDomain = expectedDomain,
+    publisherDomain: string,
     expectedProfileNamespaceId = 0,
   ): Promise<S2SProfile | null> {
-    const expectedWireDomain = toProfileWireDomain(
-      expectedDomain,
-      expectedProfileNamespaceId,
-    );
     let body: unknown;
     try {
       body = await this.peerHttp.get<unknown>(
@@ -716,9 +778,8 @@ export class FederationProfileService {
     const fields = body as Record<string, unknown>;
     if (
       Object.keys(fields).sort().join(',') !==
-        'account,avatar,bio,displayName,domain' ||
+        'account,avatar,bio,displayName' ||
       fields.account !== expectedAccount ||
-      fields.domain !== expectedWireDomain ||
       typeof fields.displayName !== 'string' ||
       !this.validWireText(fields.displayName, 1, 31) ||
       typeof fields.bio !== 'string' ||
@@ -728,7 +789,6 @@ export class FederationProfileService {
       return this.invalidExactProfile(publisherDomain);
     return {
       ...(body as Omit<S2SProfile, 'namespaceId' | 'profileRev'>),
-      domain: expectedWireDomain,
       namespaceId: expectedProfileNamespaceId,
       profileRev: rev,
     };

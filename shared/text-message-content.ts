@@ -148,13 +148,13 @@ export function parseTextMessageContent(
 /** Older unresolved rows used sourceSeq and inherited the containing message's namespace. */
 export function storedQuoteCoordinate(
   quote: NonNullable<TextMessageContent['quote']>,
-  sourceNamespaceId: number,
+  publisherNamespaceId: number,
 ): { seq: number; namespaceId: number } {
   if (quote.namespaceId !== undefined)
     return { seq: quote.seq, namespaceId: quote.namespaceId };
   return quote.sourceSeq === undefined
     ? { seq: quote.seq, namespaceId: 0 }
-    : { seq: quote.sourceSeq, namespaceId: sourceNamespaceId };
+    : { seq: quote.sourceSeq, namespaceId: publisherNamespaceId };
 }
 
 /** Parse a PURE_TEXT value that has already crossed an input-validation boundary. */

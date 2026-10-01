@@ -197,7 +197,7 @@ export async function applyMirrorMetaFactInTx(
         threadId,
         feedId: item.feedId,
         memberAccount: subject.account,
-        memberDomain: subject.domain,
+        profileNamespaceId: subject.namespaceId,
         operation: 'MEMBER_DEPART',
         body: {
           role: item.role,
@@ -254,7 +254,7 @@ export function currentMirrorMetaFact(
     threadId,
     feedId: item.feedId,
     memberAccount: subject.account,
-    memberDomain: subject.domain,
+    profileNamespaceId: subject.namespaceId,
     operation: item.operation,
     body,
   };

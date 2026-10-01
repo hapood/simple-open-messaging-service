@@ -266,7 +266,6 @@ export class FederationStateFeedConsumerService {
               target: {
                 profileNamespaceId: Number(body.namespaceId),
                 account: normalizeAccount(item.account),
-                domain: peerDomain,
                 rev: Number(body.profileRev),
               },
               peerAccount: localUser.account,
@@ -408,7 +407,6 @@ export class FederationStateFeedConsumerService {
                   target: {
                     profileNamespaceId: Number(body.namespaceId),
                     account: normalizeAccount(item.account),
-                    domain: peerDomain,
                     rev: Number(body.profileRev),
                   },
                   peerAccount: normalizeAccount(item.peerAccount),
@@ -428,7 +426,6 @@ export class FederationStateFeedConsumerService {
               target: {
                 profileNamespaceId: Number(body.namespaceId),
                 account: normalizeAccount(item.account),
-                domain: peerDomain,
                 rev: Number(body.profileRev),
               },
               peerAccount: normalizeAccount(item.peerAccount),
@@ -620,7 +617,6 @@ export class FederationStateFeedConsumerService {
               SELECT 1
               FROM "ThreadAudience" audience
               WHERE audience."threadId" = message_thread.id
-                AND audience."targetDomain" = ${sourceDomain}
                 AND audience."targetNamespaceId" = ${namespaceId}
                 AND audience."localUserId" IS NULL
             ))

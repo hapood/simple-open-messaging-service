@@ -46,10 +46,9 @@ export async function writeMirrorLocalGroupLeftInTx(
       WHERE id = ${input.threadId}
       RETURNING "curSeq", "tombstoneEndSeq"
     ), system_message AS (
-      INSERT INTO "Message" ("threadId", seq, "contentType", content,
-        "creatorAccount", "creatorDomain", "updatedAt")
+      INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "profileNamespaceId", "publisherNamespaceId", "updatedAt")
       SELECT ${input.threadId}, s."curSeq", 'SYSTEM'::"ContentType",
-        ${content}::jsonb, '$system', 'local', CURRENT_TIMESTAMP
+        ${content}::jsonb, '$system', 0, 0, CURRENT_TIMESTAMP
       FROM seq_alloc s RETURNING seq
     ), member_watermark AS (
       UPDATE "AccountThreadState" state

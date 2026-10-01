@@ -25,7 +25,8 @@ describe('MessageService local system messages', () => {
       id: 10n,
       threadId: 7,
       creatorAccount: '$system',
-      creatorDomain: 'local',
+      profileNamespaceId: 0,
+      publisherNamespaceId: 0,
       seq: 4,
       contentType: ContentType.SYSTEM,
       content: JSON.stringify({
@@ -98,7 +99,8 @@ describe('MessageService local system messages', () => {
     );
     expect(insertValues.mock.calls[0][0]).toMatchObject({
       creatorAccount: '$system',
-      creatorDomain: 'local',
+      profileNamespaceId: 0,
+      publisherNamespaceId: 0,
     });
     expect(JSON.parse(insertValues.mock.calls[0][0].content)).toEqual({
       type: 'GROUP_JOINED',
@@ -143,7 +145,8 @@ describe('MessageService local system messages', () => {
       id: 11n,
       threadId: 7,
       creatorAccount: '$system',
-      creatorDomain: 'local',
+      profileNamespaceId: 0,
+      publisherNamespaceId: 0,
       seq: 5,
       contentType: ContentType.SYSTEM,
       content: JSON.stringify({

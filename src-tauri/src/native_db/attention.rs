@@ -1499,17 +1499,6 @@ pub(crate) async fn native_db_thread_states(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_merge_thread_states(
-    user_id: i64,
-    states: Vec<ThreadFeedSnapshot>,
-    scanned_through: Option<i32>,
-) -> Result<Vec<LocalThreadAttention>, String> {
-    super::lifetime::spawn(move || merge_states(&mut open()?, user_id, states, scanned_through))
-        .await
-        .map_err(|e| format!("join attention merge: {e}"))?
-}
-
-#[tauri::command]
 pub(crate) async fn native_db_advance_thread_read(
     user_id: i64,
     thread_id: i32,

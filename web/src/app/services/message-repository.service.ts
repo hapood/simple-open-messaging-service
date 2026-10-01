@@ -29,8 +29,18 @@ export type NativeMessageHistoryDemand =
       newerCount: number;
       target?: MessageHistoryTarget;
     }
-  | { kind: 'older'; before: number; count: number; target?: MessageHistoryTarget }
-  | { kind: 'newer'; after: number; count: number; target?: MessageHistoryTarget };
+  | {
+      kind: 'older';
+      before: number;
+      count: number;
+      target?: MessageHistoryTarget;
+    }
+  | {
+      kind: 'newer';
+      after: number;
+      count: number;
+      target?: MessageHistoryTarget;
+    };
 
 export type MessageHistorySourceItem =
   | { kind: 'message'; message: MessageQueryRow }
@@ -53,14 +63,6 @@ type HistoryDirection = 'older' | 'newer';
 interface DirectionalHistoryWalk {
   items: MessageHistorySourceItem[];
   hasMore: boolean;
-}
-
-interface DeletedMessageStream {
-  target: number;
-  recovery?: { through: number; maxMessageSeq: number };
-  opening?: Promise<void>;
-  task?: Promise<void>;
-  pending?: boolean;
 }
 
 /**
@@ -107,7 +109,6 @@ export class MessageRepository {
   readonly deletedLive$ = this.deletedSignal$.asObservable();
   private readonly slotsChanged = new Subject<number>();
   readonly slotsChanged$ = this.slotsChanged.asObservable();
-  private readonly deletedStreams = new Map<number, DeletedMessageStream>();
 
   /** Successful transport reconnect. The repository clears the finite HTTP cutoff before waking views. */
   private readonly reconnectSignal = new Subject<void>();
@@ -588,6 +589,13 @@ export class MessageRepository {
       this.reconnectSignal.next();
     });
 
+    // The database worker commits tombstone pages and reports them here; project
+    // them into mounted sources the same way the old main-thread drain did.
+    this.webdb.tombstoneCommitted$.subscribe(({ threadId, deletions }) => {
+      this.slotsChanged.next(threadId);
+      if (deletions.length) this.deletedSignal$.next({ threadId, deletions });
+    });
+
     // Session-end reset: maxSeenSeq is documented "in-memory only — re-established by the init
     // backend-probe each session", so it must not survive an account switch (a stale ceiling from the
     // previous user could make getNewer falsely report the cache reached its ceiling). The IDB messages
@@ -605,7 +613,6 @@ export class MessageRepository {
   private reset(): void {
     this.maxSeenSeq.clear();
     this.newerTruncateSeq.clear();
-    this.deletedStreams.clear();
   }
 
   /** Reconcile conversation metadata/live init state into the shared per-thread ceiling. */
@@ -631,130 +638,31 @@ export class MessageRepository {
     if (emitLiveSignal) this.signal$.next({ threadId, seq: messageEndSeq });
   }
 
-  /** Start this thread's deletion stream when its chatbox is first opened. The recovery target and local
-   * message cutoff are frozen together; later targets drain without a message filter. */
+  /** Start this thread's deletion stream when its chatbox is first opened. The
+   *  drain runs in the database worker (per-thread single-flight with an
+   *  open-thread guard); the worker reports committed pages via
+   *  {@link tombstoneCommitted$}, which the constructor projects into
+   *  {@link deletedSignal$} / {@link slotsChanged}. */
   async openTombstoneStream(threadId: number, target: number): Promise<void> {
-    let stream = this.deletedStreams.get(threadId);
-    if (!stream) {
-      const recoveryThrough = Math.max(0, target);
-      stream = { target: recoveryThrough };
-      this.deletedStreams.set(threadId, stream);
-      const created = stream;
-      const opening = (async () => {
-        const [newest] = await this.webdb.getNewestMessages([threadId]);
-        created.recovery = {
-          through: recoveryThrough,
-          maxMessageSeq: newest?.seq ?? 0,
-        };
-        created.opening = undefined;
-        await this.runDeletedStream(threadId, created);
-      })().catch((error) => {
-        if (this.deletedStreams.get(threadId) === created)
-          this.deletedStreams.delete(threadId);
-        throw error;
-      });
-      created.opening = opening;
-      return opening;
-    } else {
-      stream.target = Math.max(stream.target, target);
-    }
-    if (stream.opening) return stream.opening;
-    if (stream.task) stream.pending = true;
-    return this.runDeletedStream(threadId, stream);
+    await this.webdb.drainThreadMisc(
+      threadId,
+      '0',
+      Math.max(0, target),
+    );
   }
 
-  /** Advance an already-opened stream from a unified content-head or realtime hint. Closed/unopened
-   * threads deliberately retain only their durable feed head and do no tombstone-body I/O. */
+  /** Advance an already-opened stream from a unified content-head or realtime hint.
+   *  Closed/unopened threads deliberately retain only their durable feed head
+   *  and do no tombstone-body I/O. */
   updateTombstoneTarget(threadId: number, target: number): Promise<void> {
-    const stream = this.deletedStreams.get(threadId);
-    if (!stream || !Number.isSafeInteger(target) || target < 0)
-      return Promise.resolve();
-    stream.target = Math.max(stream.target, target);
-    if (stream.opening) return stream.opening;
-    if (stream.task) {
-      stream.pending = true;
-      return stream.task;
-    }
-    return this.runDeletedStream(threadId, stream);
-  }
-
-  private runDeletedStream(
-    threadId: number,
-    stream: DeletedMessageStream,
-  ): Promise<void> {
-    if (stream.task) return stream.task;
-    const run = this.syncDeletedInternal(threadId, stream).finally(() => {
-      if (stream.task === run) stream.task = undefined;
-      if (stream.pending) {
-        stream.pending = false;
-        void this.runDeletedStream(threadId, stream);
-      }
-    });
-    stream.task = run;
-    return run;
-  }
-
-  private async syncDeletedInternal(
-    threadId: number,
-    stream: DeletedMessageStream,
-  ): Promise<void> {
-    let hwm = await this.webdb.getDeletedHwm(threadId);
-    for (;;) {
-      const recovery = stream.recovery;
-      const target = recovery?.through ?? stream.target;
-      if (hwm >= target) {
-        if (recovery) {
-          stream.recovery = undefined;
-          continue;
-        }
-        return;
-      }
-      const res = await firstValueFrom(
-        this.msg.queryDeletedMessages({
-          threadId,
-          after: hwm,
-          take: 100,
-          through: target,
-          ...(recovery ? { maxMessageSeq: recovery.maxMessageSeq } : {}),
-        }),
-      );
-      if (res.code !== 0 || !res.data) return;
-      const { tombstones: items, scannedThrough: next, hasMore } = res.data;
-      if (
-        !Array.isArray(items) ||
-        !Number.isSafeInteger(next) ||
-        next < hwm ||
-        typeof hasMore !== 'boolean' ||
-        (next === hwm && hasMore)
-      )
-        throw new Error('deleted-message query returned an invalid boundary');
-      await this.webdb.applyDeletedMessages(threadId, items, next);
-      this.slotsChanged.next(threadId);
-      if (items.length) {
-        this.deletedSignal$.next({
-          threadId,
-          deletions: items.map((item) => ({
-            seq: item.messageSeq,
-            type: item.type,
-          })),
-        });
-      }
-      hwm = next;
-      if (!hasMore) {
-        if (recovery) {
-          stream.recovery = undefined;
-          continue;
-        }
-        return;
-      }
-    }
+    if (!Number.isSafeInteger(target) || target < 0) return Promise.resolve();
+    return this.webdb.drainThreadMisc(threadId, '0', target);
   }
 
   /** Purge all cached history state for a thread when it leaves the user's roster. */
   async deleteByThread(threadId: number): Promise<void> {
     this.maxSeenSeq.delete(threadId);
     this.newerTruncateSeq.delete(threadId);
-    this.deletedStreams.delete(threadId);
     try {
       await this.webdb.deleteMessagesByThread(threadId);
     } catch {

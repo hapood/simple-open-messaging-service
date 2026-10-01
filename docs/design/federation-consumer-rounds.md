@@ -25,7 +25,7 @@ that publisher coordinate.
 - the active recoverable history-gap id;
 - whether no recoverable reverse gap remains.
 
-The source namespace is explicit. A mirrored group pulls its authority's
+The publisher namespace is explicit. A mirrored group pulls its authority's
 coordinate space, but a locally authoritative group receives independent
 submissions from multiple peers. Its local authority namespace (`0`) must not
 be used to identify those incoming streams. State Feed cursors and in-memory
@@ -268,7 +268,7 @@ identity context between pages. PendingMedia never suppresses or creates
 scheduler work.
 
 On restart the scheduler reads every `FederationThreadSyncState`, resolves its
-explicit source namespace (not the thread authority namespace), revalidates
+explicit publisher namespace (not the thread authority namespace), revalidates
 that its relationship still provides an active source, enqueues unfinished
 forward and reverse work, drains every trusted peer's State Feed, and schedules
 a coalesced lightweight state push. Transport connection and request limits

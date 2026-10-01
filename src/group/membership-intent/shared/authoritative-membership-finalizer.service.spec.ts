@@ -65,8 +65,6 @@ const localState = {
   domain: 'local',
   namespaceId: 0,
   metaEndId: 12n,
-  memberDomain: 'local',
-  memberNamespaceId: 0,
 };
 const threadLock = { threadId: 7 } as never;
 
@@ -149,7 +147,7 @@ describe('AuthoritativeMembershipFinalizerService', () => {
 
       if (active) expect(audience.close).not.toHaveBeenCalled();
       else
-        expect(audience.close).toHaveBeenCalledWith(target.tx, 'peer.test', 7);
+        expect(audience.close).toHaveBeenCalledWith(target.tx, 9, 7);
       expect(target.tx.update).not.toHaveBeenCalled();
     },
   );
@@ -176,11 +174,7 @@ describe('AuthoritativeMembershipFinalizerService', () => {
 
   it('opens a peer at the committed canonical floor before its task and content head', async () => {
     audience.open.mockResolvedValueOnce(true);
-    const target = harness({
-      ...localState,
-      memberDomain: 'peer.test',
-      memberNamespaceId: 9,
-    });
+    const target = harness(localState);
 
     await expect(
       target.service.finalizeInTx(target.tx as never, {
@@ -193,7 +187,7 @@ describe('AuthoritativeMembershipFinalizerService', () => {
       }),
     ).resolves.toEqual({ audienceChanged: true, threadFanoutAdmitted: true });
 
-    expect(audience.open).toHaveBeenCalledWith(target.tx, 'peer.test', 7, 12n);
+    expect(audience.open).toHaveBeenCalledWith(target.tx, 9, 7, 12n);
     expect(target.projectCurrentInTx).toHaveBeenCalledWith(
       target.tx,
       'peer.test',
@@ -207,11 +201,7 @@ describe('AuthoritativeMembershipFinalizerService', () => {
 
   it('publishes the content head when activation reuses a preauthorized audience', async () => {
     audience.open.mockResolvedValueOnce(false);
-    const target = harness({
-      ...localState,
-      memberDomain: 'peer.test',
-      memberNamespaceId: 9,
-    });
+    const target = harness(localState);
 
     await expect(
       target.service.finalizeInTx(target.tx as never, {

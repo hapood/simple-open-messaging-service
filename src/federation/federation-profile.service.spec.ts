@@ -12,7 +12,6 @@ const dialect = new PgDialect();
 const profile = (profileRev: number): S2SProfile => ({
   namespaceId: 0,
   account: 'alice',
-  domain: 'peer.example',
   displayName: 'Alice',
   avatar: null,
   bio: 'hello',
@@ -28,7 +27,9 @@ function makeSubject() {
   const query = {
     account: { findFirst: vi.fn().mockResolvedValue(null) },
 
-    identityNamespace: { findFirst: vi.fn().mockResolvedValue({ id: 12 }) },
+    identityNamespace: {
+      findFirst: vi.fn().mockResolvedValue({ id: 12, domain: 'peer.example' }),
+    },
     profileTable: {
       findFirst: vi.fn().mockResolvedValue({
         account: 'alice',
@@ -62,6 +63,7 @@ function makeSubject() {
       database as never,
       upload as never,
       { get: vi.fn() } as never,
+      {} as never,
     ),
     database,
     upload,
@@ -86,7 +88,6 @@ describe('FederationProfileService localization', () => {
     const serialize = vi.spyOn(subject, 'toS2SProfile').mockResolvedValueOnce({
       namespaceId: 0,
       account: 'alice',
-      domain: 'local',
       displayName: 'Alice',
       avatar: null,
       bio: 'hello',
@@ -101,7 +102,6 @@ describe('FederationProfileService localization', () => {
     expect(serialize).toHaveBeenCalledWith({
       profileNamespaceId: 0,
       account: 'alice',
-      domain: 'local',
       name: 'Alice',
       avatar: '',
       bio: 'hello',
@@ -137,13 +137,7 @@ describe('FederationProfileService localization', () => {
         domain: 'local',
       }),
     ).resolves.toBeNull();
-    expect(stored).toHaveBeenCalledWith(
-      0,
-      '!group',
-      'local',
-      0,
-      2,
-    );
+    expect(stored).toHaveBeenCalledWith(0, '!group', 0, 2);
   });
 
   it('stores a referenced third-party snapshot without an Account or a default pointer', async () => {
@@ -152,7 +146,6 @@ describe('FederationProfileService localization', () => {
     expect(values).toHaveBeenCalledWith({
       publisherNamespaceId: 12,
       account: 'alice',
-      domain: 'peer.example',
       profileNamespaceId: 0,
       profileRev: 8,
       displayName: 'Alice',
@@ -186,7 +179,6 @@ describe('FederationProfileService localization', () => {
     expect(values).toHaveBeenCalledWith({
       publisherNamespaceId: 12,
       account: 'alice',
-      domain: 'peer.example',
       profileNamespaceId: 0,
       profileRev: 2,
       displayName: '😀'.repeat(31),

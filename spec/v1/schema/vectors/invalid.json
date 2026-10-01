@@ -267,10 +267,7 @@
       "semantic": "protocolVersions",
       "value": {
         "software": "example/1.0",
-        "protocolVersions": [
-          2,
-          1
-        ],
+        "protocolVersions": [2, 1],
         "roots": [
           {
             "ed25519": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -837,7 +834,7 @@
       "schema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileParameters",
       "value": {
         "groupAccount": "!group",
-        "memberDomain": "a.example",
+        "memberAccount": "alice",
         "profileRev": "3"
       }
     },
@@ -1565,9 +1562,7 @@
       "name": "certificate must name its authorizing root",
       "schema": "urn:somfp:v1:discovery",
       "value": {
-        "protocolVersions": [
-          1
-        ],
+        "protocolVersions": [1],
         "roots": [
           {
             "ed25519": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -1608,7 +1603,8 @@
       "name": "verify request is closed over its members",
       "schema": "urn:somfp:v1:identity#/$defs/verifyRequest",
       "value": {
-        "namespaceId": 1,
+        "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+        "encryptedValue": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk=",
         "extra": 1
       }
     },

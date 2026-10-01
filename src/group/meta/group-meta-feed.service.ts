@@ -19,13 +19,13 @@ export interface GroupMetaMemberBody extends Record<string, unknown> {
 
 export interface GroupMetaMemberChange {
   account: string;
-  domain: string;
+  profileNamespaceId: number;
   body: GroupMetaMemberBody;
   operation: 'MEMBER_UPSERT' | 'MEMBER_DEPART';
 }
 
-function memberKey(member: { domain: string; account: string }): string {
-  return JSON.stringify([member.domain, member.account]);
+function memberKey(member: { profileNamespaceId: number; account: string }): string {
+  return JSON.stringify([member.profileNamespaceId, member.account]);
 }
 
 @Injectable()
@@ -42,7 +42,7 @@ export class GroupMetaFeedService {
     const history = await tx
       .select({
         account: groupMetaMemberFeed.memberAccount,
-        domain: groupMetaMemberFeed.memberDomain,
+        profileNamespaceId: groupMetaMemberFeed.profileNamespaceId,
         operation: groupMetaMemberFeed.operation,
         body: groupMetaMemberFeed.body,
         feedId: groupMetaMemberFeed.feedId,
@@ -54,7 +54,10 @@ export class GroupMetaFeedService {
           or(
             ...members.map((member) =>
               and(
-                eq(groupMetaMemberFeed.memberDomain, member.domain),
+                eq(
+                  groupMetaMemberFeed.profileNamespaceId,
+                  member.profileNamespaceId,
+                ),
                 eq(groupMetaMemberFeed.memberAccount, member.account),
               ),
             ),
@@ -85,7 +88,7 @@ export class GroupMetaFeedService {
         threadId: groupId,
         feedId: ++metaEndId,
         memberAccount: change.account,
-        memberDomain: change.domain,
+        profileNamespaceId: change.profileNamespaceId,
         operation: change.operation,
         body: change.body,
         updatedAt: new Date(),
@@ -114,14 +117,14 @@ export class GroupMetaFeedService {
         RETURNING "metaEndId"
       ), member_fact AS (
         INSERT INTO "GroupMetaMemberFeed"
-          ("threadId", "feedId", "memberAccount", "memberDomain",
+          ("threadId", "feedId", "memberAccount", "profileNamespaceId",
             operation, body)
         SELECT ${groupId}, coordinate."metaEndId", ${member.account},
-          ${member.domain},
+          ${member.profileNamespaceId},
           ${member.operation}::"GroupMetaMemberOperation",
           ${JSON.stringify(body)}::jsonb
         FROM coordinate
-        ON CONFLICT ("threadId", "memberAccount", "memberDomain")
+        ON CONFLICT ("threadId", "memberAccount", "profileNamespaceId")
         DO UPDATE SET "feedId" = EXCLUDED."feedId",
           "profileSourceSeq" = CASE
             WHEN "GroupMetaMemberFeed".operation = 'MEMBER_DEPART'
@@ -191,7 +194,7 @@ export class GroupMetaFeedService {
         threadId: groupId,
         feedId: metaEndId,
         memberAccount: source.account,
-        memberDomain: 'local',
+        profileNamespaceId: 0,
         operation: 'GROUP_PROFILE',
         body: { profileNamespaceId: 0, profileRev },
         updatedAt: new Date(),
@@ -237,11 +240,11 @@ export class GroupMetaFeedService {
 }
 
 function compareMembers(
-  left: { domain: string; account: string },
-  right: { domain: string; account: string },
+  left: { profileNamespaceId: number; account: string },
+  right: { profileNamespaceId: number; account: string },
 ): number {
   return (
-    left.domain.localeCompare(right.domain) ||
+    left.profileNamespaceId - right.profileNamespaceId ||
     left.account.localeCompare(right.account)
   );
 }

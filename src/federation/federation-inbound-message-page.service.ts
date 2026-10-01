@@ -5,7 +5,6 @@ import {
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { and, eq, or, sql } from 'drizzle-orm';
-import { isValidSomfpDomain } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
@@ -15,7 +14,6 @@ import type { InboundForwardWireBundle } from '../forward/forward-bundle.service
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { type Message } from '../message/message.service.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
-import type { S2SAddress } from './federation-address.js';
 import { loadFederationConfig } from './federation.config.js';
 import { FederationMessageContextError } from './federation-errors.js';
 import {
@@ -52,7 +50,7 @@ interface FederationMessagePageEffectContext {
   originSeq: number;
   recipients: number[];
   toAccount: string;
-  author: S2SAddress;
+  author: { account: string; namespaceId: number };
 }
 
 export type FederationMessagePageEffect = FederationMessagePageEffectContext &
@@ -133,33 +131,11 @@ export class FederationInboundMessagePageService {
       await tx.execute(sql.raw(`SAVEPOINT ${savepoint}`));
       try {
         this.assertFederatedMessageEnvelope(item);
-        if (
-          'author' in item &&
-          item.author.domain === 'local' &&
-          item.namespaceId > 0
-        ) {
-          this.logger.warn(
-            `discarded federated message with invalid local domain and positive namespace: ${federatedMessageLogContext(
-              domain,
-              item,
-              'LOCAL_DOMAIN_POSITIVE_NAMESPACE',
-            )}`,
-          );
-          continue;
-        }
         const author = this.federatedMessageAuthor(
           item,
           domain,
           token.peerAssignedLocalNamespaceId,
         );
-        let profileNamespaceId = item.namespaceId;
-        if (author.domain !== 'local' && !isValidSomfpDomain(author.domain)) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            'federated message author has an invalid wire domain',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
         if (
           !FEDERATED_MESSAGE_CONTENT_TYPES.includes(
             item.contentType as ContentType,
@@ -173,8 +149,6 @@ export class FederationInboundMessagePageService {
         const hasOriginSeq = item.originSeq !== null;
         const hasOriginCreatedAt = item.originCreatedAt !== null;
         if (
-          !Number.isSafeInteger(item.namespaceId) ||
-          item.namespaceId < 0 ||
           !Number.isSafeInteger(item.seq) ||
           item.seq < 1 ||
           hasOriginSeq !== hasOriginCreatedAt ||
@@ -186,7 +160,7 @@ export class FederationInboundMessagePageService {
         ) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
-            'missed message has invalid namespace or seq coordinate',
+            'missed message has invalid seq coordinate',
             HttpStatus.BAD_REQUEST,
           );
         }
@@ -197,13 +171,7 @@ export class FederationInboundMessagePageService {
           token.namespaceId,
           token.peerAssignedLocalNamespaceId,
         );
-        // The route resolver canonicalizes receipt/self-authored identities to
-        // this server's local persistence domain. Once the stored creator is
-        // local, the profile subject namespace is always zero; the remote wire
-        // namespace remains only the publisher/source coordinate.
-        if (route.creatorDomain === 'local') {
-          profileNamespaceId = 0;
-        }
+        const profileNamespaceId = route.profileNamespaceId;
         if (
           expectedThreadId !== undefined &&
           route.threadId !== expectedThreadId
@@ -284,7 +252,7 @@ export class FederationInboundMessagePageService {
               eq(tables.message.threadId, route.threadId),
               eq(tables.message.seq, item.originSeq),
               eq(tables.message.creatorAccount, route.creatorAccount),
-              eq(tables.message.creatorDomain, route.creatorDomain),
+              eq(tables.message.profileNamespaceId, route.profileNamespaceId),
             ),
             columns: {
               id: true,
@@ -361,7 +329,7 @@ export class FederationInboundMessagePageService {
             // Other receipts retain peer-coordinate aliases for reference resolution;
             // they cannot overwrite the original message's authority coordinate.
             const [authoritativeGroup] =
-              route.creatorDomain === 'local' && !('peerAccount' in item.thread)
+              route.profileNamespaceId === 0 && !('peerAccount' in item.thread)
                 ? await tx
                     .select({ id: groupStateTable.id })
                     .from(tables.messageThread)
@@ -384,15 +352,18 @@ export class FederationInboundMessagePageService {
                 .set({
                   originSeq: item.seq,
                   originServerTime: sourceTime,
-                  sourceNamespaceId: token.namespaceId,
+                  publisherNamespaceId: token.namespaceId,
                 })
                 .where(
                   and(
                     eq(tables.message.id, localSourceMessage.id),
                     or(
-                      eq(tables.message.sourceNamespaceId, 0),
+                      eq(tables.message.publisherNamespaceId, 0),
                       and(
-                        eq(tables.message.sourceNamespaceId, token.namespaceId),
+                        eq(
+                          tables.message.publisherNamespaceId,
+                          token.namespaceId,
+                        ),
                         eq(tables.message.originSeq, item.seq),
                         eq(tables.message.originServerTime, sourceTime),
                       ),
@@ -429,7 +400,7 @@ export class FederationInboundMessagePageService {
         const existingMessage = await tx.query.message.findFirst({
           where: and(
             eq(tables.message.threadId, route.threadId),
-            eq(tables.message.sourceNamespaceId, token.namespaceId),
+            eq(tables.message.publisherNamespaceId, token.namespaceId),
             eq(tables.message.originSeq, item.seq),
           ),
           columns: {
@@ -489,7 +460,7 @@ export class FederationInboundMessagePageService {
           threadId: route.threadId,
           creator: {
             account: route.creatorAccount,
-            domain: route.creatorDomain,
+            namespaceId: route.profileNamespaceId,
           },
           fetchedFromDomain: domain,
           namespaceId: token.namespaceId,
@@ -513,7 +484,7 @@ export class FederationInboundMessagePageService {
           ),
           downloadAuth: {
             fromAccount: author.account,
-            fromDomain: author.domain,
+            fromDomain: domain,
             toAccount: route.toAccount,
           },
           sequencePolicy,
@@ -545,14 +516,14 @@ export class FederationInboundMessagePageService {
           deletionSeq = deletion?.deletionSeq;
         }
         const profileDemand = selectInboundMessageProfileDemand(
-          item,
+          item.thread,
           stored.message,
           token.namespaceId,
           profileNamespaceId,
         );
         const profileEvidenceProjection =
           selectInboundMessageProfileEvidenceProjection(
-            item,
+            item.thread,
             stored.message,
             token.namespaceId,
             profileNamespaceId,
@@ -637,7 +608,7 @@ export class FederationInboundMessagePageService {
     item: FederationMessageFeedMessage,
     sourceDomain: string,
     peerAssignedLocalNamespaceId: number,
-  ): S2SAddress {
+  ): { account: string; namespaceId: number } {
     return this.routes.messageAuthor(
       item,
       sourceDomain,
@@ -704,7 +675,7 @@ function logAddress(value: unknown): Record<string, string> | undefined {
   if (!record) return undefined;
   return {
     account: safeLogText(record['account'], 128),
-    domain: safeLogText(record['domain'], 253),
+    namespaceId: safeLogText(record['namespaceId'], 32),
   };
 }
 

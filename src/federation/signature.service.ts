@@ -40,6 +40,18 @@ export interface OutboundSignatureHeaders {
   [key: string]: string;
 }
 
+/** Strict-decode an S2S-Root-Key header value: RFC 4648 padded base64 naming
+ *  exactly 32 bytes. Returns null on any deviation (Transport and Security 3.3). */
+export function parseRootKeyHeader(value: unknown): string | null {
+  if (
+    typeof value !== 'string' ||
+    !/^[A-Za-z0-9+/]{43}=$/.test(value)
+  ) {
+    return null;
+  }
+  return value;
+}
+
 /** RFC 9530 Content-Digest: a Structured Fields dictionary containing one SHA-256 byte sequence. */
 export function contentDigest(body: string | Uint8Array): string {
   const bytes =
@@ -153,6 +165,9 @@ export class SignatureService {
     const digest = contentDigest(req.body);
     const keyId = this.keypair.getKeyId();
     const privateKey = this.keypair.getPrivateKey();
+    // Unsigned routing hint (never in the signature base): the claimable root
+    // authorizing the signing certificate, for receiver-side identity resolution.
+    const rootKey = this.keypair.getRootPublicKeyB64();
     const signed = await httpMessageSignatures.httpbis.signMessage(
       {
         name: SIG_LABEL,
@@ -184,6 +199,7 @@ export class SignatureService {
       'content-digest': digest,
       'signature-input': signatureInput,
       signature,
+      's2s-root-key': rootKey,
     };
   }
 

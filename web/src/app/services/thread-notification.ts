@@ -10,7 +10,15 @@ export async function threadNotificationIcon(
 ): Promise<string> {
   const subject = item.type === 'GROUP' ? item.group : item.peerUser;
   if (item.profileRev < 1) return '/icons/icon-192.png';
-  const profile = await storage.getProfile({ ...subject, profileRev: item.profileRev });
+  const profile = await storage.getProfile({
+    publisherNamespaceId: subject.namespaceId,
+    lookup: 'ACCOUNT_PROFILE',
+    target: {
+      profileNamespaceId: subject.namespaceId,
+      account: subject.account,
+      rev: item.profileRev,
+    },
+  });
   const blob = profile?.avatarDigest
     ? await storage.getProfileAvatarBlob(profile.avatarDigest)
     : undefined;
@@ -20,7 +28,11 @@ export async function threadNotificationIcon(
 /** Published only after the existing local unread projection succeeds. */
 export interface ThreadNotificationUpdate {
   item: ConversationItem;
-  state: Pick<ThreadFeedSnapshot, 'threadFeedId' | 'previews' | 'lastReadSeq' | 'alias'> & Partial<ThreadFeedSnapshot>;
+  state: Pick<
+    ThreadFeedSnapshot,
+    'threadFeedId' | 'previews' | 'lastReadSeq' | 'alias'
+  > &
+    Partial<ThreadFeedSnapshot>;
 }
 
 export function threadNotificationDescriptor(

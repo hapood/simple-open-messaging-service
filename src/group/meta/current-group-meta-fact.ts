@@ -17,7 +17,7 @@ export async function upsertCurrentGroupMetaFactsInTx(
       target: [
         groupMetaMemberFeed.threadId,
         groupMetaMemberFeed.memberAccount,
-        groupMetaMemberFeed.memberDomain,
+        groupMetaMemberFeed.profileNamespaceId,
       ],
       set: {
         feedId: sql`EXCLUDED."feedId"`,

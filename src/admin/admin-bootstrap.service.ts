@@ -83,7 +83,6 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
       if (created)
         await tx.insert(profileTable).values({
           account: 'admin',
-          domain: 'local',
           publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 1,

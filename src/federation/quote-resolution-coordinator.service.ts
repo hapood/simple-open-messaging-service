@@ -147,7 +147,7 @@ export class QuoteResolutionCoordinatorService implements OnModuleDestroy {
         .from(tables.message)
         .innerJoin(
           tables.identityNamespace,
-          eq(tables.identityNamespace.id, tables.message.sourceNamespaceId),
+          eq(tables.identityNamespace.id, tables.message.publisherNamespaceId),
         )
         .where(
           and(

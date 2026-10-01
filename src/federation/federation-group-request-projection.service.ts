@@ -91,9 +91,8 @@ export class FederationGroupRequestProjectionService {
           and(
             eq(tables.groupRequestProjection.threadId, threadId),
             eq(tables.groupRequestProjection.memberAccount, member.account),
-            eq(tables.groupRequestProjection.memberDomain, member.domain),
             eq(
-              tables.groupRequestProjection.memberNamespaceId,
+              tables.groupRequestProjection.profileNamespaceId,
               member.namespaceId,
             ),
             eq(tables.groupRequestProjection.direction, direction),
@@ -105,8 +104,7 @@ export class FederationGroupRequestProjectionService {
     await this.clientStateFeed.writeGroupRequestInTx(tx, {
       threadId,
       memberAccount: member.account,
-      memberDomain: member.domain,
-      memberNamespaceId: member.namespaceId,
+      profileNamespaceId: member.namespaceId,
       memberProfileRev: memberIntent?.profileRev ?? 0,
       direction,
       status,

@@ -10,13 +10,17 @@ function subject(overrides?: {
     trustLevel: overrides?.trustLevel ?? 'available',
     active: true,
     id: 9,
+    domain: 'peer.example',
+    rootPublicKey: Buffer.alloc(32, 2).toString('base64'),
     recognizesPeer: overrides?.recognizesPeer ?? true,
     localServiceAvailable: true,
     haltCode: null,
     haltReason: null,
   };
   const verify = {
-    extractHeaders: vi.fn().mockReturnValue({}),
+    extractHeaders: vi.fn().mockReturnValue({
+      's2s-root-key': Buffer.alloc(32, 2).toString('base64'),
+    }),
     parseSigner: vi.fn().mockReturnValue({
       keyId: 'peer.example/key-1',
       domain: 'peer.example',

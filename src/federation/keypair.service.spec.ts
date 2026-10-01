@@ -3,23 +3,27 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { DatabaseService } from '../database/database.service.js';
 import {
-  localFederationIdentity,
+  localFederationRoot,
   localFederationSigningKey,
   localFederationSigningState,
 } from '../database/schema.js';
 import { verifySigningCertificate } from './federation-certificate.js';
 import { KeypairService } from './keypair.service.js';
 
-interface FakeIdentityRow {
+interface FakeRootRow {
+  id: number;
   domain: string;
-  rootKeyFingerprint: string;
   rootPublicKey: string;
   rootPrivateKey: string;
+  notBefore: Date;
+  notAfter: Date;
+  claimable: boolean;
+  unpublishedAt: Date | null;
   createdAt: Date;
 }
 
 interface FakeSigningKeyRow {
-  domain: string;
+  rootId: number;
   keyId: string;
   publicKey: string;
   privateKey: string;
@@ -38,18 +42,16 @@ interface FakeSigningStateRow {
 
 interface FakeHandle {
   database: DatabaseService;
-  getIdentity: () => FakeIdentityRow | undefined;
+  getRoots: () => FakeRootRow[];
   getKeys: () => FakeSigningKeyRow[];
   getState: () => FakeSigningStateRow | undefined;
   setKeys: (rows: FakeSigningKeyRow[]) => void;
 }
 
-/** Rebuilds the SQL text and positional parameters of a Drizzle `sql` fragment.
- *  Template-literal parts arrive as StringChunk objects; interpolated values appear
- *  directly as chunks (only arrays are interpolated by the service today). */
-function interpretSql(fragment: unknown): { text: string; params: unknown[] } {
+/** Rebuilds the SQL text of a Drizzle `sql` fragment; interpolated values appear
+ *  as parameters. Only the advisory-lock and history probes reach execute(). */
+function interpretSql(fragment: unknown): string {
   const chunks = (fragment as { queryChunks?: unknown[] }).queryChunks ?? [];
-  const params: unknown[] = [];
   let text = '';
   for (const chunk of chunks) {
     const record = chunk as { value?: unknown };
@@ -61,78 +63,43 @@ function interpretSql(fragment: unknown): { text: string; params: unknown[] } {
     ) {
       text += (record.value as string[]).join('');
     } else {
-      text += `$${params.length + 1}`;
-      params.push(chunk);
+      text += '?';
     }
   }
-  return { text, params };
+  return text;
 }
 
-/** Collects every string-array parameter embedded in a Drizzle query object — the shape
- *  `inArray(column, ids)` produces — so the typed delete can be interpreted. Only the
- *  `queryChunks` chain is walked: StringChunk objects (SQL text) carry their parts in
- *  `value`; the interpolated ids appear as a bare array whose elements are either plain
- *  strings or Param objects ({ value }) depending on the drizzle version; everything else
- *  (column references, primitives) carries no chunks. Column objects are cyclic graphs,
- *  so never walk arbitrary object properties. */
-function collectStringArrays(
-  fragment: unknown,
-  found: string[][] = [],
-): string[][] {
-  if (fragment === undefined || fragment === null) return found;
-  const chunks = (fragment as { queryChunks?: unknown[] }).queryChunks;
-  if (!Array.isArray(chunks)) return found;
+let nextRootId = 1;
+
+/** Extract root-row ids referenced by an eq(localFederationRoot.id, n) condition. */
+function fakeRootsById(condition: unknown): number[] {
+  const chunks = (condition as { queryChunks?: unknown[] }).queryChunks ?? [];
+  const ids: number[] = [];
   for (const chunk of chunks) {
-    if (chunk === undefined || chunk === null) continue;
     const record = chunk as { value?: unknown };
     if (
       typeof chunk === 'object' &&
+      chunk !== null &&
       !Array.isArray(chunk) &&
-      Array.isArray(record.value) &&
-      record.value.every((part) => typeof part === 'string')
-    )
-      continue;
-    if (Array.isArray(chunk) && chunk.length > 0) {
-      const strings = chunk.map((item) =>
-        typeof item === 'string'
-          ? item
-          : typeof (item as { value?: unknown } | null)?.value === 'string'
-            ? ((item as { value: string }).value as string)
-            : undefined,
-      );
-      if (strings.every((item) => item !== undefined)) {
-        found.push(strings as string[]);
-        continue;
-      }
+      record.value !== undefined &&
+      typeof record.value === 'number'
+    ) {
+      ids.push(record.value as number);
     }
-    collectStringArrays(chunk, found);
   }
-  return found;
+  return ids;
 }
 
 function fakeDatabase(options: { hasHistory?: boolean } = {}): FakeHandle {
-  let identity: FakeIdentityRow | undefined;
+  let roots: FakeRootRow[] = [];
   let keys: FakeSigningKeyRow[] = [];
   let state: FakeSigningStateRow | undefined;
 
-  const insert = (table: unknown) => ({
-    values: async (values: object) => {
-      if (table === localFederationIdentity) {
-        identity = values as FakeIdentityRow;
-      } else if (table === localFederationSigningKey) {
-        keys.push(values as FakeSigningKeyRow);
-      } else if (table === localFederationSigningState) {
-        state = values as FakeSigningStateRow;
-      } else {
-        throw new Error('unexpected insert target');
-      }
-    },
-  });
-
   const db = {
     query: {
-      localFederationIdentity: {
-        findFirst: async () => (identity ? { ...identity } : undefined),
+      localFederationRoot: {
+        findMany: async () => roots.map((root) => ({ ...root })),
+        findFirst: async () => (roots[0] ? { ...roots[0]! } : undefined),
       },
       localFederationSigningKey: {
         findMany: async () => keys.map((key) => ({ ...key })),
@@ -142,44 +109,69 @@ function fakeDatabase(options: { hasHistory?: boolean } = {}): FakeHandle {
       },
     },
     execute: async (fragment: unknown) => {
-      const { text, params } = interpretSql(fragment);
+      const text = interpretSql(fragment);
       if (text.includes('pg_advisory_xact_lock')) return { rows: [] };
-      if (text.includes('hasHistory')) {
-        return { rows: [{ hasHistory: options.hasHistory ?? false }] };
-      }
       if (text.includes('hasHistory')) {
         return { rows: [{ hasHistory: options.hasHistory ?? false }] };
       }
       throw new Error(`fake database cannot interpret SQL: ${text}`);
     },
-    insert,
-    update: (table: unknown) => ({
-      set: async (values: object) => {
-        if (table !== localFederationSigningState || !state) {
-          throw new Error('unexpected update target');
+    insert: (table: unknown) => ({
+      values: (values: object) => {
+        if (table === localFederationRoot) {
+          const row = {
+            ...(values as Omit<FakeRootRow, 'id' | 'createdAt'>),
+            id: nextRootId++,
+            createdAt: new Date(),
+          } as FakeRootRow;
+          roots.push(row);
+          return { returning: async () => [{ id: row.id }] };
         }
-        state = { ...state, ...values } as FakeSigningStateRow;
+        if (table === localFederationSigningKey) {
+          keys.push(values as FakeSigningKeyRow);
+          return Promise.resolve();
+        }
+        if (table === localFederationSigningState) {
+          state = values as FakeSigningStateRow;
+          return Promise.resolve();
+        }
+        throw new Error('unexpected insert target');
       },
     }),
-    delete: (table: unknown) => ({
-      where: async (condition: unknown) => {
-        if (table !== localFederationSigningKey)
-          throw new Error('unexpected delete target');
-        const [ids] = collectStringArrays(condition);
-        if (!ids)
-          throw new Error('fake database cannot interpret delete condition');
-        keys = keys.filter((key) => !ids.includes(key.keyId));
-      },
+    update: (table: unknown) => ({
+      set: (values: object) => ({
+        where: async (condition: unknown) => {
+          if (table === localFederationSigningState) {
+            if (!state) throw new Error('no signing state to update');
+            state = { ...state, ...(values as FakeSigningStateRow) };
+            return;
+          }
+          if (table === localFederationRoot) {
+            // The only root update filters by id equality; apply the change to
+            // matching rows.
+            const ids = fakeRootsById(condition);
+            if (ids.length === 0)
+              throw new Error(
+                'fake database cannot interpret root update without ids',
+              );
+            roots = roots.map((root) =>
+              ids.includes(root.id)
+                ? { ...root, ...(values as Partial<FakeRootRow>) }
+                : root,
+            );
+            return;
+          }
+          throw new Error('unexpected update target');
+        },
+      }),
     }),
     transaction: async (callback: (tx: unknown) => Promise<unknown>) =>
       callback(db),
   };
 
   return {
-    // One boundary cast keeps the in-memory store structurally compatible for the
-    // service's narrow query surface; every test uses the typed handle below instead.
     database: { db } as never,
-    getIdentity: () => identity,
+    getRoots: () => roots,
     getKeys: () => keys,
     getState: () => state,
     setKeys: (rows) => {
@@ -200,6 +192,7 @@ describe('KeypairService database-backed identity', () => {
 
   beforeEach(() => {
     process.env.SOMS_DOMAIN = 'node-a.example';
+    nextRootId = 1;
     originalValues = Object.fromEntries(
       rotationEnv.map((name) => [name, process.env[name]]),
     );
@@ -222,24 +215,21 @@ describe('KeypairService database-backed identity', () => {
     process.env.SOMS_FEDERATION_PREDECESSOR_RETENTION_MS = '100';
   }
 
-  it('bootstraps identity, initial signing key, and selection state for a fresh database', async () => {
+  it('bootstraps a claimable root epoch, initial signing key, and selection state', async () => {
     const fake = fakeDatabase();
     const service = new KeypairService(fake.database);
     await service.initialize();
 
     expect(service.getStatus()).toEqual({ available: true });
-    const identity = fake.getIdentity();
+    const root = fake.getRoots()[0];
     const key = fake.getKeys()[0];
     const state = fake.getState();
-    expect(identity?.domain).toBe('node-a.example');
-    expect(identity?.rootPublicKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
-    expect(identity?.rootPrivateKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
-    expect(identity?.rootKeyFingerprint).toBe(service.getRootKeyFingerprint());
+    expect(root?.domain).toBe('node-a.example');
+    expect(root?.rootPublicKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+    expect(root?.rootPrivateKey).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+    expect(root?.claimable).toBe(true);
+    expect(key?.rootId).toBe(root?.id);
     expect(key?.keyId).toMatch(/^node-a\.example\/k-[A-Za-z0-9_-]{20}$/);
-    expect(key?.notBefore.getTime()).toBe(key?.createdAt.getTime());
-    expect(key?.notAfter.getTime() - key?.notBefore.getTime()).toBe(
-      30 * 24 * 3_600_000,
-    );
     expect(state).toMatchObject({
       domain: 'node-a.example',
       currentKeyId: key?.keyId,
@@ -247,10 +237,17 @@ describe('KeypairService database-backed identity', () => {
       plannedSuccessorKeyId: null,
     });
     expect(service.getKeyId()).toBe(key?.keyId);
+    expect(service.getRootPublicKeyB64()).toBe(root?.rootPublicKey);
 
+    // The published group has exactly this root; the certificate names it and
+    // verifies under it.
+    const group = service.getRootGroup();
+    expect(group).toHaveLength(1);
+    expect(group[0]?.ed25519).toBe(root?.rootPublicKey);
     const certificates = service.getSigningKeyCertificates();
     expect(certificates).toHaveLength(1);
     expect(certificates[0]?.keyId).toBe(key?.keyId);
+    expect(certificates[0]?.root).toBe(root?.rootPublicKey);
     expect(
       verifySigningCertificate(certificates[0]!, service.getRootPublicKeyB64()),
     ).toBe(true);
@@ -261,13 +258,13 @@ describe('KeypairService database-backed identity', () => {
     const first = new KeypairService(fake.database);
     await first.initialize();
     const keyId = first.getKeyId();
-    const fingerprint = first.getRootKeyFingerprint();
+    const rootPublicKey = first.getRootPublicKeyB64();
 
     const second = new KeypairService(fake.database);
     await second.initialize();
     expect(second.getKeyId()).toBe(keyId);
-    expect(second.getRootKeyFingerprint()).toBe(fingerprint);
-    expect(fake.getIdentity()?.rootKeyFingerprint).toBe(fingerprint);
+    expect(second.getRootPublicKeyB64()).toBe(rootPublicKey);
+    expect(fake.getRoots()).toHaveLength(1);
     expect(fake.getKeys()).toHaveLength(1);
   });
 
@@ -279,9 +276,9 @@ describe('KeypairService database-backed identity', () => {
     expect(service.getStatus()).toEqual({
       available: false,
       reason:
-        'federation history exists but the local identity row is missing; restore the database from backup',
+        'federation history exists but the local root-identity rows are missing; restore the database from backup',
     });
-    expect(fake.getIdentity()).toBeUndefined();
+    expect(fake.getRoots()).toHaveLength(0);
     expect(fake.getKeys()).toHaveLength(0);
     expect(() => service.getKeyId()).toThrow(BusinessException);
   });
@@ -301,7 +298,7 @@ describe('KeypairService database-backed identity', () => {
     });
   });
 
-  it('rotates through plan, switch, and predecessor removal with one signer at a time', async () => {
+  it('rotates signing keys through plan and switch while retaining the predecessor', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_700_000_000_000);
     setRotationTimings();
@@ -346,10 +343,13 @@ describe('KeypairService database-backed identity', () => {
         ),
     ).toBe(true);
 
-    // Past the predecessor's notAfter its row (and private material) is removed.
+    // Past the predecessor's notAfter its row is retained forever — private
+    // material included — while publication drops it.
     vi.setSystemTime(1_700_000_000_610);
     await service.initialize();
-    expect(fake.getKeys().map((key) => key.keyId)).toEqual([secondKey.keyId]);
+    expect(fake.getKeys().map((key) => key.keyId)).toEqual(
+      expect.arrayContaining([firstKey.keyId, secondKey.keyId]),
+    );
     expect(service.getSigningKeyCertificates()).toHaveLength(1);
   }, 20_000);
 
@@ -360,7 +360,6 @@ describe('KeypairService database-backed identity', () => {
     const fake = fakeDatabase();
     const service = new KeypairService(fake.database);
     await service.initialize();
-    const fingerprint = service.getRootKeyFingerprint();
     const rootPublicKey = service.getRootPublicKeyB64();
     const originalKeyId = service.getKeyId();
 
@@ -376,9 +375,9 @@ describe('KeypairService database-backed identity', () => {
     await service.initialize();
 
     expect(service.getStatus()).toEqual({ available: true });
-    expect(service.getRootKeyFingerprint()).toBe(fingerprint);
+    expect(service.getRootPublicKeyB64()).toBe(rootPublicKey);
     expect(service.getKeyId()).not.toBe(originalKeyId);
-    expect(fake.getKeys().map((key) => key.keyId)).not.toContain(originalKeyId);
+    expect(fake.getKeys().map((key) => key.keyId)).toContain(originalKeyId);
     const certificates = service.getSigningKeyCertificates();
     expect(certificates).toHaveLength(1);
     expect(verifySigningCertificate(certificates[0]!, rootPublicKey)).toBe(
@@ -408,4 +407,95 @@ describe('KeypairService database-backed identity', () => {
       );
     }
   });
+
+  it('rotates the root epoch with immediate certificate revocation', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    setRotationTimings();
+    const fake = fakeDatabase();
+    const service = new KeypairService(fake.database);
+    await service.initialize();
+    const previousRoot = fake.getRoots()[0]!;
+    const previousRootKey = previousRoot.rootPublicKey;
+    const previousRootPrivate = previousRoot.rootPrivateKey;
+
+    // Advance so a second signing key exists under the old root.
+    vi.setSystemTime(1_700_000_000_420);
+    await service.initialize();
+    const oldRootKeyCount = fake.getKeys().length;
+
+    vi.setSystemTime(1_700_000_000_430);
+    const result = await service.rotateRoot();
+    expect(result.previousRootId).toBe(previousRoot.id);
+    expect(fake.getRoots()).toHaveLength(2);
+    expect(fake.getRoots().filter((root) => root.claimable)).toHaveLength(1);
+    expect(service.getRootPublicKeyB64()).toBe(result.newRootPublicKey);
+    expect(result.newRootPublicKey).not.toBe(previousRootKey);
+
+    // All keys ever generated are retained, including under the old root.
+    expect(fake.getKeys().length).toBe(oldRootKeyCount + 1);
+    expect(
+      fake.getKeys().every((key) => key.privateKey.length === 44),
+    ).toBe(true);
+
+    // The published group still contains the predecessor; the published
+    // certificates are only successor-authorized — removal is the revocation.
+    const group = service.getRootGroup();
+    expect(group.map((entry) => entry.ed25519)).toEqual(
+      expect.arrayContaining([previousRootKey, result.newRootPublicKey]),
+    );
+    const certificates = service.getSigningKeyCertificates();
+    expect(certificates.length).toBeGreaterThanOrEqual(1);
+    expect(
+      certificates.every(
+        (certificate) => certificate.root === result.newRootPublicKey,
+      ),
+    ).toBe(true);
+    expect(
+      certificates.every((certificate) =>
+        verifySigningCertificate(certificate, certificate.root),
+      ),
+    ).toBe(true);
+
+    // Sealed challenges under the retired root stay openable: the retained
+    // private key is resolvable by public key for both roots.
+    expect(service.isRetainedPublicKey(previousRootKey)).toBe(true);
+    expect(service.isRetainedPublicKey(result.newRootPublicKey)).toBe(true);
+    expect(service.getRetainedPrivateKey(previousRootKey)).toEqual(
+      Uint8Array.from(Buffer.from(previousRootPrivate, 'base64')),
+    );
+    const retiredSigningKey = fake
+      .getKeys()
+      .find((key) => key.rootId === previousRoot.id)!;
+    expect(service.getRetainedPrivateKey(retiredSigningKey.publicKey)).toEqual(
+      Uint8Array.from(Buffer.from(retiredSigningKey.privateKey, 'base64')),
+    );
+    expect(service.isRetainedPublicKey('A'.repeat(43) + '=')).toBe(false);
+  }, 20_000);
+
+  it('refuses to unpublish the claimable root or a still-valid predecessor', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    setRotationTimings();
+    const fake = fakeDatabase();
+    const service = new KeypairService(fake.database);
+    await service.initialize();
+    const claimableId = fake.getRoots()[0]!.id;
+    await expect(service.unpublishRoot(claimableId)).rejects.toThrow(
+      /claimable/,
+    );
+
+    vi.setSystemTime(1_700_000_000_430);
+    const rotation = await service.rotateRoot();
+    await expect(service.unpublishRoot(rotation.newRootId)).rejects.toThrow(
+      /claimable/,
+    );
+    // The predecessor root's validity (default 3650 days) still runs; an
+    // operator may only unpublish after it expired or adoption completed —
+    // here it is still valid, so the guard fires.
+    await expect(
+      service.unpublishRoot(rotation.previousRootId),
+    ).rejects.toThrow(/still-valid/);
+    expect(service.getRootGroup()).toHaveLength(2);
+  }, 20_000);
 });

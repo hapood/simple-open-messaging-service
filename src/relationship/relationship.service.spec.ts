@@ -70,8 +70,8 @@ describe('relationship client profile references', () => {
             const params = new PgDialect().sqlToQuery(where).params;
             if (!available) return undefined;
             return {
-              displayName: `Selected ${params[4]}`,
-              avatar: `avatar-${params[4]}`,
+              displayName: `Selected ${params.at(-1)}`,
+              avatar: `avatar-${params.at(-1)}`,
               bio: 'selected',
             };
           }),
@@ -124,8 +124,8 @@ describe('relationship client profile references', () => {
         ([arg]) => new PgDialect().sqlToQuery(arg.where).params,
       ),
     ).toEqual([
-      ['bob', 'remote.test', 4, 4, 7],
-      ['bob', 'remote.test', 4, 4, 7],
+      ['bob', 4, 4, 7],
+      ['bob', 4, 4, 7],
     ]);
   });
 
@@ -280,7 +280,7 @@ describe('RelationshipService local relationship client-state projection', () =>
           account: 'alice',
           domain: 'local',
           subjectAccount: 'bob',
-          subjectDomain: 'local',
+          subjectNamespaceId: 0,
           body: expect.objectContaining({
             direction: 'OUTGOING',
             status: 'ACCEPTED',
@@ -291,7 +291,7 @@ describe('RelationshipService local relationship client-state projection', () =>
           account: 'bob',
           domain: 'local',
           subjectAccount: 'alice',
-          subjectDomain: 'local',
+          subjectNamespaceId: 0,
           body: expect.objectContaining({
             direction: 'INCOMING',
             status: 'ACCEPTED',
@@ -304,7 +304,7 @@ describe('RelationshipService local relationship client-state projection', () =>
       new Set(
         ownerOne.map(
           (write) =>
-            `${write.domain}\0${write.account}\0${write.subjectDomain}\0${write.subjectAccount}`,
+            `${write.domain}\0${write.account}\0${write.subjectNamespaceId}\0${write.subjectAccount}`,
         ),
       ).size,
     ).toBe(2);

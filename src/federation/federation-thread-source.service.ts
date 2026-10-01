@@ -27,7 +27,6 @@ export class FederationThreadSourceService {
     const audience = await lock.tx.execute(sql`
       SELECT id FROM "ThreadAudience"
       WHERE "threadId" = ${source.threadId}
-        AND "targetDomain" = ${source.peerDomain}
         AND "targetNamespaceId" = ${source.namespaceId}
         AND "localUserId" IS NULL
       FOR SHARE

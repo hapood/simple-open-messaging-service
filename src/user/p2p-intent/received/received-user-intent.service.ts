@@ -139,8 +139,7 @@ export class ReceivedUserIntentService {
       this.logger.warn('received user intent client wake failed', error);
     }
     if (peers.size > 0)
-      void this.deps.federation
-        .pushStateFeedNamespaces(peers);
+      void this.deps.federation.pushStateFeedNamespaces(peers);
     return { routed: result.routed };
   }
 
@@ -270,7 +269,7 @@ export class ReceivedUserIntentService {
     // including the AccountThreadState participant trigger below.
     if (peerDomain !== 'local')
       await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
-        { peerDomain, namespaceId },
+        { namespaceId },
       ]);
     // The incoming item is the peer's direction; the activation gate is our
     // own live consent artifact (an unexpired request or a retained
@@ -432,12 +431,10 @@ export class ReceivedUserIntentService {
       const confirmations =
         await this.deps.peerFeed.writeAcceptanceConfirmationsInTx(tx, [
           {
-            peerDomain: context.peer.domain,
             namespaceId,
             account: context.localUser.account,
-            domain: 'local',
             subjectAccount: context.peer.account,
-            subjectDomain: context.peer.domain,
+            subjectNamespaceId: context.peer.namespaceId,
             eventType: 'RELATIONSHIP_INTENT',
             body: {
               status: ours.status,
@@ -453,7 +450,7 @@ export class ReceivedUserIntentService {
       for (const namespaceId of confirmations.keys())
         context.peers.add(namespaceId);
     }
-    await openFederatedAudienceInTx(tx, context.peer.domain, threadId);
+    await openFederatedAudienceInTx(tx, context.peer.namespaceId, threadId);
     await initializeRelationshipThreadStateInTx(
       tx,
       threadId,

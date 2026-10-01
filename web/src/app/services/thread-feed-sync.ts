@@ -1,14 +1,8 @@
+import { coalesceQueuedTargets } from '../../../../shared/trailing-single-flight';
 import type {
   LocalThreadAttention,
   ThreadFeedSnapshot,
 } from '../../../../shared/thread-attention';
-import {
-  syncGroupMeta,
-  GroupMetaSyncError,
-  type GroupMetaRequester,
-  type GroupMetaProfileResolver,
-  type GroupMetaSyncStorage,
-} from './group-meta-sync';
 
 const THREAD_FEED_PREVIEW_COUNT = 3;
 
@@ -19,7 +13,7 @@ export interface ThreadFeedSyncResult {
   error?: string;
 }
 
-export interface ThreadFeedSyncStorage extends GroupMetaSyncStorage {
+export interface ThreadFeedSyncStorage {
   withThreadFeedLock?<T>(run: () => Promise<T>): Promise<T>;
   getMeta(key: string): Promise<unknown>;
   mergeThreadStates(
@@ -28,34 +22,8 @@ export interface ThreadFeedSyncStorage extends GroupMetaSyncStorage {
   ): Promise<LocalThreadAttention[]>;
 }
 
-/** Coalesce queued wakes; failures only run again when another wake has actually arrived. */
-export function coalesceThreadFeedWakes(
-  enqueue: (task: () => Promise<void>) => void,
-  run: (target: number) => Promise<void>,
-): (target: number) => void {
-  let highest = 0;
-  let pending = false;
-  let scheduled = false;
-  const schedule = () => {
-    if (scheduled) return;
-    scheduled = true;
-    enqueue(async () => {
-      pending = false;
-      try {
-        await run(highest);
-      } finally {
-        scheduled = false;
-        if (pending) schedule();
-      }
-    });
-  };
-  return (target) => {
-    if (!Number.isInteger(target) || target < 0 || target > 2147483647) return;
-    highest = Math.max(highest, target);
-    pending = true;
-    schedule();
-  };
-}
+export const coalesceThreadFeedWakes = coalesceQueuedTargets;
+export const coalesceGroupMetaWakes = coalesceQueuedTargets;
 
 /** Runs in the database worker. Committed pages remain deliverable if a later request fails. */
 export async function syncThreadFeed(
@@ -67,17 +35,10 @@ export async function syncThreadFeed(
     take: number;
     previewCount: number;
   }) => Promise<unknown>,
-  requestGroupMeta: GroupMetaRequester,
-  resolveGroupMetaProfile: GroupMetaProfileResolver,
+  _requestGroupMeta?: unknown,
+  _resolveGroupMetaProfile?: unknown,
 ): Promise<ThreadFeedSyncResult> {
-  const run = () =>
-    syncThreadFeedUnlocked(
-      storage,
-      target,
-      request,
-      requestGroupMeta,
-      resolveGroupMetaProfile,
-    );
+  const run = () => syncThreadFeedUnlocked(storage, target, request);
   return storage.withThreadFeedLock ? storage.withThreadFeedLock(run) : run();
 }
 
@@ -85,8 +46,8 @@ async function syncThreadFeedUnlocked(
   storage: ThreadFeedSyncStorage,
   target: number,
   request: Parameters<typeof syncThreadFeed>[2],
-  requestGroupMeta: GroupMetaRequester,
-  resolveGroupMetaProfile: GroupMetaProfileResolver,
+  _requestGroupMeta?: unknown,
+  _resolveGroupMetaProfile?: unknown,
 ): Promise<ThreadFeedSyncResult> {
   const initial = (await storage.getMeta('threadFeedCursor')) ?? 0;
   if (
@@ -99,7 +60,6 @@ async function syncThreadFeedUnlocked(
     throw new Error('invalid thread feed target');
   let cursor = Number(initial);
   const states = new Map<number, LocalThreadAttention>();
-  let groupThreadIds: number[] = [];
   try {
     while (cursor < target) {
       const through = target;
@@ -152,18 +112,12 @@ async function syncThreadFeedUnlocked(
       cursor = page.scannedThrough;
       target = Math.max(target, page.threadFeedEndId);
     }
-    groupThreadIds = await syncGroupMeta(
-      storage,
-      requestGroupMeta,
-      resolveGroupMetaProfile,
-    );
-    return { states: [...states.values()], cursor, groupThreadIds };
+    return { states: [...states.values()], cursor, groupThreadIds: [] };
   } catch (error) {
-    if (error instanceof GroupMetaSyncError) groupThreadIds = error.threadIds;
     return {
       states: [...states.values()],
       cursor,
-      groupThreadIds,
+      groupThreadIds: [],
       error: error instanceof Error ? error.message : String(error),
     };
   }

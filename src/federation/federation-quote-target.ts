@@ -36,8 +36,8 @@ export function publishFederationQuote(
     | {
         seq: number;
         originSeq: number | null;
-        sourceNamespaceId: number;
-        creatorDomain: string | null;
+        publisherNamespaceId: number;
+        profileNamespaceId: number;
       }
     | undefined,
   groupAuthority: boolean,
@@ -45,10 +45,10 @@ export function publishFederationQuote(
 ): FederationQuoteTarget {
   if (coordinate.seq === 0) return { seq: 0 };
   if (target) {
-    if (groupAuthority || target.creatorDomain === 'local')
+    if (groupAuthority || target.profileNamespaceId === 0)
       return { seq: target.seq };
     if (
-      target.sourceNamespaceId === peerNamespaceId &&
+      target.publisherNamespaceId === peerNamespaceId &&
       target.originSeq !== null
     )
       return { originSeq: target.originSeq };

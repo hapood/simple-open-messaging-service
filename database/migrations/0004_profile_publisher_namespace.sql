@@ -57,7 +57,6 @@ BEGIN
     AND NEW.seq = OLD.seq AND NEW."threadId" = OLD."threadId"
     AND NEW."localState" = OLD."localState" AND NEW."isDeleted" = OLD."isDeleted"
     AND NEW."creatorAccount" IS NOT DISTINCT FROM OLD."creatorAccount"
-    AND NEW."creatorDomain" IS NOT DISTINCT FROM OLD."creatorDomain"
     AND NEW."profileNamespaceId" = OLD."profileNamespaceId"
     AND NEW."contentType" = OLD."contentType"
     AND (NEW."contentType" <> 'PURE_TEXT' OR NEW.content IS NOT DISTINCT FROM OLD.content)
@@ -77,7 +76,7 @@ CREATE OR REPLACE FUNCTION public.attention_message_eligible(m public."Message",
   SELECT m."threadId" = s."threadId" AND m.seq > COALESCE(cleared, 0)
     AND (s."messageVisibleThroughSeq" IS NULL OR m.seq <= s."messageVisibleThroughSeq")
     AND NOT EXISTS (SELECT 1 FROM "Account" a WHERE a.id = s."accountId"
-      AND a.account = m."creatorAccount" AND a.domain = m."creatorDomain"
+      AND a.account = m."creatorAccount"
       AND a."namespaceId" = m."profileNamespaceId")
     AND NOT s.blocked;
 $$;
@@ -86,7 +85,7 @@ ALTER TABLE "Message"
   DROP CONSTRAINT "Message_creatorNamespaceId_fkey";
 
 ALTER TABLE "Message"
-  DROP CONSTRAINT "Message_creator_namespace_check";
+  DROP CONSTRAINT IF EXISTS "Message_creator_namespace_check";
 
 ALTER TABLE "Message"
   DROP CONSTRAINT "Message_system_creator_check";
@@ -95,22 +94,13 @@ ALTER TABLE "Message"
   DROP COLUMN "creatorNamespaceId";
 
 ALTER TABLE "Message"
-  ADD CONSTRAINT "Message_profile_namespace_check"
-  CHECK (
-    "creatorDomain" IS NULL
-    OR (("creatorDomain" = 'local') = ("profileNamespaceId" = 0))
-  );
-
-ALTER TABLE "Message"
   ADD CONSTRAINT "Message_system_creator_check"
   CHECK (
     "creatorAccount" IS NOT NULL
-    AND "creatorDomain" IS NOT NULL
     AND (
       (
         "contentType" = 'SYSTEM'
         AND "creatorAccount" = '$system'
-        AND "creatorDomain" = 'local'
         AND "profileNamespaceId" = 0
         AND "profileRev" = 0
         AND "sourceNamespaceId" = 0

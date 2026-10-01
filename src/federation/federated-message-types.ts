@@ -2,9 +2,10 @@ import type { ContentType } from '../database/enums.js';
 
 type FederatedContentType = Exclude<ContentType, 'SYSTEM'>;
 
-export interface FederationAddress {
+export interface FederationAuthorAddress {
   account: string;
-  domain: string;
+  /** Profile-subject namespace in the authenticated publisher's namespace space. */
+  namespaceId: number;
 }
 
 export interface FederationByteDescriptor {

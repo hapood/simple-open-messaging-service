@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { syncThreadFeed, coalesceThreadFeedWakes } from './thread-feed-sync';
+import { syncThreadFeed } from './thread-feed-sync';
 import type { ThreadFeedSnapshot } from '../../../../shared/thread-attention';
 import { threadStructure } from './thread-feed.test-helper';
 
@@ -10,7 +10,12 @@ const profileResolver = vi.fn(async () => false);
 
 const snapshot = (feedId: number): ThreadFeedSnapshot => ({
   ...threadStructure(7, {
-    profile: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 0 },
+    profile: {
+      account: 'peer',
+      domain: 'local',
+      namespaceId: 0,
+      profileRev: 0,
+    },
   }),
   threadId: 7,
   threadFeedId: feedId,
@@ -118,49 +123,6 @@ describe('thread feed executor', () => {
     expect(repeated).not.toHaveBeenCalled();
   });
 
-  it('coalesces queued wakes and does not automatically retry a failed run', async () => {
-    const tasks: Array<() => Promise<void>> = [];
-    const run = vi.fn().mockResolvedValue(undefined);
-    const wake = coalesceThreadFeedWakes((task) => tasks.push(task), run);
-    wake(2);
-    wake(5);
-    wake(3);
-    expect(tasks).toHaveLength(1);
-    await tasks.shift()!();
-    expect(run).toHaveBeenCalledWith(5);
-    expect(tasks).toHaveLength(0);
-    run.mockRejectedValueOnce(new Error('offline'));
-    wake(5);
-    await expect(tasks.shift()!()).rejects.toThrow('offline');
-    expect(tasks).toHaveLength(0);
-    wake(5);
-    expect(tasks).toHaveLength(1);
-  });
-
-  it('preserves a wake arriving while a drain is in flight', async () => {
-    const tasks: Array<() => Promise<void>> = [];
-    let finish!: () => void;
-    const run = vi
-      .fn()
-      .mockImplementationOnce(
-        () =>
-          new Promise<void>((resolve) => {
-            finish = resolve;
-          }),
-      )
-      .mockResolvedValue(undefined);
-    const wake = coalesceThreadFeedWakes((task) => tasks.push(task), run);
-    wake(2);
-    const running = tasks.shift()!();
-    wake(3);
-    wake(7);
-    expect(tasks).toHaveLength(0);
-    finish();
-    await running;
-    expect(tasks).toHaveLength(1);
-    await tasks.shift()!();
-    expect(run.mock.calls.map(([target]) => target)).toEqual([2, 7]);
-  });
   it('owns pagination, follows the new head, and coalesces committed snapshots by thread', async () => {
     const db = storage();
     const request = vi

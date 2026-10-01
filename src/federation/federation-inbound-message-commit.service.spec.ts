@@ -62,7 +62,7 @@ describe('FederationInboundMessageCommitService', () => {
       expect(apply).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
-          sourceNamespaceId: 9,
+          publisherNamespaceId: 9,
           messageSeq: 7,
           type,
           authority: 'GROUP_MEMBER',
@@ -71,7 +71,7 @@ describe('FederationInboundMessageCommitService', () => {
     },
   );
 
-  it('finalizes materialization within the immutable source namespace', async () => {
+  it('finalizes materialization within the immutable publisher namespace', async () => {
     const service = Object.create(
       FederationInboundMessageCommitService.prototype,
     ) as FederationInboundMessageCommitService;
@@ -85,7 +85,7 @@ describe('FederationInboundMessageCommitService', () => {
     });
 
     const query = dialect.sqlToQuery(tx.execute.mock.calls[0]![0] as SQL);
-    expect(query.sql).toContain('staged."sourceNamespaceId"');
+    expect(query.sql).toContain('staged."publisherNamespaceId"');
     expect(query.params).toContain(22);
   });
 });

@@ -18,8 +18,10 @@ export class ContactCardProfileService {
     return this.database.db.query.profileTable.findFirst({
       where: and(
         eq(profileTable.account, target.account),
-        eq(profileTable.domain, target.domain),
-        eq(profileTable.publisherNamespaceId, target.domain === 'local' ? 0 : target.namespaceId),
+        eq(
+          profileTable.publisherNamespaceId,
+          target.namespaceId === 0 ? 0 : target.namespaceId,
+        ),
         eq(profileTable.profileNamespaceId, target.namespaceId),
         eq(profileTable.profileRev, target.profileRev),
       ),

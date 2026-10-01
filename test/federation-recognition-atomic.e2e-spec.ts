@@ -13,7 +13,6 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   identityNamespace,
-  peerStateFeedPullCursor,
 } from '../src/database/schema.js';
 import type { WellKnownDoc } from '../src/federation/discovery.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
@@ -39,10 +38,6 @@ describe('FederationRecognitionService atomic commit', () => {
   });
 
   async function cleanDomain() {
-    await database.pool.query(
-      'DELETE FROM "PeerStateFeedPullCursor" WHERE "peerDomain" = $1',
-      [domain],
-    );
     await database.pool.query(
       'DELETE FROM "IdentityNamespace" WHERE domain = $1',
       [domain],
@@ -110,12 +105,11 @@ describe('FederationRecognitionService atomic commit', () => {
       remoteServiceReachable: true,
       stateFeedEndId: 0n,
     });
-    expect(
-      await database.db
-        .select()
-        .from(peerStateFeedPullCursor)
-        .where(eq(peerStateFeedPullCursor.peerDomain, domain)),
-    ).toHaveLength(1);
+    // The drain progress lives on the epoch row itself; NULL is the
+    // never-bootstrapped marker the first state-feed pull resolves.
+    expect(await activeNamespace()).toMatchObject({
+      stateFeedPulledThrough: null,
+    });
   });
 
   it('rejects a conflicting sender-assigned local namespace on an existing recognition', async () => {
@@ -145,7 +139,7 @@ describe('FederationRecognitionService atomic commit', () => {
     });
   });
 
-  it('rolls back the recognition fact and cursors when namespace initialization fails', async () => {
+  it('rolls back the recognition fact when namespace initialization fails', async () => {
     const failingNamespaces = new FederationNamespaceService(database);
     const activateVerifiedInTx =
       failingNamespaces.activateVerifiedInTx.bind(failingNamespaces);
@@ -160,12 +154,6 @@ describe('FederationRecognitionService atomic commit', () => {
       service(failingNamespaces).acceptInbound(domain, document),
     ).rejects.toThrow('namespace initialization failed');
 
-    expect(
-      await database.db
-        .select()
-        .from(peerStateFeedPullCursor)
-        .where(eq(peerStateFeedPullCursor.peerDomain, domain)),
-    ).toEqual([]);
     expect(
       await database.db
         .select()

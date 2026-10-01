@@ -39,7 +39,10 @@
     "placeholder": "搜索用户、节点…",
     "hint": "输入以搜索用户和联邦节点",
     "empty": "无匹配",
-    "section": { "users": "用户", "peers": "联邦节点" }
+    "section": {
+      "users": "用户",
+      "peers": "联邦节点"
+    }
   },
   "roles": {
     "super": "超级管理员",
@@ -255,7 +258,10 @@
     "selectAll": "全选",
     "selectRow": "选择 {{name}}",
     "total": "共 {{count}} 条",
-    "tabs": { "users": "用户", "operators": "管理员" }
+    "tabs": {
+      "users": "用户",
+      "operators": "管理员"
+    }
   },
   "userDetail": {
     "back": "返回用户列表",
@@ -273,13 +279,19 @@
       "updatedAt": "更新时间",
       "bio": "简介"
     },
-    "group": { "name": "群组", "role": "角色", "joined": "加入时间" },
+    "group": {
+      "name": "群组",
+      "role": "角色",
+      "joined": "加入时间"
+    },
     "empty": {
       "groups": "无群组成员关系",
       "sessions": "无活跃会话",
       "push": "无推送设备"
     },
-    "push": { "deviceId": "设备 ID" }
+    "push": {
+      "deviceId": "设备 ID"
+    }
   },
   "userQuota": {
     "title": "个人额度",
@@ -334,7 +346,10 @@
       "expires": "过期"
     },
     "empty": "无活跃会话",
-    "tabs": { "users": "用户会话", "admins": "管理员会话" }
+    "tabs": {
+      "users": "用户会话",
+      "admins": "管理员会话"
+    }
   },
   "connections": {
     "title": "实时连接",
@@ -400,13 +415,19 @@
       "IOS": "iOS · FCM",
       "WEB": "Web Push"
     },
-    "tabs": { "devices": "设备", "config": "传输配置" }
+    "tabs": {
+      "devices": "设备",
+      "config": "传输配置"
+    }
   },
   "federation": {
     "title": "联邦",
     "desc": "对端服务器及其 Federation v1 双向认可生命周期。点开节点可查看认可事实、可达性与完整时间线。",
     "searchPlaceholder": "搜索域名",
-    "tabs": { "peers": "节点", "selfCheck": "自检" },
+    "tabs": {
+      "peers": "节点",
+      "selfCheck": "自检"
+    },
     "status": {
       "all": "全部",
       "available": "可用",
@@ -432,7 +453,8 @@
     "toast": {
       "blocked": "已屏蔽该对端——在取消屏蔽前拒绝联邦",
       "unblocked": "已取消屏蔽——下次连接将重新握手",
-      "namespaceActive": "当前命名空间已切换"
+      "reviewApproved": "身份审核已通过",
+      "reviewRejected": "身份审核已拒绝"
     },
     "total": "共 {{count}} 个对端",
     "empty": "暂无联邦对端",
@@ -459,22 +481,14 @@
       "title": "身份命名空间",
       "empty": "该对端暂无身份命名空间记录",
       "active": "当前",
-      "approve": "审核通过",
-      "setActive": "设为当前",
-      "newCandidate": "新建",
-      "confirmSetActive": "确认将命名空间 {{namespaceId}} 设为当前？普通流量会等待对端认可与可达性重新收敛。",
-      "confirmApproveCandidate": "确认审核通过该已验证命名空间候选并设为当前？普通流量会等待对端认可与可达性重新收敛。",
-      "candidate": {
-        "pending": "待审核",
-        "failed": "失败"
-      },
       "col": {
         "id": "命名空间",
-        "fingerprint": "根指纹",
         "peerAssigned": "对端分配本机 ns",
         "pinnedAt": "固定时间",
-        "retiredAt": "退役时间"
-      }
+        "retiredAt": "退役时间",
+        "rootKey": "固定的根公钥"
+      },
+      "retired": "已退役"
     },
     "selfCheck": {
       "title": "S2S 握手自检",
@@ -585,6 +599,31 @@
         "chainIncomplete": "信任链未到达可信根",
         "section": "证书"
       }
+    },
+    "reviews": {
+      "title": "身份审核",
+      "col": {
+        "kind": "到达类型",
+        "status": "状态",
+        "roots": "身份变更",
+        "arrivedAt": "到达时间"
+      },
+      "kind": {
+        "domain-rebind": "域名重绑定",
+        "root-rotation": "根密钥轮换"
+      },
+      "status": {
+        "pending": "待审核",
+        "approved": "已通过",
+        "rejected": "已拒绝"
+      },
+      "approve": "审核通过",
+      "reject": "拒绝",
+      "predecessorCheck": "前置密钥校验",
+      "predecessorOk": "对端成功解开基于固定根密钥的密封挑战",
+      "predecessorFailed": "前置密钥校验未通过，请查看详情",
+      "confirmApprove": "确认通过该{{kind}}到达？固定密钥将在单次提交内切换，普通流量随后重新收敛。",
+      "confirmReject": "确认拒绝该{{kind}}到达？当前固定的身份纪元将保持不变。"
     }
   },
   "logs": {

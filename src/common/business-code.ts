@@ -119,7 +119,10 @@ export enum BusinessCode {
   FEDERATION_MESSAGE_QUERY_RATE_LIMITED = 50024, // HTTP 200 + { retryAfter }; query cursor is unchanged
   FEDERATION_MESSAGE_QUERY_TEMPORARILY_UNAVAILABLE = 50025, // HTTP 200 + { retryAfter }; peer is not degraded
   FEDERATION_NAMESPACE_INACTIVE = 50026, // local client attempted to write to a thread owned by an archived namespace
-  FEDERATION_DOMAIN_CHANGE_REJECTED = 50028, // administrator rejected a verified domain re-binding candidate
+  FEDERATION_DOMAIN_CONFLICT = 50027, // the presented domain is bound to another peer identity or is pending on one; not fatal for the existing relationship
+  FEDERATION_DOMAIN_CHANGE_REJECTED = 50028, // administrator rejected a verified domain re-binding candidate; fatal for the relationship
+  FEDERATION_ROOT_CHANGE_REJECTED = 50029, // administrator rejected a verified root rotation arrival; operation-level, the pin and lifecycle are retained
+  FEDERATION_PUBLIC_KEY_UNRECOGNIZED = 50030, // the supplied public key is not part of this server's retained key history (sealed-challenge service)
 
   // 60xxx settings (admin-managed runtime config)
 

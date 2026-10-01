@@ -64,7 +64,7 @@ export async function resolveAuthorizedFederationThreadInTx(
        AND intent."receiverNamespaceId" = pair."endpointBNamespaceId"
       LEFT JOIN "ThreadAudience" audience
         ON audience."threadId" = thread.id
-       AND audience."targetDomain" = ${peerDomain}
+       AND audience."targetNamespaceId" = ${namespaceId}
        AND audience."targetNamespaceId" = ${namespaceId}
        AND audience."localUserId" IS NULL
       WHERE thread.type = 'GROUP'
@@ -155,7 +155,7 @@ export async function resolveAuthorizedFederationThreadInTx(
            AND intent."receiverNamespaceId" = pair."endpointBNamespaceId"
           LEFT JOIN "ThreadAudience" audience
             ON audience."threadId" = thread.id
-           AND audience."targetDomain" = ${peerDomain}
+           AND audience."targetNamespaceId" = ${namespaceId}
            AND audience."targetNamespaceId" = ${namespaceId}
            AND audience."localUserId" IS NULL
           WHERE pair.kind = 'P2P'

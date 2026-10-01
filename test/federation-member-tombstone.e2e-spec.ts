@@ -50,7 +50,7 @@ describe('member-home tombstone authority', () => {
   beforeEach(async () => {
     await truncateTablesForTest(
       database.pool,
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer", "DurableTask" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
     );
     namespaceId = await seedFederatedPeerNamespace(database.db, peerDomain);
     const [group] = await database.db

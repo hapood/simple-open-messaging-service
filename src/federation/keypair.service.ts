@@ -6,13 +6,13 @@ import {
   OnApplicationShutdown,
 } from '@nestjs/common';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { createHash, randomBytes } from 'node:crypto';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { randomBytes } from 'node:crypto';
+import { eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import {
-  localFederationIdentity,
+  localFederationRoot,
   localFederationSigningKey,
   localFederationSigningState,
 } from '../database/schema.js';
@@ -22,8 +22,10 @@ import {
 } from './federation.config.js';
 import {
   signingCertificateStatement,
+  type RootKeyEntry,
   type SigningKeyCertificate,
 } from './federation-certificate.js';
+import { openSealedBox } from './sealed-box.js';
 
 export type LocalFederationIdentityStatus =
   | { available: true }
@@ -32,6 +34,7 @@ export type LocalFederationIdentityStatus =
 /** In-memory view of one local signing-key row (epoch milliseconds everywhere). */
 interface LocalSigningKeyRow {
   keyId: string;
+  rootId: number;
   publicKey: string;
   privateKey: string;
   createdAt: number;
@@ -39,12 +42,30 @@ interface LocalSigningKeyRow {
   notAfter: number;
 }
 
+/** In-memory view of one local root-identity epoch. */
+interface LocalRootRow {
+  id: number;
+  domain: string;
+  rootPublicKey: string;
+  rootPrivateKey: string;
+  notBefore: number;
+  notAfter: number;
+  claimable: boolean;
+  unpublishedAt: number | null;
+}
+
+/** Result of an administrator-triggered root rotation. */
+export interface RootRotationResult {
+  previousRootId: number;
+  newRootId: number;
+  newRootPublicKey: string;
+}
+
 /** Immutable snapshot of the database-backed local identity, cached for the synchronous getters. */
 interface LocalKeySnapshot {
   identityDomain: string;
-  rootPublicKeyB64: string;
-  rootPrivateKeyB64: string;
-  rootKeyFingerprint: string;
+  roots: Map<number, LocalRootRow>;
+  claimableRootId: number;
   keys: Map<string, LocalSigningKeyRow>;
   currentKeyId: string;
   plannedSwitchAt: number | null;
@@ -53,8 +74,9 @@ interface LocalKeySnapshot {
 
 /**
  * Named transaction-scoped advisory lock serializing every local key-lifecycle mutation
- * (bootstrap, switch, recovery planning, cleanup). Bootstrap cannot lock the state row
- * because that row does not exist yet; one named lock keeps a single acquisition order.
+ * (bootstrap, switch, root rotation, recovery planning, predecessor unpublishing).
+ * Bootstrap cannot lock the state row because that row does not exist yet; one named
+ * lock keeps a single acquisition order.
  */
 const KEY_LIFECYCLE_LOCK = sql`SELECT pg_advisory_xact_lock(907301)`;
 
@@ -64,16 +86,26 @@ const fromB64 = (value: string): Uint8Array =>
   Uint8Array.from(Buffer.from(value, 'base64'));
 const normalizeDomain = (domain: string): string =>
   domain.trim().toLowerCase().replace(/\.+$/, '');
-const isValidAt = (key: LocalSigningKeyRow, now: number): boolean =>
-  key.notBefore <= now && now < key.notAfter;
+const isValidAt = (
+  key: { notBefore: number; notAfter: number },
+  now: number,
+): boolean => key.notBefore <= now && now < key.notAfter;
 
 /**
- * Owns this installation's immutable S2S root identity, its signing-key set, and the
+ * Owns this installation's root-identity epochs, their signing-key sets, and the
  * database-backed rotation lifecycle. Exactly one key is selected for new outbound
- * signatures at any instant; during a rotation the predecessor stays published and valid
- * for verification until its advertised notAfter, then is removed with its private
- * material. Private key material is stored unencrypted: database access control is the
+ * signatures at any instant; during a signing-key rotation the predecessor stays
+ * published and valid for verification until its advertised notAfter. Root epochs
+ * and signing keys — private material included — are retained forever: sealed
+ * challenges under retired keys must stay openable (Transport and Security 1.5).
+ * Private key material is stored unencrypted: database access control is the
  * secret boundary.
+ *
+ * A root rotation switches claim to a successor epoch immediately; predecessor-
+ * authorized certificates are removed from the published set in the same commit,
+ * which is the revocation channel. The predecessor root entry stays published
+ * until an operator unpublishes it after every recognized peer adopted the
+ * rotation.
  *
  * The snapshot is refreshed by the maintenance tick — at most every 30s, and earlier
  * when a persisted lifecycle event (successor prepublication, planned switch,
@@ -122,7 +154,7 @@ export class KeypairService
       this.status = { available: true };
       this.scheduleNextMaintenance();
       this.logger.log(
-        `Loaded S2S identity ${this.getKeyId()} (${this.getRootKeyFingerprint()}) from the database`,
+        `Loaded S2S identity ${this.getKeyId()} under root ${this.getRootPublicKeyB64().slice(0, 12)}… from the database`,
       );
     } catch (error) {
       this.snapshot = undefined;
@@ -158,60 +190,247 @@ export class KeypairService
     return this.activeSigningKey().publicKey;
   }
 
+  /** The claimable root public key — the value claimed in outbound S2S-Root-Key. */
   getRootPublicKeyB64(): string {
     this.assertAvailable();
-    return this.snapshot!.rootPublicKeyB64;
+    return this.claimableRoot().rootPublicKey;
   }
 
-  /** Certificates published in /.well-known/somfp: every key still inside its advertised
-   *  validity, ordered deterministically. The planned successor is published before first
-   *  use; the predecessor stays published until its notAfter. */
+  /** The published roots group (Transport and Security 1.1): every root epoch not
+   *  yet unpublished, deterministically ordered. A rotated-out predecessor stays
+   *  listed until an operator unpublishes it after peer adoption. */
+  getRootGroup(): RootKeyEntry[] {
+    this.assertAvailable();
+    const snapshot = this.snapshot!;
+    return [...snapshot.roots.values()]
+      .filter((root) => root.unpublishedAt === null)
+      .sort((a, b) => a.notBefore - b.notBefore || a.id - b.id)
+      .map((root) => ({
+        ed25519: root.rootPublicKey,
+        notBefore: root.notBefore,
+        notAfter: root.notAfter,
+      }));
+  }
+
+  /** All local root epochs, including unpublished ones, for the admin console.
+   *  Never served on the wire. */
+  getRootEpochs(): Array<
+    LocalRootRow & { signingKeyCount: number; claimableKeyCount: number }
+  > {
+    this.assertAvailable();
+    const snapshot = this.snapshot!;
+    return [...snapshot.roots.values()]
+      .sort((a, b) => b.id - a.id)
+      .map((root) => {
+        const keys = [...snapshot.keys.values()].filter(
+          (key) => key.rootId === root.id,
+        );
+        const now = Date.now();
+        return {
+          ...root,
+          signingKeyCount: keys.length,
+          claimableKeyCount: keys.filter(
+            (key) =>
+              key.notAfter > now && root.claimable && root.unpublishedAt === null,
+          ).length,
+        };
+      });
+  }
+
+  /** Certificates published in /.well-known/somfp keys[]: every key still inside
+   *  its advertised validity whose authorizing root is the claimable epoch. The
+   *  planned successor is published before first use; the predecessor stays
+   *  published until its notAfter. After a root rotation only
+   *  successor-authorized certificates remain — their removal is the revocation
+   *  channel. */
   getSigningKeyCertificates(): SigningKeyCertificate[] {
     this.assertAvailable();
     const snapshot = this.snapshot!;
     const now = Date.now();
-    const rootPrivateKey = fromB64(snapshot.rootPrivateKeyB64);
     return [...snapshot.keys.values()]
-      .filter((key) => key.notAfter > now)
+      .filter((key) => {
+        const root = snapshot.roots.get(key.rootId);
+        return (
+          root !== undefined && root.claimable && key.notAfter > now
+        );
+      })
       .sort((a, b) => a.notBefore - b.notBefore || (a.keyId < b.keyId ? -1 : 1))
-      .map((key) => {
-        const unsigned = {
-          keyId: key.keyId,
-          ed25519: key.publicKey,
-          notBefore: key.notBefore,
-          notAfter: key.notAfter,
-        };
-        return {
-          ...unsigned,
-          authorizationSignature: Buffer.from(
-            ed25519.sign(
-              Buffer.from(signingCertificateStatement(unsigned)),
-              rootPrivateKey,
-            ),
-          ).toString('base64'),
-        };
-      });
+      .map((key) => this.toCertificate(key, snapshot));
   }
 
   getCreatedAt(): number {
     return this.activeSigningKey().createdAt;
   }
 
-  getRootKeyFingerprint(): string {
-    this.assertAvailable();
-    return this.snapshot!.rootKeyFingerprint;
+  /** Look up a retained private key by its public counterpart — root or signing
+   *  key, current or retired — for the sealed-challenge oracle. Unknown keys
+   *  return null. */
+  getRetainedPrivateKey(publicKeyB64: string): Uint8Array | null {
+    if (!this.status.available) return null;
+    const snapshot = this.snapshot!;
+    for (const root of snapshot.roots.values()) {
+      if (root.rootPublicKey === publicKeyB64) return fromB64(root.rootPrivateKey);
+    }
+    for (const key of snapshot.keys.values()) {
+      if (key.publicKey === publicKeyB64) return fromB64(key.privateKey);
+    }
+    return null;
   }
 
-  private async tick(): Promise<void> {
-    try {
-      await this.maintainRotation();
-    } catch (error) {
-      this.logger.warn(
-        `S2S signing-key maintenance failed: ${(error as Error).message}`,
+  /** Whether a public key belongs to this server's retained key history. */
+  isRetainedPublicKey(publicKeyB64: string): boolean {
+    return this.getRetainedPrivateKey(publicKeyB64) !== null;
+  }
+
+  /** Validate and open one card lookup challenge (Profiles 2.1/3): the
+   *  `publicKey` names a retained key, `challenge` is a sealed box under it.
+   *  Returns the recovered plaintext exactly; throws the wire-mapped
+   *  business errors for unrecognized keys and malformed challenges. */
+  openCardChallenge(publicKey: string, challenge: string): string {
+    if (
+      !/^[A-Za-z0-9+/]{43}=$/.test(publicKey) ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(challenge) ||
+      challenge.length < 48 ||
+      challenge.length > 8192
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'malformed card challenge parameters',
+        HttpStatus.BAD_REQUEST,
       );
-    } finally {
-      this.scheduleNextMaintenance();
     }
+    const privateKey = this.getRetainedPrivateKey(publicKey);
+    if (!privateKey) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PUBLIC_KEY_UNRECOGNIZED,
+        'the supplied public key is not part of this server\'s retained key history',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const opened = openSealedBox(
+      Uint8Array.from(Buffer.from(challenge, 'base64')),
+      privateKey,
+    );
+    if (!opened || opened.length > 4096) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'the card challenge does not open under the supplied key',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return Buffer.from(opened).toString('utf8');
+  }
+
+  /**
+   * Administrator-triggered root rotation (immediate cutover). Generates a
+   * successor root epoch with a fresh signing key, flips claim in one
+   * transaction, and leaves the predecessor published (but no longer
+   * authorizing any published certificate) for peers that have not adopted
+   * yet. The caller must operator-verify predecessor possession evidence
+   * before invoking this on the receiving side; on the rotating side this is
+   * the deliberate act itself.
+   */
+  async rotateRoot(): Promise<RootRotationResult> {
+    this.assertAvailable();
+    const domain = normalizeDomain(this.config.domain);
+    return this.database.db.transaction(async (tx) => {
+      await tx.execute(KEY_LIFECYCLE_LOCK);
+      const snapshot = await this.reloadSnapshot(tx, domain);
+      if (!snapshot) throw new Error('local identity rows disappeared');
+      const previous = this.claimableRootOf(snapshot);
+      const now = Date.now();
+      const rootPrivateKey = ed25519.utils.randomSecretKey();
+      const rootPublicKey = ed25519.getPublicKey(rootPrivateKey);
+      const rootPublicKeyB64 = b64(rootPublicKey);
+      const rootNotAfter = now + this.config.rootKey.lifetimeMs;
+      const [insertedRoot] = await tx
+        .insert(localFederationRoot)
+        .values({
+          domain,
+          rootPublicKey: rootPublicKeyB64,
+          rootPrivateKey: b64(rootPrivateKey),
+          notBefore: new Date(now),
+          notAfter: new Date(rootNotAfter),
+          claimable: true,
+        })
+        .returning({ id: localFederationRoot.id });
+      if (!insertedRoot) throw new Error('root epoch insert returned no row');
+      const initial = this.generateSigningKey(
+        insertedRoot.id,
+        domain,
+        now,
+        Math.min(
+          now + this.config.signingKey.lifetimeMs,
+          rootNotAfter,
+        ),
+      );
+      await this.insertSigningKey(tx, initial);
+      await tx
+        .update(localFederationRoot)
+        .set({ claimable: false })
+        .where(eq(localFederationRoot.id, previous.id));
+      await tx
+        .update(localFederationSigningState)
+        .set({
+          currentKeyId: initial.keyId,
+          plannedSwitchAt: null,
+          plannedSuccessorKeyId: null,
+          updatedAt: new Date(now),
+        })
+        .where(eq(localFederationSigningState.domain, domain));
+      const next = await this.reloadSnapshot(tx, domain);
+      if (!next) throw new Error('local identity rows disappeared');
+      this.snapshot = next;
+      this.logger.warn(
+        `Rotated S2S root identity: ${previous.rootPublicKey.slice(0, 12)}… -> ${rootPublicKeyB64.slice(0, 12)}…; predecessor-authorized certificates are revoked by this switch`,
+      );
+      return {
+        previousRootId: previous.id,
+        newRootId: insertedRoot.id,
+        newRootPublicKey: rootPublicKeyB64,
+      };
+    });
+  }
+
+  /**
+   * Remove a rotated-out root from the published roots group. Only legal after
+   * every recognized peer adopted the rotation (or the rotation is abandoned);
+   * refuses to unpublish the claimable root and any still-valid root.
+   */
+  async unpublishRoot(rootId: number): Promise<void> {
+    this.assertAvailable();
+    const domain = normalizeDomain(this.config.domain);
+    await this.database.db.transaction(async (tx) => {
+      await tx.execute(KEY_LIFECYCLE_LOCK);
+      const snapshot = await this.reloadSnapshot(tx, domain);
+      if (!snapshot) throw new Error('local identity rows disappeared');
+      const root = snapshot.roots.get(rootId);
+      if (!root) throw new Error(`root epoch ${rootId} does not exist`);
+      if (root.claimable) {
+        throw new Error('the claimable root cannot be unpublished');
+      }
+      if (root.notAfter > Date.now()) {
+        throw new Error(
+          'a still-valid predecessor root must stay published until peers adopted the rotation; rotate first, then unpublish after adoption',
+        );
+      }
+      await tx
+        .update(localFederationRoot)
+        .set({ unpublishedAt: new Date() })
+        .where(eq(localFederationRoot.id, rootId));
+      const next = await this.reloadSnapshot(tx, domain);
+      if (next) this.snapshot = next;
+    });
+  }
+
+  private tick(): Promise<void> {
+    return this.maintainRotation()
+      .catch((error) => {
+        this.logger.warn(
+          `S2S signing-key maintenance failed: ${(error as Error).message}`,
+        );
+      })
+      .finally(() => this.scheduleNextMaintenance());
   }
 
   /** Self-scheduling maintenance: at most 30s between ticks, and sooner when the
@@ -230,9 +449,9 @@ export class KeypairService
 
   /** Milliseconds until the next tick: the earliest upcoming lifecycle event minus a
    *  small margin, capped at 30s, floored to keep an already-due event prompt. Events
-   * observed from the snapshot: the successor-planning deadline for the current key,
-   * the planned switch time, each predecessor's advertised notAfter (row cleanup),
-   * and the current key's own expiry (expired-current recovery). */
+   *  observed from the snapshot: the successor-planning deadline for the current key,
+   *  the planned switch time, the claimable root's expiry, and the current key's own
+   *  expiry (expired-current recovery). */
   private nextMaintenanceDelay(): number {
     const CAP_MS = 30_000;
     const MARGIN_MS = 250;
@@ -241,6 +460,8 @@ export class KeypairService
     const now = Date.now();
     if (!snapshot) return CAP_MS;
     const events: number[] = [];
+    const claimableRoot = this.claimableRootOf(snapshot);
+    events.push(claimableRoot.notAfter);
     const current = snapshot.keys.get(snapshot.currentKeyId);
     if (current) {
       events.push(current.notAfter);
@@ -254,43 +475,37 @@ export class KeypairService
     }
     if (snapshot.plannedSwitchAt !== null)
       events.push(snapshot.plannedSwitchAt);
-    for (const key of snapshot.keys.values()) {
-      if (
-        key.keyId !== snapshot.currentKeyId &&
-        key.keyId !== snapshot.plannedSuccessorKeyId
-      ) {
-        events.push(key.notAfter);
-      }
-    }
     if (events.some((time) => time <= now)) return FLOOR_MS;
     const next = Math.min(CAP_MS, Math.min(...events) - now - MARGIN_MS);
     return Math.max(FLOOR_MS, next);
   }
 
   /**
-   * Loads the identity row or bootstraps a fresh one. When federation history exists but
-   * the identity row is missing, startup fails closed instead of silently replacing a
-   * pinned identity.
+   * Loads the identity epochs or bootstraps a fresh one. When federation history
+   * exists but the root table is empty, startup fails closed instead of silently
+   * replacing a pinned identity.
    */
   private async bootstrapOrLoad(): Promise<boolean> {
     const domain = normalizeDomain(this.config.domain);
     return this.database.db.transaction(async (tx) => {
       await tx.execute(KEY_LIFECYCLE_LOCK);
-      const anchor = await tx.query.localFederationIdentity.findFirst();
-      if (anchor) {
-        if (normalizeDomain(anchor.domain) !== domain) {
-          this.disable(
-            `SOMS_DOMAIN=${domain} does not match the database identity domain=${anchor.domain}`,
-          );
-          return false;
-        }
-        this.snapshot = await this.loadSnapshot(tx, anchor);
+      const snapshot = await this.reloadSnapshot(tx, domain);
+      if (snapshot) {
+        this.snapshot = snapshot;
         return true;
+      }
+
+      const foreignRoot = await tx.query.localFederationRoot.findFirst();
+      if (foreignRoot && normalizeDomain(foreignRoot.domain) !== domain) {
+        this.disable(
+          `SOMS_DOMAIN=${domain} does not match the database identity domain=${foreignRoot.domain}`,
+        );
+        return false;
       }
 
       if (await this.hasFederationHistory(tx)) {
         this.disable(
-          'federation history exists but the local identity row is missing; restore the database from backup',
+          'federation history exists but the local root-identity rows are missing; restore the database from backup',
         );
         return false;
       }
@@ -302,43 +517,63 @@ export class KeypairService
     });
   }
 
-  private async loadSnapshot(
+  /** Reload every root epoch and signing-key row; null when the tables are empty. */
+  private async reloadSnapshot(
     tx: Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0],
-    anchor: {
-      domain: string;
-      rootKeyFingerprint: string;
-      rootPublicKey: string;
-      rootPrivateKey: string;
-    },
-  ): Promise<LocalKeySnapshot> {
-    const rootPublicKey = anchor.rootPublicKey;
-    const rootPrivateKey = anchor.rootPrivateKey;
-    const derived = Buffer.from(
-      ed25519.getPublicKey(fromB64(rootPrivateKey)),
-    ).toString('base64');
-    if (derived !== rootPublicKey) {
-      throw new Error('stored root public key does not match its private key');
-    }
-    const fingerprint = this.fingerprint(rootPublicKey);
-    if (fingerprint !== anchor.rootKeyFingerprint) {
-      throw new Error(
-        'stored root key fingerprint does not match key material',
-      );
-    }
-
-    const keys = await this.loadKeyRows(tx, anchor.domain);
+    domain: string,
+  ): Promise<LocalKeySnapshot | null> {
+    const roots = await tx.query.localFederationRoot.findMany();
+    const keys = await tx.query.localFederationSigningKey.findMany();
     const state = await tx.query.localFederationSigningState.findFirst();
-    if (!state || normalizeDomain(state.domain) !== anchor.domain) {
+    const rootRows = new Map<number, LocalRootRow>();
+    let claimableRootId: number | null = null;
+    for (const row of roots) {
+      if (normalizeDomain(row.domain) !== domain) continue;
+      rootRows.set(row.id, {
+        id: row.id,
+        domain: row.domain,
+        rootPublicKey: row.rootPublicKey,
+        rootPrivateKey: row.rootPrivateKey,
+        notBefore: row.notBefore.getTime(),
+        notAfter: row.notAfter.getTime(),
+        claimable: row.claimable,
+        unpublishedAt: row.unpublishedAt?.getTime() ?? null,
+      });
+      if (row.claimable) {
+        if (claimableRootId !== null) {
+          throw new Error('multiple claimable root epochs found');
+        }
+        claimableRootId = row.id;
+      }
+    }
+    if (rootRows.size === 0) return null;
+    if (claimableRootId === null) {
+      throw new Error('no claimable root epoch found');
+    }
+    if (!state || normalizeDomain(state.domain) !== domain) {
       throw new Error('local signing selection state is missing');
     }
-    if (!keys.has(state.currentKeyId)) {
+    const keyRows = new Map<string, LocalSigningKeyRow>();
+    for (const row of keys) {
+      if (!rootRows.has(row.rootId)) continue;
+      keyRows.set(row.keyId, {
+        keyId: row.keyId,
+        rootId: row.rootId,
+        publicKey: row.publicKey,
+        privateKey: row.privateKey,
+        createdAt: row.createdAt.getTime(),
+        notBefore: row.notBefore.getTime(),
+        notAfter: row.notAfter.getTime(),
+      });
+    }
+    if (!keyRows.has(state.currentKeyId)) {
       throw new Error('current signing key row is missing');
     }
-    if (state.plannedSuccessorKeyId && !keys.has(state.plannedSuccessorKeyId)) {
+    if (state.plannedSuccessorKeyId && !keyRows.has(state.plannedSuccessorKeyId)) {
       throw new Error('planned successor signing key row is missing');
     }
     if (state.plannedSuccessorKeyId) {
-      const successor = keys.get(state.plannedSuccessorKeyId)!;
+      const successor = keyRows.get(state.plannedSuccessorKeyId)!;
       if (
         state.plannedSwitchAt === null ||
         successor.notBefore + this.config.signingKey.clockSkewBudgetMs >
@@ -347,12 +582,14 @@ export class KeypairService
         throw new Error('planned switch violates the clock-skew budget');
       }
     }
+    if (keyRows.get(state.currentKeyId)!.rootId !== claimableRootId) {
+      throw new Error('current signing key is not authorized by the claimable root');
+    }
     return {
-      identityDomain: anchor.domain,
-      rootPublicKeyB64: rootPublicKey,
-      rootPrivateKeyB64: rootPrivateKey,
-      rootKeyFingerprint: fingerprint,
-      keys,
+      identityDomain: domain,
+      roots: rootRows,
+      claimableRootId,
+      keys: keyRows,
       currentKeyId: state.currentKeyId,
       plannedSwitchAt: state.plannedSwitchAt?.getTime() ?? null,
       plannedSuccessorKeyId: state.plannedSuccessorKeyId ?? null,
@@ -363,25 +600,32 @@ export class KeypairService
     tx: Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0],
     domain: string,
   ): Promise<LocalKeySnapshot> {
+    const now = Date.now();
+    const rootNotAfter = now + this.config.rootKey.lifetimeMs;
     const rootPrivateKey = ed25519.utils.randomSecretKey();
     const rootPublicKey = ed25519.getPublicKey(rootPrivateKey);
     const rootPublicKeyB64 = b64(rootPublicKey);
-    const fingerprint = this.fingerprint(rootPublicKeyB64);
-    const now = Date.now();
+
+    const [insertedRoot] = await tx
+      .insert(localFederationRoot)
+      .values({
+        domain,
+        rootPublicKey: rootPublicKeyB64,
+        rootPrivateKey: b64(rootPrivateKey),
+        notBefore: new Date(now),
+        notAfter: new Date(rootNotAfter),
+        claimable: true,
+      })
+      .returning({ id: localFederationRoot.id });
+    if (!insertedRoot) throw new Error('root epoch insert returned no row');
+
     const initial = this.generateSigningKey(
+      insertedRoot.id,
       domain,
       now,
-      now + this.config.signingKey.lifetimeMs,
+      Math.min(now + this.config.signingKey.lifetimeMs, rootNotAfter),
     );
-
-    await tx.insert(localFederationIdentity).values({
-      domain,
-      rootKeyFingerprint: fingerprint,
-      rootPublicKey: rootPublicKeyB64,
-      rootPrivateKey: b64(rootPrivateKey),
-      createdAt: new Date(now),
-    });
-    await this.insertSigningKey(tx, domain, initial);
+    await this.insertSigningKey(tx, initial);
     await tx.insert(localFederationSigningState).values({
       domain,
       currentKeyId: initial.keyId,
@@ -390,36 +634,59 @@ export class KeypairService
       updatedAt: new Date(now),
     });
 
-    const keys = new Map([[initial.keyId, initial]]);
     return {
       identityDomain: domain,
-      rootPublicKeyB64: rootPublicKeyB64,
-      rootPrivateKeyB64: b64(rootPrivateKey),
-      rootKeyFingerprint: fingerprint,
-      keys,
+      roots: new Map([
+        [
+          insertedRoot.id,
+          {
+            id: insertedRoot.id,
+            domain,
+            rootPublicKey: rootPublicKeyB64,
+            rootPrivateKey: b64(rootPrivateKey),
+            notBefore: now,
+            notAfter: rootNotAfter,
+            claimable: true,
+            unpublishedAt: null,
+          },
+        ],
+      ]),
+      claimableRootId: insertedRoot.id,
+      keys: new Map([[initial.keyId, initial]]),
       currentKeyId: initial.keyId,
       plannedSwitchAt: null,
       plannedSuccessorKeyId: null,
     };
   }
 
-  /** Advances the rotation lifecycle: due switches, recovery from an expired current key,
-   *  successor planning, and expired-key cleanup. Mutations run in one transaction under
-   *  the key-lifecycle advisory lock, so concurrent instances cannot double-switch. */
+  /** Advances the signing-key rotation lifecycle: due switches, recovery from an
+   *  expired current key, successor planning. Mutations run in one transaction
+   *  under the key-lifecycle advisory lock, so concurrent instances cannot
+   *  double-switch. Expired key rows are never deleted: retained key history
+   *  keeps sealed challenges openable forever. */
   private async maintainRotation(): Promise<void> {
     const domain = normalizeDomain(this.config.domain);
     await this.database.db.transaction(async (tx) => {
       await tx.execute(KEY_LIFECYCLE_LOCK);
-      const keys = await this.loadKeyRows(tx, domain);
-      const state = await tx.query.localFederationSigningState.findFirst();
-      if (!state || normalizeDomain(state.domain) !== domain) {
-        throw new Error('local signing selection state is missing');
+      const snapshot = await this.reloadSnapshot(tx, domain);
+      if (!snapshot) throw new Error('local identity rows disappeared');
+      const claimableRoot = this.claimableRootOf(snapshot);
+      if (claimableRoot.notAfter <= Date.now()) {
+        throw new Error(
+          'the claimable root epoch has expired; rotate the root identity to restore signing',
+        );
       }
+      const keys = snapshot.keys;
+      const state = {
+        currentKeyId: snapshot.currentKeyId,
+        plannedSwitchAt: snapshot.plannedSwitchAt,
+        plannedSuccessorKeyId: snapshot.plannedSuccessorKeyId,
+      };
 
       const now = Date.now();
       let currentKeyId = state.currentKeyId;
-      let plannedSwitchAt = state.plannedSwitchAt?.getTime() ?? null;
-      let plannedSuccessorKeyId = state.plannedSuccessorKeyId ?? null;
+      let plannedSwitchAt = state.plannedSwitchAt;
+      let plannedSuccessorKeyId = state.plannedSuccessorKeyId;
       let changed = false;
 
       const currentKey = keys.get(currentKeyId);
@@ -449,14 +716,18 @@ export class KeypairService
         );
       } else if (currentExpired) {
         // No valid successor either (for example after a long outage): recover under the
-        // unchanged root with a fresh immediately-valid key. Peers refresh on key miss
+        // claimable root with a fresh immediately-valid key. Peers refresh on key miss
         // and accept it because the pinned root still authorizes it.
         const recovery = this.generateSigningKey(
+          claimableRoot.id,
           domain,
           now,
-          now + this.config.signingKey.lifetimeMs,
+          Math.min(
+            now + this.config.signingKey.lifetimeMs,
+            claimableRoot.notAfter,
+          ),
         );
-        await this.insertSigningKey(tx, domain, recovery);
+        await this.insertSigningKey(tx, recovery);
         keys.set(recovery.keyId, recovery);
         currentKeyId = recovery.keyId;
         plannedSwitchAt = null;
@@ -488,11 +759,15 @@ export class KeypairService
             this.config.signingKey.predecessorRetentionMs
         ) {
           const successor = this.generateSigningKey(
+            claimableRoot.id,
             domain,
             now,
-            now + this.config.signingKey.lifetimeMs,
+            Math.min(
+              now + this.config.signingKey.lifetimeMs,
+              claimableRoot.notAfter,
+            ),
           );
-          await this.insertSigningKey(tx, domain, successor);
+          await this.insertSigningKey(tx, successor);
           keys.set(successor.keyId, successor);
           plannedSuccessorKeyId = successor.keyId;
           plannedSwitchAt = Math.max(
@@ -506,47 +781,23 @@ export class KeypairService
         }
       }
 
-      // Remove expired keys with their private material. The current key and the planned
-      // successor are always retained; a predecessor stays until its advertised notAfter.
-      const retained = [
-        currentKeyId,
-        ...(plannedSuccessorKeyId ? [plannedSuccessorKeyId] : []),
-      ];
-      const expired = [...keys.values()].filter(
-        (key) => !retained.includes(key.keyId) && now >= key.notAfter,
-      );
-      if (expired.length > 0) {
-        await tx.delete(localFederationSigningKey).where(
-          and(
-            eq(localFederationSigningKey.domain, domain),
-            inArray(
-              localFederationSigningKey.keyId,
-              expired.map((key) => key.keyId),
-            ),
-          ),
-        );
-        for (const key of expired) keys.delete(key.keyId);
-      }
-
       if (changed) {
-        await tx.update(localFederationSigningState).set({
-          currentKeyId,
-          plannedSwitchAt:
-            plannedSwitchAt === null ? null : new Date(plannedSwitchAt),
-          plannedSuccessorKeyId,
-          updatedAt: new Date(now),
-        });
+        await tx
+          .update(localFederationSigningState)
+          .set({
+            currentKeyId,
+            plannedSwitchAt:
+              plannedSwitchAt === null ? null : new Date(plannedSwitchAt),
+            plannedSuccessorKeyId,
+            updatedAt: new Date(now),
+          })
+          .where(eq(localFederationSigningState.domain, domain));
       }
 
-      const root = await tx.query.localFederationIdentity.findFirst();
-      if (!root) {
-        throw new Error('local identity row disappeared');
-      }
       this.snapshot = {
         identityDomain: domain,
-        rootPublicKeyB64: root.rootPublicKey,
-        rootPrivateKeyB64: root.rootPrivateKey,
-        rootKeyFingerprint: root.rootKeyFingerprint,
+        roots: snapshot.roots,
+        claimableRootId: snapshot.claimableRootId,
         keys,
         currentKeyId,
         plannedSwitchAt,
@@ -555,33 +806,35 @@ export class KeypairService
     });
   }
 
-  private async loadKeyRows(
-    tx: Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0],
-    domain: string,
-  ): Promise<Map<string, LocalSigningKeyRow>> {
-    const rows = await tx.query.localFederationSigningKey.findMany();
-    const keys = new Map<string, LocalSigningKeyRow>();
-    for (const row of rows) {
-      if (row.domain !== domain) continue;
-      keys.set(row.keyId, {
-        keyId: row.keyId,
-        publicKey: row.publicKey,
-        privateKey: row.privateKey,
-        createdAt: row.createdAt.getTime(),
-        notBefore: row.notBefore.getTime(),
-        notAfter: row.notAfter.getTime(),
-      });
-    }
-    return keys;
+  private toCertificate(
+    key: LocalSigningKeyRow,
+    snapshot: LocalKeySnapshot,
+  ): SigningKeyCertificate {
+    const root = snapshot.roots.get(key.rootId)!;
+    const unsigned = {
+      keyId: key.keyId,
+      ed25519: key.publicKey,
+      root: root.rootPublicKey,
+      notBefore: key.notBefore,
+      notAfter: key.notAfter,
+    };
+    return {
+      ...unsigned,
+      authorizationSignature: Buffer.from(
+        ed25519.sign(
+          Buffer.from(signingCertificateStatement(unsigned)),
+          fromB64(root.rootPrivateKey),
+        ),
+      ).toString('base64'),
+    };
   }
 
   private async insertSigningKey(
     tx: Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0],
-    domain: string,
     key: LocalSigningKeyRow,
   ): Promise<void> {
     await tx.insert(localFederationSigningKey).values({
-      domain,
+      rootId: key.rootId,
       keyId: key.keyId,
       publicKey: key.publicKey,
       privateKey: key.privateKey,
@@ -592,6 +845,7 @@ export class KeypairService
   }
 
   private generateSigningKey(
+    rootId: number,
     domain: string,
     notBefore: number,
     notAfter: number,
@@ -602,6 +856,7 @@ export class KeypairService
     const keyId = `${domain}/k-${randomBytes(15).toString('base64url')}`;
     return {
       keyId,
+      rootId,
       publicKey: b64(publicKey),
       privateKey: b64(privateKey),
       createdAt: notBefore,
@@ -617,12 +872,15 @@ export class KeypairService
       SELECT
         EXISTS (SELECT 1 FROM "IdentityNamespace" WHERE id <> 0 LIMIT 1)
         OR EXISTS (SELECT 1 FROM "S2SKeyCache" LIMIT 1)
+        OR EXISTS (SELECT 1 FROM "LocalFederationSigningKey" LIMIT 1)
+        OR EXISTS (SELECT 1 FROM "LocalFederationSigningState" LIMIT 1)
         AS "hasHistory"
     `);
     return result.rows[0]?.hasHistory === true;
   }
 
-  /** The single key used for new outbound signatures; refuses to sign outside validity. */
+  /** The single key used for new outbound signatures; refuses to sign outside
+   *  validity and outside the claimable root's validity. */
   private activeSigningKey(): LocalSigningKeyRow {
     this.assertAvailable();
     const snapshot = this.snapshot!;
@@ -634,8 +892,9 @@ export class KeypairService
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
+    const root = snapshot.roots.get(key.rootId)!;
     const now = Date.now();
-    if (!isValidAt(key, now)) {
+    if (!isValidAt(key, now) || !isValidAt(root, now)) {
       throw new BusinessException(
         BusinessCode.FEDERATION_LOCAL_IDENTITY_LOST,
         `current signing key ${key.keyId} is outside its validity interval`,
@@ -645,10 +904,20 @@ export class KeypairService
     return key;
   }
 
-  private fingerprint(publicKeyB64: string): string {
-    return `sha256:${createHash('sha256')
-      .update(fromB64(publicKeyB64))
-      .digest('base64url')}`;
+  private claimableRoot(): LocalRootRow {
+    return this.claimableRootOf(this.snapshot!);
+  }
+
+  private claimableRootOf(snapshot: LocalKeySnapshot): LocalRootRow {
+    const root = snapshot.roots.get(snapshot.claimableRootId);
+    if (!root || !root.claimable) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_LOCAL_IDENTITY_LOST,
+        'claimable root epoch missing from local state',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+    return root;
   }
 
   private disable(reason: string): void {

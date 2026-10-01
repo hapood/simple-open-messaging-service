@@ -51,13 +51,13 @@ export class FederationPendingMediaPromoter {
         columns: {
           threadId: true,
           originSeq: true,
-          sourceNamespaceId: true,
+          publisherNamespaceId: true,
         },
       });
       if (
         !stagedIdentity ||
         stagedIdentity.originSeq === null ||
-        stagedIdentity.sourceNamespaceId !== batch.namespaceId
+        stagedIdentity.publisherNamespaceId !== batch.publisherNamespaceId
       ) {
         throw new Error(
           `inbound PendingMedia ${batchId} has an invalid Message STUB`,
@@ -67,7 +67,7 @@ export class FederationPendingMediaPromoter {
         tx,
         stagedIdentity.threadId,
         batch.originDomain,
-        batch.namespaceId,
+        batch.publisherNamespaceId,
         stagedIdentity.originSeq,
       );
       const currentJob = await tx.query.pendingMedia.findFirst({
@@ -91,16 +91,13 @@ export class FederationPendingMediaPromoter {
       if (
         stagedMessage.localState !== 'STUB' ||
         stagedMessage.originSeq === null ||
-        stagedMessage.sourceNamespaceId !== batch.namespaceId
+        stagedMessage.publisherNamespaceId !== batch.publisherNamespaceId
       ) {
         throw new Error(
           `inbound PendingMedia ${batchId} has an invalid Message STUB`,
         );
       }
-      if (
-        stagedMessage.creatorAccount === null ||
-        stagedMessage.creatorDomain === null
-      )
+      if (stagedMessage.creatorAccount === null)
         throw new Error('inbound media message has no author');
 
       // The captured authorization epoch governs admission and download. Once every file has been
@@ -110,8 +107,8 @@ export class FederationPendingMediaPromoter {
         where: and(
           eq(tables.federatedMessageTombstone.threadId, stagedMessage.threadId),
           eq(
-            tables.federatedMessageTombstone.sourceNamespaceId,
-            batch.namespaceId,
+            tables.federatedMessageTombstone.publisherNamespaceId,
+            batch.publisherNamespaceId,
           ),
           eq(
             tables.federatedMessageTombstone.messageSeq,
@@ -126,7 +123,7 @@ export class FederationPendingMediaPromoter {
         : await this.resolveQuoteSeq(
             tx,
             stagedMessage.threadId,
-            batch.namespaceId,
+            batch.publisherNamespaceId,
             batch.dependsOnOriginSeq,
           );
       let storedContent = stagedMessage.content;
@@ -178,7 +175,7 @@ export class FederationPendingMediaPromoter {
 
       return {
         threadId: stagedMessage.threadId,
-        sourceNamespaceId: batch.namespaceId,
+        publisherNamespaceId: batch.publisherNamespaceId,
         originSeq: stagedMessage.originSeq,
       };
     });
@@ -196,7 +193,7 @@ export class FederationPendingMediaPromoter {
           eq(tables.pendingMedia.direction, 'INBOUND'),
           inArray(tables.pendingMedia.status, ['pending', 'downloading']),
           eq(tables.message.threadId, effect.threadId),
-          eq(tables.pendingMedia.namespaceId, effect.sourceNamespaceId),
+          eq(tables.pendingMedia.publisherNamespaceId, effect.publisherNamespaceId),
           eq(tables.pendingMedia.dependsOnOriginSeq, effect.originSeq),
         ),
       );
@@ -228,7 +225,7 @@ export class FederationPendingMediaPromoter {
       .where(
         and(
           eq(tables.message.threadId, threadId),
-          eq(tables.message.sourceNamespaceId, namespaceId),
+          eq(tables.message.publisherNamespaceId, namespaceId),
           eq(tables.message.originSeq, sourceSeq),
         ),
       )

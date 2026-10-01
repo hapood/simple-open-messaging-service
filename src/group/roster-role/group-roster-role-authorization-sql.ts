@@ -47,10 +47,9 @@ export function groupRosterRoleAuthorizationSql(input: {
   threadId: number;
   operatorUserId: number;
   targetAccount: string;
-  targetDomain: string;
+  targetNamespaceId: number;
 }) {
   return sql`
-    WITH operator_account AS MATERIALIZED (
       SELECT id, account FROM "Account"
       WHERE id = ${input.operatorUserId} AND domain = 'local' AND "namespaceId" = 0
     ), operator_roster AS MATERIALIZED (
@@ -60,20 +59,18 @@ export function groupRosterRoleAuthorizationSql(input: {
         SELECT * FROM "GroupMetaMemberFeed"
         WHERE "threadId" = ${input.threadId}
           AND "memberAccount" = (SELECT account FROM operator_account)
-          AND "memberDomain" = 'local'
+          AND "profileNamespaceId" = 0
         ORDER BY "feedId" DESC LIMIT 1
       ) latest WHERE latest.operation = 'MEMBER_UPSERT'
     ), target_roster AS MATERIALIZED (
-      SELECT latest."memberAccount" AS account, latest."memberDomain" AS domain,
-        group_meta_member_namespace(latest."threadId", latest."memberAccount",
-          latest."memberDomain") AS "namespaceId",
+      SELECT latest."memberAccount" AS account, latest."profileNamespaceId" AS "namespaceId",
         latest.body ->> 'role' AS role,
         (latest.body ->> 'profileRev')::integer AS "profileRev"
       FROM (
         SELECT * FROM "GroupMetaMemberFeed"
         WHERE "threadId" = ${input.threadId}
           AND "memberAccount" = ${input.targetAccount}
-          AND "memberDomain" = ${input.targetDomain}
+          AND "profileNamespaceId" = ${input.targetNamespaceId}
         ORDER BY "feedId" DESC LIMIT 1
       ) latest WHERE latest.operation = 'MEMBER_UPSERT'
     )
@@ -94,7 +91,7 @@ export function groupRosterRoleAuthorizationSql(input: {
           AND participant."accountId" = operator.id
       ) AS "operatorAuthorized",
       target_roster.account AS "targetAccount",
-      target_roster.domain AS "targetDomain",
+      target_namespace.domain AS "targetDomain",
       target_roster."namespaceId" AS "targetNamespaceId",
       target_roster.role AS "targetRole",
       target_roster."profileRev" AS "targetProfileRev",
@@ -110,7 +107,9 @@ export function groupRosterRoleAuthorizationSql(input: {
     LEFT JOIN operator_account operator ON true
     LEFT JOIN operator_roster ON true
     LEFT JOIN target_roster ON true
-    LEFT JOIN "Account" local_target ON target_roster.domain = 'local'
+    LEFT JOIN "IdentityNamespace" target_namespace
+      ON target_namespace.id = target_roster."namespaceId"
+    LEFT JOIN "Account" local_target ON target_roster."namespaceId" = 0
       AND local_target.account = target_roster.account
       AND local_target.domain = 'local' AND local_target."namespaceId" = 0
     WHERE g.id = ${input.threadId}

@@ -90,7 +90,7 @@ export class AuthoritativeMembershipFinalizerService {
     } else if (params.active) {
       audienceChanged = await openFederatedAudienceInTx(
         tx,
-        member.domain,
+        member.namespaceId,
         params.threadId,
         metaEndId,
       );
@@ -117,7 +117,7 @@ export class AuthoritativeMembershipFinalizerService {
       `);
       audienceChanged = activePeerMembership.rows[0]?.active
         ? false
-        : await closeFederatedAudienceInTx(tx, member.domain, params.threadId);
+        : await closeFederatedAudienceInTx(tx, member.namespaceId, params.threadId);
     }
 
     // Removing an authoritative audience does not invalidate thread-wide rounds.
@@ -139,7 +139,6 @@ export class AuthoritativeMembershipFinalizerService {
     const inserted = await tx
       .insert(threadAudience)
       .values({
-        targetDomain: 'local',
         targetNamespaceId: 0,
         localUserId,
         threadId,
@@ -147,11 +146,10 @@ export class AuthoritativeMembershipFinalizerService {
       })
       .onConflictDoNothing({
         target: [
-          threadAudience.targetDomain,
           threadAudience.localUserId,
           threadAudience.threadId,
         ],
-        where: sql`${threadAudience.targetDomain} = 'local'`,
+        where: sql`${threadAudience.localUserId} IS NOT NULL`,
       })
       .returning({ id: threadAudience.id });
     return inserted.length > 0;
@@ -166,7 +164,6 @@ export class AuthoritativeMembershipFinalizerService {
       .delete(threadAudience)
       .where(
         and(
-          eq(threadAudience.targetDomain, 'local'),
           eq(threadAudience.localUserId, localUserId),
           eq(threadAudience.threadId, threadId),
           eq(threadAudience.targetNamespaceId, 0),

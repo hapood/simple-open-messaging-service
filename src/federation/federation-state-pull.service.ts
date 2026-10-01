@@ -19,6 +19,7 @@ import {
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
 import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
+import { FederationProfileNamespacePullService } from './federation-profile-namespace-pull.service.js';
 import { ProfileResolutionCoordinatorService } from '../profile-resolution/profile-resolution-coordinator.service.js';
 import type { PeerStateFeedPage } from './peer-state-feed.service.js';
 
@@ -37,6 +38,7 @@ export class FederationStatePullService {
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly systemMessages: FederationLocalSystemMessagePublisher,
     private readonly profileResolutions: ProfileResolutionCoordinatorService,
+    private readonly profileNamespacePull: FederationProfileNamespacePullService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -84,14 +86,27 @@ export class FederationStatePullService {
         requiredRevision,
       );
     const changed = new WeakMap<PeerStateFeedPage, StatePageEffect>();
+    let observedProfileNamespaceEnd: bigint | undefined;
     await this.stateFeedPull.run(domain, context.namespaceId, {
       fetch: async (after, through) => {
-        return this.pullStateFeedPage(
+        const page = await this.pullStateFeedPage(
           domain,
           after,
           after === undefined ? undefined : 100,
           through,
         );
+        // Ordinary pulls observe the Profile Namespace Feed head from the
+        // page envelope; a behind cursor wakes that drain after this one.
+        const observed = page.profileNamespaceFeedEndId;
+        if (typeof observed === 'string' && /^(0|[1-9]\d*)$/.test(observed)) {
+          const value = BigInt(observed);
+          if (
+            observedProfileNamespaceEnd === undefined ||
+            value > observedProfileNamespaceEnd
+          )
+            observedProfileNamespaceEnd = value;
+        }
+        return page;
       },
       apply: async (tx, page) => {
         const result = await this.stateFeedConsumer.applyPageInTx(
@@ -118,6 +133,14 @@ export class FederationStatePullService {
       throw new Error(
         `state feed for ${domain} stopped at ${cursor.toString()} before required revision ${requiredRevision.toString()}`,
       );
+    if (
+      observedProfileNamespaceEnd !== undefined &&
+      observedProfileNamespaceEnd > 0n
+    )
+      await this.profileNamespacePull.wakeIfBehind(
+        domain,
+        observedProfileNamespaceEnd,
+      );
     return cursor;
   }
 
@@ -143,7 +166,7 @@ export class FederationStatePullService {
           )
             return;
           this.logger.warn(
-            `profile resolution failed for account ${demand.target.account}, domain ${demand.target.domain}, revision ${demand.target.rev}: ${(error as Error).message}`,
+            `profile resolution failed for account ${demand.target.account}, revision ${demand.target.rev}: ${(error as Error).message}`,
           );
         });
     }
@@ -186,11 +209,13 @@ export class FederationStatePullService {
     domain: string,
     namespaceId: number,
   ): Promise<bigint> {
-    const row = await this.database.db.query.peerStateFeedPullCursor.findFirst({
-      where: eq(tables.peerStateFeedPullCursor.namespaceId, namespaceId),
-      columns: { committedThrough: true },
-    });
-    if (!row) throw new Error(`peer ${domain} has no state-feed pull cursor`);
-    return row.committedThrough;
+    const [row] = await this.database.db
+      .select({ pulledThrough: tables.identityNamespace.stateFeedPulledThrough })
+      .from(tables.identityNamespace)
+      .where(eq(tables.identityNamespace.id, namespaceId))
+      .limit(1);
+    if (!row) throw new Error(`peer ${domain} has no namespace row`);
+    // NULL is the never-bootstrapped marker: nothing has been drained yet.
+    return row.pulledThrough ?? 0n;
   }
 }

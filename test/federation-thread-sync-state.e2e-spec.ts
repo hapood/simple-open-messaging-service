@@ -14,7 +14,6 @@ import { DatabaseService } from '../src/database/database.service.js';
 import {
   account,
   accountThreadState,
-  federatedPeer,
   groupAccount,
   federationThreadHistoryGap,
   federationThreadSyncState,
@@ -52,7 +51,10 @@ describe('federation thread synchronization state', () => {
   afterAll(async () => mod.close());
 
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account", "MessageThread" RESTART IDENTITY CASCADE',
+    );
     const [existingNamespace] = await database.db
       .select({ id: identityNamespace.id })
       .from(identityNamespace)
@@ -73,14 +75,15 @@ describe('federation thread synchronization state', () => {
             rootKeyFingerprint: 'sha256:thread-sync-test',
             rootPublicKey: Buffer.alloc(32, 2).toString('base64'),
             identityPinnedAt: new Date(),
+            active: true,
+            trustLevel: 'available',
           })
           .returning({ id: identityNamespace.id })
       )[0].id;
-    await database.db.insert(federatedPeer).values({
-      domain: peerDomain,
-      activeNamespaceId: namespaceId,
-      trustLevel: 'available',
-    });
+    await database.db
+      .update(identityNamespace)
+      .set({ active: true, trustLevel: 'available' })
+      .where(eq(identityNamespace.id, namespaceId));
     const [thread] = await database.db
       .insert(messageThread)
       .values({

@@ -14,7 +14,6 @@ export interface GroupAuthoredMembershipRequestInput {
   groupAvatar: string;
   groupDescription: string;
   groupProfileRev: number;
-  localDomain: string;
   targetAccount: string;
   targetDomain: string;
   targetNamespaceId: number;
@@ -89,16 +88,16 @@ export function groupAuthoredMembershipRequestSql(
       RETURNING f."invitationEndId" AS "feedId"
     ), request_projection AS (
       INSERT INTO "GroupRequestProjection"
-        ("threadId", "memberAccount", "memberDomain", "memberNamespaceId",
+        ("threadId", "memberAccount", "profileNamespaceId",
           "memberProfileRev", direction, status, note, "requestedAt", "expiresAt", "feedId")
-      SELECT ${input.threadId}, ${input.targetAccount}, ${input.targetDomain},
+      SELECT ${input.threadId}, ${input.targetAccount},
         ${input.targetNamespaceId}, (SELECT rev FROM member_rev), 'INVITATION',
         'REQUESTED'::"RequestProjectionStatus", v.note, v."requestedAt", v."expiresAt",
         (SELECT "feedId" FROM projection_alloc)
       FROM request_state v
       WHERE EXISTS (SELECT 1 FROM projection_alloc)
-      ON CONFLICT ("threadId", "memberAccount", "memberDomain",
-        "memberNamespaceId", "direction") DO UPDATE SET
+      ON CONFLICT ("threadId", "memberAccount",
+        "profileNamespaceId", "direction") DO UPDATE SET
         "feedId" = EXCLUDED."feedId",
         "memberProfileRev" = EXCLUDED."memberProfileRev", status = EXCLUDED.status,
         note = EXCLUDED.note, "requestedAt" = EXCLUDED."requestedAt",
@@ -107,14 +106,14 @@ export function groupAuthoredMembershipRequestSql(
     ), ${
       remote ? peerRecipient(input) : localRecipient(input)
     }, audience_open AS (
-      INSERT INTO "ThreadAudience" ("threadId", "targetDomain", "targetNamespaceId",
+      INSERT INTO "ThreadAudience" ("threadId", "targetNamespaceId",
         "localUserId", "groupMetaVisibleAfter", "messageAccessAfterSeq")
-      SELECT ${input.threadId}, ${input.targetDomain}, ${input.targetNamespaceId}, NULL, 0,
+      SELECT ${input.threadId}, ${input.targetNamespaceId}, NULL, 0,
         CASE WHEN COALESCE((SELECT value <> 'false' FROM "SystemSetting"
           WHERE key = ${FEDERATION_HISTORY_ACCESS_SETTING_KEY}), true)
           THEN 0 ELSE (SELECT t."curSeq" FROM "MessageThread" t WHERE t.id = ${input.threadId}) END
       WHERE ${remote ? sql`true` : sql`false`} AND EXISTS (SELECT 1 FROM authored)
-      ON CONFLICT ("targetNamespaceId", "threadId") WHERE "targetDomain" <> 'local' DO NOTHING
+      ON CONFLICT ("targetNamespaceId", "threadId") WHERE "localUserId" IS NULL DO NOTHING
       RETURNING id
     )
     SELECT v.status, v.note,
@@ -149,7 +148,7 @@ function localRecipient(input: GroupAuthoredMembershipRequestInput): SQL {
     ), candidate_bodies AS MATERIALIZED (
       SELECT ${input.localTargetId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
         b."compactionKey", ${input.groupAccount}::text AS account, 'local'::text AS domain,
-        ${input.targetAccount}::text AS "subjectAccount", 'local'::text AS "subjectDomain", b.body
+        ${input.targetAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", b.body
       FROM recipient_body b
     ), ${clientIntentFeedWriteSql()}
   `;
@@ -158,7 +157,6 @@ function localRecipient(input: GroupAuthoredMembershipRequestInput): SQL {
 /** Peer invitee: one RELATIONSHIP_INTENT REQUESTED event, suppressed when the
  * peer already holds the identical body (no feed id is consumed). */
 function peerRecipient(input: GroupAuthoredMembershipRequestInput): SQL {
-  const wireLocalDomain = 'local';
   return sql`
     peer_write AS MATERIALIZED (
       SELECT jsonb_build_object('status', v.status, 'profileRev', v."profileRev", 'note', v.note,
@@ -167,19 +165,17 @@ function peerRecipient(input: GroupAuthoredMembershipRequestInput): SQL {
           'messageEndSeq', v."messageEndSeq", 'tombstoneEndSeq', v."tombstoneEndSeq") AS body
       FROM request_state v
     ), peer_changes AS MATERIALIZED (
-      SELECT ${input.targetAccount}::text AS "subjectAccount", ${input.targetDomain}::text AS "subjectDomain",
+      SELECT ${input.targetAccount}::text AS "subjectAccount", ${input.targetNamespaceId}::integer AS "subjectNamespaceId",
         p.body, row_number() OVER () AS position, false AS invalid
       FROM peer_write p
       LEFT JOIN "PeerStateFeed" old ON old."namespaceId" = ${input.targetNamespaceId}
-        AND old.account = ${input.groupAccount} AND old.domain = ${wireLocalDomain}
+        AND old.account = ${input.groupAccount}
         AND old."eventType" = 'RELATIONSHIP_INTENT'
-        AND old."subjectAccount" = ${input.targetAccount} AND old."subjectDomain" = ${input.targetDomain}
+        AND old."subjectAccount" = ${input.targetAccount} AND old."subjectNamespaceId" = ${input.targetNamespaceId}
       WHERE old.body IS DISTINCT FROM p.body
     ), ${peerIntentFeedWriteSql({
       namespaceId: input.targetNamespaceId,
-      peerDomain: input.targetDomain,
       selfAccount: input.groupAccount,
-      selfDomain: input.localDomain,
     })}
   `;
 }

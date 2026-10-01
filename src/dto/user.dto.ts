@@ -41,6 +41,35 @@ export class UserResolveDto {
   @IsString()
   @MaxLength(63)
   domain?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 12,
+    description:
+      'Server-local namespace id of the publisher vouching for the target ' +
+      'identity. When both publisherNamespaceId and profileNamespaceId are ' +
+      'present, the resolve uses a VOUCH possession challenge — verifying ' +
+      'the vouched root key — instead of the first-contact PIN challenge.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  publisherNamespaceId?: number;
+
+  @ApiProperty({
+    required: false,
+    example: 5,
+    description:
+      "Namespace id of the profile within the publisher's namespace space " +
+      '(0 = the publisher itself). Required together with ' +
+      'publisherNamespaceId for VOUCH-based resolve; absent degrades to PIN.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  profileNamespaceId?: number;
 }
 
 /** Local user discovery (fuzzy). Matches account OR display name case-insensitively; min 2 chars so a

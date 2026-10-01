@@ -1,5 +1,21 @@
 # Federation Root Identity Model and Health Privacy (2025 redesign, final)
 
+> **Status update (Profile Namespace Feed):** the successor-epoch behavior
+> recorded here — "Peer rotation: insert a new peer epoch row (new
+> namespaceId), retire the predecessor" — is superseded by
+> [`profile-namespace-feed.md`](./profile-namespace-feed.md). Namespace ids
+> are now lifelong: an approved root change or domain re-bind updates the
+> existing `IdentityNamespace` row in place, and the change is published on
+> the Profile Namespace Feed. The review queue, arrival verification, and
+> health privacy sections below remain current. The server's own root-epoch
+> model is untouched: an own root replacement still appends a new claimable
+> `LocalFederationRoot` epoch and disables the predecessor, and an own domain
+> replacement still swaps the binding directly; the deferred
+> own-identity-change feature will announce both with a `namespaceId` `0`
+> Profile Namespace Feed item. `POST /s2s/v1/verify` is now sealed-challenge
+> only; the namespace-id to bindings resolution it used to carry inline lives
+> on `GET /s2s/v1/profile-namespaces/:nsid`.
+
 Status: `DESIGNED` — the normative changes live in `spec/v1/` (still
 `1.0.0-rc.0`, destructive in-place edit; the protocol was never published).
 This document records the threat-model reasoning, the wire decisions, and the

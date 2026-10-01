@@ -16,7 +16,12 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { ContentType, MessageThreadType } from '../database/enums.js';
 import { UploadService } from '../upload/upload.service.js';
-import { messageThread, threadAudience } from '../database/schema.js';
+import {
+  messageThread,
+  threadAudience,
+  identityNamespace,
+} from '../database/schema.js';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
@@ -336,27 +341,125 @@ describe('thread-query FORBIDDEN convergence', () => {
 });
 
 describe('FederationProfileService resource path', () => {
-  it('canonically percent-encodes a group account', async () => {
-    const { profiles, peerHttp } = makeStubs();
-    const getSigned = vi.fn().mockResolvedValue({
-      account: '!group',
-      domain: 'peer.test',
-      displayName: 'Group',
-      bio: '',
-      avatar: null,
-      profileRev: 1,
+  const canonicalProof = (account: string, domain: string) =>
+    JSON.stringify({ account, domain });
+
+  it('percent-encodes the account and sends a possession challenge under the pinned root', async () => {
+    const { profiles, peerHttp, pinnedRoot } = makeStubs();
+    const getSigned = vi.fn().mockImplementation(async (path: string) => {
+      const url = new URL(`https://peer.test${path}`);
+      expect(url.pathname).toBe('/s2s/v1/accounts/%21group');
+      expect(url.searchParams.get('publicKey')).toBe(pinnedRoot);
+      expect(url.searchParams.get('challenge')).toMatch(/^[A-Za-z0-9+/=]+$/);
+      return {
+        account: '!group',
+        displayName: 'Group',
+        bio: '',
+        avatar: null,
+        profileRev: 1,
+        proof: canonicalProof('!group', 'peer.test'),
+      };
     });
     Object.assign(peerHttp, { get: getSigned });
 
-    await profiles.fetchRemoteAccount({
-      account: '!group',
-      domain: 'peer.test',
+    await profiles.fetchRemoteAccount(
+      { account: '!group', domain: 'peer.test' },
+      { kind: 'PIN' },
+    );
+
+    expect(getSigned).toHaveBeenCalledTimes(1);
+  });
+
+  it('challenges under the vouched root for card references', async () => {
+    const { profiles, peerHttp } = makeStubs();
+    const VOUCHED_ROOT = Buffer.from(
+      ed25519.getPublicKey(Uint8Array.from(Buffer.alloc(32, 2))),
+    ).toString('base64');
+    const getSigned = vi.fn().mockImplementation(async (path: string) => {
+      const url = new URL(`https://peer.test${path}`);
+      expect(url.searchParams.get('publicKey')).toBe(VOUCHED_ROOT);
+      return {
+        account: 'alice',
+        displayName: 'Alice',
+        bio: '',
+        avatar: null,
+        profileRev: 1,
+        proof: canonicalProof('alice', 'peer.test'),
+      };
+    });
+    Object.assign(peerHttp, { get: getSigned });
+    Object.assign(profiles, {
+      profileNamespaceInfo: {
+        resolveBatch: vi.fn(async () => [
+          {
+            publisherNamespaceId: 12,
+            profileNamespaceId: 5,
+            domain: 'peer.test',
+            rootPublicKey: VOUCHED_ROOT,
+            updateFeedId: '4',
+            expired: false,
+          },
+        ]),
+      },
     });
 
-    expect(getSigned).toHaveBeenCalledWith(
-      '/s2s/v1/accounts/%21group',
-      'peer.test',
+    await profiles.fetchRemoteAccount(
+      { account: 'alice', domain: 'peer.test' },
+      { kind: 'VOUCH', publisherNamespaceId: 12, profileNamespaceId: 5 },
     );
+    expect(getSigned).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an uncertifiable vouch without contacting the peer', async () => {
+    const { profiles, peerHttp } = makeStubs();
+    const getSigned = vi.fn();
+    Object.assign(peerHttp, { get: getSigned });
+    Object.assign(profiles, {
+      profileNamespaceInfo: {
+        resolveBatch: vi.fn(async () => [
+          {
+            publisherNamespaceId: 12,
+            profileNamespaceId: 5,
+            domain: null,
+            rootPublicKey: null,
+            updateFeedId: '0',
+            expired: true,
+          },
+        ]),
+      },
+    });
+    await expect(
+      profiles.fetchRemoteAccount(
+        { account: 'alice', domain: 'peer.test' },
+        { kind: 'VOUCH', publisherNamespaceId: 12, profileNamespaceId: 5 },
+      ),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+    });
+    expect(getSigned).not.toHaveBeenCalled();
+  });
+
+  it('rejects a possession proof mismatch', async () => {
+    const { profiles, peerHttp } = makeStubs();
+    Object.assign(peerHttp, {
+      get: vi.fn().mockResolvedValue({
+        account: 'alice',
+        displayName: 'Alice',
+        bio: '',
+        avatar: null,
+        profileRev: 1,
+        proof: canonicalProof('alice', 'other.test'),
+      }),
+    });
+    await expect(
+      profiles.fetchRemoteAccount(
+        { account: 'alice', domain: 'peer.test' },
+        { kind: 'PIN' },
+      ),
+    ).rejects.toMatchObject({
+      code: BusinessCode.FEDERATION_MALFORMED,
+      status: 200,
+    });
   });
 
   it('rejects a public response that echoes namespaceId or has the wrong identity', async () => {
@@ -372,7 +475,10 @@ describe('FederationProfileService resource path', () => {
     });
     Object.assign(peerHttp, { get: getSigned });
     await expect(
-      profiles.fetchRemoteAccount({ account: 'alice', domain: 'peer.test' }),
+      profiles.fetchRemoteAccount(
+        { account: 'alice', domain: 'peer.test' },
+        { kind: 'PIN' },
+      ),
     ).rejects.toMatchObject({
       code: BusinessCode.FEDERATION_MALFORMED,
       status: 200,
@@ -385,16 +491,19 @@ describe('FederationProfileService resource path', () => {
       const { profiles, peerHttp } = makeStubs();
       const getSigned = vi.fn().mockResolvedValue({
         account: 'alice',
-        domain: 'peer.test',
         displayName: 'Alice',
         bio: '',
         avatar: null,
         profileRev,
+        proof: canonicalProof('alice', 'peer.test'),
       });
       Object.assign(peerHttp, { get: getSigned });
 
       await expect(
-        profiles.fetchRemoteAccount({ account: 'alice', domain: 'peer.test' }),
+        profiles.fetchRemoteAccount(
+          { account: 'alice', domain: 'peer.test' },
+          { kind: 'PIN' },
+        ),
       ).rejects.toMatchObject({
         code: BusinessCode.FEDERATION_MALFORMED,
         status: 200,
@@ -417,7 +526,6 @@ describe('FederationProfileService resource path', () => {
       profiles.toS2SProfile({
         profileNamespaceId: 12,
         account: 'alice',
-        domain: 'local',
         name: 'Alice',
         avatar: '/uploads/avatars/alice.webp',
         bio: '',
@@ -426,7 +534,6 @@ describe('FederationProfileService resource path', () => {
     ).resolves.toEqual({
       namespaceId: 12,
       account: 'alice',
-      domain: 'local',
       displayName: 'Alice',
       bio: '',
       avatar: {
@@ -447,7 +554,6 @@ describe('FederationProfileService resource path', () => {
       upload: { saveAvatarFromWire: typeof saveAvatarFromWire };
       prepareForeignProfileData(profile: {
         account: string;
-        domain: string;
         displayName: string;
         bio: string;
         avatar: {
@@ -464,7 +570,6 @@ describe('FederationProfileService resource path', () => {
     await expect(
       target.prepareForeignProfileData({
         account: 'alice',
-        domain: 'peer.test',
         displayName: 'Alice',
         bio: '',
         avatar: {
@@ -535,6 +640,8 @@ function makeStubs() {
       select: vi.fn(() => {
         let source: unknown;
         const resolve = async () => {
+          if (source === identityNamespace)
+            return [{ rootPublicKey: PINNED_ROOT }];
           if (source === messageThread) {
             const row = await store.messageThread.findUnique();
             return row
@@ -662,10 +769,17 @@ function makeStubs() {
     threadAccess,
   );
   const upload = {};
+  const PINNED_ROOT = Buffer.from(
+    ed25519.getPublicKey(Uint8Array.from(Buffer.alloc(32, 1))),
+  ).toString('base64');
+  const profileNamespaceInfo = {
+    resolveBatch: vi.fn(async () => []),
+  };
   const profiles = new FederationProfileService(
     database as never,
     upload as never,
     peerHttp,
+    profileNamespaceInfo as never,
   );
   const mediaLocalization = new FederationMediaLocalizationService(
     database as never,
@@ -746,6 +860,9 @@ function makeStubs() {
   return {
     svc,
     database,
+    profiles,
+    profileNamespaceInfo,
+    pinnedRoot: PINNED_ROOT,
     store,
     sse,
     deletedMessages,
@@ -986,7 +1103,7 @@ describe('FederationPeerResourceService media authorization gates', () => {
             {
               messageId: 17n,
               threadId: 11,
-              authorDomain: 'local',
+              authorNamespaceId: 4,
               threadType: MessageThreadType.P2P,
               groupId: null,
             },
@@ -1209,7 +1326,7 @@ describe('FederationService global missed transport', () => {
       toAccount: 'alice',
       authority: 'PEER',
       creatorAccount: 'bob',
-      creatorDomain: 'local',
+      profileNamespaceId: 0,
       recipients: [1],
     });
     expect(findUser).not.toHaveBeenCalled();

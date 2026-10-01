@@ -47,7 +47,7 @@ export async function writeP2PClientRelationshipInTx(
         account: actor.account,
         domain: actor.domain,
         subjectAccount: subject.account,
-        subjectDomain: subject.domain,
+        subjectNamespaceId: subject.namespaceId,
         namespaceId,
         eventType: 'RELATIONSHIP_INTENT',
         body: {
@@ -85,8 +85,10 @@ async function clientInviteUser(
       ? await tx.query.profileTable.findFirst({
           where: and(
             eq(profileTable.account, value.account),
-            eq(profileTable.domain, value.domain),
-            eq(profileTable.publisherNamespaceId, value.domain === 'local' ? 0 : value.namespaceId),
+            eq(
+              profileTable.publisherNamespaceId,
+              value.namespaceId === 0 ? 0 : value.namespaceId,
+            ),
             eq(profileTable.profileNamespaceId, value.namespaceId),
             eq(profileTable.profileRev, rev),
           ),

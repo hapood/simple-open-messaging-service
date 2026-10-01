@@ -91,7 +91,8 @@ function validatePage(
           entry.operation !== 'GROUP_ANNOUNCEMENT' &&
           entry.operation !== 'MEMBER_UPSERT' &&
           entry.operation !== 'MEMBER_DEPART') ||
-        ((entry.operation === 'MEMBER_UPSERT' || entry.operation === 'MEMBER_DEPART') &&
+        ((entry.operation === 'MEMBER_UPSERT' ||
+          entry.operation === 'MEMBER_DEPART') &&
           (!entry.account ||
             !entry.domain ||
             !Number.isSafeInteger(entry.namespaceId) ||
@@ -118,21 +119,36 @@ function validatePage(
     throw new Error('invalid group announcement');
 }
 
-/** Catch every stored group projection up to its durable thread-head target. */
+/** Catch every stored group projection up to its durable thread-head target.
+ *  A failing group or profile resolution isolates to its own error entry and
+ *  never starves the remaining groups; the aggregated failure still rejects
+ *  the invocation so the caller's wake/retry pressure is preserved. */
 export async function syncGroupMeta(
   storage: GroupMetaSyncStorage,
   request: GroupMetaRequester,
   resolveProfile: GroupMetaProfileResolver,
 ): Promise<number[]> {
   const changed: number[] = [];
+  const failures: string[] = [];
   try {
-    return await syncGroupMetaUnchecked(
+    const committed = await syncGroupMetaUnchecked(
       storage,
       request,
       resolveProfile,
       changed,
+      failures,
     );
+    if (failures.length) {
+      const visible = failures.slice(0, 5);
+      const overflow = failures.length - visible.length;
+      throw new GroupMetaSyncError(
+        visible.join('; ') + (overflow > 0 ? `; (+${overflow} more)` : ''),
+        [...new Set(changed)],
+      );
+    }
+    return committed;
   } catch (error) {
+    if (error instanceof GroupMetaSyncError) throw error;
     throw new GroupMetaSyncError(
       error instanceof Error ? error.message : String(error),
       [...new Set(changed)],
@@ -140,32 +156,37 @@ export async function syncGroupMeta(
   }
 }
 
-async function syncGroupMetaUnchecked(
+async function syncGroupMetaThreadUnchecked(
   storage: GroupMetaSyncStorage,
   request: GroupMetaRequester,
   resolveProfile: GroupMetaProfileResolver,
+  threadId: number,
+  target: string,
   changed: number[],
-): Promise<number[]> {
+  failures: string[],
+  guard?: () => boolean,
+): Promise<void> {
   const [threads, states] = await Promise.all([
     storage.getThreads(),
     storage.getThreadStates(),
   ]);
-  const byThread = new Map(threads.map((thread) => [thread.threadId, thread]));
-  for (const state of states) {
-    const target = state.threadFeedId === null ? null : state.groupMetaFeedEndId;
-    const thread = byThread.get(state.threadId);
-    if (
-      target === null ||
-      target === undefined ||
-      thread?.type !== 'GROUP' ||
-      thread.conversationState === 'READ_ONLY'
-    )
-      continue;
+  const thread = threads.find((item) => item.threadId === threadId);
+  const state = states.find((item) => item.threadId === threadId);
+  if (
+    !thread ||
+    thread.type !== 'GROUP' ||
+    thread.conversationState === 'READ_ONLY'
+  )
+    return;
+  const feedTarget = state?.threadFeedId === null ? null : target;
+  if (feedTarget === null) return;
 
-    let after = thread.group.groupMetaFeedId;
-    let recoveryThrough = thread.groupMetaRecoveryThrough ?? null;
-    if (recoveryThrough === null && BigInt(after) >= BigInt(target)) continue;
+  let after = thread.group.groupMetaFeedId;
+  let recoveryThrough = thread.groupMetaRecoveryThrough ?? null;
+  if (recoveryThrough === null && BigInt(after) >= BigInt(target)) return;
 
+  const context = `group ${thread.group.account}@${thread.group.domain}`;
+  try {
     let mode: 'full' | 'delta';
     let through: string;
     if (recoveryThrough !== null || after === '0') {
@@ -186,6 +207,7 @@ async function syncGroupMetaUnchecked(
     // server-directed replacement window allowed during this invocation.
     let reopened = false;
     for (;;) {
+      if (guard && !guard()) return;
       const envelope = (await request({
         threadId: thread.threadId,
         mode,
@@ -206,7 +228,10 @@ async function syncGroupMetaUnchecked(
         continue;
       }
       const page = envelope?.code === 0 ? pageFrom(envelope.data) : null;
-      if (!page) throw new Error('group-meta pull failed');
+      if (!page)
+        throw new Error(
+          `group-meta pull failed (code ${String(envelope?.code)})`,
+        );
       validatePage(page, {
         account: thread.group.account,
         mode,
@@ -230,13 +255,110 @@ async function syncGroupMetaUnchecked(
         break;
       }
     }
+  } catch (error) {
+    failures.push(
+      `${context}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+export async function syncGroupMetaThread(
+  storage: GroupMetaSyncStorage,
+  request: GroupMetaRequester,
+  resolveProfile: GroupMetaProfileResolver,
+  threadId: number,
+  target: string,
+  guard?: () => boolean,
+): Promise<number[]> {
+  const changed: number[] = [];
+  const failures: string[] = [];
+  await syncGroupMetaThreadUnchecked(
+    storage,
+    request,
+    resolveProfile,
+    threadId,
+    target,
+    changed,
+    failures,
+    guard,
+  );
+  // Resolve profiles touched by this thread's drain.
+  const unresolved = await storage.getUnresolvedGroupMetaProfiles();
+  const unique = new Map(
+    unresolved
+      .filter((reference) => reference.threadId === threadId)
+      .map((reference) => [JSON.stringify(reference), reference]),
+  );
+  for (const reference of unique.values()) {
+    try {
+      if (await resolveProfile(reference)) changed.push(reference.threadId);
+    } catch (error) {
+      failures.push(
+        `group profile ${reference.account}@${reference.domain}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  if (failures.length) {
+    const visible = failures.slice(0, 5);
+    const overflow = failures.length - visible.length;
+    throw new GroupMetaSyncError(
+      visible.join('; ') + (overflow > 0 ? `; (+${overflow} more)` : ''),
+      [...new Set(changed)],
+    );
+  }
+  return [...new Set(changed)];
+}
+
+async function syncGroupMetaUnchecked(
+  storage: GroupMetaSyncStorage,
+  request: GroupMetaRequester,
+  resolveProfile: GroupMetaProfileResolver,
+  changed: number[],
+  failures: string[],
+): Promise<number[]> {
+  const [threads, states] = await Promise.all([
+    storage.getThreads(),
+    storage.getThreadStates(),
+  ]);
+  const byThread = new Map(threads.map((thread) => [thread.threadId, thread]));
+  for (const state of states) {
+    const target =
+      state.threadFeedId === null ? null : state.groupMetaFeedEndId;
+    const thread = byThread.get(state.threadId);
+    if (
+      target === null ||
+      target === undefined ||
+      thread?.type !== 'GROUP' ||
+      thread.conversationState === 'READ_ONLY'
+    )
+      continue;
+    await syncGroupMetaThreadUnchecked(
+      storage,
+      request,
+      resolveProfile,
+      state.threadId,
+      target,
+      changed,
+      failures,
+    );
   }
   const unresolved = await storage.getUnresolvedGroupMetaProfiles();
   const unique = new Map(
     unresolved.map((reference) => [JSON.stringify(reference), reference]),
   );
   const references = [...unique.values()];
-  for (const reference of references)
-    if (await resolveProfile(reference)) changed.push(reference.threadId);
+  for (const reference of references) {
+    try {
+      if (await resolveProfile(reference)) changed.push(reference.threadId);
+    } catch (error) {
+      failures.push(
+        `group profile ${reference.account}@${reference.domain}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
   return [...new Set(changed)];
 }

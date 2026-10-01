@@ -19,10 +19,8 @@ export interface GroupDisbandMembershipRevocationInput {
   groupAvatar: string;
   groupDescription: string;
   groupProfileRev: number;
-  localDomain: string;
   memberAccount: string;
-  memberDomain: string;
-  memberNamespaceId: number;
+  profileNamespaceId: number;
   /** Local Account.id of the member, or null for a peer-hosted member. */
   localMemberId: number | null;
   /** Existing non-REVOKED projection directions for this member, from authorization. */
@@ -93,7 +91,7 @@ function memberToGroupKey(memberAccount: string, groupAccount: string): string {
 export function groupDisbandMembershipRevocationSql(
   input: GroupDisbandMembershipRevocationInput,
 ): SQL {
-  const localMember = input.memberDomain === 'local';
+  const localMember = input.profileNamespaceId === 0;
   return sql`
     WITH ${
       localMember
@@ -101,7 +99,7 @@ export function groupDisbandMembershipRevocationSql(
       ${authoredIntentWriteSql({
         author: {
           account: input.memberAccount,
-          namespaceId: input.memberNamespaceId,
+          namespaceId: input.profileNamespaceId,
         },
         receiver: { account: input.groupAccount, namespaceId: 0 },
         threadId: input.threadId,
@@ -117,7 +115,7 @@ export function groupDisbandMembershipRevocationSql(
         author: { account: input.groupAccount, namespaceId: 0 },
         receiver: {
           account: input.memberAccount,
-          namespaceId: input.memberNamespaceId,
+          namespaceId: input.profileNamespaceId,
         },
         threadId: input.threadId,
         status: 'REVOKED',
@@ -132,7 +130,7 @@ export function groupDisbandMembershipRevocationSql(
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.groupAccount} AND "authorNamespaceId" = 0
         AND "receiverAccount" = ${input.memberAccount}
-        AND "receiverNamespaceId" = ${input.memberNamespaceId}
+        AND "receiverNamespaceId" = ${input.profileNamespaceId}
         AND NOT EXISTS (SELECT 1 FROM authored)
     ), pair_change AS (
       UPDATE "RelationshipPair" SET active = false, "updatedAt" = CURRENT_TIMESTAMP
@@ -142,22 +140,20 @@ export function groupDisbandMembershipRevocationSql(
     ), ${requestProjectionFlipSql({
       threadId: input.threadId,
       memberAccount: input.memberAccount,
-      memberDomain: input.memberDomain,
-      memberNamespaceId: input.memberNamespaceId,
+      profileNamespaceId: input.profileNamespaceId,
       status: 'REVOKED',
       authorAccount: input.groupAccount,
       directions: input.projectionDirections,
     })}, audience_close AS (
       DELETE FROM "ThreadAudience" ta
       WHERE ta."threadId" = ${input.threadId} AND (
-        (ta."targetDomain" = 'local' AND ta."localUserId" = ${input.localMemberId}
+        (ta."localUserId" = ${input.localMemberId}
           AND ta."targetNamespaceId" = 0)
         OR (${localMember ? sql`false` : sql`true`}
-          AND ta."targetDomain" = ${input.memberDomain}
-          AND ta."targetNamespaceId" = ${input.memberNamespaceId}
+          AND ta."targetNamespaceId" = ${input.profileNamespaceId}
           AND NOT EXISTS (SELECT 1 FROM "RelationshipPair" p
             WHERE p.kind = 'GROUP_MEMBER' AND p."threadId" = ${input.threadId}
-              AND p.active AND p."endpointBNamespaceId" = ${input.memberNamespaceId}
+              AND p.active AND p."endpointBNamespaceId" = ${input.profileNamespaceId}
               AND p.id <> ${input.pairId})))
       RETURNING ta.id
     ), ${localMember ? localRecipients(input) : peerRecipient(input)}
@@ -194,7 +190,7 @@ function localRecipients(input: GroupDisbandMembershipRevocationInput): SQL {
     ), candidate_bodies AS MATERIALIZED (
       SELECT ${input.localMemberId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
         b."compactionKey", ${input.groupAccount}::text AS account, 'local'::text AS domain,
-        ${input.memberAccount}::text AS "subjectAccount", 'local'::text AS "subjectDomain", b.body
+        ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", b.body
       FROM recipient_bodies b
       UNION ALL
       SELECT ${input.localMemberId}::integer, 0, 2,
@@ -218,7 +214,6 @@ function localRecipients(input: GroupDisbandMembershipRevocationInput): SQL {
  * suppressed when the peer already holds the identical body (no feed id is
  * consumed). */
 function peerRecipient(input: GroupDisbandMembershipRevocationInput): SQL {
-  const wireLocalDomain = 'local';
   return sql`
     peer_write AS MATERIALIZED (
       SELECT jsonb_build_object('status', v.status, 'profileRev', v."profileRev", 'note', v.note,
@@ -227,19 +222,17 @@ function peerRecipient(input: GroupDisbandMembershipRevocationInput): SQL {
             ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END) AS body
       FROM revocation v
     ), peer_changes AS MATERIALIZED (
-      SELECT ${input.memberAccount}::text AS "subjectAccount", ${input.memberDomain}::text AS "subjectDomain",
+      SELECT ${input.memberAccount}::text AS "subjectAccount", ${input.profileNamespaceId}::integer AS "subjectNamespaceId",
         p.body, row_number() OVER () AS position, false AS invalid
       FROM peer_write p
-      LEFT JOIN "PeerStateFeed" old ON old."namespaceId" = ${input.memberNamespaceId}
-        AND old.account = ${input.groupAccount} AND old.domain = ${wireLocalDomain}
+      LEFT JOIN "PeerStateFeed" old ON old."namespaceId" = ${input.profileNamespaceId}
+        AND old.account = ${input.groupAccount}
         AND old."eventType" = 'RELATIONSHIP_INTENT'
-        AND old."subjectAccount" = ${input.memberAccount} AND old."subjectDomain" = ${input.memberDomain}
+        AND old."subjectAccount" = ${input.memberAccount} AND old."subjectNamespaceId" = ${input.profileNamespaceId}
       WHERE old.body IS DISTINCT FROM p.body
     ), ${peerIntentFeedWriteSql({
-      namespaceId: input.memberNamespaceId,
-      peerDomain: input.memberDomain,
+      namespaceId: input.profileNamespaceId,
       selfAccount: input.groupAccount,
-      selfDomain: input.localDomain,
     })}
   `;
 }

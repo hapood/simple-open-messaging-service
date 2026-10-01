@@ -17,7 +17,7 @@ function transaction(pairChanged: boolean) {
             groupNamespaceId: 9,
             memberAccount: 'alice',
             memberDomain: 'local',
-            memberNamespaceId: 0,
+            profileNamespaceId: 0,
           },
         ],
       };

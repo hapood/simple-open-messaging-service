@@ -103,8 +103,10 @@ export class GroupService {
       const snapshot = await tx.query.profileTable.findFirst({
         where: and(
           eq(profileTable.account, member.account),
-          eq(profileTable.domain, member.domain),
-          eq(profileTable.publisherNamespaceId, member.domain === 'local' ? 0 : member.namespaceId),
+          eq(
+            profileTable.publisherNamespaceId,
+            member.namespaceId === 0 ? 0 : member.namespaceId,
+          ),
           eq(profileTable.profileNamespaceId, member.namespaceId),
           eq(profileTable.profileRev, member.profileRev),
         ),
@@ -163,14 +165,13 @@ export class GroupService {
       LEFT JOIN LATERAL (
         SELECT member_fact.operation FROM "GroupMetaMemberFeed" member_fact
         WHERE member_fact."threadId" = thread_scope.id
-          AND member_fact."memberAccount" = friend.account AND member_fact."memberDomain" = friend.domain
-          AND group_meta_member_namespace(member_fact."threadId",
-            member_fact."memberAccount", member_fact."memberDomain") = friend."namespaceId"
+          AND member_fact."memberAccount" = friend.account
+          AND member_fact."profileNamespaceId" = friend."namespaceId"
         ORDER BY member_fact."feedId" DESC LIMIT 1
       ) member ON true
       LEFT JOIN "GroupRequestProjection" invitation ON
         invitation."threadId" = ${threadId} AND invitation."memberAccount" = friend.account
-        AND invitation."memberDomain" = friend.domain AND invitation."memberNamespaceId" = friend."namespaceId"
+        AND invitation."profileNamespaceId" = friend."namespaceId"
         AND invitation.direction = 'INVITATION'
       WHERE friendship.kind = 'P2P' AND friendship.active = true AND friendship."threadId" IS NOT NULL
         ${afterThreadId === undefined ? sql.empty() : sql`AND friendship."threadId" > ${afterThreadId}`}
@@ -216,12 +217,14 @@ export class GroupService {
         CASE WHEN projection.status = 'REQUESTED'
           AND projection."expiresAt" <= CURRENT_TIMESTAMP
           THEN 'EXPIRED' ELSE projection.status END AS status,
-        projection."memberAccount" AS account, projection."memberDomain" AS domain,
-        projection."memberNamespaceId" AS "namespaceId", projection."memberProfileRev" AS "profileRev",
+        projection."memberAccount" AS account,
+        ns.domain AS domain,
+        projection."profileNamespaceId" AS "namespaceId", projection."memberProfileRev" AS "profileRev",
         projection."memberAccount" AS name, '' AS avatar, projection.note,
         (EXTRACT(EPOCH FROM projection."requestedAt") * 1000)::bigint AS "requestedAt",
         (EXTRACT(EPOCH FROM projection."expiresAt") * 1000)::bigint AS "expiresAt"
       FROM "GroupRequestProjection" projection
+      JOIN "IdentityNamespace" ns ON ns.id = projection."profileNamespaceId"
       WHERE projection."threadId" = ${threadId}
         AND projection.direction = ${direction}
         ${before === undefined ? sql.empty() : sql`AND projection."feedId" < ${before}`}
@@ -433,7 +436,6 @@ export class GroupService {
           };
           await tx.insert(profileTable).values({
             account,
-            domain: 'local',
             publisherNamespaceId: 0,
             profileNamespaceId: 0,
             profileRev: 1,
@@ -846,7 +848,6 @@ export class GroupService {
       const nextRev = current.group.profileRev + 1;
       await tx.insert(profileTable).values({
         account: current.group.account,
-        domain: 'local',
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: nextRev,

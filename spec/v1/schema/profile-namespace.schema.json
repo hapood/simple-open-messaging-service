@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:profile-namespace",
+  "title": "GET /s2s/v1/profile-namespaces/:nsid response data",
+  "type": "object",
+  "required": ["domain", "rootPublicKey", "profileNamespaceFeedEndId"],
+  "properties": {
+    "domain": {
+      "$ref": "urn:somfp:v1:common#/$defs/domain"
+    },
+    "rootPublicKey": {
+      "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
+    },
+    "profileNamespaceFeedEndId": {
+      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+    }
+  },
+  "additionalProperties": false
+}

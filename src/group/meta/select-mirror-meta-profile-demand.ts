@@ -33,7 +33,6 @@ export function selectMirrorMetaProfileDemand(
     target: {
       profileNamespaceId: item.profileNamespaceId,
       account: item.account,
-      domain: item.domain,
       rev: item.profileRev,
     },
     groupAccount: group.account,

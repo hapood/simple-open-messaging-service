@@ -70,7 +70,7 @@ export class GroupMembershipProjectionService {
         throw new Error('departing group member projection is missing');
       await this.groupMeta.appendMemberTransitionInTx(tx, params.groupId, {
         account: identity.account,
-        domain: identity.domain,
+        profileNamespaceId: identity.namespaceId,
         operation: 'MEMBER_DEPART',
         body: {
           role: current.role,
@@ -108,7 +108,7 @@ export class GroupMembershipProjectionService {
       );
       await this.groupMeta.appendMemberTransitionInTx(tx, params.groupId, {
         account: identity.account,
-        domain: identity.domain,
+        profileNamespaceId: identity.namespaceId,
         operation: 'MEMBER_UPSERT',
         body: { role, profileNamespaceId: identity.namespaceId, profileRev },
       });

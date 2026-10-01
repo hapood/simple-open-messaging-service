@@ -13,7 +13,11 @@ import { Public } from '../common/public.decorator.js';
 import { Raw } from '../common/raw.decorator.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import { DatabaseService } from '../database/database.service.js';
 import { DiscoveryService } from './discovery.service.js';
+import { parseRootKeyHeader } from './signature.service.js';
+import { and, eq, isNull, sql } from 'drizzle-orm';
+import { identityNamespace } from '../database/schema.js';
 import { FEDERATION_API_PREFIX } from './federation-protocol.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { KeypairService } from './keypair.service.js';
@@ -28,6 +32,7 @@ export class S2sRecognitionController {
     private readonly verify: S2sVerifyService,
     private readonly discovery: DiscoveryService,
     private readonly recognition: FederationRecognitionService,
+    private readonly database: DatabaseService,
   ) {}
 
   @Post('recognize')
@@ -36,10 +41,19 @@ export class S2sRecognitionController {
     this.keypair.assertAvailable();
     const headers = this.verify.extractHeaders(req);
     const { keyId, domain, expires } = this.verify.parseSigner(headers);
+    const claimedRoot = parseRootKeyHeader(headers['s2s-root-key']);
+    if (!claimedRoot) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missing or malformed S2S-Root-Key header',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     const senderAssignedLocalNamespaceId = this.assertRecognizeRequest(body);
     return this.recognition.submitInboundRecognize({
       domain,
       keyId,
+      claimedRoot,
       signedRequest: this.verify.signedRequest(req),
       headers,
       senderAssignedLocalNamespaceId,
@@ -52,58 +66,68 @@ export class S2sRecognitionController {
   @Header('Cache-Control', 'no-store')
   async health(@Req() req: FastifyRequest) {
     this.assertEmptyGet(req);
-    const headers = this.verify.extractHeaders(req);
-    const signer = this.verify.parseSigner(headers);
-
-    // Common authentication path. Inbound Health MUST NOT initiate well-known discovery,
-    // even for a known peer: key freshness is maintained by the requester's outbound Health
-    // overlap refresh and other ordinary discovery refreshes. A missing/expired certificate
-    // or failed signature is a common authentication error, never a Health status object.
-    const context = await this.resolveHealthSigner(signer.domain);
-    const publicKey = await this.discovery.getCachedPublicKey(
-      signer.domain,
-      context.namespaceId,
-      signer.keyId,
-    );
-    if (!publicKey) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_BAD_SIGNATURE,
-        `signing certificate ${signer.keyId} is not available in local state`,
-        HttpStatus.UNAUTHORIZED,
+    // Uniform privacy projection: every authentication failure — malformed
+    // signature structure, missing or unresolvable S2S-Root-Key, invalid
+    // signature, unavailable or unpublished certificate — and every signer
+    // whose relationship is not recognized or prepared answers the same
+    // HTTP 200 `unavailable`. Inbound Health MUST NOT initiate well-known
+    // discovery even for a known peer: key freshness is maintained by the
+    // requester's outbound Health overlap refresh and other ordinary
+    // discovery refreshes.
+    try {
+      const headers = this.verify.extractHeaders(req);
+      const signer = this.verify.parseSigner(headers);
+      const claimedRoot = parseRootKeyHeader(headers['s2s-root-key']);
+      if (!claimedRoot) return this.unavailableHealth();
+      const context = await this.resolveHealthSigner(claimedRoot);
+      if (!context) return this.unavailableHealth();
+      const publicKey = await this.discovery.getCachedPublicKey(
+        context.domain,
+        context.namespaceId,
+        signer.keyId,
       );
-    }
-    await this.verify.verifyWithPublicKey(
-      this.verify.signedRequest(req),
-      headers,
-      Buffer.from(publicKey).toString('base64'),
-    );
+      if (!publicKey) return this.unavailableHealth();
+      await this.verify.verifyWithPublicKey(
+        this.verify.signedRequest(req),
+        headers,
+        Buffer.from(publicKey).toString('base64'),
+      );
 
-    // Privacy projection begins only after authentication succeeds.
-    if (!(await this.recognition.hasPreparedPeer(signer.domain))) {
+      // Privacy projection begins only after authentication succeeds.
+      if (!(await this.recognition.hasPreparedPeer(context.domain))) {
+        return this.unavailableHealth();
+      }
+      const status = await this.recognition.queryHealth(context.domain);
+      if (status === 'unavailable') return this.unavailableHealth();
+      await this.recognition.markReachable(context.domain);
+      return {
+        status,
+        peerAssignedLocalNamespaceId: context.namespaceId,
+      } as const;
+    } catch {
       return this.unavailableHealth();
     }
-    const status = await this.recognition.queryHealth(signer.domain);
-    if (status === 'unavailable') return this.unavailableHealth();
-    await this.recognition.markReachable(signer.domain);
-    return {
-      status,
-      peerAssignedLocalNamespaceId: context.namespaceId,
-    } as const;
   }
 
-  /** Resolve the pinned namespace that scopes the signer's cached certificate set. Failure
-   *  means no verified identity exists, so no certificate can be available: the common
-   *  authentication error, not a privacy projection. */
-  private async resolveHealthSigner(domain: string) {
-    try {
-      return await this.recognition.captureVerifiedContext(domain);
-    } catch (error) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_BAD_SIGNATURE,
-        `no verified identity for signer ${domain}: ${(error as Error).message}`,
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
+  /** Resolve the pinned namespace that scopes the signer's cached certificate
+   *  set, by the claimed root. A root pinned to no unretired epoch has no
+   *  cached certificate set: authentication failure, uniform `unavailable`. */
+  private async resolveHealthSigner(claimedRoot: string) {
+    const [namespace] = await this.database.db
+      .select({
+        domain: identityNamespace.domain,
+        namespaceId: identityNamespace.id,
+      })
+      .from(identityNamespace)
+      .where(
+        and(
+          eq(identityNamespace.rootPublicKey, claimedRoot),
+          isNull(identityNamespace.retiredAt),
+          sql`${identityNamespace.id} > 0`,
+        ),
+      )
+      .limit(1);
+    return namespace ?? null;
   }
 
   private unavailableHealth() {

@@ -221,7 +221,7 @@ export class RemoteMemberMembershipIntentService {
             groupAccount: group.groupAccount,
             groupNamespaceId: 0,
             memberAccount: member.account,
-            memberNamespaceId: member.namespaceId,
+            profileNamespaceId: member.namespaceId,
           })
         : await this.lockExistingPairInTx(tx, existing, command.threadId);
     await lockGroupMemberIntentRowsInTx(
@@ -257,7 +257,7 @@ export class RemoteMemberMembershipIntentService {
     if (!row) throw new Error('remote member authorization disappeared');
     // The member's outbound allocator precedes every client-feed allocation.
     await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
-      { peerDomain: member.domain, namespaceId: member.namespaceId },
+      { namespaceId: member.namespaceId },
     ]);
     const accounts = [...row.managerIds];
     if (row.localMemberId !== null) accounts.push(row.localMemberId);
@@ -399,8 +399,7 @@ export class RemoteMemberMembershipIntentService {
         groupProfileRev: context.row.profileRev,
         localDomain: 'local',
         memberAccount: context.member.account,
-        memberDomain: context.member.domain,
-        memberNamespaceId: context.member.namespaceId,
+        profileNamespaceId: context.member.namespaceId,
         localMemberId: null,
         note: context.wireIntent.note,
         requestedAt: context.intent.requestedAt,
@@ -532,7 +531,7 @@ export class RemoteMemberMembershipIntentService {
       localDomain: 'local',
       memberAccount: member.account,
       memberDomain: member.domain,
-      memberNamespaceId: member.namespaceId,
+      profileNamespaceId: member.namespaceId,
       // The group's own invitation note survives the completion, exactly like
       // the authored collapse.
       note: context.row.groupIntentNote ?? '',
@@ -610,7 +609,7 @@ export class RemoteMemberMembershipIntentService {
       localDomain: 'local',
       memberAccount: member.account,
       memberDomain: member.domain,
-      memberNamespaceId: member.namespaceId,
+      profileNamespaceId: member.namespaceId,
       localMemberId: null,
       projectionDirections: context.row.projectionDirections,
       author: {

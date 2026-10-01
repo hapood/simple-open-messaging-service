@@ -1,6 +1,14 @@
-import { Injectable, inject, signal, effect, computed, DestroyRef } from '@angular/core';
+import {
+  Injectable,
+  inject,
+  signal,
+  effect,
+  computed,
+  DestroyRef,
+} from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { filter, map, Subject, Subscription } from 'rxjs';
+import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
 import { WebdbService } from './webdb.service';
 import { preserveThreadProfile } from './thread-profile-projection';
 import { UserService } from './user.service';
@@ -154,7 +162,10 @@ export class ThreadRepository {
     if (isAndroidNative()) {
       document.addEventListener('visibilitychange', this.onAppVisibilityChange);
       inject(DestroyRef).onDestroy(() =>
-        document.removeEventListener('visibilitychange', this.onAppVisibilityChange),
+        document.removeEventListener(
+          'visibilitychange',
+          this.onAppVisibilityChange,
+        ),
       );
     }
     this.webdb.profileWake$.pipe(takeUntilDestroyed()).subscribe((wake) => {
@@ -164,7 +175,6 @@ export class ThreadRepository {
         if (
           reference.namespaceId === wake.key.profileNamespaceId &&
           reference.account === wake.key.account &&
-          reference.domain === wake.key.domain &&
           reference.profileRev === wake.key.rev
         )
           void this.resolveThreadProfile(item);
@@ -214,6 +224,20 @@ export class ThreadRepository {
         case 'STATE_FEED_UPDATED':
           // SSE workers hand the wake directly to the owning database/Rust executor.
           break;
+        case 'PROFILE_NAMESPACE_UPDATED': {
+          // Change-feed wake: pull (cursor, end] and converge bindings.
+          const wakeEnd = (m.data as { end?: unknown } | undefined)?.end;
+          if (typeof wakeEnd === 'number' && Number.isSafeInteger(wakeEnd))
+            void this.webdb
+              .pullProfileNamespaceChanges(wakeEnd)
+              .catch((error) =>
+                console.warn(
+                  '[profile-namespace] wake sync failed; next wake retries',
+                  error,
+                ),
+              );
+          break;
+        }
         case 'LOCAL_STATE_FEED_COMMITTED': {
           const data = m.data as { userId?: number } | undefined;
           if (data?.userId === this.userService.sessionUserId())
@@ -277,28 +301,26 @@ export class ThreadRepository {
     if (reference.profileRev < 1) return;
     const epoch = this.sessionEpoch;
     try {
-      const result = await this.webdb.resolveProfileEvidence(
-        item.type === 'GROUP'
-          ? {
-              type: 'GROUP_META',
-              threadId: item.threadId,
-              profileRev: reference.profileRev,
-              subject: { type: 'GROUP' },
-            }
-          : {
-              type: 'EXACT',
-              account: reference.account,
-              domain: reference.domain,
-              rev: reference.profileRev,
-            },
-      );
+      const result = await this.webdb.resolveProfileDemand({
+        publisherNamespaceId: reference.namespaceId,
+        lookup: 'ACCOUNT_PROFILE',
+        target: {
+          profileNamespaceId: reference.namespaceId,
+          account: reference.account,
+          rev: reference.profileRev,
+        },
+      });
       if (epoch !== this.sessionEpoch || result.status === 'PENDING') return;
       const profile = result.profile;
       this._items.update((items) =>
         items.map((current) => {
           if (
             threadProfileKey(threadProfileReference(current)) !==
-            threadProfileKey(profile)
+            JSON.stringify([
+              profile.profileNamespaceId,
+              profile.account,
+              profile.profileRev,
+            ])
           )
             return current;
           return current.type === 'GROUP'
@@ -370,9 +392,7 @@ export class ThreadRepository {
     this.localStableReadSeq.clear();
     this.pendingUnknownContentHeads.clear();
     this.threadFeedCursor = undefined;
-    this.threadSyncInFlight = false;
-    this.threadSyncPending = false;
-    this.threadSyncTarget = 0;
+    this.threadSync = this.makeThreadSyncFlight();
     // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
   }
 
@@ -435,7 +455,8 @@ export class ThreadRepository {
     this._openThreadId.set(threadId);
     if (threadId !== undefined) {
       const target =
-        attentionSnapshot(this.threadStates.get(threadId))?.tombstoneEndSeq ?? 0;
+        attentionSnapshot(this.threadStates.get(threadId))?.tombstoneEndSeq ??
+        0;
       await this.messageRepo.openTombstoneStream(threadId, target);
     }
   }
@@ -806,9 +827,11 @@ export class ThreadRepository {
   }
 
   private threadFeedCursor: number | undefined;
-  private threadSyncInFlight = false;
-  private threadSyncPending = false;
-  private threadSyncTarget = 0;
+  /** Thread-feed drain scheduler: joins concurrent targets (max merge),
+   *  runs one trailing round when a target lands mid-drain. Replaced on
+   *  session reset so a queued trailing round never crosses sessions; the
+   *  epoch guard inside each round is the hard boundary. */
+  private threadSync = this.makeThreadSyncFlight();
 
   /** HELLO (the SSE connect handshake) — the network-refresh half of boot (the cache-paint is owned by
    *  {@link load}, which eager-paints from the IDB cache before HELLO lands). Carries the caller's userId
@@ -834,6 +857,21 @@ export class ThreadRepository {
     //    painted from the IDB cache (and on a cold start the cache is empty, so the delta below populates).
     await this.userService.establishSession(d.userId, d.profileRev ?? 0);
     const epoch = this.sessionEpoch;
+    // Profile-namespace change sync: the HELLO anchor skips the pull when the
+    // persisted cursor already matches (fresh caches simply start at 0).
+    if (
+      d.profileNamespaceChangeEndId === undefined ||
+      Number.isSafeInteger(d.profileNamespaceChangeEndId)
+    ) {
+      void this.webdb
+        .pullProfileNamespaceChanges(d.profileNamespaceChangeEndId)
+        .catch((error) =>
+          console.warn(
+            '[profile-namespace] HELLO sync failed; next wake retries',
+            error,
+          ),
+        );
+    }
     // HELLO can race the thread-list mount. It awaits the account-level thread-init barrier, but does
     // not provide or own the deletion HWM; reconnects reuse the persisted result.
     if (this.threadFeedCursor === undefined) {
@@ -863,7 +901,9 @@ export class ThreadRepository {
     // The HELLO wake reaches the worker/Rust independently. A concurrent completion also
     // delivers LOCAL_THREAD_FEED_COMMITTED after the cursor and Group Meta pages commit.
     await this.refreshCommittedThreadFeed(
-      this._items().filter((item) => item.type === 'GROUP').map((item) => item.threadId),
+      this._items()
+        .filter((item) => item.type === 'GROUP')
+        .map((item) => item.threadId),
     );
     this.publishForegroundFeedReady();
   }
@@ -881,40 +921,38 @@ export class ThreadRepository {
     this.applyItems(items);
   }
 
-  private async syncThreadFeed(target: number): Promise<void> {
-    if (!Number.isInteger(target) || target < 0) return;
-    this.threadSyncTarget = Math.max(this.threadSyncTarget, target);
-    this.threadSyncPending = true;
-    if (this.threadSyncInFlight || this.threadFeedCursor === undefined) return;
-    this.threadSyncInFlight = true;
-    const epoch = this.sessionEpoch;
-    try {
-      while (
-        this.threadFeedCursor !== undefined &&
-        (this.threadSyncPending ||
-          this.threadFeedCursor < this.threadSyncTarget)
-      ) {
-        this.threadSyncPending = false;
-        const result = await this.webdb.syncThreadFeed(
-          this.threadSyncTarget,
-          this.threadFeedCursor,
+  private makeThreadSyncFlight(): TrailingSingleFlight<number> {
+    return new TrailingSingleFlight<number>(async (target) => {
+      const epoch = this.sessionEpoch;
+      try {
+        while (
+          this.threadFeedCursor !== undefined &&
+          this.threadFeedCursor < target
+        ) {
+          const result = await this.webdb.syncThreadFeed(
+            target,
+            this.threadFeedCursor,
+          );
+          if (epoch !== this.sessionEpoch) return;
+          await this.refreshCommittedThreadFeed(result.groupThreadIds);
+          if (epoch !== this.sessionEpoch) return;
+          if (result.error) throw new Error(result.error);
+        }
+      } catch (error) {
+        console.warn(
+          '[thread-feed] sync failed; next wake or HELLO retries',
+          error,
         );
-        if (epoch !== this.sessionEpoch) return;
-        await this.refreshCommittedThreadFeed(result.groupThreadIds);
-        if (epoch !== this.sessionEpoch) return;
-        if (result.error) throw new Error(result.error);
+      } finally {
+        if (epoch === this.sessionEpoch) this.publishForegroundFeedReady();
       }
-    } catch (error) {
-      console.warn(
-        '[thread-feed] sync failed; next wake or HELLO retries',
-        error,
-      );
-    } finally {
-      if (epoch === this.sessionEpoch) {
-        this.threadSyncInFlight = false;
-        this.publishForegroundFeedReady();
-      }
-    }
+    }, Math.max);
+  }
+
+  private syncThreadFeed(target: number): Promise<void> {
+    if (!Number.isInteger(target) || target < 0) return Promise.resolve();
+    if (this.threadFeedCursor === undefined) return Promise.resolve();
+    return this.threadSync.trigger(target);
   }
 
   async refreshBackgroundThreadFeed(userId: number): Promise<void> {
@@ -964,10 +1002,12 @@ export class ThreadRepository {
     for (const stored of states) {
       if (epoch !== this.sessionEpoch) return;
       const delivered = attentionSnapshot(stored);
-      const notify = delivered && threadNotificationChanged(
-        attentionSnapshot(this.threadStates.get(stored.threadId)),
-        delivered,
-      );
+      const notify =
+        delivered &&
+        threadNotificationChanged(
+          attentionSnapshot(this.threadStates.get(stored.threadId)),
+          delivered,
+        );
       let state = this.threadStates.get(stored.threadId) ?? stored;
       if (delivered) state = mergeThreadAttention(state, delivered);
       const local = Math.max(
@@ -1261,6 +1301,9 @@ interface HelloPayload {
   stateFeedEndId: number;
   threadFeedEndId: number;
   profileRev?: number;
+  /** Change-feed head; a mismatch with the persisted cursor triggers one
+   *  profile-namespace sync round (the profileRev skip pattern). */
+  profileNamespaceChangeEndId?: number;
 }
 
 function isThreadListFeedId(value: unknown): value is number {
@@ -1304,7 +1347,6 @@ function threadProfileKey(
   return JSON.stringify([
     profile.namespaceId,
     profile.account,
-    profile.domain,
     profile.profileRev,
   ]);
 }

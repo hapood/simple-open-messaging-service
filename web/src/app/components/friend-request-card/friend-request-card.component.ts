@@ -15,7 +15,7 @@ import {
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
-import type { ProfileSelector } from '../../../../../shared/profile-selector';
+import type { ProfileDemand } from '../../../../../shared/profile-demand';
 
 export interface FriendRequestCardModel {
   id: string;
@@ -23,6 +23,7 @@ export interface FriendRequestCardModel {
   name?: string;
   account?: string;
   domain?: string;
+  namespaceId?: number;
   reqMessage?: string;
   status: RequestProjectionStatusValue;
   date: number;
@@ -56,14 +57,17 @@ export class FriendRequestCardComponent {
   readonly rejected = output<void>();
   readonly UserAvatarType = UserAvatarType;
 
-  profileEvidence(): ProfileSelector | undefined {
+  profileEvidence(): ProfileDemand | undefined {
     const request = this.requestItem();
     return request.account && request.domain && request.profileRev
       ? {
-          type: 'EXACT',
-          account: request.account,
-          domain: request.domain,
-          rev: request.profileRev,
+          publisherNamespaceId: request.namespaceId ?? 0,
+          lookup: 'ACCOUNT_PROFILE',
+          target: {
+            profileNamespaceId: request.namespaceId ?? 0,
+            account: request.account,
+            rev: request.profileRev,
+          },
         }
       : undefined;
   }

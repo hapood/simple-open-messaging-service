@@ -50,7 +50,7 @@ import {
 import { ContactCardShareService } from '../../services/contact-card-share.service';
 import { FederationNamespaceService } from '../../services/federation-namespace.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
-import type { ProfileSelector } from '../../../../../shared/profile-selector';
+import type { ProfileDemand } from '../../../../../shared/profile-demand';
 import {
   currentGroupAnnouncement,
   isGroupMetaCurrent,
@@ -109,30 +109,34 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   /** The open thread id (template-bound for the alias editor). */
   readonly threadId = this.convList.openThreadId;
 
-  groupProfileEvidence(): ProfileSelector | undefined {
+  groupProfileEvidence(): ProfileDemand | undefined {
     const group = this.group();
     const threadId = this.threadId();
     const rev = this.userMsgTrd()?.profileRev;
     return group && threadId !== undefined && rev && rev > 0
       ? {
-          type: 'GROUP_META',
-          threadId,
-          profileRev: rev,
-          subject: { type: 'GROUP' },
+          publisherNamespaceId: group.namespaceId,
+          lookup: 'ACCOUNT_PROFILE',
+          target: {
+            profileNamespaceId: group.namespaceId,
+            account: group.account,
+            rev,
+          },
         }
       : undefined;
   }
 
-  memberProfileEvidence(member: ResolvedMemberProfile): ProfileSelector {
+  memberProfileEvidence(member: ResolvedMemberProfile): ProfileDemand {
+    const group = this.group();
     return {
-      type: 'GROUP_META',
-      threadId: this.threadId()!,
-      profileRev: member.profileRev,
-      subject: {
-        type: 'MEMBER',
+      publisherNamespaceId: member.namespaceId,
+      lookup: 'GROUP_MEMBER_PROFILE',
+      target: {
+        profileNamespaceId: member.namespaceId,
         account: member.account,
-        domain: member.domain,
+        rev: member.profileRev,
       },
+      groupAccount: group?.account ?? '',
     };
   }
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */

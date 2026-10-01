@@ -5,7 +5,6 @@ import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
-  federatedPeer,
   identityNamespace,
   mediaAsset,
   message,
@@ -42,7 +41,7 @@ describe('FederationMessageFeedService thread query', () => {
   beforeEach(async () => {
     await truncateTablesForTest(
       database.pool,
-      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
     );
     service = new FederationMessageFeedService(database);
   });
@@ -50,7 +49,7 @@ describe('FederationMessageFeedService thread query', () => {
   afterAll(async () => {
     await truncateTablesForTest(
       database.pool,
-      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
     );
     await mod.close();
   });
@@ -77,14 +76,15 @@ describe('FederationMessageFeedService thread query', () => {
             rootKeyFingerprint: 'sha256:message-feed-test',
             rootPublicKey: Buffer.alloc(32, 3).toString('base64'),
             identityPinnedAt: now,
+            active: true,
+            trustLevel: 'available',
           })
           .returning({ id: identityNamespace.id })
       )[0].id;
-    await database.db.insert(federatedPeer).values({
-      domain: peerDomain,
-      activeNamespaceId: namespaceId,
-      trustLevel: 'available',
-    });
+    await database.db
+      .update(identityNamespace)
+      .set({ active: true, trustLevel: 'available' })
+      .where(eq(identityNamespace.id, namespaceId));
     const [alice] = await database.db
       .insert(user)
       .values({

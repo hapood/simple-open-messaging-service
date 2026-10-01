@@ -15,7 +15,7 @@ export interface GroupMembershipStateRow extends Record<string, unknown> {
   pairId: string;
   memberAccount: string;
   memberDomain: string;
-  memberNamespaceId: number;
+  profileNamespaceId: number;
   memberNote: string | null;
   memberIntentStatus: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' | null;
   memberProfileRev: number | null;
@@ -45,17 +45,15 @@ export function groupMembershipStateSql(input: {
   /** The group endpoint's own namespace; 0 when the group is hosted here. */
   groupNamespaceId: number;
   memberAccount: string;
-  memberDomain: string;
-  memberNamespaceId: number;
+  profileNamespaceId: number;
 }) {
-  const memberNamespaceId = sql`CASE WHEN ${input.memberDomain} = 'local'
-    THEN 0 ELSE ${input.memberNamespaceId} END`;
+  const profileNamespaceId = sql`${input.profileNamespaceId}`;
   return sql`
     WITH side_b AS MATERIALIZED (
       SELECT status, note, "profileRev", "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.memberAccount}
-        AND "authorNamespaceId" = ${memberNamespaceId}
+        AND "authorNamespaceId" = ${profileNamespaceId}
         AND "receiverAccount" = ${input.groupAccount}
         AND "receiverNamespaceId" = ${input.groupNamespaceId}
     ), side_a AS MATERIALIZED (
@@ -64,7 +62,7 @@ export function groupMembershipStateSql(input: {
       WHERE a."authorAccount" = ${input.groupAccount}
         AND a."authorNamespaceId" = ${input.groupNamespaceId}
         AND a."receiverAccount" = ${input.memberAccount}
-        AND a."receiverNamespaceId" = ${memberNamespaceId}
+        AND a."receiverNamespaceId" = ${profileNamespaceId}
     ), roster AS MATERIALIZED (
       SELECT * FROM "GroupMetaMemberFeed"
       WHERE "threadId" = ${input.threadId}
@@ -73,7 +71,7 @@ export function groupMembershipStateSql(input: {
       FROM roster r JOIN "Account" a ON a.account = r."memberAccount"
         AND a.domain = 'local' AND a."namespaceId" = 0
       JOIN "AccountThreadState" p ON p."accountId" = a.id AND p."threadId" = ${input.threadId}
-      WHERE r."memberDomain" = 'local'
+      WHERE r."profileNamespaceId" = 0
         AND r.operation = 'MEMBER_UPSERT' AND r.body->>'role' IN ('OWNER', 'ADMIN')
     ), capacity_scope AS MATERIALIZED (
       -- Same authorization growth gate as the group-side variants: each side A
@@ -81,9 +79,7 @@ export function groupMembershipStateSql(input: {
       -- member's own pair is its already-reserved slot.
       SELECT COUNT(*)::integer AS "authorizedCount", COALESCE(BOOL_OR(
           pair."endpointBAccount" = ${input.memberAccount}
-          AND pair."endpointBNamespaceId" = CASE
-            WHEN ${input.memberDomain} = 'local' THEN 0
-            ELSE ${input.memberNamespaceId} END
+          AND pair."endpointBNamespaceId" = ${input.profileNamespaceId}
         ), false) AS "alreadyAuthorized"
       FROM ${groupStateSql} scope
       JOIN "RelationshipPair" pair ON pair.kind = 'GROUP_MEMBER'
@@ -103,8 +99,8 @@ export function groupMembershipStateSql(input: {
     )
     SELECT g.*, ${input.pairId}::text AS "pairId",
       ${input.memberAccount}::text AS "memberAccount",
-      ${input.memberDomain}::text AS "memberDomain",
-      ${input.memberNamespaceId}::integer AS "memberNamespaceId",
+      member_ns.domain AS "memberDomain",
+      ${input.profileNamespaceId}::integer AS "profileNamespaceId",
       side_b.note AS "memberNote",
       side_b.status AS "memberIntentStatus", side_b."profileRev" AS "memberProfileRev",
       (side_b.status = 'ACCEPTED' OR (side_b.status = 'REQUESTED'
@@ -129,16 +125,16 @@ export function groupMembershipStateSql(input: {
       COALESCE((SELECT jsonb_agg(DISTINCT p.direction ORDER BY p.direction)
         FROM "GroupRequestProjection" p
         WHERE p."threadId" = ${input.threadId} AND p."memberAccount" = ${input.memberAccount}
-          AND p."memberDomain" = ${input.memberDomain}
-          AND p."memberNamespaceId" = ${input.memberNamespaceId}
+          AND p."profileNamespaceId" = ${input.profileNamespaceId}
           AND p.status = 'REQUESTED'), '[]'::jsonb) AS "projectionDirections"
     FROM ${groupStateSql} g
     LEFT JOIN side_b ON true
     LEFT JOIN side_a ON true
+    JOIN "IdentityNamespace" member_ns ON member_ns.id = ${input.profileNamespaceId}
     LEFT JOIN "Account" local_member ON local_member.account = ${input.memberAccount}
-      AND local_member.domain = ${input.memberDomain}
-      AND local_member."namespaceId" = CASE WHEN ${input.memberDomain} = 'local'
-        THEN 0 ELSE ${input.memberNamespaceId} END
+      AND local_member.domain = 'local'
+      AND local_member."namespaceId" = 0
+      AND ${input.profileNamespaceId} = 0
     WHERE g.id = ${input.threadId}
   `;
 }

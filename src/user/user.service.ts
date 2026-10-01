@@ -8,7 +8,6 @@ import { BusinessCode } from '../common/business-code.js';
 
 const selectedProfile = and(
   eq(profileTable.account, accountTable.account),
-  eq(profileTable.domain, 'local'),
   eq(profileTable.publisherNamespaceId, 0),
   eq(profileTable.profileNamespaceId, 0),
   eq(profileTable.profileRev, accountTable.defaultProfileRev),
@@ -97,7 +96,6 @@ export class UserService {
       const previous = await tx.query.profileTable.findFirst({
         where: and(
           eq(profileTable.account, current.account),
-          eq(profileTable.domain, 'local'),
           eq(profileTable.publisherNamespaceId, 0),
           eq(profileTable.profileNamespaceId, 0),
           eq(profileTable.profileRev, current.defaultProfileRev),
@@ -106,7 +104,6 @@ export class UserService {
       const nextRev = current.defaultProfileRev + 1;
       await tx.insert(profileTable).values({
         account: current.account,
-        domain: 'local',
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: nextRev,
@@ -216,7 +213,6 @@ export class UserService {
       if (!created) return { status: 2 };
       await tx.insert(profileTable).values({
         account: address,
-        domain: 'local',
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 1,

@@ -59,7 +59,7 @@ export class UserManageService {
             FROM "GroupMetaMemberFeed" member_fact
             WHERE member_fact."threadId" = group_profile.id
               AND member_fact."memberAccount" = (SELECT account FROM "Account" WHERE id = ${id})
-              AND member_fact."memberDomain" = 'local'
+              AND member_fact."profileNamespaceId" = 0
             ORDER BY member_fact."feedId" DESC
             LIMIT 1
           ) latest ON latest.operation = 'MEMBER_UPSERT'

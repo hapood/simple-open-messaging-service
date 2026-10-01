@@ -17,6 +17,7 @@ describe('SignatureService (RFC 9421 + Ed25519)', () => {
     const keypair = {
       getKeyId: () => 'aaa.com/key-1',
       getPrivateKey: () => priv,
+      getRootPublicKeyB64: () => Buffer.alloc(32, 4).toString('base64'),
     } as unknown as KeypairService;
     return { svc: new SignatureService(keypair), pub };
   }
@@ -32,6 +33,10 @@ describe('SignatureService (RFC 9421 + Ed25519)', () => {
     const headers = await svc.signOutbound(req);
     expect(headers['signature-input']).toMatch(/^sig1=\("@method"/);
     expect(headers.signature).toMatch(/^sig1=:[^:]+:$/);
+    // The unsigned routing hint rides along but never enters the signature base.
+    expect(headers['s2s-root-key']).toBe(
+      Buffer.alloc(32, 4).toString('base64'),
+    );
     await expect(svc.verifyWithKey(req, headers, pub)).resolves.toBe(true);
   });
 

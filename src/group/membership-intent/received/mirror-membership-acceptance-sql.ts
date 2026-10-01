@@ -114,7 +114,7 @@ export function mirrorMembershipActivationSql(
       SELECT COALESCE((SELECT body->>'role' FROM (
           SELECT operation, body FROM "GroupMetaMemberFeed"
           WHERE "threadId" = ${input.threadId} AND "memberAccount" = ${input.memberAccount}
-            AND "memberDomain" = 'local'
+            AND "profileNamespaceId" = 0
           ORDER BY "feedId" DESC LIMIT 1
         ) latest WHERE operation = 'MEMBER_UPSERT'), 'MEMBER') AS role
     ), member_state AS (
@@ -181,7 +181,7 @@ export function mirrorMembershipActivationFeedSql(input: {
         })}::text AS "compactionKey",
         ${input.presentation.groupAccount}::text AS account,
         ${input.presentation.groupDomain}::text AS domain,
-        ${input.memberAccount}::text AS "subjectAccount", 'local'::text AS "subjectDomain",
+        ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId",
         ${mirrorIntentFeedBodySql({
           status: sql`${input.status}::text`,
           note: sql`${input.note}::text`,

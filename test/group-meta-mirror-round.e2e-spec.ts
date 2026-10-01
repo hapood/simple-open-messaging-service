@@ -5,9 +5,9 @@ import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   accountThreadState,
-  federatedPeer,
   groupMeta,
   groupMetaMemberFeed,
+  identityNamespace,
   message,
   messageThread,
   profileTable,
@@ -142,8 +142,9 @@ describe('mirror Group Meta rounds', () => {
       .where(eq(messageThread.id, threadId));
     await database.db.delete(user).where(eq(user.id, localUserId));
     await database.db
-      .delete(federatedPeer)
-      .where(eq(federatedPeer.domain, originDomain));
+      .update(identityNamespace)
+      .set({ active: false })
+      .where(eq(identityNamespace.domain, originDomain));
     await module.close();
   });
 
@@ -283,7 +284,9 @@ describe('mirror Group Meta rounds', () => {
     expect(
       rows.find((row) => row.memberAccount === 'stale-member'),
     ).toBeUndefined();
-    expect(rows.filter((row) => row.operation === 'MEMBER_UPSERT')).toHaveLength(3);
+    expect(
+      rows.filter((row) => row.operation === 'MEMBER_UPSERT'),
+    ).toHaveLength(3);
     // A mirror must expose the same active roster cardinality as the
     // authority after the complete Group Meta drain, including the remote
     // owner. This is the server-side contract consumed by the client mirror.

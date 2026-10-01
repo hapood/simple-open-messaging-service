@@ -80,24 +80,24 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
       // sibling CTEs otherwise see the statement snapshot.
       establishedOverride: sql`(SELECT true FROM pair_change)`,
     })}, audience_local AS (
-      INSERT INTO "ThreadAudience" ("threadId", "targetDomain", "targetNamespaceId", "localUserId")
-      SELECT ${input.threadId}, 'local', 0, a.id
+      INSERT INTO "ThreadAudience" ("threadId", "targetNamespaceId", "localUserId")
+      SELECT ${input.threadId}, 0, a.id
       FROM "RelationshipPair" p, "Account" a
       WHERE p.id = ${input.pairId} AND a.domain = 'local' AND a."namespaceId" = 0
         AND ((p."endpointAAccount" = a.account AND p."endpointANamespaceId" = 0)
           OR (p."endpointBAccount" = a.account AND p."endpointBNamespaceId" = 0))
         AND EXISTS (SELECT 1 FROM pair_change)
-      ON CONFLICT ("targetDomain", "localUserId", "threadId") WHERE "targetDomain" = 'local' DO NOTHING
+      ON CONFLICT ("localUserId", "threadId") WHERE "localUserId" IS NOT NULL DO NOTHING
       RETURNING id
     ), audience_remote AS (
-      INSERT INTO "ThreadAudience" ("threadId", "targetDomain", "targetNamespaceId",
+      INSERT INTO "ThreadAudience" ("threadId", "targetNamespaceId",
         "localUserId", "messageAccessAfterSeq")
-      SELECT ${input.threadId}, ${input.targetDomain}, ${input.targetNamespaceId}, NULL,
+      SELECT ${input.threadId}, ${input.targetNamespaceId}, NULL,
         CASE WHEN COALESCE((SELECT value <> 'false' FROM "SystemSetting"
           WHERE key = ${FEDERATION_HISTORY_ACCESS_SETTING_KEY}), true)
           THEN 0 ELSE (SELECT j."curSeq" FROM join_source j) END
       WHERE ${remote ? sql`true` : sql`false`} AND EXISTS (SELECT 1 FROM pair_change)
-      ON CONFLICT ("targetNamespaceId", "threadId") WHERE "targetDomain" <> 'local' DO NOTHING
+      ON CONFLICT ("targetNamespaceId", "threadId") WHERE "localUserId" IS NULL DO NOTHING
       RETURNING id
     ), seq_alloc AS (
       -- One update per row per statement: the round enable, the head
@@ -107,11 +107,11 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
       WHERE t.id = ${input.threadId} AND EXISTS (SELECT 1 FROM pair_change)
       RETURNING t."curSeq", t."tombstoneEndSeq"
     ), system_message AS (
-      INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "creatorDomain", "updatedAt")
+      INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "profileNamespaceId", "publisherNamespaceId", "updatedAt")
       SELECT ${input.threadId}, s."curSeq", 'SYSTEM'::"ContentType",
         jsonb_build_object('type', 'FRIEND_ADDED', 'participants',
           ${userIntentSystemParticipantsSql({ pairId: input.pairId, actorState: 'accepted' })}),
-        '$system', 'local', CURRENT_TIMESTAMP
+        '$system', 0, 0, CURRENT_TIMESTAMP
       FROM seq_alloc s
       RETURNING seq
     ), ${threadFanoutAdmissionSql({

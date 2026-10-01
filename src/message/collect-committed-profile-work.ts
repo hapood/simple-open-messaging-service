@@ -15,7 +15,6 @@ export interface CommittedProfileMessage {
   threadType: 'P2P' | 'GROUP';
   creator: {
     account: string;
-    domain: string;
     profileNamespaceId: number;
     profileRev: number;
   };
@@ -108,7 +107,6 @@ export function collectCommittedProfileWork(
           publisherNamespaceId,
           address.profileNamespaceId,
           address.account,
-          address.domain,
           address.profileRev,
         ]);
         const previous = thread.get(key);
@@ -116,7 +114,6 @@ export function collectCommittedProfileWork(
           const target = {
             profileNamespaceId: address.profileNamespaceId,
             account: address.account,
-            domain: address.domain,
             rev: address.profileRev,
           };
           if (item.threadType === 'GROUP') {
@@ -169,7 +166,7 @@ export function collectCommittedProfileWork(
       item.publisherNamespaceId,
       author.profileNamespaceId,
       author.account,
-      author.domain,
+      author.profileNamespaceId,
     ]);
     const previous = thread.get(key);
     if (!previous || item.seq > previous.evidence.projection.messageSeq) {
@@ -177,13 +174,11 @@ export function collectCommittedProfileWork(
         publisherNamespaceId: item.publisherNamespaceId,
         profileNamespaceId: author.profileNamespaceId,
         account: author.account,
-        domain: author.domain,
         rev: author.profileRev,
       };
       const target = {
         profileNamespaceId: author.profileNamespaceId,
         account: author.account,
-        domain: author.domain,
         rev: author.profileRev,
       };
       const projection = {
@@ -222,9 +217,9 @@ export function collectCommittedProfileWork(
       );
     }
   }
-  const messageWork = [...evidenceByThread.values()].flatMap((thread) =>
-    [...thread.values()],
-  );
+  const messageWork = [...evidenceByThread.values()].flatMap((thread) => [
+    ...thread.values(),
+  ]);
   return {
     demands: [
       ...messageWork.map(({ demand }) => demand),

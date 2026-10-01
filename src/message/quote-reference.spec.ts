@@ -7,7 +7,7 @@ describe('stored quote resolution', () => {
     threadId: 7,
     namespaceId: 3,
     seq: 20,
-    sourceNamespaceId: 3,
+    publisherNamespaceId: 3,
     contentType: 'PURE_TEXT',
     content: JSON.stringify({ text: 'reply', quote: { seq: 0, sourceSeq: 4 } }),
   };
@@ -83,7 +83,7 @@ describe('stored quote resolution', () => {
           namespaceId: 3,
           seq: 104,
           originSeq: 4,
-          sourceNamespaceId: 3,
+          publisherNamespaceId: 3,
           localState: 'READY',
           isDeleted: false,
         },
@@ -96,7 +96,7 @@ describe('stored quote resolution', () => {
   it('uses the reference namespace even after the containing message origin changes', async () => {
     const message = {
       ...parent,
-      sourceNamespaceId: 99,
+      publisherNamespaceId: 99,
       content: JSON.stringify({
         text: 'reply',
         quote: { seq: 4, namespaceId: 3 },
@@ -110,7 +110,7 @@ describe('stored quote resolution', () => {
           threadId: 7,
           seq: 104,
           originSeq: 4,
-          sourceNamespaceId: 3,
+          publisherNamespaceId: 3,
           isDeleted: false,
         },
       }) as never,
@@ -128,7 +128,7 @@ describe('stored quote resolution', () => {
           threadId: 7,
           seq: 4,
           originSeq: 4,
-          sourceNamespaceId: 99,
+          publisherNamespaceId: 99,
           isDeleted: false,
         },
       }) as never,

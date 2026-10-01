@@ -9,7 +9,7 @@ The existing message `creator` field is its sender, always
 `{ account: '$system', domain: 'local', publisherNamespaceId: 0, profileNamespaceId: 0, profileRev: 0 }`. Do not add a second
 `sender` field. This is the reserved disabled `Account.kind = SYSTEM` account,
 which has no published profile. Notification rows use profile revision zero and
-source namespace zero. They are never published as federation messages.
+publisher namespace zero. They are never published as federation messages.
 
 The sender says who delivers the notification. The content says what happened.
 There is no generic `actor` or `subject` in notification content. In particular,

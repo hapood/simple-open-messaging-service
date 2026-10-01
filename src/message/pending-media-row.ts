@@ -8,7 +8,6 @@ export type OutboundPendingMediaRow = PendingMediaRow & {
   messageId: null;
   threadId: number;
   creatorAccount: string;
-  creatorDomain: string;
   contentType: ContentType;
   content: string;
   originDomain: null;
@@ -20,12 +19,11 @@ export type InboundPendingMediaRow = PendingMediaRow & {
   messageId: bigint;
   threadId: null;
   creatorAccount: null;
-  creatorDomain: null;
   contentType: null;
   content: null;
   clientMessageId: null;
   originDomain: string;
-  namespaceId: number;
+  publisherNamespaceId: number;
   expectedAuthorizationEpoch: number;
 };
 
@@ -38,7 +36,6 @@ export function requireOutboundPendingMedia(
     row.messageId !== null ||
     row.threadId === null ||
     row.creatorAccount === null ||
-    row.creatorDomain === null ||
     row.contentType === null ||
     row.content === null ||
     row.originDomain !== null ||
@@ -60,12 +57,11 @@ export function requireInboundPendingMedia(
     row.messageId === null ||
     row.threadId !== null ||
     row.creatorAccount !== null ||
-    row.creatorDomain !== null ||
     row.contentType !== null ||
     row.content !== null ||
     row.clientMessageId !== null ||
     row.originDomain === null ||
-    row.namespaceId === null ||
+    row.publisherNamespaceId === null ||
     row.expectedAuthorizationEpoch === null
   ) {
     throw new Error(`PendingMedia ${row.batchId} has an invalid INBOUND shape`);

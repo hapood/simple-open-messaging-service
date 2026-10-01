@@ -7,19 +7,21 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import { identityNamespace } from '../database/schema.js';
+import { ProfileNamespaceFeedService } from './profile-namespace-feed.service.js';
+import { ProfileNamespaceInfoService } from './profile-namespace-info.service.js';
 
 export interface FederationContext {
   domain: string;
   namespaceId: number;
   peerAssignedLocalNamespaceId: number;
-  rootKeyFingerprint: string;
+  rootPublicKey: string;
 }
 
 export interface VerifiedFederationNamespace {
   domain: string;
   namespaceId: number;
   peerAssignedLocalNamespaceId: number | null;
-  rootKeyFingerprint: string;
+  rootPublicKey: string;
 }
 
 export interface RetiredFederationNamespace {
@@ -30,12 +32,54 @@ export interface RetiredFederationNamespace {
 /** Owns the boundary between a current peer route domain and locally verified identity namespaces. */
 @Injectable()
 export class FederationNamespaceService {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly profileNamespaceFeed: ProfileNamespaceFeedService,
+    private readonly profileNamespaceInfo: ProfileNamespaceInfoService,
+  ) {}
 
   async captureActive(domain: string): Promise<FederationContext> {
     return this.database.db.transaction((tx) =>
       this.captureActiveInTx(tx, domain),
     );
+  }
+
+  /** Captures a known peer by its lifelong namespace id. The id is the
+   *  durable identity key: the row's current domain binding is followed even
+   *  across a review-approved re-bind, and only reset retirement ends the
+   *  identity. Callers with prior knowledge address peers by id, never by a
+   *  domain they remember. */
+  async captureActiveByIdInTx(
+    tx: DatabaseTransaction,
+    namespaceId: number,
+  ): Promise<FederationContext> {
+    const [row] = await tx
+      .select({
+        domain: identityNamespace.domain,
+        namespaceId: identityNamespace.id,
+        peerAssignedLocalNamespaceId:
+          identityNamespace.peerAssignedLocalNamespaceId,
+        rootPublicKey: identityNamespace.rootPublicKey,
+        active: identityNamespace.active,
+        retiredAt: identityNamespace.retiredAt,
+      })
+      .from(identityNamespace)
+      .where(eq(identityNamespace.id, namespaceId))
+      .limit(1);
+    if (
+      !row ||
+      row.retiredAt !== null ||
+      !row.active ||
+      row.peerAssignedLocalNamespaceId === null ||
+      row.rootPublicKey === null
+    )
+      this.unavailableById(namespaceId);
+    const { active: _active, retiredAt: _retiredAt, ...context } = row;
+    return {
+      ...context,
+      peerAssignedLocalNamespaceId: context.peerAssignedLocalNamespaceId!,
+      rootPublicKey: context.rootPublicKey!,
+    };
   }
 
   async captureActiveInTx(
@@ -60,7 +104,7 @@ export class FederationNamespaceService {
         namespaceId: identityNamespace.id,
         peerAssignedLocalNamespaceId:
           identityNamespace.peerAssignedLocalNamespaceId,
-        rootKeyFingerprint: identityNamespace.rootKeyFingerprint,
+        rootPublicKey: identityNamespace.rootPublicKey,
       })
       .from(identityNamespace)
       .where(
@@ -71,12 +115,12 @@ export class FederationNamespaceService {
         ),
       )
       .limit(1);
-    if (!row || row.rootKeyFingerprint === null) this.unavailable(domain);
+    if (!row || row.rootPublicKey === null) this.unavailable(domain);
     return {
       domain: row.domain,
       namespaceId: row.namespaceId,
       peerAssignedLocalNamespaceId: row.peerAssignedLocalNamespaceId,
-      rootKeyFingerprint: row.rootKeyFingerprint,
+      rootPublicKey: row.rootPublicKey,
     };
   }
 
@@ -91,7 +135,7 @@ export class FederationNamespaceService {
       .where(
         and(
           eq(identityNamespace.id, context.namespaceId),
-          eq(identityNamespace.rootKeyFingerprint, context.rootKeyFingerprint),
+          eq(identityNamespace.rootPublicKey, context.rootPublicKey),
         ),
       )
       .limit(1);
@@ -134,7 +178,6 @@ export class FederationNamespaceService {
     tx: DatabaseTransaction,
     identity: {
       domain: string;
-      rootKeyFingerprint: string;
       rootPublicKey: string;
       identityPinnedAt: Date;
     },
@@ -153,10 +196,7 @@ export class FederationNamespaceService {
       .limit(1);
 
     if (active) {
-      if (
-        active.rootKeyFingerprint !== identity.rootKeyFingerprint ||
-        active.rootPublicKey !== identity.rootPublicKey
-      ) {
+      if (active.rootPublicKey !== identity.rootPublicKey) {
         throw new BusinessException(
           BusinessCode.FEDERATION_IDENTITY_MISMATCH,
           `${identity.domain} does not match its active federation namespace`,
@@ -166,7 +206,7 @@ export class FederationNamespaceService {
         domain: identity.domain,
         namespaceId: active.id,
         peerAssignedLocalNamespaceId: active.peerAssignedLocalNamespaceId,
-        rootKeyFingerprint: identity.rootKeyFingerprint,
+        rootPublicKey: identity.rootPublicKey,
       };
     }
 
@@ -176,11 +216,24 @@ export class FederationNamespaceService {
       .returning({ id: identityNamespace.id });
     if (!created || created.id <= 0)
       throw new Error('failed to allocate a federation namespace');
+    // A newly allocated namespace item is one feed modification. The entry
+    // never matches a consumer's cached row (the id is new); it is recorded
+    // for uniformity so every namespace birth advances the shared feed.
+    await this.profileNamespaceFeed.recordNamespaceChangeInTx(tx, created.id);
+    // Handshake seed: the peer's own binding is known from the
+    // hostname-verified domain and root of this activation; updateFeedId 0
+    // lets the first feed pull refresh the counter.
+    await this.profileNamespaceInfo.seedDirectRowInTx(
+      tx,
+      created.id,
+      identity.domain,
+      identity.rootPublicKey,
+    );
     return {
       domain: identity.domain,
       namespaceId: created.id,
       peerAssignedLocalNamespaceId: null,
-      rootKeyFingerprint: identity.rootKeyFingerprint,
+      rootPublicKey: identity.rootPublicKey,
     };
   }
 
@@ -213,6 +266,13 @@ export class FederationNamespaceService {
     throw new BusinessException(
       BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
       `federation peer ${domain} has no active namespace`,
+    );
+  }
+
+  private unavailableById(namespaceId: number): never {
+    throw new BusinessException(
+      BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+      `federation namespace ${namespaceId} is retired or unknown`,
     );
   }
 }

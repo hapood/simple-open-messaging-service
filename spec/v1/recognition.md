@@ -1024,16 +1024,16 @@ has accepted the rotation or the rotation is abandoned (Transport and
 Security, Section 1.5). The protocol defines no automation, queueing, or
 multi-party coordination for any of these decisions.
 
-## 12. Sealed-challenge verification and namespace identity service
+## 12. Sealed-challenge verification service
 
 `POST /s2s/v1/verify` is a stateless challenge-answering service every
-server offers to its recognized peers. It answers two questions using the
-responder's retained key history: whether the responder still holds the
-private counterpart of a supplied public key (proven by opening a sealed
-challenge), and which root public key the responder has pinned for a
-namespace id in its own namespace space.
+server offers to its recognized peers: it proves whether the responder
+still holds the private counterpart of a supplied public key by opening a
+sealed challenge. Namespace-id to bindings resolution is not part of this
+service; it lives on
+[`GET /s2s/v1/profile-namespaces/:nsid`](./profile-namespace-feed.md#6-namespace-bindings-query).
 
-The request body is one of two closed objects:
+The request body is one closed object:
 
 ```ts
 interface SealedChallengeRequest {
@@ -1041,11 +1041,7 @@ interface SealedChallengeRequest {
   encryptedValue: Base64SealedChallenge; // sealed under that key
 }
 
-interface NamespaceIdentityRequest {
-  namespaceId: SafeNonNegativeInteger; // 0 = the responder's current root
-}
-
-type VerifyRequest = SealedChallengeRequest | NamespaceIdentityRequest;
+type VerifyRequest = SealedChallengeRequest;
 ```
 
 For `SealedChallengeRequest` the responder looks the public key up in its
@@ -1073,31 +1069,12 @@ not server memory.
 The sealed-challenge success `data` is the closed object
 `{ "value": string }`.
 
-For `NamespaceIdentityRequest` with `namespaceId > 0` the responder answers
-from the namespace currently pinned at that id; `namespaceId` `0` answers
-with the responder's own currently claimable root. Its success `data` is a
-closed object:
-
-```ts
-interface NamespaceIdentityResult {
-  root: Base64Ed25519Key;
-  domain: Domain;
-}
-```
-
-`root` and `domain` are the current pin of the requested namespace. A
-rotation changes a later answer, and verifiers MUST treat a mismatch with
-an older artifact as rotation, not forgery. An unknown, retired, or
-unallocated namespace returns HTTP `200 NOT_FOUND` with `data: null`
-without disclosing which condition held.
-
-To keep both answers possible, a server MUST retain every root and signing
-key it has ever published — private key material included, since sealed
-challenges under retired keys must stay openable forever. Publication
-removal from well-known and internal retention are separate acts
-(Transport and Security, Section 1.5). The service discloses nothing about
-peers beyond identities the requester could already name, and MUST NOT
-reveal pins of halted or blocked namespaces beyond the uniform `NOT_FOUND`.
+To keep the answer possible for retired keys, a server MUST retain every
+root and signing key it has ever published — private key material included,
+since sealed challenges under retired keys must stay openable forever.
+Publication removal from well-known and internal retention are separate
+acts (Transport and Security, Section 1.5). The service discloses nothing
+about peers: it answers only from its own retained key history.
 
 The sealed-box construction itself — key conversion and the exact
 cryptographic format of `Base64SealedChallenge` — is defined in

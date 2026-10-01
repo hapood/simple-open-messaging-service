@@ -21,11 +21,11 @@ export async function resolveStoredQuotes<T extends Message>(
     if (!content?.quote) return [];
     const coordinate = storedQuoteCoordinate(
       content.quote,
-      m.sourceNamespaceId ?? 0,
+      m.publisherNamespaceId ?? 0,
     );
     return [
       {
-        m: { ...m, sourceNamespaceId: coordinate.namespaceId },
+        m: { ...m, publisherNamespaceId: coordinate.namespaceId },
         content,
         quote:
           coordinate.namespaceId === 0
@@ -54,12 +54,12 @@ export async function resolveStoredQuotes<T extends Message>(
         (quote.sourceSeq === undefined
           ? quote.seq >= g.startSeq + g.messageSeqOffset &&
             quote.seq <= g.endSeq + g.messageSeqOffset
-          : g.namespaceId === m.sourceNamespaceId &&
+          : g.namespaceId === m.publisherNamespaceId &&
             quote.sourceSeq >= g.startSeq &&
             quote.sourceSeq <= g.endSeq),
     );
     const state = states.find(
-      (s) => s.threadId === m.threadId && s.namespaceId === m.sourceNamespaceId,
+      (s) => s.threadId === m.threadId && s.namespaceId === m.publisherNamespaceId,
     );
     const pending = target
       ? false

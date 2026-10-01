@@ -7,7 +7,7 @@ This document describes the local implementation, not additional protocol rules.
 
 `Message.content.quote` stores `{ seq, namespaceId }`. Namespace zero selects
 `Message(threadId, seq)`; a positive namespace selects
-`Message(threadId, sourceNamespaceId, originSeq)`. The namespace belongs to the
+`Message(threadId, publisherNamespaceId, originSeq)`. The namespace belongs to the
 reference, independently of the containing message. In particular, receipt
 backfill must not change a reference's meaning.
 
@@ -17,7 +17,7 @@ check or numeric remapping is performed. Namespace IDs are never transmitted.
 Client-authored replies select a visible local target and store namespace zero.
 
 Existing `{ seq }` rows mean local coordinates. Legacy `{ seq: 0, sourceSeq }`
-rows remain readable using the containing message's source namespace. These
+rows remain readable using the containing message's publisher namespace. These
 compatibility rules do not allow legacy `targetSeq` on the wire. No relational
 schema change or data rewrite is needed; new writes explicitly bind the namespace.
 

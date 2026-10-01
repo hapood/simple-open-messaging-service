@@ -50,7 +50,7 @@ export interface ForwardTombstonePageCommit {
 
 interface SatisfiedQuoteDependency {
   threadId: number;
-  sourceNamespaceId: number;
+  publisherNamespaceId: number;
   originSeq: number;
 }
 
@@ -141,7 +141,7 @@ export class FederationInboundMessageCommitService {
       UPDATE "Message" staged
       SET "localState" = 'READY', "updatedAt" = CURRENT_TIMESTAMP
       WHERE staged."threadId" = ${params.threadId}
-        AND staged."sourceNamespaceId" = ${params.namespaceId}
+        AND staged."publisherNamespaceId" = ${params.namespaceId}
         AND staged."localState" = 'STUB'
         AND staged."originSeq" >= ${params.throughSeq}
         AND staged."originSeq" < ${params.beforeSeq}
@@ -201,7 +201,7 @@ export class FederationInboundMessageCommitService {
         threadId: route.threadId,
         messageSeq: item.messageSeq,
         sourceDomain: params.response.peerDomain,
-        sourceNamespaceId: params.response.peerToken.namespaceId,
+        publisherNamespaceId: params.response.peerToken.namespaceId,
         remoteDeletionSeq: item.deletionSeq,
         type: item.type,
         authorityDeletedAt: new Date(item.deletedAt),
@@ -211,7 +211,7 @@ export class FederationInboundMessageCommitService {
       if (deletion) deletions.push(deletion);
       satisfied.push({
         threadId: route.threadId,
-        sourceNamespaceId: params.response.peerToken.namespaceId,
+        publisherNamespaceId: params.response.peerToken.namespaceId,
         originSeq: item.messageSeq,
       });
     }
@@ -236,7 +236,7 @@ export class FederationInboundMessageCommitService {
           and(
             eq(tables.pendingMedia.direction, 'INBOUND'),
             eq(tables.message.threadId, dependency.threadId),
-            eq(tables.pendingMedia.namespaceId, dependency.sourceNamespaceId),
+            eq(tables.pendingMedia.publisherNamespaceId, dependency.publisherNamespaceId),
             eq(tables.pendingMedia.dependsOnOriginSeq, dependency.originSeq),
           ),
         );

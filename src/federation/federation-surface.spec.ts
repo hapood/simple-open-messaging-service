@@ -57,10 +57,12 @@ describe('Federation v1 surface', () => {
         'GET /s2s/v1/media/:digest',
         'GET /s2s/v1/messages',
         'GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev',
-        'GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev',
+        'GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
         'GET /s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev',
         'GET /s2s/v1/message-tombstones',
         'GET /s2s/v1/state-feed',
+        'GET /s2s/v1/profile-namespace-feed',
+        'GET /s2s/v1/profile-namespaces/:nsid',
         'GET /s2s/v1/accounts/:account',
         'POST /s2s/v1/call',
         'POST /s2s/v1/feed-heads',
@@ -88,7 +90,7 @@ describe('Federation v1 surface', () => {
   it('keeps cross-version bootstrap on the fixed well-known surface', () => {
     vi.stubEnv('SOMS_DOMAIN', 'node-a.example');
     const controller = new WellKnownController({
-      getRootPublicKeyB64: () => 'root-key',
+      getRootGroup: () => [{ ed25519: 'root-key', notBefore: 1, notAfter: 2 }],
       getSigningKeyCertificates: () => [],
     } as never);
 
@@ -98,8 +100,11 @@ describe('Federation v1 surface', () => {
     expect(document.protocolVersions).toEqual([FEDERATION_PROTOCOL_VERSION]);
     expect(document.software).toMatch(/^soms\//);
     expect(document).not.toHaveProperty('capabilities');
+    expect(document.roots).toEqual([
+      { ed25519: 'root-key', notBefore: 1, notAfter: 2 },
+    ]);
     expect(Object.keys(document).sort()).toEqual(
-      ['keys', 'protocolVersions', 'rootKey', 'software'].sort(),
+      ['keys', 'protocolVersions', 'roots', 'software'].sort(),
     );
   });
 

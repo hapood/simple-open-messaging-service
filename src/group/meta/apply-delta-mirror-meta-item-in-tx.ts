@@ -146,7 +146,11 @@ function selectChangedMirrorMemberProfileDemand(
   group: DeltaMirrorMetaItemInput['group'],
   item: MirrorMetaReplicatedItem,
   previousFact:
-    | { operation: string; profileNamespaceId: number | null; profileRev: number | null }
+    | {
+        operation: string;
+        profileNamespaceId: number | null;
+        profileRev: number | null;
+      }
     | undefined,
 ): ProfilePrefetchDemand | null {
   if (
@@ -201,7 +205,11 @@ async function readCurrentMirrorMemberOperationInTx(
   namespaceId: number,
   item: MirrorMetaReplicatedItem,
 ): Promise<
-  | { operation: string; profileNamespaceId: number | null; profileRev: number | null }
+  | {
+      operation: string;
+      profileNamespaceId: number | null;
+      profileRev: number | null;
+    }
   | undefined
 > {
   if (
@@ -226,7 +234,7 @@ async function readCurrentMirrorMemberOperationInTx(
         THEN (body ->> 'profileRev')::integer ELSE NULL END AS "profileRev"
     FROM "GroupMetaMemberFeed"
     WHERE "threadId" = ${threadId} AND "memberAccount" = ${member.account}
-      AND "memberDomain" = ${member.domain}
+      AND "profileNamespaceId" = ${member.namespaceId}
     LIMIT 1
   `);
   return previous.rows[0];
@@ -241,7 +249,11 @@ async function writeObservedMembershipTransitionInTx(
   group: MirrorGroupAddress,
   item: MirrorMetaReplicatedItem,
   previousFact:
-    | { operation: string; profileNamespaceId: number | null; profileRev: number | null }
+    | {
+        operation: string;
+        profileNamespaceId: number | null;
+        profileRev: number | null;
+      }
     | undefined,
   deps: {
     threadLock: Awaited<
@@ -283,12 +295,6 @@ async function writeObservedMembershipTransitionInTx(
     throw new Error('departing member has no previous profile revision');
   if (profileRev > 0 && profileNamespaceId === null)
     throw new Error('member profile revision has no profile namespace');
-  const identity = await tx.execute<{ namespaceId: number }>(sql`
-    SELECT group_meta_member_namespace(${threadId}, ${member.account},
-      ${member.domain}) AS "namespaceId"
-  `);
-  if (!identity.rows[0])
-    throw new Error('group member namespace is unavailable');
   if (member.domain === 'local') {
     const pair = await tx.execute<{ active: boolean }>(sql`
       SELECT active FROM "RelationshipPair"
@@ -328,7 +334,6 @@ async function writeObservedMembershipTransitionInTx(
       publisherNamespaceId: group.publisherNamespaceId,
       creator: {
         account: result.message.creator!.account,
-        domain: result.message.creator!.domain,
         profileNamespaceId: result.message.creator!.namespaceId,
         profileRev: result.message.profileRev,
       },

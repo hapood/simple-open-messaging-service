@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ProfileLookup, type ProfileEvidenceProjection } from './profile-resolution-demand.js';
+import {
+  ProfileLookup,
+  type ProfileEvidenceProjection,
+} from './profile-resolution-demand.js';
 import { normalizeAccount } from '../common/account.js';
 import { requireThreadContentLockInTx } from '../common/locks/thread-content-lock.js';
 import { DatabaseService } from '../database/database.service.js';
@@ -28,7 +31,10 @@ export class ProfileEvidenceProjectionService {
   ) {}
 
   async resolve(projection: ProfileEvidenceProjection): Promise<void> {
-    if (projection.profile.rev < 1 || projection.profile.profileNamespaceId === 0)
+    if (
+      projection.profile.rev < 1 ||
+      projection.profile.profileNamespaceId === 0
+    )
       return;
     const key = evidenceSlotKeyString(projection);
     const evidenceValue = projection.projection.messageSeq;
@@ -51,7 +57,9 @@ export class ProfileEvidenceProjectionService {
       return;
     }
     if (this.pending.size >= ProfileEvidenceProjectionService.CAPACITY) {
-      this.logger.warn('profile evidence projection queue is full; skipping evidence update');
+      this.logger.warn(
+        'profile evidence projection queue is full; skipping evidence update',
+      );
       return;
     }
     this.pending.set(key, { projection, state: 'QUEUED' });
@@ -98,7 +106,9 @@ export class ProfileEvidenceProjectionService {
     }
   }
 
-  private async project(projection: ProfileEvidenceProjection): Promise<boolean> {
+  private async project(
+    projection: ProfileEvidenceProjection,
+  ): Promise<boolean> {
     const p2pChanges = await this.database.db.transaction(async (tx) => {
       const threadLock = await requireThreadContentLockInTx(
         tx,
@@ -108,7 +118,6 @@ export class ProfileEvidenceProjectionService {
         return projectP2PMessageProfileInTx(tx, {
           threadLock,
           account: normalizeAccount(projection.profile.account),
-          domain: projection.profile.domain,
           publisherNamespaceId: projection.profile.publisherNamespaceId,
           namespaceId: projection.profile.profileNamespaceId,
           messageSeq: projection.projection.messageSeq,
@@ -118,7 +127,6 @@ export class ProfileEvidenceProjectionService {
       return (await publishMemberMessageProfileInTx(tx, {
         threadLock,
         account: normalizeAccount(projection.profile.account),
-        domain: projection.profile.domain,
         publisherNamespaceId: projection.profile.publisherNamespaceId,
         namespaceId: projection.profile.profileNamespaceId,
         messageSeq: projection.projection.messageSeq,
@@ -151,7 +159,6 @@ function evidenceSlotKeyString(projection: ProfileEvidenceProjection): string {
     projection.profile.publisherNamespaceId,
     projection.profile.profileNamespaceId,
     projection.profile.account,
-    projection.profile.domain,
     projection.projection.threadId,
     projection.lookup === ProfileLookup.GROUP_MEMBER_PROFILE
       ? projection.groupAccount

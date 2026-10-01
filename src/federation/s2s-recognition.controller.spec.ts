@@ -8,15 +8,29 @@ import { S2sRecognitionController } from './s2s-recognition.controller.js';
 
 process.env.SOMS_DOMAIN ??= 'local.example';
 
+const TEST_ROOT_KEY = Buffer.alloc(32, 2).toString('base64');
+const OTHER_ROOT_KEY = Buffer.alloc(32, 9).toString('base64');
+
+/** Drizzle select-chain mock resolving rows (or none) at limit(). */
+function selectChain(rows: unknown[]) {
+  const builder: Record<string, unknown> = {};
+  for (const method of ['from', 'innerJoin', 'where', 'orderBy', 'for'])
+    builder[method] = vi.fn(() => builder);
+  builder.limit = vi.fn(async () => rows);
+  return builder;
+}
+
 describe('S2sRecognitionController Health privacy projection', () => {
-  function target() {
+  function target(options: { namespaceRows?: unknown[] } = {}) {
     const discovery = {
       fetchWellKnown: vi.fn(),
       getCachedPublicKey: vi.fn(),
       cacheDocument: vi.fn().mockResolvedValue(undefined),
     };
     const verify = {
-      extractHeaders: vi.fn().mockReturnValue({}),
+      extractHeaders: vi.fn().mockReturnValue({
+        's2s-root-key': TEST_ROOT_KEY,
+      }),
       parseSigner: vi.fn().mockReturnValue({
         keyId: 'peer.example/key-2',
         domain: 'peer.example',
@@ -44,28 +58,39 @@ describe('S2sRecognitionController Health privacy projection', () => {
       queryHealth: vi.fn(),
       markReachable: vi.fn().mockResolvedValue(undefined),
     };
+    const database = {
+      db: {
+        select: vi.fn(() =>
+          selectChain(
+            options.namespaceRows ?? [
+              { domain: 'peer.example', namespaceId: 12 },
+            ],
+          ),
+        ),
+      },
+    };
     const controller = new S2sRecognitionController(
       { assertAvailable: vi.fn() } as never,
       verify as never,
       discovery as never,
       recognition as never,
+      database as never,
     );
-    return { controller, discovery, verify, recognition };
+    return { controller, discovery, verify, recognition, database };
   }
 
-  it('answers a cache miss with the common authentication error and never fetches well-known', async () => {
+  const healthRequest = {
+    url: '/s2s/v1/health',
+    rawBody: Buffer.alloc(0),
+    headers: {},
+  } as never;
+
+  it('answers a cache miss with the uniform unavailable status and never fetches well-known', async () => {
     const { controller, discovery, verify, recognition } = target();
     discovery.getCachedPublicKey.mockResolvedValue(null);
 
-    await expect(
-      controller.health({
-        url: '/s2s/v1/health',
-        rawBody: Buffer.alloc(0),
-        headers: {},
-      } as never),
-    ).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_BAD_SIGNATURE,
-      status: 401,
+    await expect(controller.health(healthRequest)).resolves.toEqual({
+      status: 'unavailable',
     });
     expect(discovery.getCachedPublicKey).toHaveBeenCalledWith(
       'peer.example',
@@ -77,27 +102,27 @@ describe('S2sRecognitionController Health privacy projection', () => {
     expect(recognition.queryHealth).not.toHaveBeenCalled();
   });
 
-  it('maps a signer without a verified identity to the common authentication error', async () => {
-    const { controller, discovery, recognition } = target();
-    recognition.captureVerifiedContext.mockRejectedValue(
-      new Error('no verified namespace'),
-    );
+  it('maps an unresolvable claimed root to the uniform unavailable status', async () => {
+    const { controller, discovery } = target({ namespaceRows: [] });
 
-    await expect(
-      controller.health({
-        url: '/s2s/v1/health',
-        rawBody: Buffer.alloc(0),
-        headers: {},
-      } as never),
-    ).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_BAD_SIGNATURE,
-      status: 401,
+    await expect(controller.health(healthRequest)).resolves.toEqual({
+      status: 'unavailable',
     });
     expect(discovery.getCachedPublicKey).not.toHaveBeenCalled();
     expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
   });
 
-  it('propagates a failed signature verification as the common authentication error', async () => {
+  it('maps a malformed S2S-Root-Key to the uniform unavailable status', async () => {
+    const { controller, discovery, verify } = target();
+    verify.extractHeaders.mockReturnValue({ 's2s-root-key': 'not-base64' });
+
+    await expect(controller.health(healthRequest)).resolves.toEqual({
+      status: 'unavailable',
+    });
+    expect(discovery.getCachedPublicKey).not.toHaveBeenCalled();
+  });
+
+  it('maps a failed signature verification to the uniform unavailable status', async () => {
     const { controller, discovery, verify, recognition } = target();
     discovery.getCachedPublicKey.mockResolvedValue(new Uint8Array(32));
     verify.verifyWithPublicKey.mockRejectedValue(
@@ -108,15 +133,8 @@ describe('S2sRecognitionController Health privacy projection', () => {
       ),
     );
 
-    await expect(
-      controller.health({
-        url: '/s2s/v1/health',
-        rawBody: Buffer.alloc(0),
-        headers: {},
-      } as never),
-    ).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_BAD_SIGNATURE,
-      status: 401,
+    await expect(controller.health(healthRequest)).resolves.toEqual({
+      status: 'unavailable',
     });
     expect(recognition.queryHealth).not.toHaveBeenCalled();
     expect(recognition.markReachable).not.toHaveBeenCalled();
@@ -127,13 +145,9 @@ describe('S2sRecognitionController Health privacy projection', () => {
     discovery.getCachedPublicKey.mockResolvedValue(new Uint8Array(32));
     recognition.hasPreparedPeer.mockResolvedValue(false);
 
-    await expect(
-      controller.health({
-        url: '/s2s/v1/health',
-        rawBody: Buffer.alloc(0),
-        headers: {},
-      } as never),
-    ).resolves.toEqual({ status: 'unavailable' });
+    await expect(controller.health(healthRequest)).resolves.toEqual({
+      status: 'unavailable',
+    });
     expect(verify.verifyWithPublicKey).toHaveBeenCalledOnce();
     expect(recognition.queryHealth).not.toHaveBeenCalled();
     expect(recognition.markReachable).not.toHaveBeenCalled();
@@ -144,13 +158,7 @@ describe('S2sRecognitionController Health privacy projection', () => {
     discovery.getCachedPublicKey.mockResolvedValue(new Uint8Array(32));
     recognition.queryHealth.mockResolvedValue('degraded');
 
-    await expect(
-      controller.health({
-        url: '/s2s/v1/health',
-        rawBody: Buffer.alloc(0),
-        headers: {},
-      } as never),
-    ).resolves.toEqual({
+    await expect(controller.health(healthRequest)).resolves.toEqual({
       status: 'degraded',
       peerAssignedLocalNamespaceId: 12,
     });
@@ -159,7 +167,6 @@ describe('S2sRecognitionController Health privacy projection', () => {
       recognition.markReachable,
     );
     expect(recognition.markReachable).toHaveBeenCalledWith('peer.example');
-    expect(recognition.captureVerifiedContext).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -203,7 +210,18 @@ describe('S2sRecognitionController Health privacy projection', () => {
     expect(discovery.fetchWellKnown).not.toHaveBeenCalled();
   });
 
-  it('accepts Recognize into asynchronous verification', async () => {
+  it('rejects a missing S2S-Root-Key on Recognize', async () => {
+    const { controller, verify, recognition } = target();
+    verify.extractHeaders.mockReturnValue({});
+
+    await expect(controller.recognize({} as never, {})).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+      status: 400,
+    });
+    expect(recognition.submitInboundRecognize).not.toHaveBeenCalled();
+  });
+
+  it('accepts Recognize into asynchronous verification with the claimed root', async () => {
     const { controller, discovery, recognition } = target();
 
     await expect(
@@ -217,8 +235,9 @@ describe('S2sRecognitionController Health privacy projection', () => {
     expect(recognition.submitInboundRecognize).toHaveBeenCalledWith({
       domain: 'peer.example',
       keyId: 'peer.example/key-2',
+      claimedRoot: TEST_ROOT_KEY,
       signedRequest: expect.anything(),
-      headers: {},
+      headers: { 's2s-root-key': TEST_ROOT_KEY },
       senderAssignedLocalNamespaceId: 5,
       signatureExpires: expect.any(Number),
     });
@@ -521,14 +540,10 @@ describe('FederationRecognitionService health transitions', () => {
 });
 
 describe('FederationRecognitionService inbound Recognize result states', () => {
-  function subject(candidate?: Record<string, unknown> | null) {
+  function subject(review?: Record<string, unknown> | null) {
     const database = {
       db: {
-        query: {
-          federationNamespaceCandidate: {
-            findFirst: vi.fn().mockResolvedValue(candidate ?? null),
-          },
-        },
+        select: vi.fn(() => selectChain(review ? [review] : [])),
       },
     };
     const service = new FederationRecognitionService(
@@ -559,11 +574,12 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     'signature-input':
       'sig1=("@method");created=1;expires=2;keyid="peer.example/key-1"',
     signature: 'sig1=:test:',
+    's2s-root-key': TEST_ROOT_KEY,
   };
 
-  it('returns pending when a verified candidate is waiting for administrator approval', async () => {
+  it('returns pending when an open review is waiting for administrator approval', async () => {
     const { service, verify } = subject({
-      nextDomain: 'peer.example',
+      kind: 'domain-rebind',
       status: 'pending',
     });
 
@@ -571,6 +587,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
       service.submitInboundRecognize({
         domain: 'Peer.Example.',
         keyId: 'peer.example/key-1',
+        claimedRoot: TEST_ROOT_KEY,
         signedRequest,
         headers: recognizeHeaders,
         signatureExpires: Math.floor(Date.now() / 1000) + 300,
@@ -583,18 +600,17 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     expect(verify).not.toHaveBeenCalled();
   });
 
-  it('returns failed when a candidate stores a terminal recognition failure', async () => {
+  it('returns the rotation rejection code for a rejected root-rotation review', async () => {
     const { service, verify } = subject({
-      nextDomain: 'peer.example',
-      status: 'failed',
-      failedCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-      failedMessage: 'sender-assigned local namespace mismatch',
+      kind: 'root-rotation',
+      status: 'rejected',
     });
 
     await expect(
       service.submitInboundRecognize({
         domain: 'peer.example',
         keyId: 'peer.example/key-1',
+        claimedRoot: TEST_ROOT_KEY,
         signedRequest,
         headers: recognizeHeaders,
         signatureExpires: Math.floor(Date.now() / 1000) + 300,
@@ -602,65 +618,88 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     ).resolves.toEqual({
       ok: false,
       status: 'failed',
-      code: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-      message: 'sender-assigned local namespace mismatch',
+      code: BusinessCode.FEDERATION_ROOT_CHANGE_REJECTED,
+      message: 'root rotation rejected by administrator review',
     });
     expect(verify).not.toHaveBeenCalled();
   });
 
-  it('writes an unmatched root candidate after async verification', async () => {
-    const candidateValues = vi.fn();
-    const candidateConflict = vi.fn();
-    const otherInsertValues = vi.fn();
-    const tx = {
-      select: vi.fn(() => ({
-        from: vi.fn(() => ({
-          where: vi.fn(() => ({
-            limit: vi.fn().mockResolvedValue([]),
-          })),
-        })),
-      })),
-      insert: vi.fn((table: unknown) => {
-        if (table === tables.federationNamespaceCandidate) {
-          return {
-            values: vi.fn((values: unknown) => {
-              candidateValues(values);
-              return { onConflictDoUpdate: candidateConflict };
-            }),
-          };
-        }
-        return {
-          values: vi.fn((values: unknown) => {
-            otherInsertValues({ table, values });
-            return Promise.resolve();
-          }),
-        };
+  it('returns the re-binding rejection code for a rejected domain-rebind review', async () => {
+    const { service, verify } = subject({
+      kind: 'domain-rebind',
+      status: 'rejected',
+    });
+
+    await expect(
+      service.submitInboundRecognize({
+        domain: 'peer.example',
+        keyId: 'peer.example/key-1',
+        claimedRoot: TEST_ROOT_KEY,
+        signedRequest,
+        headers: recognizeHeaders,
+        signatureExpires: Math.floor(Date.now() / 1000) + 300,
       }),
-    };
+    ).resolves.toEqual({
+      ok: false,
+      status: 'failed',
+      code: BusinessCode.FEDERATION_DOMAIN_CHANGE_REJECTED,
+      message: 'domain re-binding rejected by administrator review',
+    });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  /** Database mock for verifyInboundRecognize resolution paths: rows for the
+   *  domain epoch lookup, the root epoch lookup, and optional review writes. */
+  function resolutionTarget(options: {
+    domainEpoch?: unknown[];
+    rootEpoch?: unknown[];
+  }) {
+    const reviewInsert = vi.fn();
+    const namespaceUpdate = vi.fn().mockResolvedValue(undefined);
+    let call = 0;
+    const rowsPerCall = [options.domainEpoch ?? [], options.rootEpoch ?? []];
     const database = {
       db: {
-        query: {
-          identityNamespace: {
-            findFirst: vi.fn().mockResolvedValue(null),
-          },
-        },
-        transaction: vi.fn((run: (value: typeof tx) => Promise<void>) =>
-          run(tx),
-        ),
+        select: vi.fn(() => {
+          const rows = rowsPerCall[Math.min(call, rowsPerCall.length - 1)]!;
+          call += 1;
+          return selectChain(rows);
+        }),
+        update: vi.fn(() => ({
+          set: vi.fn(() => ({ where: vi.fn(() => namespaceUpdate()) })),
+        })),
+        insert: vi.fn((table: unknown) => ({
+          values: vi.fn((values: unknown) => {
+            if (table === tables.federationIdentityReview) {
+              reviewInsert(values);
+              return { onConflictDoUpdate: vi.fn() };
+            }
+            return Promise.resolve();
+          }),
+        })),
       },
     };
+    const doc = {
+      protocolVersions: [1],
+      roots: [
+        {
+          ed25519: TEST_ROOT_KEY,
+          notBefore: Date.now() - 10_000,
+          notAfter: Date.now() + 10_000,
+        },
+      ],
+      keys: [
+        {
+          keyId: 'peer.example/key-1',
+          ed25519: Buffer.alloc(32, 3).toString('base64'),
+          root: TEST_ROOT_KEY,
+          notBefore: Date.now() - 1000,
+          notAfter: Date.now() + 1000,
+        },
+      ],
+    };
     const discovery = {
-      fetchWellKnown: vi.fn().mockResolvedValue({
-        rootKey: { ed25519: Buffer.alloc(32, 2).toString('base64') },
-        keys: [
-          {
-            keyId: 'peer.example/key-1',
-            ed25519: Buffer.alloc(32, 3).toString('base64'),
-            notBefore: Date.now() - 1000,
-            notAfter: Date.now() + 1000,
-          },
-        ],
-      }),
+      fetchWellKnown: vi.fn().mockResolvedValue(doc),
     };
     const signature = { verifyWithKey: vi.fn().mockResolvedValue(true) };
     const service = new FederationRecognitionService(
@@ -671,11 +710,20 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
       {} as never,
       {} as never,
     );
+    const acceptInbound = vi
+      .spyOn(service, 'acceptInbound')
+      .mockResolvedValue({
+        domain: 'peer.example',
+        namespaceId: 9,
+        peerAssignedLocalNamespaceId: null,
+        rootPublicKey: TEST_ROOT_KEY,
+      } as never);
     const verify = (
       service as unknown as {
         verifyInboundRecognize: (params: {
           domain: string;
           keyId: string;
+          claimedRoot: string;
           signedRequest: typeof signedRequest;
           headers: typeof recognizeHeaders;
           signatureExpires: number;
@@ -683,28 +731,163 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
         }) => Promise<void>;
       }
     ).verifyInboundRecognize.bind(service);
+    return { service, verify, acceptInbound, reviewInsert, namespaceUpdate };
+  }
 
-    await verify({
+  it('commits an ordinary first recognition without a review record', async () => {
+    const target = resolutionTarget({ domainEpoch: [], rootEpoch: [] });
+
+    await target.verify({
       domain: 'Peer.Example.',
       keyId: 'peer.example/key-1',
+      claimedRoot: TEST_ROOT_KEY,
       signedRequest,
       headers: recognizeHeaders,
       signatureExpires: Math.floor(Date.now() / 1000) + 300,
       senderAssignedLocalNamespaceId: 44,
     });
 
-    expect(candidateValues).toHaveBeenCalledWith(
+    expect(target.acceptInbound).toHaveBeenCalledWith(
+      'peer.example',
+      TEST_ROOT_KEY,
+      44,
+    );
+    expect(target.reviewInsert).not.toHaveBeenCalled();
+  });
+
+  it('commits an ordinary re-recognition when the claimed root is pinned for the domain', async () => {
+    const target = resolutionTarget({
+      domainEpoch: [
+        {
+          id: 9,
+          domain: 'peer.example',
+          rootPublicKey: TEST_ROOT_KEY,
+          peerAssignedLocalNamespaceId: 44,
+        },
+      ],
+      rootEpoch: [
+        {
+          id: 9,
+          domain: 'peer.example',
+          peerAssignedLocalNamespaceId: 44,
+        },
+      ],
+    });
+
+    await target.verify({
+      domain: 'peer.example',
+      keyId: 'peer.example/key-1',
+      claimedRoot: TEST_ROOT_KEY,
+      signedRequest,
+      headers: recognizeHeaders,
+      signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      senderAssignedLocalNamespaceId: 44,
+    });
+
+    expect(target.acceptInbound).toHaveBeenCalledWith(
+      'peer.example',
+      TEST_ROOT_KEY,
+      44,
+    );
+    expect(target.reviewInsert).not.toHaveBeenCalled();
+  });
+
+  it('keeps a live epoch arriving under a different domain pending for review', async () => {
+    const target = resolutionTarget({
+      domainEpoch: [],
+      rootEpoch: [
+        { id: 7, domain: 'old.example', peerAssignedLocalNamespaceId: null },
+      ],
+    });
+
+    await target.verify({
+      domain: 'peer.example',
+      keyId: 'peer.example/key-1',
+      claimedRoot: TEST_ROOT_KEY,
+      signedRequest,
+      headers: recognizeHeaders,
+      signatureExpires: Math.floor(Date.now() / 1000) + 300,
+    });
+
+    expect(target.acceptInbound).not.toHaveBeenCalled();
+    expect(target.reviewInsert).toHaveBeenCalledWith(
       expect.objectContaining({
+        kind: 'domain-rebind',
+        matchedNamespaceId: 7,
         nextDomain: 'peer.example',
-        matchedNamespaceId: null,
-        rootPublicKey: Buffer.alloc(32, 2).toString('base64'),
-        peerAssignedLocalNamespaceId: 44,
+        claimedRoot: TEST_ROOT_KEY,
         status: 'pending',
-        failedCode: null,
-        failedMessage: null,
       }),
     );
-    expect(otherInsertValues).not.toHaveBeenCalled();
+    expect(target.namespaceUpdate).toHaveBeenCalled();
+  });
+
+  it('records a root rotation review when the group still contains the pin', async () => {
+    const target = resolutionTarget({
+      domainEpoch: [
+        {
+          id: 7,
+          domain: 'peer.example',
+          rootPublicKey: OTHER_ROOT_KEY,
+          peerAssignedLocalNamespaceId: 44,
+        },
+      ],
+      rootEpoch: [],
+    });
+    // The fetched group must still contain the pinned predecessor root.
+    target.verify;
+    const discoveryDoc = {
+      protocolVersions: [1],
+      roots: [
+        {
+          ed25519: OTHER_ROOT_KEY,
+          notBefore: Date.now() - 10_000,
+          notAfter: Date.now() + 10_000,
+        },
+        {
+          ed25519: TEST_ROOT_KEY,
+          notBefore: Date.now() - 10_000,
+          notAfter: Date.now() + 10_000,
+        },
+      ],
+      keys: [
+        {
+          keyId: 'peer.example/key-1',
+          ed25519: Buffer.alloc(32, 3).toString('base64'),
+          root: TEST_ROOT_KEY,
+          notBefore: Date.now() - 1000,
+          notAfter: Date.now() + 1000,
+        },
+      ],
+    };
+    // resolutionTarget captured its discovery mock internally; rebuild with it.
+    const service = (
+      target as unknown as { service: FederationRecognitionService }
+    ).service;
+    (service as unknown as { discovery: { fetchWellKnown: ReturnType<typeof vi.fn> } }).discovery.fetchWellKnown.mockResolvedValue(discoveryDoc);
+
+    await target.verify({
+      domain: 'peer.example',
+      keyId: 'peer.example/key-1',
+      claimedRoot: TEST_ROOT_KEY,
+      signedRequest,
+      headers: recognizeHeaders,
+      signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      senderAssignedLocalNamespaceId: 44,
+    });
+
+    expect(target.acceptInbound).not.toHaveBeenCalled();
+    expect(target.reviewInsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'root-rotation',
+        matchedNamespaceId: 7,
+        nextDomain: 'peer.example',
+        claimedRoot: TEST_ROOT_KEY,
+        status: 'pending',
+      }),
+    );
+    // A rotation review leaves the pinned epoch untouched.
+    expect(target.namespaceUpdate).not.toHaveBeenCalled();
   });
 
   it('starts one async verifier per normalized domain and returns pending while it runs', async () => {
@@ -718,6 +901,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     const params = {
       domain: 'Peer.Example.',
       keyId: 'peer.example/key-1',
+      claimedRoot: TEST_ROOT_KEY,
       signedRequest,
       headers: recognizeHeaders,
       signatureExpires: Math.floor(Date.now() / 1000) + 300,

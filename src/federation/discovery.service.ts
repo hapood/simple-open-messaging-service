@@ -7,7 +7,6 @@ import {
 } from '@nestjs/common';
 import { lookup, type LookupAddress } from 'node:dns';
 import { resolveSrv } from 'node:dns/promises';
-import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { BusinessCode } from '../common/business-code.js';
@@ -15,6 +14,8 @@ import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import {
+  isValidRootKeyEntry,
+  type RootKeyEntry,
   type SigningKeyCertificate,
   verifySigningCertificate,
 } from './federation-certificate.js';
@@ -38,9 +39,23 @@ const DOMAIN_RE =
 export interface WellKnownDoc {
   software?: string;
   protocolVersions: number[];
-  rootKey: { ed25519: string };
+  roots: RootKeyEntry[];
   keys: SigningKeyCertificate[];
   [key: string]: unknown;
+}
+
+/** The root a first-contact Recognize pins: the root authorizing a currently
+ *  valid certificate. A B-mode rotation leaves exactly one such root; a group
+ *  with several is resolved to the root of the certificate actually signing
+ *  the request, which the recognition flow extracts itself. */
+export function currentCertifyingRoots(doc: WellKnownDoc): string[] {
+  const now = Date.now();
+  const roots = new Set<string>();
+  for (const certificate of doc.keys) {
+    if (certificate.notBefore <= now && now < certificate.notAfter)
+      roots.add(certificate.root);
+  }
+  return [...roots];
 }
 
 /** Stable classification for DNS/SRV discovery failures exposed to first-contact UI. */
@@ -256,26 +271,47 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
         Buffer.byteLength(doc.software) >= 1 &&
         Buffer.byteLength(doc.software) <= 128 &&
         !/[\u0000-\u001f\u007f-\u009f]/u.test(doc.software));
+    const now = Date.now();
     if (
       !doc ||
       selectFederationProtocolVersion(doc.protocolVersions) !== 1 ||
       !softwareValid ||
-      !doc.rootKey ||
-      typeof doc.rootKey.ed25519 !== 'string' ||
-      !/^[A-Za-z0-9+/]{43}=$/.test(doc.rootKey.ed25519) ||
+      !Array.isArray(doc.roots) ||
+      doc.roots.length === 0 ||
       !Array.isArray(doc.keys) ||
       doc.keys.length === 0
     ) {
       throw new Error(`well-known ${normalized}: malformed v1 document`);
     }
+    // Root group: unique canonical keys, sane intervals, and at least one
+    // currently valid root when the document is consumed.
+    const rootEntries = new Map<string, RootKeyEntry>();
+    for (const entry of doc.roots) {
+      if (!isValidRootKeyEntry(entry) || rootEntries.has(entry.ed25519)) {
+        throw new Error(`well-known ${normalized}: invalid roots group`);
+      }
+      rootEntries.set(entry.ed25519, entry);
+    }
+    if (
+      ![...rootEntries.values()].some(
+        (entry) => entry.notBefore <= now && now < entry.notAfter,
+      )
+    ) {
+      throw new Error(`well-known ${normalized}: no currently valid root`);
+    }
     const ids = new Set<string>();
     for (const certificate of doc.keys) {
+      const authorizing = rootEntries.get(certificate?.root as string);
       if (
         !certificate ||
         typeof certificate.keyId !== 'string' ||
         parseKeyId(certificate.keyId)?.domain !== normalized ||
         ids.has(certificate.keyId) ||
-        !verifySigningCertificate(certificate, doc.rootKey.ed25519)
+        !authorizing ||
+        // The certificate interval must be enclosed by its root's interval.
+        certificate.notBefore < authorizing.notBefore ||
+        certificate.notAfter > authorizing.notAfter ||
+        !verifySigningCertificate(certificate, certificate.root)
       ) {
         throw new Error(
           `well-known ${normalized}: invalid signing certificate`,
@@ -326,9 +362,29 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
         eq(tables.s2SKeyCache.keyId, keyId),
       ),
     });
-    return cached && cached.notBefore <= now && cached.notAfter > now
-      ? Uint8Array.from(Buffer.from(cached.publicKey, 'base64'))
-      : null;
+    // A cached certificate authenticates only while it is currently valid AND
+    // its authorizing root still byte-equals the namespace pin: successor-root
+    // certificates of a rotation pending local adoption must not authenticate.
+    if (
+      !cached ||
+      !(cached.notBefore <= now && cached.notAfter > now) ||
+      !(await this.rootMatchesPin(namespaceId, cached.root))
+    ) {
+      return null;
+    }
+    return Uint8Array.from(Buffer.from(cached.publicKey, 'base64'));
+  }
+
+  private async rootMatchesPin(
+    namespaceId: number,
+    root: string,
+  ): Promise<boolean> {
+    const [namespace] = await this.database.db
+      .select({ rootPublicKey: tables.identityNamespace.rootPublicKey })
+      .from(tables.identityNamespace)
+      .where(eq(tables.identityNamespace.id, namespaceId))
+      .limit(1);
+    return namespace?.rootPublicKey === root;
   }
 
   /** Single-flight, rate-limited refresh of one peer's cached certificate set. Concurrent
@@ -456,34 +512,32 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
     namespaceId: number,
     keyId: string,
   ): Promise<Uint8Array | null> {
-    const now = new Date();
-    const cached = await this.database.db.query.s2SKeyCache.findFirst({
-      where: and(
-        eq(tables.s2SKeyCache.domain, this.normalizeDomain(domain)),
-        eq(tables.s2SKeyCache.namespaceId, namespaceId),
-        eq(tables.s2SKeyCache.keyId, keyId),
-      ),
-    });
-    return cached && cached.notBefore <= now && cached.notAfter > now
-      ? Uint8Array.from(Buffer.from(cached.publicKey, 'base64'))
-      : null;
+    return this.cachedPublicKey(
+      this.normalizeDomain(domain),
+      namespaceId,
+      keyId,
+    );
   }
 
-  /** Verify root continuity and atomically replace the cache with the currently published certificates. */
+  /** Verify root-group continuity and atomically replace the cache with the
+   *  published certificates. The pinned root MUST still be present in the
+   *  fetched roots group byte for byte: a peer may add successor roots
+   *  (rotation pending adoption) but dropping the pin is an identity
+   *  contradiction, not rotation. Certificates authorized by other roots in
+   *  the group are cached too; the guard only authenticates those whose root
+   *  byte-equals the pin. */
   async cacheDocument(
     domain: string,
     namespaceId: number,
     doc: WellKnownDoc,
   ): Promise<void> {
     const normalized = this.normalizeDomain(domain);
-    const fingerprint = this.fingerprint(doc.rootKey.ed25519);
     const mismatch = await this.database.db.transaction(async (tx) => {
       const [namespace] = await tx
         .select({
           domain: tables.identityNamespace.domain,
           active: tables.identityNamespace.active,
           rootPublicKey: tables.identityNamespace.rootPublicKey,
-          rootKeyFingerprint: tables.identityNamespace.rootKeyFingerprint,
         })
         .from(tables.identityNamespace)
         .where(eq(tables.identityNamespace.id, namespaceId))
@@ -491,12 +545,10 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
         // Lock the pinned identity row before replacing the key set. Concurrent
         // DELETEs can miss each other's newly inserted rows and then fail with 23505.
         .for('no key update', { of: tables.identityNamespace });
-      if (
-        !namespace ||
-        namespace.domain !== normalized ||
-        namespace.rootPublicKey !== doc.rootKey.ed25519 ||
-        namespace.rootKeyFingerprint !== fingerprint
-      ) {
+      const pinStillPublished =
+        namespace?.rootPublicKey !== undefined &&
+        doc.roots.some((entry) => entry.ed25519 === namespace.rootPublicKey);
+      if (!namespace || namespace.domain !== normalized || !pinStillPublished) {
         const reason =
           'peer presented a root different from the pinned identity';
         if (namespace?.active && namespace.domain === normalized) {
@@ -522,6 +574,7 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
           namespaceId,
           keyId: key.keyId,
           publicKey: key.ed25519,
+          root: key.root,
           notBefore: new Date(key.notBefore),
           notAfter: new Date(key.notAfter),
           authorizationSignature: key.authorizationSignature,
@@ -574,11 +627,5 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
     if (!DOMAIN_RE.test(normalized))
       throw new Error(`invalid domain ${domain}`);
     return normalized;
-  }
-
-  private fingerprint(publicKey: string): string {
-    return `sha256:${createHash('sha256')
-      .update(Buffer.from(publicKey, 'base64'))
-      .digest('base64url')}`;
   }
 }

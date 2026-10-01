@@ -309,22 +309,18 @@ export class FederationSelfCheckService {
     }
     try {
       const rootPublicKey = this.keypair.getRootPublicKeyB64();
-      const fingerprint = this.keypair.getRootKeyFingerprint();
-      if (
-        !/^[A-Za-z0-9+/]{43}=$/.test(rootPublicKey) ||
-        !/^sha256:[A-Za-z0-9_-]{43}$/.test(fingerprint)
-      ) {
+      if (!/^[A-Za-z0-9+/]{43}=$/.test(rootPublicKey)) {
         return {
           status: 'fail',
           detail: 'stored root key material is malformed',
-          evidence: { fingerprint },
+          evidence: { rootPublicKey },
         };
       }
       this.keypair.getKeyId(); // throws outside the current key validity interval
       this.keypair.getSigningKeyCertificates();
       return {
         status: 'ok',
-        detail: `database key material usable (fingerprint ${fingerprint})`,
+        detail: `database key material usable (root ${rootPublicKey.slice(0, 12)}…)`,
       };
     } catch (e) {
       return {

@@ -187,8 +187,7 @@ export class UserIntentService {
         this.logger.warn('user intent client wake failed', error);
       }
       if (applied.peers.size > 0)
-        void this.deps.federation
-          .pushStateFeedNamespaces(applied.peers.keys());
+        void this.deps.federation.pushStateFeedNamespaces(applied.peers.keys());
     }
     return applied.outcome;
   }
@@ -244,28 +243,52 @@ export class UserIntentService {
   > {
     const targetAccount = normalizeAccount(params.target.account);
     const targetDomain = params.target.domain.trim().toLowerCase();
-    // A remote target's active namespace is captured; an unavailable peer is
-    // an expected business rejection.
+    // Identity addressing: a namespace id is the durable key; a domain is
+    // only a first-contact entry hint and a delivery address. A caller with
+    // prior knowledge (a contact card or roster reference carries the nsid)
+    // addresses the peer BY ID — the intent then follows the row's current
+    // domain binding across a review-approved re-bind, and only a reset
+    // retirement (the identity the caller knew no longer exists) is a
+    // mismatch. First contact by address resolves the domain's current
+    // active namespace, exactly as before.
+    let effectiveDomain = targetDomain;
     let targetNamespaceId: number;
-    try {
-      targetNamespaceId =
-        targetDomain === 'local'
-          ? 0
-          : (params.target.namespaceId ??
-            (await this.deps.namespaces.captureActiveInTx(tx, targetDomain))
-              .namespaceId);
-    } catch (error) {
-      if (!(error instanceof BusinessException)) throw error;
-      return this.reject(
-        'PEER_UNAVAILABLE',
-        BusinessCode.FEDERATION_DELIVERY_FAILED,
-        `federation peer ${targetDomain} is unavailable`,
-      );
+    if (targetDomain === 'local') {
+      targetNamespaceId = 0;
+    } else if (params.target.namespaceId !== undefined) {
+      try {
+        const row = await this.deps.namespaces.captureActiveByIdInTx(
+          tx,
+          params.target.namespaceId,
+        );
+        targetNamespaceId = row.namespaceId;
+        effectiveDomain = row.domain;
+      } catch (error) {
+        if (!(error instanceof BusinessException)) throw error;
+        return this.reject(
+          'IDENTITY_MISMATCH',
+          BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+          `target namespace ${params.target.namespaceId} is retired or unknown`,
+        );
+      }
+    } else {
+      try {
+        targetNamespaceId = (
+          await this.deps.namespaces.captureActiveInTx(tx, targetDomain)
+        ).namespaceId;
+      } catch (error) {
+        if (!(error instanceof BusinessException)) throw error;
+        return this.reject(
+          'PEER_UNAVAILABLE',
+          BusinessCode.FEDERATION_DELIVERY_FAILED,
+          `federation peer ${targetDomain} is unavailable`,
+        );
+      }
     }
     const located = await this.locateInTx(tx, {
       actorUserId: params.userId,
       targetAccount,
-      targetDomain,
+      targetDomain: effectiveDomain,
       targetNamespaceId,
     });
     if (!located)
@@ -318,7 +341,9 @@ export class UserIntentService {
     };
     const target: Endpoint = {
       account: targetAccount,
-      domain: targetDomain,
+      // Delivery follows the namespace row's current binding, so a
+      // re-bound identity is addressed at its live domain.
+      domain: effectiveDomain,
       namespaceId: targetNamespaceId,
     };
     // The command owns only the local actor's account state. Both endpoints'
@@ -384,7 +409,7 @@ export class UserIntentService {
           actorAccount: actor.account,
           actorNamespaceId: actor.namespaceId,
           targetAccount,
-          targetDomain,
+          targetDomain: effectiveDomain,
           targetNamespaceId: target.namespaceId,
         }),
       )
@@ -398,9 +423,9 @@ export class UserIntentService {
       return { staleAuthorization: true };
     // Peer feed allocators precede every operation that may allocate from a
     // local Account state-feed counter, including AccountThreadState triggers.
-    if (targetDomain !== 'local')
+    if (target.domain !== 'local')
       await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
-        { peerDomain: targetDomain, namespaceId: targetNamespaceId },
+        { namespaceId: targetNamespaceId },
       ]);
     if (params.decision === 'REVOKED')
       await lockUserIntentThreadStateInTx(tx, shell, actor, target);

@@ -17,7 +17,6 @@ export async function writeProfileSnapshotInTx(
     where: and(
       eq(profileTable.publisherNamespaceId, snapshot.publisherNamespaceId),
       eq(profileTable.account, snapshot.account),
-      eq(profileTable.domain, snapshot.domain),
       eq(profileTable.profileNamespaceId, snapshot.profileNamespaceId),
       eq(profileTable.profileRev, snapshot.profileRev),
     ),

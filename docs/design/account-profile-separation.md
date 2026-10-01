@@ -67,7 +67,7 @@ not grant login capability or create an `Account`.
 
 The source coordinate of a message or roster fact remains distinct from the
 identity/profile coordinate of its subject. A local-account mapping must not
-erase the source namespace used for synchronization, replay, or archival.
+erase the publisher namespace used for synchronization, replay, or archival.
 
 The implementation keeps three coordinates separate:
 
@@ -139,9 +139,9 @@ relationship endpoints directly; they do not require foreign account rows.
 Existing authorization-epoch checks continue to reject stale query failures. Group dissolution enumerates relationship endpoints, including foreign
 members, without joining an identity table.
 
-Messages now keep `sourceNamespaceId` for the direct publisher/source and
+Messages now keep `publisherNamespaceId` for the direct publisher/source and
 `profileNamespaceId` for the author's profile namespace. Incoming messages
-normalize their creator identity without changing `sourceNamespaceId`. Profile
+normalize their creator identity without changing `publisherNamespaceId`. Profile
 resolution reads the stored message/member namespace and does not fetch a
 missing local revision from a group publisher.
 
@@ -156,7 +156,7 @@ Missing snapshots do not hide members or abort message rendering. Resolved
 message profiles are cached under their exact subject coordinates and revision.
 
 Client subject normalization maps the local sentinel or namespace zero to
-`local / 0`. It does not rewrite a message's source namespace or a mirrored
+`local / 0`. It does not rewrite a message's publisher namespace or a mirrored
 group's authority namespace. Profile facts update only matching namespaces in
 both persistent and in-memory thread projections. Conflicting exact snapshots
 abort the IndexedDB transaction, preserving the previous state-feed cursor.

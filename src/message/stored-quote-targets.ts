@@ -9,7 +9,7 @@ import {
 type Message = typeof tables.message.$inferSelect;
 type QuoteMessage = Pick<
   Message,
-  'id' | 'threadId' | 'contentType' | 'content' | 'sourceNamespaceId'
+  'id' | 'threadId' | 'contentType' | 'content' | 'publisherNamespaceId'
 >;
 
 /** Resolve scoped coordinates for republication, including deleted targets and receipt aliases. */
@@ -23,7 +23,7 @@ export async function findStoredQuoteTargets(
         ? parseTextMessageContent(m.content)?.quote
         : undefined;
     if (!quote) return [];
-    const c = storedQuoteCoordinate(quote, m.sourceNamespaceId);
+    const c = storedQuoteCoordinate(quote, m.publisherNamespaceId);
     return c.seq > 0 ? [{ m, c }] : [];
   });
   const result = new Map<bigint, Message>();
@@ -36,7 +36,7 @@ export async function findStoredQuoteTargets(
           c.namespaceId === 0
             ? eq(tables.message.seq, c.seq)
             : and(
-                eq(tables.message.sourceNamespaceId, c.namespaceId),
+                eq(tables.message.publisherNamespaceId, c.namespaceId),
                 eq(tables.message.originSeq, c.seq),
               ),
         ),
@@ -49,7 +49,7 @@ export async function findStoredQuoteTargets(
         t.threadId === m.threadId &&
         (c.namespaceId === 0
           ? t.seq === c.seq
-          : t.sourceNamespaceId === c.namespaceId && t.originSeq === c.seq),
+          : t.publisherNamespaceId === c.namespaceId && t.originSeq === c.seq),
     );
     if (target) result.set(m.id, target);
   }

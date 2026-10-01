@@ -19,7 +19,8 @@ function sourceRow() {
     seq: 7,
     threadId: 4,
     creatorAccount: 'alice',
-    creatorDomain: 'local',
+    publisherNamespaceId: 0,
+    profileNamespaceId: 0,
     profileRev: 1,
     contentType: ContentType.FORWARD,
     content: JSON.stringify({
@@ -121,6 +122,15 @@ function databaseFake(tx?: unknown) {
             domain: 'local',
             name: 'Alice',
             avatar: '',
+          }),
+        },
+        localFederationRoot: {
+          findFirst: vi.fn().mockResolvedValue(null),
+        },
+        identityNamespace: {
+          findFirst: vi.fn().mockResolvedValue({
+            domain: 'peer.test',
+            rootPublicKey: null,
           }),
         },
         mediaAsset: {
@@ -1108,7 +1118,6 @@ describe('ForwardBundleService', () => {
           messages: [
             {
               id: 1,
-              author: {},
               profile: { displayName: 'Alice' },
               contentType: ContentType.PURE_TEXT,
               content: JSON.stringify({ text: 'hello' }),
@@ -1123,7 +1132,6 @@ describe('ForwardBundleService', () => {
     ).resolves.toHaveProperty('localRootBundleId');
 
     expect(insertedBundles[0].messages[0]).toMatchObject({
-      author: {},
       profile: { displayName: 'Alice' },
     });
   });

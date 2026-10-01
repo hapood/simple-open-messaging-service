@@ -83,7 +83,16 @@ describe('FederationMediaLocalizationService', () => {
           where: vi.fn().mockReturnValue({ limit: pairLimit }),
         }),
       });
-    const database = { db: { select } };
+    const database = {
+      db: {
+        select,
+        query: {
+          identityNamespace: {
+            findFirst: vi.fn().mockResolvedValue({ domain: 'peer.example' }),
+          },
+        },
+      },
+    };
     const service = new FederationMediaLocalizationService(
       database as never,
       {} as never,
@@ -98,7 +107,8 @@ describe('FederationMediaLocalizationService', () => {
       service.resolveForwardAssetAuth({
         threadId: 11,
         creatorAccount: 'alice',
-        creatorDomain: 'peer.example',
+        profileNamespaceId: 9,
+        publisherNamespaceId: 3,
         originSeq: 9,
       } as never),
     ).resolves.toEqual({
@@ -129,7 +139,16 @@ describe('FederationMediaLocalizationService', () => {
         }),
       });
     const service = new FederationMediaLocalizationService(
-      { db: { select } } as never,
+      {
+        db: {
+          select,
+          query: {
+            identityNamespace: {
+              findFirst: vi.fn().mockResolvedValue({ domain: 'peer.example' }),
+            },
+          },
+        },
+      } as never,
       {} as never,
       {} as never,
       {} as never,
@@ -142,7 +161,8 @@ describe('FederationMediaLocalizationService', () => {
       service.resolveForwardAssetAuth({
         threadId: 11,
         creatorAccount: 'alice',
-        creatorDomain: 'peer.example',
+        profileNamespaceId: 9,
+        publisherNamespaceId: 3,
         originSeq: 9,
       } as never),
     ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
@@ -165,7 +185,8 @@ describe('FederationMediaLocalizationService', () => {
         id: 17n,
         contentType: ContentType.IMAGE,
         creatorAccount: 'alice',
-        creatorDomain: 'peer.example',
+        profileNamespaceId: 9,
+        publisherNamespaceId: 3,
         localState: 'STUB',
       },
       pendingStatus: 'downloading',

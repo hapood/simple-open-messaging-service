@@ -53,7 +53,7 @@ function groupRow(overrides: Record<string, unknown> = {}) {
     profileRev: 1,
     originSeq: 2,
     originServerTime: null,
-    sourceNamespaceId: 0,
+    publisherNamespaceId: 0,
     contentType: 'PURE_TEXT',
     content: JSON.stringify({ text: 'hello' }),
     createdAt: new Date('2026-09-04T00:00:00.000Z'),
@@ -62,39 +62,35 @@ function groupRow(overrides: Record<string, unknown> = {}) {
     groupId: 5,
     authorityNamespaceId: 9,
     authorAccount: 'member',
-    authorDomain: 'local',
     profileNamespaceId: 0,
     ...overrides,
   };
 }
 
 describe('FederationMessageFeedService group origin coordinates', () => {
-  it.each(['origin.test', 'third-party.test'])(
-    'returns the direct origin coordinate for a mirror copy authored on %s',
-    async (authorDomain) => {
-      const originTime = new Date('2026-09-03T00:00:00.000Z');
-      const [receipt] = await service().serializeMessagesInTx(
-        transaction(),
-        [
-          groupRow({
-            seq: 99,
-            originSeq: 42,
-            originServerTime: originTime,
-            sourceNamespaceId: 9,
-            authorDomain,
-          }),
-        ],
-        'origin.test',
-        9,
-        { account: '!group' },
-      );
-      expect(receipt).toMatchObject({
-        seq: 99,
-        originSeq: 42,
-        originCreatedAt: originTime.getTime(),
-      });
-    },
-  );
+  it('returns the direct origin coordinate for a mirror copy', async () => {
+    const originTime = new Date('2026-09-03T00:00:00.000Z');
+    const [receipt] = await service().serializeMessagesInTx(
+      transaction(),
+      [
+        groupRow({
+          seq: 99,
+          originSeq: 42,
+          originServerTime: originTime,
+          publisherNamespaceId: 9,
+          profileNamespaceId: 12,
+        }),
+      ],
+      'origin.test',
+      9,
+      { account: '!group' },
+    );
+    expect(receipt).toMatchObject({
+      seq: 99,
+      originSeq: 42,
+      originCreatedAt: originTime.getTime(),
+    });
+  });
   it('returns submission coordinates only to the author home of an accepted group message', async () => {
     const publisher = service();
     publisher.localDomain = 'origin.test';
@@ -103,9 +99,9 @@ describe('FederationMessageFeedService group origin coordinates', () => {
       seq: 42,
       originSeq: 7,
       originServerTime: originTime,
-      sourceNamespaceId: 12,
+      publisherNamespaceId: 12,
       authorityNamespaceId: 0,
-      authorDomain: 'member.test',
+      profileNamespaceId: 12,
     });
     const [receipt] = await publisher.serializeMessagesInTx(
       transaction(),
@@ -136,38 +132,38 @@ describe('FederationMessageFeedService group origin coordinates', () => {
   it.each([
     {
       name: 'own target before confirmation',
-      creatorDomain: 'local',
-      sourceNamespaceId: 0,
+      profileNamespaceId: 0,
+      publisherNamespaceId: 0,
       expected: { seq: 8 },
     },
     {
       name: 'own target after confirmation',
-      creatorDomain: 'local',
-      sourceNamespaceId: 9,
+      profileNamespaceId: 0,
+      publisherNamespaceId: 9,
       expected: { seq: 8 },
     },
     {
       name: 'authority target',
-      creatorDomain: 'origin.test',
-      sourceNamespaceId: 9,
+      profileNamespaceId: 12,
+      publisherNamespaceId: 9,
       expected: { originSeq: 21 },
     },
     {
       name: 'another member represented by authority',
-      creatorDomain: 'third.test',
-      sourceNamespaceId: 9,
+      profileNamespaceId: 13,
+      publisherNamespaceId: 9,
       expected: { originSeq: 21 },
     },
   ])(
     'publishes $name using the correct coordinate',
-    async ({ creatorDomain, sourceNamespaceId, expected }) => {
+    async ({ profileNamespaceId, publisherNamespaceId, expected }) => {
       const target = {
         id: 8n,
         threadId: 7,
         seq: 8,
         originSeq: 21,
-        creatorDomain,
-        sourceNamespaceId,
+        profileNamespaceId,
+        publisherNamespaceId,
       };
       const [reply] = await service().serializeMessagesInTx(
         transaction([target]),
@@ -194,16 +190,16 @@ describe('FederationMessageFeedService group origin coordinates', () => {
         threadId: 7,
         seq: 31,
         originSeq: 8,
-        creatorDomain: 'wrong.test',
-        sourceNamespaceId: 11,
+        profileNamespaceId: 11,
+        publisherNamespaceId: 11,
       },
       {
         id: 9n,
         threadId: 7,
         seq: 42,
         originSeq: 8,
-        creatorDomain: 'member.test',
-        sourceNamespaceId: 12,
+        profileNamespaceId: 12,
+        publisherNamespaceId: 12,
         isDeleted: true,
       },
     ];
@@ -212,7 +208,7 @@ describe('FederationMessageFeedService group origin coordinates', () => {
       [
         groupRow({
           authorityNamespaceId: 0,
-          sourceNamespaceId: 12,
+          publisherNamespaceId: 12,
           content: JSON.stringify({
             text: 'reply',
             quote: { seq: 8, namespaceId: 12 },
@@ -252,7 +248,7 @@ describe('FederationMessageFeedService group origin coordinates', () => {
         [
           groupRow({
             authorityNamespaceId: 0,
-            sourceNamespaceId: 12,
+            publisherNamespaceId: 12,
             content: JSON.stringify({
               text: 'reply',
               quote: { seq: 8, namespaceId: 12 },
@@ -277,8 +273,7 @@ describe('FederationMessageFeedService group origin coordinates', () => {
 
     expect(messages).toMatchObject([
       {
-        namespaceId: 0,
-        author: { account: 'member', domain: 'local' },
+        author: { account: 'member', namespaceId: 0 },
         originSeq: null,
         originCreatedAt: null,
       },
@@ -293,9 +288,9 @@ describe('FederationMessageFeedService group origin coordinates', () => {
         groupRow({
           originSeq: 1,
           originServerTime: originTime,
-          sourceNamespaceId: 9,
+          publisherNamespaceId: 9,
           authorAccount: 'owner',
-          authorDomain: 'origin.test',
+          profileNamespaceId: 0,
         }),
       ],
       'origin.test',
@@ -305,7 +300,7 @@ describe('FederationMessageFeedService group origin coordinates', () => {
 
     expect(messages).toMatchObject([
       {
-        author: { account: 'owner', domain: 'origin.test' },
+        author: { account: 'owner', namespaceId: 0 },
         originSeq: 1,
         originCreatedAt: originTime.getTime(),
       },
@@ -319,9 +314,9 @@ describe('FederationMessageFeedService group origin coordinates', () => {
         groupRow({
           originSeq: 1,
           originServerTime: new Date('2026-09-03T00:00:00.000Z'),
-          sourceNamespaceId: 8,
+          publisherNamespaceId: 8,
           authorAccount: 'owner',
-          authorDomain: 'origin.test',
+          profileNamespaceId: 0,
         }),
       ],
       'origin.test',

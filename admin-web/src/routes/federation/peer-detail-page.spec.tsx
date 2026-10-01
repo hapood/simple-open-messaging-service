@@ -10,9 +10,22 @@ const state = vi.hoisted(() => ({
 }));
 const block = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
 const unblock = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
-const setActiveNamespace = vi.hoisted(() => ({
+const approveReview = vi.hoisted(() => ({
   isPending: false,
   mutateAsync: vi.fn(),
+}));
+const rejectReview = vi.hoisted(() => ({
+  isPending: false,
+  mutateAsync: vi.fn(),
+}));
+const predecessorCheck = vi.hoisted(() => ({
+  isPending: false,
+  mutateAsync: vi.fn().mockResolvedValue({
+    reviewId: 7,
+    checkedRoot: 'root-a',
+    ok: true,
+    detail: 'opened',
+  }),
 }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 const confirmMock = vi.hoisted(() => vi.fn());
@@ -45,26 +58,43 @@ vi.mock('@/hooks/use-federation', () => ({
     error: null,
   }),
   useFederationPeerNamespaces: () => ({
-    data: [
-      {
-        id: 0,
-        domain: 'peer.test',
-        rootKeyFingerprint: 'sha256:new',
-        rootPublicKey: 'root',
-        peerAssignedLocalNamespaceId: 44,
-        identityPinnedAt: null,
-        createdAt: null,
-        retiredAt: null,
-        active: false,
-        candidate: true,
-        candidateStatus: 'pending',
-        failedCode: null,
-        failedMessage: null,
-      },
-    ],
+    data: {
+      namespaces: [
+        {
+          id: 12,
+          domain: 'peer.test',
+          rootPublicKey: 'root-a',
+          peerAssignedLocalNamespaceId: 44,
+          identityPinnedAt: null,
+          createdAt: null,
+          retiredAt: null,
+          active: true,
+          trustLevel: 'available',
+          halted: false,
+          pendingReview: null,
+        },
+      ],
+      reviews: [
+        {
+          id: 7,
+          kind: 'root-rotation',
+          matchedNamespaceId: 12,
+          matchedDomain: 'peer.test',
+          nextDomain: 'peer.test',
+          claimedRoot: 'root-b',
+          claim: { previousRoot: 'root-a' },
+          status: 'pending',
+          verifiedAt: null,
+          reviewedAt: null,
+          createdAt: null,
+        },
+      ],
+    },
     isLoading: false,
   }),
-  useSetActiveFederationPeerNamespace: () => setActiveNamespace,
+  useApproveFederationIdentityReview: () => approveReview,
+  useRejectFederationIdentityReview: () => rejectReview,
+  useFederationPredecessorCheck: () => predecessorCheck,
   useBlockFederationPeer: () => block,
   useUnblockFederationPeer: () => unblock,
 }));
@@ -88,7 +118,14 @@ describe('PeerDetailPage authorization', () => {
     unblock.mutateAsync.mockReset().mockResolvedValue(undefined);
     toast.success.mockReset();
     toast.error.mockReset();
-    setActiveNamespace.mutateAsync.mockReset().mockResolvedValue(undefined);
+    approveReview.mutateAsync.mockReset().mockResolvedValue(undefined);
+    rejectReview.mutateAsync.mockReset().mockResolvedValue(undefined);
+    predecessorCheck.mutateAsync.mockReset().mockResolvedValue({
+      reviewId: 7,
+      checkedRoot: 'root-a',
+      ok: true,
+      detail: 'opened',
+    });
     confirmMock.mockReset().mockReturnValue(true);
   });
 
@@ -115,23 +152,49 @@ describe('PeerDetailPage authorization', () => {
     expect(toast.success).toHaveBeenCalledWith('federation.toast.blocked');
   });
 
-  it('lets a super administrator approve a new namespace candidate without a namespace id', async () => {
+  it('lets a super administrator run the predecessor check and approve a pending rotation review', async () => {
+    state.isSuper = true;
+    renderPage();
+
+    fireEvent.click(screen.getByText('federation.detail.tabNamespaces'));
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'federation.reviews.predecessorCheck',
+      }),
+    );
+    await waitFor(() =>
+      expect(predecessorCheck.mutateAsync).toHaveBeenCalledWith(7),
+    );
+    expect(toast.success).toHaveBeenCalledWith(
+      'federation.reviews.predecessorOk',
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'federation.reviews.approve' }),
+    );
+    await waitFor(() =>
+      expect(approveReview.mutateAsync).toHaveBeenCalledWith(7),
+    );
+    expect(toast.success).toHaveBeenCalledWith(
+      'federation.toast.reviewApproved',
+    );
+  });
+
+  it('lets a super administrator reject a pending rotation review without changing the pin', async () => {
     state.isSuper = true;
     renderPage();
 
     fireEvent.click(screen.getByText('federation.detail.tabNamespaces'));
     fireEvent.click(
-      screen.getByRole('button', { name: 'federation.namespaces.approve' }),
+      screen.getByRole('button', { name: 'federation.reviews.reject' }),
     );
 
     await waitFor(() =>
-      expect(setActiveNamespace.mutateAsync).toHaveBeenCalledWith({
-        domain: 'peer.test',
-        namespaceId: undefined,
-      }),
+      expect(rejectReview.mutateAsync).toHaveBeenCalledWith(7),
     );
     expect(toast.success).toHaveBeenCalledWith(
-      'federation.toast.namespaceActive',
+      'federation.toast.reviewRejected',
     );
   });
 

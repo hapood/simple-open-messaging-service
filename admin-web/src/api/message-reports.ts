@@ -9,7 +9,7 @@ interface MessageReportListItem extends MessageTarget {
   isDeleted: boolean;
   createdAt: number;
   updatedAt: number;
-  creator: { account: string; name: string; domain: string };
+  creator: { account: string; name: string; namespaceId: number };
   message: {
     id: string;
     contentType: string;

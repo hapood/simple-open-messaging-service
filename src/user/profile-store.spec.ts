@@ -3,8 +3,8 @@ import { writeProfileSnapshotInTx } from './profile-store.js';
 
 const snapshot = {
   account: 'alice',
-  domain: 'charlie.test',
-  namespaceId: 7,
+  publisherNamespaceId: 7,
+  profileNamespaceId: 7,
   profileRev: 3,
   displayName: 'Alice',
   avatar: '',

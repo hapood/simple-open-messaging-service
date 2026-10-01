@@ -1,5 +1,5 @@
 /** Geometry-only sticky-avatar calculation, kept independent of Angular and the virtual-scroll kernel. */
-import type { ProfileSelector } from '../../../../shared/profile-selector';
+import type { ProfileDemand } from '../../../../shared/profile-demand';
 
 const STICKY_AVATAR_TOP_GAP_PX = 12;
 const STICKY_AVATAR_SIZE_PX = 40;
@@ -24,7 +24,7 @@ interface StickyAvatarPlacement {
 
 export interface StickyAvatarView {
   readonly name: string;
-  readonly profileEvidence?: ProfileSelector;
+  readonly profileEvidence?: ProfileDemand;
   readonly snapshotAvatarUrl?: string;
   readonly identityId?: string;
   readonly account?: string;
@@ -35,7 +35,7 @@ export interface StickyAvatarView {
 
 export interface StickyAvatarIdentity {
   readonly name: string;
-  readonly profileEvidence?: ProfileSelector;
+  readonly profileEvidence?: ProfileDemand;
   readonly snapshotAvatarUrl?: string;
   readonly identityId?: string;
   readonly account?: string;
@@ -44,7 +44,7 @@ export interface StickyAvatarIdentity {
 
 export interface StickyAvatarMeasuredRow extends StickyAvatarRow {
   readonly name: string;
-  readonly profileEvidence?: ProfileSelector;
+  readonly profileEvidence?: ProfileDemand;
   readonly snapshotAvatarUrl?: string;
   readonly identityId?: string;
   readonly account?: string;

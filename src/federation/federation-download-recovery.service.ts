@@ -82,7 +82,7 @@ export class FederationDownloadRecoveryService
       .where(
         and(
           eq(pendingMedia.direction, 'INBOUND'),
-          eq(fileSyncProgress.namespaceId, namespaceId),
+          eq(fileSyncProgress.publisherNamespaceId, namespaceId),
           eq(fileSyncProgress.status, 'PENDING'),
           eq(fileSyncProgress.errorKind, 'QUOTA_PAUSED'),
         ),

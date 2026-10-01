@@ -140,7 +140,7 @@ describe('ClientStateFeedService', () => {
       eventType: 'RELATIONSHIP_INTENT',
       namespaceId: 0,
       subjectAccount: '!group',
-      subjectDomain: 'alpha.test',
+      subjectNamespaceId: 'alpha.test',
       body: { status: 'REQUESTED', requestedAt },
     });
 

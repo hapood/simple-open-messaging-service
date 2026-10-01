@@ -75,12 +75,12 @@ current coordinate with the compacted member/profile rows in feed order.
 Client presentation and its per-account acknowledgement are described in
 [Group announcement](./group-announcement.md).
 
-The member subject key remains `(threadId, memberAccount, memberDomain)`, while
-`profileNamespaceId` is stored in the current `MEMBER_UPSERT` body. It is the
-opaque profile-subject namespace supplied by the profile publisher and must not
-be derived from the member's relationship endpoint namespace. The recognized
-publisher namespace is tracked separately from this profile namespace. The
-Group Meta unique index remains `(threadId, memberAccount, memberDomain)`.
+The member subject key is `(threadId, memberAccount, profileNamespaceId)`. The
+`profileNamespaceId` is the opaque profile-subject namespace supplied by the
+profile publisher and must not be derived from a member relationship endpoint.
+The recognized publisher namespace is tracked separately from this profile
+namespace. Domain is namespace metadata used for routing or display, not the
+canonical member identity key.
 
 The compacted GROUP_PROFILE item is a stored feed fact like any member fact:
 a profile mutation allocates one new coordinate, stores the row with the group
@@ -379,7 +379,7 @@ group origin
   -> may warm the revision immediately after REQUESTED commits
   -> publishes the stable reference without waiting for profile bytes
   -> lazily resolves and caches the exact revision through the global coordinator
-  -> serves GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev
+  -> serves GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev
 
 group mirror
   -> requests only from the group origin
@@ -393,7 +393,7 @@ remote group and never redirects a mirror to the member's home server.
 The application-wide profile coordinator uses the immutable key:
 
 ```text
-(publisherNamespaceId, profileNamespaceId, memberAccount, memberDomain, profileRev)
+(publisherNamespaceId, profileNamespaceId, memberAccount, profileRev)
 ```
 
 Equal requests share one in-flight job. In-flight jobs live in a separate

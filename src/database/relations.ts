@@ -24,20 +24,19 @@ import {
   diagnosticsReport,
   forwardBundleDependency,
   forwardBundleAsset,
-  federationNamespaceCandidate,
+  federationIdentityReview,
   identityNamespace,
   peerStateFeed,
-  peerStateFeedPullCursor,
   relationshipPair,
   federationThreadHistoryGap,
   federationThreadSyncState,
 } from './schema.js';
 
-export const federationNamespaceCandidateRelations = relations(
-  federationNamespaceCandidate,
+export const federationIdentityReviewRelations = relations(
+  federationIdentityReview,
   ({ one }) => ({
     matchedNamespace: one(identityNamespace, {
-      fields: [federationNamespaceCandidate.matchedNamespaceId],
+      fields: [federationIdentityReview.matchedNamespaceId],
       references: [identityNamespace.id],
     }),
   }),

@@ -22,7 +22,7 @@ export class FederationDownloadAdminService {
         threadId: tables.message.threadId,
         messageSeq: tables.message.seq,
         creatorAccount: tables.message.creatorAccount,
-        creatorDomain: tables.message.creatorDomain,
+        profileNamespaceId: tables.message.profileNamespaceId,
         originSeq: tables.message.originSeq,
         contentType: tables.message.contentType,
         status: tables.pendingMedia.status,
@@ -57,7 +57,7 @@ export class FederationDownloadAdminService {
 
     return {
       batches: batches.map((batch) => {
-        if (!batch.creatorAccount || !batch.creatorDomain) {
+        if (!batch.creatorAccount) {
           throw new Error(`inbound media batch ${batch.batchId} has no author`);
         }
         return {
@@ -66,7 +66,7 @@ export class FederationDownloadAdminService {
           messageSeq: batch.messageSeq,
           creator: {
             account: batch.creatorAccount,
-            domain: batch.creatorDomain,
+            namespaceId: batch.profileNamespaceId,
           },
           originSeq: batch.originSeq,
           contentType: batch.contentType,

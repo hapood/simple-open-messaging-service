@@ -504,7 +504,7 @@ export class GroupController {
   private rosterRoleTarget(dto: TransferGroupDto | SetRoleGroupDto) {
     return {
       account: normalizeAccount(dto.account),
-      domain: dto.domain.trim().toLowerCase(),
+      namespaceId: dto.namespaceId,
     };
   }
 

@@ -10,12 +10,10 @@ export interface MemberAuthoredMembershipRequestInput {
   groupAvatar: string;
   groupDescription: string;
   groupProfileRev: number;
-  localDomain: string;
   /** The applying member. Local for this family's own actor; a remote member
    * when the received-intent applier drives the same statement. */
   memberAccount: string;
-  memberDomain: string;
-  memberNamespaceId: number;
+  profileNamespaceId: number;
   /** The applicant's local Account id, or null for a remote member: no local
    * applicant feed row exists to write in that case. */
   localMemberId: number | null;
@@ -43,7 +41,7 @@ export function memberAuthoredMembershipRequestSql(
         authoredIntentWriteSql({
           author: {
             account: input.memberAccount,
-            namespaceId: input.memberNamespaceId,
+            namespaceId: input.profileNamespaceId,
           },
           receiver: { account: input.groupAccount, namespaceId: 0 },
           threadId: input.threadId,
@@ -58,7 +56,7 @@ export function memberAuthoredMembershipRequestSql(
       UNION ALL
       SELECT id, status, "profileRev", note, "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
-      WHERE "authorAccount" = ${input.memberAccount} AND "authorNamespaceId" = ${input.memberNamespaceId}
+      WHERE "authorAccount" = ${input.memberAccount} AND "authorNamespaceId" = ${input.profileNamespaceId}
         AND "receiverAccount" = ${input.groupAccount} AND "receiverNamespaceId" = 0
         AND NOT EXISTS (SELECT 1 FROM authored)
     ), projection_alloc AS (
@@ -69,17 +67,17 @@ export function memberAuthoredMembershipRequestSql(
       RETURNING f."applicationEndId" AS "feedId"
     ), request_projection AS (
       INSERT INTO "GroupRequestProjection"
-        ("threadId", "memberAccount", "memberDomain", "memberNamespaceId",
+        ("threadId", "memberAccount", "profileNamespaceId",
           "memberProfileRev", direction, status, note, "requestedAt", "expiresAt", "feedId")
-      SELECT ${input.threadId}, ${input.memberAccount}, ${input.memberDomain},
-        ${input.memberNamespaceId},
+      SELECT ${input.threadId}, ${input.memberAccount},
+        ${input.profileNamespaceId},
         v."profileRev", 'APPLICATION',
         'REQUESTED'::"RequestProjectionStatus", v.note, v."requestedAt", v."expiresAt",
         (SELECT "feedId" FROM projection_alloc)
       FROM request_state v
       WHERE EXISTS (SELECT 1 FROM projection_alloc)
-      ON CONFLICT ("threadId", "memberAccount", "memberDomain",
-        "memberNamespaceId", "direction") DO UPDATE SET
+      ON CONFLICT ("threadId", "memberAccount",
+        "profileNamespaceId", "direction") DO UPDATE SET
         "feedId" = EXCLUDED."feedId",
         "memberProfileRev" = EXCLUDED."memberProfileRev", status = EXCLUDED.status,
         note = EXCLUDED.note, "requestedAt" = EXCLUDED."requestedAt",
@@ -101,7 +99,7 @@ export function memberAuthoredMembershipRequestSql(
       SELECT ${input.localMemberId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
         ${memberFeedCompactionKey(input.groupAccount, input.memberAccount)}::text AS "compactionKey",
         ${input.groupAccount}::text AS account, 'local'::text AS domain,
-        ${input.memberAccount}::text AS "subjectAccount", 'local'::text AS "subjectDomain",
+        ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId",
         b.body
       FROM recipient_body b
       WHERE ${input.localMemberId}::integer IS NOT NULL

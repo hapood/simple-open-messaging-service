@@ -20,7 +20,6 @@ import {
   AdminFederationSelfCheckDto,
   AdminFederationResetDto,
   AdminFederationIdentityRecoverDto,
-  AdminFederationSetActiveNamespaceDto,
 } from './admin.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -31,6 +30,7 @@ import { FederationService } from '../federation/federation.service.js';
 import { FederationSelfCheckService } from './federation-self-check.service.js';
 import { FederationResetService } from './federation-reset.service.js';
 import { FederationNamespaceAdminService } from './federation-namespace-admin.service.js';
+import { KeypairService } from '../federation/keypair.service.js';
 
 /**
  * Federation trust-lifecycle admin endpoints. Read-only observability of the peer trust state,
@@ -54,6 +54,7 @@ export class AdminFederationController {
     private readonly resetService: FederationResetService,
     private readonly namespaceAdmin: FederationNamespaceAdminService,
     private readonly database: DatabaseService,
+    private readonly keypair: KeypairService,
   ) {}
 
   @UseGuards(AdminAuthGuard)
@@ -102,20 +103,99 @@ export class AdminFederationController {
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.SUPER_ADMIN)
-  @Audit('federation.peer.namespace_set_active', {
-    targetType: 'peer',
-    targetParam: 'domain',
-  })
   @HttpCode(HttpStatus.OK)
-  @Post('admin/federation/peers/:domain/namespaces/active')
+  @Post('admin/federation/identity-reviews')
   @ApiOperation({
-    summary: 'Switch the active identity namespace for a federated peer',
+    summary: 'List pending peer identity reviews (domain re-binds, root rotations)',
   })
-  async setActiveNamespace(
-    @Param('domain') domain: string,
-    @Body() dto: AdminFederationSetActiveNamespaceDto,
-  ) {
-    return this.namespaceAdmin.setActive(domain, dto.namespaceId);
+  async pendingIdentityReviews() {
+    return this.namespaceAdmin.pendingReviews();
+  }
+
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/local-root-epochs')
+  @ApiOperation({
+    summary: 'List local federation root identity epochs',
+  })
+  async localRootEpochs() {
+    return this.keypair.getRootEpochs();
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Audit('federation.local_root_rotate', { targetType: 'localFederationRoot' })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/local-root-epochs/rotate')
+  @ApiOperation({
+    summary: 'Rotate the local federation root identity epoch immediately',
+  })
+  async rotateLocalRoot() {
+    return this.keypair.rotateRoot();
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Audit('federation.local_root_unpublish', { targetType: 'localFederationRoot' })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/local-root-epochs/:id/unpublish')
+  @ApiOperation({
+    summary: 'Stop publishing an expired predecessor root epoch',
+  })
+  async unpublishLocalRoot(@Param('id') id: string) {
+    const rootId = this.requireReviewId(id);
+    await this.keypair.unpublishRoot(rootId);
+    return { rootId, status: 'unpublished' };
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/identity-reviews/:id/predecessor-check')
+  @ApiOperation({
+    summary:
+      'Seal a fresh challenge under the pinned predecessor root and ask the peer to open it (rotation continuity evidence)',
+  })
+  async predecessorCheck(@Param('id') id: string) {
+    return this.namespaceAdmin.predecessorCheck(this.requireReviewId(id));
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Audit('federation.identity_review_approve', { targetType: 'identityReview' })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/identity-reviews/:id/approve')
+  @ApiOperation({
+    summary: 'Approve a pending peer identity review',
+  })
+  async approveIdentityReview(@Param('id') id: string) {
+    return this.namespaceAdmin.approve(this.requireReviewId(id));
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Audit('federation.identity_review_reject', { targetType: 'identityReview' })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/identity-reviews/:id/reject')
+  @ApiOperation({
+    summary: 'Reject a pending peer identity review',
+  })
+  async rejectIdentityReview(@Param('id') id: string) {
+    return this.namespaceAdmin.reject(this.requireReviewId(id));
+  }
+
+  private requireReviewId(raw: string): number {
+    const id = Number(raw);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'reviewId must be a positive integer',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return id;
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

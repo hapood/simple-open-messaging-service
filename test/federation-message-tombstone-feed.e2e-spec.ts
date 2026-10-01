@@ -7,7 +7,6 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { MessageDeleteType } from '../src/database/enums.js';
 import {
   deletedMessage,
-  federatedPeer,
   identityNamespace,
   message,
   messageThread,
@@ -37,7 +36,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
   beforeEach(async () => {
     await truncateTablesForTest(
       database.pool,
-      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
     );
     service = new FederationMessageTombstoneFeedService(database);
   });
@@ -45,7 +44,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
   afterAll(async () => {
     await truncateTablesForTest(
       database.pool,
-      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
     );
     await mod.close();
   });
@@ -72,14 +71,15 @@ describe('FederationMessageTombstoneFeedService query', () => {
             rootKeyFingerprint: 'sha256:tombstone-feed-test',
             rootPublicKey: Buffer.alloc(32, 1).toString('base64'),
             identityPinnedAt: now,
+            active: true,
+            trustLevel: 'available',
           })
           .returning({ id: identityNamespace.id })
       )[0].id;
-    await database.db.insert(federatedPeer).values({
-      domain: peerDomain,
-      activeNamespaceId: namespaceId,
-      trustLevel: 'available',
-    });
+    await database.db
+      .update(identityNamespace)
+      .set({ active: true, trustLevel: 'available' })
+      .where(eq(identityNamespace.id, namespaceId));
     const [alice] = await database.db
       .insert(user)
       .values({

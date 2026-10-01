@@ -51,20 +51,20 @@ export class MessageReportService {
         ),
         columns: {
           creatorAccount: true,
-          creatorDomain: true,
+          profileNamespaceId: true,
           contentType: true,
           isDeleted: true,
         },
       });
       const reporter = await tx.query.account.findFirst({
         where: eq(user.id, userId),
-        columns: { account: true, domain: true },
+        columns: { account: true, namespaceId: true },
       });
       if (!reporter) throw new Error('reporter does not exist');
       if (
         !target ||
         (target.creatorAccount === reporter.account &&
-          target.creatorDomain === reporter.domain) ||
+          target.profileNamespaceId === 0) ||
         target.contentType === 'SYSTEM'
       ) {
         throw new BusinessException(
@@ -128,8 +128,8 @@ export class MessageReportService {
           seq: messageReport.seq,
           creator: {
             account: message.creatorAccount,
+            namespaceId: message.profileNamespaceId,
             name: sql<string>`COALESCE(${accountProfileFields(creator).name}, ${message.creatorAccount})`,
-            domain: message.creatorDomain,
           },
           message: {
             id: message.id,
@@ -154,14 +154,7 @@ export class MessageReportService {
           creator,
           and(
             eq(creator.account, message.creatorAccount),
-            eq(creator.domain, message.creatorDomain),
-            eq(
-              creator.namespaceId,
-              sql<number>`CASE
-                WHEN ${message.creatorDomain} = 'local' THEN 0
-                ELSE ${message.sourceNamespaceId}
-              END`,
-            ),
+            eq(creator.namespaceId, message.profileNamespaceId),
           ),
         )
         .where(where)

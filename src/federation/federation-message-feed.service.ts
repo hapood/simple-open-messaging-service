@@ -40,7 +40,7 @@ import {
   toFederatedMessageContent,
 } from './federated-message-content.js';
 import type {
-  FederationAddress,
+  FederationAuthorAddress,
   FederationByteDescriptor,
   FederatedMessagePayload,
 } from './federated-message-types.js';
@@ -65,8 +65,6 @@ type FederationMessageFeedAsset = FederationByteDescriptor;
 
 interface FederationMessageFeedMessageBase
   extends FederatedMessagePayload<string> {
-  /** Identity namespace that published this message copy. */
-  namespaceId: number;
   seq: number;
   profileRev: number;
   originSeq: number | null;
@@ -83,7 +81,7 @@ export type FederationMessageFeedMessage =
     })
   | (FederationMessageFeedMessageBase & {
       thread: { account: string };
-      author: FederationAddress;
+      author: FederationAuthorAddress;
     });
 
 export interface FederationMessageQueryPage {
@@ -237,7 +235,7 @@ export class FederationMessageFeedService {
                 profileRev: message.profileRev,
                 originSeq: message.originSeq,
                 originServerTime: message.originServerTime,
-                sourceNamespaceId: message.sourceNamespaceId,
+                publisherNamespaceId: message.publisherNamespaceId,
                 contentType: message.contentType,
                 content: message.content,
                 createdAt: message.createdAt,
@@ -246,7 +244,6 @@ export class FederationMessageFeedService {
                 groupId: messageThread.id,
                 authorityNamespaceId: messageThread.authorityNamespaceId,
                 authorAccount: sql<string>`${message.creatorAccount}`,
-                authorDomain: sql<string>`${message.creatorDomain}`,
                 profileNamespaceId: message.profileNamespaceId,
               })
               .from(message)
@@ -266,20 +263,20 @@ export class FederationMessageFeedService {
                   groupQueryDirection === 'MIRROR_TO_ORIGIN'
                     ? or(
                         and(
-                          eq(message.creatorDomain, 'local'),
-                          eq(message.sourceNamespaceId, 0),
+                          eq(message.profileNamespaceId, 0),
+                          eq(message.publisherNamespaceId, 0),
                         ),
                         and(
                           isNotNull(message.originSeq),
-                          eq(message.sourceNamespaceId, namespaceId),
+                          eq(message.publisherNamespaceId, namespaceId),
                         ),
                       )
                     : undefined,
                   includeSelf
                     ? undefined
                     : groupQueryDirection === 'MIRROR_TO_ORIGIN'
-                      ? eq(message.creatorDomain, 'local')
-                      : ne(message.creatorDomain, peerDomain),
+                      ? eq(message.profileNamespaceId, 0)
+                      : ne(message.profileNamespaceId, namespaceId),
                 ),
               )
               .orderBy(forward ? asc(message.seq) : desc(message.seq))
@@ -313,12 +310,7 @@ export class FederationMessageFeedService {
           authorReferences: selected.map((row) => ({
             seq: row.seq,
             account: row.authorAccount,
-            domain:
-              row.authorDomain === 'local'
-                ? this.localDomain
-                : row.authorDomain,
-            namespaceId:
-              row.authorDomain === 'local' ? 0 : row.sourceNamespaceId,
+            namespaceId: row.profileNamespaceId,
             profileRev: row.profileRev,
           })),
         };
@@ -352,7 +344,7 @@ export class FederationMessageFeedService {
       profileRev: number;
       originSeq: number | null;
       originServerTime: Date | null;
-      sourceNamespaceId: number;
+      publisherNamespaceId: number;
       contentType: ContentType;
       content: string;
       createdAt: Date;
@@ -361,7 +353,6 @@ export class FederationMessageFeedService {
       groupId: number | null;
       authorityNamespaceId: number;
       authorAccount: string;
-      authorDomain: string;
       profileNamespaceId: number;
     }>,
     peerDomain: string,
@@ -399,7 +390,7 @@ export class FederationMessageFeedService {
       const thread = threadAddress;
       const author = {
         account: row.authorAccount,
-        domain: this.wireDomain(row.authorDomain),
+        namespaceId: row.profileNamespaceId,
       };
       const quote =
         row.contentType === ContentType.PURE_TEXT
@@ -407,7 +398,7 @@ export class FederationMessageFeedService {
           : undefined;
       const target = quoteTargets.get(row.messageId);
       const coordinate =
-        quote && storedQuoteCoordinate(quote, row.sourceNamespaceId);
+        quote && storedQuoteCoordinate(quote, row.publisherNamespaceId);
       const groupAuthority =
         row.threadType === 'GROUP' && row.authorityNamespaceId === 0;
       // A group authority republishes every author's target in its own timeline.
@@ -451,9 +442,8 @@ export class FederationMessageFeedService {
       const isProcessingReceipt =
         row.originSeq !== null &&
         row.originServerTime !== null &&
-        row.sourceNamespaceId === peerNamespaceId;
+        row.publisherNamespaceId === peerNamespaceId;
       const envelope = {
-        namespaceId: row.profileNamespaceId,
         seq: row.seq,
         profileRev: row.profileRev,
         originSeq: isProcessingReceipt ? row.originSeq : null,
@@ -471,10 +461,10 @@ export class FederationMessageFeedService {
       let item: FederationMessageFeedMessage;
       if ('peerAccount' in thread) {
         const sourceAuthored =
-          author.domain === this.localDomain &&
-          author.account === thread.account;
+          author.namespaceId === 0 && author.account === thread.account;
         const peerAuthored =
-          author.domain === peerDomain && author.account === thread.peerAccount;
+          author.namespaceId === peerNamespaceId &&
+          author.account === thread.peerAccount;
         if (!sourceAuthored && !peerAuthored) {
           throw new Error(
             `P2P message author is not one of the addressed participants (thread ${row.threadId}, seq ${row.seq})`,
@@ -504,19 +494,17 @@ export class FederationMessageFeedService {
       .from(peerStateFeed)
       .where(
         and(
-          eq(peerStateFeed.peerDomain, peerDomain),
           eq(peerStateFeed.namespaceId, namespaceId),
           eq(peerStateFeed.account, selector.account),
-          eq(peerStateFeed.domain, this.localDomain),
           eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
           selector.type === 'P2P'
             ? and(
                 eq(peerStateFeed.subjectAccount, selector.peerAccount),
-                eq(peerStateFeed.subjectDomain, peerDomain),
+                eq(peerStateFeed.subjectNamespaceId, namespaceId),
               )
             : and(
                 eq(peerStateFeed.subjectAccount, ''),
-                eq(peerStateFeed.subjectDomain, 'local'),
+                eq(peerStateFeed.subjectNamespaceId, 0),
               ),
         ),
       )
@@ -544,9 +532,5 @@ export class FederationMessageFeedService {
       'through must be greater than or equal to after',
       HttpStatus.BAD_REQUEST,
     );
-  }
-
-  private wireDomain(domain: string): string {
-    return domain;
   }
 }

@@ -7,7 +7,7 @@ import { ProfileRepository } from '../../../services/profile-store.service';
 import { WebdbService } from '../../../services/webdb.service';
 import { ConversationListService } from '../../../services/conversation-list.service';
 
-import type { ProfileSelector } from '../../../../../../shared/profile-selector';
+import type { ProfileDemand } from '../../../../../../shared/profile-demand';
 import { UserService } from '../../../services/user.service';
 import { displayUserAccount } from '../../../services/model';
 import {
@@ -128,10 +128,13 @@ export class SystemRowComponent {
       if (!revision) return;
       void this.profiles
         .getProfile({
-          account: identity.account,
-          domain: identity.domain,
-          namespaceId: identity.namespaceId,
-          profileRev: revision,
+          publisherNamespaceId: identity.profileNamespaceId,
+          lookup: 'ACCOUNT_PROFILE',
+          target: {
+            profileNamespaceId: identity.profileNamespaceId,
+            account: identity.account,
+            rev: revision,
+          },
         })
         .then((profile) => {
           if (!cancelled && current === request)
@@ -143,7 +146,7 @@ export class SystemRowComponent {
       if (threadIds.includes(threadId)) refresh();
     });
     const event = this.event();
-    let evidence: ProfileSelector | undefined;
+    let evidence: ProfileDemand | undefined;
     if (revision > 0 && revision === identity.profileRev && event) {
       if (
         data.isGroupConversation &&
@@ -156,21 +159,29 @@ export class SystemRowComponent {
         ].includes(event.type)
       )
         evidence = {
-          type: 'GROUP_META',
-          threadId,
-          profileRev: revision,
-          subject: {
-            type: 'MEMBER',
+          publisherNamespaceId: identity.profileNamespaceId,
+          lookup: 'GROUP_MEMBER_PROFILE',
+          target: {
+            profileNamespaceId: identity.profileNamespaceId,
             account: identity.account,
-            domain: identity.domain,
+            rev: revision,
           },
+          groupAccount: (() => {
+            const item = this.conversations
+              .items()
+              .find((candidate) => candidate.threadId === threadId);
+            return item?.type === 'GROUP' ? item.group.account : '';
+          })(),
         };
       else if (event.type === 'FRIEND_ADDED')
         evidence = {
-          type: 'EXACT',
-          account: identity.account,
-          domain: identity.domain,
-          rev: revision,
+          publisherNamespaceId: identity.profileNamespaceId,
+          lookup: 'ACCOUNT_PROFILE',
+          target: {
+            profileNamespaceId: identity.profileNamespaceId,
+            account: identity.account,
+            rev: revision,
+          },
         };
     }
     const profileSubscription = evidence
@@ -178,9 +189,8 @@ export class SystemRowComponent {
           next: (profile) => {
             if (cancelled) return;
             if (
-              profile.namespaceId !== identity.namespaceId ||
-              profile.account !== identity.account ||
-              profile.domain !== identity.domain
+              profile.namespaceId !== identity.profileNamespaceId ||
+              profile.account !== identity.account
             )
               return;
             revision = profile.rev;
@@ -264,7 +274,7 @@ export class SystemRowComponent {
                 item.type === 'P2P' &&
                 item.peerUser.account === identity.account &&
                 item.peerUser.domain === identity.domain &&
-                item.peerUser.namespaceId === identity.namespaceId,
+                item.peerUser.namespaceId === identity.profileNamespaceId,
             )
             ?.alias?.trim() ?? '')
         : '';

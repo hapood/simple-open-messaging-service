@@ -41,7 +41,7 @@ export class DeletedMessageService {
       threadId: number;
       messageSeq: number;
       type: MessageDeleteType;
-      sourceNamespaceId?: number;
+      publisherNamespaceId?: number;
       updatedAt?: Date;
       threadLock?: ThreadContentLock;
     },
@@ -70,7 +70,7 @@ export class DeletedMessageService {
       deletionSeq: allocated.deletionSeq,
       messageSeq: params.messageSeq,
       type: params.type,
-      sourceNamespaceId: params.sourceNamespaceId ?? 0,
+      publisherNamespaceId: params.publisherNamespaceId ?? 0,
       updatedAt: params.updatedAt ?? new Date(),
     });
     return { deletionSeq: allocated.deletionSeq, created: true };
@@ -198,16 +198,12 @@ export class DeletedMessageService {
           'message not found',
         );
       const locked = await tx.execute(sql`
-        SELECT message.id, message."creatorAccount", message."creatorDomain",
+        SELECT message.id, message."creatorAccount", message."profileNamespaceId",
                message."contentType", message."isDeleted"
         FROM "Message" message
         JOIN "Account" author
          ON author.account = message."creatorAccount"
-         AND author.domain = message."creatorDomain"
-         AND author."namespaceId" = CASE
-           WHEN message."creatorDomain" = 'local' THEN 0
-           ELSE message."sourceNamespaceId"
-         END
+         AND author."namespaceId" = message."profileNamespaceId"
         WHERE message."threadId" = ${threadId}
           AND message.seq = ${seq}
           AND author.id = ${userId}
@@ -217,7 +213,7 @@ export class DeletedMessageService {
         | {
             id: string;
             creatorAccount: string;
-            creatorDomain: string;
+            profileNamespaceId: number;
             contentType: string;
             isDeleted: boolean;
           }
@@ -243,7 +239,7 @@ export class DeletedMessageService {
         messageSeq: seq,
         creator: {
           account: target.creatorAccount,
-          domain: target.creatorDomain,
+          namespaceId: target.profileNamespaceId,
         },
       };
     });
@@ -353,7 +349,7 @@ export class DeletedMessageService {
     threadId: number;
     messageSeq: number;
     sourceDomain: string;
-    sourceNamespaceId: number;
+    publisherNamespaceId: number;
     remoteDeletionSeq: number;
     type: MessageDeleteType;
     authorityDeletedAt?: Date;
@@ -388,7 +384,7 @@ export class DeletedMessageService {
     const pending = await tx.query.federatedMessageTombstone.findFirst({
       where: and(
         eq(federatedMessageTombstone.threadId, params.threadId),
-        eq(federatedMessageTombstone.sourceNamespaceId, params.namespaceId),
+        eq(federatedMessageTombstone.publisherNamespaceId, params.namespaceId),
         eq(federatedMessageTombstone.messageSeq, params.peerSeq),
       ),
     });
@@ -400,7 +396,10 @@ export class DeletedMessageService {
         .where(
           and(
             eq(federatedMessageTombstone.threadId, params.threadId),
-            eq(federatedMessageTombstone.sourceNamespaceId, params.namespaceId),
+            eq(
+              federatedMessageTombstone.publisherNamespaceId,
+              params.namespaceId,
+            ),
             eq(federatedMessageTombstone.messageSeq, params.peerSeq),
           ),
         );
@@ -410,7 +409,7 @@ export class DeletedMessageService {
       threadId: params.threadId,
       messageSeq: params.peerSeq,
       sourceDomain: params.peerDomain,
-      sourceNamespaceId: params.namespaceId,
+      publisherNamespaceId: params.namespaceId,
       remoteDeletionSeq: pending.remoteDeletionSeq,
       type: pending.type,
       authorityDeletedAt: pending.authorityDeletedAt,
@@ -426,7 +425,7 @@ export class DeletedMessageService {
       threadId: number;
       messageSeq: number;
       sourceDomain: string;
-      sourceNamespaceId: number;
+      publisherNamespaceId: number;
       remoteDeletionSeq: number;
       type: MessageDeleteType;
       authorityDeletedAt?: Date;
@@ -439,20 +438,20 @@ export class DeletedMessageService {
       tx,
       params.threadId,
       params.sourceDomain,
-      params.sourceNamespaceId,
+      params.publisherNamespaceId,
       params.expectedFederationVersion,
     );
     const threadLock = await DeletedMessageService.lockFederatedIdentity(
       tx,
       params.threadId,
       params.sourceDomain,
-      params.sourceNamespaceId,
+      params.publisherNamespaceId,
       params.messageSeq,
       params.threadLock,
     );
     const peerCoordinate = and(
       eq(message.threadId, params.threadId),
-      eq(message.sourceNamespaceId, params.sourceNamespaceId),
+      eq(message.publisherNamespaceId, params.publisherNamespaceId),
       eq(message.originSeq, params.messageSeq),
     );
     let target = await tx.query.message.findFirst({
@@ -460,8 +459,8 @@ export class DeletedMessageService {
       columns: {
         seq: true,
         creatorAccount: true,
-        creatorDomain: true,
-        sourceNamespaceId: true,
+        profileNamespaceId: true,
+        publisherNamespaceId: true,
         contentType: true,
         isDeleted: true,
         localState: true,
@@ -474,7 +473,7 @@ export class DeletedMessageService {
       const receipt = await tx.query.federationMessageReceipt.findFirst({
         where: and(
           eq(federationMessageReceipt.threadId, params.threadId),
-          eq(federationMessageReceipt.namespaceId, params.sourceNamespaceId),
+          eq(federationMessageReceipt.namespaceId, params.publisherNamespaceId),
           eq(federationMessageReceipt.peerSeq, params.messageSeq),
         ),
         columns: { messageId: true },
@@ -488,8 +487,8 @@ export class DeletedMessageService {
             and(
               eq(federatedMessageTombstone.threadId, params.threadId),
               eq(
-                federatedMessageTombstone.sourceNamespaceId,
-                params.sourceNamespaceId,
+                federatedMessageTombstone.publisherNamespaceId,
+                params.publisherNamespaceId,
               ),
               eq(federatedMessageTombstone.messageSeq, params.messageSeq),
             ),
@@ -505,8 +504,8 @@ export class DeletedMessageService {
           columns: {
             seq: true,
             creatorAccount: true,
-            creatorDomain: true,
-            sourceNamespaceId: true,
+            profileNamespaceId: true,
+            publisherNamespaceId: true,
             contentType: true,
             isDeleted: true,
             localState: true,
@@ -517,7 +516,7 @@ export class DeletedMessageService {
     if (
       target &&
       params.authority === 'P2P_HOME' &&
-      target.creatorDomain !== params.sourceDomain
+      target.profileNamespaceId !== params.publisherNamespaceId
     )
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
@@ -527,7 +526,7 @@ export class DeletedMessageService {
     if (
       target &&
       params.authority === 'GROUP_MEMBER' &&
-      target.creatorDomain !== params.sourceDomain
+      target.profileNamespaceId !== params.publisherNamespaceId
     )
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
@@ -541,8 +540,8 @@ export class DeletedMessageService {
       where: and(
         eq(federatedMessageTombstone.threadId, params.threadId),
         eq(
-          federatedMessageTombstone.sourceNamespaceId,
-          params.sourceNamespaceId,
+          federatedMessageTombstone.publisherNamespaceId,
+          params.publisherNamespaceId,
         ),
         eq(federatedMessageTombstone.messageSeq, params.messageSeq),
       ),
@@ -551,7 +550,7 @@ export class DeletedMessageService {
     // An earlier pending fact wins over later, differently typed tombstones.
     const effectiveType = pending?.type ?? params.type;
     const ignored =
-      target?.creatorDomain === 'local' &&
+      target?.profileNamespaceId === 0 &&
       params.authority === 'GROUP_ORIGIN' &&
       effectiveType === MessageDeleteType.USER_RETRACTION;
 
@@ -568,7 +567,7 @@ export class DeletedMessageService {
           .values({
             threadId: params.threadId,
             messageSeq: params.messageSeq,
-            sourceNamespaceId: params.sourceNamespaceId,
+            publisherNamespaceId: params.publisherNamespaceId,
             remoteDeletionSeq: params.remoteDeletionSeq,
             type: params.type,
             authorityDeletedAt: params.authorityDeletedAt ?? new Date(),
@@ -580,8 +579,7 @@ export class DeletedMessageService {
     if (target && !ignored) {
       if (
         target.contentType === ContentType.SYSTEM ||
-        target.creatorAccount === null ||
-        target.creatorDomain === null
+        target.creatorAccount === null
       )
         throw new Error('SYSTEM messages cannot enter deletion processing');
       const now = new Date();
@@ -594,8 +592,8 @@ export class DeletedMessageService {
         threadId: params.threadId,
         messageSeq: target.seq,
         type: effectiveType,
-        sourceNamespaceId:
-          params.authority === 'GROUP_MEMBER' ? 0 : params.sourceNamespaceId,
+        publisherNamespaceId:
+          params.authority === 'GROUP_MEMBER' ? 0 : params.publisherNamespaceId,
         updatedAt: now,
       });
       localDeletionSeq = localDeletion.created
@@ -621,8 +619,8 @@ export class DeletedMessageService {
           and(
             eq(federatedMessageTombstone.threadId, params.threadId),
             eq(
-              federatedMessageTombstone.sourceNamespaceId,
-              params.sourceNamespaceId,
+              federatedMessageTombstone.publisherNamespaceId,
+              params.publisherNamespaceId,
             ),
             eq(federatedMessageTombstone.messageSeq, params.messageSeq),
           ),

@@ -122,6 +122,26 @@ describe('RelationshipController.acceptRelationship', () => {
       data: { status: 'REJECTED', reason: 'INTENT_NOT_FOUND' },
     });
   });
+
+  it('forwards a namespace id on acceptance for nsid-first addressing', async () => {
+    const userIntents = {
+      execute: vi.fn().mockResolvedValue({ status: 'APPLIED', threadId: 21 }),
+    };
+    const controller = build({ userIntents });
+
+    await expect(
+      controller.acceptRelationship({ user: { userId: 7 } } as never, {
+        account: 'bob',
+        domain: 'peer.test',
+        namespaceId: 5,
+      }),
+    ).resolves.toEqual({ status: 'OK', threadId: 21 });
+    expect(userIntents.execute).toHaveBeenCalledWith({
+      userId: 7,
+      decision: 'ACCEPTED',
+      target: { account: 'bob', domain: 'peer.test', namespaceId: 5 },
+    });
+  });
 });
 
 describe('RelationshipController.revokeRelationship', () => {
@@ -393,6 +413,32 @@ describe('RelationshipController.requestRelationship', () => {
       code: BusinessCode.UNAUTHENTICATED,
       data: { status: 'REJECTED', reason: 'ACTOR_NOT_FOUND' },
     });
+  });
+
+  it('forwards a namespace id from the DTO to the intent service for nsid-first addressing', async () => {
+    const userIntents = {
+      execute: vi.fn().mockResolvedValue({ status: 'APPLIED', threadId: 42 }),
+    };
+    const controller = build({ userIntents });
+
+    await expect(
+      controller.requestRelationship({ user: { userId: 7 } } as never, {
+        account: 'bob',
+        domain: 'peer.test',
+        namespaceId: 5,
+        displayName: 'Bob',
+        note: 'nsid-first',
+      }),
+    ).resolves.toEqual({ status: 'OK', threadId: 42 });
+    expect(userIntents.execute).toHaveBeenCalledWith(
+      {
+        userId: 7,
+        decision: 'REQUESTED',
+        target: { account: 'bob', domain: 'peer.test', namespaceId: 5 },
+        note: 'nsid-first',
+      },
+      expect.objectContaining({ admissionInTx: expect.any(Function) }),
+    );
   });
 
   it.each([

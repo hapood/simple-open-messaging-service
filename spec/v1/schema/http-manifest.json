@@ -39,7 +39,12 @@
       "successStatus": [200],
       "requestMediaType": "application/json",
       "requestSchema": "urn:somfp:v1:identity#/$defs/verifyRequest",
-      "requestHeaders": ["Date", "Content-Digest", "Signature-Input", "Signature"],
+      "requestHeaders": [
+        "Date",
+        "Content-Digest",
+        "Signature-Input",
+        "Signature"
+      ],
       "responseSchema": "urn:somfp:v1:identity#/$defs/verifyResult",
       "responseEnvelope": true
     },
@@ -60,6 +65,26 @@
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/feedQuery",
       "responseSchema": "urn:somfp:v1:state-feed",
+      "responseEnvelope": true
+    },
+    {
+      "id": "profileNamespaceFeed",
+      "method": "GET",
+      "path": "/s2s/v1/profile-namespace-feed",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/feedQuery",
+      "responseSchema": "urn:somfp:v1:profile-namespace-feed",
+      "responseEnvelope": true
+    },
+    {
+      "id": "profileNamespace",
+      "method": "GET",
+      "path": "/s2s/v1/profile-namespaces/:nsid",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/profileNamespaceParameters",
+      "responseSchema": "urn:somfp:v1:profile-namespace",
       "responseEnvelope": true
     },
     {
@@ -85,7 +110,7 @@
     {
       "id": "groupMemberProfile",
       "method": "GET",
-      "path": "/s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev",
+      "path": "/s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev",
       "authentication": "recognized-http-message-signature",
       "successStatus": [200],
       "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/groupMemberProfileParameters",

@@ -2,6 +2,7 @@ import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { Interval } from '@nestjs/schedule';
 import { FederationService } from './federation.service.js';
+import { FederationProfileNamespacePullService } from './federation-profile-namespace-pull.service.js';
 import {
   FEDERATION_PEER_AVAILABLE,
   type FederationPeerAvailable,
@@ -33,6 +34,7 @@ export class FederationReconnectService implements OnApplicationBootstrap {
 
   constructor(
     private readonly federation: FederationService,
+    private readonly profileNamespacePull: FederationProfileNamespacePullService,
     private readonly events: EventEmitter2,
   ) {}
 
@@ -92,6 +94,9 @@ export class FederationReconnectService implements OnApplicationBootstrap {
   private async reconcile(domain: string): Promise<void> {
     await this.federation.pushStateFeedDomains([domain]);
     await this.federation.pullStateFromPeer(domain);
+    // Recognition recovery also converges the Profile Namespace Feed: the
+    // initial pull after a fresh handshake seeds the cursor from 0.
+    await this.profileNamespacePull.pullFromPeer(domain);
   }
 
   private async sweep(): Promise<void> {

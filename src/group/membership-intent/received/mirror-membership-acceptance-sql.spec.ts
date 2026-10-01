@@ -15,7 +15,7 @@ describe('mirror group membership activation profile selection', () => {
         },
         memberAccount: 'alice', localMemberId: 5,
         intent: {
-          profileRev: 6, note: '', requestedAt: null, expiresAt: null,
+          profileNamespaceId: 0, profileRev: 6, note: '', requestedAt: null, expiresAt: null,
           messageEndSeq: 0, tombstoneEndSeq: 0,
         },
         persistStatus: 'ACCEPTED', promote: false,

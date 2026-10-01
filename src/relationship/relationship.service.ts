@@ -147,7 +147,7 @@ export class RelationshipService {
       namespaceId: 0,
       eventType: 'RELATIONSHIP_INTENT',
       subjectAccount: member.account,
-      subjectDomain: 'local',
+      subjectNamespaceId: 0,
       body: {
         status:
           request.status === 'ACCEPTED'
@@ -187,5 +187,4 @@ export class RelationshipService {
       this.clientStateFeed,
     );
   }
-
 }

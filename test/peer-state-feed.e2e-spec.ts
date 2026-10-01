@@ -9,7 +9,6 @@ import {
   groupAccount,
   message,
   threadAudience,
-  federatedPeer,
   identityNamespace,
   messageThread,
   relationshipIntent,
@@ -37,13 +36,10 @@ describe('per-peer state feed', () => {
         rootKeyFingerprint: `sha256:${domain}`,
         rootPublicKey: Buffer.alloc(32, domain.length).toString('base64'),
         identityPinnedAt: new Date(),
+        active: true,
+        trustLevel: 'available',
       })
       .returning({ id: identityNamespace.id });
-    await database.db.insert(federatedPeer).values({
-      domain,
-      activeNamespaceId: namespace.id,
-      trustLevel: 'available',
-    });
     namespaceIds.set(domain, namespace.id);
     return namespace.id;
   }
@@ -65,13 +61,16 @@ describe('per-peer state feed', () => {
     for (const domain of DOMAINS) await seedPeer(domain);
   });
 
+  async function deactivatePeer(domain: string): Promise<void> {
+    await database.db
+      .update(identityNamespace)
+      .set({ active: false })
+      .where(eq(identityNamespace.domain, domain));
+  }
+
   afterAll(async () => {
-    await database.db
-      .delete(federatedPeer)
-      .where(eq(federatedPeer.domain, DOMAINS[0]));
-    await database.db
-      .delete(federatedPeer)
-      .where(eq(federatedPeer.domain, DOMAINS[1]));
+    await deactivatePeer(DOMAINS[0]);
+    await deactivatePeer(DOMAINS[1]);
     await mod.close();
   });
 
@@ -154,7 +153,7 @@ describe('per-peer state feed', () => {
           eq(peerStateFeed.account, account),
           eq(peerStateFeed.namespaceId, namespaceId(peerDomain)),
         ),
-    );
+      );
     const head = rows.find((row) => row.eventType === 'THREAD_CONTENT_HEAD')!;
     expect(rows).toHaveLength(1);
     expect(head.body).toMatchObject({
@@ -181,9 +180,7 @@ describe('per-peer state feed', () => {
       ),
     });
     expect(unchanged?.feedId).toBe(head.feedId);
-    await database.db
-      .delete(federatedPeer)
-      .where(eq(federatedPeer.domain, peerDomain));
+    await deactivatePeer(peerDomain);
   });
 
   it('compacts a key and does not allocate a feed ID for identical writes', async () => {
@@ -311,9 +308,7 @@ describe('per-peer state feed', () => {
         },
       ]);
     } finally {
-      await database.db
-        .delete(federatedPeer)
-        .where(eq(federatedPeer.domain, domain));
+      await deactivatePeer(domain);
     }
   });
 
@@ -441,10 +436,7 @@ describe('per-peer state feed', () => {
         },
       ]),
     );
-    await database.db
-      .delete(federatedPeer)
-      .where(eq(federatedPeer.domain, domain));
+    await deactivatePeer(domain);
     expect(await feed.readFeedEndId(testNamespaceId)).toBe(1n);
   });
-
 });

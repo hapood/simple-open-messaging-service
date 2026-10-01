@@ -8,33 +8,33 @@ function page(scannedThrough: string, hasMore = false): PeerStateFeedPage {
     items: [],
     scannedThrough,
     stateFeedEndId: scannedThrough,
+    profileNamespaceFeedEndId: '0',
     hasMore,
   };
 }
 
-function harness(committedThrough = 0n, initialized = true) {
+function harness(pulledThrough: bigint | null = 0n) {
   const order: string[] = [];
-  const cursor = {
-    peerDomain: 'peer.test',
-    initialized,
-    committedThrough,
-    updatedAt: new Date(),
-  };
-  const limit = vi.fn(async () => [{ ...cursor }]);
-  const select = vi.fn(() => ({
-    from: vi.fn(() => ({ where: vi.fn(() => ({ limit })) })),
-  }));
+  const epoch = { stateFeedPulledThrough: pulledThrough };
+  const limit = vi.fn(async () => [
+    { pulledThrough: epoch.stateFeedPulledThrough },
+  ]);
+  const selectChain = () => ({
+    from: () => ({ where: () => ({ limit }) }),
+  });
   const whereUpdate = vi.fn(async () => undefined);
-  const setUpdate = vi.fn((values: Partial<typeof cursor>) => ({
-    where: async () => {
-      Object.assign(cursor, values);
-      order.push('cursor');
-      return whereUpdate();
-    },
-  }));
+  const setUpdate = vi.fn(
+    (values: { stateFeedPulledThrough: bigint | null }) => ({
+      where: async () => {
+        Object.assign(epoch, values);
+        order.push('cursor');
+        return whereUpdate();
+      },
+    }),
+  );
   const tx = {
     execute: vi.fn().mockResolvedValue({ rows: [{ locked: true }] }),
-    select,
+    select: vi.fn(selectChain),
     update: vi.fn(() => ({ set: setUpdate })),
   };
   const database = {
@@ -42,17 +42,13 @@ function harness(committedThrough = 0n, initialized = true) {
       transaction: vi.fn(async (fn: (value: typeof tx) => Promise<unknown>) =>
         fn(tx),
       ),
-      query: {
-        peerStateFeedPullCursor: {
-          findFirst: vi.fn(async () => ({ ...cursor })),
-        },
-      },
+      select: vi.fn(selectChain),
     },
   };
   return {
     service: new PeerStateFeedPullService(database as never),
     database,
-    cursor,
+    epoch,
     order,
     whereUpdate,
   };
@@ -280,7 +276,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
   });
 
   it('initializes from zero without warning and continues the drain', async () => {
-    const { service, order, cursor } = harness(0n, false);
+    const { service, order, epoch } = harness(null);
     const logger = { warn: vi.fn(), log: vi.fn() };
     Object.assign(service, { logger });
     const fetch = vi
@@ -291,7 +287,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
       fetch,
       apply: async () => void order.push('state'),
     });
-    expect(cursor).toMatchObject({ initialized: true, committedThrough: 3n });
+    expect(epoch.stateFeedPulledThrough).toBe(3n);
     expect(logger.warn).not.toHaveBeenCalled();
     expect(logger.log).toHaveBeenCalledWith(
       'initialized state-feed cursor for peer peer.test (namespace 12) at 0',
@@ -304,7 +300,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
   it.each([0n, 2n, 4n])(
     'rejects reset to %s for an initialized cursor without changing progress',
     async (resumeAfter) => {
-      const { service, cursor, database } = harness(2n);
+      const { service, epoch, database } = harness(2n);
       const fetch = vi
         .fn()
         .mockRejectedValue(
@@ -316,7 +312,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
       ).rejects.toThrow(
         'initialized state-feed cursor rejected by peer peer.test (namespace 12, committedThrough=2',
       );
-      expect(cursor).toMatchObject({ initialized: true, committedThrough: 2n });
+      expect(epoch.stateFeedPulledThrough).toBe(2n);
       expect(database.db.transaction).not.toHaveBeenCalled();
       expect(apply).not.toHaveBeenCalled();
       expect(fetch).toHaveBeenCalledTimes(1);
@@ -328,14 +324,14 @@ describe('PeerStateFeedPullService atomic item application', () => {
     [1n, 4n],
     [0n, 0n],
   ])('rejects invalid bootstrap bounds %s / %s', async (after, before) => {
-    const { service, cursor, database } = harness(0n, false);
+    const { service, epoch, database } = harness(null);
     const fetch = vi
       .fn()
       .mockRejectedValue(new RemoteFeedCursorUnavailableError(after, before));
     await expect(
       service.run('peer.test', 12, { fetch, apply: vi.fn() }),
     ).rejects.toThrow('invalid state-feed bootstrap cursor');
-    expect(cursor.initialized).toBe(false);
+    expect(epoch.stateFeedPulledThrough).toBeNull();
     expect(database.db.transaction).not.toHaveBeenCalled();
   });
 });

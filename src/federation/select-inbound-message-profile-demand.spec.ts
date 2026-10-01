@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../message/message.service.js';
-import type { FederationMessageFeedMessage } from './federation-message-feed.service.js';
+import type { FederationThreadAddress } from './federation-message-feed.service.js';
 import {
   selectInboundMessageProfileDemand,
   selectInboundMessageProfileEvidenceProjection,
@@ -9,27 +9,18 @@ import {
 const stored = {
   profileRev: 4,
   creatorAccount: 'alice',
-  creatorDomain: 'member.test',
+  profileNamespaceId: 12,
+  publisherNamespaceId: 7,
   isDeleted: false,
   threadId: 9,
   seq: 70,
 } as Message;
 
-function item(
-  thread: FederationMessageFeedMessage['thread'],
-  profileNamespaceId = 12,
-) {
-  return {
-    namespaceId: profileNamespaceId,
-    thread,
-  } as FederationMessageFeedMessage;
-}
-
 describe('selectInboundMessageProfileDemand', () => {
   it('selects ACCOUNT_PROFILE for a P2P thread account', () => {
     expect(
       selectInboundMessageProfileDemand(
-        item({ account: 'alice', peerAccount: 'bob' }),
+        { account: 'alice', peerAccount: 'bob' },
         stored,
         7,
         12,
@@ -40,7 +31,6 @@ describe('selectInboundMessageProfileDemand', () => {
       target: {
         profileNamespaceId: 12,
         account: 'alice',
-        domain: 'member.test',
         rev: 4,
       },
     });
@@ -49,7 +39,7 @@ describe('selectInboundMessageProfileDemand', () => {
   it('selects GROUP_MEMBER_PROFILE from the group-account prefix', () => {
     expect(
       selectInboundMessageProfileDemand(
-        item({ account: '!GROUP' }),
+        { account: '!GROUP' },
         stored,
         7,
         12,
@@ -60,7 +50,6 @@ describe('selectInboundMessageProfileDemand', () => {
       target: {
         profileNamespaceId: 12,
         account: 'alice',
-        domain: 'member.test',
         rev: 4,
       },
       groupAccount: '!group',
@@ -70,7 +59,7 @@ describe('selectInboundMessageProfileDemand', () => {
   it('selects matching P2P evidence projection separately from demand', () => {
     expect(
       selectInboundMessageProfileEvidenceProjection(
-        item({ account: 'alice', peerAccount: 'bob' }),
+        { account: 'alice', peerAccount: 'bob' },
         stored,
         7,
         12,
@@ -80,7 +69,6 @@ describe('selectInboundMessageProfileDemand', () => {
         publisherNamespaceId: 7,
         profileNamespaceId: 12,
         account: 'alice',
-        domain: 'member.test',
         rev: 4,
       },
       lookup: 'ACCOUNT_PROFILE',
@@ -91,7 +79,7 @@ describe('selectInboundMessageProfileDemand', () => {
   it('selects matching group-member evidence projection separately from demand', () => {
     expect(
       selectInboundMessageProfileEvidenceProjection(
-        item({ account: '!GROUP' }),
+        { account: '!GROUP' },
         stored,
         7,
         12,
@@ -101,7 +89,6 @@ describe('selectInboundMessageProfileDemand', () => {
         publisherNamespaceId: 7,
         profileNamespaceId: 12,
         account: 'alice',
-        domain: 'member.test',
         rev: 4,
       },
       lookup: 'GROUP_MEMBER_PROFILE',
@@ -113,7 +100,7 @@ describe('selectInboundMessageProfileDemand', () => {
   it('keeps a remote profile namespace zero distinct from its publisher', () => {
     expect(
       selectInboundMessageProfileDemand(
-        item({ account: 'alice', peerAccount: 'bob' }, 0),
+        { account: 'alice', peerAccount: 'bob' },
         stored,
         7,
         0,
@@ -126,13 +113,12 @@ describe('selectInboundMessageProfileDemand', () => {
 
   it.each([
     ['publisher namespace zero', stored, 0],
-    ['local creator', { ...stored, creatorDomain: 'local' }, 7],
     ['zero revision', { ...stored, profileRev: 0 }, 7],
     ['deleted message', { ...stored, isDeleted: true }, 7],
   ])(
     'does not create demand or evidence for %s',
     (_label, message, namespaceId) => {
-      const thread = item({ account: 'alice', peerAccount: 'bob' });
+      const thread = { account: 'alice', peerAccount: 'bob' };
       expect(
         selectInboundMessageProfileDemand(
           thread,

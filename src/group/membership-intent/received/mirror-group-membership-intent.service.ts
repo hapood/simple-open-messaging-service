@@ -260,7 +260,7 @@ export class MirrorGroupMembershipIntentService {
           ORDER BY participant."accountId" FOR NO KEY UPDATE OF participant`,
       );
     await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
-      { peerDomain: group.domain, namespaceId: group.namespaceId },
+      { namespaceId: group.namespaceId },
     ]);
     const presentation = await this.presentationInTx(tx, threadId);
     const effective = (
@@ -630,7 +630,7 @@ export class MirrorGroupMembershipIntentService {
       groupAccount: group.account,
       groupNamespaceId: group.namespaceId,
       memberAccount,
-      memberNamespaceId: 0,
+      profileNamespaceId: 0,
     });
   }
 

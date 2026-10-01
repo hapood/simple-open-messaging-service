@@ -403,10 +403,9 @@ export class ThreadFeedHeadWriter {
           AND message.seq > ${Math.max(state.messageEndSeq, state.profileSourceId ?? 0)}
           AND message.seq <= ${target.messageEndSeq}
           AND message."creatorAccount" IS NOT NULL
-          AND message."creatorDomain" IS NOT NULL
           AND message."creatorAccount" <> '$system'
           AND NOT (message."creatorAccount" = viewer.account
-            AND message."creatorDomain" = viewer.domain)
+            AND message."profileNamespaceId" = 0)
         ORDER BY message.seq DESC LIMIT 1
       )
       UPDATE "AccountThreadState" SET

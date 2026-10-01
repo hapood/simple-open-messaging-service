@@ -4,7 +4,7 @@ import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
-import { peerStateFeedPullCursor } from '../database/schema.js';
+import { identityNamespace } from '../database/schema.js';
 import type { PeerStateFeedPage } from './peer-state-feed.service.js';
 import { RemoteFeedCursorUnavailableError } from './federation-feed-cursor-error.js';
 
@@ -79,14 +79,13 @@ export class PeerStateFeedPullService {
       if (applied.scannedThrough !== drainTarget)
         throw new Error('peer ended state drain before its fixed target');
       await callbacks.afterDrain?.(drainTarget);
-      const cursor =
-        await this.database.db.query.peerStateFeedPullCursor.findFirst({
-          where: eq(peerStateFeedPullCursor.namespaceId, namespaceId),
-          columns: { committedThrough: true },
-        });
-      if (!cursor) return;
+      const pulledThrough = await this.readPulledThrough(
+        peerDomain,
+        namespaceId,
+      );
+      if (pulledThrough === undefined) return;
       const advertised = this.advertised.get(key);
-      if (advertised !== undefined && advertised > cursor.committedThrough) {
+      if (advertised !== undefined && advertised > pulledThrough) {
         drainTarget = undefined;
         continue;
       }
@@ -99,51 +98,69 @@ export class PeerStateFeedPullService {
     }
   }
 
+  /** The drain progress lives on the peer's epoch row; NULL means the feed was
+   * never bootstrapped. */
+  private async readPulledThrough(
+    peerDomain: string,
+    namespaceId: number,
+  ): Promise<bigint | undefined> {
+    const [row] = await this.database.db
+      .select({ pulledThrough: identityNamespace.stateFeedPulledThrough })
+      .from(identityNamespace)
+      .where(eq(identityNamespace.id, namespaceId))
+      .limit(1);
+    if (!row) throw new Error(`peer ${peerDomain} has no namespace row`);
+    return row.pulledThrough ?? undefined;
+  }
+
   private async applyOnePage(
     peerDomain: string,
     namespaceId: number,
     callbacks: PeerStateFeedPullCallbacks,
     through?: bigint,
   ) {
-    const cursor =
-      await this.database.db.query.peerStateFeedPullCursor.findFirst({
-        where: eq(peerStateFeedPullCursor.namespaceId, namespaceId),
-      });
-    if (!cursor) return null;
+    const [epoch] = await this.database.db
+      .select({
+        pulledThrough: identityNamespace.stateFeedPulledThrough,
+      })
+      .from(identityNamespace)
+      .where(eq(identityNamespace.id, namespaceId))
+      .limit(1);
+    if (!epoch) return null;
+    const initialized = epoch.pulledThrough !== null;
+    const committedThrough = epoch.pulledThrough ?? 0n;
 
     let page: PeerStateFeedPage;
     try {
       page = await callbacks.fetch(
-        cursor.initialized ? cursor.committedThrough : undefined,
-        cursor.initialized ? through : undefined,
+        initialized ? committedThrough : undefined,
+        initialized ? through : undefined,
       );
     } catch (error) {
       if (!(error instanceof RemoteFeedCursorUnavailableError)) throw error;
       // Compaction preserves cursor validity within a namespace. A publisher
       // rejecting committed progress is an invariant violation, not a rebuild.
-      if (cursor.initialized)
+      if (initialized)
         throw new Error(
-          `initialized state-feed cursor rejected by peer ${peerDomain} (namespace ${namespaceId}, committedThrough=${cursor.committedThrough}, resumeAfter=${error.resumeAfter}, resumeBefore=${error.resumeBefore}); progress retained`,
+          `initialized state-feed cursor rejected by peer ${peerDomain} (namespace ${namespaceId}, committedThrough=${committedThrough}, resumeAfter=${error.resumeAfter}, resumeBefore=${error.resumeBefore}); progress retained`,
           { cause: error },
         );
       if (error.resumeAfter !== 0n || error.resumeBefore <= 0n)
         throw new Error('peer returned an invalid state-feed bootstrap cursor');
       await this.database.db.transaction(async (tx) => {
         await tx
-          .update(peerStateFeedPullCursor)
+          .update(identityNamespace)
           .set({
-            initialized: true,
-            committedThrough: error.resumeAfter,
-            updatedAt: new Date(),
+            stateFeedPulledThrough: error.resumeAfter,
           })
-          .where(eq(peerStateFeedPullCursor.namespaceId, namespaceId));
+          .where(eq(identityNamespace.id, namespaceId));
       });
       this.logger.log(
         `initialized state-feed cursor for peer ${peerDomain} (namespace ${namespaceId}) at 0`,
       );
       return { cursorInitialized: true };
     }
-    if (!cursor.initialized)
+    if (!initialized)
       throw new Error('peer returned a state page without bootstrap cursor');
 
     const scannedThrough = this.parseRev(page.scannedThrough, 'scannedThrough');
@@ -151,14 +168,14 @@ export class PeerStateFeedPullService {
     const scanEnd =
       through === undefined || sourceEndId < through ? sourceEndId : through;
     if (
-      scannedThrough < cursor.committedThrough ||
+      scannedThrough < committedThrough ||
       scannedThrough > scanEnd ||
-      (page.hasMore && scannedThrough === cursor.committedThrough) ||
+      (page.hasMore && scannedThrough === committedThrough) ||
       page.hasMore !== scannedThrough < scanEnd
     )
       throw new Error('peer returned an invalid state feed boundary');
 
-    let previous = cursor.committedThrough;
+    let previous = committedThrough;
     const items = page.items.map((item) => {
       const feedId = this.parseRev(item.feedId, 'item.feedId');
       if (feedId <= previous || feedId > scannedThrough)
@@ -182,28 +199,27 @@ export class PeerStateFeedPullService {
           throw new Error('state-feed database single-flight is busy');
         const [current] = await tx
           .select({
-            committedThrough: peerStateFeedPullCursor.committedThrough,
+            pulledThrough: identityNamespace.stateFeedPulledThrough,
           })
-          .from(peerStateFeedPullCursor)
-          .where(eq(peerStateFeedPullCursor.namespaceId, namespaceId))
+          .from(identityNamespace)
+          .where(eq(identityNamespace.id, namespaceId))
           .limit(1);
-        if (!current) throw new Error('state-feed pull cursor disappeared');
-        if (current.committedThrough >= feedId) return false;
+        if (!current) throw new Error('state-feed pull namespace row disappeared');
+        const currentThrough = current.pulledThrough ?? 0n;
+        if (currentThrough >= feedId) return false;
         await callbacks.apply(tx, itemPage);
         await tx
-          .update(peerStateFeedPullCursor)
+          .update(identityNamespace)
           .set({
-            initialized: true,
-            committedThrough: feedId,
-            updatedAt: new Date(),
+            stateFeedPulledThrough: feedId,
           })
-          .where(eq(peerStateFeedPullCursor.namespaceId, namespaceId));
+          .where(eq(identityNamespace.id, namespaceId));
         return true;
       });
       if (applied) await callbacks.afterCommit?.(itemPage);
     }
 
-    const appliedThrough = items.at(-1)?.feedId ?? cursor.committedThrough;
+    const appliedThrough = items.at(-1)?.feedId ?? committedThrough;
     await this.database.db.transaction(async (tx) => {
       const lock = await tx.execute<{ locked: boolean }>(
         sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${`${peerDomain}:${namespaceId}`}, 912774)) AS locked`,
@@ -211,25 +227,26 @@ export class PeerStateFeedPullService {
       if (!lock.rows[0]?.locked)
         throw new Error('state-feed database single-flight is busy');
       const [current] = await tx
-        .select({ committedThrough: peerStateFeedPullCursor.committedThrough })
-        .from(peerStateFeedPullCursor)
-        .where(eq(peerStateFeedPullCursor.namespaceId, namespaceId))
-        .limit(1);
-      if (!current) throw new Error('state-feed pull cursor disappeared');
-      if (current.committedThrough < appliedThrough)
-        throw new Error('state-feed item cursor did not commit');
-      if (current.committedThrough >= scannedThrough) return;
-      await tx
-        .update(peerStateFeedPullCursor)
-        .set({
-          initialized: true,
-          committedThrough: scannedThrough,
-          updatedAt: new Date(),
+        .select({
+          pulledThrough: identityNamespace.stateFeedPulledThrough,
         })
-        .where(eq(peerStateFeedPullCursor.namespaceId, namespaceId));
+        .from(identityNamespace)
+        .where(eq(identityNamespace.id, namespaceId))
+        .limit(1);
+      if (!current) throw new Error('state-feed pull namespace row disappeared');
+      const currentThrough = current.pulledThrough ?? 0n;
+      if (currentThrough < appliedThrough)
+        throw new Error('state-feed item cursor did not commit');
+      if (currentThrough >= scannedThrough) return;
+      await tx
+        .update(identityNamespace)
+        .set({
+          stateFeedPulledThrough: scannedThrough,
+        })
+        .where(eq(identityNamespace.id, namespaceId));
     });
     return {
-      requestedAfter: cursor.committedThrough,
+      requestedAfter: committedThrough,
       scannedThrough,
       sourceEndId,
       hasMore: page.hasMore,

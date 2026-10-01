@@ -2,12 +2,17 @@ import { describe, expect, it, vi } from 'vitest';
 import { lastValueFrom, toArray } from 'rxjs';
 import type { FastifyRequest } from 'fastify';
 import { UserController } from './user.controller.js';
+import { BusinessException } from '../common/business.exception.js';
+import { BusinessCode } from '../common/business-code.js';
 
 function setup() {
   const clientStateFeed = {
     readEndId: vi.fn().mockResolvedValue(6),
     query: vi.fn().mockResolvedValue([]),
     rejectMissingAfter: vi.fn(),
+  };
+  const profileNamespaceFeed = {
+    clientChangeEnd: vi.fn().mockResolvedValue(9n),
   };
   const controller = new UserController(
     {} as never,
@@ -20,13 +25,14 @@ function setup() {
     {} as never,
     clientStateFeed as never,
     {} as never,
+    profileNamespaceFeed as never,
     {} as never,
     {} as never,
     {} as never,
     {} as never,
   );
   const req = { user: { userId: 7 } } as unknown as FastifyRequest;
-  return { controller, clientStateFeed, req };
+  return { controller, clientStateFeed, profileNamespaceFeed, req };
 }
 
 describe('UserController.resolveUser', () => {
@@ -44,6 +50,7 @@ describe('UserController.resolveUser', () => {
       }),
     };
     const controller = new UserController(
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -83,7 +90,7 @@ describe('UserController.queryStateFeed', () => {
         domain: 'local' as const,
         eventType: 'INCOMING_INVITE_HEAD',
         subjectAccount: '',
-        subjectDomain: 'local',
+        subjectNamespaceId: 0,
         body: { readThroughFeedId: 0 },
       },
     ]);
@@ -100,6 +107,7 @@ describe('UserController.queryStateFeed', () => {
       ],
       scannedThrough: 6,
       stateFeedEndId: 6,
+      profileNamespaceChangeEndId: 9,
       hasMore: false,
     });
     expect(clientStateFeed.query).toHaveBeenCalledWith(7, 'full', 0, 6);
@@ -167,10 +175,13 @@ describe('UserController.resolveFederatedUserStream', () => {
         })
         .pipe(toArray()),
     );
-    expect(federationService.fetchRemoteAccount).toHaveBeenCalledWith({
-      account: '!group',
-      domain: 'peer.example',
-    });
+    expect(federationService.fetchRemoteAccount).toHaveBeenCalledWith(
+      {
+        account: '!group',
+        domain: 'peer.example',
+      },
+      { kind: 'PIN' },
+    );
     expect(
       events.find((event) => event.type === 'resolved')?.data,
     ).toMatchObject({
@@ -300,5 +311,148 @@ describe('UserController.resolveFederatedUserStream', () => {
     resolveRecognition();
     await Promise.resolve();
     expect(events).toEqual([]);
+  });
+
+  it('uses a VOUCH possession challenge when namespace coordinates are provided', async () => {
+    const federationService = {
+      hasCompletePeerRecognition: vi.fn().mockResolvedValue(true),
+      checkPeerHealth: vi.fn().mockResolvedValue('available'),
+      checkPeerOutboundReady: vi.fn().mockResolvedValue(undefined),
+      fetchRemoteAccount: vi.fn().mockResolvedValue({
+        account: 'alice',
+        domain: 'peer.example',
+        displayName: 'Alice',
+        avatar: null,
+        bio: '',
+        profileRev: 3,
+      }),
+    };
+    const controller = new UserController(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      federationService as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const events = await lastValueFrom(
+      controller
+        .resolveFederatedUserStream({
+          account: 'alice',
+          domain: 'peer.example',
+          publisherNamespaceId: 12,
+          profileNamespaceId: 5,
+        })
+        .pipe(toArray()),
+    );
+    expect(federationService.fetchRemoteAccount).toHaveBeenCalledWith(
+      { account: 'alice', domain: 'peer.example' },
+      { kind: 'VOUCH', publisherNamespaceId: 12, profileNamespaceId: 5 },
+    );
+    expect(
+      events.find((event) => event.type === 'resolved')?.data,
+    ).toMatchObject({ user: { name: 'Alice' } });
+  });
+
+  it('falls back to PIN when only one namespace coordinate is provided', async () => {
+    const federationService = {
+      hasCompletePeerRecognition: vi.fn().mockResolvedValue(true),
+      checkPeerHealth: vi.fn().mockResolvedValue('available'),
+      checkPeerOutboundReady: vi.fn().mockResolvedValue(undefined),
+      fetchRemoteAccount: vi.fn().mockResolvedValue({
+        account: 'alice',
+        domain: 'peer.example',
+        displayName: 'Alice',
+        avatar: null,
+        bio: '',
+        profileRev: 3,
+      }),
+    };
+    const controller = new UserController(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      federationService as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    await lastValueFrom(
+      controller
+        .resolveFederatedUserStream({
+          account: 'alice',
+          domain: 'peer.example',
+          publisherNamespaceId: 12,
+        })
+        .pipe(toArray()),
+    );
+    expect(federationService.fetchRemoteAccount).toHaveBeenCalledWith(
+      { account: 'alice', domain: 'peer.example' },
+      { kind: 'PIN' },
+    );
+  });
+
+  it('reports IDENTITY_LOST when a VOUCH challenge is uncertifiable', async () => {
+    const federationService = {
+      hasCompletePeerRecognition: vi.fn().mockResolvedValue(true),
+      checkPeerHealth: vi.fn().mockResolvedValue('available'),
+      checkPeerOutboundReady: vi.fn().mockResolvedValue(undefined),
+      fetchRemoteAccount: vi
+        .fn()
+        .mockRejectedValue(
+          new BusinessException(
+            BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
+            'vouched root key is uncertifiable',
+          ),
+        ),
+    };
+    const controller = new UserController(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      federationService as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const events = await lastValueFrom(
+      controller
+        .resolveFederatedUserStream({
+          account: 'alice',
+          domain: 'peer.example',
+          publisherNamespaceId: 12,
+          profileNamespaceId: 5,
+        })
+        .pipe(toArray()),
+    );
+    expect(federationService.fetchRemoteAccount).toHaveBeenCalledWith(
+      { account: 'alice', domain: 'peer.example' },
+      { kind: 'VOUCH', publisherNamespaceId: 12, profileNamespaceId: 5 },
+    );
+    expect(events.find((event) => event.type === 'failed')?.data).toMatchObject(
+      { reason: 'IDENTITY_LOST' },
+    );
   });
 });

@@ -6,7 +6,7 @@ import {
 } from '../group/shared/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { stat } from 'node:fs/promises';
-import { and, eq, isNotNull, or, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
 import { dataDirectory } from '../common/data-directory.js';
@@ -30,7 +30,7 @@ function currentThreadResourceAuthorizationSql(
       LEFT JOIN ${groupStateSql} authorized_group
         ON authorized_group.id = authorized_thread.id
       WHERE audience."threadId" = ${threadId}
-        AND audience."targetDomain" = ${signerDomain}
+        AND audience."targetNamespaceId" = ${signerNamespaceId}
         AND audience."targetNamespaceId" = ${signerNamespaceId}
         AND audience."localUserId" IS NULL
         AND (authorized_thread.type = 'P2P'
@@ -94,7 +94,7 @@ export class FederationPeerResourceService {
       .select({
         messageId: tables.message.id,
         threadId: tables.message.threadId,
-        authorDomain: sql<string>`${tables.message.creatorDomain}`,
+        authorNamespaceId: tables.message.profileNamespaceId,
         threadType: tables.messageThread.type,
         groupId: tables.messageThread.id,
       })
@@ -106,7 +106,7 @@ export class FederationPeerResourceService {
       .where(
         and(
           eq(tables.message.creatorAccount, normalizeAccount(fromAccount)),
-          isNotNull(tables.message.creatorDomain),
+          eq(tables.message.profileNamespaceId, signerNamespaceId),
           eq(tables.message.isDeleted, false),
           eq(tables.message.seq, sourceSeq),
           currentThreadResourceAuthorizationSql(
@@ -118,7 +118,7 @@ export class FederationPeerResourceService {
       );
     let sourceMessage: { id: bigint; threadId: number } | undefined;
     for (const candidate of candidates) {
-      if (candidate.authorDomain !== fromDomain) continue;
+      if (candidate.authorNamespaceId !== signerNamespaceId) continue;
       if (
         !(await this.historicalThreadMatchesRecipient(
           candidate.threadId,

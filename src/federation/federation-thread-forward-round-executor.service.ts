@@ -408,8 +408,8 @@ export class FederationThreadForwardRoundExecutorService {
           dependency.federationVersion !== response.federationVersion ||
           dependency.peerToken.domain !== response.peerToken.domain ||
           dependency.peerToken.namespaceId !== response.peerToken.namespaceId ||
-          dependency.peerToken.rootKeyFingerprint !==
-            response.peerToken.rootKeyFingerprint
+          dependency.peerToken.rootPublicKey !==
+            response.peerToken.rootPublicKey
         )
           this.malformed('federation authority changed during message query');
         closure = dependency.data;

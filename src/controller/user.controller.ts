@@ -41,6 +41,7 @@ import {
   FederationService,
   S2sResponseError,
   type S2SProfile,
+  type PossessionKey,
 } from '../federation/federation.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { RelationshipService } from '../relationship/relationship.service.js';
@@ -50,6 +51,7 @@ import { serializeBody } from '../common/serialize.interceptor.js';
 import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
 import { GroupService } from '../group/group.service.js';
+import { ProfileNamespaceFeedService } from '../federation/profile-namespace-feed.service.js';
 
 /** One item in the device-facing compacted state feed. */
 type ClientStateFeedItem = {
@@ -59,7 +61,7 @@ type ClientStateFeedItem = {
   namespaceId: number;
   eventType: 'RELATIONSHIP_INTENT' | 'INCOMING_INVITE_HEAD';
   subjectAccount: string;
-  subjectDomain: string;
+  subjectNamespaceId: number;
   body: unknown;
 };
 
@@ -86,6 +88,7 @@ export class UserController {
     private readonly federationRecognition: FederationRecognitionService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly clientGroupMetaFeed: ClientGroupMetaFeedService,
+    private readonly profileNamespaceFeed: ProfileNamespaceFeedService,
     private readonly userQuotaService: UserQuotaService,
     private readonly relationships: RelationshipService,
     private readonly durableTasks: DurableTaskQueueService,
@@ -183,6 +186,40 @@ export class UserController {
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @Get('user/profile-namespace-feed')
+  @ApiOperation({
+    summary:
+      'Fetch compacted profile-namespace binding changes for this device',
+  })
+  async queryProfileNamespaceFeed(
+    @Request() req: FastifyRequest,
+    @Query('after') afterParam?: string,
+    @Query('take') takeParam?: string,
+  ) {
+    const parse = (value: string, name: string): number => {
+      if (!/^(0|[1-9]\d*)$/.test(value))
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          `${name} must be a non-negative integer`,
+          HttpStatus.BAD_REQUEST,
+        );
+      const parsed = Number(value);
+      if (!Number.isSafeInteger(parsed))
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          `${name} exceeds the safe integer range`,
+          HttpStatus.BAD_REQUEST,
+        );
+      return parsed;
+    };
+    const after =
+      afterParam === undefined ? undefined : parse(afterParam, 'after');
+    const take = takeParam === undefined ? undefined : parse(takeParam, 'take');
+    return this.profileNamespaceFeed.serveClientChanges(after, take);
+  }
+
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Get('user/state-feed')
   @ApiOperation({
     summary: 'Fetch compacted client state in a fixed feed-id range',
@@ -241,6 +278,13 @@ export class UserController {
         HttpStatus.BAD_REQUEST,
       );
     const stateFeedEndId = await this.clientStateFeed.readEndId(me);
+    const profileNamespaceChangeEndId = Number(
+      await this.profileNamespaceFeed.clientChangeEnd(),
+    );
+    if (!Number.isSafeInteger(profileNamespaceChangeEndId))
+      throw new Error(
+        'profile namespace change head exceeds the client-safe integer range',
+      );
     if (after > stateFeedEndId) {
       throw new BusinessException(
         BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
@@ -258,7 +302,7 @@ export class UserController {
       namespaceId: item.namespaceId,
       eventType: item.eventType as ClientStateFeedItem['eventType'],
       subjectAccount: item.subjectAccount,
-      subjectDomain: item.subjectDomain,
+      subjectNamespaceId: item.subjectNamespaceId,
       feedId: item.feedId,
       body: item.body,
     })) satisfies ClientStateFeedItem[];
@@ -281,6 +325,10 @@ export class UserController {
       items,
       scannedThrough,
       stateFeedEndId,
+      // Client change-feed head in every state-feed envelope: a device that
+      // missed a PROFILE_NAMESPACE_UPDATED wake converges on its next
+      // state-feed pull (the s2s envelope-observation pattern, mirrored).
+      profileNamespaceChangeEndId,
       hasMore: scannedThrough < scanEnd,
     };
   }
@@ -485,11 +533,27 @@ export class UserController {
             return;
           }
           emit('progress', { stage: 'FETCHING_USER' });
-          const profile = await this.federationService.fetchRemoteAccount({
-            account,
-            domain,
+          // Prior knowledge (a contact card or roster reference carries the
+          // vouched lineage) resolves via VOUCH: the challenge is sealed
+          // under the root key the publisher's profile-namespace bindings
+          // name for the referenced identity, not under the local handshake
+          // pin. First contact by address falls back to PIN.
+          const possession: PossessionKey =
+            typeof dto.publisherNamespaceId === 'number' &&
+            typeof dto.profileNamespaceId === 'number'
+              ? {
+                  kind: 'VOUCH',
+                  publisherNamespaceId: dto.publisherNamespaceId,
+                  profileNamespaceId: dto.profileNamespaceId,
+                }
+              : { kind: 'PIN' };
+          const profile = await this.federationService.fetchRemoteAccount(
+            { account, domain },
+            possession,
+          );
+          finish('resolved', {
+            user: this.transientFederatedUser(profile, domain),
           });
-          finish('resolved', { user: this.transientFederatedUser(profile) });
         } catch (error) {
           if (sink.closed) return;
           const reason =
@@ -501,8 +565,16 @@ export class UserController {
                 : error instanceof BusinessException &&
                     error.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED
                   ? 'BLOCKED'
-                  : 'UNREACHABLE';
-          if (reason !== 'NOT_FOUND' && reason !== 'BLOCKED') {
+                  : error instanceof BusinessException &&
+                      error.bizCode ===
+                        BusinessCode.FEDERATION_PEER_IDENTITY_LOST
+                    ? 'IDENTITY_LOST'
+                    : 'UNREACHABLE';
+          if (
+            reason !== 'NOT_FOUND' &&
+            reason !== 'BLOCKED' &&
+            reason !== 'IDENTITY_LOST'
+          ) {
             const detail = error instanceof Error ? error.stack : String(error);
             this.logger.warn(
               `Federated resolve ${account}@${domain} failed (${reason}): ${detail}`,
@@ -518,7 +590,7 @@ export class UserController {
     });
   }
 
-  private transientFederatedUser(profile: S2SProfile) {
+  private transientFederatedUser(profile: S2SProfile, domain: string) {
     const now = Date.now();
     return {
       id: 0,
@@ -529,7 +601,7 @@ export class UserController {
         : '',
       bio: profile.bio,
       isGroup: profile.account.startsWith('!'),
-      domain: profile.domain,
+      domain,
       createdAt: now,
       updatedAt: now,
       isDeleted: false,

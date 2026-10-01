@@ -73,42 +73,62 @@ describe('collectCommittedProfileWork', () => {
         {
           publisherNamespaceId: 0,
           lookup: 'ACCOUNT_PROFILE',
-          target: { profileNamespaceId: 0, account: 'alice', domain: 'local', rev: 0 },
+          target: { profileNamespaceId: 0, account: 'alice', rev: 0 },
         },
         {
           publisherNamespaceId: 3,
           lookup: 'ACCOUNT_PROFILE',
-          target: { profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 7 },
+          target: { profileNamespaceId: 3, account: 'bob', rev: 7 },
         },
         {
           publisherNamespaceId: 4,
           lookup: 'ACCOUNT_PROFILE',
-          target: { profileNamespaceId: 4, account: 'bob', domain: 'remote.test', rev: 4 },
+          target: { profileNamespaceId: 4, account: 'bob', rev: 4 },
         },
         {
           publisherNamespaceId: 0,
           lookup: 'ACCOUNT_PROFILE',
-          target: { profileNamespaceId: 0, account: 'alice', domain: 'local', rev: 1 },
+          target: { profileNamespaceId: 0, account: 'alice', rev: 1 },
         },
       ],
       evidenceProjections: [
         {
-          profile: { publisherNamespaceId: 0, profileNamespaceId: 0, account: 'alice', domain: 'local', rev: 0 },
+          profile: {
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            account: 'alice',
+            rev: 0,
+          },
           lookup: 'ACCOUNT_PROFILE',
           projection: { threadId: 11, messageSeq: 4 },
         },
         {
-          profile: { publisherNamespaceId: 3, profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 7 },
+          profile: {
+            publisherNamespaceId: 3,
+            profileNamespaceId: 3,
+            account: 'bob',
+            rev: 7,
+          },
           lookup: 'ACCOUNT_PROFILE',
           projection: { threadId: 11, messageSeq: 8 },
         },
         {
-          profile: { publisherNamespaceId: 4, profileNamespaceId: 4, account: 'bob', domain: 'remote.test', rev: 4 },
+          profile: {
+            publisherNamespaceId: 4,
+            profileNamespaceId: 4,
+            account: 'bob',
+            rev: 4,
+          },
           lookup: 'ACCOUNT_PROFILE',
           projection: { threadId: 11, messageSeq: 9 },
         },
         {
-          profile: { publisherNamespaceId: 0, profileNamespaceId: 0, account: 'alice', domain: 'local', rev: 1 },
+          profile: {
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            account: 'alice',
+            rev: 1,
+          },
           lookup: 'ACCOUNT_PROFILE',
           projection: { threadId: 12, messageSeq: 5 },
         },
@@ -131,12 +151,17 @@ describe('collectCommittedProfileWork', () => {
         {
           publisherNamespaceId: 0,
           lookup: 'ACCOUNT_PROFILE',
-          target: { profileNamespaceId: 0, account: 'alice', domain: 'local', rev: 5 },
+          target: { profileNamespaceId: 0, account: 'alice', rev: 5 },
         },
       ],
       evidenceProjections: [
         {
-          profile: { publisherNamespaceId: 0, profileNamespaceId: 0, account: 'alice', domain: 'local', rev: 5 },
+          profile: {
+            publisherNamespaceId: 0,
+            profileNamespaceId: 0,
+            account: 'alice',
+            rev: 5,
+          },
           lookup: 'ACCOUNT_PROFILE',
           projection: { threadId: 11, messageSeq: 10 },
         },
@@ -154,7 +179,6 @@ describe('collectCommittedProfileWork', () => {
         publisherNamespaceId: 3,
         creator: {
           account: '$system',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 0,
         },
@@ -170,23 +194,19 @@ describe('collectCommittedProfileWork', () => {
         }),
       });
     expect(
-      collectCommittedProfileWork([
-        system(4, 7),
-        system(6, 7),
-        system(8, 2),
-      ]),
+      collectCommittedProfileWork([system(4, 7), system(6, 7), system(8, 2)]),
     ).toEqual({
       demands: [
         {
           publisherNamespaceId: 3,
           lookup: 'RELATIONSHIP_INTENT_PROFILE',
-          target: { profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 7 },
+          target: { profileNamespaceId: 3, account: 'bob', rev: 7 },
           peerAccount: 'alice',
         },
         {
           publisherNamespaceId: 3,
           lookup: 'RELATIONSHIP_INTENT_PROFILE',
-          target: { profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 2 },
+          target: { profileNamespaceId: 3, account: 'bob', rev: 2 },
           peerAccount: 'alice',
         },
       ],
@@ -210,7 +230,6 @@ describe('collectCommittedProfileWork', () => {
         contentType: 'SYSTEM',
         creator: {
           account: '$system',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 0,
         },
@@ -223,7 +242,6 @@ describe('collectCommittedProfileWork', () => {
         contentType: 'SYSTEM',
         creator: {
           account: '$system',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 0,
         },
@@ -247,18 +265,23 @@ describe('collectCommittedProfileWork', () => {
           publisherNamespaceId: 3,
           lookup: 'GROUP_MEMBER_PROFILE',
           groupAccount: '!group',
-          target: { profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 10 },
+          target: { profileNamespaceId: 3, account: 'bob', rev: 10 },
         },
         {
           publisherNamespaceId: 3,
           lookup: 'GROUP_MEMBER_PROFILE',
-          target: { profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 4 },
+          target: { profileNamespaceId: 3, account: 'bob', rev: 4 },
           groupAccount: '!group',
         },
       ],
       evidenceProjections: [
         {
-          profile: { publisherNamespaceId: 3, profileNamespaceId: 3, account: 'bob', domain: 'remote.test', rev: 10 },
+          profile: {
+            publisherNamespaceId: 3,
+            profileNamespaceId: 3,
+            account: 'bob',
+            rev: 10,
+          },
           lookup: 'GROUP_MEMBER_PROFILE',
           groupAccount: '!group',
           projection: { threadId: 11, messageSeq: 2 },
@@ -280,7 +303,6 @@ describe('collectCommittedProfileWork', () => {
         groupAccount: '!group',
         creator: {
           account: '$system',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 0,
         },

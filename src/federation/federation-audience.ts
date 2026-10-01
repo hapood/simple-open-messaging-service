@@ -17,15 +17,10 @@ import {
  * direction; an explicit later retention boundary is represented by messageAccessAfterSeq. */
 export async function openFederatedAudienceInTx(
   tx: DatabaseTransaction,
-  peerDomain: string,
+  namespaceId: number,
   threadId: number,
   groupMetaVisibleAfter = 0,
 ): Promise<boolean> {
-  const namespaceId = await resolveAudienceNamespaceInTx(
-    tx,
-    peerDomain,
-    threadId,
-  );
   const [thread] = await tx
     .select({ curSeq: messageThread.curSeq })
     .from(messageThread)
@@ -42,7 +37,6 @@ export async function openFederatedAudienceInTx(
   const inserted = await tx
     .insert(threadAudience)
     .values({
-      targetDomain: peerDomain,
       targetNamespaceId: namespaceId,
       localUserId: null,
       threadId,
@@ -51,7 +45,7 @@ export async function openFederatedAudienceInTx(
     })
     .onConflictDoNothing({
       target: [threadAudience.targetNamespaceId, threadAudience.threadId],
-      where: sql`${threadAudience.targetDomain} <> 'local'`,
+      where: sql`${threadAudience.localUserId} IS NULL`,
     })
     .returning({ id: threadAudience.id });
   return inserted.length > 0;
@@ -60,19 +54,13 @@ export async function openFederatedAudienceInTx(
 /** Close the current audience and remove its compacted thread-content projection. */
 export async function closeFederatedAudienceInTx(
   tx: DatabaseTransaction,
-  peerDomain: string,
+  namespaceId: number,
   threadId: number,
 ): Promise<boolean> {
-  const localDomain = 'local';
-  const namespaceId = await resolveAudienceNamespaceInTx(
-    tx,
-    peerDomain,
-    threadId,
-  );
   const address = await tx.execute<{
     account: string;
     subjectAccount: string;
-    subjectDomain: string;
+    subjectNamespaceId: number;
   }>(sql`
     SELECT CASE
              WHEN thread.type = 'GROUP' THEN group_state.account
@@ -83,9 +71,9 @@ export async function closeFederatedAudienceInTx(
              ELSE peer_user.account
            END AS "subjectAccount",
            CASE
-             WHEN thread.type = 'GROUP' THEN 'local'
-             ELSE ${peerDomain}
-           END AS "subjectDomain"
+             WHEN thread.type = 'GROUP' THEN 0
+             ELSE ${namespaceId}
+           END AS "subjectNamespaceId"
     FROM "MessageThread" thread
     LEFT JOIN ${groupStateSql} group_state ON group_state.id = thread.id
     LEFT JOIN "RelationshipPair" pair
@@ -103,7 +91,6 @@ export async function closeFederatedAudienceInTx(
     .delete(threadAudience)
     .where(
       and(
-        eq(threadAudience.targetDomain, peerDomain),
         eq(threadAudience.targetNamespaceId, namespaceId),
         eq(threadAudience.threadId, threadId),
         isNull(threadAudience.localUserId),
@@ -111,49 +98,18 @@ export async function closeFederatedAudienceInTx(
     )
     .returning({ id: threadAudience.id });
   const key = address.rows[0];
-  if (key)
+  if (key) {
     await tx
       .delete(peerStateFeed)
       .where(
         and(
-          eq(peerStateFeed.peerDomain, peerDomain),
           eq(peerStateFeed.namespaceId, namespaceId),
           eq(peerStateFeed.account, key.account),
-          eq(peerStateFeed.domain, localDomain),
           eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
           eq(peerStateFeed.subjectAccount, key.subjectAccount),
-          eq(peerStateFeed.subjectDomain, key.subjectDomain),
+          eq(peerStateFeed.subjectNamespaceId, key.subjectNamespaceId),
         ),
       );
-  return deleted.length > 0;
-}
-
-async function resolveAudienceNamespaceInTx(
-  tx: DatabaseTransaction,
-  peerDomain: string,
-  threadId: number,
-): Promise<number> {
-  const candidates = await tx.execute<{ namespaceId: number }>(sql`
-    SELECT DISTINCT candidate."namespaceId"
-    FROM (
-      SELECT pair."endpointBNamespaceId" AS "namespaceId"
-      FROM "RelationshipPair" pair
-      WHERE pair."threadId" = ${threadId}
-        AND pair."endpointANamespaceId" = 0
-        AND pair."endpointBNamespaceId" <> 0
-      UNION
-      SELECT group_profile."namespaceId"
-      FROM "MessageThread" thread
-      JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
-      WHERE thread.id = ${threadId} AND group_profile.domain = ${peerDomain}
-    ) candidate
-    WHERE candidate."namespaceId" > 0
-    LIMIT 2
-  `);
-  if (candidates.rows.length !== 1) {
-    throw new Error(
-      `thread ${threadId} does not resolve one namespace for ${peerDomain}`,
-    );
   }
-  return candidates.rows[0].namespaceId;
+  return deleted.length > 0;
 }

@@ -348,7 +348,7 @@ The signed federation profile reads are:
 ```text
 GET /s2s/v1/accounts/:account
 GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev
-GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev
+GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev
 GET /s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev
 ```
 
@@ -482,7 +482,7 @@ client listeners.
 
 After each committed message batch, outside its message transaction, source-specific
 selectors produce final demands. Ordinary messages use `creator` and the carried
-revision; their publisher namespace is the message source namespace, and their
+revision; their publisher namespace is the message publisher namespace, and their
 target profile namespace is the federated message `namespaceId`. System messages
 use event participants rather than the system `creator`. Mirrored Group Meta is
 a separate post-commit source: its `MEMBER_UPSERT` supplies the member target,

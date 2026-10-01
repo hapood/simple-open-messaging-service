@@ -6,7 +6,6 @@ import { enqueueCurrentThreadFanoutsInTx } from '../../message/thread-fanout-tas
 export interface MemberMessageProfileCandidate {
   threadLock: ThreadContentLock;
   account: string;
-  domain: string;
   publisherNamespaceId: number;
   namespaceId: number;
   messageSeq: number;
@@ -19,8 +18,14 @@ export async function publishMemberMessageProfileInTx(
   tx: DatabaseTransaction,
   candidate: MemberMessageProfileCandidate,
 ): Promise<boolean> {
-  const { threadLock, account, domain, publisherNamespaceId, namespaceId, messageSeq, profileRev } =
-    candidate;
+  const {
+    threadLock,
+    account,
+    publisherNamespaceId,
+    namespaceId,
+    messageSeq,
+    profileRev,
+  } = candidate;
   if (
     !Number.isSafeInteger(messageSeq) ||
     messageSeq < 1 ||
@@ -48,15 +53,14 @@ export async function publishMemberMessageProfileInTx(
     SELECT (body ->> 'profileRev')::integer AS "profileRev", "profileSourceSeq"
     FROM "GroupMetaMemberFeed"
     WHERE "threadId" = ${groupId} AND "memberAccount" = ${account}
-      AND "memberDomain" = ${domain} AND operation = 'MEMBER_UPSERT'
+      AND "profileNamespaceId" = ${namespaceId} AND operation = 'MEMBER_UPSERT'
       AND EXISTS (
         SELECT 1 FROM "RelationshipPair" pair
         WHERE pair."threadId" = ${groupId} AND pair.kind = 'GROUP_MEMBER'
           AND pair.active
           AND pair."endpointBType" = 'USER'
           AND pair."endpointBAccount" = ${account}
-          AND pair."endpointBNamespaceId" = CASE WHEN ${domain} = 'local'
-            THEN 0 ELSE ${namespaceId} END
+          AND pair."endpointBNamespaceId" = ${namespaceId}
       )
     FOR NO KEY UPDATE
   `);
@@ -75,7 +79,7 @@ export async function publishMemberMessageProfileInTx(
   const evidence = await tx.execute(sql`
     SELECT 1 FROM "Message" m
     WHERE m."threadId" = ${groupId} AND m.seq = ${messageSeq}
-      AND m."creatorAccount" = ${account} AND m."creatorDomain" = ${domain}
+      AND m."creatorAccount" = ${account}
       AND m."profileNamespaceId" = ${namespaceId}
       AND m."profileRev" = ${profileRev}
       AND m."contentType" <> 'SYSTEM' AND m."localState" = 'READY'
@@ -85,21 +89,19 @@ export async function publishMemberMessageProfileInTx(
           AND joined."contentType" = 'SYSTEM'
           AND joined.content ->> 'type' = 'GROUP_JOINED'
           AND joined.content -> 'member' ->> 'account' = ${account}
-          AND joined.content -> 'member' ->> 'domain' = ${domain}
           AND (joined.content -> 'member' ->> 'profileNamespaceId')::integer = ${namespaceId}
       ), 0)
       AND NOT EXISTS (
         SELECT 1 FROM "Message" newer
         WHERE newer."threadId" = m."threadId" AND newer.seq > m.seq
           AND newer."creatorAccount" = m."creatorAccount"
-          AND newer."creatorDomain" = m."creatorDomain"
           AND newer."profileNamespaceId" = m."profileNamespaceId"
           AND newer."contentType" <> 'SYSTEM'
           AND newer."localState" = 'READY'
       )
       AND (${profileRev} = 0 OR EXISTS (
         SELECT 1 FROM "Profile" p
-        WHERE p.account = m."creatorAccount" AND p.domain = m."creatorDomain"
+        WHERE p.account = m."creatorAccount"
           AND p."publisherNamespaceId" = ${publisherNamespaceId}
           AND p."profileNamespaceId" = m."profileNamespaceId"
           AND p."profileRev" = ${profileRev}
@@ -114,7 +116,7 @@ export async function publishMemberMessageProfileInTx(
       body = jsonb_set(body, '{profileRev}', to_jsonb(${profileRev}::integer)),
       "updatedAt" = CURRENT_TIMESTAMP
     WHERE "threadId" = ${groupId} AND "memberAccount" = ${account}
-      AND "memberDomain" = ${domain} AND operation = 'MEMBER_UPSERT'
+      AND "profileNamespaceId" = ${namespaceId} AND operation = 'MEMBER_UPSERT'
   `);
   await tx.execute(sql`
     UPDATE "GroupMeta" SET "metaEndId" = ${feedId},

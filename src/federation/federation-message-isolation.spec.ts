@@ -35,7 +35,6 @@ const item = (
     peerAccount: 'bob',
   },
   authorRef: 'THREAD_PEER_ACCOUNT',
-  namespaceId: 12,
   seq: Number(sequence),
   profileRev: 3,
   originSeq: Number(sequence),
@@ -110,7 +109,7 @@ describe('federation message context isolation', () => {
       const resolve = vi.fn().mockResolvedValue({
         threadId: 9,
         creatorAccount: 'alice',
-        creatorDomain: 'peer.test',
+        profileNamespaceId: 12,
         authority: 'PEER',
       });
       Object.assign(service, { resolveMissedThreadInTransaction: resolve });
@@ -192,9 +191,9 @@ describe('federation message context isolation', () => {
             threadId: 9,
             seq: 70,
             originSeq: 70,
-            sourceNamespaceId: 4,
+            publisherNamespaceId: 4,
             creatorAccount: 'bob',
-            creatorDomain: 'origin.test',
+            profileNamespaceId: 12,
             contentType: 'PURE_TEXT',
             content: JSON.stringify({ text: 'history' }),
             localState: 'STUB',
@@ -237,7 +236,7 @@ describe('federation message context isolation', () => {
 
       await service.store(tx as never, {
         threadId: 9,
-        creator: { account: 'bob', domain: 'origin.test' },
+        creator: { account: 'bob', namespaceId: 12 },
         fetchedFromDomain: 'origin.test',
         namespaceId: 12,
         profileNamespaceId: 12,
@@ -310,11 +309,11 @@ describe('federation message context isolation', () => {
         originSeq: 70,
         recipients: [7],
         toAccount: 'alice',
-        author: { account: 'bob', domain: 'origin.test' },
+        author: { account: 'bob', namespaceId: 12 },
         message: {
           seq: 70,
           creatorAccount: 'bob',
-          creatorDomain: 'origin.test',
+          profileNamespaceId: 12,
           createdAt: new Date(),
           isDeleted: false,
         },
@@ -366,7 +365,7 @@ describe('federation message context isolation', () => {
         originSeq: 70,
         recipients: [],
         toAccount: '!group',
-        author: { account: 'bob', domain: 'member.test' },
+        author: { account: 'bob', namespaceId: 12 },
         profileDemand: demand,
         profileEvidenceProjection: evidence,
         message: {
@@ -408,13 +407,13 @@ describe('federation message context isolation', () => {
           originSeq: 70,
           recipients: [],
           toAccount: 'alice',
-          author: { account: 'bob', domain: 'origin.test' },
+          author: { account: 'bob', namespaceId: 12 },
           localForwardBundleId: 'bundle',
           message: {
             seq: 70,
             profileRev: 0,
             creatorAccount: 'bob',
-            creatorDomain: 'origin.test',
+            profileNamespaceId: 12,
             createdAt: new Date(),
             isDeleted: false,
           },
@@ -449,12 +448,12 @@ describe('federation message context isolation', () => {
         originSeq: 70,
         recipients: [8, 7, 8],
         toAccount: 'alice',
-        author: { account: 'bob', domain: 'origin.test' },
+        author: { account: 'bob', namespaceId: 12 },
         message: {
           seq: 12,
           profileRev: 0,
           creatorAccount: 'bob',
-          creatorDomain: 'origin.test',
+          profileNamespaceId: 12,
           createdAt: new Date(),
           isDeleted: false,
         },
@@ -561,7 +560,7 @@ describe('federation message context isolation', () => {
       resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
         threadId: 9,
         creatorAccount: 'bob',
-        creatorDomain: 'local',
+        profileNamespaceId: 0,
         authority: 'LOCAL',
         federationVersion: 0,
         recipients: [7],
@@ -595,7 +594,7 @@ describe('federation message context isolation', () => {
       resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
         threadId: 9,
         creatorAccount: 'alice',
-        creatorDomain: 'peer.test',
+        profileNamespaceId: 12,
         authority: 'PEER',
         federationVersion: 0,
         recipients: [7],
@@ -685,7 +684,7 @@ describe('federation message context isolation', () => {
     });
   });
 
-  it('deduplicates inbound messages by immutable source namespace', async () => {
+  it('deduplicates inbound messages by immutable publisher namespace', async () => {
     const service = createMessagePageService();
     const findFirst = vi.fn().mockResolvedValue({
       id: 1n,
@@ -696,7 +695,7 @@ describe('federation message context isolation', () => {
         threadId: 9,
         creatorId: 7,
         creatorAccount: 'bob',
-        creatorDomain: 'peer.test',
+        profileNamespaceId: 12,
         authority: 'PEER',
         federationVersion: 0,
         recipients: [7],
@@ -720,7 +719,7 @@ describe('federation message context isolation', () => {
     ).resolves.toEqual([]);
 
     const query = dialect.sqlToQuery(findFirst.mock.calls[0]![0].where as SQL);
-    expect(query.sql).toContain('"Message"."sourceNamespaceId"');
+    expect(query.sql).toContain('"Message"."publisherNamespaceId"');
     expect(query.params).toContain(22);
   });
 
@@ -835,7 +834,7 @@ describe('federation message context isolation', () => {
         seq: 1,
         profileRev: 3,
         creatorAccount: 'bob',
-        creatorDomain: 'local',
+        profileNamespaceId: 0,
         isDeleted: false,
       },
     });
@@ -844,7 +843,7 @@ describe('federation message context isolation', () => {
       resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
         threadId: 9,
         creatorAccount: 'bob',
-        creatorDomain: 'local',
+        profileNamespaceId: 0,
         authority: 'PEER',
         federationVersion: 1,
         recipients: [7],
@@ -853,7 +852,6 @@ describe('federation message context isolation', () => {
     });
     const inbound = {
       ...item('1'),
-      namespaceId: 17,
       originSeq: null,
       originCreatedAt: null,
     };
@@ -872,7 +870,7 @@ describe('federation message context isolation', () => {
     expect(store).toHaveBeenCalledWith(
       tx,
       expect.objectContaining({
-        creator: { account: 'bob', domain: 'local' },
+        creator: { account: 'bob', namespaceId: 0 },
         namespaceId: 7,
         profileNamespaceId: 0,
       }),
@@ -890,8 +888,7 @@ describe('federation message context isolation', () => {
     const localAuthorItem = {
       ...item('1'),
       thread: { account: '!group' },
-      author: { account: 'alice', domain: 'local' },
-      namespaceId: 0,
+      author: { account: 'alice', namespaceId: 0 },
     } as FederationMessageFeedMessage;
     delete (localAuthorItem as { authorRef?: unknown }).authorRef;
     const author = (
@@ -900,40 +897,11 @@ describe('federation message context isolation', () => {
           value: FederationMessageFeedMessage,
           peerDomain: string,
           peerAssignedLocalNamespaceId: number,
-        ): { account: string; domain: string };
+        ): { account: string; namespaceId: number };
       }
     ).federatedMessageAuthor(localAuthorItem, 'peer.test', 7);
 
-    expect(author).toEqual({ account: 'alice', domain: 'local' });
-  });
-
-  it('warns and drops a group author with local domain and positive namespace', async () => {
-    const service = createMessagePageService();
-    const logger = { error: vi.fn(), warn: vi.fn() };
-    Object.assign(service, {
-      config: { domain: 'local.test' },
-      logger,
-      assertPeerResponseWritable: vi.fn(),
-    });
-    const localAuthorItem = {
-      ...item('1'),
-      thread: { account: '!group' },
-      author: { account: 'alice', domain: 'local' },
-      contentType: 'STICKER',
-    } as unknown as FederationMessageFeedMessage;
-    delete (localAuthorItem as { authorRef?: unknown }).authorRef;
-    const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
-
-    await expect(
-      service.apply(tx as never, 'peer.test', [localAuthorItem], {} as never),
-    ).resolves.toEqual([]);
-
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('LOCAL_DOMAIN_POSITIVE_NAMESPACE'),
-    );
-    expect(logger.warn).not.toHaveBeenCalledWith(
-      expect.stringContaining('unknown federated message content type'),
-    );
+    expect(author).toEqual({ account: 'alice', namespaceId: 0 });
   });
 
   it('logs and skips malformed wire data instead of aborting the page', async () => {

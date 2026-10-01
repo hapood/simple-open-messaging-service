@@ -16,10 +16,8 @@ export interface GroupMembershipRevocationInput {
   groupAvatar: string;
   groupDescription: string;
   groupProfileRev: number;
-  localDomain: string;
   memberAccount: string;
-  memberDomain: string;
-  memberNamespaceId: number;
+  profileNamespaceId: number;
   /** Local Account.id of the member, or null for a peer-hosted member. */
   localMemberId: number | null;
   /** Existing non-REVOKED projection directions for this member, from authorization. */
@@ -65,7 +63,7 @@ function localRecipientKey(
 export function groupMembershipRevocationSql(
   input: GroupMembershipRevocationInput,
 ): SQL {
-  const localMember = input.memberDomain === 'local';
+  const localMember = input.profileNamespaceId === 0;
   const authorIsMember = !isGroupAccount(input.author.account);
   const memberEndpoint = authorIsMember ? input.author : input.receiver;
   const groupEndpoint = authorIsMember ? input.receiver : input.author;
@@ -91,19 +89,17 @@ export function groupMembershipRevocationSql(
     : sql`(SELECT "profileRev" FROM "RelationshipIntent"
       WHERE "authorAccount" = ${memberEndpoint.account} AND "authorNamespaceId" = ${memberEndpoint.namespaceId}
         AND "receiverAccount" = ${groupEndpoint.account} AND "receiverNamespaceId" = ${groupEndpoint.namespaceId} LIMIT 1)`;
-  const memberProfileNamespaceId =
-    input.memberDomain === 'local' ? 0 : input.memberNamespaceId;
+  const memberProfileNamespaceId = input.profileNamespaceId;
   const memberBody = sql`jsonb_build_object(
     'role', COALESCE((SELECT body ->> 'role' FROM "GroupMetaMemberFeed"
       WHERE "threadId" = ${input.threadId}
         AND "memberAccount" = ${input.memberAccount}
-        AND "memberDomain" = ${input.memberDomain}
+        AND "profileNamespaceId" = ${memberProfileNamespaceId}
         AND operation = 'MEMBER_UPSERT' LIMIT 1), 'MEMBER')::text,
     'profileNamespaceId', ${memberProfileNamespaceId}::integer,
     'profileRev', COALESCE(${memberProfileRev}, 0)::integer)`;
   const content = sql`jsonb_build_object('type', 'GROUP_LEFT', 'member',
     jsonb_build_object('account', ${input.memberAccount}::text,
-      'domain', ${input.memberDomain}::text,
       'profileNamespaceId', ${memberProfileNamespaceId}::integer,
       'profileRev', COALESCE(${memberProfileRev}, 0)))`;
   return sql`
@@ -139,11 +135,11 @@ export function groupMembershipRevocationSql(
       RETURNING f."metaEndId"
     ), depart_fact AS (
       INSERT INTO "GroupMetaMemberFeed"
-        ("threadId", "feedId", "memberAccount", "memberDomain", operation, body)
-      SELECT ${input.threadId}, a."metaEndId", ${input.memberAccount}, ${input.memberDomain},
+        ("threadId", "feedId", "memberAccount", "profileNamespaceId", operation, body)
+      SELECT ${input.threadId}, a."metaEndId", ${input.memberAccount}, ${memberProfileNamespaceId},
         'MEMBER_DEPART'::"GroupMetaMemberOperation", ${memberBody}::jsonb
       FROM depart_alloc a
-      ON CONFLICT ("threadId", "memberAccount", "memberDomain")
+      ON CONFLICT ("threadId", "memberAccount", "profileNamespaceId")
       DO UPDATE SET "feedId" = EXCLUDED."feedId",
         operation = EXCLUDED.operation, body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
@@ -155,9 +151,9 @@ export function groupMembershipRevocationSql(
       FROM pair_change p WHERE t.id = ${input.threadId}
       RETURNING t."curSeq", t."tombstoneEndSeq"
     ), system_message AS (
-      INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "creatorDomain", "updatedAt")
+      INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "profileNamespaceId", "publisherNamespaceId", "updatedAt")
       SELECT ${input.threadId}, s."curSeq", 'SYSTEM'::"ContentType", ${content}::jsonb,
-        '$system', 'local', CURRENT_TIMESTAMP
+        '$system', 0, 0, CURRENT_TIMESTAMP
       FROM seq_alloc s
       RETURNING seq
     ), member_watermark AS (
@@ -190,22 +186,20 @@ export function groupMembershipRevocationSql(
     })}, ${requestProjectionFlipSql({
       threadId: input.threadId,
       memberAccount: input.memberAccount,
-      memberDomain: input.memberDomain,
-      memberNamespaceId: input.memberNamespaceId,
+      profileNamespaceId: input.profileNamespaceId,
       status: 'REVOKED',
       authorAccount: input.author.account,
       directions: input.projectionDirections,
     })}, audience_close AS (
       DELETE FROM "ThreadAudience" ta
       WHERE ta."threadId" = ${input.threadId} AND (
-        (ta."targetDomain" = 'local' AND ta."localUserId" = ${input.localMemberId}
+        (ta."localUserId" = ${input.localMemberId}
           AND ta."targetNamespaceId" = 0)
         OR (${localMember ? sql`false` : sql`true`}
-          AND ta."targetDomain" = ${input.memberDomain}
-          AND ta."targetNamespaceId" = ${input.memberNamespaceId}
+          AND ta."targetNamespaceId" = ${input.profileNamespaceId}
           AND NOT EXISTS (SELECT 1 FROM "RelationshipPair" p
             WHERE p.kind = 'GROUP_MEMBER' AND p."threadId" = ${input.threadId}
-              AND p.active AND p."endpointBNamespaceId" = ${input.memberNamespaceId}
+              AND p.active AND p."endpointBNamespaceId" = ${input.profileNamespaceId}
               AND p."endpointBType" = 'USER'
               AND p.id <> ${input.pairId})))
       RETURNING ta.id
@@ -265,7 +259,7 @@ function localRecipient(
     ), candidate_bodies AS MATERIALIZED (
       SELECT ${input.localMemberId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
         b."compactionKey", ${input.groupAccount}::text AS account, 'local'::text AS domain,
-        ${input.memberAccount}::text AS "subjectAccount", 'local'::text AS "subjectDomain", b.body
+        ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", b.body
       FROM recipient_body b
     ), ${clientIntentFeedWriteSql()}
   `;
@@ -274,7 +268,6 @@ function localRecipient(
 /** Group-authored peer recipient: one side-A RELATIONSHIP_INTENT REVOKED event, suppressed when the
  * peer already holds the identical body (no feed id is consumed). */
 function peerRecipient(input: GroupMembershipRevocationInput): SQL {
-  const wireLocalDomain = 'local';
   return sql`
     peer_write AS MATERIALIZED (
       SELECT jsonb_build_object('status', v.status, 'profileRev', v."profileRev", 'note', v.note,
@@ -283,19 +276,17 @@ function peerRecipient(input: GroupMembershipRevocationInput): SQL {
             ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END) AS body
       FROM revocation v
     ), peer_changes AS MATERIALIZED (
-      SELECT ${input.memberAccount}::text AS "subjectAccount", ${input.memberDomain}::text AS "subjectDomain",
+      SELECT ${input.memberAccount}::text AS "subjectAccount", ${input.profileNamespaceId}::integer AS "subjectNamespaceId",
         p.body, row_number() OVER () AS position, false AS invalid
       FROM peer_write p
-      LEFT JOIN "PeerStateFeed" old ON old."namespaceId" = ${input.memberNamespaceId}
-        AND old.account = ${input.groupAccount} AND old.domain = ${wireLocalDomain}
+      LEFT JOIN "PeerStateFeed" old ON old."namespaceId" = ${input.profileNamespaceId}
+        AND old.account = ${input.groupAccount}
         AND old."eventType" = 'RELATIONSHIP_INTENT'
-        AND old."subjectAccount" = ${input.memberAccount} AND old."subjectDomain" = ${input.memberDomain}
+        AND old."subjectAccount" = ${input.memberAccount} AND old."subjectNamespaceId" = ${input.profileNamespaceId}
       WHERE old.body IS DISTINCT FROM p.body
     ), ${peerIntentFeedWriteSql({
-      namespaceId: input.memberNamespaceId,
-      peerDomain: input.memberDomain,
+      namespaceId: input.profileNamespaceId,
       selfAccount: input.groupAccount,
-      selfDomain: input.localDomain,
     })}
   `;
 }

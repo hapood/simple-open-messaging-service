@@ -97,7 +97,6 @@ export class FederationInboundMessageValidatorService {
       [
         'thread',
         isGroup ? 'author' : 'authorRef',
-        'namespaceId',
         'seq',
         'profileRev',
         'originSeq',
@@ -110,15 +109,13 @@ export class FederationInboundMessageValidatorService {
       ['quoteTarget'],
     );
     if (
-      !Number.isSafeInteger(item.namespaceId) ||
-      item.namespaceId < 0 ||
       !Number.isSafeInteger(item.profileRev) ||
       item.profileRev < 0 ||
       item.profileRev > 2_147_483_647
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'federated message has an invalid namespaceId or profileRev',
+        'federated message has an invalid profileRev',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -140,11 +137,12 @@ export class FederationInboundMessageValidatorService {
       const author = assertFields(
         (item as Extract<FederationMessageFeedMessage, { author: unknown }>)
           .author,
-        ['account', 'domain'],
+        ['account', 'namespaceId'],
       );
       if (
         typeof author['account'] !== 'string' ||
-        typeof author['domain'] !== 'string'
+        !Number.isSafeInteger(author['namespaceId']) ||
+        Number(author['namespaceId']) < 0
       ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,

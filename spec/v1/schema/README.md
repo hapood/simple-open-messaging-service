@@ -16,6 +16,8 @@ normative text prevails and the release package must be corrected.
 - `discovery.schema.json`: cross-version bootstrap and key discovery at `/.well-known/somfp`.
 - `identity.schema.json`: closed JSON shapes for Recognize, Health, and feed-head hints.
 - `state-feed.schema.json`: compacted relationship/profile-reference and thread-content head items carrying Group Meta coordinates where applicable.
+- `profile-namespace-feed.schema.json`: compacted identity-change items of the Profile Namespace Feed.
+- `profile-namespace.schema.json`: current namespace-identity bindings resolved by `profile-namespaces/:nsid`.
 - `group-meta.schema.json`: full and delta group-member role/profile-reference, compacted group-profile-reference, and current-announcement projections.
 - `profile.schema.json`: current public account profile response.
 - `evidence-profile.schema.json`: exact profile response selected by account, group-member, or intent evidence.

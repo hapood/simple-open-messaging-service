@@ -17,24 +17,30 @@ function fixture() {
   });
   const state: LocalThreadAttention = {
     ...threadStructure(12, {
-      type: 'GROUP', authorityNamespaceId: 7,
-      profile: { account: 'room', domain: 'remote.test', namespaceId: 7, profileRev: 1 },
+      type: 'GROUP',
+      authorityNamespaceId: 7,
+      profile: {
+        account: 'room',
+        domain: 'remote.test',
+        namespaceId: 7,
+        profileRev: 1,
+      },
     }),
     threadId: 12,
     localReadSeq: 0,
-      threadFeedId: 1,
-      messageEndSeq: 0,
-      tombstoneEndSeq: 0,
-      alias: null,
-      threadProfileRev: 1,
-      groupMetaFeedEndId: '3',
-      joinRequestEndFeedId: 0,
-      joinRequestReadFeedId: -1,
-      groupInviteEndFeedId: 0,
-      announcementReadFeedId: 0,
-      lastReadSeq: 0,
-      unreadCount: 0,
-      lastMentionSeq: null,
+    threadFeedId: 1,
+    messageEndSeq: 0,
+    tombstoneEndSeq: 0,
+    alias: null,
+    threadProfileRev: 1,
+    groupMetaFeedEndId: '3',
+    joinRequestEndFeedId: 0,
+    joinRequestReadFeedId: -1,
+    groupInviteEndFeedId: 0,
+    announcementReadFeedId: 0,
+    lastReadSeq: 0,
+    unreadCount: 0,
+    lastMentionSeq: null,
   };
   const unresolved = {
     type: 'GROUP' as const,
@@ -57,7 +63,7 @@ function fixture() {
       thread.groupMetaRecoveryThrough = page.hasMore ? '3' : null;
     }),
   };
-  return { storage, thread, unresolved };
+  return { storage, thread, state, unresolved };
 }
 
 function page(scannedThrough: string, hasMore: boolean) {
@@ -84,7 +90,10 @@ describe('Group Meta background synchronization', () => {
 
     await expect(
       syncGroupMeta(storage, firstRun, vi.fn()),
-    ).rejects.toMatchObject({ message: 'offline', threadIds: [12] });
+    ).rejects.toMatchObject({
+      message: 'group room@remote.test: offline',
+      threadIds: [12],
+    });
     expect(thread.group.groupMetaFeedId).toBe('1');
     expect(thread.groupMetaRecoveryThrough).toBe('3');
 
@@ -242,5 +251,73 @@ describe('Group Meta background synchronization', () => {
       ['full', '1', '2'],
       ['delta', '2', '3'],
     ]);
+  });
+});
+
+describe('Group Meta failure isolation', () => {
+  it('continues past a failing group instead of starving later groups', async () => {
+    const { storage, thread, state } = fixture();
+    const healthy = structuredClone(thread);
+    healthy.threadId = 13;
+    healthy.group = { ...thread.group };
+    (storage.getThreads as ReturnType<typeof vi.fn>).mockResolvedValue([
+      thread,
+      healthy,
+    ]);
+    (storage.getThreadStates as ReturnType<typeof vi.fn>).mockResolvedValue([
+      structuredClone(state),
+      { ...structuredClone(state), threadId: 13 },
+    ]);
+    (
+      storage.getUnresolvedGroupMetaProfiles as ReturnType<typeof vi.fn>
+    ).mockResolvedValue([]);
+    // The fixture closures write to the original thread; route by threadId.
+    (
+      storage.beginGroupMetaRecovery as ReturnType<typeof vi.fn>
+    ).mockImplementation(async (threadId: number, through: string) => {
+      const target = threadId === 13 ? healthy : thread;
+      target.group.groupMetaFeedId = '0';
+      target.groupMetaRecoveryThrough = through;
+    });
+    (storage.applyGroupMetaPage as ReturnType<typeof vi.fn>).mockImplementation(
+      async ({
+        threadId,
+        page,
+      }: {
+        threadId: number;
+        page: { scannedThrough: string; hasMore: boolean };
+      }) => {
+        const target = threadId === 13 ? healthy : thread;
+        target.group.groupMetaFeedId = page.scannedThrough;
+        target.groupMetaRecoveryThrough = page.hasMore ? '3' : null;
+      },
+    );
+    // First group's request fails; the second group must still drain.
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          account: 'room',
+          mode: 'full',
+          items: [],
+          scannedThrough: '3',
+          groupMetaFeedEndId: '3',
+          hasMore: false,
+        },
+      });
+    await expect(syncGroupMeta(storage, request, vi.fn())).rejects.toThrow(
+      'group room@remote.test: offline',
+    );
+    expect(healthy.group.groupMetaFeedId).toBe('3');
+  });
+
+  it('surfaces the business code of a rejected page', async () => {
+    const { storage } = fixture();
+    const request = vi.fn().mockResolvedValueOnce({ code: 30001 });
+    await expect(syncGroupMeta(storage, request, vi.fn())).rejects.toThrow(
+      'group-meta pull failed (code 30001)',
+    );
   });
 });

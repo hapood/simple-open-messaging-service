@@ -1,5 +1,5 @@
 import type { ConversationItem } from '../../services/model';
-import type { ProfileSelector } from '../../../../../shared/profile-selector';
+import type { ProfileDemand } from '../../../../../shared/profile-demand';
 import { UserAvatarType } from './model';
 
 /**
@@ -34,21 +34,16 @@ export function conversationAvatarSrc(
 
 export function conversationAvatarEvidence(
   t: ConversationItem,
-): ProfileSelector | undefined {
+): ProfileDemand | undefined {
   if (t.profileRev < 1) return undefined;
-  // Thread type comes from the authenticated state feed. The profile-resolution
-  // endpoint independently checks that the selector belongs to this thread.
-  return t.type === 'P2P'
-    ? {
-        type: 'EXACT',
-        account: t.peerUser.account,
-        domain: t.peerUser.domain,
-        rev: t.profileRev,
-      }
-    : {
-        type: 'GROUP_META',
-        threadId: t.threadId,
-        profileRev: t.profileRev,
-        subject: { type: 'GROUP' },
-      };
+  const subject = t.type === 'P2P' ? t.peerUser : t.group;
+  return {
+    publisherNamespaceId: subject.namespaceId,
+    lookup: 'ACCOUNT_PROFILE',
+    target: {
+      profileNamespaceId: subject.namespaceId,
+      account: subject.account,
+      rev: t.profileRev,
+    },
+  };
 }

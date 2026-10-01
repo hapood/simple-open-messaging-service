@@ -24,12 +24,6 @@ export class ProfileResolutionTargetDto {
   @IsNotEmpty()
   account!: string;
 
-  @ApiProperty()
-  @IsDefined()
-  @IsString()
-  @IsNotEmpty()
-  domain!: string;
-
   @ApiProperty({ minimum: 1 })
   @IsDefined()
   @IsInt()

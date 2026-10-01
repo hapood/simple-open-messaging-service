@@ -21,7 +21,6 @@ export interface ResolvedClientProfile {
   publisherNamespaceId: number;
   profileNamespaceId: number;
   account: string;
-  domain: string;
   rev: number;
   name: string;
   bio: string;
@@ -83,13 +82,7 @@ export class ProfileResolutionCoordinatorService {
     demand: ProfileResolutionDemand,
     options: ResolutionEnqueueOptions = {},
   ): Promise<ProfileResolutionStart> {
-    const key: ProfileKey = {
-      publisherNamespaceId: demand.publisherNamespaceId,
-      profileNamespaceId: demand.target.profileNamespaceId,
-      account: demand.target.account,
-      domain: demand.target.domain,
-      rev: demand.target.rev,
-    };
+    const key = this.profileKeyForDemand(demand);
     const keyString = profileKeyString(key);
     const cached = this.cache.get(keyString);
     if (cached) {
@@ -101,7 +94,7 @@ export class ProfileResolutionCoordinatorService {
       this.touch(keyString, durable);
       return { status: 'READY', profile: durable };
     }
-    if (key.publisherNamespaceId === 0 && key.domain === 'local') {
+    if (key.publisherNamespaceId === 0) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'local profile revision is unavailable',
@@ -159,7 +152,6 @@ export class ProfileResolutionCoordinatorService {
     >,
     publisherDomain: string,
   ): Promise<void> {
-    const memberDomain = demand.target.domain;
     const rows = await this.database.db.execute(sql`
       SELECT 1
       FROM "Account" viewer
@@ -171,7 +163,7 @@ export class ProfileResolutionCoordinatorService {
         FROM "GroupMetaMemberFeed" fact
         WHERE fact."threadId" = group_state.id
           AND fact."memberAccount" = ${normalizeAccount(demand.target.account)}
-          AND fact."memberDomain" = ${memberDomain}
+          AND (fact.body ->> 'profileNamespaceId')::integer = ${demand.target.profileNamespaceId}
         ORDER BY fact."feedId" DESC
         LIMIT 1
       ) latest ON true
@@ -198,8 +190,7 @@ export class ProfileResolutionCoordinatorService {
             AND message.seq > COALESCE(thread."clearedSeq", 0)
             AND message.seq <= state."messageEndSeq"
             AND message."creatorAccount" = ${normalizeAccount(demand.target.account)}
-            AND message."creatorDomain" = ${memberDomain}
-            AND message."sourceNamespaceId" = ${demand.publisherNamespaceId}
+            AND message."publisherNamespaceId" = ${demand.publisherNamespaceId}
             AND message."profileNamespaceId" = ${demand.target.profileNamespaceId}
             AND message."profileRev" = ${demand.target.rev}
             AND message."contentType" <> 'SYSTEM'
@@ -270,7 +261,6 @@ export class ProfileResolutionCoordinatorService {
       WHERE self.id = ${userId}
         AND (
           (self.account = ${account}
-            AND self.domain = ${demand.target.domain}
             AND self."namespaceId" = ${demand.target.profileNamespaceId})
           OR EXISTS (
             SELECT 1 FROM "RelationshipPair" pair
@@ -281,9 +271,7 @@ export class ProfileResolutionCoordinatorService {
               AND pair."endpointANamespaceId" = 0
               AND pair."endpointBType" = 'USER'
               AND pair."endpointBAccount" = ${account}
-              AND pair."endpointBNamespaceId" = CASE
-                WHEN ${demand.target.domain} = 'local' THEN 0
-                ELSE ${demand.publisherNamespaceId} END
+              AND pair."endpointBNamespaceId" = ${demand.target.profileNamespaceId}
           )
           OR EXISTS (
             SELECT 1
@@ -294,8 +282,7 @@ export class ProfileResolutionCoordinatorService {
               AND message.seq > COALESCE(thread."clearedSeq", 0)
               AND message.seq <= state."messageEndSeq"
               AND message."creatorAccount" = ${account}
-              AND message."creatorDomain" = ${demand.target.domain}
-              AND message."sourceNamespaceId" = ${demand.publisherNamespaceId}
+              AND message."publisherNamespaceId" = ${demand.publisherNamespaceId}
               AND message."profileNamespaceId" = ${demand.target.profileNamespaceId}
               AND message."profileRev" = ${demand.target.rev}
               AND message."contentType" <> 'SYSTEM'
@@ -316,7 +303,6 @@ export class ProfileResolutionCoordinatorService {
             WHERE state."accountId" = self.id
               AND thread.type = 'GROUP'
               AND thread."groupAccount" = ${account}
-              AND thread."groupDomain" = ${demand.target.domain}
               AND thread."authorityNamespaceId" = ${demand.publisherNamespaceId}
               AND latest.operation = 'GROUP_PROFILE'
               AND (latest.body ->> 'profileNamespaceId')::integer = ${demand.target.profileNamespaceId}
@@ -336,7 +322,6 @@ export class ProfileResolutionCoordinatorService {
     const profile = await this.profiles.getStoredProfile(
       key.publisherNamespaceId,
       key.account,
-      key.domain,
       key.profileNamespaceId,
       key.rev,
     );
@@ -391,13 +376,12 @@ export class ProfileResolutionCoordinatorService {
       publisherNamespaceId: profile.publisherNamespaceId,
       profileNamespaceId: profile.profileNamespaceId,
       account: profile.account,
-      domain: profile.domain,
       rev: profile.rev,
     };
     this.touch(profileKeyString(actualKey), profile);
 
     // A durable exact snapshot satisfies every method waiting for this same
-    // five-tuple. Remove the pending key only after persistence, then notify
+    // four-tuple. Remove the pending key only after persistence, then notify
     // the union of its session listeners. Internal prefetches have no listener.
     const listeners = [...item.listeners];
     this.removeItem(expectedKeyString, item);
@@ -509,7 +493,6 @@ export class ProfileResolutionCoordinatorService {
       return {
         profile: await this.profiles.fetchExactGroupMemberProfile(
           demand.groupAccount,
-          demand.target.domain,
           demand.target.account,
           demand.target.rev,
           publisherDomain,
@@ -546,7 +529,6 @@ export class ProfileResolutionCoordinatorService {
       publisherNamespaceId,
       profileNamespaceId,
       account: profile.account,
-      domain: profile.domain,
       rev: profile.profileRev,
       name: profile.displayName,
       bio: profile.bio,
@@ -576,6 +558,14 @@ export class ProfileResolutionCoordinatorService {
       return 'NOT_FOUND';
     return 'TEMPORARILY_UNAVAILABLE';
   }
+  private profileKeyForDemand(demand: ProfileResolutionDemand): ProfileKey {
+    return {
+      publisherNamespaceId: demand.publisherNamespaceId,
+      profileNamespaceId: demand.target.profileNamespaceId,
+      account: demand.target.account,
+      rev: demand.target.rev,
+    };
+  }
 }
 
 function profileKeyString(key: ProfileKey): string {
@@ -583,7 +573,6 @@ function profileKeyString(key: ProfileKey): string {
     key.publisherNamespaceId,
     key.profileNamespaceId,
     key.account,
-    key.domain,
     key.rev,
   ]);
 }

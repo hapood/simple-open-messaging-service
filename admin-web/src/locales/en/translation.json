@@ -39,7 +39,10 @@
     "placeholder": "Search users, peers…",
     "hint": "Type to search users and federation peers",
     "empty": "No matches",
-    "section": { "users": "Users", "peers": "Federation peers" }
+    "section": {
+      "users": "Users",
+      "peers": "Federation peers"
+    }
   },
   "roles": {
     "super": "Super Admin",
@@ -255,7 +258,10 @@
     "selectAll": "Select all",
     "selectRow": "Select {{name}}",
     "total": "{{count}} total",
-    "tabs": { "users": "Users", "operators": "Operators" }
+    "tabs": {
+      "users": "Users",
+      "operators": "Operators"
+    }
   },
   "userDetail": {
     "back": "Back to users",
@@ -273,13 +279,19 @@
       "updatedAt": "Updated",
       "bio": "Bio"
     },
-    "group": { "name": "Group", "role": "Role", "joined": "Joined" },
+    "group": {
+      "name": "Group",
+      "role": "Role",
+      "joined": "Joined"
+    },
     "empty": {
       "groups": "No group memberships",
       "sessions": "No active sessions",
       "push": "No push devices"
     },
-    "push": { "deviceId": "Device ID" }
+    "push": {
+      "deviceId": "Device ID"
+    }
   },
   "userQuota": {
     "title": "Personal quota",
@@ -403,13 +415,19 @@
       "IOS": "iOS · FCM",
       "WEB": "Web Push"
     },
-    "tabs": { "devices": "Devices", "config": "Transport config" }
+    "tabs": {
+      "devices": "Devices",
+      "config": "Transport config"
+    }
   },
   "federation": {
     "title": "Federation",
     "desc": "Peer servers and their Federation v1 bidirectional recognition lifecycle. Open a peer for recognition facts, reachability, and namespace state.",
     "searchPlaceholder": "Search domain",
-    "tabs": { "peers": "Peers", "selfCheck": "Self-check" },
+    "tabs": {
+      "peers": "Peers",
+      "selfCheck": "Self-check"
+    },
     "status": {
       "all": "All",
       "available": "Available",
@@ -434,7 +452,8 @@
     "toast": {
       "blocked": "Peer blocked — federation refused until unblocked",
       "unblocked": "Peer unblocked — will re-handshake on next contact",
-      "namespaceActive": "Active namespace switched"
+      "reviewApproved": "Identity review approved",
+      "reviewRejected": "Identity review rejected"
     },
     "total": "{{count}} peers",
     "empty": "No federated peers",
@@ -461,22 +480,14 @@
       "title": "Identity namespaces",
       "empty": "No identity namespaces recorded for this peer",
       "active": "active",
-      "approve": "Approve",
-      "setActive": "Set active",
-      "newCandidate": "new",
-      "confirmSetActive": "Set namespace {{namespaceId}} as active? Peer acceptance and reachability will re-converge before ordinary traffic resumes.",
-      "confirmApproveCandidate": "Approve this verified namespace candidate and make it active? Peer acceptance and reachability will re-converge before ordinary traffic resumes.",
-      "candidate": {
-        "pending": "pending review",
-        "failed": "failed"
-      },
       "col": {
         "id": "Namespace",
-        "fingerprint": "Root fingerprint",
         "peerAssigned": "Peer-assigned local ns",
         "pinnedAt": "Pinned at",
-        "retiredAt": "Retired at"
-      }
+        "retiredAt": "Retired at",
+        "rootKey": "Pinned root key"
+      },
+      "retired": "retired"
     },
     "selfCheck": {
       "title": "S2S Handshake Self-Check",
@@ -587,6 +598,31 @@
         "chainIncomplete": "chain does NOT reach a trusted root",
         "section": "Certificate"
       }
+    },
+    "reviews": {
+      "title": "Identity reviews",
+      "col": {
+        "kind": "Arrival",
+        "status": "Status",
+        "roots": "Identity change",
+        "arrivedAt": "Arrived"
+      },
+      "kind": {
+        "domain-rebind": "Domain re-bind",
+        "root-rotation": "Root rotation"
+      },
+      "status": {
+        "pending": "Awaiting review",
+        "approved": "Approved",
+        "rejected": "Rejected"
+      },
+      "approve": "Approve",
+      "reject": "Reject",
+      "predecessorCheck": "Predecessor check",
+      "predecessorOk": "The peer opened the sealed challenge under the pinned root",
+      "predecessorFailed": "The predecessor check failed; inspect the detail line",
+      "confirmApprove": "Approve this {{kind}} arrival? The pin swaps in one commit and ordinary traffic re-converges afterwards.",
+      "confirmReject": "Reject this {{kind}} arrival? The currently pinned epoch stays exactly as it is."
     }
   },
   "logs": {

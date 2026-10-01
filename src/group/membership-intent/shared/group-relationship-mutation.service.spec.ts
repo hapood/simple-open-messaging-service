@@ -171,7 +171,7 @@ describe('GroupRelationshipMutationService', () => {
 
     expect(stateFeed.lockOutboundStateFeedNamespacesInTx).toHaveBeenCalledWith(
       tx,
-      [{ peerDomain: 'peer.example', namespaceId: 12 }],
+      [{ namespaceId: 12 }],
     );
     expect(order).toEqual(['peer-lock', 'client', 'peer-write']);
     expect(clientStateFeed.writeInTx).toHaveBeenCalledWith(

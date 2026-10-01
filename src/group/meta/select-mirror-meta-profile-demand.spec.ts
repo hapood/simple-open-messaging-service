@@ -30,7 +30,6 @@ describe('selectMirrorMetaProfileDemand', () => {
       lookup: 'GROUP_MEMBER_PROFILE',
       target: {
         account: 'remote-member',
-        domain: 'member.example',
         profileNamespaceId: 23,
         rev: 9,
       },
@@ -42,7 +41,6 @@ describe('selectMirrorMetaProfileDemand', () => {
     { operation: 'MEMBER_DEPART' as const, profileRev: 3 },
     { operation: 'MEMBER_UPSERT' as const, profileRev: 0 },
     { operation: 'GROUP_PROFILE' as const, profileRev: 3 },
-    { operation: 'MEMBER_UPSERT' as const, profileRev: 4, domain: 'local' },
   ])(
     'does not create work for $operation',
     ({ operation, profileRev, domain }) => {

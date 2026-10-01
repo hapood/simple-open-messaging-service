@@ -732,11 +732,11 @@ fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
 
 #[test]
 fn native_message_creator_localization_preserves_message_source() {
-    let mut message = serde_json::json!({"sourceNamespaceId":7,"creator":{"account":"me","domain":"local","namespaceId":7}});
+    let mut message = serde_json::json!({"publisherNamespaceId":7,"creator":{"account":"me","domain":"local","namespaceId":7}});
     super::messages::normalize_message_creator(&mut message);
     assert_eq!(message["creator"]["namespaceId"], 0);
     assert_eq!(message["creator"]["domain"], "local");
-    assert_eq!(message["sourceNamespaceId"], 7);
+    assert_eq!(message["publisherNamespaceId"], 7);
     let mut foreign =
         serde_json::json!({"creator":{"account":"other","domain":"third.test","namespaceId":7}});
     let original = foreign.clone();

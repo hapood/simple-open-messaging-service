@@ -10,7 +10,7 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { dataDirectory } from '../common/data-directory.js';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -25,6 +25,8 @@ import {
   message,
   messageThread,
   accountThreadState,
+  identityNamespace,
+  localFederationRoot,
 } from '../database/schema.js';
 import { ContentType } from '../database/enums.js';
 import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
@@ -64,10 +66,21 @@ export interface ForwardSourceMessage {
   seq: number;
 }
 
+type Base64Ed25519Key = string;
+
 interface ForwardAuthor {
-  /** Optional stable identity. Account and domain are either both present or both absent. */
-  account?: string;
-  domain?: string;
+  account: string;
+  domain: string;
+  /** Optional root identity anchor for the author domain/provenance snapshot. */
+  publicRootKey?: Base64Ed25519Key;
+}
+
+const BASE64_ED25519_PUBLIC_KEY_RE = /^[A-Za-z0-9+/]{43}=$/;
+
+function isCanonicalBase64Ed25519PublicKey(value: string): boolean {
+  if (!BASE64_ED25519_PUBLIC_KEY_RE.test(value)) return false;
+  const bytes = Buffer.from(value, 'base64');
+  return bytes.length === 32 && bytes.toString('base64') === value;
 }
 
 interface ForwardProfileSnapshot {
@@ -78,7 +91,7 @@ interface ForwardProfileSnapshot {
 export interface ForwardBundleMessage extends FederatedMessagePayload {
   /** Positive identity used only by quotes in this enclosing messages array. */
   id: number;
-  author: ForwardAuthor;
+  author?: ForwardAuthor;
   profile: ForwardProfileSnapshot;
   sentAt: number;
   childBundleId?: string;
@@ -331,12 +344,11 @@ export class ForwardBundleService {
           .then(async (row) => {
             if (!row) return null;
             const creatorProfile =
-              row.creatorAccount === null || row.creatorDomain === null
+              row.creatorAccount === null
                 ? null
                 : await this.exactProfileForMessage({
                     account: row.creatorAccount,
-                    domain: row.creatorDomain,
-                    publisherNamespaceId: row.sourceNamespaceId,
+                    publisherNamespaceId: row.publisherNamespaceId,
                     profileNamespaceId: row.profileNamespaceId,
                     profileRev: row.profileRev,
                   });
@@ -452,7 +464,7 @@ export class ForwardBundleService {
           'system messages cannot be forwarded',
         );
       }
-      if (message.creatorAccount === null || message.creatorDomain === null)
+      if (message.creatorAccount === null)
         throw new Error('user-authored forward source has no creator');
       const avatar = message.creatorProfile?.avatar
         ? await this.snapshotAvatarForMessage(message.creatorProfile.avatar)
@@ -481,14 +493,19 @@ export class ForwardBundleService {
         resolvedQuote && resolvedQuote.seq > 0
           ? selectedIndex.get(`${message.threadId}:${resolvedQuote.seq}`)
           : undefined;
+      const authorDomain =
+        message.profileNamespaceId === 0
+          ? (process.env.SOMS_DOMAIN ?? 'local')
+          : await this.domainForNamespace(message.publisherNamespaceId);
+      const publicRootKey = await this.publicRootKeyForNamespace(
+        message.publisherNamespaceId,
+      );
       messages.push({
         id: index + 1,
         author: {
           account: message.creatorAccount,
-          domain:
-            message.creatorDomain === 'local'
-              ? (process.env.SOMS_DOMAIN ?? 'local')
-              : message.creatorDomain,
+          domain: authorDomain,
+          ...(publicRootKey ? { publicRootKey } : {}),
         },
         profile,
         contentType: message.contentType,
@@ -857,22 +874,25 @@ export class ForwardBundleService {
           !Number.isSafeInteger(message.id) ||
           message.id < 1 ||
           ids.has(message.id) ||
-          message.author === null ||
-          typeof message.author !== 'object' ||
-          Array.isArray(message.author) ||
-          (message.author.account !== undefined &&
-            typeof message.author.account !== 'string') ||
-          (message.author.domain !== undefined &&
-            typeof message.author.domain !== 'string') ||
-          (message.author.account === undefined) !==
-            (message.author.domain === undefined) ||
-          (message.author.account !== undefined &&
-            !isValidSomfpUserAccount(message.author.account)) ||
-          (message.author.domain !== undefined &&
-            !isValidSomfpDomain(message.author.domain)) ||
-          Object.keys(message.author).some(
-            (key) => key !== 'account' && key !== 'domain',
-          ) ||
+          (message.author !== undefined &&
+            (message.author === null ||
+              typeof message.author !== 'object' ||
+              Array.isArray(message.author) ||
+              typeof message.author.account !== 'string' ||
+              typeof message.author.domain !== 'string' ||
+              !isValidSomfpUserAccount(message.author.account) ||
+              !isValidSomfpDomain(message.author.domain) ||
+              (message.author.publicRootKey !== undefined &&
+                (typeof message.author.publicRootKey !== 'string' ||
+                  !isCanonicalBase64Ed25519PublicKey(
+                    message.author.publicRootKey,
+                  ))) ||
+              Object.keys(message.author).some(
+                (key) =>
+                  key !== 'account' &&
+                  key !== 'domain' &&
+                  key !== 'publicRootKey',
+              ))) ||
           message.profile === null ||
           typeof message.profile !== 'object' ||
           Array.isArray(message.profile) ||
@@ -1198,9 +1218,37 @@ export class ForwardBundleService {
     }
   }
 
+  private async domainForNamespace(namespaceId: number): Promise<string> {
+    if (namespaceId === 0) return process.env.SOMS_DOMAIN ?? 'local';
+    const row = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(identityNamespace.id, namespaceId),
+      columns: { domain: true },
+    });
+    if (!row) throw new Error(`namespace ${namespaceId} is missing`);
+    return row.domain;
+  }
+
+  private async publicRootKeyForNamespace(
+    namespaceId: number,
+  ): Promise<string | null> {
+    if (namespaceId === 0) {
+      const row = await this.database.db.query.localFederationRoot.findFirst({
+        where: eq(localFederationRoot.claimable, true),
+        columns: { rootPublicKey: true },
+        orderBy: desc(localFederationRoot.notBefore),
+      });
+      return row?.rootPublicKey ?? null;
+    }
+    const row = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(identityNamespace.id, namespaceId),
+      columns: { rootPublicKey: true },
+    });
+    if (!row) throw new Error(`namespace ${namespaceId} is missing`);
+    return row.rootPublicKey ?? null;
+  }
+
   private async exactProfileForMessage(selector: {
     account: string;
-    domain: string;
     publisherNamespaceId: number;
     profileNamespaceId: number;
     profileRev: number;
@@ -1212,7 +1260,6 @@ export class ForwardBundleService {
       SELECT snapshot."displayName", snapshot.avatar
       FROM "Profile" snapshot
       WHERE snapshot.account = ${selector.account}
-        AND snapshot.domain = ${selector.domain}
         AND snapshot."publisherNamespaceId" = ${selector.publisherNamespaceId}
         AND snapshot."profileNamespaceId" = ${selector.profileNamespaceId}
         AND snapshot."profileRev" = ${selector.profileRev}

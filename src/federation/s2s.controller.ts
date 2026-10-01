@@ -22,7 +22,10 @@ import { FederationMessageFeedService } from './federation-message-feed.service.
 import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
+import { ProfileNamespaceFeedService } from './profile-namespace-feed.service.js';
+import { FederationProfileNamespacePullService } from './federation-profile-namespace-pull.service.js';
 import { FederationGroupMetaFeedService } from './group-meta-feed.service.js';
+import { KeypairService } from './keypair.service.js';
 import { FEDERATION_API_PREFIX } from './federation-protocol.js';
 import { FEDERATION_THREAD_SEQUENCE_MAX } from './federation-thread-round.constants.js';
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
@@ -35,7 +38,6 @@ import {
   requireDomain,
   requireSafeDecimal,
   requireSha256Hex,
-  requireSubjectDomain,
   requireUserAccount,
 } from './federation-resource-request.js';
 
@@ -45,7 +47,9 @@ import {
  *
  * - POST /s2s/v1/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationService.handleCallFrame.
  * - GET  /s2s/v1/state-feed — compacted profile/relationship/group state for the signed peer.
- * - POST /s2s/v1/feed-heads — an ephemeral state-feed wake-up hint.
+ * - POST /s2s/v1/feed-heads — an ephemeral merged state-feed / profile-namespace-feed wake-up hint.
+ * - GET  /s2s/v1/profile-namespace-feed — the shared compacted identity-binding change feed.
+ * - GET  /s2s/v1/profile-namespaces/:nsid — current bindings of one namespace id in this server's space.
  *
  * Response shape: success bodies are enveloped by the global SerializeInterceptor as
  * { code: 0, message, data } (the peer's getSigned unwraps `data` and throws on a non-zero code). Business
@@ -65,8 +69,11 @@ export class S2sController {
     private readonly tombstoneFeed: FederationMessageTombstoneFeedService,
     private readonly settings: SettingsService,
     private readonly peerStateFeed: PeerStateFeedService,
+    private readonly profileNamespaceFeed: ProfileNamespaceFeedService,
+    private readonly profileNamespacePull: FederationProfileNamespacePullService,
     private readonly roundScheduler: FederationThreadRoundSchedulerService,
     private readonly groupMeta: FederationGroupMetaFeedService,
+    private readonly keypair: KeypairService,
   ) {}
 
   @Get('group-meta')
@@ -124,21 +131,24 @@ export class S2sController {
     );
   }
 
-  /** Receive an ephemeral state-feed head; actual data remains pull-only. */
+  /** Receive an ephemeral merged feed-head hint; actual data remains pull-only. */
   @Post('feed-heads')
   @HttpCode(HttpStatus.OK)
   async postDiscoveryHwm(@Req() req: FastifyRequest): Promise<void> {
     const signer = this.signerDomain(req);
     const body = req.body as {
       stateFeedEndId?: unknown;
+      profileNamespaceFeedEndId?: unknown;
     } | null;
+    const decimal = (value: unknown): value is string =>
+      typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
     if (
       !body ||
       typeof body !== 'object' ||
       Array.isArray(body) ||
-      Object.keys(body).length !== 1 ||
-      typeof body.stateFeedEndId !== 'string' ||
-      !/^(0|[1-9]\d*)$/.test(body.stateFeedEndId)
+      Object.keys(body).length !== 2 ||
+      !decimal(body.stateFeedEndId) ||
+      !decimal(body.profileNamespaceFeedEndId)
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
@@ -148,6 +158,61 @@ export class S2sController {
     }
     const stateFeedEndId = BigInt(body.stateFeedEndId);
     this.roundScheduler.wakeStateFeed(signer, stateFeedEndId);
+    // Each field is handled independently: the profile-namespace head wakes
+    // that pull when it is ahead of the receiver's cursor.
+    this.profileNamespacePull.wake(signer, BigInt(body.profileNamespaceFeedEndId));
+  }
+
+  /** The shared compacted identity-binding change feed. An omitted `after`
+   *  is the first-pull form: the sender-side zero fallback serves every
+   *  current item from 0. */
+  @Get('profile-namespace-feed')
+  async getProfileNamespaceFeed(
+    @Req() req: FastifyRequest,
+    @Query('after') afterParam?: string,
+    @Query('take') takeParam?: string,
+    @Query('through') throughParam?: string,
+  ) {
+    this.assertQueryShape(req, ['after', 'take', 'through']);
+    if (
+      afterParam === undefined &&
+      (takeParam !== undefined || throughParam !== undefined)
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'take and through require after',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const after =
+      afterParam === undefined
+        ? undefined
+        : this.parseCursorBigInt(afterParam, 'after');
+    const take =
+      takeParam === undefined ? undefined : Number(takeParam);
+    const through =
+      throughParam === undefined
+        ? undefined
+        : this.parseCursorBigInt(throughParam, 'through');
+    return this.profileNamespaceFeed.serve(after, take, through);
+  }
+
+  /** Current bindings of one namespace id in this responder's own namespace
+   *  space. Id 0 is the responder itself; display/vouching data only. */
+  @Get('profile-namespaces/:nsid')
+  async getProfileNamespace(@Req() req: FastifyRequest): Promise<unknown> {
+    const raw = (req.params as { nsid?: unknown }).nsid;
+    if (
+      typeof raw !== 'string' ||
+      !/^(0|[1-9][0-9]{0,15})$/.test(raw)
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'nsid must be a non-negative decimal path parameter',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return this.profileNamespaceFeed.resolveBindings(Number(raw));
   }
 
   @Get('message-tombstones')
@@ -331,7 +396,6 @@ export class S2sController {
     @Query('through') throughParam?: string,
   ) {
     this.assertQueryShape(req, ['after', 'take', 'through']);
-    const peerDomain = this.signerDomain(req);
     const namespaceId = req.peer!.namespaceId;
     if (afterParam === undefined) {
       if (takeParam !== undefined || throughParam !== undefined) {
@@ -341,7 +405,7 @@ export class S2sController {
           HttpStatus.BAD_REQUEST,
         );
       }
-      return this.peerStateFeed.rejectMissingAfter(peerDomain, namespaceId);
+      return this.peerStateFeed.rejectMissingAfter(namespaceId);
     }
     const after = this.parseCursorBigInt(afterParam, 'after');
     const take = takeParam === undefined ? undefined : Number(takeParam);
@@ -350,7 +414,6 @@ export class S2sController {
         ? undefined
         : this.parseCursorBigInt(throughParam, 'through');
     return this.peerStateFeed.serve(
-      peerDomain,
       namespaceId,
       after,
       take,
@@ -378,8 +441,20 @@ export class S2sController {
     const parsed = parseFederationResourceRequest(req, {
       pathPrefix: '/s2s/v1/accounts/',
       pathName: 'account',
+      query: [
+        { name: 'publicKey' },
+        { name: 'challenge' },
+      ],
     });
     const account = requireAccount(parsed.pathValue, 'account');
+    // The public current-profile lookup doubles as a possession proof: the
+    // card is bound to the holder of the named key's private counterpart
+    // because `proof` is the plaintext recovered from the caller's sealed
+    // challenge. The plaintext is opaque to this server.
+    const proof = this.keypair.openCardChallenge(
+      parsed.query.publicKey,
+      parsed.query.challenge,
+    );
     // The endpoint serves OUR users and groups only. The account is the sole path segment;
     // profile identity uses the publisher-local subject marker.
     const address: S2SAddress = { account, domain: 'local' };
@@ -394,9 +469,15 @@ export class S2sController {
         `account ${account} not found`,
       );
     }
-    const { account: owner, domain, displayName, bio, avatar, profileRev } =
-      profile;
-    return { account: owner, domain, displayName, bio, avatar, profileRev };
+    const { account: owner, displayName, bio, avatar, profileRev } = profile;
+    return {
+      account: owner,
+      displayName,
+      bio,
+      avatar,
+      profileRev,
+      proof,
+    };
   }
 
   @Get('intent-profiles/:namespaceId/:account/:peerAccount/:profileRev')
@@ -436,12 +517,11 @@ export class S2sController {
     }
     const {
       account: owner,
-      domain,
       displayName,
       bio,
       avatar,
     } = profile;
-    return { account: owner, domain, displayName, bio, avatar };
+    return { account: owner, displayName, bio, avatar };
   }
 
   @Get('account-profiles/:namespaceId/:account/:profileRev')
@@ -476,28 +556,21 @@ export class S2sController {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
     const {
       account: owner,
-      domain,
       displayName,
       bio,
       avatar,
     } = profile;
-    return { account: owner, domain, displayName, bio, avatar };
+    return { account: owner, displayName, bio, avatar };
   }
 
   @Get(
-    'group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev',
+    'group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
   )
   async getGroupMemberProfile(@Req() req: FastifyRequest) {
     const path = parseFederationResourcePath(
       req,
       '/s2s/v1/group-member-profiles/',
-      [
-        'groupAccount',
-        'namespaceId',
-        'memberAccount',
-        'memberDomain',
-        'profileRev',
-      ],
+      ['groupAccount', 'namespaceId', 'memberAccount', 'profileRev'],
     );
     const groupAccount = requireAccount(path.groupAccount, 'groupAccount');
     if (!groupAccount.startsWith('!')) {
@@ -515,11 +588,6 @@ export class S2sController {
       path.memberAccount,
       'memberAccount',
     );
-    const memberDomain = requireSubjectDomain(
-      path.memberDomain,
-      'memberDomain',
-      profileNamespaceId,
-    );
     const rev = requireSafeDecimal(path.profileRev, 'profileRev');
     if (rev < 1) {
       throw new BusinessException(
@@ -531,7 +599,6 @@ export class S2sController {
     const profile = await this.resourceOperation(() =>
       this.federation.getAuthorizedGroupMemberProfile(
         groupAccount,
-        memberDomain,
         memberAccount,
         profileNamespaceId,
         rev,
@@ -541,8 +608,8 @@ export class S2sController {
     );
     if (!profile)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
-    const { account, domain, displayName, bio, avatar } = profile;
-    return { account, domain, displayName, bio, avatar };
+    const { account, displayName, bio, avatar } = profile;
+    return { account, displayName, bio, avatar };
   }
 
   /** The verified signer domain (set by S2sSignatureGuard as req.peer.domain). */

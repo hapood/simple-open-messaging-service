@@ -5,6 +5,7 @@ import { get } from 'node:http';
 import { once } from 'node:events';
 import type { Observable, Subscription } from 'rxjs';
 import { describe, expect, it, vi } from 'vitest';
+import { profileNamespaceChangeFeedHead } from '../database/schema.js';
 import { SseService } from './sse.service.js';
 
 function makeService() {
@@ -19,18 +20,28 @@ function makeService() {
         return query;
       }),
       select: vi.fn(() => {
+        // sendHello runs two selects per HELLO: the session/user projection
+        // and the profile-namespace change head row. Distinguish them by the
+        // table passed to from() — order-independent.
+        let isHead = false;
         const query = {
-          from: () => query,
+          from: (table: unknown) => {
+            if (table === profileNamespaceChangeFeedHead) isHead = true;
+            return query;
+          },
           innerJoin: () => query,
           where: () => query,
-          limit: async () => [
-            {
-              stateFeedEndId: 4,
-              threadFeedEndId: 3,
-              profileRev: 2,
-              pushSubscriptionRev: 3,
-            },
-          ],
+          limit: async () =>
+            isHead
+              ? [{ endId: 5n }]
+              : [
+                  {
+                    stateFeedEndId: 4,
+                    threadFeedEndId: 3,
+                    profileRev: 2,
+                    pushSubscriptionRev: 3,
+                  },
+                ],
         };
         return query;
       }),
@@ -93,6 +104,7 @@ describe('framework SSE streams', () => {
       sessionId: 11,
       stateFeedEndId: 4,
       pushSubscriptionRev: 3,
+      profileNamespaceChangeEndId: 5,
     });
     a.subscription.unsubscribe();
     expect(svc.isSessionOnline(7, 11)).toBe(false);
@@ -119,7 +131,9 @@ describe('framework SSE streams', () => {
     expect(eventsOf(old, 'PROFILE_AVAILABLE')).toHaveLength(0);
     expect(eventsOf(current, 'PROFILE_AVAILABLE')).toHaveLength(1);
     expect(eventsOf(sameUserOtherSession, 'PROFILE_AVAILABLE')).toHaveLength(0);
-    expect(eventsOf(otherUserSameSessionId, 'PROFILE_AVAILABLE')).toHaveLength(0);
+    expect(eventsOf(otherUserSameSessionId, 'PROFILE_AVAILABLE')).toHaveLength(
+      0,
+    );
 
     current.subscription.unsubscribe();
     svc.onProfileUnavailable(11, {

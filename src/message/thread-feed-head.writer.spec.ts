@@ -145,7 +145,7 @@ describe('mention projection in the shared head writer', () => {
     expect(update.sql).toContain('"profileSourceId" = CASE WHEN thread.type = \'P2P\'');
     expect(update.sql).toContain('"profileRev" IS DISTINCT FROM');
     expect(update.sql).toContain('message."creatorAccount" = viewer.account');
-    expect(update.sql).toContain('message."creatorDomain" = viewer.domain');
+    expect(update.sql).toContain('message."profileNamespaceId" = 0');
     expect(update.sql).toContain('ORDER BY message.seq DESC LIMIT 1');
     expect(update.sql).not.toContain('meta_head."profileRev"');
     expect(update.params).not.toContain(100);

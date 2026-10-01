@@ -279,7 +279,6 @@ BEGIN
     AND NEW.seq = OLD.seq AND NEW."threadId" = OLD."threadId"
     AND NEW."localState" = OLD."localState" AND NEW."isDeleted" = OLD."isDeleted"
     AND NEW."creatorAccount" IS NOT DISTINCT FROM OLD."creatorAccount"
-    AND NEW."creatorDomain" IS NOT DISTINCT FROM OLD."creatorDomain"
     AND NEW."creatorNamespaceId" = OLD."creatorNamespaceId"
     AND NEW."contentType" = OLD."contentType"
     AND (NEW."contentType" <> 'PURE_TEXT' OR NEW.content IS NOT DISTINCT FROM OLD.content)
@@ -355,7 +354,6 @@ CREATE TABLE public."Message" (
     content jsonb NOT NULL,
     "threadId" integer NOT NULL,
     "creatorAccount" character varying(31),
-    "creatorDomain" character varying(63),
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone NOT NULL,
     "isDeleted" boolean DEFAULT false NOT NULL,
@@ -366,11 +364,10 @@ CREATE TABLE public."Message" (
     "localState" public."MessageLocalState" DEFAULT 'READY'::public."MessageLocalState" NOT NULL,
     "profileRev" integer DEFAULT 0 NOT NULL,
     "creatorNamespaceId" integer DEFAULT 0 NOT NULL,
-    CONSTRAINT "Message_creator_namespace_check" CHECK ((("creatorDomain" IS NULL) OR ((("creatorDomain")::text = 'local'::text) = ("creatorNamespaceId" = 0)))),
     CONSTRAINT "Message_origin_seq_check" CHECK ((("sourceNamespaceId" = 0) OR (("originSeq" IS NOT NULL) AND ("originSeq" > 0)))),
     CONSTRAINT "Message_profileRev_check" CHECK (("profileRev" >= 0)),
     CONSTRAINT "Message_seq_check" CHECK ((seq > 0)),
-    CONSTRAINT "Message_system_creator_check" CHECK ((("creatorAccount" IS NOT NULL) AND ("creatorDomain" IS NOT NULL) AND ((("contentType" = 'SYSTEM'::public."ContentType") AND (("creatorAccount")::text = '$system'::text) AND (("creatorDomain")::text = 'local'::text) AND ("creatorNamespaceId" = 0) AND ("profileRev" = 0) AND ("sourceNamespaceId" = 0)) OR (("contentType" <> 'SYSTEM'::public."ContentType") AND (("creatorAccount")::text <> '$system'::text)))))
+    CONSTRAINT "Message_system_creator_check" CHECK ((("creatorAccount" IS NOT NULL) AND ((("contentType" = 'SYSTEM'::public."ContentType") AND (("creatorAccount")::text = '$system'::text) AND ("creatorNamespaceId" = 0) AND ("profileRev" = 0) AND ("sourceNamespaceId" = 0)) OR (("contentType" <> 'SYSTEM'::public."ContentType") AND (("creatorAccount")::text <> '$system'::text)))))
 );
 
 
@@ -384,7 +381,7 @@ CREATE FUNCTION public.attention_message_eligible(m public."Message", s public."
   SELECT m."threadId" = s."threadId" AND m.seq > COALESCE(cleared, 0)
     AND (s."messageVisibleThroughSeq" IS NULL OR m.seq <= s."messageVisibleThroughSeq")
     AND NOT EXISTS (SELECT 1 FROM "Account" a WHERE a.id = s."accountId"
-      AND a.account = m."creatorAccount" AND a.domain = m."creatorDomain"
+      AND a.account = m."creatorAccount"
       AND a."namespaceId" = m."creatorNamespaceId")
     AND NOT s.blocked;
 $$;
@@ -427,29 +424,6 @@ BEGIN
   PERFORM publish_client_thread_state(NEW."accountId", NEW."threadId");
   RETURN NEW;
 END;
-$$;
-
-
---
--- Name: group_meta_member_namespace(integer, text, text); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.group_meta_member_namespace(p_thread_id integer, p_account text, p_domain text) RETURNS integer
-    LANGUAGE sql STABLE
-    AS $$
-  SELECT CASE WHEN p_domain = 'local' THEN 0 ELSE COALESCE((
-    SELECT pair."endpointBNamespaceId"
-    FROM "RelationshipPair" pair
-    WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = p_thread_id
-      AND pair."endpointBType" = 'USER'
-      AND pair."endpointBAccount" = p_account
-      AND pair."endpointBDomain" = p_domain
-    ORDER BY pair.active DESC, pair."updatedAt" DESC, pair.id DESC
-    LIMIT 1
-  ), (
-    SELECT thread."authorityNamespaceId"
-    FROM "MessageThread" thread WHERE thread.id = p_thread_id
-  )) END;
 $$;
 
 
@@ -519,7 +493,7 @@ BEGIN
   IF snapshot IS NOT DISTINCT FROM previous THEN RETURN; END IF;
   UPDATE "Account" SET "clientStateFeedEndId" = "clientStateFeedEndId" + 1
     WHERE id = owner_id RETURNING "clientStateFeedEndId" INTO position;
-  INSERT INTO "ClientStateFeed" ("userId", account, domain, "eventType", "subjectAccount", "subjectDomain", "namespaceId", "feedId", body, "compactionKey")
+  INSERT INTO "ClientStateFeed" ("userId", account, domain, "eventType", "subjectAccount", "subjectNamespaceId", "namespaceId", "feedId", body, "compactionKey")
     VALUES (owner_id, '', 'local', 'THREAD_STATE', thread_id::text, 'local', 0, position, snapshot, compact_key)
     ON CONFLICT ("userId", "compactionKey") DO UPDATE SET body = EXCLUDED.body, "feedId" = EXCLUDED."feedId", "updatedAt" = CURRENT_TIMESTAMP;
 END;
@@ -816,7 +790,7 @@ CREATE TABLE public."ClientStateFeed" (
     domain character varying(63) NOT NULL,
     "eventType" character varying(31) NOT NULL,
     "subjectAccount" character varying(31) DEFAULT ''::character varying NOT NULL,
-    "subjectDomain" character varying(63) DEFAULT 'local'::character varying NOT NULL,
+    "subjectNamespaceId" integer DEFAULT 0 NOT NULL,
     "namespaceId" integer DEFAULT 0 NOT NULL,
     "feedId" integer NOT NULL,
     body jsonb NOT NULL,
@@ -1263,7 +1237,7 @@ CREATE TABLE public."GroupMetaMemberFeed" (
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "threadId" integer NOT NULL,
     "memberAccount" character varying(31) NOT NULL,
-    "memberDomain" character varying(63) NOT NULL,
+    "profileNamespaceId" integer NOT NULL,
     CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK (((jsonb_typeof(body) = 'object'::text) AND (((operation = 'MEMBER_UPSERT'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'MEMBER_DEPART'::public."GroupMetaMemberOperation") AND (body = '{}'::jsonb)) OR ((operation = 'GROUP_PROFILE'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb))))),
     CONSTRAINT "GroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0))
 );
@@ -1276,8 +1250,7 @@ CREATE TABLE public."GroupMetaMemberFeed" (
 CREATE TABLE public."GroupRequestProjection" (
     "threadId" integer NOT NULL,
     "memberAccount" character varying(31) NOT NULL,
-    "memberDomain" character varying(63) NOT NULL,
-    "memberNamespaceId" integer NOT NULL,
+    "profileNamespaceId" integer NOT NULL,
     "memberProfileRev" integer NOT NULL,
     direction character varying(15) NOT NULL,
     "feedId" integer NOT NULL,
@@ -1520,13 +1493,13 @@ CREATE TABLE public."PeerStateFeed" (
     domain character varying(63) NOT NULL,
     "eventType" public."PeerStateEventType" NOT NULL,
     "subjectAccount" character varying(31) DEFAULT ''::character varying NOT NULL,
-    "subjectDomain" character varying(63) DEFAULT 'local'::character varying NOT NULL,
+    "subjectNamespaceId" integer DEFAULT 0 NOT NULL,
     "feedId" bigint NOT NULL,
     body jsonb NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "PeerStateFeed_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "PeerStateFeed_subject_check" CHECK (((("eventType" = 'RELATIONSHIP_INTENT'::public."PeerStateEventType") AND (("subjectAccount")::text <> ''::text) AND (("subjectDomain")::text <> ''::text)) OR (("eventType" = 'THREAD_CONTENT_HEAD'::public."PeerStateEventType") AND ((((account)::text ~~ '!%'::text) AND (("subjectAccount")::text = ''::text) AND (("subjectDomain")::text = 'local'::text)) OR (((account)::text !~~ '!%'::text) AND (("subjectAccount")::text <> ''::text) AND (("subjectDomain")::text = ("peerDomain")::text))))))
+    CONSTRAINT "PeerStateFeed_subject_check" CHECK ((("eventType" = 'RELATIONSHIP_INTENT'::public."PeerStateEventType" AND "subjectAccount" <> ''::text AND "subjectNamespaceId" > 0) OR ("eventType" = 'THREAD_CONTENT_HEAD'::public."PeerStateEventType" AND (((account)::text ~~ '!%'::text AND "subjectAccount" = ''::text AND "subjectNamespaceId" = 0) OR ((account)::text !~~ '!%'::text AND "subjectAccount" <> ''::text AND "subjectNamespaceId" = "namespaceId")))))
 );
 
 
@@ -1553,7 +1526,6 @@ CREATE TABLE public."PendingMedia" (
     "messageId" bigint,
     "threadId" integer,
     "creatorAccount" character varying(31),
-    "creatorDomain" character varying(63),
     "contentType" public."ContentType",
     content text,
     digest character varying(64),
@@ -1571,7 +1543,7 @@ CREATE TABLE public."PendingMedia" (
     "expectedAuthorizationEpoch" integer,
     "dependsOnOriginSeq" integer,
     CONSTRAINT "PendingMedia_depends_on_origin_seq_check" CHECK ((("dependsOnOriginSeq" IS NULL) OR ("dependsOnOriginSeq" > 0))),
-    CONSTRAINT "PendingMedia_direction_shape_check" CHECK ((((direction = 'OUTBOUND'::public."FileSyncDirection") AND ("messageId" IS NULL) AND ("threadId" IS NOT NULL) AND ("creatorAccount" IS NOT NULL) AND ("creatorDomain" IS NOT NULL) AND ("contentType" IS NOT NULL) AND (content IS NOT NULL) AND ("originDomain" IS NULL) AND ("expectedAuthorizationEpoch" IS NULL) AND ("dependsOnOriginSeq" IS NULL)) OR ((direction = 'INBOUND'::public."FileSyncDirection") AND ("messageId" IS NOT NULL) AND ("threadId" IS NULL) AND ("creatorAccount" IS NULL) AND ("creatorDomain" IS NULL) AND ("contentType" IS NULL) AND (content IS NULL) AND ("clientMessageId" IS NULL) AND ("originDomain" IS NOT NULL) AND ("expectedAuthorizationEpoch" IS NOT NULL)))),
+    CONSTRAINT "PendingMedia_direction_shape_check" CHECK ((((direction = 'OUTBOUND'::public."FileSyncDirection") AND ("messageId" IS NULL) AND ("threadId" IS NOT NULL) AND ("creatorAccount" IS NOT NULL) AND ("contentType" IS NOT NULL) AND (content IS NOT NULL) AND ("originDomain" IS NULL) AND ("expectedAuthorizationEpoch" IS NULL) AND ("dependsOnOriginSeq" IS NULL)) OR ((direction = 'INBOUND'::public."FileSyncDirection") AND ("messageId" IS NOT NULL) AND ("threadId" IS NULL) AND ("creatorAccount" IS NULL) AND ("contentType" IS NULL) AND (content IS NULL) AND ("clientMessageId" IS NULL) AND ("originDomain" IS NOT NULL) AND ("expectedAuthorizationEpoch" IS NOT NULL)))),
     CONSTRAINT "PendingMedia_expectedAuthorizationEpoch_check" CHECK ((("expectedAuthorizationEpoch" IS NULL) OR ("expectedAuthorizationEpoch" >= 0)))
 );
 
@@ -2463,7 +2435,7 @@ ALTER TABLE ONLY public."GroupMetaMemberFeed"
 --
 
 ALTER TABLE ONLY public."GroupRequestProjection"
-    ADD CONSTRAINT "GroupRequestProjection_pkey" PRIMARY KEY ("threadId", "memberAccount", "memberDomain", "memberNamespaceId", direction);
+    ADD CONSTRAINT "GroupRequestProjection_pkey" PRIMARY KEY ("threadId", "memberAccount", "profileNamespaceId", direction);
 
 
 --
@@ -2543,7 +2515,7 @@ ALTER TABLE ONLY public."PeerStateFeedPullCursor"
 --
 
 ALTER TABLE ONLY public."PeerStateFeed"
-    ADD CONSTRAINT "PeerStateFeed_pkey" PRIMARY KEY ("namespaceId", account, domain, "eventType", "subjectAccount", "subjectDomain");
+    ADD CONSTRAINT "PeerStateFeed_pkey" PRIMARY KEY ("namespaceId", account, domain, "eventType", "subjectAccount", "subjectNamespaceId");
 
 
 --
@@ -2997,7 +2969,7 @@ CREATE INDEX "ForwardMessage_bundleId_idx" ON public."ForwardMessage" USING btre
 -- Name: GroupMetaMemberFeed_member_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "GroupMetaMemberFeed_member_key" ON public."GroupMetaMemberFeed" USING btree ("threadId", "memberAccount", "memberDomain");
+CREATE UNIQUE INDEX "GroupMetaMemberFeed_member_key" ON public."GroupMetaMemberFeed" USING btree ("threadId", "memberAccount", "profileNamespaceId");
 
 
 --
@@ -3109,7 +3081,7 @@ CREATE INDEX "Message_createdAt_idx" ON public."Message" USING btree ("createdAt
 -- Name: Message_creator_address_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "Message_creator_address_idx" ON public."Message" USING btree ("creatorAccount", "creatorDomain", "sourceNamespaceId");
+CREATE INDEX "Message_creator_address_idx" ON public."Message" USING btree ("creatorAccount", "creatorNamespaceId", "sourceNamespaceId");
 
 
 --
@@ -3706,11 +3678,18 @@ ALTER TABLE ONLY public."GroupMeta"
 
 
 --
--- Name: GroupRequestProjection GroupRequestProjection_memberNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: GroupMetaMemberFeed GroupMetaMemberFeed_profileNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."GroupMetaMemberFeed"
+    ADD CONSTRAINT "GroupMetaMemberFeed_profileNamespaceId_fkey" FOREIGN KEY ("profileNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+
+
+-- Name: GroupRequestProjection GroupRequestProjection_profileNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."GroupRequestProjection"
-    ADD CONSTRAINT "GroupRequestProjection_memberNamespaceId_fkey" FOREIGN KEY ("memberNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "GroupRequestProjection_profileNamespaceId_fkey" FOREIGN KEY ("profileNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
 
 
 --

@@ -13,11 +13,10 @@ function service() {
   ) as FederationInboundMessageRouteService & Record<string, unknown>;
 }
 
-function groupMessage(authorDomain = 'local'): FederationMessageFeedMessage {
+function groupMessage(authorNamespaceId = 0): FederationMessageFeedMessage {
   return {
     thread: { account: '!group' },
-    author: { account: 'alice', domain: authorDomain },
-    namespaceId: authorDomain === 'local' ? 0 : 12,
+    author: { account: 'alice', namespaceId: authorNamespaceId },
     seq: 7,
     profileRev: 1,
     originSeq: null,
@@ -31,7 +30,7 @@ function groupMessage(authorDomain = 'local'): FederationMessageFeedMessage {
 
 function groupReceipt(): FederationMessageFeedMessage {
   return {
-    ...groupMessage('local.test'),
+    ...groupMessage(12),
     originSeq: 3,
     originCreatedAt: 1_700_000_000_000,
   };
@@ -47,7 +46,7 @@ describe('FederationInboundMessageRouteService', () => {
         federationVersion: 4,
         toAccount: 'alice',
         creatorAccount: 'bob',
-        creatorDomain: 'peer.test',
+        profileNamespaceId: 7,
         authority: 'PEER',
         recipients: [],
       });
@@ -70,7 +69,7 @@ describe('FederationInboundMessageRouteService', () => {
       federationVersion: 4,
       toAccount: '!group',
       creatorAccount: 'alice',
-      creatorDomain: 'peer.test',
+      profileNamespaceId: 9,
       authority: 'PEER',
       recipients: [],
     });
@@ -95,17 +94,17 @@ describe('FederationInboundMessageRouteService', () => {
       expect.anything(),
       {
         thread: { account: '!group' },
-        author: { account: 'alice', domain: 'local' },
+        author: { account: 'alice', namespaceId: 0 },
       },
       'peer.test',
       9,
       7,
     );
     const query = dialect.sqlToQuery(execute.mock.calls[1]![0] as SQL);
-    expect(query.sql).toContain('m."creatorDomain" =');
-    expect(query.sql).toContain('m."sourceNamespaceId" =');
+    expect(query.sql).toContain('m."profileNamespaceId" = 0');
+    expect(query.sql).toContain('m."publisherNamespaceId" =');
     expect(query.sql).toContain('m."originSeq" =');
-    expect(query.params).toEqual([0, 'GROUP', '!group', 9, 7]);
+    expect(query.params).toEqual(['GROUP', '!group', 9, 7]);
   });
 
   it('rejects unknown or foreign-authored member retractions without inventing pending facts', async () => {
@@ -141,7 +140,7 @@ describe('FederationInboundMessageRouteService', () => {
       federationVersion: 4,
       toAccount: '!group',
       creatorAccount: 'alice',
-      creatorDomain: 'local',
+      profileNamespaceId: 0,
       authority: 'PEER',
       recipients: [],
     });
@@ -169,7 +168,7 @@ describe('FederationInboundMessageRouteService', () => {
       service().resolveMessage(tx, groupReceipt(), 'peer.test', 9, 12),
     ).resolves.toMatchObject({
       threadId: 11,
-      creatorDomain: 'local',
+      profileNamespaceId: 12,
       authority: 'LOCAL',
     });
     const query = dialect.sqlToQuery(execute.mock.calls[1]![0] as SQL);
@@ -178,11 +177,11 @@ describe('FederationInboundMessageRouteService', () => {
   });
 
   it.each([
-    ['third.test', 13, 'PEER'],
-    ['local.test', 12, 'LOCAL'],
+    [13, 13, 'PEER'],
+    [12, 12, 'LOCAL'],
   ] as const)(
     'derives group-message authority from peer-assigned namespace, not domain comparison',
-    async (authorDomain, namespaceId, authority) => {
+    async (authorNamespaceId, namespaceId, authority) => {
       const execute = vi
         .fn()
         .mockResolvedValueOnce({
@@ -195,8 +194,7 @@ describe('FederationInboundMessageRouteService', () => {
           { execute } as unknown as DatabaseTransaction,
           {
             ...groupReceipt(),
-            author: { account: 'alice', domain: authorDomain },
-            namespaceId,
+            author: { account: 'alice', namespaceId: authorNamespaceId },
           },
           'group.test',
           9,
@@ -213,7 +211,7 @@ describe('FederationInboundMessageRouteService', () => {
     await expect(
       service().resolveMessage(
         tx,
-        groupMessage('third-party.test'),
+        groupMessage(13),
         'peer.test',
         9,
         7,
@@ -230,7 +228,13 @@ describe('FederationInboundMessageRouteService', () => {
     const tx = { execute } as unknown as DatabaseTransaction;
 
     await expect(
-      service().resolveTombstone(tx, { account: '!group' }, 'origin.test', 9, 7),
+      service().resolveTombstone(
+        tx,
+        { account: '!group' },
+        'origin.test',
+        9,
+        7,
+      ),
     ).rejects.toThrow('tombstone has no retained local group thread');
 
     const query = dialect.sqlToQuery(execute.mock.calls[0]![0] as SQL);

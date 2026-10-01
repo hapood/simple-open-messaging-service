@@ -12,10 +12,8 @@ export interface GroupMembershipAcceptanceInput {
   groupName: string;
   groupAvatar: string;
   groupDescription: string;
-  localDomain: string;
   memberAccount: string;
-  memberDomain: string;
-  memberNamespaceId: number;
+  profileNamespaceId: number;
   note: string;
   acceptedAt: Date;
   /** Which manager projection rows flip to ACCEPTED: the group's own ACK
@@ -39,7 +37,7 @@ export interface GroupMembershipAcceptanceInput {
 function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
   const memberAuthored = input.memberAck
     ? sql`member_authored AS (
-      ${input.memberAuthoredSql ?? authoredIntentWriteSql({ author: { account: input.memberAccount, namespaceId: input.memberNamespaceId }, receiver: { account: input.groupAccount, namespaceId: 0 }, threadId: input.threadId, status: 'ACCEPTED', note: input.note, requestedAt: input.acceptedAt, expiresAt: null })}
+      ${input.memberAuthoredSql ?? authoredIntentWriteSql({ author: { account: input.memberAccount, namespaceId: input.profileNamespaceId }, receiver: { account: input.groupAccount, namespaceId: 0 }, threadId: input.threadId, status: 'ACCEPTED', note: input.note, requestedAt: input.acceptedAt, expiresAt: null })}
     ), `
     : sql``;
   const memberSideRead = input.memberAck
@@ -65,18 +63,18 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
         b."tombstoneEndSeq" AS "sourceDeletionEndSeq"
       FROM "RelationshipPair" p JOIN "MessageThread" t ON t.id = p."threadId"
       JOIN "RelationshipIntent" b
-        ON b."authorAccount" = ${input.memberAccount} AND b."authorNamespaceId" = ${input.memberNamespaceId}
+        ON b."authorAccount" = ${input.memberAccount} AND b."authorNamespaceId" = ${input.profileNamespaceId}
           AND b."receiverAccount" = ${input.groupAccount} AND b."receiverNamespaceId" = 0
       WHERE p.id = ${input.pairId} AND t.id = ${input.threadId}${tableReadGuard}${memberSideRead}
     ), authored_intent AS (
-      ${authoredIntentWriteSql({ author: { account: input.groupAccount, namespaceId: 0 }, receiver: { account: input.memberAccount, namespaceId: input.memberNamespaceId }, threadId: input.threadId, status: 'ACCEPTED', note: input.note, requestedAt: input.acceptedAt, expiresAt: null })}
+      ${authoredIntentWriteSql({ author: { account: input.groupAccount, namespaceId: 0 }, receiver: { account: input.memberAccount, namespaceId: input.profileNamespaceId }, threadId: input.threadId, status: 'ACCEPTED', note: input.note, requestedAt: input.acceptedAt, expiresAt: null })}
     ), accepted_intent AS MATERIALIZED (
       SELECT status, "profileRev", note, "requestedAt", "expiresAt" FROM authored_intent
       UNION ALL
       SELECT status, "profileRev", note, "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.groupAccount} AND "authorNamespaceId" = 0
-        AND "receiverAccount" = ${input.memberAccount} AND "receiverNamespaceId" = ${input.memberNamespaceId}
+        AND "receiverAccount" = ${input.memberAccount} AND "receiverNamespaceId" = ${input.profileNamespaceId}
         AND NOT EXISTS (SELECT 1 FROM authored_intent)
     ), ${prepareRecipient(input)}, pair_change AS (
       UPDATE "RelationshipPair" SET active = true, established = true, "updatedAt" = CURRENT_TIMESTAMP
@@ -104,30 +102,31 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       UNION ALL SELECT "metaEndId" FROM "GroupMeta" WHERE "threadId" = ${input.threadId}
         AND NOT EXISTS (SELECT 1 FROM meta_allocation)
     ), member_fact AS (
-      INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "memberDomain", operation, body)
-      SELECT ${input.threadId}, h."metaEndId" - p."profileChanged"::integer, ${input.memberAccount}, ${input.memberDomain},
+      INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "profileNamespaceId", operation, body)
+      SELECT ${input.threadId}, h."metaEndId" - p."profileChanged"::integer, ${input.memberAccount},
+        ${input.profileNamespaceId}::integer,
         'MEMBER_UPSERT', jsonb_build_object(
           'role', p.role,
-          'profileNamespaceId', ${input.memberDomain === 'local' ? 0 : input.memberNamespaceId}::integer,
+          'profileNamespaceId', ${input.profileNamespaceId}::integer,
           'profileRev', s."memberProfileRev"
         )
       FROM meta_head h CROSS JOIN roster_plan p CROSS JOIN join_source s
       CROSS JOIN meta_allocation
       WHERE p."memberChanged"
-      ON CONFLICT ("threadId", "memberAccount", "memberDomain")
+      ON CONFLICT ("threadId", "memberAccount", "profileNamespaceId")
       DO UPDATE SET "feedId" = EXCLUDED."feedId",
         operation = EXCLUDED.operation, body = EXCLUDED.body,
         "profileSourceSeq" = NULL, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
     ), profile_fact AS (
-      INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "memberDomain", operation, body)
-      SELECT ${input.threadId}, h."metaEndId", ${input.groupAccount}, 'local',
+      INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "profileNamespaceId", operation, body)
+      SELECT ${input.threadId}, h."metaEndId", ${input.groupAccount}, 0,
         'GROUP_PROFILE'::"GroupMetaMemberOperation",
         jsonb_build_object('profileNamespaceId', 0, 'profileRev', ${input.groupProfileRev}::integer)
       FROM meta_head h CROSS JOIN roster_plan p
       CROSS JOIN meta_allocation
       WHERE p."profileChanged"
-      ON CONFLICT ("threadId", "memberAccount", "memberDomain")
+      ON CONFLICT ("threadId", "memberAccount", "profileNamespaceId")
       DO UPDATE SET "feedId" = EXCLUDED."feedId",
         operation = EXCLUDED.operation, body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
@@ -143,19 +142,18 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       UPDATE "MessageThread" t SET
         "updatedAt" = CURRENT_TIMESTAMP,
         "curSeq" = t."curSeq" + (CASE WHEN EXISTS (SELECT 1 FROM pair_change) THEN 1 ELSE 0 END),
-        "federationRoundsEnabled" = CASE WHEN ${input.memberDomain === 'local'} THEN true ELSE t."federationRoundsEnabled" END
+        "federationRoundsEnabled" = CASE WHEN ${input.profileNamespaceId === 0} THEN true ELSE t."federationRoundsEnabled" END
       FROM roster_plan p
       WHERE t.id = ${input.threadId} AND EXISTS (SELECT 1 FROM pair_change)
       RETURNING t."curSeq", t."tombstoneEndSeq"
     ), system_message AS (
-      INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "creatorDomain", "updatedAt")
+      INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "profileNamespaceId", "publisherNamespaceId", "updatedAt")
       SELECT ${input.threadId}, s."curSeq", 'SYSTEM'::"ContentType",
         jsonb_build_object('type', 'GROUP_JOINED', 'member',
           jsonb_build_object('account', ${input.memberAccount}::text,
-            'domain', ${input.memberDomain}::text,
-            'profileNamespaceId', ${input.memberDomain === 'local' ? 0 : input.memberNamespaceId}::integer,
+            'profileNamespaceId', ${input.profileNamespaceId}::integer,
             'profileRev', (SELECT "memberProfileRev" FROM join_source))),
-        '$system', 'local', CURRENT_TIMESTAMP
+        '$system', 0, 0, CURRENT_TIMESTAMP
       FROM seq_alloc s CROSS JOIN roster_plan p
       WHERE EXISTS (SELECT 1 FROM pair_change)
       RETURNING seq
@@ -198,14 +196,14 @@ function localMember(input: GroupMembershipAcceptanceInput): SQL {
           THEN NULL ELSE "AccountThreadState"."lastMentionSeq" END
       RETURNING "accountId"
     ), audience_change AS (
-      INSERT INTO "ThreadAudience" ("threadId", "targetDomain", "targetNamespaceId", "localUserId", "groupMetaVisibleAfter")
-      SELECT ${input.threadId}, 'local', 0, m."accountId", h."metaEndId" FROM member_state m CROSS JOIN meta_head h
-      ON CONFLICT ("targetDomain", "localUserId", "threadId") WHERE "targetDomain" = 'local' DO NOTHING
+      INSERT INTO "ThreadAudience" ("threadId", "targetNamespaceId", "localUserId", "groupMetaVisibleAfter")
+      SELECT ${input.threadId}, 0, m."accountId", h."metaEndId" FROM member_state m CROSS JOIN meta_head h
+      ON CONFLICT ("localUserId", "threadId") WHERE "localUserId" IS NOT NULL DO NOTHING
       RETURNING id
     ), branch_done AS MATERIALIZED (
       SELECT count(*) FROM member_state
     ), recipient_feed AS (
-      INSERT INTO "ClientStateFeed" ("userId", account, domain, "namespaceId", "eventType", "subjectAccount", "subjectDomain", "feedId", "compactionKey", body)
+      INSERT INTO "ClientStateFeed" ("userId", account, domain, "namespaceId", "eventType", "subjectAccount", "subjectNamespaceId", "feedId", "compactionKey", body)
       SELECT a.id, ${input.groupAccount}, 'local', 0, 'RELATIONSHIP_INTENT', ${input.memberAccount}, 'local', a."feedId", b."compactionKey", b.body
       FROM recipient_allocation a CROSS JOIN recipient_body b CROSS JOIN branch_done
       ON CONFLICT ("userId", "compactionKey") DO UPDATE SET "feedId" = EXCLUDED."feedId", body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
@@ -218,7 +216,6 @@ function localMember(input: GroupMembershipAcceptanceInput): SQL {
 /** This branch only handles a local group receiving a remote member, so reverseEnabled=false.
  * Preserve processed coordinates on re-entry; an epoch change may require deletion recovery. */
 function remoteMember(input: GroupMembershipAcceptanceInput): SQL {
-  const wireLocalDomain = 'local';
   return sql`
     history_policy AS MATERIALIZED (
       SELECT COALESCE((SELECT value <> 'false' FROM "SystemSetting"
@@ -229,7 +226,7 @@ function remoteMember(input: GroupMembershipAcceptanceInput): SQL {
     ), source_sync AS (
       INSERT INTO "FederationThreadSyncState" ("threadId", "namespaceId", "messageTargetSeq", "deletionTargetSeq",
         "messageProcessedThroughSeq", "deletionProcessedThroughSeq", "authorizationEpoch", "updatedAt")
-      SELECT ${input.threadId}, ${input.memberNamespaceId}, s."sourceMessageEndSeq", s."sourceDeletionEndSeq",
+      SELECT ${input.threadId}, ${input.profileNamespaceId}, s."sourceMessageEndSeq", s."sourceDeletionEndSeq",
         0, 0, s."authorizationEpoch", CURRENT_TIMESTAMP
       FROM join_source s CROSS JOIN (SELECT count(*) FROM pair_change) pair_barrier
       WHERE NOT s."wasActive"
@@ -249,13 +246,13 @@ function remoteMember(input: GroupMembershipAcceptanceInput): SQL {
         "authorizationEpoch" = EXCLUDED."authorizationEpoch", "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "threadId"
     ), audience_change AS (
-      INSERT INTO "ThreadAudience" ("threadId", "targetDomain", "targetNamespaceId", "localUserId", "groupMetaVisibleAfter", "messageAccessAfterSeq")
-      SELECT ${input.threadId}, ${input.memberDomain}, ${input.memberNamespaceId}, NULL, h."metaEndId",
+      INSERT INTO "ThreadAudience" ("threadId", "targetNamespaceId", "localUserId", "groupMetaVisibleAfter", "messageAccessAfterSeq")
+      SELECT ${input.threadId}, ${input.profileNamespaceId}, NULL, h."metaEndId",
         boundary."messageAccessAfterSeq"
       FROM meta_head h CROSS JOIN audience_boundary boundary
       CROSS JOIN (SELECT count(*) FROM member_fact) roster_barrier
       CROSS JOIN (SELECT count(*) FROM source_sync) sync_barrier
-      ON CONFLICT ("targetNamespaceId", "threadId") WHERE "targetDomain" <> 'local' DO NOTHING
+      ON CONFLICT ("targetNamespaceId", "threadId") WHERE "localUserId" IS NULL DO NOTHING
       RETURNING id, "messageAccessAfterSeq"
     ), branch_done AS MATERIALIZED (
       SELECT count(*) FROM source_sync
@@ -265,7 +262,7 @@ function remoteMember(input: GroupMembershipAcceptanceInput): SQL {
 /** Reserve the local intent's position before participant triggers touch the same allocator.
  * Participant triggers may allocate later positions in this same statement. */
 function prepareRecipient(input: GroupMembershipAcceptanceInput): SQL {
-  if (input.memberDomain !== 'local')
+  if (input.profileNamespaceId !== 0)
     return sql`recipient_prepared AS MATERIALIZED (SELECT 1 AS ready)`;
   const key = JSON.stringify([
     'RELATIONSHIP_INTENT',
@@ -293,27 +290,26 @@ function prepareRecipient(input: GroupMembershipAcceptanceInput): SQL {
 }
 
 function peerRecipient(input: GroupMembershipAcceptanceInput): SQL {
-  const wireLocalDomain = 'local';
   return sql`
     audience_floor AS MATERIALIZED (
       SELECT "messageAccessAfterSeq" FROM audience_change
       UNION ALL SELECT "messageAccessAfterSeq" FROM "ThreadAudience"
-      WHERE "threadId" = ${input.threadId} AND "targetNamespaceId" = ${input.memberNamespaceId}
+      WHERE "threadId" = ${input.threadId} AND "targetNamespaceId" = ${input.profileNamespaceId}
         AND NOT EXISTS (SELECT 1 FROM audience_change)
     ), peer_heads AS MATERIALIZED (
       SELECT COALESCE((SELECT max(seq) FROM "Message" WHERE "threadId" = ${input.threadId}
         AND seq > a."messageAccessAfterSeq" AND "contentType" <> 'SYSTEM'), a."messageAccessAfterSeq") AS "messageEndSeq",
         COALESCE((SELECT max(d."deletionSeq") FROM "DeletedMessage" d JOIN "Message" m ON m."threadId" = d."threadId" AND m.seq = d."messageSeq"
-          WHERE d."threadId" = ${input.threadId} AND d."sourceNamespaceId" = 0), 0) AS "tombstoneEndSeq",
+          WHERE d."threadId" = ${input.threadId} AND d."publisherNamespaceId" = 0), 0) AS "tombstoneEndSeq",
         COALESCE((SELECT max(seq) FROM "Message" WHERE "threadId" = ${input.threadId} AND "contentType" <> 'SYSTEM'), 0) AS "relationshipMessageEndSeq",
         m."metaEndId" AS "groupMetaFeedEndId"
       FROM audience_floor a CROSS JOIN branch_done CROSS JOIN meta_head m
     ), peer_writes AS MATERIALIZED (
-      SELECT 'THREAD_CONTENT_HEAD'::"PeerStateEventType" AS "eventType", ''::text AS "subjectAccount", 'local'::text AS "subjectDomain", 1 AS ordinal,
+      SELECT 'THREAD_CONTENT_HEAD'::"PeerStateEventType" AS "eventType", ''::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", 1 AS ordinal,
         jsonb_build_object('messageEndSeq', h."messageEndSeq", 'tombstoneEndSeq', h."tombstoneEndSeq",
           'groupMetaFeedEndId', h."groupMetaFeedEndId") AS body FROM peer_heads h
       UNION ALL
-      SELECT 'RELATIONSHIP_INTENT'::"PeerStateEventType", ${input.memberAccount}, ${input.memberDomain}, 2,
+      SELECT 'RELATIONSHIP_INTENT'::"PeerStateEventType", ${input.memberAccount}, ${input.profileNamespaceId}, 2,
         jsonb_build_object('status', i.status, 'profileRev', i."profileRev", 'note', i.note,
           'requestedAt', floor(extract(epoch FROM i."requestedAt") * 1000)::bigint, 'expiresAt', NULL,
           'messageEndSeq', h."relationshipMessageEndSeq", 'tombstoneEndSeq', h."tombstoneEndSeq")
@@ -323,19 +319,19 @@ function peerRecipient(input: GroupMembershipAcceptanceInput): SQL {
         w."eventType" = 'THREAD_CONTENT_HEAD' AND old.body IS DISTINCT FROM w.body
           AND old.body->'messageEndSeq' = w.body->'messageEndSeq' AND old.body->'tombstoneEndSeq' = w.body->'tombstoneEndSeq'
           AND COALESCE(old.body->>'groupMetaFeedEndId', '') = COALESCE(w.body->>'groupMetaFeedEndId', '') AS invalid
-      FROM peer_writes w LEFT JOIN "PeerStateFeed" old ON old."namespaceId" = ${input.memberNamespaceId}
-        AND old.account = ${input.groupAccount} AND old.domain = ${wireLocalDomain} AND old."eventType" = w."eventType"
-        AND old."subjectAccount" = w."subjectAccount" AND old."subjectDomain" = w."subjectDomain"
+      FROM peer_writes w LEFT JOIN "PeerStateFeed" old ON old."namespaceId" = ${input.profileNamespaceId}
+        AND old.account = ${input.groupAccount} AND old."eventType" = w."eventType"
+        AND old."subjectAccount" = w."subjectAccount" AND old."subjectNamespaceId" = w."subjectNamespaceId"
       WHERE w."eventType" = 'RELATIONSHIP_INTENT' OR old.body IS DISTINCT FROM w.body
     ), peer_allocation AS (
       UPDATE "IdentityNamespace" SET "stateFeedEndId" = "stateFeedEndId" + (SELECT count(*) FROM peer_changes)
-      WHERE id = ${input.memberNamespaceId} AND domain = ${input.memberDomain} AND "retiredAt" IS NULL
+      WHERE id = ${input.profileNamespaceId} AND "retiredAt" IS NULL
       RETURNING "stateFeedEndId" AS "allocatedThrough"
     ), peer_feeds AS (
-      INSERT INTO "PeerStateFeed" ("peerDomain", "namespaceId", account, domain, "eventType", "subjectAccount", "subjectDomain", "feedId", body)
-      SELECT ${input.memberDomain}, ${input.memberNamespaceId}, ${input.groupAccount}, ${wireLocalDomain}, w."eventType", w."subjectAccount", w."subjectDomain",
+      INSERT INTO "PeerStateFeed" ("namespaceId", account, "eventType", "subjectAccount", "subjectNamespaceId", "feedId", body)
+      SELECT ${input.profileNamespaceId}, ${input.groupAccount}, w."eventType", w."subjectAccount", w."subjectNamespaceId",
         a."allocatedThrough" - (SELECT count(*) FROM peer_changes) + w.position, w.body FROM peer_changes w CROSS JOIN peer_allocation a
-      ON CONFLICT ("namespaceId", account, domain, "eventType", "subjectAccount", "subjectDomain") DO UPDATE SET
+      ON CONFLICT ("namespaceId", account, "eventType", "subjectAccount", "subjectNamespaceId") DO UPDATE SET
         "feedId" = EXCLUDED."feedId", body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
     ), recipient_result AS MATERIALIZED (
@@ -351,8 +347,7 @@ function managerProjections(input: GroupMembershipAcceptanceInput): SQL {
   return requestProjectionFlipSql({
     threadId: input.threadId,
     memberAccount: input.memberAccount,
-    memberDomain: input.memberDomain,
-    memberNamespaceId: input.memberNamespaceId,
+    profileNamespaceId: input.profileNamespaceId,
     status: 'ACCEPTED',
     directions: input.projectionDirections,
   });
@@ -365,7 +360,7 @@ export function groupMembershipAcceptanceSql(
   input: GroupMembershipAcceptanceInput,
 ): SQL {
   return sql`WITH ${relationshipAndRoster(input)},
-    ${input.memberDomain === 'local' ? localMember(input) : remoteMember(input)},
+    ${input.profileNamespaceId === 0 ? localMember(input) : remoteMember(input)},
     ${threadFanoutAdmissionSql({
       threadId: input.threadId,
       prefix: 'thread_fanout',

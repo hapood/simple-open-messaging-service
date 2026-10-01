@@ -97,10 +97,7 @@
       "schema": "urn:somfp:v1:discovery",
       "value": {
         "software": "example/1.0",
-        "protocolVersions": [
-          1,
-          2
-        ],
+        "protocolVersions": [1, 2],
         "roots": [
           {
             "ed25519": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
@@ -645,7 +642,6 @@
       "values": [
         {
           "groupAccount": "!group",
-          "memberDomain": "a.example",
           "memberAccount": "alice",
           "namespaceId": "0",
           "profileRev": "7"
@@ -909,12 +905,6 @@
         {
           "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
           "encryptedValue": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ejAxMjM0NTY3ODk="
-        },
-        {
-          "namespaceId": 0
-        },
-        {
-          "namespaceId": 42
         }
       ]
     },
@@ -924,10 +914,6 @@
       "values": [
         {
           "value": "{\"account\":\"alice\",\"domain\":\"a.example\"}"
-        },
-        {
-          "root": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
-          "domain": "a.example"
         }
       ]
     }

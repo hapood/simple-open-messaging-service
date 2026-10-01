@@ -887,6 +887,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
     if (m.creator === null) throw new Error('authored message has no creator');
     const creatorKey = this.creatorKey(m.creator)!;
+    const creatorIdentity = parseUserIdentityKey(creatorKey);
+    if (!creatorIdentity) throw new Error('invalid profile identity key');
     const p = this.profilesBySeq.get(m.seq) ?? this.profiles.get(creatorKey);
     if (!p) throw new Error('message User was not resolved');
     const textContent =
@@ -915,10 +917,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       ...(m.creator && m.profileRev > 0
         ? {
             profileEvidence: {
-              type: 'MESSAGE_AUTHOR' as const,
-              threadId: m.threadId,
-              messageSeq: m.seq,
-              rev: m.profileRev,
+              publisherNamespaceId: creatorIdentity.namespaceId,
+              lookup: 'ACCOUNT_PROFILE' as const,
+              target: {
+                profileNamespaceId: creatorIdentity.namespaceId,
+                account: creatorIdentity.account,
+                rev: m.profileRev,
+              },
             },
           }
         : {}),
@@ -1005,8 +1010,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         const identity = parseUserIdentityKey(key);
         if (!identity) throw new Error('invalid profile identity key');
         const cached = await this.profileRepo?.getProfile({
-          ...identity,
-          profileRev: message.profileRev,
+          publisherNamespaceId: identity.namespaceId,
+          lookup: 'ACCOUNT_PROFILE',
+          target: {
+            profileNamespaceId: identity.namespaceId,
+            account: identity.account,
+            rev: message.profileRev,
+          },
         });
         const presentation = {
           name: cached?.name ?? identity.account,

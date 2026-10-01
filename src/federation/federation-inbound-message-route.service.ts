@@ -6,7 +6,6 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
-import type { S2SAddress } from './federation-address.js';
 import { FederationMessageContextError } from './federation-errors.js';
 import type {
   FederationMessageFeedMessage,
@@ -16,7 +15,7 @@ import type {
 export interface FederationInboundMessageRoute {
   threadId: number;
   creatorAccount: string;
-  creatorDomain: string;
+  profileNamespaceId: number;
   authority: 'LOCAL' | 'PEER';
   federationVersion: number;
   recipients: number[];
@@ -30,7 +29,9 @@ export interface FederationInboundTombstoneRoute {
   authority: 'P2P_HOME' | 'GROUP_ORIGIN' | 'GROUP_MEMBER';
 }
 
-interface ResolvedInboundAuthor extends S2SAddress {
+interface ResolvedInboundAuthor {
+  account: string;
+  namespaceId: number;
   publisherLocal: boolean;
   receiverLocal: boolean;
 }
@@ -42,13 +43,13 @@ export class FederationInboundMessageRouteService {
     item: FederationMessageFeedMessage,
     sourceDomain: string,
     peerAssignedLocalNamespaceId: number,
-  ): S2SAddress {
+  ): { account: string; namespaceId: number } {
     const author = this.resolveAuthor(
       item,
       sourceDomain,
       peerAssignedLocalNamespaceId,
     );
-    return { account: author.account, domain: author.domain };
+    return { account: author.account, namespaceId: author.namespaceId };
   }
 
   private resolveAuthor(
@@ -60,35 +61,36 @@ export class FederationInboundMessageRouteService {
       return item.authorRef === 'THREAD_ACCOUNT'
         ? {
             account: item.thread.account,
-            domain: 'local',
+            namespaceId: 0,
             publisherLocal: true,
             receiverLocal: false,
           }
         : {
             account: item.thread.peerAccount,
-            domain: 'local',
+            namespaceId: peerAssignedLocalNamespaceId,
             publisherLocal: false,
             receiverLocal: true,
           };
     }
-    if (item.author.domain === 'local') {
+    if (item.author.namespaceId === 0) {
       return {
         account: item.author.account,
-        domain: 'local',
+        namespaceId: 0,
         publisherLocal: true,
         receiverLocal: false,
       };
     }
-    if (item.namespaceId === peerAssignedLocalNamespaceId) {
+    if (item.author.namespaceId === peerAssignedLocalNamespaceId) {
       return {
         account: item.author.account,
-        domain: 'local',
+        namespaceId: peerAssignedLocalNamespaceId,
         publisherLocal: false,
         receiverLocal: true,
       };
     }
     return {
-      ...item.author,
+      account: item.author.account,
+      namespaceId: item.author.namespaceId,
       publisherLocal: false,
       receiverLocal: false,
     };
@@ -268,7 +270,7 @@ export class FederationInboundMessageRouteService {
     }
     if (!authority) throw new Error('message authority was not resolved');
     const creatorAccount = normalizeAccount(author.account);
-    const creatorDomain = author.domain;
+    const profileNamespaceId = author.namespaceId;
     const recipientRows =
       'peerAccount' in item.thread
         ? await tx.execute<{ userId: number }>(sql`
@@ -294,7 +296,7 @@ export class FederationInboundMessageRouteService {
         ...route,
         authority,
         creatorAccount,
-        creatorDomain,
+        profileNamespaceId,
         recipients: recipients.filter(
           (_, index) => recipientAuthorization[index],
         ),
@@ -304,7 +306,7 @@ export class FederationInboundMessageRouteService {
       ...route,
       authority,
       creatorAccount,
-      creatorDomain,
+      profileNamespaceId,
       recipients,
     };
   }
@@ -356,9 +358,8 @@ export class FederationInboundMessageRouteService {
         JOIN ${groupStateSql} g ON g.id = t.id
         WHERE g.account = ${normalizeAccount(thread.account)}
           AND g.domain = 'local' AND g."namespaceId" = 0
-          AND m."sourceNamespaceId" = ${namespaceId}
+          AND m."publisherNamespaceId" = ${namespaceId}
           AND m."originSeq" = ${messageSeq}
-          AND m."creatorDomain" = 'local'
           AND m."profileNamespaceId" = 0
           AND m."contentType" <> 'SYSTEM'
         LIMIT 1
@@ -369,7 +370,7 @@ export class FederationInboundMessageRouteService {
           tx,
           {
             thread,
-            author: { account: target.account, domain: 'local' },
+            author: { account: target.account, namespaceId: 0 },
           } as FederationMessageFeedMessage,
           sourceDomain,
           namespaceId,

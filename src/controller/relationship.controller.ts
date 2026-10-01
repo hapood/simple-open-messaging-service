@@ -93,7 +93,13 @@ export class RelationshipController {
     const outcome = await this.userIntents.execute({
       userId: me,
       decision: 'REVOKED',
-      target: { account, domain },
+      target: {
+        account,
+        domain,
+        ...(dto.namespaceId !== undefined
+          ? { namespaceId: dto.namespaceId }
+          : {}),
+      },
     });
     if (isBusinessRejection(outcome) && outcome.code === BusinessCode.NOT_FOUND)
       return businessEnvelope(
@@ -144,7 +150,13 @@ export class RelationshipController {
         {
           userId: me,
           decision: 'REQUESTED',
-          target: { account, domain },
+          target: {
+            account,
+            domain,
+            ...(dto.namespaceId !== undefined
+              ? { namespaceId: dto.namespaceId }
+              : {}),
+          },
           note: dto.note ?? '',
         },
         { admissionInTx: (tx) => this.userQuota.tick(me, 'requests', tx) },
@@ -157,7 +169,13 @@ export class RelationshipController {
       {
         userId: me,
         decision: 'REQUESTED',
-        target: { account, domain: 'local' },
+        target: {
+          account,
+          domain: 'local',
+          ...(dto.namespaceId !== undefined
+            ? { namespaceId: dto.namespaceId }
+            : {}),
+        },
         note: dto.note ?? '',
       },
       { admissionInTx: (tx) => this.userQuota.tick(me, 'requests', tx) },
@@ -207,7 +225,13 @@ export class RelationshipController {
     const outcome = await this.userIntents.execute({
       userId: me,
       decision: 'ACCEPTED',
-      target: { account, domain },
+      target: {
+        account,
+        domain,
+        ...(dto.namespaceId !== undefined
+          ? { namespaceId: dto.namespaceId }
+          : {}),
+      },
     });
     if (isBusinessRejection(outcome) && outcome.code === BusinessCode.NOT_FOUND)
       return businessEnvelope(BusinessCode.INVITE_NOT_FOUND, outcome.message, {

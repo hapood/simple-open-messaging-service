@@ -12,7 +12,6 @@ export interface UserIntentFeedInput {
   pairId: bigint;
   threadId: number;
   namespaceId: number;
-  localDomain: string;
   /** Compaction key of the direction authored by the command actor. */
   actorKey: string;
   /** Compaction key of the direction authored by the addressed target. */
@@ -104,7 +103,7 @@ export function userIntentClientBodiesSql(
         ${input.actorAccount}, ${input.actorDomain}, ${input.actorNamespaceId}, 2
     ), directions AS MATERIALIZED (
       SELECT s."authorAccount", s."authorDomain", s."peerAccount", s."peerDomain",
-        s.ordinal, ${reverseState},
+        s."peerNamespaceId", s.ordinal, ${reverseState},
         p."threadId" AS "localThreadId", ${established} AS established
       FROM sides s
       JOIN "RelationshipPair" p ON p.id = ${input.pairId}
@@ -115,7 +114,7 @@ export function userIntentClientBodiesSql(
       WHERE s."authorAccount" <> ${input.actorAccount}
       UNION ALL
       SELECT s."authorAccount", s."authorDomain", s."peerAccount", s."peerDomain",
-        s.ordinal, v.status, v.note, v."profileRev",
+        s."peerNamespaceId", s.ordinal, v.status, v.note, v."profileRev",
         floor(extract(epoch FROM v."requestedAt") * 1000)::bigint AS "requestedAt",
         CASE WHEN v."expiresAt" IS NULL THEN NULL
           ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END AS "expiresAt",
@@ -149,7 +148,7 @@ export function userIntentClientBodiesSql(
       SELECT cp."userId", ${input.namespaceId}::integer AS "namespaceId", cp.ordinal,
         cp."compactionKey",
         cp."authorAccount" AS account, cp."authorDomain" AS domain,
-        cp."peerAccount" AS "subjectAccount", cp."peerDomain" AS "subjectDomain",
+        cp."peerAccount" AS "subjectAccount", cp."peerNamespaceId" AS "subjectNamespaceId",
         jsonb_build_object(
           'status', cp.status, 'note', cp.note,
           'requestedAt', cp."requestedAt", 'expiresAt', cp."expiresAt",
@@ -188,7 +187,6 @@ export function userIntentPeerWriteSql(
     resultName: string;
   },
 ): SQL {
-  const wireLocalDomain = 'local';
   // `jsonb || '{}'` is the identity: REVOKED bodies keep the bare shape.
   const heads = input.revoked
     ? sql`'{}'::jsonb`
@@ -197,7 +195,7 @@ export function userIntentPeerWriteSql(
           WHERE m."threadId" = ${input.threadId} AND m."contentType" <> 'SYSTEM'), 0),
         'tombstoneEndSeq', COALESCE((SELECT MAX(d."deletionSeq") FROM "DeletedMessage" d
           JOIN "Message" m ON m."threadId" = d."threadId" AND m.seq = d."messageSeq"
-          WHERE d."threadId" = ${input.threadId} AND d."sourceNamespaceId" = 0), 0))`;
+          WHERE d."threadId" = ${input.threadId} AND d."publisherNamespaceId" = 0), 0))`;
   return sql`
     intent_source AS MATERIALIZED (
       SELECT v.status, v.note, v."profileRev", v."requestedAt", v."expiresAt"
@@ -209,20 +207,18 @@ export function userIntentPeerWriteSql(
             ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END) || ${heads} AS body
       FROM intent_source v
     ), peer_changes AS MATERIALIZED (
-      SELECT ${input.targetAccount}::text AS "subjectAccount", ${input.targetDomain}::text AS "subjectDomain",
+      SELECT ${input.targetAccount}::text AS "subjectAccount", ${input.targetNamespaceId}::integer AS "subjectNamespaceId",
         p.body, row_number() OVER () AS position, false AS invalid
       FROM peer_write p
       LEFT JOIN "PeerStateFeed" old ON old."namespaceId" = ${input.targetNamespaceId}
-        AND old.account = ${input.actorAccount} AND old.domain = ${wireLocalDomain}
+        AND old.account = ${input.actorAccount}
         AND old."eventType" = 'RELATIONSHIP_INTENT'
         AND old."subjectAccount" = ${input.targetAccount}
-        AND old."subjectDomain" = ${input.targetDomain}
+        AND old."subjectNamespaceId" = ${input.targetNamespaceId}
       WHERE old.body IS DISTINCT FROM p.body ${input.always ? sql`OR true` : sql``}
     ), ${peerIntentFeedWriteSql({
       namespaceId: input.targetNamespaceId,
-      peerDomain: input.targetDomain,
       selfAccount: input.actorAccount,
-      selfDomain: input.localDomain,
       resultName: input.resultName,
     })}
   `;

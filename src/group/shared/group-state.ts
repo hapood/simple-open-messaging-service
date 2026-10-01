@@ -41,8 +41,10 @@ const query = new QueryBuilder()
     profileTable,
     and(
       eq(profileTable.account, messageThread.groupAccount),
-      eq(profileTable.domain, messageThread.groupDomain),
-      eq(profileTable.publisherNamespaceId, 0),
+      eq(
+        profileTable.publisherNamespaceId,
+        sql<number>`CASE WHEN ${messageThread.authorityNamespaceId} = 0 THEN 0 ELSE ${messageThread.authorityNamespaceId} END`,
+      ),
       eq(profileTable.profileNamespaceId, messageThread.authorityNamespaceId),
       eq(profileTable.profileRev, revision),
     ),

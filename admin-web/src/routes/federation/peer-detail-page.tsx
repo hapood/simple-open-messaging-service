@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -6,7 +6,9 @@ import { ArrowLeft } from 'lucide-react';
 import {
   useFederationPeer,
   useFederationPeerNamespaces,
-  useSetActiveFederationPeerNamespace,
+  useApproveFederationIdentityReview,
+  useRejectFederationIdentityReview,
+  useFederationPredecessorCheck,
   useBlockFederationPeer,
   useUnblockFederationPeer,
 } from '@/hooks/use-federation';
@@ -46,11 +48,18 @@ export function PeerDetailPage() {
   const { domain = '' } = useParams<{ domain: string }>();
   const d = decodeURIComponent(domain);
   const { data: peer, isLoading, error } = useFederationPeer(d);
-  const { data: namespaces, isLoading: namespacesLoading } =
+  const { data: namespaceData, isLoading: namespacesLoading } =
     useFederationPeerNamespaces(d);
+  const namespaces = namespaceData?.namespaces;
+  const reviews = namespaceData?.reviews;
   const block = useBlockFederationPeer();
   const unblock = useUnblockFederationPeer();
-  const setActiveNamespace = useSetActiveFederationPeerNamespace();
+  const approveReview = useApproveFederationIdentityReview();
+  const rejectReview = useRejectFederationIdentityReview();
+  const predecessorCheck = useFederationPredecessorCheck();
+  const [predecessorResult, setPredecessorResult] = useState<
+    string | undefined
+  >(undefined);
   const isSuper = useIsSuperAdmin();
   const { data: quotaNodes, isLoading: quotaLoading } = useQuotaNodes();
   const quotaNode = quotaNodes?.find((node) => node.domain === d);
@@ -70,19 +79,43 @@ export function PeerDetailPage() {
     }
   };
 
-  const onSetActiveNamespace = async (namespaceId?: number) => {
+  const onDecideReview = async (
+    reviewId: number,
+    kind: 'domain-rebind' | 'root-rotation',
+    decision: 'approved' | 'rejected',
+  ) => {
     if (
       !window.confirm(
-        namespaceId === undefined
-          ? t('federation.namespaces.confirmApproveCandidate')
-          : t('federation.namespaces.confirmSetActive', { namespaceId }),
+        decision === 'approved'
+          ? t('federation.reviews.confirmApprove', {
+              kind: t(`federation.reviews.kind.${kind}`),
+            })
+          : t('federation.reviews.confirmReject', {
+              kind: t(`federation.reviews.kind.${kind}`),
+            }),
       )
     ) {
       return;
     }
     try {
-      await setActiveNamespace.mutateAsync({ domain: d, namespaceId });
-      toast.success(t('federation.toast.namespaceActive'));
+      if (decision === 'approved') {
+        await approveReview.mutateAsync(reviewId);
+        toast.success(t('federation.toast.reviewApproved'));
+      } else {
+        await rejectReview.mutateAsync(reviewId);
+        toast.success(t('federation.toast.reviewRejected'));
+      }
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  };
+
+  const onPredecessorCheck = async (reviewId: number) => {
+    try {
+      const result = await predecessorCheck.mutateAsync(reviewId);
+      setPredecessorResult(`${result.ok ? '✓' : '✗'} ${result.detail}`);
+      if (result.ok) toast.success(t('federation.reviews.predecessorOk'));
+      else toast.warning(t('federation.reviews.predecessorFailed'));
     } catch (e) {
       toast.error(formatApiError(e));
     }
@@ -201,7 +234,7 @@ export function PeerDetailPage() {
                               {t('federation.namespaces.col.id')}
                             </TableHead>
                             <TableHead>
-                              {t('federation.namespaces.col.fingerprint')}
+                              {t('federation.namespaces.col.rootKey')}
                             </TableHead>
                             <TableHead className="w-32">
                               {t('federation.namespaces.col.peerAssigned')}
@@ -212,45 +245,26 @@ export function PeerDetailPage() {
                             <TableHead className="w-40">
                               {t('federation.namespaces.col.retiredAt')}
                             </TableHead>
-                            <TableHead className="w-32" />
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {namespaces?.map((ns) => (
-                            <TableRow
-                              key={
-                                ns.candidate ? `candidate:${ns.domain}` : ns.id
-                              }
-                            >
+                            <TableRow key={ns.id}>
                               <TableCell className="font-mono text-sm">
-                                {ns.candidate && ns.id === 0
-                                  ? t('federation.namespaces.newCandidate')
-                                  : ns.id}{' '}
+                                {ns.id}{' '}
                                 {ns.active ? (
                                   <Badge variant="secondary">
                                     {t('federation.namespaces.active')}
                                   </Badge>
                                 ) : null}
-                                {ns.candidate ? (
+                                {ns.retiredAt ? (
                                   <Badge variant="outline">
-                                    {t(
-                                      `federation.namespaces.candidate.${ns.candidateStatus ?? 'pending'}`,
-                                    )}
+                                    {t('federation.namespaces.retired')}
                                   </Badge>
                                 ) : null}
                               </TableCell>
                               <TableCell className="max-w-80 break-all font-mono text-xs text-muted-foreground">
-                                <div>
-                                  {ns.rootKeyFingerprint ??
-                                    t('federation.meta.none')}
-                                </div>
-                                {ns.failedMessage ? (
-                                  <div className="mt-1 font-sans text-xs text-destructive">
-                                    {ns.failedCode
-                                      ? `${ns.failedCode}: ${ns.failedMessage}`
-                                      : ns.failedMessage}
-                                  </div>
-                                ) : null}
+                                {ns.rootPublicKey ?? t('federation.meta.none')}
                               </TableCell>
                               <TableCell className="font-mono text-sm">
                                 {ns.peerAssignedLocalNamespaceId ??
@@ -262,29 +276,6 @@ export function PeerDetailPage() {
                               <TableCell>
                                 <Timestamp value={ns.retiredAt} />
                               </TableCell>
-                              <TableCell className="text-right">
-                                {isSuper && !ns.active ? (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() =>
-                                      onSetActiveNamespace(
-                                        ns.candidate && ns.id === 0
-                                          ? undefined
-                                          : ns.id,
-                                      )
-                                    }
-                                    disabled={
-                                      setActiveNamespace.isPending ||
-                                      ns.candidateStatus === 'failed'
-                                    }
-                                  >
-                                    {ns.candidate
-                                      ? t('federation.namespaces.approve')
-                                      : t('federation.namespaces.setActive')}
-                                  </Button>
-                                ) : null}
-                              </TableCell>
                             </TableRow>
                           ))}
                         </TableBody>
@@ -293,6 +284,112 @@ export function PeerDetailPage() {
                   )}
                 </CardContent>
               </Card>
+              {(reviews?.length ?? 0) > 0 ? (
+                <Card className="mt-4">
+                  <CardHeader>
+                    <CardTitle>{t('federation.reviews.title')}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-32">
+                              {t('federation.reviews.col.kind')}
+                            </TableHead>
+                            <TableHead className="w-36">
+                              {t('federation.reviews.col.status')}
+                            </TableHead>
+                            <TableHead>
+                              {t('federation.reviews.col.roots')}
+                            </TableHead>
+                            <TableHead className="w-40">
+                              {t('federation.reviews.col.arrivedAt')}
+                            </TableHead>
+                            <TableHead className="w-64" />
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {reviews?.map((review) => (
+                            <TableRow key={review.id}>
+                              <TableCell>
+                                <Badge variant="outline">
+                                  {t(`federation.reviews.kind.${review.kind}`)}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-sm">
+                                {t(
+                                  `federation.reviews.status.${review.status}`,
+                                )}
+                              </TableCell>
+                              <TableCell className="max-w-96 break-all font-mono text-xs text-muted-foreground">
+                                {review.kind === 'root-rotation'
+                                  ? `${String(review.claim.previousRoot ?? '—')} → ${review.claimedRoot}`
+                                  : `${review.claimedRoot} @ ${review.nextDomain}`}
+                              </TableCell>
+                              <TableCell>
+                                <Timestamp value={review.createdAt} />
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {review.status === 'pending' && isSuper ? (
+                                  <div className="flex justify-end gap-2">
+                                    {review.kind === 'root-rotation' ? (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() =>
+                                          onPredecessorCheck(review.id)
+                                        }
+                                        disabled={predecessorCheck.isPending}
+                                      >
+                                        {t(
+                                          'federation.reviews.predecessorCheck',
+                                        )}
+                                      </Button>
+                                    ) : null}
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() =>
+                                        onDecideReview(
+                                          review.id,
+                                          review.kind,
+                                          'rejected',
+                                        )
+                                      }
+                                      disabled={rejectReview.isPending}
+                                    >
+                                      {t('federation.reviews.reject')}
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      onClick={() =>
+                                        onDecideReview(
+                                          review.id,
+                                          review.kind,
+                                          'approved',
+                                        )
+                                      }
+                                      disabled={approveReview.isPending}
+                                    >
+                                      {t('federation.reviews.approve')}
+                                    </Button>
+                                  </div>
+                                ) : null}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                    {predecessorResult ? (
+                      <div className="mt-3 break-all font-mono text-xs text-muted-foreground">
+                        {predecessorResult}
+                      </div>
+                    ) : null}
+                  </CardContent>
+                </Card>
+              ) : null}
             </TabsContent>
             <TabsContent value="quota">
               {quotaLoading ? (

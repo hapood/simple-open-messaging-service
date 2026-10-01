@@ -1,9 +1,14 @@
 import { request } from '@/api/client';
 import type {
+  FederationIdentityReview,
+  FederationPeerNamespacesResult,
   FederationPeerState,
   FederationPeerStateListResult,
-  FederationNamespace,
-  FederationNamespaceSwitchResult,
+  FederationPredecessorCheckResult,
+  FederationReviewDecisionResult,
+  LocalFederationRootEpoch,
+  LocalFederationRootRotationResult,
+  LocalFederationRootUnpublishResult,
   SelfCheckReport,
 } from '@/types/api';
 
@@ -14,6 +19,30 @@ export interface FederationPeersQuery {
   status?: string; // Federation v1 recognition lifecycle filter
 }
 
+export function localFederationRootEpochs(): Promise<
+  LocalFederationRootEpoch[]
+> {
+  return request<LocalFederationRootEpoch[]>(
+    '/admin/federation/local-root-epochs',
+  );
+}
+
+export function rotateLocalFederationRoot(): Promise<LocalFederationRootRotationResult> {
+  return request<LocalFederationRootRotationResult>(
+    '/admin/federation/local-root-epochs/rotate',
+    {},
+  );
+}
+
+export function unpublishLocalFederationRoot(
+  rootId: number,
+): Promise<LocalFederationRootUnpublishResult> {
+  return request<LocalFederationRootUnpublishResult>(
+    `/admin/federation/local-root-epochs/${rootId}/unpublish`,
+    {},
+  );
+}
+
 export function listFederationPeers(
   q: FederationPeersQuery,
 ): Promise<FederationPeerStateListResult> {
@@ -21,7 +50,9 @@ export function listFederationPeers(
 }
 
 /** Single peer's current lifecycle state (the routed detail page's source — deep-linkable by domain). */
-export function getFederationPeer(domain: string): Promise<FederationPeerState> {
+export function getFederationPeer(
+  domain: string,
+): Promise<FederationPeerState> {
   return request<FederationPeerState>(
     `/admin/federation/peers/${encodeURIComponent(domain)}`,
   );
@@ -29,19 +60,46 @@ export function getFederationPeer(domain: string): Promise<FederationPeerState> 
 
 export function federationPeerNamespaces(
   domain: string,
-): Promise<FederationNamespace[]> {
-  return request<FederationNamespace[]>(
+): Promise<FederationPeerNamespacesResult> {
+  return request<FederationPeerNamespacesResult>(
     `/admin/federation/peers/${encodeURIComponent(domain)}/namespaces`,
   );
 }
 
-export function setActiveFederationPeerNamespace(
-  domain: string,
-  namespaceId?: number,
-): Promise<FederationNamespaceSwitchResult> {
-  return request<FederationNamespaceSwitchResult>(
-    `/admin/federation/peers/${encodeURIComponent(domain)}/namespaces/active`,
-    namespaceId === undefined ? {} : { namespaceId },
+export function federationPendingIdentityReviews(): Promise<
+  FederationIdentityReview[]
+> {
+  return request<FederationIdentityReview[]>(
+    '/admin/federation/identity-reviews',
+  );
+}
+
+export function approveFederationIdentityReview(
+  reviewId: number,
+): Promise<FederationReviewDecisionResult> {
+  return request<FederationReviewDecisionResult>(
+    `/admin/federation/identity-reviews/${reviewId}/approve`,
+    {},
+  );
+}
+
+export function rejectFederationIdentityReview(
+  reviewId: number,
+): Promise<FederationReviewDecisionResult> {
+  return request<FederationReviewDecisionResult>(
+    `/admin/federation/identity-reviews/${reviewId}/reject`,
+    {},
+  );
+}
+
+/** Seal a fresh challenge under the pinned predecessor root and ask the peer
+ *  to open it through its sealed-challenge service (rotation continuity). */
+export function federationPredecessorCheck(
+  reviewId: number,
+): Promise<FederationPredecessorCheckResult> {
+  return request<FederationPredecessorCheckResult>(
+    `/admin/federation/identity-reviews/${reviewId}/predecessor-check`,
+    {},
   );
 }
 

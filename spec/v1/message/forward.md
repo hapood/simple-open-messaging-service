@@ -57,8 +57,9 @@ interface ForwardChildBundle {
 }
 
 interface ForwardAuthor {
-  account?: UserAccount;
-  domain?: Domain;
+  account: UserAccount;
+  domain: Domain;
+  publicRootKey?: Base64Ed25519Key;
 }
 
 interface ForwardProfileSnapshot {
@@ -68,7 +69,7 @@ interface ForwardProfileSnapshot {
 
 interface ForwardBundleMessageBase {
   id: PositiveSafeInteger;
-  author: ForwardAuthor;
+  author?: ForwardAuthor;
   profile: ForwardProfileSnapshot;
   sentAt: EpochMilliseconds;
   quoteTargetId?: SafeInteger;
@@ -109,9 +110,12 @@ Every object is a closed schema. Inner `content` uses the corresponding message-
 - `profile.displayName` is the required immutable nickname snapshot and contains
   1–30 Unicode code points. It is untrusted display data, not an authorization
   coordinate.
-- `author.account` and `author.domain` are optional. They MUST either both be
-  present and form a valid `UserAccount` Address, or both be absent. A consumer
-  MUST NOT infer a missing Address from the nickname.
+- `author` is optional. When present, it is a closed provenance snapshot with
+  required `account` and `domain`; `publicRootKey` is optional. A consumer MUST
+  NOT infer a missing author from the nickname. `publicRootKey`, when present,
+  MUST be a canonical padded-base64 Ed25519 public root key value. It is
+  provenance metadata for the author domain/root snapshot and is not a profile
+  lookup key.
 - When the exact profile selected by the source message is unavailable, the
   publisher MUST still provide a stable display name captured from the source
   message identity; it MUST NOT read or substitute a mutable current/default

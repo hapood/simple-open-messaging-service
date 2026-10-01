@@ -217,7 +217,6 @@ describe('GroupService membership lifecycle', () => {
         table: profileTable,
         value: {
           account: '!group',
-          domain: 'local',
           publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 4,

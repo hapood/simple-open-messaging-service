@@ -231,8 +231,7 @@ export class GroupDisbandMembershipRevocationService {
           groupAccount: groupEndpoint.account,
           groupNamespaceId: groupEndpoint.namespaceId,
           memberAccount: member.account,
-          memberDomain: member.domain,
-          memberNamespaceId: member.namespaceId,
+          profileNamespaceId: member.namespaceId,
         }),
       )
     ).rows[0];
@@ -246,11 +245,10 @@ export class GroupDisbandMembershipRevocationService {
         reason: 'ALREADY_REVOKED',
         transitioned: false,
       };
-    if (row.memberDomain !== 'local')
+    if (row.profileNamespaceId !== 0)
       await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
         {
-          peerDomain: row.memberDomain,
-          namespaceId: row.memberNamespaceId,
+          namespaceId: row.profileNamespaceId,
         },
       ]);
     // This child writes only the departing local member's client feed. Manager
@@ -263,7 +261,7 @@ export class GroupDisbandMembershipRevocationService {
       threadLock,
       pairId,
       localMemberId: row.localMemberId,
-      peerDomain: row.memberDomain === 'local' ? null : row.memberDomain,
+      peerDomain: row.profileNamespaceId === 0 ? null : row.memberDomain,
       input: {
         threadId: params.threadId,
         pairId,
@@ -275,7 +273,7 @@ export class GroupDisbandMembershipRevocationService {
         localDomain: 'local',
         memberAccount: member.account,
         memberDomain: row.memberDomain,
-        memberNamespaceId: row.memberNamespaceId,
+        profileNamespaceId: row.profileNamespaceId,
         localMemberId: row.localMemberId,
         projectionDirections: row.projectionDirections,
       },

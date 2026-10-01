@@ -51,7 +51,6 @@ const accountDemand = {
   target: {
     profileNamespaceId: 12,
     account: 'alice',
-    domain: 'member.test',
     rev: 4,
   },
 } as const;
@@ -96,7 +95,6 @@ describe('ProfileResolutionCoordinatorService', () => {
         publisherNamespaceId: 7,
         profileNamespaceId: 12,
         account: 'alice',
-        domain: 'member.test',
         rev: 4,
       },
       accountDemand,
@@ -130,7 +128,6 @@ describe('ProfileResolutionCoordinatorService', () => {
         publisherNamespaceId: 7,
         profileNamespaceId: 12,
         account: 'alice',
-        domain: 'member.test',
         rev: 4,
       },
       demand,
@@ -163,7 +160,6 @@ describe('ProfileResolutionCoordinatorService', () => {
         publisherNamespaceId: 7,
         profileNamespaceId: 12,
         account: 'alice',
-        domain: 'member.test',
         rev: 4,
       },
       demand,
@@ -171,7 +167,6 @@ describe('ProfileResolutionCoordinatorService', () => {
 
     expect(profiles.fetchExactGroupMemberProfile).toHaveBeenCalledWith(
       '!group',
-      'member.test',
       'alice',
       4,
       'group-origin.test',
@@ -193,7 +188,7 @@ describe('ProfileResolutionCoordinatorService', () => {
     );
     expect(query).toContain('message.seq > COALESCE(thread."clearedSeq", 0)');
     expect(query).toContain('message.seq <= state."messageEndSeq"');
-    expect(query).toContain('message."sourceNamespaceId"');
+    expect(query).toContain('message."publisherNamespaceId"');
     expect(query).toContain('message."profileNamespaceId"');
     expect(query).toContain('message."localState" = \'READY\'');
     expect(query).not.toContain('message."isDeleted"');
@@ -308,7 +303,6 @@ describe('ProfileResolutionCoordinatorService', () => {
       target: {
         ...accountDemand.target,
         profileNamespaceId: 0,
-        domain: 'local',
       },
     });
 
@@ -355,7 +349,6 @@ describe('ProfileResolutionCoordinatorService', () => {
           publisherNamespaceId: 7,
           profileNamespaceId: 12,
           account: 'alice',
-          domain: 'member.test',
           rev: 4,
         },
       ],
@@ -365,7 +358,6 @@ describe('ProfileResolutionCoordinatorService', () => {
           publisherNamespaceId: 7,
           profileNamespaceId: 12,
           account: 'alice',
-          domain: 'member.test',
           rev: 4,
         },
       ],
@@ -389,17 +381,15 @@ describe('ProfileResolutionCoordinatorService', () => {
         publisherNamespaceId: 7,
         profileNamespaceId: 12,
         account: 'alice',
-        domain: 'member.test',
         rev: 4,
       },
       accountDemand,
     );
 
-    expect(subject['cache'].get('[7,12,"alice","member.test",4]')).toEqual({
+    expect(subject['cache'].get('[7,12,"alice",4]')).toEqual({
       publisherNamespaceId: 7,
       profileNamespaceId: 12,
       account: 'alice',
-      domain: 'member.test',
       rev: 4,
       name: 'Alice',
       bio: 'Biography',

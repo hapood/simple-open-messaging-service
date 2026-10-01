@@ -22,7 +22,7 @@ export async function readThreadHeadSnapshotInTx(
     COALESCE((
       SELECT MAX(d."deletionSeq") FROM "DeletedMessage" d
       JOIN "Message" m ON m."threadId" = d."threadId" AND m.seq = d."messageSeq"
-      WHERE d."threadId" = ${threadId} AND d."sourceNamespaceId" = 0
+      WHERE d."threadId" = ${threadId} AND d."publisherNamespaceId" = 0
     ), 0) AS "tombstoneEndSeq"
   `);
   if (!result.rows[0]) throw new Error('thread head snapshot missing');

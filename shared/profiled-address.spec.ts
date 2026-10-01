@@ -12,7 +12,6 @@ describe('profiled system-event identity', () => {
     expect(isProfiledAddress(participant)).toBe(true);
     expect(profileKeyForAddress(participant, 17)).toEqual({
       account: 'alice',
-      domain: 'peer.test',
       publisherNamespaceId: 17,
       profileNamespaceId: 12,
       rev: 3,
@@ -48,7 +47,6 @@ describe('profiled system-event identity', () => {
       profileKeyForAddress(
         {
           account: '$system',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 0,
         },
@@ -61,7 +59,6 @@ describe('profiled system-event identity', () => {
     expect(
       isProfiledAddress({
         account: 'alice',
-        domain: 'peer.test',
         profileRev: 2,
       }),
     ).toBe(false);
@@ -76,7 +73,6 @@ describe('profiled system-event identity', () => {
     expect(
       isProfiledAddress({
         account: 'alice',
-        domain: 'peer.test',
         profileNamespaceId: 7,
         profileRev: 2,
         name: 'Alice',

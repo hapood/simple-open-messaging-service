@@ -23,48 +23,29 @@
       ]
     },
     "verifyRequest": {
-      "oneOf": [
-        {
-          "type": "object",
-          "required": ["publicKey", "encryptedValue"],
-          "properties": {
-            "publicKey": { "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key" },
-            "encryptedValue": { "$ref": "urn:somfp:v1:common#/$defs/base64SealedChallenge" }
-          },
-          "additionalProperties": false
+      "type": "object",
+      "required": ["publicKey", "encryptedValue"],
+      "properties": {
+        "publicKey": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key"
         },
-        {
-          "type": "object",
-          "required": ["namespaceId"],
-          "properties": {
-            "namespaceId": {
-              "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
-            }
-          },
-          "additionalProperties": false
+        "encryptedValue": {
+          "$ref": "urn:somfp:v1:common#/$defs/base64SealedChallenge"
         }
-      ]
+      },
+      "additionalProperties": false
     },
     "verifyResult": {
-      "oneOf": [
-        {
-          "type": "object",
-          "required": ["value"],
-          "properties": {
-            "value": { "type": "string", "minLength": 0, "maxLength": 4096 }
-          },
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "required": ["root", "domain"],
-          "properties": {
-            "root": { "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key" },
-            "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" }
-          },
-          "additionalProperties": false
+      "type": "object",
+      "required": ["value"],
+      "properties": {
+        "value": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4096
         }
-      ]
+      },
+      "additionalProperties": false
     },
     "recognizeResult": {
       "oneOf": [
@@ -72,9 +53,15 @@
           "type": "object",
           "required": ["ok", "status"],
           "properties": {
-            "ok": { "const": true },
-            "status": { "const": "pending" },
-            "message": { "type": "string" }
+            "ok": {
+              "const": true
+            },
+            "status": {
+              "const": "pending"
+            },
+            "message": {
+              "type": "string"
+            }
           },
           "additionalProperties": false
         },
@@ -82,8 +69,12 @@
           "type": "object",
           "required": ["ok", "status", "peerAssignedLocalNamespaceId"],
           "properties": {
-            "ok": { "const": true },
-            "status": { "const": "recognized" },
+            "ok": {
+              "const": true
+            },
+            "status": {
+              "const": "recognized"
+            },
             "peerAssignedLocalNamespaceId": {
               "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
             }
@@ -94,10 +85,18 @@
           "type": "object",
           "required": ["ok", "status", "code", "message"],
           "properties": {
-            "ok": { "const": false },
-            "status": { "const": "failed" },
-            "code": { "$ref": "urn:somfp:v1:common#/$defs/safeInteger" },
-            "message": { "type": "string" }
+            "ok": {
+              "const": false
+            },
+            "status": {
+              "const": "failed"
+            },
+            "code": {
+              "$ref": "urn:somfp:v1:common#/$defs/safeInteger"
+            },
+            "message": {
+              "type": "string"
+            }
           },
           "additionalProperties": false
         }
@@ -109,7 +108,9 @@
           "type": "object",
           "required": ["status", "peerAssignedLocalNamespaceId"],
           "properties": {
-            "status": { "enum": ["available", "degraded"] },
+            "status": {
+              "enum": ["available", "degraded"]
+            },
             "peerAssignedLocalNamespaceId": {
               "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
             }
@@ -120,7 +121,9 @@
           "type": "object",
           "required": ["status"],
           "properties": {
-            "status": { "const": "unavailable" }
+            "status": {
+              "const": "unavailable"
+            }
           },
           "additionalProperties": false
         }
@@ -128,9 +131,12 @@
     },
     "feedHeadHint": {
       "type": "object",
-      "required": ["stateFeedEndId"],
+      "required": ["stateFeedEndId", "profileNamespaceFeedEndId"],
       "properties": {
         "stateFeedEndId": {
+          "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+        },
+        "profileNamespaceFeedEndId": {
           "$ref": "urn:somfp:v1:common#/$defs/decimalString"
         }
       },

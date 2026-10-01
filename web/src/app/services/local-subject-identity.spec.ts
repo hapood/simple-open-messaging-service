@@ -11,13 +11,13 @@ describe('client subject coordinates', () => {
         account: 'me',
         domain: 'local',
         namespaceId: 7,
-        sourceNamespaceId: 7,
+        publisherNamespaceId: 7,
       }),
     ).toEqual({
       account: 'me',
       domain: 'local',
       namespaceId: 0,
-      sourceNamespaceId: 7,
+      publisherNamespaceId: 7,
     });
     expect(
       localSubjectIdentity({

@@ -113,19 +113,26 @@ export async function readGroupMetaPageInTx(
     await tx.execute<{
       feedId: number;
       memberAccount: string | null;
-      memberDomain: string | null;
-      operation: 'MEMBER_UPSERT' | 'MEMBER_DEPART' | 'GROUP_PROFILE' | 'GROUP_ANNOUNCEMENT';
+      profileNamespaceId: number | null;
+      domain: string | null;
+      operation:
+        | 'MEMBER_UPSERT'
+        | 'MEMBER_DEPART'
+        | 'GROUP_PROFILE'
+        | 'GROUP_ANNOUNCEMENT';
       body: Record<string, unknown>;
     }>(sql`
     SELECT fact."feedId", fact."memberAccount" AS "memberAccount",
-      fact."memberDomain" AS "memberDomain", fact.operation::text AS operation,
+      fact."profileNamespaceId" AS "profileNamespaceId", ns.domain AS "domain",
+      fact.operation::text AS operation,
       fact.body
     FROM "GroupMetaMemberFeed" fact
+    JOIN "IdentityNamespace" ns ON ns.id = fact."profileNamespaceId"
     WHERE fact."threadId" = ${params.groupId}
       AND fact."feedId" > ${params.after} AND fact."feedId" <= ${scanEnd}
       ${params.feedMode === 'full' ? sql`AND fact.operation IN ('MEMBER_UPSERT', 'GROUP_PROFILE')` : sql.empty()}
     UNION ALL
-    SELECT meta."announcementFeedId", NULL::varchar, NULL::varchar,
+    SELECT meta."announcementFeedId", NULL::varchar, NULL::integer, NULL::varchar,
       'GROUP_ANNOUNCEMENT'::text, jsonb_build_object('text', meta."announcementText")
     FROM "GroupMeta" meta WHERE meta."threadId" = ${params.groupId}
       AND meta."announcementFeedId" > ${params.after}
@@ -133,30 +140,6 @@ export async function readGroupMetaPageInTx(
     ORDER BY "feedId" LIMIT ${queryLimit}
   `)
   ).rows;
-  const namespaceByAddress = new Map<string, number>();
-  if (
-    params.viewMode === 'client' &&
-    memberRows.some(
-      (row) => row.operation === 'MEMBER_UPSERT' || row.operation === 'MEMBER_DEPART',
-    )
-  ) {
-    const identities = await tx.execute<{
-      memberAccount: string;
-      memberDomain: string;
-      namespaceId: number;
-    }>(sql`
-      SELECT fact."memberAccount", fact."memberDomain",
-        group_meta_member_namespace(fact."threadId", fact."memberAccount",
-          fact."memberDomain") AS "namespaceId"
-      FROM "GroupMetaMemberFeed" fact
-      WHERE fact."threadId" = ${params.groupId}
-    `);
-    for (const identity of identities.rows)
-      namespaceByAddress.set(
-        JSON.stringify([identity.memberDomain, identity.memberAccount]),
-        identity.namespaceId,
-      );
-  }
   const items: GroupMetaFeedItem[] = memberRows
     .map((row): GroupMetaFeedItem => {
       if (row.operation === 'GROUP_ANNOUNCEMENT')
@@ -174,17 +157,12 @@ export async function readGroupMetaPageInTx(
             profileRev: Number(row.body.profileRev),
           },
         };
-      const namespaceId = namespaceByAddress.get(
-        JSON.stringify([row.memberDomain, row.memberAccount]),
-      );
-      if (row.memberDomain === null || row.memberAccount === null)
+      if (row.profileNamespaceId === null || row.memberAccount === null || row.domain === null)
         throw new Error('group-meta member identity is missing');
-      if (params.viewMode === 'client' && namespaceId === undefined)
-        throw new Error('group-meta client identity namespace is missing');
       const identity = {
         account: row.memberAccount,
-        domain: row.memberDomain,
-        namespaceId: namespaceId ?? 0,
+        domain: row.domain,
+        namespaceId: row.profileNamespaceId,
       };
       const base = {
         feedId: row.feedId,

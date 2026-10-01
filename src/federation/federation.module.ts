@@ -11,6 +11,7 @@ import { FederationGroupRequestProjectionService } from './federation-group-requ
 import { GroupRelationshipFoldService } from '../group/membership-intent/shared/group-relationship-fold.service.js';
 import { FederationReconnectService } from './federation-reconnect.service.js';
 import { S2sController } from './s2s.controller.js';
+import { S2sVerifyController } from './s2s-verify.controller.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
 import { WellKnownController } from './well-known.controller.js';
 import { RelationshipModule } from '../relationship/relationship.module.js';
@@ -27,6 +28,11 @@ import { FederationMessageFeedService } from './federation-message-feed.service.
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 import { FederationDownloadRecoveryService } from './federation-download-recovery.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
+import { ProfileNamespaceFeedService } from './profile-namespace-feed.service.js';
+import { ProfileNamespaceFeedConsumerService } from './profile-namespace-feed-consumer.service.js';
+import { ProfileNamespaceFeedPullService } from './profile-namespace-feed-pull.service.js';
+import { ProfileNamespaceInfoService } from './profile-namespace-info.service.js';
+import { FederationProfileNamespacePullService } from './federation-profile-namespace-pull.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
 import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
@@ -115,6 +121,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
   controllers: [
     WellKnownController,
     S2sController,
+    S2sVerifyController,
     S2sRecognitionController,
     ProfileResolutionController,
     QuoteResolutionController,
@@ -306,6 +313,11 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     FederationThreadContentHeadService,
     GroupRelationshipMutationService,
     FederationNamespaceService,
+    ProfileNamespaceFeedService,
+    ProfileNamespaceFeedConsumerService,
+    ProfileNamespaceFeedPullService,
+    ProfileNamespaceInfoService,
+    FederationProfileNamespacePullService,
     FederationStateFeedConsumerService,
     MessageProfileWorkDispatcherService,
   ],
@@ -341,6 +353,8 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     FederationThreadContentHeadService,
     GroupRelationshipMutationService,
     FederationNamespaceService,
+    ProfileNamespaceFeedService,
+    ProfileNamespaceInfoService,
   ],
 })
 export class FederationModule {}

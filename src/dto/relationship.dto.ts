@@ -34,6 +34,19 @@ export class RequestRelationshipDto {
 
   @ApiProperty({
     required: false,
+    example: 7,
+    description:
+      'Target identity namespace id. Omit for first contact by domain; ' +
+      'send when prior knowledge (contact card, roster) carries the nsid ' +
+      'so the request follows the identity across a review-approved re-bind.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  namespaceId?: number;
+
+  @ApiProperty({
+    required: false,
     example: 'Hi from the conference',
     description: 'Relationship request note (≤255 chars)',
   })
@@ -79,6 +92,18 @@ export class RevokeRelationshipDto {
   @IsNotEmpty()
   @MaxLength(63)
   domain!: string;
+
+  @ApiProperty({
+    required: false,
+    example: 7,
+    description:
+      'Peer identity namespace id. Send when prior knowledge carries the ' +
+      'nsid so revocation addresses the durable identity, not just the domain.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  namespaceId?: number;
 }
 
 /** Select a pending relationship request by counterparty Address. */
@@ -93,6 +118,18 @@ export class AcceptRelationshipDto {
   @IsNotEmpty()
   @MaxLength(63)
   domain!: string;
+
+  @ApiProperty({
+    required: false,
+    example: 7,
+    description:
+      'Peer identity namespace id. Send when prior knowledge carries the ' +
+      'nsid so acceptance addresses the durable identity, not just the domain.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  namespaceId?: number;
 }
 
 /** Advance the account-wide relationship-request read watermark. The value is a client state-feed

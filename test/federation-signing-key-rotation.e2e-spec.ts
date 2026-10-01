@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { federatedPeer } from '../src/database/schema.js';
+import { and, eq } from 'drizzle-orm';
+import { identityNamespace } from '../src/database/schema.js';
 import { verifySigningCertificate } from '../src/federation/federation-certificate.js';
 import { parseKeyId } from '../src/federation/key-id.js';
 import {
@@ -215,8 +215,11 @@ describe('database-backed signing-key rotation', () => {
     // A NEW signed request uses the successor; the peer accepts it — from cache or via a
     // key-miss well-known refresh — without any Recognize restart or lifecycle disturbance.
     await resolveResolved();
-    const peerOnB = await appB.database.query.federatedPeer.findFirst({
-      where: eq(federatedPeer.domain, FED_DOMAIN_A),
+    const peerOnB = await appB.database.query.identityNamespace.findFirst({
+      where: and(
+        eq(identityNamespace.domain, FED_DOMAIN_A),
+        eq(identityNamespace.active, true),
+      ),
     });
     expect(peerOnB).toMatchObject({
       peerAcceptanceConfirmed: true,

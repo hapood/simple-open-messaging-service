@@ -423,7 +423,7 @@ export class MemberAuthoredGroupMembershipIntentService {
         groupAccount: located.groupAccount,
         groupNamespaceId,
         memberAccount: member.account,
-        memberNamespaceId: 0,
+        profileNamespaceId: 0,
       });
     } else {
       // The pair's local endpoint is the member; the group sits on B with its
@@ -481,8 +481,7 @@ export class MemberAuthoredGroupMembershipIntentService {
           groupAccount: located.groupAccount,
           groupNamespaceId,
           memberAccount: member.account,
-          memberDomain: member.domain,
-          memberNamespaceId: 0,
+          profileNamespaceId: 0,
         }),
       )
     ).rows[0];
@@ -548,8 +547,7 @@ export class MemberAuthoredGroupMembershipIntentService {
         groupProfileRev: row.profileRev,
         localDomain: 'local',
         memberAccount: row.memberAccount,
-        memberDomain: 'local',
-        memberNamespaceId: 0,
+        profileNamespaceId: 0,
         localMemberId: row.localMemberId!,
         note: (base.params.note ?? '').slice(0, 255),
         requestedAt,
@@ -617,7 +615,7 @@ export class MemberAuthoredGroupMembershipIntentService {
         localDomain: 'local',
         memberAccount: row.memberAccount,
         memberDomain: row.memberDomain,
-        memberNamespaceId: row.memberNamespaceId,
+        profileNamespaceId: row.profileNamespaceId,
         note: row.groupIntentNote ?? '',
         acceptedAt: new Date(),
         projectionDirections: ['INVITATION'],
@@ -676,12 +674,12 @@ export class MemberAuthoredGroupMembershipIntentService {
         localDomain: 'local',
         memberAccount: row.memberAccount,
         memberDomain: row.memberDomain,
-        memberNamespaceId: row.memberNamespaceId,
+        profileNamespaceId: row.profileNamespaceId,
         localMemberId: row.localMemberId,
         projectionDirections: row.projectionDirections,
         author: {
           account: row.memberAccount,
-          namespaceId: row.memberNamespaceId,
+          namespaceId: row.profileNamespaceId,
         },
         receiver: { account: row.account, namespaceId: 0 },
       },

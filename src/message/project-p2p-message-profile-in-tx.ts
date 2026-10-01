@@ -6,7 +6,6 @@ import { lockAccountFeedAllocatorsInTx } from '../common/locks/account-feed-allo
 export interface P2PMessageProfileProjection {
   threadLock: ThreadContentLock;
   account: string;
-  domain: string;
   publisherNamespaceId: number;
   namespaceId: number;
   messageSeq: number;
@@ -25,8 +24,14 @@ export async function projectP2PMessageProfileInTx(
   tx: DatabaseTransaction,
   projection: P2PMessageProfileProjection,
 ): Promise<P2PMessageProfileProjectionChange[]> {
-  const { threadLock, account, domain, publisherNamespaceId, namespaceId, messageSeq, profileRev } =
-    projection;
+  const {
+    threadLock,
+    account,
+    publisherNamespaceId,
+    namespaceId,
+    messageSeq,
+    profileRev,
+  } = projection;
   if (
     !Number.isSafeInteger(messageSeq) ||
     messageSeq < 1 ||
@@ -49,7 +54,7 @@ export async function projectP2PMessageProfileInTx(
     WHERE state."threadId" = ${threadLock.threadId}
       AND thread.type = 'P2P'
       AND state.blocked = false
-      AND NOT (viewer.account = ${account} AND viewer.domain = ${domain})
+      AND NOT (viewer.account = ${account} AND viewer."namespaceId" = ${namespaceId})
       AND pair."endpointAType" = 'USER'
       AND pair."endpointAAccount" = viewer.account
       AND pair."endpointANamespaceId" = 0
@@ -72,7 +77,6 @@ export async function projectP2PMessageProfileInTx(
         AND message.seq = ${messageSeq}
         AND thread.type = 'P2P'
         AND message."creatorAccount" = ${account}
-        AND message."creatorDomain" = ${domain}
         AND message."profileNamespaceId" = ${namespaceId}
         AND message."profileRev" = ${profileRev}
         AND message."contentType" <> 'SYSTEM'
@@ -80,7 +84,6 @@ export async function projectP2PMessageProfileInTx(
         AND EXISTS (
           SELECT 1 FROM "Profile" profile
           WHERE profile.account = message."creatorAccount"
-            AND profile.domain = message."creatorDomain"
             AND profile."publisherNamespaceId" = ${publisherNamespaceId}
             AND profile."profileNamespaceId" = message."profileNamespaceId"
             AND profile."profileRev" = ${profileRev}
@@ -90,7 +93,6 @@ export async function projectP2PMessageProfileInTx(
           WHERE newer."threadId" = message."threadId"
             AND newer.seq > message.seq
             AND newer."creatorAccount" = message."creatorAccount"
-            AND newer."creatorDomain" = message."creatorDomain"
             AND newer."profileNamespaceId" = message."profileNamespaceId"
             AND newer."contentType" <> 'SYSTEM'
             AND newer."localState" = 'READY'
@@ -104,7 +106,7 @@ export async function projectP2PMessageProfileInTx(
         AND pair.kind = 'P2P' AND pair.active
       WHERE state."threadId" = ${threadLock.threadId}
         AND state.blocked = false
-        AND NOT (viewer.account = ${account} AND viewer.domain = ${domain})
+        AND NOT (viewer.account = ${account} AND viewer."namespaceId" = ${namespaceId})
         AND pair."endpointAType" = 'USER'
         AND pair."endpointAAccount" = viewer.account
         AND pair."endpointANamespaceId" = 0

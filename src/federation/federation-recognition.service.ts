@@ -1,7 +1,6 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
-import { createHash } from 'node:crypto';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { and, eq, getTableColumns, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, isNull, or, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
@@ -9,7 +8,11 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import { DiscoveryService, type WellKnownDoc } from './discovery.service.js';
+import {
+  currentCertifyingRoots,
+  DiscoveryService,
+  type WellKnownDoc,
+} from './discovery.service.js';
 import { parsePeerErrorBody } from './federation-errors.js';
 import {
   FEDERATION_PEER_AVAILABLE,
@@ -63,11 +66,11 @@ type RecognizeResult =
     }
   | RecognizeFailed;
 
-interface RecognizeRecognized {
-  ok: true;
-  status: 'recognized';
-  peerAssignedLocalNamespaceId: number;
-}
+/** Bounded re-issue window for a `pending` Recognize result: the responder's
+ * asynchronous verification commits independently, so the requester observes it
+ * by asking again rather than degrading an authenticated, healthy peer. */
+const RECOGNIZE_PENDING_POLL_INTERVAL_MS = 250;
+const RECOGNIZE_PENDING_POLL_BUDGET_MS = 4_000;
 
 export type FederationRecognitionStage =
   | 'DISCOVERING'
@@ -190,6 +193,7 @@ export class FederationRecognitionService {
   async submitInboundRecognize(params: {
     domain: string;
     keyId: string;
+    claimedRoot: string;
     signedRequest: SignedRequest;
     headers: OutboundSignatureHeaders;
     senderAssignedLocalNamespaceId?: number;
@@ -199,25 +203,31 @@ export class FederationRecognitionService {
     const cached = this.inboundRecognizeResults.get(domain);
     if (cached && cached.expiresAtMs > Date.now()) return cached.result;
     if (cached) this.inboundRecognizeResults.delete(domain);
-    const candidate =
-      await this.database.db.query.federationNamespaceCandidate.findFirst({
-        where: eq(tables.federationNamespaceCandidate.nextDomain, domain),
-      });
-    if (candidate) {
-      if (candidate.status === 'failed') {
-        return {
-          ok: false,
-          status: 'failed',
-          code:
-            candidate.failedCode ??
-            BusinessCode.FEDERATION_DOMAIN_CHANGE_REJECTED,
-          message: candidate.failedMessage ?? 'recognition failed',
-        };
-      }
+    // Review gate: an open review for this arrival domain (a re-binding whose
+    // next domain it is, or a rotation of the namespace bound to it) answers
+    // pending without re-verification; the latest resolved review answers with
+    // its rejection code. A rejected rotation is operation-level: the epoch's
+    // ordinary lifecycle is untouched and only the rotation stays refused.
+    const review = await this.findReviewForDomain(domain);
+    if (review?.status === 'pending') {
       return {
         ok: true,
         status: 'pending',
         message: 'waiting for administrator approval',
+      };
+    }
+    if (review && review.status === 'rejected') {
+      return {
+        ok: false,
+        status: 'failed',
+        code:
+          review.kind === 'root-rotation'
+            ? BusinessCode.FEDERATION_ROOT_CHANGE_REJECTED
+            : BusinessCode.FEDERATION_DOMAIN_CHANGE_REJECTED,
+        message:
+          review.kind === 'root-rotation'
+            ? 'root rotation rejected by administrator review'
+            : 'domain re-binding rejected by administrator review',
       };
     }
     const existing = this.inboundRecognizeInFlight.get(domain);
@@ -368,6 +378,7 @@ export class FederationRecognitionService {
   private async verifyInboundRecognize(params: {
     domain: string;
     keyId: string;
+    claimedRoot: string;
     signedRequest: SignedRequest;
     headers: OutboundSignatureHeaders;
     senderAssignedLocalNamespaceId?: number;
@@ -375,11 +386,9 @@ export class FederationRecognitionService {
   }): Promise<void> {
     const normalized = this.normalizeDomain(params.domain);
     const doc = await this.discovery.fetchWellKnown(normalized);
+    const now = Date.now();
     const certificate = doc.keys.find(
-      (key) =>
-        key.keyId === params.keyId &&
-        key.notBefore <= Date.now() &&
-        Date.now() < key.notAfter,
+      (key) => key.keyId === params.keyId && key.notBefore <= now && now < key.notAfter,
     );
     if (!certificate) {
       throw new BusinessException(
@@ -388,6 +397,23 @@ export class FederationRecognitionService {
         HttpStatus.UNAUTHORIZED,
       );
     }
+    // The claimed root must be a currently valid group entry and must be the
+    // root that authorizes the signing certificate (recognition 4.4).
+    const claimedEntry = doc.roots.find(
+      (entry) => entry.ed25519 === params.claimedRoot,
+    );
+    if (
+      !claimedEntry ||
+      !(claimedEntry.notBefore <= now && now < claimedEntry.notAfter) ||
+      certificate.root !== params.claimedRoot
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_BAD_SIGNATURE,
+        'claimed root does not authorize the signing certificate',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    const claimedRoot = params.claimedRoot;
     if (
       !(await this.signature.verifyWithKey(
         params.signedRequest,
@@ -401,165 +427,275 @@ export class FederationRecognitionService {
         HttpStatus.UNAUTHORIZED,
       );
     }
-    const fingerprint = this.fingerprint(doc.rootKey.ed25519);
-    const peer = await this.database.db.query.identityNamespace.findFirst({
-      where: eq(tables.identityNamespace.domain, normalized),
-      columns: { id: true },
-    });
-    if (peer?.id != null) {
-      const [active] = await this.database.db
-        .select({
-          rootKeyFingerprint: tables.identityNamespace.rootKeyFingerprint,
-          rootPublicKey: tables.identityNamespace.rootPublicKey,
-        })
-        .from(tables.identityNamespace)
-        .where(eq(tables.identityNamespace.id, peer.id))
-        .limit(1);
+    // --- Root-identity resolution (recognition 4.4) ---
+    const [domainEpoch] = await this.database.db
+      .select({
+        id: tables.identityNamespace.id,
+        domain: tables.identityNamespace.domain,
+        rootPublicKey: tables.identityNamespace.rootPublicKey,
+        peerAssignedLocalNamespaceId:
+          tables.identityNamespace.peerAssignedLocalNamespaceId,
+      })
+      .from(tables.identityNamespace)
+      .where(
+        and(
+          eq(tables.identityNamespace.domain, normalized),
+          eq(tables.identityNamespace.active, true),
+          isNull(tables.identityNamespace.retiredAt),
+          sql`${tables.identityNamespace.id} > 0`,
+        ),
+      )
+      .limit(1);
+    const [rootEpoch] = await this.database.db
+      .select({
+        id: tables.identityNamespace.id,
+        domain: tables.identityNamespace.domain,
+        peerAssignedLocalNamespaceId:
+          tables.identityNamespace.peerAssignedLocalNamespaceId,
+      })
+      .from(tables.identityNamespace)
+      .where(
+        and(
+          eq(tables.identityNamespace.rootPublicKey, claimedRoot),
+          isNull(tables.identityNamespace.retiredAt),
+          sql`${tables.identityNamespace.id} > 0`,
+        ),
+      )
+      .limit(1);
+
+    const requireCoordinateMatch = (epoch: { peerAssignedLocalNamespaceId: number | null }): void => {
       if (
-        active?.rootKeyFingerprint === fingerprint &&
-        active.rootPublicKey === doc.rootKey.ed25519
+        params.senderAssignedLocalNamespaceId !== undefined &&
+        epoch.peerAssignedLocalNamespaceId !== null &&
+        params.senderAssignedLocalNamespaceId !== epoch.peerAssignedLocalNamespaceId
       ) {
-        const context = await this.acceptInbound(
-          normalized,
-          doc,
-          params.senderAssignedLocalNamespaceId,
+        throw new BusinessException(
+          BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+          `${normalized} sender-assigned local namespace does not match pinned identity`,
+          HttpStatus.CONFLICT,
         );
-        this.inboundRecognizeResults.set(normalized, {
-          expiresAtMs: params.signatureExpires * 1000,
-          result: {
-            ok: true,
-            status: 'recognized',
-            peerAssignedLocalNamespaceId: context.namespaceId,
-          },
-        });
-        return;
       }
+    };
+
+    if (rootEpoch && rootEpoch.domain === normalized) {
+      // Claimed root already pinned and bound to this domain: ordinary
+      // idempotent re-recognition; commit acceptance directly.
+      requireCoordinateMatch({
+        peerAssignedLocalNamespaceId: rootEpoch.peerAssignedLocalNamespaceId,
+      });
+      const context = await this.acceptInbound(
+        normalized,
+        claimedRoot,
+        params.senderAssignedLocalNamespaceId,
+      );
+      this.inboundRecognizeResults.set(normalized, {
+        expiresAtMs: params.signatureExpires * 1000,
+        result: {
+          ok: true,
+          status: 'recognized',
+          peerAssignedLocalNamespaceId: context.namespaceId,
+        },
+      });
+      return;
     }
 
-    await this.database.db.transaction(async (tx) => {
-      const [matched] = await tx
-        .select({
-          id: tables.identityNamespace.id,
-          peerAssignedLocalNamespaceId:
-            tables.identityNamespace.peerAssignedLocalNamespaceId,
-          rootPublicKey: tables.identityNamespace.rootPublicKey,
-        })
-        .from(tables.identityNamespace)
-        .where(
-          and(
-            eq(tables.identityNamespace.rootKeyFingerprint, fingerprint),
-            isNull(tables.identityNamespace.retiredAt),
-            sql`${tables.identityNamespace.id} > 0`,
-          ),
-        )
-        .limit(1);
+    if (rootEpoch) {
+      // Claimed root pinned under a different domain: domain re-binding
+      // arrival (recognition 4.4). The hostname-verified fetch already
+      // performed is the proof of control over the new domain.
+      requireCoordinateMatch({
+        peerAssignedLocalNamespaceId: rootEpoch.peerAssignedLocalNamespaceId,
+      });
       if (
-        matched &&
-        params.senderAssignedLocalNamespaceId !== undefined &&
-        matched.peerAssignedLocalNamespaceId !== null &&
-        params.senderAssignedLocalNamespaceId !==
-          matched.peerAssignedLocalNamespaceId
+        domainEpoch &&
+        domainEpoch.id !== rootEpoch.id &&
+        domainEpoch.rootPublicKey !== claimedRoot
       ) {
-        const message = `${normalized} sender-assigned local namespace does not match pinned identity`;
-        await tx
-          .insert(tables.federationNamespaceCandidate)
-          .values({
-            nextDomain: normalized,
-            matchedNamespaceId: matched.id,
-            rootKeyFingerprint: fingerprint,
-            rootPublicKey: doc.rootKey.ed25519,
-            peerAssignedLocalNamespaceId: matched.peerAssignedLocalNamespaceId,
-            status: 'failed',
-            failedCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-            failedMessage: message,
-            verifiedAt: new Date(),
-            updatedAt: new Date(),
+        throw new BusinessException(
+          BusinessCode.FEDERATION_DOMAIN_CONFLICT,
+          `${normalized} is already bound to another peer identity`,
+          HttpStatus.CONFLICT,
+        );
+      }
+      await this.recordReview({
+        kind: 'domain-rebind',
+        matchedNamespaceId: rootEpoch.id,
+        nextDomain: normalized,
+        claimedRoot,
+        claim: {
+          previousDomain: rootEpoch.domain,
+          claimedRoot,
+          rootGroup: doc.roots,
+          senderAssignedLocalNamespaceId:
+            params.senderAssignedLocalNamespaceId ?? null,
+          arrivedAt: new Date().toISOString(),
+        },
+      });
+      await this.markReviewOpen(rootEpoch.id);
+      return;
+    }
+
+    if (domainEpoch) {
+      // Root not pinned anywhere, but this domain has an epoch: a root
+      // rotation arrival when the fetched group still contains the pin as a
+      // currently valid entry (recognition 4.5); otherwise the peer dropped
+      // our pin from its group, which is an identity contradiction.
+      requireCoordinateMatch({
+        peerAssignedLocalNamespaceId: domainEpoch.peerAssignedLocalNamespaceId,
+      });
+      const pinEntry = doc.roots.find(
+        (entry) => entry.ed25519 === domainEpoch.rootPublicKey,
+      );
+      const pinStillValid =
+        pinEntry !== undefined &&
+        pinEntry.notBefore <= now &&
+        now < pinEntry.notAfter;
+      if (!pinStillValid) {
+        const message = `${normalized} no longer publishes the pinned root in its group`;
+        await this.database.db
+          .update(tables.identityNamespace)
+          .set({
+            trustLevel: 'halted',
+            remoteServiceReachable: false,
+            haltedAt: new Date(),
+            haltCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
+            haltReason: message,
           })
-          .onConflictDoUpdate({
-            target: tables.federationNamespaceCandidate.nextDomain,
-            set: {
-              matchedNamespaceId: matched.id,
-              rootKeyFingerprint: fingerprint,
-              rootPublicKey: doc.rootKey.ed25519,
-              peerAssignedLocalNamespaceId:
-                matched.peerAssignedLocalNamespaceId,
-              status: 'failed',
-              failedCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
-              failedMessage: message,
-              verifiedAt: new Date(),
-              updatedAt: new Date(),
-            },
-          });
+          .where(eq(tables.identityNamespace.id, domainEpoch.id));
         throw new BusinessException(
           BusinessCode.FEDERATION_IDENTITY_MISMATCH,
           message,
           HttpStatus.CONFLICT,
         );
       }
-      const peerAssignedLocalNamespaceId =
-        matched?.peerAssignedLocalNamespaceId ??
-        params.senderAssignedLocalNamespaceId ??
-        null;
-      await tx
-        .insert(tables.federationNamespaceCandidate)
-        .values({
-          nextDomain: normalized,
-          matchedNamespaceId: matched?.id ?? null,
-          rootKeyFingerprint: fingerprint,
-          rootPublicKey: doc.rootKey.ed25519,
-          peerAssignedLocalNamespaceId,
-          status: 'pending',
-          failedCode: null,
-          failedMessage: null,
-          verifiedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: tables.federationNamespaceCandidate.nextDomain,
-          set: {
-            matchedNamespaceId: matched?.id ?? null,
-            rootKeyFingerprint: fingerprint,
-            rootPublicKey: doc.rootKey.ed25519,
-            peerAssignedLocalNamespaceId,
-            status: 'pending',
-            failedCode: null,
-            failedMessage: null,
-            verifiedAt: new Date(),
-            updatedAt: new Date(),
-          },
-        });
-      if (matched) {
-        await tx
-          .update(tables.identityNamespace)
-          .set({
-            domain: normalized,
-            trustLevel: 'pending',
-            recognizesPeer: true,
-            localServiceAvailable: true,
-            peerAcceptanceConfirmed: false,
-            remoteServiceReachable: false,
-          })
-          .where(eq(tables.identityNamespace.id, matched.id));
-      }
+      await this.recordReview({
+        kind: 'root-rotation',
+        matchedNamespaceId: domainEpoch.id,
+        nextDomain: normalized,
+        claimedRoot,
+        claim: {
+          previousRoot: domainEpoch.rootPublicKey,
+          claimedRoot,
+          rootGroup: doc.roots,
+          senderAssignedLocalNamespaceId:
+            params.senderAssignedLocalNamespaceId ?? null,
+          arrivedAt: new Date().toISOString(),
+        },
+      });
+      // A rotation review leaves the pinned epoch exactly as it is: ordinary
+      // admission keeps authenticating predecessor-authorized certificates
+      // only, and successor-root traffic fails authentication with 401.
+      return;
+    }
+
+    // Unknown domain, unpinned root: ordinary first recognition. The
+    // coordinate value, if any, is a first disclosure, not a consistency
+    // check.
+    const context = await this.acceptInbound(
+      normalized,
+      claimedRoot,
+      params.senderAssignedLocalNamespaceId,
+    );
+    this.inboundRecognizeResults.set(normalized, {
+      expiresAtMs: params.signatureExpires * 1000,
+      result: {
+        ok: true,
+        status: 'recognized',
+        peerAssignedLocalNamespaceId: context.namespaceId,
+      },
     });
+  }
+
+  /** Latest review relevant to arrivals from one domain: open reviews first,
+   *  otherwise the most recently resolved one. */
+  private async findReviewForDomain(domain: string) {
+    const rows = await this.database.db
+      .select({
+        id: tables.federationIdentityReview.id,
+        kind: tables.federationIdentityReview.kind,
+        status: tables.federationIdentityReview.status,
+      })
+      .from(tables.federationIdentityReview)
+      .innerJoin(
+        tables.identityNamespace,
+        eq(
+          tables.identityNamespace.id,
+          tables.federationIdentityReview.matchedNamespaceId,
+        ),
+      )
+      .where(
+        or(
+          eq(tables.federationIdentityReview.nextDomain, domain),
+          eq(tables.identityNamespace.domain, domain),
+        ),
+      )
+      .orderBy(desc(tables.federationIdentityReview.updatedAt))
+      .limit(1);
+    return rows[0];
+  }
+
+  /** Idempotently record one review fact for a matched namespace; a repeated
+   *  coherent arrival refreshes the claim snapshot of the open review. */
+  private async recordReview(params: {
+    kind: 'domain-rebind' | 'root-rotation';
+    matchedNamespaceId: number;
+    nextDomain: string;
+    claimedRoot: string;
+    claim: Record<string, unknown>;
+  }): Promise<void> {
+    const now = new Date();
+    await this.database.db
+      .insert(tables.federationIdentityReview)
+      .values({
+        kind: params.kind,
+        matchedNamespaceId: params.matchedNamespaceId,
+        nextDomain: params.nextDomain,
+        claimedRoot: params.claimedRoot,
+        claim: params.claim,
+        status: 'pending',
+        verifiedAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [tables.federationIdentityReview.matchedNamespaceId],
+        targetWhere: sql`${tables.federationIdentityReview.status} = 'pending'`,
+        set: {
+          nextDomain: params.nextDomain,
+          claimedRoot: params.claimedRoot,
+          claim: params.claim,
+          verifiedAt: now,
+          updatedAt: now,
+        },
+      });
+  }
+
+  /** A domain re-binding review puts the matched epoch into the pending
+   *  lifecycle without disturbing its data-plane admission state beyond
+   *  peer-acceptance evidence; the wire answer stays pending. */
+  private async markReviewOpen(namespaceId: number): Promise<void> {
+    await this.database.db
+      .update(tables.identityNamespace)
+      .set({
+        trustLevel: 'pending',
+        recognizesPeer: true,
+        localServiceAvailable: true,
+        peerAcceptanceConfirmed: false,
+        remoteServiceReachable: false,
+      })
+      .where(eq(tables.identityNamespace.id, namespaceId));
   }
 
   async acceptInbound(
     domain: string,
-    doc: WellKnownDoc,
+    rootPublicKey: string,
     senderAssignedLocalNamespaceId?: number,
   ): Promise<VerifiedFederationNamespace> {
     const normalized = this.normalizeDomain(domain);
-    const fingerprint = this.fingerprint(doc.rootKey.ed25519);
     let restored = false;
     const mismatch = await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, normalized);
       this.assertPolicyAllowsRecognition(peer, normalized);
-      if (
-        peer?.identityPinnedAt &&
-        (peer.rootPublicKey !== doc.rootKey.ed25519 ||
-          peer.rootKeyFingerprint !== fingerprint)
-      ) {
+      if (peer?.identityPinnedAt && peer.rootPublicKey !== rootPublicKey) {
         await this.markIdentityLostInTx(tx, normalized);
         return { mismatch: true as const };
       }
@@ -576,8 +712,7 @@ export class FederationRecognitionService {
       restored = this.didRecover(peer, trustLevel);
       const context = await this.namespaces.activateVerifiedInTx(tx, {
         domain: normalized,
-        rootPublicKey: doc.rootKey.ed25519,
-        rootKeyFingerprint: fingerprint,
+        rootPublicKey,
         identityPinnedAt: peer?.identityPinnedAt ?? now,
       });
       // The sender discloses the namespace its local store allocated for this
@@ -615,7 +750,6 @@ export class FederationRecognitionService {
             : {}),
         })
         .where(eq(tables.identityNamespace.id, context.namespaceId));
-      await this.initializePeerInTx(tx, context.domain, context.namespaceId);
       return { mismatch: false as const, context };
     });
     if (mismatch.mismatch) this.throwIdentityMismatch(normalized);
@@ -814,7 +948,17 @@ export class FederationRecognitionService {
     await this.discovery.resolveBase(domain);
     this.publishProgress(domain, 'VERIFYING_IDENTITY');
     const doc = await this.discovery.fetchWellKnown(domain);
-    const context = await this.prepareOutbound(domain, doc);
+    // Outbound first pin: the root authorizing the peer's currently valid
+    // certificates. A B-mode rotation leaves exactly one such root; several
+    // means the peer serves overlap and the claim of the certificate that
+    // answers our request resolves the epoch on their side.
+    const certifyingRoots = currentCertifyingRoots(doc);
+    if (certifyingRoots.length !== 1) {
+      throw new Error(
+        `Recognize ${domain}: well-known group does not resolve to exactly one certifying root`,
+      );
+    }
+    const context = await this.prepareOutbound(domain, certifyingRoots[0]!);
     await this.discovery.cacheDocument(domain, context.namespaceId, doc);
     const base = await this.discovery.resolveBase(domain);
     const url = new URL(`${base}/s2s/v1/recognize`);
@@ -823,45 +967,72 @@ export class FederationRecognitionService {
       : '{}';
     const release = await this.discovery.acquireRequestSlot(domain);
     try {
-      const headers = await this.signature.signOutbound({
-        method: 'POST',
-        url,
-        body,
-      });
-      let response: Response;
-      this.publishProgress(domain, 'CONNECTING');
-      try {
-        response = await this.discovery.request(url, {
+      // A `pending` result is a definitive authenticated answer (asynchronous
+      // verification or administrator review in progress), never a transport
+      // failure: re-issue Recognize within a bounded window instead of
+      // degrading, and surface `failed` results without touching reachability.
+      const deadline = Date.now() + RECOGNIZE_PENDING_POLL_BUDGET_MS;
+      let ok: Extract<RecognizeResult, { status: 'recognized' }> | undefined;
+      for (;;) {
+        const headers = await this.signature.signOutbound({
           method: 'POST',
-          headers: { 'content-type': 'application/json', ...headers },
+          url,
           body,
-          signal: AbortSignal.timeout(
-            this.transportConfig.get().callTimeoutSec * 1000,
-          ),
         });
-      } catch (error) {
-        await this.markTransportDegraded(
-          domain,
-          `Recognize network/timeout: ${(error as Error).message}`,
-        );
-        throw error;
-      }
-      if (response.status !== 200)
-        await this.handleRecognizeHttpFailure(domain, response);
-      let value: unknown;
-      try {
-        value = await response.json();
-      } catch {
-        value = undefined;
-      }
-      const ok = this.parseRecognizeRecognized(value);
-      if (!ok) {
-        await this.markTransportDegraded(
-          domain,
-          'Recognize malformed recognized result',
-        );
-        throw new Error(
-          `Recognize ${domain} returned malformed recognized result`,
+        let response: Response;
+        this.publishProgress(domain, 'CONNECTING');
+        try {
+          response = await this.discovery.request(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...headers },
+            body,
+            signal: AbortSignal.timeout(
+              this.transportConfig.get().callTimeoutSec * 1000,
+            ),
+          });
+        } catch (error) {
+          await this.markTransportDegraded(
+            domain,
+            `Recognize network/timeout: ${(error as Error).message}`,
+          );
+          throw error;
+        }
+        if (response.status !== 200)
+          await this.handleRecognizeHttpFailure(domain, response);
+        let value: unknown;
+        try {
+          value = await response.json();
+        } catch {
+          value = undefined;
+        }
+        const result = this.parseRecognizeResult(value);
+        if (!result) {
+          await this.markTransportDegraded(
+            domain,
+            'Recognize malformed recognized result',
+          );
+          throw new Error(
+            `Recognize ${domain} returned malformed recognized result`,
+          );
+        }
+        if (result.status === 'failed') {
+          throw new BusinessException(
+            result.code,
+            result.message,
+            HttpStatus.CONFLICT,
+          );
+        }
+        if (result.status === 'recognized') {
+          ok = result;
+          break;
+        }
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `Recognize ${domain} is still pending asynchronous verification or local review`,
+          );
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, RECOGNIZE_PENDING_POLL_INTERVAL_MS),
         );
       }
       await this.recordPeerAssignedLocalNamespace(
@@ -910,17 +1081,12 @@ export class FederationRecognitionService {
 
   private async prepareOutbound(
     domain: string,
-    doc: WellKnownDoc,
+    rootPublicKey: string,
   ): Promise<VerifiedFederationNamespace> {
-    const fingerprint = this.fingerprint(doc.rootKey.ed25519);
     const mismatch = await this.database.db.transaction(async (tx) => {
       const peer = await this.lockPeer(tx, domain);
       this.assertPolicyAllowsRecognition(peer, domain);
-      if (
-        peer?.identityPinnedAt &&
-        (peer.rootPublicKey !== doc.rootKey.ed25519 ||
-          peer.rootKeyFingerprint !== fingerprint)
-      ) {
+      if (peer?.identityPinnedAt && peer.rootPublicKey !== rootPublicKey) {
         await this.markIdentityLostInTx(tx, domain);
         return { mismatch: true as const };
       }
@@ -934,8 +1100,7 @@ export class FederationRecognitionService {
       const trustLevel = this.lifecycle(next);
       const context = await this.namespaces.activateVerifiedInTx(tx, {
         domain,
-        rootPublicKey: doc.rootKey.ed25519,
-        rootKeyFingerprint: fingerprint,
+        rootPublicKey,
         identityPinnedAt: peer?.identityPinnedAt ?? now,
       });
       await tx
@@ -950,7 +1115,6 @@ export class FederationRecognitionService {
               : peer?.trustedAt,
         })
         .where(eq(tables.identityNamespace.id, context.namespaceId));
-      await this.initializePeerInTx(tx, context.domain, context.namespaceId);
       return { mismatch: false as const, context };
     });
     if (mismatch.mismatch) this.throwIdentityMismatch(domain);
@@ -970,25 +1134,9 @@ export class FederationRecognitionService {
     );
   }
 
-  private async initializePeerInTx(
-    tx: DatabaseTransaction,
-    domain: string,
-    namespaceId: number,
-  ): Promise<void> {
-    await tx
-      .insert(tables.peerStateFeedPullCursor)
-      .values({ peerDomain: domain, namespaceId })
-      .onConflictDoNothing();
-  }
-
   private async lockPeer(tx: DatabaseTransaction, domain: string) {
     const [peer] = await tx
-      .select({
-        ...getTableColumns(tables.identityNamespace),
-        rootKeyFingerprint: tables.identityNamespace.rootKeyFingerprint,
-        rootPublicKey: tables.identityNamespace.rootPublicKey,
-        identityPinnedAt: tables.identityNamespace.identityPinnedAt,
-      })
+      .select(getTableColumns(tables.identityNamespace))
       .from(tables.identityNamespace)
       .where(
         and(
@@ -1140,18 +1288,54 @@ export class FederationRecognitionService {
     };
   }
 
-  private parseRecognizeRecognized(value: unknown): RecognizeRecognized | null {
+  /** Closed-shape parse of a Recognize result body: unknown fields are
+   * rejected, and `message` is required on `failed` exactly like the outbound
+   * failures this server itself serializes. */
+  private parseRecognizeResult(value: unknown): RecognizeResult | null {
     if (!this.isRecord(value)) return null;
-    if (Object.keys(value).length !== 3) return null;
-    if (value.ok !== true) return null;
-    if (value.status !== 'recognized') return null;
-    if (!this.isPositiveSafeInteger(value.peerAssignedLocalNamespaceId))
-      return null;
-    return {
-      ok: true,
-      status: 'recognized',
-      peerAssignedLocalNamespaceId: value.peerAssignedLocalNamespaceId,
-    };
+    const { ok, status } = value;
+    if (ok === true && status === 'recognized') {
+      if (Object.keys(value).length !== 3) return null;
+      if (!this.isPositiveSafeInteger(value.peerAssignedLocalNamespaceId))
+        return null;
+      return {
+        ok: true,
+        status: 'recognized',
+        peerAssignedLocalNamespaceId: value.peerAssignedLocalNamespaceId,
+      };
+    }
+    if (ok === true && status === 'pending') {
+      const keys = Object.keys(value);
+      if (
+        keys.some(
+          (key) => key !== 'ok' && key !== 'status' && key !== 'message',
+        )
+      )
+        return null;
+      const message = value.message;
+      if (message !== undefined && typeof message !== 'string') return null;
+      return message === undefined
+        ? { ok: true, status: 'pending' }
+        : { ok: true, status: 'pending', message };
+    }
+    if (ok === false && status === 'failed') {
+      const keys = Object.keys(value);
+      if (
+        keys.some(
+          (key) =>
+            key !== 'ok' &&
+            key !== 'status' &&
+            key !== 'code' &&
+            key !== 'message',
+        )
+      )
+        return null;
+      const { code, message } = value;
+      if (typeof code !== 'number' || !Number.isSafeInteger(code)) return null;
+      if (typeof message !== 'string') return null;
+      return { ok: false, status: 'failed', code, message };
+    }
+    return null;
   }
 
   private parseHealthResult(value: unknown): HealthResult | null {
@@ -1178,12 +1362,6 @@ export class FederationRecognitionService {
     return (
       Number.isSafeInteger(value) && typeof value === 'number' && value > 0
     );
-  }
-
-  private fingerprint(publicKey: string): string {
-    return `sha256:${createHash('sha256')
-      .update(Buffer.from(publicKey, 'base64'))
-      .digest('base64url')}`;
   }
 
   private normalizeDomain(value: string): string {

@@ -60,7 +60,7 @@ The v1 wire surface and every v1 object are closed. Unknown fields and unknown e
 
 ## 3. Federation v1 HTTP surface
 
-The following table is the complete v1 surface. Its synchronization surface contains two GET feeds, two GET thread queries, three exact profile queries, and one POST feed-head hint. `recognize` additionally serves as the arrival operation for a server presenting a new domain under an already pinned root identity. The authentication context determines how signature validation obtains a key and which peer states MAY invoke an operation; it does not change the Section 6 signature wire format.
+The following table is the complete v1 surface. Its synchronization surface contains three GET feeds, one GET namespace-bindings query, two GET thread queries, three exact profile queries, and one POST feed-head hint. `recognize` additionally serves as the arrival operation for a server presenting a new domain under an already pinned root identity. The authentication context determines how signature validation obtains a key and which peer states MAY invoke an operation; it does not change the Section 6 signature wire format.
 
 | Method | Absolute path                                                                                       | Authentication context | Request                                         | Success     | Response                 |
 | ------ | --------------------------------------------------------------------------------------------------- | ---------------------- | ----------------------------------------------- | ----------- | ------------------------ |
@@ -69,14 +69,16 @@ The following table is the complete v1 surface. Its synchronization surface cont
 | `GET`  | `/s2s/v1/health`                                                                                    | status signed          | no query or body                                | `200`       | bare privacy-safe status |
 | `POST` | `/s2s/v1/feed-heads`                                                                                | lightweight signed     | JSON feed-head hint                             | `200`       | success ACK envelope     |
 | `GET`  | `/s2s/v1/state-feed`                                                                                | recognized signed      | feed query                                      | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/profile-namespace-feed`                                                                   | recognized signed      | namespace feed query                            | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/group-meta`                                                                                | recognized signed      | group/meta mode query                           | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/account-profiles/:namespaceId/:account/:profileRev`                                        | recognized signed      | path profile evidence                           | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev` | recognized signed      | path member evidence                            | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev` | recognized signed      | path member evidence                            | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev`                            | recognized signed      | path intent evidence                            | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/messages`                                                                                  | recognized signed      | thread data query                               | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/message-tombstones`                                                                        | recognized signed      | thread data query                               | `200`       | success data envelope    |
 | `POST` | `/s2s/v1/call`                                                                                      | recognized signed      | JSON call frame                                 | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/accounts/:account`                                                                         | recognized signed      | path account                                    | `200`       | success data envelope    |
+| `GET`  | `/s2s/v1/profile-namespaces/:nsid`                                                                  | recognized signed      | path namespace bindings                         | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/media/:digest`                                                                             | recognized signed      | path/query/optional Range                       | `200`/`206` | raw bytes                |
 | `GET`  | `/s2s/v1/forward-bundles/:bundleId`                                                                 | recognized signed      | path bundle ID                                  | `200`       | success data envelope    |
 
@@ -341,7 +343,7 @@ The required closure is:
 | `group-meta`                                                                                 | Publishes the origin-authoritative current roster and compacted group-profile reference; it does not provide a historical roster.                          |
 | `/accounts/:account`                                                                         | Returns the current public profile for an exact local account on the responding server.                                                                    |
 | `/account-profiles/:namespaceId/:account/:profileRev`                                        | Returns an exact account profile revision authorized by current readable user-message evidence or the current group-profile reference.                     |
-| `/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev` | Returns an exact member profile revision authorized by the current Group Meta member reference or a serviceable member-authored group message.             |
+| `/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev` | Returns an exact member profile revision authorized by the current Group Meta member reference or a serviceable member-authored group message.             |
 | `/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev`                            | Returns an exact account profile revision selected by one current directed Relationship Intent.                                                            |
 | `/messages` and `/message-tombstones`                                                        | Recompute the operation's relationship and authority rules and apply local history policy on every request; a stale head grants no authority.              |
 | Media and forward bundles                                                                    | Recompute the exact authorized message/thread binding independently of every feed cursor or hint.                                                          |
@@ -377,6 +379,7 @@ This specification uses the following feed-coordinate terms consistently. An unq
 - `scannedThrough`: the direction-relative boundary through which a page has scanned continuously. It becomes the next `after` for a forward query or the next `before` for a reverse thread query after successful commit.
 - `resumeAfter` and `resumeBefore`: the source's exclusive lower and upper serviceable boundaries for feed and thread-query recovery. A forward query adopts `resumeAfter`, while a reverse thread query adopts `resumeBefore`. Group Meta delta recovery changes to Full mode as defined by [Group Meta Feed](./group-meta.md).
 - `stateFeedEndId`: the sole inclusive State Feed drain bound published by `feed-heads`. It is a drain target, not a consumer cursor, business revision, thread-authorization boundary, or relationship-terminal position.
+- `profileNamespaceFeedEndId`: the inclusive end of a publisher's Profile Namespace Feed, disclosed by the State Feed page envelope and by `feed-heads`. It is a change-detection counter for that feed, never a State Feed or Group Meta coordinate, consumer cursor, or authorization boundary.
 - `messageEndSeq` and `tombstoneEndSeq`: inclusive upper bounds carried together by `THREAD_CONTENT_HEAD`. They belong to two thread-local coordinate spaces and are not feed IDs. Each is a JSON `0 | ThreadSequence`: `0` means that no item has yet been allocated in the corresponding coordinate space; a positive value is its inclusive sequence bound. Neither bound resets to zero merely because no items are currently queryable.
 - A message's `seq` is its publisher-local thread coordinate. Exact profile
   reads authorized by message evidence do not expose this coordinate; the
@@ -447,7 +450,14 @@ Applying a page and adopting its cursor position MUST be atomic from the protoco
 
 Feed retention is operation-specific. State Feed MUST retain every current non-deletion stable-key projection needed to rebuild from its advertised oldest boundary. Group Meta MUST retain the latest `MEMBER_UPSERT` needed for every current roster member, its current group-profile and announcement projections (including an explicit announcement clear), and the mutations required by active bounded drains. Message query has an independent serviceable window. A publisher SHOULD retain each referenced author-profile snapshot while any message referencing it remains serviceable to a peer. If the snapshot is unavailable, the degradation rules in [Profiles, Section 8](./profiles.md#8-retention-and-degradation) apply. Tombstone facts remain permanent even when loss of authorization removes their current thread-content projection.
 
-The closed `feed-heads` body contains only `stateFeedEndId`. The authenticated signer domain identifies the feed source and is not repeated in the body. The value is an inclusive State Feed scan bound used only for wake-up and bounded draining; it is not an ACK, business revision, or query sequence. A hint may be lost, duplicated, or reordered and MUST NOT be the sole recovery mechanism.
+The closed `feed-heads` body contains exactly `stateFeedEndId` and
+`profileNamespaceFeedEndId`; both are required. The authenticated signer
+domain identifies the feed source and is not repeated in the body.
+`stateFeedEndId` is an inclusive State Feed scan bound;
+`profileNamespaceFeedEndId` is the signer's Profile Namespace Feed end. Each
+field wakes and bounds the draining of its own feed only, and neither is an
+ACK, business revision, or query sequence. A hint may be lost, duplicated, or
+reordered and MUST NOT be the sole recovery mechanism.
 
 For each authenticated publisher, a consumer MUST retain the greatest
 `stateFeedEndId` it has observed but not yet durably covered. A duplicate or

@@ -131,7 +131,6 @@ export class FederationThreadFanoutTaskHandler
               WHERE audience."threadId" = thread.id
                 AND audience."localUserId" IS NULL
                 AND audience."targetNamespaceId" = namespace.id
-                AND audience."targetDomain" = namespace.domain
                 AND (thread.type = 'P2P' OR thread."groupDomain" = 'local')
             )
             OR (thread.type = 'GROUP'

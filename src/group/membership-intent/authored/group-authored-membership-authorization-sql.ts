@@ -16,7 +16,7 @@ export type GroupMembershipAuthorizationRow = {
   dissolvedAt: string | null;
   memberAccount: string | null;
   memberDomain: string | null;
-  memberNamespaceId: number | null;
+  profileNamespaceId: number | null;
   memberNote: string | null;
   memberIntentStatus: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' | null;
   memberProfileRev: number | null;
@@ -153,7 +153,7 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
       FROM roster r JOIN "Account" a ON a.account = r."memberAccount"
         AND a.domain = 'local' AND a."namespaceId" = 0
       JOIN "AccountThreadState" p ON p."accountId" = a.id AND p."threadId" = ${input.threadId}
-      WHERE r."memberDomain" = 'local'
+      WHERE r."profileNamespaceId" = 0
         AND r.operation = 'MEMBER_UPSERT' AND r.body->>'role' IN ('OWNER', 'ADMIN')
     ), capacity_scope AS MATERIALIZED (
       -- Same authorization growth gate as the request-keyed variant; the
@@ -182,8 +182,8 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
     )
     SELECT g.*, ${input.pairId}::text AS "pairId",
       ${input.targetAccount}::text AS "memberAccount",
-      ${input.targetDomain}::text AS "memberDomain",
-      ${input.targetNamespaceId}::integer AS "memberNamespaceId",
+      ns.domain AS "memberDomain",
+      ${input.targetNamespaceId}::integer AS "profileNamespaceId",
       rev.note AS "memberNote",
       rev.status AS "memberIntentStatus", rev."profileRev" AS "memberProfileRev",
       (rev.status = 'ACCEPTED' OR (rev.status = 'REQUESTED'
@@ -214,16 +214,18 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
       COALESCE((SELECT jsonb_agg(DISTINCT p.direction ORDER BY p.direction)
         FROM "GroupRequestProjection" p
         WHERE p."threadId" = ${input.threadId} AND p."memberAccount" = ${input.targetAccount}
-          AND p."memberDomain" = ${input.targetDomain} AND p."memberNamespaceId" = ${input.targetNamespaceId}
+          AND p."profileNamespaceId" = ${input.targetNamespaceId}
           AND p.status = 'REQUESTED'), '[]'::jsonb) AS "projectionDirections"
     FROM ${groupStateSql} g
     LEFT JOIN reverse rev ON true
     LEFT JOIN side_a ON true
     LEFT JOIN roster member_last ON member_last."memberAccount" = ${input.targetAccount}
-      AND member_last."memberDomain" = ${input.targetDomain}
+      AND member_last."profileNamespaceId" = ${input.targetNamespaceId}
+    LEFT JOIN "IdentityNamespace" ns ON ns.id = ${input.targetNamespaceId}
     LEFT JOIN "Account" local_member ON local_member.account = ${input.targetAccount}
       AND local_member.domain = ${input.targetDomain}
-      AND local_member."namespaceId" = ${input.targetNamespaceId}
+      AND local_member."namespaceId" = 0
+      AND ${input.targetNamespaceId} = 0
     WHERE g.id = ${input.threadId}
   `;
 }

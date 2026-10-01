@@ -11,7 +11,7 @@ import { deriveMessagePreview } from '../../shared/message-preview.js';
 interface ThreadFeedPreview {
   seq: number;
   createdAt: string;
-  sender: { account: string; domain: string; namespaceId: number; profileRev: number };
+  sender: { account: string; namespaceId: number; profileRev: number };
   status: 'LIVE' | 'USER_RETRACTION' | 'MODERATION_REMOVAL';
   text?: string;
 }
@@ -22,7 +22,7 @@ interface ThreadFeedState {
   conversationState: 'ACTIVE' | 'READ_ONLY';
   blocked: boolean;
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
-  profile: { account: string; domain: string; namespaceId: number; profileRev: number };
+  profile: { account: string; namespaceId: number; profileRev: number };
   alias: string | null;
   threadId: number;
   threadFeedId: number;
@@ -88,7 +88,6 @@ export class ThreadFeedService {
           Omit<ThreadFeedState, 'groupMetaFeedEndId' | 'profile'> & {
             groupMetaFeedEndId: number | null;
             profileAccount: string;
-            profileDomain: string;
             profileNamespaceId: number;
             profileRev: number;
           }
@@ -103,7 +102,6 @@ export class ThreadFeedService {
                CASE WHEN t.type = 'GROUP' THEN t."groupAccount"
                  WHEN pair."endpointAAccount" = self.account
                    THEN pair."endpointBAccount" ELSE pair."endpointAAccount" END AS "profileAccount",
-               peer_ns.domain AS "profileDomain",
                CASE WHEN t.type = 'GROUP' THEN t."authorityNamespaceId"
                  WHEN pair."endpointAAccount" = self.account
                    THEN pair."endpointBNamespaceId" ELSE pair."endpointANamespaceId" END AS "profileNamespaceId",
@@ -126,12 +124,10 @@ export class ThreadFeedService {
         const hasMore = resultRows.rows.length > take;
         const items: ThreadFeedState[] = resultRows.rows
           .slice(0, take)
-          .map(({ profileAccount, profileDomain,
-                  profileNamespaceId, profileRev, ...item }) => ({
+          .map(({ profileAccount, profileNamespaceId, profileRev, ...item }) => ({
             ...item,
             profile: {
               account: profileAccount,
-              domain: profileDomain,
               namespaceId: profileNamespaceId,
               profileRev,
             },
@@ -155,7 +151,6 @@ export class ThreadFeedService {
                 createdAt: new Date(preview.createdAt).toISOString(),
                 sender: {
                   account: preview.creatorAccount,
-                  domain: preview.creatorDomain,
                   namespaceId: preview.profileNamespaceId,
                   profileRev: preview.profileRev,
                 },

@@ -29,16 +29,8 @@ export class MemberProfileRepository {
 
   constructor() {
     this.webdb.profileWake$.pipe(takeUntilDestroyed()).subscribe((wake) => {
-      // A newly resolved name can enter an empty search result, but only the
-      // roster named by the authorization evidence is affected.
-      if (wake.event !== 'PROFILE_AVAILABLE' || !wake.evidence) return;
-      const { evidence } = wake;
-      if (
-        (evidence.type === 'GROUP_META' ||
-          evidence.type === 'MESSAGE_AUTHOR') &&
-        this.queriedThreads.has(evidence.threadId)
-      )
-        this.notifyChanged([evidence.threadId]);
+      if (wake.event !== 'PROFILE_AVAILABLE') return;
+      this.notifyChanged([...this.queriedThreads]);
     });
     inject(SessionLifecycleService)
       .ended$.pipe(takeUntilDestroyed())

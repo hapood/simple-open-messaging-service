@@ -103,7 +103,7 @@ export class FederationGroupMetaFeedService {
           .where(
             and(
               eq(threadAudience.threadId, authorized.threadId),
-              eq(threadAudience.targetDomain, peerDomain),
+              eq(threadAudience.targetNamespaceId, namespaceId),
               eq(threadAudience.targetNamespaceId, namespaceId),
               sql`${threadAudience.localUserId} IS NULL`,
             ),

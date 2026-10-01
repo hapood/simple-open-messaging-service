@@ -61,6 +61,14 @@ export const GLOBAL_PREFIX_EXCLUSIONS = [
     method: RequestMethod.GET,
   },
   {
+    path: `${FEDERATION_API_PREFIX}/profile-namespace-feed`,
+    method: RequestMethod.GET,
+  },
+  {
+    path: `${FEDERATION_API_PREFIX}/profile-namespaces/:nsid`,
+    method: RequestMethod.GET,
+  },
+  {
     path: `${FEDERATION_API_PREFIX}/group-meta`,
     method: RequestMethod.GET,
   },
@@ -82,7 +90,7 @@ export const GLOBAL_PREFIX_EXCLUSIONS = [
     method: RequestMethod.GET,
   },
   {
-    path: `${FEDERATION_API_PREFIX}/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev`,
+    path: `${FEDERATION_API_PREFIX}/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev`,
     method: RequestMethod.GET,
   },
   {

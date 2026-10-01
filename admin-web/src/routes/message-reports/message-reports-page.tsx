@@ -223,7 +223,7 @@ export function MessageReportsPage() {
                   <TableCell>
                     <div>{report.creator.name}</div>
                     <div className="text-xs text-muted-foreground">
-                      {report.creator.account}@{report.creator.domain}
+                      {report.creator.account} · ns {report.creator.namespaceId}
                     </div>
                   </TableCell>
                   <TableCell className="font-mono text-xs">

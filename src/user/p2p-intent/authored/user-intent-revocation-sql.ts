@@ -44,7 +44,10 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
   const authoredSql =
     input.authoredSql ??
     authoredIntentWriteSql({
-      author: { account: input.actorAccount, namespaceId: input.actorNamespaceId },
+      author: {
+        account: input.actorAccount,
+        namespaceId: input.actorNamespaceId,
+      },
       receiver: {
         account: input.targetAccount,
         namespaceId: input.targetNamespaceId,
@@ -81,9 +84,9 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
       WHERE t.id = ${input.threadId} AND EXISTS (SELECT 1 FROM pair_change)
       RETURNING t."curSeq", t."tombstoneEndSeq"
     ), system_message AS (
-      INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "creatorDomain", "updatedAt")
+      INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "profileNamespaceId", "publisherNamespaceId", "updatedAt")
       SELECT ${input.threadId}, s."curSeq", 'SYSTEM'::"ContentType", ${content}::jsonb,
-        '$system', 'local', CURRENT_TIMESTAMP
+        '$system', 0, 0, CURRENT_TIMESTAMP
       FROM seq_alloc s
       RETURNING seq
     ), member_watermark AS (
@@ -135,10 +138,10 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
     ), audience_close AS (
       DELETE FROM "ThreadAudience" ta
       WHERE ta."threadId" = ${input.threadId} AND (
-        ta."targetDomain" = 'local'
+        ta."localUserId" IS NOT NULL
         OR (${remote ? sql`true` : sql`false`}
-          AND ta."targetDomain" = ${input.targetDomain}
-          AND ta."targetNamespaceId" = ${input.targetNamespaceId})
+          AND ta."targetNamespaceId" = ${input.targetNamespaceId}
+          AND ta."localUserId" IS NULL)
       ) AND (SELECT departed FROM departed d)
       RETURNING ta.id
     )${
@@ -148,14 +151,11 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
             -- the receiving side converges from the REVOKED fact alone and must
             -- never re-read a content boundary for a departed relationship.
             DELETE FROM "PeerStateFeed" psf
-            WHERE psf."peerDomain" = ${input.targetDomain}
-              AND psf."namespaceId" = ${input.targetNamespaceId}
+            WHERE psf."namespaceId" = ${input.targetNamespaceId}
               AND psf."account" = ${input.actorAccount}
-              -- domain is the wire-normalized local domain; the rest of the key
-              -- is already unique per server, so it needs no filter.
               AND psf."eventType" = 'THREAD_CONTENT_HEAD'
               AND psf."subjectAccount" = ${input.targetAccount}
-              AND psf."subjectDomain" = ${input.targetDomain}
+              AND psf."subjectNamespaceId" = ${input.targetNamespaceId}
               AND (SELECT departed FROM departed d)
             RETURNING psf."feedId"
           ), ${userIntentPeerWriteSql({

@@ -70,10 +70,10 @@ import {
   type ThreadFeedSnapshot,
 } from '../../../../shared/thread-attention';
 import {
-  isProfileSelector,
+  type ProfileDemand,
   type ProfileKey,
-  type ProfileSelector as ProfileEvidence,
-} from '../../../../shared/profile-selector';
+} from '../../../../shared/profile-demand';
+import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
 
 /**
  * The IndexedDB primitive for the frontend persistence layer ("webdb") — the storage half of the
@@ -94,15 +94,11 @@ import {
  * elsewhere.
  */
 
-export interface ProfileSelector {
+export interface ProfileSnapshot {
   publisherNamespaceId: number;
-  account: string;
-  domain: string;
   profileNamespaceId: number;
+  account: string;
   profileRev: number;
-}
-
-export interface ProfileSnapshot extends ProfileSelector {
   name: string;
   avatarDigest: string | null;
   bio: string;
@@ -113,7 +109,7 @@ export type ProfileResolutionAttempt =
   | { status: 'PENDING'; key: ProfileKey };
 
 export type ProfileWake =
-  | { event: 'PROFILE_AVAILABLE'; key: ProfileKey; evidence?: ProfileEvidence }
+  | { event: 'PROFILE_AVAILABLE'; key: ProfileKey; demand?: ProfileDemand }
   | {
       event: 'PROFILE_UNAVAILABLE';
       key: ProfileKey;
@@ -124,6 +120,52 @@ export interface NamespaceRecord {
   domain: string;
   namespaceId: number;
   status: 'ACTIVE' | 'ARCHIVED';
+}
+
+/** Cached profile-namespace binding for one (publisher, nsid-in-publisher)
+ *  pair. `domain`/`rootPublicKey` mirror the server's resolve answer; a null
+ *  domain is a tomb (the publisher reports no binding). An expired row must
+ *  be re-resolved before its data is displayed.
+ *
+ *  Two coordinates with different spaces: `updateFeedId` is the publisher's
+ *  own feed position from a resolve answer; `changeSeq` is the local change
+ *  feed position last applied to this row. The commit guard compares against
+ *  the sync round's end in the change space, so a resolve answer fetched
+ *  before a newer change entry can never resurrect stale bindings. Both are
+ *  JSON numbers on the client wire. */
+export interface ProfileNamespaceBinding {
+  publisherNamespaceId: number;
+  profileNamespaceId: number;
+  domain: string | null;
+  rootPublicKey: string | null;
+  updateFeedId: number;
+  changeSeq: number;
+  expired: boolean;
+  refreshedAt: number;
+}
+
+/** Identity of one cached binding row; also the resolve-request pair shape. */
+export interface ProfileNamespacePairKey {
+  publisherNamespaceId: number;
+  profileNamespaceId: number;
+}
+
+function profileNamespacePairKey(
+  value: unknown,
+): ProfileNamespacePairKey | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const pair = value as Partial<ProfileNamespacePairKey>;
+  if (
+    !Number.isSafeInteger(pair.publisherNamespaceId) ||
+    Number(pair.publisherNamespaceId) < 0 ||
+    !Number.isSafeInteger(pair.profileNamespaceId) ||
+    Number(pair.profileNamespaceId) < 0
+  )
+    return;
+  return {
+    publisherNamespaceId: Number(pair.publisherNamespaceId),
+    profileNamespaceId: Number(pair.profileNamespaceId),
+  };
 }
 
 interface NamespaceRegistryStore {
@@ -252,7 +294,10 @@ type StoredThreadPreview = {
   text: string | null;
 };
 
-function storeThreadPreview(threadId: number, preview: ThreadPreview): StoredThreadPreview {
+function storeThreadPreview(
+  threadId: number,
+  preview: ThreadPreview,
+): StoredThreadPreview {
   return {
     threadId,
     seq: preview.seq,
@@ -281,7 +326,9 @@ function restoreThreadPreview(row: StoredThreadPreview): ThreadPreview {
   };
 }
 
-function storeThreadAttention(state: LocalThreadAttention): StoredThreadAttention {
+function storeThreadAttention(
+  state: LocalThreadAttention,
+): StoredThreadAttention {
   const { previews: _previews, profile, ...fields } = state;
   return {
     ...fields,
@@ -296,21 +343,51 @@ function withStoredPreview(
   row: StoredThreadPreview | undefined,
 ): LocalThreadAttention {
   const {
-    threadId, threadFeedId, type, authorityNamespaceId,
-    conversationState, blocked, role,
-    profileAccount, profileDomain, profileNamespaceId,
-    alias, threadProfileRev, messageEndSeq, tombstoneEndSeq,
-    groupMetaFeedEndId, joinRequestEndFeedId, joinRequestReadFeedId,
-    groupInviteEndFeedId, lastReadSeq, announcementReadFeedId,
-    unreadCount, lastMentionSeq, localReadSeq,
+    threadId,
+    threadFeedId,
+    type,
+    authorityNamespaceId,
+    conversationState,
+    blocked,
+    role,
+    profileAccount,
+    profileDomain,
+    profileNamespaceId,
+    alias,
+    threadProfileRev,
+    messageEndSeq,
+    tombstoneEndSeq,
+    groupMetaFeedEndId,
+    joinRequestEndFeedId,
+    joinRequestReadFeedId,
+    groupInviteEndFeedId,
+    lastReadSeq,
+    announcementReadFeedId,
+    unreadCount,
+    lastMentionSeq,
+    localReadSeq,
   } = state;
   return {
-    threadId, threadFeedId, type, authorityNamespaceId,
-    conversationState, blocked, role,
-    alias, threadProfileRev, messageEndSeq, tombstoneEndSeq,
-    groupMetaFeedEndId, joinRequestEndFeedId, joinRequestReadFeedId,
-    groupInviteEndFeedId, lastReadSeq, announcementReadFeedId,
-    unreadCount, lastMentionSeq, localReadSeq,
+    threadId,
+    threadFeedId,
+    type,
+    authorityNamespaceId,
+    conversationState,
+    blocked,
+    role,
+    alias,
+    threadProfileRev,
+    messageEndSeq,
+    tombstoneEndSeq,
+    groupMetaFeedEndId,
+    joinRequestEndFeedId,
+    joinRequestReadFeedId,
+    groupInviteEndFeedId,
+    lastReadSeq,
+    announcementReadFeedId,
+    unreadCount,
+    lastMentionSeq,
+    localReadSeq,
     profile: {
       account: profileAccount,
       domain: profileDomain,
@@ -345,10 +422,14 @@ export interface WebdbSchema extends DBSchema {
     indexes: { domain: string };
   };
   profiles: {
-    key: [number, string, string, number, number];
+    key: [number, number, string, number];
     value: ProfileSnapshot;
   };
   profileAvatarBlobs: { key: string; value: { digest: string; blob: Blob } };
+  profileNamespaces: {
+    key: [number, number];
+    value: ProfileNamespaceBinding;
+  };
   members: {
     key: [number, string, string, number];
     value: MemberRecord;
@@ -385,7 +466,8 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 34;
+export const CACHE_SCHEMA_VERSION = 36;
+// Profile-namespace binding cache added (change-feed consumption).
 // Message content now stores canonical CAS paths; discard cached contextual URLs.
 export const MESSAGE_CACHE_SCHEMA_VERSION = 6;
 const IDB_FORMAT_VERSION = 1;
@@ -416,30 +498,20 @@ function idbAvailable(): boolean {
   return typeof indexedDB !== 'undefined';
 }
 
-function normalizeProfileSnapshot<T extends ProfileSelector>(
-  snapshot: T,
-): T {
-  const subject = localSubjectIdentity({
-    account: snapshot.account,
-    domain: snapshot.domain,
-    namespaceId: snapshot.profileNamespaceId,
-  });
+function normalizeProfileSnapshot<T extends ProfileSnapshot>(snapshot: T): T {
   return {
     ...snapshot,
-    account: subject.account,
-    domain: subject.domain,
-    profileNamespaceId: subject.namespaceId,
+    account: snapshot.account.trim().toLowerCase(),
   };
 }
 
 function profileStoreKey(
-  profile: ProfileSelector,
-): [number, string, string, number, number] {
+  profile: ProfileSnapshot,
+): [number, number, string, number] {
   return [
     profile.publisherNamespaceId,
-    profile.account,
-    profile.domain,
     profile.profileNamespaceId,
+    profile.account,
     profile.profileRev,
   ];
 }
@@ -454,8 +526,6 @@ function parseProfileKey(value: unknown): ProfileKey | undefined {
     Number(candidate.profileNamespaceId) < 0 ||
     typeof candidate.account !== 'string' ||
     candidate.account.length === 0 ||
-    typeof candidate.domain !== 'string' ||
-    candidate.domain.length === 0 ||
     !Number.isSafeInteger(candidate.rev) ||
     Number(candidate.rev) < 1
   )
@@ -464,12 +534,38 @@ function parseProfileKey(value: unknown): ProfileKey | undefined {
     publisherNamespaceId: Number(candidate.publisherNamespaceId),
     profileNamespaceId: Number(candidate.profileNamespaceId),
     account: candidate.account,
-    domain: candidate.domain,
     rev: Number(candidate.rev),
   };
 }
 
 export type StateFeedWorkerFactory = () => Worker | null;
+
+/** Fire-and-forget events the worker pushes without a request id. */
+type StateFeedWorkerEvent =
+  | { type: 'notification-batch'; userId: number; entries: BrowserNotificationBatch['entries'] }
+  | { type: 'profile-wake'; wake: ProfileWake }
+  | { type: 'profile-namespace-wake'; pairs: ProfileNamespacePairKey[] }
+  | {
+      type: 'tombstone-committed';
+      threadId: number;
+      tombstones: Array<{
+        seq: number;
+        type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
+      }>;
+    };
+
+/** A request response carrying the pending id. */
+type StateFeedWorkerResponse = {
+  id: number;
+  ok: true;
+  result?: unknown;
+} | {
+  id: number;
+  ok: false;
+  error: string;
+};
+
+type StateFeedWorkerMessage = StateFeedWorkerEvent | StateFeedWorkerResponse;
 
 /** Shared storage implementation used by page and background runtimes. */
 export class WebdbStorage {
@@ -480,6 +576,29 @@ export class WebdbStorage {
   readonly browserNotifications$ = this.browserNotifications.asObservable();
   private readonly profileWake = new Subject<ProfileWake>();
   readonly profileWake$ = this.profileWake.asObservable();
+  /** Emitted by the database worker after each tombstone page commits, so the
+   *  message repository can project deletions into mounted sources. */
+  private readonly tombstoneCommitted = new Subject<{
+    threadId: number;
+    deletions: Array<{ seq: number; type: 'USER_RETRACTION' | 'MODERATION_REMOVAL' }>;
+  }>();
+  readonly tombstoneCommitted$ = this.tombstoneCommitted.asObservable();
+  /** Emitted when the database worker refreshed profile-namespace bindings
+   *  after a change-feed sync round, so UI joins re-read the cache. */
+  private readonly profileNamespaceWake = new Subject<
+    ProfileNamespacePairKey[]
+  >();
+  /** Change-feed pull scheduler: single-flight with a trailing edge, so the
+   *  HELLO anchor and SSE wakes never start parallel drains, and a wake that
+   *  lands mid-drain still gets observed by one trailing round. */
+  private readonly profileNamespacePull = new TrailingSingleFlight<
+    number | undefined
+  >((anchor) =>
+    this.runAccountOperation(() =>
+      this.pullProfileNamespaceChangesInternal(anchor),
+    ),
+  );
+  readonly profileNamespaceWake$ = this.profileNamespaceWake.asObservable();
 
   async applyProfileEvent(
     event: 'PROFILE_AVAILABLE' | 'PROFILE_UNAVAILABLE',
@@ -497,26 +616,19 @@ export class WebdbStorage {
       this.profileWake.next({ event, key, reason });
       return;
     }
-    const result = await this.resolveProfileEvidence({
-      type: 'EXACT',
+    const result = await this.resolveProfileDemand({
       publisherNamespaceId: key.publisherNamespaceId,
-      profileNamespaceId: key.profileNamespaceId,
-      account: key.account,
-      domain: key.domain,
-      rev: key.rev,
+      lookup: 'ACCOUNT_PROFILE',
+      target: {
+        profileNamespaceId: key.profileNamespaceId,
+        account: key.account,
+        rev: key.rev,
+      },
     });
     // Native SSE is delivered after SQLite materialization. Browser commits
     // notify through the worker instead of emitting again at the request layer.
     if (isTauri() && result.status === 'READY') {
-      const evidence =
-        data &&
-        typeof data === 'object' &&
-        'evidence' in data &&
-        isProfileSelector(data.evidence)
-          ? data.evidence
-          : undefined;
-      if (evidence) await this.applyGroupMetaProfileDrift(evidence, key);
-      this.profileWake.next({ event, key, ...(evidence ? { evidence } : {}) });
+      this.profileWake.next({ event, key });
     }
   }
   private stateFeedWorker: Worker | null = null;
@@ -802,6 +914,7 @@ export class WebdbStorage {
   ): Promise<boolean> {
     const required = [
       'namespaces',
+      'profileNamespaces',
       'profiles',
       'profileAvatarBlobs',
       'members',
@@ -844,11 +957,13 @@ export class WebdbStorage {
         db.createObjectStore('profiles', {
           keyPath: [
             'publisherNamespaceId',
-            'account',
-            'domain',
             'profileNamespaceId',
+            'account',
             'profileRev',
           ],
+        });
+        db.createObjectStore('profileNamespaces', {
+          keyPath: ['publisherNamespaceId', 'profileNamespaceId'],
         });
         db.createObjectStore('profileAvatarBlobs', { keyPath: 'digest' });
         const members = db.createObjectStore('members', {
@@ -1228,7 +1343,9 @@ export class WebdbStorage {
       ]);
       await tx.done;
       const byThread = new Map(previews.map((row) => [row.threadId, row]));
-      return states.map((state) => withStoredPreview(state, byThread.get(state.threadId)));
+      return states.map((state) =>
+        withStoredPreview(state, byThread.get(state.threadId)),
+      );
     });
   }
 
@@ -1260,7 +1377,9 @@ export class WebdbStorage {
         cursor,
         groupThreadIds: [],
         states: rows
-          .filter((row) => row.threadFeedId > after && row.threadFeedId <= cursor)
+          .filter(
+            (row) => row.threadFeedId > after && row.threadFeedId <= cursor,
+          )
           .map((row) => withStoredPreview(row, byThread.get(row.threadId))),
       };
     });
@@ -1302,7 +1421,9 @@ export class WebdbStorage {
     return this.runAccountOperation(async () => {
       // Validate and copy before opening the transaction or yielding to other callers.
       const incoming = states.map((state) => {
-        const snapshot = attentionSnapshot(mergeThreadAttention(undefined, state))!;
+        const snapshot = attentionSnapshot(
+          mergeThreadAttention(undefined, state),
+        )!;
         // Computing the single durable preview before opening IDB keeps malformed
         // pages from committing a partial structural row.
         const latest = snapshot.previews!.reduce<ThreadPreview | undefined>(
@@ -1312,10 +1433,11 @@ export class WebdbStorage {
         );
         return {
           snapshot,
-          latest: latest ? storeThreadPreview(snapshot.threadId, latest) : undefined,
+          latest: latest
+            ? storeThreadPreview(snapshot.threadId, latest)
+            : undefined,
         };
       });
-      const snapshots = incoming.map(({ snapshot }) => snapshot);
       if (
         scannedThrough !== undefined &&
         (!Number.isInteger(scannedThrough) ||
@@ -1323,14 +1445,9 @@ export class WebdbStorage {
           scannedThrough > 2_147_483_647)
       )
         throw new Error('Invalid attention feed cursor');
-      if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<LocalThreadAttention[]>(
-          'native_db_merge_thread_states',
-          {
-            userId: Number(this.currentUserId),
-            states: snapshots,
-            scannedThrough: scannedThrough ?? null,
-          },
+      if (isTauri())
+        throw new Error(
+          'native thread feed synchronization belongs to the Rust SSE executor',
         );
       const tx = (await this.db()).transaction(
         ['threadPreviews', 'threads', 'namespaces', 'settings'],
@@ -1352,13 +1469,18 @@ export class WebdbStorage {
           )
             throw new Error('thread feed changed a conversation identity');
           const current = stored
-            ? withStoredPreview(stored, await previewStore.get(snapshot.threadId))
+            ? withStoredPreview(
+                stored,
+                await previewStore.get(snapshot.threadId),
+              )
             : undefined;
           const next = mergeThreadAttention(current, snapshot);
           if (next !== current) {
             if (snapshot.profile.namespaceId !== 0)
               await this.registerNamespace(
-                tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
+                tx.objectStore(
+                  'namespaces',
+                ) as unknown as NamespaceRegistryStore,
                 snapshot.profile.domain,
                 snapshot.profile.namespaceId,
               );
@@ -1390,7 +1512,11 @@ export class WebdbStorage {
       try {
         return await commit();
       } catch (error) {
-        try { tx.abort(); } catch { /* Transaction may already have aborted. */ }
+        try {
+          tx.abort();
+        } catch {
+          /* Transaction may already have aborted. */
+        }
         await tx.done.catch(() => undefined);
         throw error;
       }
@@ -1402,8 +1528,12 @@ export class WebdbStorage {
     seq: number,
   ): Promise<LocalThreadAttention> {
     return this.runAccountOperation(async () => {
-      if (!Number.isSafeInteger(threadId) || threadId < 1 ||
-          !Number.isSafeInteger(seq) || seq < 0)
+      if (
+        !Number.isSafeInteger(threadId) ||
+        threadId < 1 ||
+        !Number.isSafeInteger(seq) ||
+        seq < 0
+      )
         throw new Error('invalid local read position');
       if (isTauri() && this.currentUserId != null)
         return tauriInvoke<LocalThreadAttention>(
@@ -1671,7 +1801,10 @@ export class WebdbStorage {
     // Presentation-only batch: omitted entries retain their authoritative
     // feed state; clearing the table here would silently lose valid threads.
     const previous = new Map(
-      (await tx.objectStore('threads').getAll()).map((item) => [item.threadId, item]),
+      (await tx.objectStore('threads').getAll()).map((item) => [
+        item.threadId,
+        item,
+      ]),
     );
     const selected: ConversationItem[] = [];
     for (const item of items) {
@@ -1683,10 +1816,12 @@ export class WebdbStorage {
         await tx.done.catch(() => undefined);
         throw error;
       }
-      selected.push(preserveThreadProfile(
-        { ...item, profileRev: state.threadProfileRev },
-        restoreThread(state),
-      ));
+      selected.push(
+        preserveThreadProfile(
+          { ...item, profileRev: state.threadProfileRev },
+          restoreThread(state),
+        ),
+      );
     }
     for (const item of selected) {
       await this.ensureThreadNamespaceInTx(tx.objectStore('namespaces'), item);
@@ -1740,9 +1875,9 @@ export class WebdbStorage {
           ? await tx
               .objectStore('profiles')
               .get([
-                identity.account,
-                identity.domain,
                 identity.namespaceId,
+                identity.namespaceId,
+                identity.account,
                 item.profileRev,
               ])
           : undefined;
@@ -1788,11 +1923,15 @@ export class WebdbStorage {
       return;
     }
     const tx = (await this.db()).transaction(
-      ['threads', 'threadPreviews', 'members'], 'readwrite',
+      ['threads', 'threadPreviews', 'members'],
+      'readwrite',
     );
     await tx.objectStore('threads').delete(threadId);
     await tx.objectStore('threadPreviews').delete(threadId);
-    let member = await tx.objectStore('members').index('thread').openCursor(threadId);
+    let member = await tx
+      .objectStore('members')
+      .index('thread')
+      .openCursor(threadId);
     while (member) {
       await member.delete();
       member = await member.continue();
@@ -1808,19 +1947,13 @@ export class WebdbStorage {
     fullThrough?: number | null,
   ): Promise<void> {
     await this.runAccountOperation(async () => {
-      if (!isTauri() && this.currentUserId !== null && fullThrough === undefined) {
-        const workerApply = this.applyStateFeedPageInWorker(
-          this.currentUserId,
-          items,
-          feedId,
-          resetProjection,
-        );
-        if (workerApply) {
-          await workerApply;
-          return;
-        }
-      }
-      await this.applyStateFeedPageInternal(items, feedId, resetProjection, [], fullThrough);
+      await this.applyStateFeedPageInternal(
+        items,
+        feedId,
+        resetProjection,
+        [],
+        fullThrough,
+      );
     });
   }
 
@@ -1828,21 +1961,6 @@ export class WebdbStorage {
   async applyGroupMetaPage(update: ClientGroupMetaApply): Promise<void> {
     await this.runAccountOperation(async () => {
       await this.applyStateFeedPageInternal([], null, false, [update]);
-    });
-  }
-
-  private applyStateFeedPageInWorker(
-    userId: string,
-    items: ClientStateFeedItem[],
-    feedId: number,
-    resetProjection: boolean,
-  ): Promise<void> | null {
-    return this.requestDbWorker<void>({
-      type: 'apply',
-      userId,
-      items,
-      feedId,
-      resetProjection,
     });
   }
 
@@ -1856,15 +1974,14 @@ export class WebdbStorage {
     const epoch = this.cacheEpoch;
     const userId = this.currentUserId;
     if (isTauri())
-      throw new Error('native feed synchronization belongs to the Rust SSE executor');
+      throw new Error(
+        'native feed synchronization belongs to the Rust SSE executor',
+      );
     const pending = this.requestDbWorker<ThreadFeedSyncResult>({
       type: 'thread-sync',
       userId,
       target,
       after,
-      url: `${apiPrefix()}/thread-feed`,
-      groupMetaUrl: `${apiPrefix()}/user/group-meta`,
-      profileResolutionUrl: `${apiPrefix()}/user/profile-resolution`,
     });
     if (!pending) throw new Error('database worker unavailable');
     const result = await pending;
@@ -1873,10 +1990,10 @@ export class WebdbStorage {
     return result;
   }
 
-  /** Submit one authorized profile evidence to the platform-owned database executor.
+  /** Submit one authorized profile demand to the platform-owned database executor.
    * READY results are committed there before this promise resolves. */
-  async resolveProfileEvidence(
-    selector: ProfileEvidence,
+  async resolveProfileDemand(
+    demand: ProfileDemand,
   ): Promise<ProfileResolutionAttempt> {
     if (this.accountMaintenance || this.currentUserId === null)
       throw new Error('account cache lifetime expired');
@@ -1885,31 +2002,42 @@ export class WebdbStorage {
     const result = isTauri()
       ? await tauriInvoke<ProfileResolutionAttempt>('native_profile_resolve', {
           userId: Number(userId),
-          selector,
+          demand,
         })
       : await this.requestDbWorker<ProfileResolutionAttempt>({
           type: 'resolve-profile',
           userId,
-          selector,
-          profileResolutionUrl: `${apiPrefix()}/user/profile-resolution`,
+          demand,
         });
     if (!result) throw new Error('database worker unavailable');
     if (epoch !== this.cacheEpoch)
       throw new Error('account cache lifetime expired');
-    if (
-      result.status === 'READY' &&
-      selector.type === 'GROUP_META' &&
-      selector.subject.type === 'MEMBER' &&
-      result.profile.profileRev !== selector.profileRev
-    ) {
-      await this.applyGroupMetaProfileDrift(selector, {
-        account: result.profile.account,
-        domain: result.profile.domain,
-        namespaceId: result.profile.namespaceId,
-        rev: result.profile.profileRev,
-      });
-    }
     return result;
+  }
+
+  /** Drive per-thread Group Meta + tombstone drains in the database worker.
+   *
+   *  `threadId === null` is the stop signal: the worker finishes the current
+   *  page and commits it, then stops (the next page's guard fails). A non-null
+   *  `threadId` sets it as the open thread and fires both drains concurrently;
+   *  each checks `openThreadId === threadId` between pages. */
+  async drainThreadMisc(
+    threadId: number | null,
+    groupMetaEndId: string,
+    tombstoneEndSeq: number,
+  ): Promise<void> {
+    if (this.accountMaintenance || this.currentUserId === null)
+      throw new Error('account cache lifetime expired');
+    const userId = this.currentUserId;
+    const pending = this.requestDbWorker<void>({
+      type: 'drain-thread-misc',
+      userId,
+      threadId,
+      groupMetaEndId,
+      tombstoneEndSeq,
+    });
+    if (!pending) throw new Error('database worker unavailable');
+    await pending;
   }
 
   private requestDbWorker<T>(
@@ -1921,42 +2049,44 @@ export class WebdbStorage {
       if (!this.stateFeedWorker) return null;
       const worker = this.stateFeedWorker;
       this.stateFeedWorker.onmessage = (
-        event: MessageEvent<{
-          id?: number;
-          type?: string;
-          wake?: ProfileWake;
-          userId?: number;
-          entries?: BrowserNotificationBatch['entries'];
-          ok?: boolean;
-          error?: string;
-          result?: unknown;
-        }>,
+        event: MessageEvent<StateFeedWorkerMessage>,
       ) => {
         if (this.stateFeedWorker !== worker) return;
-        if (
-          event.data.type === 'notification-batch' &&
-          event.data.userId === Number(this.currentUserId) &&
-          event.data.entries
-        ) {
-          this.browserNotifications.next({
-            userId: event.data.userId,
-            entries: event.data.entries,
+        const data = event.data;
+        // Events carry a `type` discriminant; responses carry an `id`.
+        if (!('type' in data)) {
+          const pending = this.stateFeedWorkerPending.get(data.id);
+          if (!pending) return;
+          this.stateFeedWorkerPending.delete(data.id);
+          if (data.ok) pending.resolve(data.result);
+          else pending.reject(new Error(data.error));
+          return;
+        }
+        if (data.type === 'notification-batch') {
+          if (data.userId === Number(this.currentUserId))
+            this.browserNotifications.next({
+              userId: data.userId,
+              entries: data.entries,
+            });
+          return;
+        }
+        if (data.type === 'profile-wake') {
+          this.profileWake.next(data.wake);
+          return;
+        }
+        if (data.type === 'profile-namespace-wake') {
+          this.profileNamespaceWake.next(
+            data.pairs.filter((pair) => profileNamespacePairKey(pair)),
+          );
+          return;
+        }
+        if (data.type === 'tombstone-committed') {
+          this.tombstoneCommitted.next({
+            threadId: data.threadId,
+            deletions: data.tombstones,
           });
           return;
         }
-        if (event.data.type === 'profile-wake' && event.data.wake) {
-          this.profileWake.next(event.data.wake);
-          return;
-        }
-        if (event.data.id === undefined) return;
-        const pending = this.stateFeedWorkerPending.get(event.data.id);
-        if (!pending) return;
-        this.stateFeedWorkerPending.delete(event.data.id);
-        if (event.data.ok) pending.resolve(event.data.result);
-        else
-          pending.reject(
-            new Error(event.data.error ?? 'state-feed worker failed'),
-          );
       };
       this.stateFeedWorker.onerror = (event) => {
         if (this.stateFeedWorker !== worker) return;
@@ -2006,10 +2136,6 @@ export class WebdbStorage {
           type: 'bind-thread-feed',
           userId: this.currentUserId,
           port: channel.port1,
-          url: `${apiPrefix()}/thread-feed`,
-          groupMetaUrl: `${apiPrefix()}/user/group-meta`,
-          stateFeedUrl: `${apiPrefix()}/user/state-feed`,
-          profileResolutionUrl: `${apiPrefix()}/user/profile-resolution`,
         },
         [channel.port1],
       );
@@ -2037,12 +2163,15 @@ export class WebdbStorage {
     fullThrough?: number | null,
   ): Promise<void> {
     if (isTauri())
-      throw new Error('native state-feed commits belong to the Rust SSE executor');
+      throw new Error(
+        'native state-feed commits belong to the Rust SSE executor',
+      );
     const db = await this.db();
     const tx = db.transaction(
       [
         'threads',
         'namespaces',
+        'profileNamespaces',
         'profiles',
         'members',
         'relationshipRequests',
@@ -2053,7 +2182,9 @@ export class WebdbStorage {
     try {
       if (resetProjection) {
         await tx.objectStore('relationshipRequests').clear();
-        await tx.objectStore('settings').delete('relationshipIntentStateRevision');
+        await tx
+          .objectStore('settings')
+          .delete('relationshipIntentStateRevision');
       }
       const applyRequestProjectionEffect = async (
         op: ClientRelationshipIntentItem,
@@ -2208,12 +2339,21 @@ export class WebdbStorage {
                 text: item.body.text,
               };
               const presentation = restoreThread(thread);
-              if (presentation.type !== 'GROUP') throw new Error('invalid group structure');
-              const next = update.page.mode === 'full'
-                ? { ...presentation, groupMetaRecoveryAnnouncement: announcement }
-                : { ...presentation, group: { ...presentation.group, announcement } };
+              if (presentation.type !== 'GROUP')
+                throw new Error('invalid group structure');
+              const next =
+                update.page.mode === 'full'
+                  ? {
+                      ...presentation,
+                      groupMetaRecoveryAnnouncement: announcement,
+                    }
+                  : {
+                      ...presentation,
+                      group: { ...presentation.group, announcement },
+                    };
               await tx.objectStore('threads').put({
-                ...thread, ...storeThreadPresentation(next),
+                ...thread,
+                ...storeThreadPresentation(next),
               });
             }
             continue;
@@ -2243,7 +2383,7 @@ export class WebdbStorage {
             continue;
           }
           const body = item.body;
-          // A message sequence is stronger profile evidence than a compacted Meta
+          // A message sequence is stronger profile demand than a compacted Meta
           // fact. Only a new membership incarnation discards its message anchor.
           const messageAnchor = !previous?.left
             ? (previous?.profileMessageSeq ?? null)
@@ -2267,7 +2407,8 @@ export class WebdbStorage {
         const thread = await tx.objectStore('threads').get(update.threadId);
         if (thread?.type === 'GROUP') {
           const presentation = restoreThread(thread);
-          if (presentation.type !== 'GROUP') throw new Error('invalid group structure');
+          if (presentation.type !== 'GROUP')
+            throw new Error('invalid group structure');
           await tx.objectStore('threads').put({
             ...thread,
             ...storeThreadPresentation({
@@ -2284,7 +2425,10 @@ export class WebdbStorage {
                 memberCount: activeMembers.length,
                 groupMetaFeedId: update.page.scannedThrough,
                 ...(update.page.mode === 'full' && !update.page.hasMore
-                  ? { announcement: presentation.groupMetaRecoveryAnnouncement ?? null }
+                  ? {
+                      announcement:
+                        presentation.groupMetaRecoveryAnnouncement ?? null,
+                    }
                   : {}),
               },
             }),
@@ -2298,26 +2442,36 @@ export class WebdbStorage {
             key: 'relationshipRequestReadHead',
             value: op.body,
           });
-          continue;
         }
       }
-      const intentRevision = items.filter((item) => item.eventType === 'RELATIONSHIP_INTENT')
+      const intentRevision = items
+        .filter((item) => item.eventType === 'RELATIONSHIP_INTENT')
         .reduce((highest, item) => Math.max(highest, item.feedId), 0);
       if (intentRevision > 0) {
         const settings = tx.objectStore('settings');
         const previous = await settings.get('relationshipIntentStateRevision');
-        await settings.put({ key: 'relationshipIntentStateRevision',
-          value: Math.max(intentRevision, typeof previous?.value === 'number' ? previous.value : 0) });
+        await settings.put({
+          key: 'relationshipIntentStateRevision',
+          value: Math.max(
+            intentRevision,
+            typeof previous?.value === 'number' ? previous.value : 0,
+          ),
+        });
       }
       if (fullThrough !== undefined) {
         const settings = tx.objectStore('settings');
         if (fullThrough === null) await settings.delete('stateFeedFullThrough');
         else if (feedId !== null && fullThrough > feedId)
-          await settings.put({ key: 'stateFeedFullThrough', value: fullThrough });
+          await settings.put({
+            key: 'stateFeedFullThrough',
+            value: fullThrough,
+          });
         else throw new Error('invalid state-feed full boundary');
       }
       if (feedId !== null)
-        await tx.objectStore('settings').put({ key: 'stateFeedId', value: feedId });
+        await tx
+          .objectStore('settings')
+          .put({ key: 'stateFeedId', value: feedId });
       await tx.done;
     } catch (error) {
       // Application errors do not automatically abort an IndexedDB transaction.
@@ -2329,6 +2483,238 @@ export class WebdbStorage {
       await tx.done.catch(() => undefined);
       throw error;
     }
+  }
+
+  /** Cached bindings for the given pairs, in request order. Missing rows
+   *  are simply absent from the result — callers demand-fill. */
+  async getProfileNamespaceBindings(
+    pairs: readonly ProfileNamespacePairKey[],
+  ): Promise<ProfileNamespaceBinding[]> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        return tauriInvoke<ProfileNamespaceBinding[]>(
+          'native_db_profile_namespace_bindings',
+          {
+            userId: Number(this.currentUserId),
+            pairs: pairs.map((pair) => [
+              pair.publisherNamespaceId,
+              pair.profileNamespaceId,
+            ]),
+          },
+        );
+      }
+      const db = await this.db();
+      const rows: ProfileNamespaceBinding[] = [];
+      for (const pair of pairs) {
+        const row = await db.get('profileNamespaces', [
+          pair.publisherNamespaceId,
+          pair.profileNamespaceId,
+        ]);
+        if (row) rows.push(row);
+      }
+      return rows;
+    });
+  }
+
+  /** Persists fresh resolve answers from one sync round that ended at
+   *  `roundEnd` (change-feed coordinate). A row whose `changeSeq` already
+   *  moved past `roundEnd` was expired by a newer round; the stale answer
+   *  must not resurrect it. A row with data clears expiry; a tomb answer
+   *  (null domain — the publisher reports no binding) also clears expiry,
+   *  because "no binding" is itself a current fact. */
+  async commitProfileNamespaceBindings(
+    entries: readonly Omit<
+      ProfileNamespaceBinding,
+      'changeSeq' | 'expired' | 'refreshedAt'
+    >[],
+    roundEnd: number,
+  ): Promise<void> {
+    await this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        await tauriInvoke('native_db_commit_profile_namespace_bindings', {
+          userId: Number(this.currentUserId),
+          entries,
+          roundEnd,
+        });
+        return;
+      }
+      const db = await this.db();
+      const tx = db.transaction('profileNamespaces', 'readwrite');
+      const store = tx.objectStore('profileNamespaces');
+      for (const entry of entries) {
+        const previous = await store.get([
+          entry.publisherNamespaceId,
+          entry.profileNamespaceId,
+        ]);
+        // A newer round's expiry must survive this round's stale answer.
+        if ((previous?.changeSeq ?? 0) > roundEnd) continue;
+        await store.put({
+          ...entry,
+          changeSeq: Math.max(previous?.changeSeq ?? 0, roundEnd),
+          expired: false,
+          refreshedAt: Date.now(),
+        });
+      }
+      await tx.done;
+    });
+  }
+
+  /** Applies one change-feed page: every item either expires a cached row or
+   *  plants a tomb for a pair this device has not cached yet (feed pulled,
+   *  cache not — the tomb marks the pair known-but-unresolved). Returns the
+   *  pairs touched, for the caller's resolve round. */
+  async applyProfileNamespaceChanges(
+    items: ReadonlyArray<{
+      publisherNamespaceId: number;
+      profileNamespaceId: number;
+      changeId: number;
+    }>,
+  ): Promise<ProfileNamespacePairKey[]> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        return tauriInvoke<ProfileNamespacePairKey[]>(
+          'native_db_apply_profile_namespace_changes',
+          { userId: Number(this.currentUserId), items },
+        );
+      }
+      const db = await this.db();
+      const tx = db.transaction('profileNamespaces', 'readwrite');
+      const store = tx.objectStore('profileNamespaces');
+      const touched: ProfileNamespacePairKey[] = [];
+      for (const item of items) {
+        const key: ProfileNamespacePairKey = {
+          publisherNamespaceId: item.publisherNamespaceId,
+          profileNamespaceId: item.profileNamespaceId,
+        };
+        const row = await store.get([
+          key.publisherNamespaceId,
+          key.profileNamespaceId,
+        ]);
+        if (row && row.expired && row.changeSeq >= item.changeId) continue; // stale replay
+        await store.put(
+          row
+            ? { ...row, expired: true, changeSeq: item.changeId }
+            : {
+                ...key,
+                domain: null,
+                rootPublicKey: null,
+                updateFeedId: 0,
+                changeSeq: item.changeId,
+                expired: true,
+                refreshedAt: 0,
+              },
+        );
+        touched.push(key);
+      }
+      await tx.done;
+      return touched;
+    });
+  }
+
+  /** Client change-feed cursor, persisted in settings. The HELLO anchor
+   *  (`profileNamespaceChangeEndId`) enables the skip-pull fast path; a
+   *  wake (SSE PROFILE_NAMESPACE_UPDATED) or a stale cursor triggers this
+   *  pull. Single-flight through the shared TrailingSingleFlight primitive.
+   */
+  pullProfileNamespaceChanges(anchor?: number): Promise<void> {
+    return this.profileNamespacePull.trigger(anchor);
+  }
+
+  private async pullProfileNamespaceChangesInternal(
+    anchor: number | undefined,
+  ): Promise<void> {
+    const db = await this.db();
+    if (isTauri()) {
+      // The native runtime owns its own SSE-driven sync; this pull is the
+      // browser path. Native wiring lands with the Tauri executor.
+      return;
+    }
+    const settings = db.transaction('settings');
+    const cursorRow = await settings.store.get('profileNamespaceChangeEndId');
+    const cursor =
+      typeof cursorRow?.value === 'number' &&
+      Number.isSafeInteger(cursorRow.value)
+        ? cursorRow.value
+        : 0;
+    await settings.done.catch(() => undefined);
+    if (anchor !== undefined && anchor === cursor) return;
+    let after = cursor;
+    for (;;) {
+      const response = await fetch(
+        `${apiPrefix()}/user/profile-namespace-feed?after=${after}&take=100`,
+        { credentials: 'same-origin' },
+      );
+      if (!response.ok && response.status === 400 && after > 0) {
+        // The server's coordinate space moved backwards (reset): resync
+        // from the beginning.
+        after = 0;
+        continue;
+      }
+      if (!response.ok)
+        throw new Error(
+          `profile-namespace change feed HTTP ${response.status}`,
+        );
+      const envelope = (await response.json()) as {
+        code?: number;
+        data?: {
+          items: Array<{
+            publisherNamespaceId: number;
+            profileNamespaceId: number;
+            changeId: number;
+          }>;
+          scannedThrough: number;
+          endId: number;
+          hasMore: boolean;
+        };
+      };
+      if (envelope.code !== 0 || !envelope.data)
+        throw new Error('profile-namespace change feed failed');
+      const page = envelope.data;
+      const touched = await this.applyProfileNamespaceChanges(page.items);
+      if (touched.length)
+        await this.resolveProfileNamespacePairs(touched, page.scannedThrough);
+      const writeSettings = db.transaction('settings', 'readwrite');
+      await writeSettings.store.put({
+        key: 'profileNamespaceChangeEndId',
+        value: page.scannedThrough,
+      });
+      await writeSettings.done;
+      this.profileNamespaceWake.next(touched);
+      if (!page.hasMore) return;
+      after = page.scannedThrough;
+    }
+  }
+
+  /** Resolves one round's touched pairs through the server cache. A failure
+   *  leaves the tombs in place; the next wake or demand retries. */
+  private async resolveProfileNamespacePairs(
+    pairs: readonly ProfileNamespacePairKey[],
+    roundEnd: number,
+  ): Promise<void> {
+    const response = await fetch(`${apiPrefix()}/profile-namespaces/resolve`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pairs }),
+    });
+    if (!response.ok)
+      throw new Error(`profile-namespace resolve HTTP ${response.status}`);
+    const envelope = (await response.json()) as {
+      code?: number;
+      data?: {
+        entries: Array<{
+          publisherNamespaceId: number;
+          profileNamespaceId: number;
+          domain: string | null;
+          rootPublicKey: string | null;
+          updateFeedId: number;
+          expired: boolean;
+        }>;
+      };
+    };
+    if (envelope.code !== 0 || !envelope.data)
+      throw new Error('profile-namespace resolve failed');
+    await this.commitProfileNamespaceBindings(envelope.data.entries, roundEnd);
   }
 
   async getNamespaces(): Promise<NamespaceRecord[]> {
@@ -2400,187 +2786,49 @@ export class WebdbStorage {
   }
 
   async getProfile(
-    selector: ProfileSelector,
+    demand: ProfileDemand,
   ): Promise<ProfileSnapshot | undefined> {
-    selector = normalizeProfileSnapshot(selector);
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
         return (
           (await tauriInvoke<ProfileSnapshot | null>('native_db_get_profile', {
             userId: Number(this.currentUserId),
-            ...selector,
+            demand,
           })) ?? undefined
         );
       return (await this.db()).get('profiles', [
-        selector.publisherNamespaceId,
-        selector.account,
-        selector.domain,
-        selector.profileNamespaceId,
-        selector.profileRev,
+        demand.publisherNamespaceId,
+        demand.target.profileNamespaceId,
+        demand.target.account,
+        demand.target.rev,
       ]);
     });
   }
 
-  async profileDemandForEvidence(evidence: ProfileEvidence): Promise<unknown> {
+  async profileDemandForDemand(demand: ProfileDemand): Promise<ProfileDemand> {
+    return demand;
+  }
+
+  async groupAccountForThread(threadId: number): Promise<string> {
     return this.runAccountOperation(async () => {
-      if (evidence.type === 'EXACT') {
-        return {
-          publisherNamespaceId: evidence.publisherNamespaceId,
-          lookup: 'ACCOUNT_PROFILE',
-          target: {
-            profileNamespaceId: evidence.profileNamespaceId,
-            account: evidence.account,
-            domain: evidence.domain,
-            rev: evidence.rev,
-          },
-        };
-      }
-      const db = await this.db();
-      if (evidence.type === 'MESSAGE_AUTHOR') {
-        const message = await (
-          await this.messageDb()
-        ).get('messages', [evidence.threadId, evidence.messageSeq]);
-        if (
-          !message ||
-          message.isDeleted ||
-          !('creator' in message) ||
-          !message.creator ||
-          message.profileRev !== evidence.rev
-        )
-          throw new Error('message-author profile evidence is not locally available');
-        const creator = localSubjectIdentity(message.creator);
-        return {
-          publisherNamespaceId: creator.namespaceId,
-          lookup: 'ACCOUNT_PROFILE',
-          target: {
-            profileNamespaceId: creator.namespaceId,
-            account: creator.account,
-            domain: creator.domain,
-            rev: evidence.rev,
-          },
-        };
-      }
-      if (evidence.subject.type === 'GROUP') {
-        const state = await db.get('threads', evidence.threadId);
-        if (state?.type !== 'GROUP' || state.threadProfileRev !== evidence.profileRev)
-          throw new Error('Group Meta profile evidence is not locally available');
-        return {
-          publisherNamespaceId: state.profileNamespaceId,
-          lookup: 'ACCOUNT_PROFILE',
-          target: {
-            profileNamespaceId: state.profileNamespaceId,
-            account: state.profileAccount,
-            domain: state.profileDomain,
-            rev: evidence.profileRev,
-          },
-        };
-      }
-      const memberSubject = evidence.subject;
-      const member = (
-        await db
-          .transaction('members')
-          .store.index('thread')
-          .getAll(evidence.threadId)
-      ).find(
-        (row) =>
-          !row.left &&
-          row.account === memberSubject.account &&
-          row.domain === memberSubject.domain &&
-          row.profileRev === evidence.profileRev,
-      );
-      if (!member) throw new Error('Group member profile evidence is not locally available');
-      return {
-        publisherNamespaceId: member.namespaceId,
-        lookup: 'GROUP_MEMBER_PROFILE',
-        target: {
-          profileNamespaceId: member.namespaceId,
-          account: member.account,
-          domain: member.domain,
-          rev: member.profileRev,
-        },
-        groupAccount: await this.groupAccountForThread(db, evidence.threadId),
-      };
+      const state = await (await this.db()).get('threads', threadId);
+      if (state?.type !== 'GROUP')
+        throw new Error('Group thread is not locally available');
+      return state.profileAccount;
     });
   }
 
-  private async groupAccountForThread(
-    db: IDBPDatabase<WebdbSchema>,
-    threadId: number,
-  ): Promise<string> {
-    const state = await db.get('threads', threadId);
-    if (state?.type !== 'GROUP') throw new Error('Group thread is not locally available');
-    return state.profileAccount;
-  }
-
-  /** Resolve an evidence reference to an already materialized local snapshot. */
-  async findProfileForEvidence(
-    evidence: ProfileEvidence,
+  /** Resolve an demand to an already materialized local snapshot. */
+  /** Resolve a demand to an already materialized local snapshot. */
+  async findProfileForDemand(
+    demand: ProfileDemand,
   ): Promise<ProfileSnapshot | undefined> {
     return this.runAccountOperation(async () => {
-      const db = await this.db();
-      if (evidence.type === 'EXACT') {
-        return db.get('profiles', [
-          evidence.publisherNamespaceId,
-          evidence.account,
-          evidence.domain,
-          evidence.profileNamespaceId,
-          evidence.rev,
-        ]);
-      }
-      if (evidence.type === 'MESSAGE_AUTHOR') {
-        const message = await (
-          await this.messageDb()
-        ).get('messages', [evidence.threadId, evidence.messageSeq]);
-        if (
-          !message ||
-          message.isDeleted ||
-          !('creator' in message) ||
-          !message.creator ||
-          message.profileRev !== evidence.rev
-        )
-          return undefined;
-        const creator = localSubjectIdentity(message.creator);
-        return db.get('profiles', [
-          creator.namespaceId,
-          creator.account,
-          creator.domain,
-          creator.namespaceId,
-          evidence.rev,
-        ]);
-      }
-      if (evidence.subject.type === 'GROUP') {
-        const state = await db.get('threads', evidence.threadId);
-        if (state?.type !== 'GROUP' ||
-            state.threadProfileRev !== evidence.profileRev)
-          return undefined;
-        return db.get('profiles', [
-          state.profileNamespaceId,
-          state.profileAccount,
-          state.profileDomain,
-          state.profileNamespaceId,
-          evidence.profileRev,
-        ]);
-      }
-      const memberSubject = evidence.subject;
-      const member = (
-        await db
-          .transaction('members')
-          .store.index('thread')
-          .getAll(evidence.threadId)
-      ).find(
-        (row) =>
-          !row.left &&
-          row.account === memberSubject.account &&
-          row.domain === memberSubject.domain &&
-          row.profileRev === evidence.profileRev,
-      );
-      if (!member) return undefined;
-      return db.get('profiles', [
-        member.namespaceId,
-        member.account,
-        member.domain,
-        member.namespaceId,
-        member.profileRev,
+      return (await this.db()).get('profiles', [
+        demand.publisherNamespaceId,
+        demand.target.profileNamespaceId,
+        demand.target.account,
+        demand.target.rev,
       ]);
     });
   }
@@ -2592,7 +2840,6 @@ export class WebdbStorage {
     return {
       publisherNamespaceId: member.namespaceId,
       account: member.account,
-      domain: member.domain,
       profileNamespaceId: member.namespaceId,
       profileRev: member.profileRev,
       name: snapshot?.name ?? member.account,
@@ -2692,9 +2939,8 @@ export class WebdbStorage {
         if (result.length >= params.take) break;
         const snapshot = await db.get('profiles', [
           member.namespaceId,
-          member.account,
-          member.domain,
           member.namespaceId,
+          member.account,
           member.profileRev,
         ]);
         const user = this.memberUser(member, snapshot);
@@ -2740,9 +2986,8 @@ export class WebdbStorage {
       if (!member || member.left) return undefined;
       const snapshot = await db.get('profiles', [
         namespaceId,
-        account,
-        domain,
         namespaceId,
+        account,
         member.profileRev,
       ]);
       return this.resolveMember(member, snapshot);
@@ -2761,15 +3006,20 @@ export class WebdbStorage {
       const references: import('./group-meta-sync').GroupMetaProfileReference[] =
         [];
       for (const state of await tx.objectStore('threads').getAll()) {
-        if (state.type !== 'GROUP' || state.conversationState === 'READ_ONLY' ||
-            state.threadProfileRev < 1) continue;
-        const cached = await tx.objectStore('profiles').get([
-          state.profileNamespaceId,
-          state.profileAccount,
-          state.profileDomain,
-          state.profileNamespaceId,
-          state.threadProfileRev,
-        ]);
+        if (
+          state.type !== 'GROUP' ||
+          state.conversationState === 'READ_ONLY' ||
+          state.threadProfileRev < 1
+        )
+          continue;
+        const cached = await tx
+          .objectStore('profiles')
+          .get([
+            state.profileNamespaceId,
+            state.profileNamespaceId,
+            state.profileAccount,
+            state.threadProfileRev,
+          ]);
         if (!cached)
           references.push({
             type: 'GROUP',
@@ -2791,9 +3041,8 @@ export class WebdbStorage {
           .objectStore('profiles')
           .get([
             member.namespaceId,
-            member.account,
-            member.domain,
             member.namespaceId,
+            member.account,
             member.profileRev,
           ]);
         if (!cached)
@@ -2813,154 +3062,8 @@ export class WebdbStorage {
 
   /** A newer remote Meta profile may outrun the compacted member fact. Message
    * evidence always wins; updating this local reference never advances a feed. */
-  async applyGroupMetaProfileDrift(
-    evidence: ProfileEvidence,
-    key: ProfileKey,
-  ): Promise<boolean> {
-    if (
-      evidence.type !== 'GROUP_META' ||
-      evidence.subject.type !== 'MEMBER' ||
-      evidence.profileRev === key.rev ||
-      evidence.subject.account !== key.account ||
-      evidence.subject.domain !== key.domain
-    )
-      return false;
-    return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<boolean>(
-          'native_db_apply_group_member_profile_drift',
-          {
-            userId: Number(this.currentUserId),
-            threadId: evidence.threadId,
-            account: key.account,
-            domain: key.domain,
-            namespaceId: key.profileNamespaceId,
-            expectedRev: evidence.profileRev,
-            actualRev: key.rev,
-          },
-        );
-      const tx = (await this.db()).transaction('members', 'readwrite');
-      const address: [number, string, string, number] = [
-        evidence.threadId,
-        key.account,
-        key.domain,
-        key.profileNamespaceId,
-      ];
-      const member = await tx.store.get(address);
-      const changed =
-        !!member &&
-        !member.left &&
-        member.profileMessageSeq == null &&
-        member.profileRev === evidence.profileRev;
-      if (changed) await tx.store.put({ ...member, profileRev: key.rev });
-      await tx.done;
-      return changed;
-    });
-  }
-
-  async recordGroupMemberMessageProfile(
-    threadId: number,
-    identity: {
-      account: string;
-      domain: string;
-      namespaceId: number;
-    },
-    profileRev: number,
-    messageSeq: number,
-  ): Promise<boolean> {
-    identity = localSubjectIdentity(identity);
-    return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<boolean>(
-          'native_db_record_group_member_profile_ref',
-          {
-            userId: Number(this.currentUserId),
-            threadId,
-            ...identity,
-            profileRev,
-            messageSeq,
-          },
-        );
-      const db = await this.db();
-      let key: [number, string, string, number] = [
-        threadId,
-        identity.account,
-        identity.domain,
-        identity.namespaceId,
-      ];
-      const tx = db.transaction('members', 'readwrite');
-      let previous = await tx.store.get(key);
-
-      if (
-        !previous ||
-        previous.left ||
-        (previous.profileMessageSeq ?? 0) >= messageSeq
-      ) {
-        await tx.done;
-        return false;
-      }
-      await tx.store.put({
-        ...previous,
-        profileRev,
-        profileMessageSeq: messageSeq,
-      });
-      await tx.done;
-      return true;
-    });
-  }
-
-  private async storeGroupMemberResolvedProfile(
-    threadId: number,
-    identity: {
-      account: string;
-      domain: string;
-      namespaceId: number;
-    },
-    profile: {
-      rev: number;
-      name: string;
-      avatarDigest?: string | null;
-      avatarBlob?: Blob;
-      bio: string;
-    },
-  ): Promise<boolean> {
-    identity = localSubjectIdentity(identity);
-    return this.runAccountOperation(async () => {
-      const db = await this.db();
-      let key: [number, string, string, number] = [
-        threadId,
-        identity.account,
-        identity.domain,
-        identity.namespaceId,
-      ];
-      const tx = db.transaction(
-        ['members', 'profiles', 'profileAvatarBlobs'],
-        'readwrite',
-      );
-      let previous = await tx.objectStore('members').get(key);
-
-      if (!previous || previous.left || previous.profileRev !== profile.rev) {
-        await tx.done;
-        return false;
-      }
-      await this.writeSnapshot(tx.objectStore('profiles'), {
-        publisherNamespaceId: identity.namespaceId,
-        account: identity.account,
-        domain: identity.domain,
-        profileNamespaceId: identity.namespaceId,
-        profileRev: profile.rev,
-        name: profile.name,
-        avatarDigest: profile.avatarDigest ?? null,
-        bio: profile.bio,
-      });
-      if (profile.avatarDigest && profile.avatarBlob)
-        await tx.objectStore('profileAvatarBlobs').put({
-          digest: profile.avatarDigest,
-          blob: profile.avatarBlob,
-        });
-      await tx.done;
-      return true;
-    });
+  async applyGroupMetaProfileDrift(): Promise<boolean> {
+    return false;
   }
 
   async commitResolvedGroupMetaProfile(
@@ -2984,21 +3087,42 @@ export class WebdbStorage {
       throw new Error('resolved profile does not match Group Meta reference');
     const decodedAvatar = await decodeProfileAvatar(profile.avatarBase64);
     if (reference.type === 'GROUP_MEMBER')
-      return this.storeGroupMemberResolvedProfile(
-        reference.threadId,
-        {
+      return this.runAccountOperation(async () => {
+        const tx = (await this.db()).transaction(
+          ['members', 'namespaces', 'profiles', 'profileAvatarBlobs'],
+          'readwrite',
+        );
+        const member = await tx
+          .objectStore('members')
+          .get([
+            reference.threadId,
+            reference.account,
+            reference.domain,
+            reference.namespaceId,
+          ]);
+        if (!member || member.left || member.profileRev !== reference.rev) {
+          await tx.done;
+          return false;
+        }
+        await this.registerNamespace(
+          tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
+          reference.domain,
+          reference.namespaceId,
+        );
+        await this.writeSnapshot(tx.objectStore('profiles'), {
+          publisherNamespaceId: reference.namespaceId,
+          profileNamespaceId: reference.namespaceId,
           account: reference.account,
-          domain: reference.domain,
-          namespaceId: reference.namespaceId,
-        },
-        {
-          rev: profile.rev,
+          profileRev: reference.rev,
           name: profile.name,
           avatarDigest: decodedAvatar?.digest ?? null,
-          avatarBlob: decodedAvatar?.blob,
           bio: profile.bio,
-        },
-      );
+        });
+        if (decodedAvatar)
+          await tx.objectStore('profileAvatarBlobs').put(decodedAvatar);
+        await tx.done;
+        return true;
+      });
     return this.runAccountOperation(async () => {
       const tx = (await this.db()).transaction(
         ['threads', 'namespaces', 'profiles', 'profileAvatarBlobs'],
@@ -3022,9 +3146,8 @@ export class WebdbStorage {
       );
       await this.writeSnapshot(tx.objectStore('profiles'), {
         publisherNamespaceId: reference.namespaceId,
-        account: reference.account,
-        domain: reference.domain,
         profileNamespaceId: reference.namespaceId,
+        account: reference.account,
         profileRev: reference.rev,
         name: profile.name,
         avatarDigest: decodedAvatar?.digest ?? null,
@@ -3048,7 +3171,6 @@ export class WebdbStorage {
     publisherNamespaceId: number;
     profileNamespaceId: number;
     account: string;
-    domain: string;
     rev: number;
     name: string;
     bio: string;
@@ -3059,7 +3181,6 @@ export class WebdbStorage {
       publisherNamespaceId: profile.publisherNamespaceId,
       profileNamespaceId: profile.profileNamespaceId,
       account: profile.account,
-      domain: profile.domain,
       profileRev: profile.rev,
       name: profile.name,
       bio: profile.bio,
@@ -3071,11 +3192,6 @@ export class WebdbStorage {
         'readwrite',
       );
       if (avatar) await tx.objectStore('profileAvatarBlobs').put(avatar);
-      await this.registerNamespace(
-        tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
-        snapshot.domain,
-        snapshot.profileNamespaceId,
-      );
       const written = await this.writeSnapshot(
         tx.objectStore('profiles'),
         snapshot,
@@ -3083,7 +3199,6 @@ export class WebdbStorage {
       for (const thread of await tx.objectStore('threads').getAll()) {
         if (
           thread.profileAccount === snapshot.account &&
-          thread.profileDomain === snapshot.domain &&
           thread.profileNamespaceId === snapshot.profileNamespaceId &&
           thread.threadProfileRev === snapshot.profileRev
         )
@@ -3102,7 +3217,6 @@ export class WebdbStorage {
         event: 'PROFILE_AVAILABLE',
         key: {
           account: snapshot.account,
-          domain: snapshot.domain,
           publisherNamespaceId: snapshot.publisherNamespaceId,
           profileNamespaceId: snapshot.profileNamespaceId,
           rev: snapshot.profileRev,
@@ -3134,7 +3248,7 @@ export class WebdbStorage {
   private async writeSnapshot(
     store: {
       get(
-        key: [number, string, string, number, number],
+        key: [number, number, string, number],
       ): Promise<ProfileSnapshot | undefined>;
       put(record: ProfileSnapshot): Promise<unknown>;
       transaction: { abort(): void; done: Promise<void> };
@@ -3176,6 +3290,40 @@ export class WebdbStorage {
     return this.runMessageOperation(() =>
       this.queryCachedMessagesInternal(threadId, orderBy, take, anchor),
     );
+  }
+
+  async recordGroupMemberMessageProfile(
+    threadId: number,
+    identity: { account: string; domain: string; namespaceId: number },
+    profileRev: number,
+    messageSeq: number,
+  ): Promise<boolean> {
+    return this.runAccountOperation(async () => {
+      const tx = (await this.db()).transaction('members', 'readwrite');
+      const member = await tx.store.get([
+        threadId,
+        identity.account,
+        identity.domain,
+        identity.namespaceId,
+      ]);
+      if (
+        !member ||
+        member.left ||
+        (member.profileMessageSeq !== undefined &&
+          member.profileMessageSeq !== null &&
+          member.profileMessageSeq >= messageSeq)
+      ) {
+        await tx.done;
+        return false;
+      }
+      await tx.store.put({
+        ...member,
+        profileRev,
+        profileMessageSeq: messageSeq,
+      });
+      await tx.done;
+      return true;
+    });
   }
 
   /** Persist a correction for one participant of one cached SYSTEM row only. */

@@ -5,11 +5,11 @@ import {
   type ProfileEvidenceProjection,
   type ProfilePrefetchDemand,
 } from '../profile-resolution/profile-resolution-demand.js';
-import type { FederationMessageFeedMessage } from './federation-message-feed.service.js';
+import type { FederationThreadAddress } from './federation-message-feed.service.js';
 
 /** Select snapshot-only profile work from a committed inbound federation message. */
 export function selectInboundMessageProfileDemand(
-  item: FederationMessageFeedMessage,
+  thread: FederationThreadAddress,
   message: Message,
   publisherNamespaceId: number,
   profileNamespaceId: number,
@@ -20,12 +20,12 @@ export function selectInboundMessageProfileDemand(
     profileNamespaceId,
   );
   if (!profile) return undefined;
-  return item.thread.account.startsWith('!')
+  return thread.account.startsWith('!')
     ? {
         publisherNamespaceId,
         lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
         target: profile.target,
-        groupAccount: normalizeAccount(item.thread.account),
+        groupAccount: normalizeAccount(thread.account),
       }
     : {
         publisherNamespaceId,
@@ -35,7 +35,7 @@ export function selectInboundMessageProfileDemand(
 }
 
 export function selectInboundMessageProfileEvidenceProjection(
-  item: FederationMessageFeedMessage,
+  thread: FederationThreadAddress,
   message: Message,
   publisherNamespaceId: number,
   profileNamespaceId: number,
@@ -47,11 +47,11 @@ export function selectInboundMessageProfileEvidenceProjection(
   );
   if (!profile) return undefined;
   const projection = { threadId: message.threadId, messageSeq: message.seq };
-  return item.thread.account.startsWith('!')
+  return thread.account.startsWith('!')
     ? {
         profile: profile.key,
         lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
-        groupAccount: normalizeAccount(item.thread.account),
+        groupAccount: normalizeAccount(thread.account),
         projection,
       }
     : {
@@ -70,14 +70,12 @@ function inboundMessageProfileWorkSubject(
       target: {
         profileNamespaceId: number;
         account: string;
-        domain: string;
         rev: number;
       };
       key: {
         publisherNamespaceId: number;
         profileNamespaceId: number;
         account: string;
-        domain: string;
         rev: number;
       };
     }
@@ -86,16 +84,13 @@ function inboundMessageProfileWorkSubject(
     publisherNamespaceId === 0 ||
     message.isDeleted ||
     message.profileRev < 1 ||
-    message.creatorAccount === null ||
-    message.creatorDomain === null ||
-    message.creatorDomain === 'local'
+    message.creatorAccount === null
   )
     return undefined;
 
   const target = {
     profileNamespaceId,
     account: message.creatorAccount,
-    domain: message.creatorDomain,
     rev: message.profileRev,
   };
   return { target, key: { publisherNamespaceId, ...target } };

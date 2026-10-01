@@ -61,8 +61,7 @@ export class ResumableUploadService {
       !(await this.messages.isAuthoredBy(
         {
           account: stage.creatorAccount,
-          domain: stage.creatorDomain,
-          namespaceId: 0,
+          namespaceId: stage.publisherNamespaceId,
         },
         userId,
       ))

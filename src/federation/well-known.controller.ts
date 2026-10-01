@@ -7,15 +7,16 @@ import { loadFederationConfig } from './federation.config.js';
 import { FEDERATION_PROTOCOL_VERSIONS } from './federation-protocol.js';
 
 /**
- * Publish this server's S2S signing keys. PUBLIC (no auth) — peers fetch this over HTTPS to discover
- * and verify our signing keys (RFC 8615 well-known URI). Excluded from the /api/v1 global prefix in
- * bootstrap.ts so it's served at exactly /.well-known/somfp.
+ * Publish this server's S2S root identity group and signing certificates.
+ * PUBLIC (no auth) — peers fetch this over HTTPS to discover and verify our
+ * keys (RFC 8615 well-known URI). Excluded from the /api/v1 global prefix in
+ * bootstrap.ts so it is served at exactly /.well-known/somfp.
  *
- * S2S endpoint paths (friend-request, friend-approve, users, messages, …) are NOT published here —
- * peers derive them from the resolved base URL as `${base}/s2s/v1/<path>`, the same way the
- * Step 2 pull routes are already resolved.
- *
- * `keys` contains root-authorized signing certificates and may overlap during online rotation.
+ * `roots` is the identity anchor set: every root epoch still published,
+ * including rotated-out predecessors whose entries must remain visible until
+ * every recognized peer adopted the rotation. `keys` contains root-authorized
+ * signing certificates; after a root rotation only successor-authorized
+ * certificates remain — their removal is the revocation channel.
  */
 @Public()
 @Raw()
@@ -30,9 +31,7 @@ export class WellKnownController {
     return {
       software: `soms/${SERVER_VERSION}`,
       protocolVersions: [...FEDERATION_PROTOCOL_VERSIONS],
-      rootKey: {
-        ed25519: this.keypair.getRootPublicKeyB64(),
-      },
+      roots: this.keypair.getRootGroup(),
       keys: this.keypair.getSigningKeyCertificates(),
     };
   }

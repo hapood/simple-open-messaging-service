@@ -632,7 +632,7 @@ pub(super) fn apply_state_feed_page_with_resume(
             return Err("group-meta sourceServer must be canonical and non-empty".into());
         }
         if update.namespace_id < 0 {
-            return Err("group-meta source namespace must be non-negative".into());
+            return Err("group-meta publisher namespace must be non-negative".into());
         }
         if update.page.mode != "full" && update.page.mode != "delta" {
             return Err("group-meta mode must be full or delta".into());

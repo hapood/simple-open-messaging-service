@@ -8,13 +8,15 @@ export enum ProfileLookup {
 export interface ProfileTarget {
   profileNamespaceId: number;
   account: string;
-  domain: string;
   rev: number;
 }
 
 /** The complete profile resolution cache and notification identity. */
-export interface ProfileKey extends ProfileTarget {
+export interface ProfileKey {
   publisherNamespaceId: number;
+  profileNamespaceId: number;
+  account: string;
+  rev: number;
 }
 
 /** Local evidence coordinates used after an exact snapshot has been stored. */

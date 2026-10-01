@@ -21,13 +21,18 @@ export interface ClientStateFeedWrite {
   userId: number;
   account: string;
   domain: string;
-  eventType: 'RELATIONSHIP_INTENT' | 'INCOMING_INVITE_HEAD';
+  eventType:
+    | 'RELATIONSHIP_INTENT'
+    | 'INCOMING_INVITE_HEAD';
   /** Federation context owning this fact. If either relationship endpoint is federated, both
    * authored directions use that captured namespace; only wholly local facts use namespace 0. */
   namespaceId: number;
   subjectAccount: string;
-  subjectDomain: string;
+  subjectNamespaceId: number;
   body: Record<string, unknown>;
+  /** Explicit compaction identity for event families whose stable key is not
+   *  the address tuple. */
+  compactionIdentity?: string;
 }
 
 export interface PendingClientStateFeedUpdate {
@@ -173,13 +178,14 @@ export class ClientStateFeedService implements OnModuleDestroy {
   }
 
   private compactionKey(write: ClientStateFeedWrite): string {
+    if (write.compactionIdentity !== undefined) return write.compactionIdentity;
     return JSON.stringify([
       write.eventType,
       write.namespaceId,
       write.account,
       write.domain,
       write.subjectAccount,
-      write.subjectDomain,
+      write.subjectNamespaceId,
     ]);
   }
 
@@ -190,8 +196,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
     write: {
       threadId: number;
       memberAccount: string;
-      memberDomain: string;
-      memberNamespaceId: number;
+      profileNamespaceId: number;
       memberProfileRev: number;
       direction: 'APPLICATION' | 'INVITATION';
       status: RequestProjectionStatusValue;
@@ -213,8 +218,10 @@ export class ClientStateFeedService implements OnModuleDestroy {
         and(
           eq(groupRequestProjection.threadId, write.threadId),
           eq(groupRequestProjection.memberAccount, write.memberAccount),
-          eq(groupRequestProjection.memberDomain, write.memberDomain),
-          eq(groupRequestProjection.memberNamespaceId, write.memberNamespaceId),
+          eq(
+            groupRequestProjection.profileNamespaceId,
+            write.profileNamespaceId,
+          ),
           eq(groupRequestProjection.direction, write.direction),
         ),
       )
@@ -266,8 +273,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
         target: [
           groupRequestProjection.threadId,
           groupRequestProjection.memberAccount,
-          groupRequestProjection.memberDomain,
-          groupRequestProjection.memberNamespaceId,
+          groupRequestProjection.profileNamespaceId,
           groupRequestProjection.direction,
         ],
         set: {
@@ -313,7 +319,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
             eq(clientStateFeed.domain, 'local'),
             eq(clientStateFeed.eventType, 'INCOMING_INVITE_HEAD'),
             eq(clientStateFeed.subjectAccount, ''),
-            eq(clientStateFeed.subjectDomain, 'local'),
+            eq(clientStateFeed.subjectNamespaceId, 0),
           ),
         )
         .limit(1);
@@ -332,7 +338,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
         namespaceId: 0,
         eventType: 'INCOMING_INVITE_HEAD',
         subjectAccount: '',
-        subjectDomain: 'local',
+        subjectNamespaceId: 0,
         body: { readThroughFeedId: next },
       });
       if (feedId !== null) pending = { userId, feedId };

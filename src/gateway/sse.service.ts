@@ -9,10 +9,24 @@ import { DatabaseService } from '../database/database.service.js';
 import {
   account,
   account as userTable,
+  profileNamespaceChangeFeedHead,
   sessionToken,
 } from '../database/schema.js';
 import { CallStateRegistry } from './call-state.registry.js';
 import { AccountFeedThrottle } from '../common/account-feed-throttle.js';
+
+/** Client-facing feed coordinates are JSON numbers; the s2s wire keeps
+ *  DecimalString. A coordinate past the safe-integer range must fail loudly
+ *  rather than silently corrupt a client cursor. */
+function toClientFeedNumber(value: bigint | undefined): number {
+  if (value === undefined) throw new Error('feed coordinate is missing');
+  const numeric = Number(value);
+  if (!Number.isSafeInteger(numeric))
+    throw new Error(
+      `feed coordinate ${String(value)} exceeds the client-safe integer range`,
+    );
+  return numeric;
+}
 
 /** One subscribed event stream and its authenticated session identity. */
 interface SseClient {
@@ -96,6 +110,16 @@ export class SseService implements OnModuleDestroy {
       this.pushToUser(userId, 'STATE_FEED_UPDATED', { feedId }),
     (error) => this.logger.warn(`State SSE hint failed: ${String(error)}`),
   );
+  /** Profile-namespace binding changes are rare, so the wake needs no
+   *  throttle: one event per committed change, carrying the client change
+   *  feed's new head so devices can skip the pull when already current.
+   *  Client-facing coordinates are JSON numbers (safe-integer guarded). */
+  notifyProfileNamespaceChange(endId: bigint): void {
+    const end = toClientFeedNumber(endId);
+    for (const clients of Object.values(this.clients))
+      for (const client of clients)
+        this.emit(client.sink, 'PROFILE_NAMESPACE_UPDATED', { end });
+  }
   private readonly threadThrottle = new AccountFeedThrottle(
     1000,
     (userId, threadFeedEndId) => this.pushThreadFeed(userId, threadFeedEndId),
@@ -226,19 +250,28 @@ export class SseService implements OnModuleDestroy {
    *  DB failure is swallowed (never throws on the connect path). */
   private async sendHello(userId: number, entry: SseClient): Promise<void> {
     try {
-      const [user] = await this.database.db
-        .select({
-          stateFeedEndId: account.clientStateFeedEndId,
-          threadFeedEndId: account.threadFeedEndId,
-          profileRev: userTable.defaultProfileRev,
-          pushSubscriptionRev: sessionToken.pushSubscriptionRev,
-        })
-        .from(account)
-        .innerJoin(sessionToken, eq(sessionToken.userId, account.id))
-        .where(
-          and(eq(account.id, userId), eq(sessionToken.id, entry.sessionId)),
-        )
-        .limit(1);
+      const [[user], [changeHead]] = await Promise.all([
+        this.database.db
+          .select({
+            stateFeedEndId: account.clientStateFeedEndId,
+            threadFeedEndId: account.threadFeedEndId,
+            profileRev: userTable.defaultProfileRev,
+            pushSubscriptionRev: sessionToken.pushSubscriptionRev,
+          })
+          .from(account)
+          .innerJoin(sessionToken, eq(sessionToken.userId, account.id))
+          .where(
+            and(eq(account.id, userId), eq(sessionToken.id, entry.sessionId)),
+          )
+          .limit(1),
+        this.database.db
+          .select({ endId: profileNamespaceChangeFeedHead.endId })
+          .from(profileNamespaceChangeFeedHead)
+          .where(eq(profileNamespaceChangeFeedHead.id, 0))
+          .limit(1),
+      ]);
+      if (!changeHead)
+        throw new Error('profile namespace change head row is missing');
       const data = {
         // The caller's userId. The session token is OPAQUE (server-side lookup only), so the client cannot
         // learn its userId without an authenticated response — HELLO is it. The client opens its per-user
@@ -252,6 +285,10 @@ export class SseService implements OnModuleDestroy {
         // The client pulls (cursor, stateFeedEndId] after this handshake and later feed signals.
         stateFeedEndId: user?.stateFeedEndId ?? 0,
         threadFeedEndId: user?.threadFeedEndId ?? 0,
+        // Profile-namespace change feed head. The client skips the change
+        // pull entirely when its persisted cursor already matches this
+        // (the profileRev skip pattern); otherwise it pulls
+        // (cursor, profileNamespaceChangeEnd] once, then on wake events.
         // The self-profile version. The client skips the cold-start /user/my-profile fetch when its IDB-
         // cached profileRev matches this (it already has the fresh name/avatar/bio). First-ever boot (no
         // cache) or a changed rev still fetches.
@@ -261,6 +298,7 @@ export class SseService implements OnModuleDestroy {
         // FSM (driven by CALL_EVENT) is the live authority; this is the connect-time snapshot, mirrored by
         // CallsService. Null when no call OR after the call ended (cleared on terminal).
         activeCall: this.callState.get(userId),
+        profileNamespaceChangeEndId: toClientFeedNumber(changeHead.endId),
       };
       this.emit(entry.sink, 'HELLO', data);
     } catch (e) {
@@ -503,7 +541,6 @@ export class SseService implements OnModuleDestroy {
       publisherNamespaceId: number;
       profileNamespaceId: number;
       account: string;
-      domain: string;
       rev: number;
     },
   ): void {
@@ -524,7 +561,6 @@ export class SseService implements OnModuleDestroy {
       publisherNamespaceId: number;
       profileNamespaceId: number;
       account: string;
-      domain: string;
       rev: number;
       reason: 'NOT_FOUND' | 'NOT_DISCLOSED' | 'TEMPORARILY_UNAVAILABLE';
     },

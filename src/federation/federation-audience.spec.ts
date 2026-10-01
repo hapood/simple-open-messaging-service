@@ -35,13 +35,12 @@ describe('openFederatedAudienceInTx history access', () => {
     const { tx, values } = transaction();
 
     await expect(
-      openFederatedAudienceInTx(tx, 'peer.test', 11, 9),
+      openFederatedAudienceInTx(tx, 7, 11, 9),
     ).resolves.toBe(true);
 
     expect(values).toHaveBeenCalledWith(
       expect.objectContaining({
         threadId: 11,
-        targetDomain: 'peer.test',
         targetNamespaceId: 7,
         messageAccessAfterSeq: 0,
         groupMetaVisibleAfter: 9,
@@ -52,7 +51,7 @@ describe('openFederatedAudienceInTx history access', () => {
   it('starts at the current tail when retained history access is disabled', async () => {
     const { tx, values } = transaction('false');
 
-    await openFederatedAudienceInTx(tx, 'peer.test', 11);
+    await openFederatedAudienceInTx(tx, 7, 11);
 
     expect(values).toHaveBeenCalledWith(
       expect.objectContaining({ messageAccessAfterSeq: 42 }),

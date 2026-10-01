@@ -69,7 +69,6 @@ export class ThreadPreviewService {
       seq: number;
       createdAt: string;
       creatorAccount: string;
-      creatorDomain: string;
       profileNamespaceId: number;
       profileRev: number;
       isDeleted: boolean;
@@ -77,7 +76,7 @@ export class ThreadPreviewService {
       contentType: string | null;
       content: string | null;
     }>(sql`
-      SELECT m.seq, m."createdAt"::text AS "createdAt", m."creatorAccount", m."creatorDomain",
+      SELECT m.seq, m."createdAt"::text AS "createdAt", m."creatorAccount",
         m."profileNamespaceId", m."profileRev", m."isDeleted", d.type AS "deletionType",
         CASE WHEN m."isDeleted" THEN NULL ELSE m."contentType" END AS "contentType",
         CASE WHEN m."isDeleted" THEN NULL ELSE m.content::text END AS content

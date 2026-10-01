@@ -224,7 +224,13 @@
     }
   },
   "type": "object",
-  "required": ["items", "scannedThrough", "stateFeedEndId", "hasMore"],
+  "required": [
+    "items",
+    "scannedThrough",
+    "stateFeedEndId",
+    "profileNamespaceFeedEndId",
+    "hasMore"
+  ],
   "properties": {
     "items": {
       "type": "array",
@@ -236,6 +242,9 @@
       "$ref": "urn:somfp:v1:common#/$defs/decimalString"
     },
     "stateFeedEndId": {
+      "$ref": "urn:somfp:v1:common#/$defs/decimalString"
+    },
+    "profileNamespaceFeedEndId": {
       "$ref": "urn:somfp:v1:common#/$defs/decimalString"
     },
     "hasMore": {

@@ -210,9 +210,29 @@ export class HandleGroupJoinRequestDto extends GroupMemberTargetDto {}
 
 export class KickGroupDto extends GroupMemberTargetDto {}
 
-export class TransferGroupDto extends GroupMemberTargetDto {}
+class GroupRosterMemberTargetDto {
+  @ApiProperty({ example: 12, description: 'Group id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  groupId!: number;
 
-export class SetRoleGroupDto extends GroupMemberTargetDto {
+  @ApiProperty({ example: 'alice', description: 'Member account' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(31)
+  account!: string;
+
+  @ApiProperty({ example: 7, description: 'Member identity namespace id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  namespaceId!: number;
+}
+
+export class TransferGroupDto extends GroupRosterMemberTargetDto {}
+
+export class SetRoleGroupDto extends GroupRosterMemberTargetDto {
   /** ADMIN or MEMBER only — ownership changes go through group/transfer. OWNER is rejected. */
   @ApiProperty({
     enum: GroupRole,

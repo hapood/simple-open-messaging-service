@@ -60,13 +60,11 @@ describe('FederationThreadContentHeadService', () => {
     expect(snapshotSql).toContain('MAX(d."deletionSeq")');
     expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(tx, [
       expect.objectContaining({
-        peerDomain: 'peer.test',
         namespaceId: 7,
         account: 'alice',
-        domain: 'local',
         eventType: 'THREAD_CONTENT_HEAD',
         subjectAccount: 'bob',
-        subjectDomain: 'peer.test',
+        subjectNamespaceId: 7,
         body: { messageEndSeq: 12, tombstoneEndSeq: 4 },
       }),
     ]);
@@ -83,7 +81,7 @@ describe('FederationThreadContentHeadService', () => {
       expect.objectContaining({
         account: '!group',
         subjectAccount: '',
-        subjectDomain: 'local',
+        subjectNamespaceId: 0,
         body: { messageEndSeq: 12, tombstoneEndSeq: 0 },
       }),
     ]);

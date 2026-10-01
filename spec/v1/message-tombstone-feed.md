@@ -284,7 +284,8 @@ the query cursor.
 
 ## 5. Relationship to lightweight push
 
-`feed-heads` carries only `stateFeedEndId`. The consumer drains State Feed,
+`feed-heads` carries `stateFeedEndId` (and, unrelated to tombstone draining,
+`profileNamespaceFeedEndId`). The consumer drains State Feed,
 merges both coordinates from each `THREAD_CONTENT_HEAD`, and then invokes the
 per-thread queries. Hints may be lost, duplicated, or reordered, so startup and
 periodic reconciliation MUST also drain State Feed without relying on a hint.

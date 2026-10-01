@@ -92,7 +92,11 @@ export class FriendInviteDialogComponent {
       domain: user.domain || 'local',
       ...((user.domain || 'local') === 'local'
         ? {}
-        : { displayName: user.name, avatar }),
+        : {
+            displayName: user.name,
+            avatar,
+            ...(user.namespaceId > 0 ? { namespaceId: user.namespaceId } : {}),
+          }),
       note,
     });
     request.subscribe({

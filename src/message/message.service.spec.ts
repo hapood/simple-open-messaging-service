@@ -44,17 +44,19 @@ function databaseMock(queries: {
       query: {
         profileTable: {
           findMany: async () => {
-            const rows = (queries.user
-              ? await queries.user()
-              : [
-                  {
-                    account: 'alice',
-                    domain: 'local',
-                    publisherNamespaceId: 0,
-                    profileNamespaceId: 0,
-                    name: 'Alice',
-                  },
-                ]) as Array<{ name: string }>;
+            const rows = (
+              queries.user
+                ? await queries.user()
+                : [
+                    {
+                      account: 'alice',
+                      domain: 'local',
+                      publisherNamespaceId: 0,
+                      profileNamespaceId: 0,
+                      name: 'Alice',
+                    },
+                  ]
+            ) as Array<{ name: string }>;
             return rows.map((row: { name: string }) => ({
               ...row,
               displayName: row.name,
@@ -94,9 +96,8 @@ function mk(
   return {
     threadId: 1,
     creatorAccount: 'alice',
-    creatorDomain: 'local',
     profileNamespaceId: 0,
-    sourceNamespaceId: 0,
+    publisherNamespaceId: 0,
     profileRev: 1,
     contentType: 'IMAGE' as ContentType,
     createdAt: new Date(),
@@ -119,9 +120,8 @@ describe('stripMessageId author projection namespace', () => {
         id: 1n,
         seq: 1,
         content: '{}',
-        creatorDomain: 'local',
         profileNamespaceId: 0,
-        sourceNamespaceId: 7,
+        publisherNamespaceId: 7,
       }),
     );
 
@@ -134,9 +134,8 @@ describe('stripMessageId author projection namespace', () => {
         id: 1n,
         seq: 1,
         content: '{}',
-        creatorDomain: 'remote.test',
         profileNamespaceId: 7,
-        sourceNamespaceId: 11,
+        publisherNamespaceId: 11,
       }),
     );
 
@@ -206,7 +205,7 @@ describe('MessageService committed profile work', () => {
         seq: 4,
         profileRev: 0,
         creator: { account: '$system', domain: 'local', namespaceId: 0 },
-        sourceNamespaceId: 7,
+        publisherNamespaceId: 7,
         contentType: 'SYSTEM',
         content: JSON.stringify(systemContent),
         isDeleted: false,
@@ -222,7 +221,7 @@ describe('MessageService committed profile work', () => {
       {
         publisherNamespaceId: 7,
         lookup: 'RELATIONSHIP_INTENT_PROFILE',
-        target: { profileNamespaceId: 7, account: 'alice', domain: 'remote.test', rev: 3 },
+        target: { profileNamespaceId: 7, account: 'alice', rev: 3 },
         peerAccount: 'bob',
       },
     ]);
@@ -253,14 +252,16 @@ describe('MessageService committed profile work', () => {
       { emit } as never,
     );
 
-    await (svc as unknown as {
-      publishCommittedProfileWork(message: unknown): Promise<void>;
-    }).publishCommittedProfileWork({
+    await (
+      svc as unknown as {
+        publishCommittedProfileWork(message: unknown): Promise<void>;
+      }
+    ).publishCommittedProfileWork({
       threadId: 9,
       seq: 4,
       profileRev: 3,
       creator: { account: 'alice', domain: 'remote.test', namespaceId: 7 },
-      sourceNamespaceId: 7,
+      publisherNamespaceId: 7,
       contentType: 'PURE_TEXT',
       content: JSON.stringify({ text: 'hello' }),
       isDeleted: false,
@@ -274,7 +275,7 @@ describe('MessageService committed profile work', () => {
       {
         publisherNamespaceId: 7,
         lookup: 'ACCOUNT_PROFILE',
-        target: { profileNamespaceId: 7, account: 'alice', domain: 'remote.test', rev: 3 },
+        target: { profileNamespaceId: 7, account: 'alice', rev: 3 },
       },
     ]);
     expect(event.evidenceProjections).toEqual([
@@ -283,7 +284,6 @@ describe('MessageService committed profile work', () => {
           publisherNamespaceId: 7,
           profileNamespaceId: 7,
           account: 'alice',
-          domain: 'remote.test',
           rev: 3,
         },
         lookup: 'ACCOUNT_PROFILE',

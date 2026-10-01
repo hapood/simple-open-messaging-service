@@ -34,6 +34,7 @@ and client behavior.
 - [Message inline entities](./design/message-entities.md)
 - [Federation consistency stress testing](./design/federation-consistency-stress-testing.md)
 - [Federation P2P observed-fact oracle](./design/federation-p2p-consistency-state-machine.md)
+- [Profile Namespace Feed](./design/profile-namespace-feed.md)
 
 ## Platform
 

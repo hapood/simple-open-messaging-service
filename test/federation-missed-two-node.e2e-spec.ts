@@ -16,7 +16,6 @@ import { and, eq } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import {
   fileSyncProgress,
-  federatedPeer,
   federationThreadSyncState,
   mediaAsset,
   message,
@@ -208,13 +207,18 @@ describe('federation durable missed transport (two nodes)', () => {
     // the fixture before B starts, so B's startup HWM reconciliation is accepted by A. The test target
     // is crash recovery, not breaker backoff.
     await appA.database
-      .update(federatedPeer)
+      .update(identityNamespace)
       .set({
         trustLevel: 'available',
         degradedAt: null,
         degradationReason: null,
       })
-      .where(eq(federatedPeer.domain, FED_DOMAIN_B));
+      .where(
+        and(
+          eq(identityNamespace.domain, FED_DOMAIN_B),
+          eq(identityNamespace.active, true),
+        ),
+      );
     proxy.clearRequestLog();
     await appB.start();
     await vi.waitFor(
@@ -354,15 +358,18 @@ describe('federation durable missed transport (two nodes)', () => {
     const quotaDate = new Date(
       Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
     );
-    const peer = await appB.database.query.federatedPeer.findFirst({
-      where: eq(federatedPeer.domain, FED_DOMAIN_A),
+    const peer = await appB.database.query.identityNamespace.findFirst({
+      where: and(
+        eq(identityNamespace.domain, FED_DOMAIN_A),
+        eq(identityNamespace.active, true),
+      ),
     });
-    expect(peer?.activeNamespaceId).toBeTruthy();
+    expect(peer?.id).toBeTruthy();
     const usedFiles =
       (
         await appB.database.query.quotaDailyUsage.findFirst({
           where: and(
-            eq(quotaDailyUsage.namespaceId, peer!.activeNamespaceId!),
+            eq(quotaDailyUsage.namespaceId, peer!.id),
             eq(quotaDailyUsage.date, quotaDate),
             eq(quotaDailyUsage.category, 'files'),
           ),

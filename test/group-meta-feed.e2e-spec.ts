@@ -5,10 +5,10 @@ import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
-  federatedPeer,
   groupAccount as groupAccountTable,
   groupMeta,
   groupMetaMemberFeed,
+  identityNamespace,
   messageThread,
   message,
   peerStateFeed,
@@ -130,8 +130,9 @@ describe('canonical Group Meta feed', () => {
       .where(eq(groupAccountTable.account, groupAccount));
     await database.db.delete(user).where(eq(user.id, ownerUserId));
     await database.db
-      .delete(federatedPeer)
-      .where(inArray(federatedPeer.domain, [peerDomain, otherPeerDomain]));
+      .update(identityNamespace)
+      .set({ active: false })
+      .where(inArray(identityNamespace.domain, [peerDomain, otherPeerDomain]));
     await module.close();
   });
 

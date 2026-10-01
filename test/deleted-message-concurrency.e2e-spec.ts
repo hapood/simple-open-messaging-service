@@ -8,7 +8,6 @@ import {
   deletedMessage,
   accountThreadState,
   federatedMessageTombstone,
-  federatedPeer,
   federationMessageReceipt,
   fileSyncProgress,
   identityNamespace,
@@ -59,7 +58,7 @@ describe('federated message deletion transaction ordering', () => {
   beforeEach(async () => {
     await truncateTablesForTest(
       database.pool,
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "FederatedPeer", "DurableTask" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
     );
     const now = new Date();
     const [existingNamespace] = await database.db
@@ -82,14 +81,15 @@ describe('federated message deletion transaction ordering', () => {
             rootKeyFingerprint: 'sha256:deleted-message-test',
             rootPublicKey: Buffer.alloc(32, 3).toString('base64'),
             identityPinnedAt: now,
+            active: true,
+            trustLevel: 'available',
           })
           .returning({ id: identityNamespace.id })
       )[0].id;
-    await database.db.insert(federatedPeer).values({
-      domain: peerDomain,
-      activeNamespaceId: namespaceId,
-      trustLevel: 'available',
-    });
+    await database.db
+      .update(identityNamespace)
+      .set({ active: true, trustLevel: 'available' })
+      .where(eq(identityNamespace.id, namespaceId));
     const [thread] = await database.db
       .insert(messageThread)
       .values({

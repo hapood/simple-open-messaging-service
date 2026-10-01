@@ -146,7 +146,7 @@ by their federation transaction with the domain as last seen.
 
 `MessageThread.authorityNamespaceId` identifies the immutable thread authority.
 `FederationThreadSyncState` is keyed by `(threadId, namespaceId)`, and
-`FederationThreadHistoryGap` carries its source namespace, so a locally authoritative group tracks
+`FederationThreadHistoryGap` carries its publisher namespace, so a locally authoritative group tracks
 several remote publisher coordinate spaces independently.
 
 Relationship and client-state facts use the federation context namespace whenever either endpoint

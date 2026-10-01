@@ -34,11 +34,13 @@ describe('FederationStatePullService drain window', () => {
       const service = new FederationStatePullService(
         {
           db: {
-            query: {
-              peerStateFeedPullCursor: {
-                findFirst: vi.fn().mockResolvedValue({ committedThrough: 2n }),
-              },
-            },
+            select: () => ({
+              from: () => ({
+                where: () => ({
+                  limit: vi.fn().mockResolvedValue([{ pulledThrough: 2n }]),
+                }),
+              }),
+            }),
           },
         } as never,
         {} as never,
@@ -102,11 +104,13 @@ describe('FederationStatePullService drain window', () => {
     const service = new FederationStatePullService(
       {
         db: {
-          query: {
-            peerStateFeedPullCursor: {
-              findFirst: vi.fn().mockResolvedValue({ committedThrough: 5n }),
-            },
-          },
+          select: () => ({
+            from: () => ({
+              where: () => ({
+                limit: vi.fn().mockResolvedValue([{ pulledThrough: 5n }]),
+              }),
+            }),
+          }),
         },
       } as never,
       peerHttp as never,
@@ -186,11 +190,13 @@ describe('FederationStatePullService drain window', () => {
     const service = new FederationStatePullService(
       {
         db: {
-          query: {
-            peerStateFeedPullCursor: {
-              findFirst: vi.fn().mockResolvedValue({ committedThrough: 2n }),
-            },
-          },
+          select: () => ({
+            from: () => ({
+              where: () => ({
+                limit: vi.fn().mockResolvedValue([{ pulledThrough: 2n }]),
+              }),
+            }),
+          }),
         },
       } as never,
       {} as never,

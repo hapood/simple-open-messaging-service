@@ -9,6 +9,7 @@ import { MessageModule } from './message/message.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { GatewayModule } from './gateway/gateway.module.js';
 import { UserController } from './controller/user.controller.js';
+import { ProfileNamespaceController } from './controller/profile-namespace.controller.js';
 import { GroupModule } from './group/group.module.js';
 import { GroupController } from './controller/group.controller.js';
 import { UploadModule } from './upload/upload.module.js';
@@ -82,6 +83,7 @@ import { DurableTaskSchedulerService } from './durable-task/durable-task-schedul
     MessageController,
     AuthController,
     UserController,
+    ProfileNamespaceController,
     GroupController,
     RelationshipController,
     DeviceController,

@@ -71,7 +71,7 @@ export function mirrorMembershipRequestSql(
         })}::text AS "compactionKey",
         ${input.presentation.groupAccount}::text AS account,
         ${input.presentation.groupDomain}::text AS domain,
-        ${input.memberAccount}::text AS "subjectAccount", 'local'::text AS "subjectDomain",
+        ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId",
         ${mirrorIntentFeedBodySql({
           status: sql`v.status`,
           note: sql`v.note`,

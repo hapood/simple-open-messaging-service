@@ -100,7 +100,7 @@ export class GroupRelationshipMutationService {
   ): Promise<void> {
     if (group.domain === 'local') return;
     await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
-      { peerDomain: group.domain, namespaceId: group.namespaceId },
+      { namespaceId: group.namespaceId },
     ]);
   }
 
@@ -168,10 +168,7 @@ export class GroupRelationshipMutationService {
       { name: group.name, avatar: group.avatar },
       groupSnapshot,
     );
-    const memberDirection = buildIntentDirection(
-      member,
-      group,
-    );
+    const memberDirection = buildIntentDirection(member, group);
     const membership =
       await this.groupRelationships.writeLockedAuthoredIntentInTx(tx, {
         threadId,
@@ -251,7 +248,7 @@ export class GroupRelationshipMutationService {
           namespaceId: 0,
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: endpoints.subjectAccount,
-          subjectDomain: 'local',
+          subjectNamespaceId: 0,
           body: {
             status: membership.request.status,
             ...(clientRequestStatus
@@ -282,12 +279,10 @@ export class GroupRelationshipMutationService {
       return new Map();
     }
     const relationship: PeerStateFeedWrite = {
-      peerDomain: group.domain,
       namespaceId: group.namespaceId!,
       account: member.account,
-      domain: 'local',
       subjectAccount: group.account,
-      subjectDomain: group.domain,
+      subjectNamespaceId: group.namespaceId!,
       eventType: 'RELATIONSHIP_INTENT',
       body: {
         status: membership.request.status,
@@ -313,7 +308,7 @@ export class GroupRelationshipMutationService {
         namespaceId: group.namespaceId,
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: endpoints.subjectAccount,
-        subjectDomain: group.domain,
+        subjectNamespaceId: group.namespaceId!,
         body: {
           status: membership.request.status,
           ...(clientRequestStatus
@@ -399,7 +394,6 @@ export class GroupRelationshipMutationService {
     if (member.domain !== 'local')
       await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
         {
-          peerDomain: member.domain,
           namespaceId: member.namespaceId!,
         },
       ]);
@@ -461,7 +455,7 @@ export class GroupRelationshipMutationService {
         namespaceId: 0,
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: endpoints.subjectAccount,
-        subjectDomain: 'local',
+        subjectNamespaceId: 0,
         body: {
           status: membership.request.status,
           ...(clientRequestStatus
@@ -494,12 +488,10 @@ export class GroupRelationshipMutationService {
       return new Map();
     }
     const relationship: PeerStateFeedWrite = {
-      peerDomain: member.domain,
       namespaceId: member.namespaceId!,
       account: state.groupAccount,
-      domain: 'local',
       subjectAccount: member.account,
-      subjectDomain: member.domain,
+      subjectNamespaceId: member.namespaceId,
       eventType: 'RELATIONSHIP_INTENT',
       body: {
         status: membership.request.status,

@@ -2,6 +2,7 @@ import { Injectable, HttpStatus } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import {
   SignatureService,
+  parseRootKeyHeader,
   type SignedRequest,
   type OutboundSignatureHeaders,
 } from './signature.service.js';
@@ -32,13 +33,15 @@ export class S2sVerifyService {
     private readonly discovery: DiscoveryService,
   ) {}
 
-  /** Pull the four RFC 9421 headers Fastify normalized into req.headers. */
+  /** Pull the four RFC 9421 headers plus S2S-Root-Key that Fastify
+   *  normalized into req.headers. */
   extractHeaders(req: FastifyRequest): OutboundSignatureHeaders {
     return {
       date: req.headers.date as string,
       'content-digest': req.headers['content-digest'] as string,
       'signature-input': req.headers['signature-input'] as string,
       signature: req.headers.signature as string,
+      's2s-root-key': req.headers['s2s-root-key'] as string,
     };
   }
 

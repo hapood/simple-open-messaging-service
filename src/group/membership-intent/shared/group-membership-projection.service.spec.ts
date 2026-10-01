@@ -100,7 +100,7 @@ describe('GroupMembershipProjectionService', () => {
       5,
       {
         account: 'alice',
-        domain: 'local',
+        profileNamespaceId: 0,
         operation: 'MEMBER_UPSERT',
         body: {
           role: 'MEMBER',
@@ -179,7 +179,7 @@ describe('GroupMembershipProjectionService', () => {
       5,
       {
         account: 'remote-member',
-        domain: 'member.example',
+        profileNamespaceId: 23,
         operation: 'MEMBER_UPSERT',
         body: {
           role: 'MEMBER',
@@ -244,7 +244,7 @@ describe('GroupMembershipProjectionService', () => {
       5,
       expect.objectContaining({
         account: 'alice',
-        domain: 'local',
+        profileNamespaceId: 0,
         operation: 'MEMBER_DEPART',
         body: { role: 'ADMIN', profileNamespaceId: 0, profileRev: 2 },
       }),

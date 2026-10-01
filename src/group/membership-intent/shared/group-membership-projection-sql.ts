@@ -6,8 +6,7 @@ import { isGroupAccount } from '../../../common/account.js';
 type RequestProjectionFlipParams = {
   threadId: number;
   memberAccount: string;
-  memberDomain: string;
-  memberNamespaceId: number;
+  profileNamespaceId: number;
   directions: readonly ('APPLICATION' | 'INVITATION')[];
 } & (
   | { status: 'ACCEPTED'; authorAccount?: never }
@@ -28,7 +27,7 @@ export function requestProjectionFlipSql(
       SELECT r.*
       FROM "GroupRequestProjection" r
       WHERE r."threadId" = ${params.threadId} AND r."memberAccount" = ${params.memberAccount}
-        AND r."memberDomain" = ${params.memberDomain} AND r."memberNamespaceId" = ${params.memberNamespaceId}
+        AND r."profileNamespaceId" = ${params.profileNamespaceId}
         AND r.direction = ANY(${sql.param(params.directions)}::text[])
         -- Only an outstanding request can be decided. Terminal projection
         -- states, including ACCEPTED, survive later convergence passes. A
@@ -46,7 +45,7 @@ export function requestProjectionFlipSql(
         END)::"RequestProjectionStatus"
       FROM manager_requests p
       WHERE r."threadId" = p."threadId" AND r."memberAccount" = p."memberAccount"
-        AND r."memberDomain" = p."memberDomain" AND r."memberNamespaceId" = p."memberNamespaceId" AND r.direction = p.direction
+        AND r."profileNamespaceId" = p."profileNamespaceId" AND r.direction = p.direction
       RETURNING 1
     )`;
 }

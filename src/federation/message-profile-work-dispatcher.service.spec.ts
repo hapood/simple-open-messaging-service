@@ -17,14 +17,13 @@ describe('MessageProfileWorkDispatcherService', () => {
     const demand = {
       publisherNamespaceId: 7,
       lookup: ProfileLookup.ACCOUNT_PROFILE,
-      target: { profileNamespaceId: 7, account: 'alice', domain: 'remote.test', rev: 3 },
+      target: { profileNamespaceId: 7, account: 'alice', rev: 3 },
     } satisfies ProfilePrefetchDemand;
     const evidence = {
       profile: {
         publisherNamespaceId: 7,
         profileNamespaceId: 7,
         account: 'alice',
-        domain: 'remote.test',
         rev: 3,
       },
       lookup: ProfileLookup.ACCOUNT_PROFILE,

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
-import { federatedPeer } from '../src/database/schema.js';
+import { and, eq } from 'drizzle-orm';
+import { identityNamespace } from '../src/database/schema.js';
 import {
   bootFederationPair,
   FED_DOMAIN_A,
@@ -45,8 +45,11 @@ describe('Health recognition acknowledgement', () => {
     );
 
     expect(result.event).toBe('resolved');
-    const peerOnA = await appA.database.query.federatedPeer.findFirst({
-      where: eq(federatedPeer.domain, FED_DOMAIN_B),
+    const peerOnA = await appA.database.query.identityNamespace.findFirst({
+      where: and(
+        eq(identityNamespace.domain, FED_DOMAIN_B),
+        eq(identityNamespace.active, true),
+      ),
     });
     expect(peerOnA).toMatchObject({
       peerAcceptanceConfirmed: true,
@@ -54,8 +57,11 @@ describe('Health recognition acknowledgement', () => {
       remoteServiceReachable: true,
     });
 
-    const peerOnB = await appB.database.query.federatedPeer.findFirst({
-      where: eq(federatedPeer.domain, FED_DOMAIN_A),
+    const peerOnB = await appB.database.query.identityNamespace.findFirst({
+      where: and(
+        eq(identityNamespace.domain, FED_DOMAIN_A),
+        eq(identityNamespace.active, true),
+      ),
     });
     expect(peerOnB).toMatchObject({
       peerAcceptanceConfirmed: true,

@@ -42,7 +42,7 @@ import { FriendInviteDialogComponent } from '../friend-invite-dialog/friend-invi
 import { VirtualInfiniteListComponent } from '../virtual-infinite-list/virtual-infinite-list.component';
 import { FriendRequestCardComponent } from '../friend-request-card/friend-request-card.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
-import type { ProfileSelector } from '../../../../../shared/profile-selector';
+import type { ProfileDemand } from '../../../../../shared/profile-demand';
 
 export enum AddTabStatus {
   INIT,
@@ -69,6 +69,7 @@ type PendingReq = {
   name?: string;
   account?: string;
   domain?: string;
+  namespaceId?: number;
   reqMessage?: string;
   status: RequestProjectionStatusValue;
   date: number;
@@ -686,6 +687,7 @@ export class FriendRequestsComponent implements OnDestroy {
         name: peer.name,
         account: peer.account,
         domain: peer.domain,
+        namespaceId: peer.namespaceId,
         reqMessage: projection.note,
         status: projection.status,
         date: projection.requestedAt,
@@ -703,6 +705,7 @@ export class FriendRequestsComponent implements OnDestroy {
       name: group.name,
       account: group.account,
       domain: group.domain,
+      namespaceId: group.namespaceId,
       reqMessage: group.description,
       status: projection.status,
       date: projection.requestedAt,
@@ -822,13 +825,16 @@ export class FriendRequestsComponent implements OnDestroy {
     }
   }
 
-  profileEvidence(request: PendingReq): ProfileSelector | undefined {
+  profileEvidence(request: PendingReq): ProfileDemand | undefined {
     return request.account && request.domain && request.profileRev
       ? {
-          type: 'EXACT',
-          account: request.account,
-          domain: request.domain,
-          rev: request.profileRev,
+          publisherNamespaceId: request.namespaceId ?? 0,
+          lookup: 'ACCOUNT_PROFILE',
+          target: {
+            profileNamespaceId: request.namespaceId ?? 0,
+            account: request.account,
+            rev: request.profileRev,
+          },
         }
       : undefined;
   }

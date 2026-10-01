@@ -262,21 +262,22 @@ Independent of friendship (survives unfriend; applies to strangers too). `@@uniq
 | `contentType`                           | ContentType          | `PURE_TEXT \| INVITE \| IMAGE \| VIDEO \| FILE \| AUDIO \| LINK \| FORWARD \| GALLERY \| SYSTEM`                                                                                                                      |
 | `content`                               | String               | text / JSON / CAS-url meta (per type)                                                                                                                                                                                 |
 | `clientMessageId`                       | VarChar(36)?, unique | send-idempotency UUID (partial unique index — NULLs distinct)                                                                                                                                                         |
-| `originSeq`                             | Int?                 | source-scoped message coordinate (non-null for user messages); used with `sourceNamespaceId` and `threadId` for deduplication, receipt association, and quote resolution; not a global ID or a standalone pull cursor |
+| `originSeq`                             | Int?                 | source-scoped message coordinate (non-null for user messages); used with `publisherNamespaceId` and `threadId` for deduplication, receipt association, and quote resolution; not a global ID or a standalone pull cursor |
 | `originServerTime`                      | DateTime?            | sender-server allocation time (audit only; never displayed)                                                                                                                                                           |
 | `threadId`                              |                      | conversation FK                                                                                                                                                                                                       |
-| `creatorAccount` / `creatorDomain`      | Address snapshot     | sender identity; SYSTEM items use `$system@local`                                                                                                                                                                     |
+| `creatorAccount` / `profileNamespaceId` | Author identity snapshot | sender identity; SYSTEM items use `$system` with profile/publisher namespace `0` |
 | `createdAt` / `updatedAt` / `isDeleted` |                      |                                                                                                                                                                                                                       |
 
 Unique: `(threadId, seq)` is the local timeline identity; `(threadId,
-creatorAccount, creatorDomain, originSeq)` deduplicates an author's federated
-sequence without coupling retained messages to a mutable `User` row.
+publisherNamespaceId, originSeq)` identifies a publisher stream coordinate and
+deduplicates federated messages. Author identity is separately
+`creatorAccount + profileNamespaceId`.
 
 ### MediaAsset / MessageAsset / PendingMedia — Media
 
 - **MediaAsset** — verified content-addressed blob: `digest` = sha256 of the raw bytes, stored once at `data/cas/<dd>/<dd>/<digest>` with no filename or extension. It stores `bytes` and `isDeleted`; in-flight state lives in `FileSyncProgress`. Liveness is derived from reachable messages and active staging, never a cached refcount.
 - **MessageAsset** — per-object authorization index for a media-bearing message: `(messageId, threadId, digest)`. The `/uploads/cas/*` gate checks the caller's current access to a message referencing the live digest.
-- **PendingMedia** — in-flight staging: a media message is NOT committed as a `Message` until its bytes are confirmed. LOCAL: `clientMessageId` idempotency + display meta (CAS url injected at promote). FEDERATED: pulled content + `originSeq` dedup; a text message quoting staged media is also retained here with `dependsOnOriginSeq` and zero files until the target receives a local `Message.seq`. `status` pending|failed. Created BEFORE the file write so a crash always leaves an attributable record for the GC. Admin clean, tombstone handling, and stale GC recursively delete dependent quote stages when the target is abandoned.
+- **PendingMedia** — in-flight staging: a media message is NOT committed as a `Message` until its bytes are confirmed. LOCAL: `clientMessageId` idempotency + display meta (CAS url injected at promote). FEDERATED: pulled content + `publisherNamespaceId`/`originSeq` dedup; `originDomain` is transport provenance only. A text message quoting staged media is also retained here with `dependsOnOriginSeq` and zero files until the target receives a local `Message.seq`. `status` pending|failed. Created BEFORE the file write so a crash always leaves an attributable record for the GC. Admin clean, tombstone handling, and stale GC recursively delete dependent quote stages when the target is abandoned.
 
 ### Federation protocol-to-local mappings
 
@@ -287,11 +288,11 @@ columns are implementation details and never replace the wire coordinates:
 
 | Wire identity or coordinate                     | SOMS local representation                                                                                                                       |
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Direct incoming `(publisher, thread, seq)`      | Captured publisher namespace plus `Message(threadId, sourceNamespaceId, originSeq)`; local `Message.seq` is a separate display/order coordinate |
-| `quoteTarget.seq`                               | Durable `quote: { seq, namespaceId: capturedPublisherNamespace }`; resolve by thread, source namespace, and origin sequence at read time        |
+| Direct incoming `(publisher, thread, seq)`      | Captured publisher namespace plus `Message(threadId, publisherNamespaceId, originSeq)`; local `Message.seq` is a separate display/order coordinate |
+| `quoteTarget.seq`                               | Durable `quote: { seq, namespaceId: capturedPublisherNamespace }`; resolve by thread, publisher namespace, and origin sequence at read time        |
 | `quoteTarget.originSeq`                         | Durable `quote: { seq: originSeq, namespaceId: 0 }`; already addresses the receiver's local thread sequence                                     |
 | Direct-media `digest` bound to an outer message | `MessageAsset(messageId, digest)` plus `MediaAsset(digest)` CAS state                                                                           |
-| Remote media not yet localized                  | `PendingMedia(threadId, creatorAccount, creatorDomain, originSeq, digest)` until digest and authorization checks succeed                        |
+| Remote media not yet localized                  | `PendingMedia(threadId, publisherNamespaceId, originSeq, digest)` plus transport `originDomain` until digest and authorization checks succeed                        |
 | Outer FORWARD card root `bundleId`              | `ForwardMessage(messageId, bundleId)` → `ForwardBundle(id)`                                                                                     |
 | Child bundle relation                           | `ForwardBundleDependency(parentBundleId, childBundleId)`; child IDs are never substituted for the outer root ID in media requests               |
 | Asset within a verified root closure            | `ForwardBundleAsset(bundleId, digest, ...)`; authorization still starts from the outer message and root bundle mapping                          |
