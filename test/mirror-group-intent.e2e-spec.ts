@@ -477,7 +477,8 @@ describe('mirror group intent application', () => {
     expect(after.pair!.active).toBe(false);
     expect(after.sideA!.status).toBe('ACCEPTED');
     expect(
-      after.intents.find((intent) => intent.authorAccount === bob.account)?.status,
+      after.intents.find((intent) => intent.authorAccount === bob.account)
+        ?.status,
     ).toBe('REVOKED');
     expect(await peerItems(group.namespaceId)).toEqual(outboundBefore);
     const [namespaceAfter] = await database.db
@@ -526,7 +527,8 @@ describe('mirror group intent application', () => {
       }),
     ).toHaveLength(0);
     expect(
-      after.intents.find((intent) => intent.authorAccount === bob.account)?.status,
+      after.intents.find((intent) => intent.authorAccount === bob.account)
+        ?.status,
     ).toBe('REVOKED');
     const feeds = await feedRows(bob.id);
     expect(feeds.some((f) => bodyOf(f).status === 'REVOKED')).toBe(true);

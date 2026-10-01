@@ -1,4 +1,11 @@
-import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  HttpStatus,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { Public } from '../common/public.decorator.js';
@@ -65,7 +72,7 @@ export class S2sVerifyController {
     if (!privateKey) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PUBLIC_KEY_UNRECOGNIZED,
-        'the supplied public key is not part of this server\'s retained key history',
+        "the supplied public key is not part of this server's retained key history",
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -77,7 +84,9 @@ export class S2sVerifyController {
     }
     const opened = openSealedBox(sealed, privateKey);
     if (!opened || opened.length > MAX_PLAINTEXT_BYTES) {
-      throw this.malformed('the sealed challenge does not open under the supplied key');
+      throw this.malformed(
+        'the sealed challenge does not open under the supplied key',
+      );
     }
     return { value: Buffer.from(opened).toString('utf8') };
   }

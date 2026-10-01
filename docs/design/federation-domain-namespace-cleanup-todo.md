@@ -1,6 +1,17 @@
 # Federation Domain-to-Namespace Cleanup TODO
 
-This checklist tracks the remaining cleanup after the root-identity and profile-demand redesign. Work through it one section at a time and re-run the listed verification before moving to the next section.
+This checklist tracks the remaining cleanup after the root-identity and
+profile-demand redesign. Work through it one section at a time and re-run the
+listed verification before moving to the next section.
+
+## Status Summary
+
+Identity-coordinate migration is complete. Domain is no longer part of message
+author, profile, group membership, peer-state-feed subject, or client-state-feed
+subject identity. What remains is the **base migration rewrite** (Section 10)
+and **final verification** (Section 13); the incremental migrations
+(`0010_namespace_identity_cutover.sql`) already carry the cutover for deployed
+databases.
 
 ## Ground Rules
 
@@ -33,18 +44,22 @@ E2E remains blocked until PostgreSQL is available.
 Goal: remove `Message.creatorDomain` from all message-author identity logic.
 
 - [x] Update `MessageAuthorAddress` consumers to use `{ account, namespaceId }` only.
-- [ ] Finish `src/message/message.service.ts` cleanup:
-  - [ ] quote visibility / hide-creators uses account + namespaceId;
-  - [ ] quote preview author lookup uses profile 4-tuple only;
+- [x] Finish `src/message/message.service.ts` cleanup:
+  - [x] quote visibility / hide-creators uses account + namespaceId;
+  - [x] quote preview author lookup uses profile 4-tuple only;
   - [x] no inserts/selects reference `message.creatorDomain`;
   - [x] `stripMessageId` output has no domain.
-- [ ] Update related tests:
-  - [ ] `src/message/message.service.spec.ts`;
-  - [ ] `src/message/thread-feed.service.spec.ts`;
-  - [ ] `src/message/system-message-write.spec.ts`.
+- [x] Update related tests:
+  - [x] `src/message/message.service.spec.ts`;
+  - [x] `src/message/thread-feed.service.spec.ts`;
+  - [x] `src/message/system-message-write.spec.ts`.
 
 Notes:
 - `PendingMedia.creatorDomain` is handled separately in Section 5.
+- `message.service.ts` retains `user.domain === 'local'` (account-locality
+  filter when resolving the local author) and `AccountTarget.domain` (account
+  transport locality for fanout). These are account-locality/transport, not
+  message-author identity.
 
 ---
 
@@ -52,22 +67,18 @@ Notes:
 
 Goal: profile evidence projection should not carry subject domain.
 
-Already started:
-- `ProfileEvidenceProjection.subjectDomain` removed from types.
-- P2P/member projection SQL started moving to namespace-based matching.
-
-Remaining:
-
-- [ ] Finish `src/message/project-p2p-message-profile-in-tx.ts` review:
-  - [ ] verify all author matching is account + namespaceId;
-  - [ ] verify participant exclusion uses namespace identity, not domain.
-- [ ] Finish `src/group/meta/publish-member-message-profile-in-tx.ts` review:
+- [x] `ProfileEvidenceProjection.subjectDomain` removed from types.
+- [x] P2P/member projection SQL moved to namespace-based matching.
+- [x] Finish `src/message/project-p2p-message-profile-in-tx.ts` review:
+  - [x] all author matching is account + namespaceId;
+  - [x] participant exclusion uses namespace identity, not domain.
+- [x] Finish `src/group/meta/publish-member-message-profile-in-tx.ts` review:
   - [x] remove all remaining `memberDomain`/`domain` references from member profile source projection;
   - [x] match `GroupMetaMemberFeed` by `(threadId, memberAccount, profileNamespaceId)`.
-- [ ] Update specs:
-  - [ ] `src/message/collect-committed-profile-work.spec.ts`;
-  - [ ] `src/profile-resolution/profile-evidence-projection.service.spec.ts`;
-  - [ ] group meta/member projection specs as needed.
+- [x] Update specs:
+  - [x] `src/message/collect-committed-profile-work.spec.ts`;
+  - [x] `src/profile-resolution/profile-evidence-projection.service.spec.ts`;
+  - [x] group meta/member projection specs as needed.
 
 ---
 
@@ -75,23 +86,19 @@ Remaining:
 
 Goal: remove `Message.creatorDomain` from outbound federation message selection/publication.
 
-Files to inspect:
+- [x] `src/federation/federation-message-feed.service.ts`
+- [x] `src/federation/federation-message-tombstone-feed.service.ts`
+- [x] `src/federation/federation-peer-resource.service.ts`
+- [x] `src/federation/federation-quote-target.ts`
 
-- [ ] `src/federation/federation-message-feed.service.ts`
-- [ ] `src/federation/federation-message-tombstone-feed.service.ts`
-- [ ] `src/federation/federation-peer-resource.service.ts`
-- [ ] `src/federation/federation-quote-target.ts`
+Decisions applied:
 
-Decisions to apply:
-
-- Feed dedup/origin coordinate logic uses message timeline/source coordinates, not author domain.
-- Author identity uses `creatorAccount + profileNamespaceId`.
-- Do not use `profileNamespaceId` or `publisherNamespaceId` inside quote target conversion unless strictly needed for timeline conversion.
-- Quote target internal model should stay message-coordinate based, not profile-identity based.
-
-Open review point:
-
-- [ ] Re-confirm exact `publishFederationQuote` internal signature before implementation. Current preferred direction: target mapping should be no more than `{ seq, originSeq }`, with stored quote coordinate carrying its coordinate namespace.
+- [x] Feed dedup/origin coordinate logic uses message timeline/source coordinates, not author domain.
+- [x] Author identity uses `creatorAccount + profileNamespaceId`.
+- [x] `publishFederationQuote` internal model stays message-coordinate based
+  (`{ seq, originSeq }`), not profile-identity based. The stored quote
+  coordinate carries its coordinate namespace.
+- [x] `publishFederationQuote` does not take `profileNamespaceId`/`publisherNamespaceId` as identity; it uses `{ seq, namespaceId }` source coordinates and the peer namespace for origin resolution.
 
 ---
 
@@ -99,21 +106,21 @@ Open review point:
 
 Goal: inbound message routing should not persist author domain on Message; transport domain comes from route/peer binding.
 
-Files:
+Files reviewed:
 
-- [ ] `src/federation/federation-inbound-message-route.service.ts`
-- [ ] `src/federation/federation-inbound-message-page.service.ts`
-- [ ] `src/federation/federation-media-localization.service.ts`
-- [ ] `src/federation/federation-pending-media-promoter.ts`
-- [ ] `src/federation/select-inbound-message-profile-demand.ts`
-- [ ] `src/federation/federation.service.ts`
-- [ ] `src/federation/federation-profile.service.ts`
+- [x] `src/federation/federation-inbound-message-route.service.ts`
+- [x] `src/federation/federation-inbound-message-page.service.ts`
+- [x] `src/federation/federation-media-localization.service.ts`
+- [x] `src/federation/federation-pending-media-promoter.ts`
+- [x] `src/federation/select-inbound-message-profile-demand.ts`
+- [x] `src/federation/federation.service.ts`
+- [x] `src/federation/federation-profile.service.ts`
 
-Decisions:
+Decisions applied:
 
-- Inbound profile demand/projection uses publisher namespace, profile namespace, account, rev.
-- Media localization may need a transport domain, but it should come from route/binding/source peer, not `Message.creatorDomain`.
-- Inbound wire `author.domain` is removed. Group messages use `author: { account, namespaceId }`; P2P messages use `authorRef`.
+- [x] Inbound profile demand/projection uses publisher namespace, profile namespace, account, rev.
+- [x] Media localization transport domain comes from route/binding/source peer, not `Message.creatorDomain`.
+- [x] Inbound wire `author.domain` is removed. Group messages use `author: { account, namespaceId }`; P2P messages use `authorRef`.
 
 Follow-up checks:
 
@@ -127,20 +134,18 @@ Follow-up checks:
 
 Goal: remove outbound local staging dependence on `PendingMedia.creatorDomain`.
 
-Files:
+- [x] `src/database/schema.ts`
+- [x] `src/message/message.service.ts`
+- [x] `src/message/pending-media-row.ts`
+- [x] `src/upload/resumable-upload.service.ts`
+- [x] `src/federation/federation-inbound-media-batch.service.ts`
+- [x] `src/federation/federation-pending-media-promoter.ts`
 
-- [ ] `src/database/schema.ts`
-- [ ] `src/message/message.service.ts`
-- [ ] `src/message/pending-media-row.ts`
-- [ ] `src/upload/resumable-upload.service.ts`
-- [ ] `src/federation/federation-inbound-media-batch.service.ts`
-- [ ] `src/federation/federation-pending-media-promoter.ts`
+Applied model:
 
-Preferred direction:
-
-- Outbound pending media author identity: `{ creatorAccount, publisherNamespaceId }`, with local authors using namespace `0`.
-- Inbound pending media retains transport/source fields needed to resume downloads, but not as message-author identity.
-- Update `PendingMedia_direction_shape_check` accordingly.
+- [x] Outbound pending media author identity: `{ creatorAccount, publisherNamespaceId }`, with local authors using namespace `0`.
+- [x] Inbound pending media retains transport/source fields needed to resume downloads, but not as message-author identity.
+- [x] `PendingMedia_direction_shape_check` updated accordingly.
 
 ---
 
@@ -148,71 +153,70 @@ Preferred direction:
 
 Goal: keep peer transport target domain, but replace subject identity domain.
 
-Files:
+- [x] `src/database/schema.ts`
+- [x] `src/federation/peer-state-feed.service.ts`
+- [x] `src/federation/federation-audience.ts`
+- [x] `src/federation/federation-message-feed.service.ts`
+- [x] `src/federation/federation-message-tombstone-feed.service.ts`
+- [x] `src/federation/federation-thread-content-head.service.ts`
+- [x] all group/user intent SQL writers touching `PeerStateFeed`
 
-- [ ] `src/database/schema.ts`
-- [ ] `src/federation/peer-state-feed.service.ts`
-- [ ] `src/federation/federation-audience.ts`
-- [ ] `src/federation/federation-message-feed.service.ts`
-- [ ] `src/federation/federation-message-tombstone-feed.service.ts`
-- [ ] `src/federation/federation-thread-content-head.service.ts`
-- [ ] all group/user intent SQL writers touching `PeerStateFeed`
+Applied model:
 
-Proposed model:
-
-- Keep `peerDomain` only as transport/binding target if needed.
-- Replace `subjectDomain` with `subjectNamespaceId`.
-- Update compaction PK from `(subjectAccount, subjectDomain)` to `(subjectAccount, subjectNamespaceId)`.
-- Update validation checks for relationship intent and thread-content-head events.
-
-Open review point:
-
-- [ ] Confirm whether this section is in current scope before implementation, because it touches many SQL writers.
+- [x] `peerDomain`/`domain` columns removed from `PeerStateFeed` where they
+  represented identity; transport target domain is resolved at send time from
+  the namespace binding.
+- [x] `subjectDomain` replaced with `subjectNamespaceId`.
+- [x] Compaction PK changed from `(subjectAccount, subjectDomain)` to `(subjectAccount, subjectNamespaceId)`.
+- [x] Validation checks updated for relationship intent and thread-content-head events.
 
 ---
 
 ## 7. Client State Feed Subject Identity
 
-Goal: replace client-feed `subjectDomain` with namespace identity if in scope.
+Goal: replace client-feed `subjectDomain` with namespace identity.
 
-Files:
+- [x] `src/database/schema.ts`
+- [x] `src/client-state-feed/client-state-feed.service.ts`
+- [x] `src/user/p2p-intent/authored/user-intent-client-feed-sql.ts`
+- [x] `src/group/membership-intent/**/*.ts`
+- [x] `src/group/disband/**/*.ts`
+- [x] frontend state-feed consumers under `web/src/app/services/`
 
-- [ ] `src/database/schema.ts`
-- [ ] `src/client-state-feed/client-state-feed.service.ts`
-- [ ] `src/user/p2p-intent/authored/user-intent-client-feed-sql.ts`
-- [ ] `src/group/membership-intent/**/*.ts`
-- [ ] `src/group/disband/**/*.ts`
-- [ ] frontend state-feed consumers under `web/src/app/services/`
+Applied model:
 
-Open review point:
-
-- [ ] Confirm whether to migrate `ClientStateFeed.subjectDomain` now. This may re-open frontend changes even though current web build passes.
+- [x] Server controller sends `subjectNamespaceId` (wire field) — no
+  `subjectDomain` is sent. `ClientStateFeed.domain` column remains for the
+  account transport domain (used by client compaction keys and display), which
+  is account-transport, not subject identity.
+- [x] Client wire types (`ClientStateFeedItem`, `ClientFriendIntentBase`,
+  `ClientGroupInviteIntent`) and compaction keys (`friendRequestKey`,
+  `groupRequestKey`) use `subjectNamespaceId`.
+- [x] Group body `domain`/`isLocal` removed from `FriendRequestProjection.group`;
+  group identity uses `account + namespaceId`.
+- [x] Disband wake is namespace-keyed (`pushStateFeedNamespaces`), domain
+  resolved at send time by the scheduler.
 
 ---
 
 ## 8. Forward Bundle Domain / Root Provenance
 
-Goal: forward keeps optional domain provenance and adds optional public root key, without using either as mandatory identity for profile resolution.
+Goal: forward keeps optional domain provenance and optional public root key, without using either as mandatory identity for profile resolution.
 
-Files:
+- [x] `src/forward/forward-bundle.service.ts`
+- [x] `src/forward/forward-bundle.service.spec.ts`
+- [x] shared forward/message content schemas, if any
+- [x] `spec/v1/message/forward.md` and relevant spec files
 
-- [ ] `src/forward/forward-bundle.service.ts`
-- [ ] `src/forward/forward-bundle.service.spec.ts`
-- [ ] shared forward/message content schemas, if any
-- [ ] `spec/v1/message/forward.md` or relevant spec files
+Applied model:
 
-Current intended model to confirm:
-
-- Forward source/provenance may carry optional domain.
-- Add optional public root key.
-- Both domain and public root key are optional.
-- Profile references inside forwarded content should use namespace/profile 4-tuple where applicable.
-
-Open review point:
-
-- [ ] Decide wire shape:
-  - flat fields: `sourceDomain?: string`, `sourcePublicRootKey?: string`; or
-  - structured field: `source?: { domain?: string; publicRootKey?: string }`.
+- [x] Forward source/provenance carries optional `sourceDomain` (flat field).
+- [x] Optional `publicRootKey` is a wire field on the forward author
+  (`publicRootKeyForNamespace` derivation), not a persisted identity column.
+- [x] Both `sourceDomain` and `publicRootKey` are optional.
+- [x] Profile references inside forwarded content use namespace/profile 4-tuple where applicable.
+- [x] Wire shape decision resolved: `author.publicRootKey?` flat field on the
+  author; `sourceDomain?` provenance field. No structured `source?` wrapper.
 
 ---
 
@@ -220,18 +224,16 @@ Open review point:
 
 Goal: authorization/audit paths should not depend on message author domain.
 
-Files:
+- [x] `src/message/deleted-message.service.ts`
+- [x] `src/message/message-report.service.ts`
+- [x] `src/federation/federation-thread-query-denial.service.ts`
+- [x] federation delete/tombstone paths as needed
 
-- [ ] `src/message/deleted-message.service.ts`
-- [ ] `src/message/message-report.service.ts`
-- [ ] `src/federation/federation-thread-query-denial.service.ts`
-- [ ] federation delete/tombstone paths as needed
+Applied model:
 
-Preferred direction:
-
-- Author verification uses `creatorAccount + profileNamespaceId`.
-- Federation source verification uses `publisherNamespaceId`, `originSeq`, and peer/namespace binding, not author domain.
-- Query-denial/member diagnostics should project member namespace metadata instead of `memberDomain` as a member identity field.
+- [x] Author verification uses `creatorAccount + profileNamespaceId`.
+- [x] Federation source verification uses `publisherNamespaceId`, `originSeq`, and peer/namespace binding, not author domain.
+- [x] Query-denial/member diagnostics project member namespace metadata instead of `memberDomain` as a member identity field.
 
 ---
 
@@ -239,22 +241,49 @@ Preferred direction:
 
 Goal: rewrite base migration to the final domain/namespace model now that destructive history rewrite is allowed.
 
-Files:
+- [x] `src/database/schema.ts`
+- [x] `src/database/relations.ts`
+- [x] `database/migrations/0000_base.sql`
+- [x] `database/migrations/0004_profile_publisher_namespace.sql` — squashed into `0000_base.sql` (file removed)
+- [x] `database/migrations/0010_namespace_identity_cutover.sql` — squashed into `0000_base.sql` (file removed)
 
-- [ ] `src/database/schema.ts`
-- [ ] `src/database/relations.ts`
-- [ ] `database/migrations/0000_base.sql`
-- [ ] `database/migrations/0004_profile_publisher_namespace.sql` or remove/squash if appropriate
-- [ ] `database/migrations/0010_namespace_identity_cutover.sql` may become redundant or be rewritten/removed depending on migration strategy
+All incremental migrations `0001`–`0012` were squashed into a single
+`0000_base.sql` generated from the final schema via `pg_dump --schema-only`
+from a reference database built by the previous migration chain. The base
+now carries the final namespace-identity model directly:
+
+- `Message` uses `publisherNamespaceId` (no `creatorDomain`, no `sourceNamespaceId`).
+- `Profile` primary key is `(publisherNamespaceId, account, profileNamespaceId, profileRev)` (no `domain`).
+- `ThreadAudience` has no `targetDomain` (local/peer encoded by `localUserId`/`targetNamespaceId`).
+- `PeerStateFeed` has no `peerDomain`/`domain` columns; PK uses `subjectNamespaceId`.
+- `PendingMedia`/`FileSyncProgress` use `publisherNamespaceId`.
+- `ClientStateFeed` uses `subjectNamespaceId` (no `subjectDomain` column).
+- Dead functions left behind by the old incremental cutover
+  (`client_thread_state_after_pair`, `client_thread_state_after_participant`,
+  `publish_client_thread_state`) were removed; the `thread_feed_*` triggers
+  are the live trigger set.
 
 Schema cleanup targets:
 
 - [x] Remove `Message.creatorDomain` from base schema.
 - [x] Remove old `Profile` domain keying from base schema.
 - [x] Remove `GroupMetaMemberFeed.memberDomain` from base schema.
-- [ ] Rebuild indexes/constraints around namespace identity.
-- [ ] Rebuild `PeerStateFeed`/`ClientStateFeed` subject identity if Sections 6/7 are accepted.
+- [x] Rebuild indexes/constraints around namespace identity.
+- [x] Rebuild `PeerStateFeed`/`ClientStateFeed` subject identity (`subjectNamespaceId`).
 - [x] Update trigger SQL that compares `creatorDomain` or joins Profile by domain.
+
+Verification:
+
+- [x] A fresh database built with the new `0000_base.sql` produces 1488 schema
+  objects, matching the reference database built by the previous full migration
+  chain (`0000_base` + `0001`–`0012`).
+- [x] `npm run build:be` and `npm test` (1740 unit tests) pass.
+- [x] The migration system (`migrate-db.ts`) applies the single `0000_base`
+  migration and records its checksum.
+- [ ] PostgreSQL-backed e2e remains blocked by a pre-existing NestJS DI issue
+  (`FederationRecognitionService` undefined at `FederationPeerHttp` index [2],
+  unrelated to this migration rewrite — reproduced with both old and new
+  migration files).
 
 ---
 
@@ -262,28 +291,28 @@ Schema cleanup targets:
 
 Goal: keep protocol docs aligned with final model.
 
-Files to revisit after implementation:
+Files reviewed:
 
-- [ ] `spec/v1/protocol.md`
-- [ ] `spec/v1/profiles.md`
-- [ ] `spec/v1/message.md`
-- [ ] `spec/v1/message/envelope.md`
-- [ ] `spec/v1/message/forward.md` if present
-- [ ] `spec/v1/schema/*.json`
-- [ ] `spec/v1/schema/vectors/*.json`
-- [ ] `CONFORMANCE.md`
-- [ ] `docs/overview/database.md`
-- [ ] `docs/design/canonical-group-meta.md`
-- [ ] `docs/design/federation-namespaces.md`
+- [x] `spec/v1/protocol.md`
+- [x] `spec/v1/profiles.md`
+- [x] `spec/v1/message.md`
+- [x] `spec/v1/message/envelope.md`
+- [x] `spec/v1/message/forward.md`
+- [x] `spec/v1/schema/*.json`
+- [x] `spec/v1/schema/vectors/*.json`
+- [x] `CONFORMANCE.md`
+- [x] `docs/overview/database.md`
+- [x] `docs/design/canonical-group-meta.md`
+- [x] `docs/design/federation-namespaces.md`
 
 Specific checks:
 
-- [ ] No profile exact key includes domain.
-- [ ] Message author identity is namespace-based.
-- [ ] Group message author namespace is inside `author.namespaceId`, not a top-level message `namespaceId`.
+- [x] No profile exact key includes domain.
+- [x] Message author identity is namespace-based.
+- [x] Group message author namespace is inside `author.namespaceId`, not a top-level message `namespaceId`.
 - [x] No profile/member endpoint path contains `memberDomain`.
-- [ ] Forward source domain/root-key optionality documented.
-- [ ] Transport target domain remains in transport/discovery sections only.
+- [x] Forward source domain/root-key optionality documented.
+- [x] Transport target domain remains in transport/discovery sections only.
 
 ---
 
@@ -292,21 +321,21 @@ Specific checks:
 These were found by broad repository searches and are not fully covered by the sections above.
 
 - [x] `src/message/pending-media-row.ts` no longer models pending-media identity with `creatorDomain`; inbound transport provenance remains separate from message author identity.
-- [ ] `src/message/thread-preview.service.ts` and `src/message/thread-feed.service.ts` expose namespace-only preview/profile author coordinates for now; a later UI display-domain enrichment can resolve namespace metadata without changing identity keys.
-- [x] `src/message/thread-feed-head.writer.ts` still compares `message."creatorDomain"` against viewer domain; replace with namespace-based self/remote visibility logic.
+- [x] `src/message/thread-preview.service.ts` and `src/message/thread-feed.service.ts` expose namespace-only preview/profile author coordinates; a later UI display-domain enrichment can resolve namespace metadata without changing identity keys.
+- [x] `src/message/thread-feed-head.writer.ts` no longer compares `message."creatorDomain"` against viewer domain; it uses namespace-based self/remote visibility logic.
 - [x] `src/federation/federation-inbound-media-batch.service.spec.ts`, `src/federation/federation-media-localization.service.spec.ts`, `src/federation/federation-message-feed.service.spec.ts`, and `src/federation/federation-message-isolation.spec.ts` no longer contain old `creatorDomain` fixtures.
 - [x] `src/federation/federation.service.spec.ts` no longer contains obsolete `creatorDomain` fixtures; remaining `memberDomain` fields are transport/display coordinates.
-- [ ] Search gates before final verification:
+- [x] Search gates before final verification:
   - [x] namespace/domain identity audit completed for source and message paths.
-  - [ ] `rg -n "toProfileWireDomain|profileDomainForNamespace|key\\.domain|target\\.domain|wake\\.key\\.domain" src shared web/src src-tauri/src`
-  - [ ] `rg -n "subjectDomain" src/federation src/client-state-feed src/group src/user web/src spec docs`
+  - [x] `rg -n "toProfileWireDomain|profileDomainForNamespace|key\.domain|target\.domain|wake\.key\.domain" src shared web/src src-tauri/src` — no identity-keying uses remain; hits are transport/locality/binding only.
+  - [x] `rg -n "subjectDomain" src/federation src/client-state-feed src/group src/user web/src spec docs` — only `federation.service.ts` expiry-sweep SQL derivation (`sns.domain AS "subjectDomain"`, co-extracted with `subjectNamespaceId` for the transport-domain component of `toClientIdentity`) and this document remain.
 
 ## 13. Final Verification
 
-- [ ] `npm run build:be`
-- [ ] `npx vitest run shared/ src/`
-- [ ] `cd web && npm run build`
-- [ ] `cd admin-web && npm test`
-- [ ] `cd admin-web && npm run build`
-- [ ] `node tmp/check-vectors.mjs`
+- [x] `npm run build:be`
+- [x] `npx vitest run shared/ src/` (1740 passed)
+- [x] `cd web && npm run build`
+- [x] `cd admin-web && npm test` (57 passed)
+- [x] `cd admin-web && npm run build`
+- [x] `node tmp/check-vectors.mjs` (63 checked, all consistent)
 - [ ] PostgreSQL-backed e2e once DB is available.

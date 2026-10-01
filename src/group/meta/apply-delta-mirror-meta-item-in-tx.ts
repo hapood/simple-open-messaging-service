@@ -319,7 +319,8 @@ async function writeObservedMembershipTransitionInTx(
         ? SystemMessageType.GROUP_JOINED
         : SystemMessageType.GROUP_LEFT,
       member: {
-        ...member,
+        account: member.account,
+        domain: member.domain,
         profileNamespaceId: profileNamespaceId ?? 0,
         profileRev,
       },

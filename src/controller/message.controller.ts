@@ -73,6 +73,7 @@ import {
   serializeUserMention,
   transformMessageEntities,
 } from '../common/message-entity.js';
+import { parseSomfpUserMentionEntity } from '../common/account.js';
 import { ForwardBundleService } from '../forward/forward-bundle.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { SseService } from '../gateway/sse.service.js';
@@ -598,21 +599,18 @@ export class MessageController {
 
     const requestedMembers = new Map<
       string,
-      { account: string; domain: string }
+      { namespaceId: number; account: string }
     >();
     for (const entity of entities) {
       if (entity.entityType !== 'user') continue;
-      const separator = entity.entityId.lastIndexOf('@');
-      if (separator <= 0 || separator === entity.entityId.length - 1) {
+      const parsed = parseSomfpUserMentionEntity(entity.entityId);
+      if (!parsed) {
         throw new BusinessException(
           BusinessCode.GROUP_TARGET_NOT_MEMBER,
-          `mention target must use an exact account@domain address: ${entity.entityId}`,
+          `mention target must use a namespace/account entity: ${entity.entityId}`,
         );
       }
-      requestedMembers.set(entity.entityId, {
-        account: entity.entityId.slice(0, separator),
-        domain: entity.entityId.slice(separator + 1),
-      });
+      requestedMembers.set(entity.entityId, parsed);
     }
     const resolvedMembers = new Map(
       await Promise.all(
@@ -634,7 +632,8 @@ export class MessageController {
         if (!member) throw new Error('resolved mention member is missing');
         return serializeUserMention(
           member.name,
-          `${member.account}@${member.domain}`,
+          member.namespaceId,
+          member.account,
         );
       }
       if (entity.entityType === 'audience' && entity.entityId === 'all') {
@@ -978,7 +977,11 @@ export class MessageController {
       req.user.userId,
       dto,
     );
-    return this.sse.registerMediaMessageProgress(req.user.userId, threadId, seq);
+    return this.sse.registerMediaMessageProgress(
+      req.user.userId,
+      threadId,
+      seq,
+    );
   }
 
   @Raw()
@@ -999,7 +1002,9 @@ export class MessageController {
         'digest must be a 64-character hex string',
       );
     }
-    if (!(await this.messageService.hasMessageMediaDigest(threadId, seq, digest))) {
+    if (
+      !(await this.messageService.hasMessageMediaDigest(threadId, seq, digest))
+    ) {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'media not found');
     }
     return this.sse.registerMediaFileProgress(

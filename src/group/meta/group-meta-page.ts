@@ -157,7 +157,11 @@ export async function readGroupMetaPageInTx(
             profileRev: Number(row.body.profileRev),
           },
         };
-      if (row.profileNamespaceId === null || row.memberAccount === null || row.domain === null)
+      if (
+        row.profileNamespaceId === null ||
+        row.memberAccount === null ||
+        row.domain === null
+      )
         throw new Error('group-meta member identity is missing');
       const identity = {
         account: row.memberAccount,

@@ -46,13 +46,11 @@ describe('LINK message send (single instance)', () => {
 
   beforeAll(async () => {
     ({ app, database } = await createTestApp((builder) => {
-      builder
-        .overrideProvider(LinkPreviewService)
-        .useValue({
-          consumeGeneration: () => ({ ...generatedCard }),
-          buildCardContent: async () => ({ ...generatedCard }),
-          finishGeneration: () => undefined,
-        });
+      builder.overrideProvider(LinkPreviewService).useValue({
+        consumeGeneration: () => ({ ...generatedCard }),
+        buildCardContent: async () => ({ ...generatedCard }),
+        finishGeneration: () => undefined,
+      });
     }));
     const address = (
       app.getHttpServer() as { address: () => { port: number } | string | null }
@@ -62,7 +60,10 @@ describe('LINK message send (single instance)', () => {
   });
 
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => {

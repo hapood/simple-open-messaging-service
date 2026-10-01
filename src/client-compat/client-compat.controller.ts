@@ -15,7 +15,10 @@ export class ClientCompatController {
 
   @Get('compat')
   @Throttle('client.compat')
-  @ApiOperation({ summary: 'Client API version, server version and public client configuration.' })
+  @ApiOperation({
+    summary:
+      'Client API version, server version and public client configuration.',
+  })
   compat(): ClientCompatDto {
     return this.clientCompat.compat();
   }

@@ -3,10 +3,7 @@ import * as tables from '../../database/schema.js';
 import { MessageThreadType } from '../../database/enums.js';
 import { normalizeAccount } from '../../common/account.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
-import {
-  groupStateFields,
-  readGroupState,
-} from './group-state.js';
+import { groupStateFields, readGroupState } from './group-state.js';
 import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
 
 /** Mirror-side group anchor: the GROUP MessageThread row carrying the peer

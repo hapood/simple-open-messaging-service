@@ -434,9 +434,9 @@ describe('KeypairService database-backed identity', () => {
 
     // All keys ever generated are retained, including under the old root.
     expect(fake.getKeys().length).toBe(oldRootKeyCount + 1);
-    expect(
-      fake.getKeys().every((key) => key.privateKey.length === 44),
-    ).toBe(true);
+    expect(fake.getKeys().every((key) => key.privateKey.length === 44)).toBe(
+      true,
+    );
 
     // The published group still contains the predecessor; the published
     // certificates are only successor-authorized — removal is the revocation.

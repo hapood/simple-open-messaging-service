@@ -229,15 +229,12 @@ export const loginCodeRelations = relations(loginCode, ({ one }) => ({
   }),
 }));
 
-export const sessionTokenRelations = relations(
-  sessionToken,
-  ({ one }) => ({
-    account: one(account, {
-      fields: [sessionToken.userId],
-      references: [account.id],
-    }),
+export const sessionTokenRelations = relations(sessionToken, ({ one }) => ({
+  account: one(account, {
+    fields: [sessionToken.userId],
+    references: [account.id],
   }),
-);
+}));
 
 export const twoFactorBackupCodeRelations = relations(
   twoFactorBackupCode,

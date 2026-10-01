@@ -127,10 +127,7 @@ export interface DigestFileRef {
 
 function visitDigestObjects(
   content: string,
-  onDigestObject: (
-    digest: string,
-    item: Record<string, unknown>,
-  ) => void,
+  onDigestObject: (digest: string, item: Record<string, unknown>) => void,
 ): void {
   const visit = (value: unknown): void => {
     if (Array.isArray(value)) {

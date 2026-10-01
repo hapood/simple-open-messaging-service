@@ -3,6 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { Subject } from 'rxjs';
 import { MemberProfileRepository } from './member-profile-store.service';
 import { WebdbService, type ProfileWake } from './webdb.service';
+import { WebdbStorage } from './webdb-storage';
 import { SessionLifecycleService } from './session-lifecycle.service';
 
 describe('MemberProfileRepository invalidation', () => {
@@ -89,7 +90,7 @@ describe('MemberProfileRepository invalidation', () => {
       },
       terminate() {},
     };
-    const db = new WebdbService(() => worker as unknown as Worker);
+    const db = new WebdbStorage(() => worker as unknown as Worker);
     await db.openForUser('994202');
     const notified = vi.fn();
     db.profileWake$.subscribe(notified);
@@ -116,7 +117,7 @@ describe('MemberProfileRepository invalidation', () => {
   });
 
   it('announces a committed snapshot only after readers can see it', async () => {
-    const db = new WebdbService(() => null);
+    const db = new WebdbStorage(() => null);
     await db.openForUser('994201');
     const reads: Promise<unknown>[] = [];
     db.profileWake$.subscribe((wake) => {

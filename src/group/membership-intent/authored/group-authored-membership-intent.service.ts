@@ -235,8 +235,7 @@ export class GroupAuthoredMembershipIntentService {
       );
     }
     if (peers.size > 0)
-      void this.deps.federation
-        .pushStateFeedNamespaces(peers.keys());
+      void this.deps.federation.pushStateFeedNamespaces(peers.keys());
   }
 
   private async lockAndValidateInTx(
@@ -297,7 +296,10 @@ export class GroupAuthoredMembershipIntentService {
       {
         kind: 'GROUP_MEMBER',
         addresses: [
-          completeBusinessAddress(candidate.groupAccount, candidate.groupDomain),
+          completeBusinessAddress(
+            candidate.groupAccount,
+            candidate.groupDomain,
+          ),
           completeBusinessAddress(member.account, member.domain),
         ],
       },
@@ -318,16 +320,24 @@ export class GroupAuthoredMembershipIntentService {
     await lockGroupMemberIntentRowsInTx(
       tx,
       {
-        account: lockedPair.endpointAType === 'GROUP'
-          ? lockedPair.endpointAAccount : lockedPair.endpointBAccount,
-        namespaceId: lockedPair.endpointAType === 'GROUP'
-          ? lockedPair.endpointANamespaceId : lockedPair.endpointBNamespaceId,
+        account:
+          lockedPair.endpointAType === 'GROUP'
+            ? lockedPair.endpointAAccount
+            : lockedPair.endpointBAccount,
+        namespaceId:
+          lockedPair.endpointAType === 'GROUP'
+            ? lockedPair.endpointANamespaceId
+            : lockedPair.endpointBNamespaceId,
       },
       {
-        account: lockedPair.endpointAType === 'GROUP'
-          ? lockedPair.endpointBAccount : lockedPair.endpointAAccount,
-        namespaceId: lockedPair.endpointAType === 'GROUP'
-          ? lockedPair.endpointBNamespaceId : lockedPair.endpointANamespaceId,
+        account:
+          lockedPair.endpointAType === 'GROUP'
+            ? lockedPair.endpointBAccount
+            : lockedPair.endpointAAccount,
+        namespaceId:
+          lockedPair.endpointAType === 'GROUP'
+            ? lockedPair.endpointBNamespaceId
+            : lockedPair.endpointANamespaceId,
       },
     );
     await this.lockParticipantsInTx(tx, params, member);
@@ -353,8 +363,7 @@ export class GroupAuthoredMembershipIntentService {
     if (
       params.scope === 'APPLICATION' &&
       (row.memberIntentStatus === null ||
-        (row.memberIntentStatus === 'ACCEPTED' &&
-          row.invitationOutstanding))
+        (row.memberIntentStatus === 'ACCEPTED' && row.invitationOutstanding))
     )
       return this.reject(
         'INTENT_NOT_FOUND',
@@ -449,7 +458,11 @@ export class GroupAuthoredMembershipIntentService {
       )
     ).rows[0];
     if (!currentGroup)
-      return this.reject('GROUP_NOT_FOUND', BusinessCode.NOT_FOUND, 'group not found');
+      return this.reject(
+        'GROUP_NOT_FOUND',
+        BusinessCode.NOT_FOUND,
+        'group not found',
+      );
     if (currentGroup.dissolvedAt)
       return this.reject(
         'GROUP_DISSOLVED',
@@ -623,9 +636,7 @@ export class GroupAuthoredMembershipIntentService {
         groupName: row.name,
         groupAvatar: row.avatar,
         groupDescription: row.description,
-        localDomain: 'local',
         memberAccount: member.account,
-        memberDomain: member.domain,
         profileNamespaceId: member.namespaceId,
         // An application keeps the applicant's note; completing an invitation
         // preserves the group's own invitation note through the promotion.
@@ -722,9 +733,7 @@ export class GroupAuthoredMembershipIntentService {
         groupAvatar: row.avatar,
         groupDescription: row.description,
         groupProfileRev: row.profileRev,
-        localDomain: 'local',
         memberAccount: member.account,
-        memberDomain: member.domain,
         profileNamespaceId: member.namespaceId,
         localMemberId: row.localMemberId,
         projectionDirections: row.projectionDirections,
@@ -810,7 +819,6 @@ export class GroupAuthoredMembershipIntentService {
         groupAvatar: row.avatar,
         groupDescription: row.description,
         groupProfileRev: row.profileRev,
-        localDomain: 'local',
         targetAccount: member.account,
         targetDomain: member.domain,
         targetNamespaceId: member.namespaceId,
@@ -938,7 +946,8 @@ export class GroupAuthoredMembershipIntentService {
           'REVOKED',
           clientUpdates,
         );
-      for (const [namespaceId, feedId] of conclusion) peers.set(namespaceId, feedId);
+      for (const [namespaceId, feedId] of conclusion)
+        peers.set(namespaceId, feedId);
     }
     return peers;
   }

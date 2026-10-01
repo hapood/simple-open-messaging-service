@@ -273,8 +273,7 @@ export class FederationThreadReverseRoundExecutorService {
       dependency.federationVersion !== message.federationVersion ||
       dependency.peerToken.domain !== message.peerToken.domain ||
       dependency.peerToken.namespaceId !== message.peerToken.namespaceId ||
-      dependency.peerToken.rootPublicKey !==
-        message.peerToken.rootPublicKey
+      dependency.peerToken.rootPublicKey !== message.peerToken.rootPublicKey
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,

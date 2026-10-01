@@ -475,9 +475,10 @@ export class MessageThreadComponent implements OnDestroy {
           !isSelfMentionMember(this.userService.sessionProfile(), member),
       )
       .map((member) => ({
-        // Mention entity ids are serialized as full SOMFP user addresses. Keeping only the account works
-        // for display but the server rejects the resulting entity because the domain is missing.
-        id: `${member.account}@${member.domain || 'local'}`,
+        // Mention entity ids are serialized as v1 user entities:
+        // somfp://user/<namespaceId>/<account>. The member's namespaceId is the
+        // publisher-scoped subject namespace (0 for a local member).
+        id: `${member.namespaceId}/${member.account}`,
         label: member.name,
         avatarUrl: assetUrl(avatarUrl(member.avatar)),
       }));
@@ -775,10 +776,10 @@ export class MessageThreadComponent implements OnDestroy {
         }
         return;
       }
-      // Native background delivery can outlive the WebView's list projection. Wait for
-      // this foreground's HELLO/thread-feed drain before mounting or resuming reads.
-      if (isAndroidNative() && (!this.appVisible() || !this.convList.threadFeedReady()))
-        return;
+      // Native background delivery can outlive the WebView's list projection. The
+      // unread count and divider are computed from the live thread state at mount,
+      // so mounting before the foreground drain catches up is safe.
+      if (isAndroidNative() && !this.appVisible()) return;
       if (this.resumeAfterBackground && this.currentTrdId === trd.threadId) {
         // A pane already mounted before backgrounding keeps its kernel, draft and
         // viewport. Replace only the measured divider rows, then catch up newer.
@@ -813,7 +814,7 @@ export class MessageThreadComponent implements OnDestroy {
         !loading &&
         this.kernelReady &&
         this.unreadDividerReady() &&
-        (!isAndroidNative() || (this.appVisible() && this.convList.threadFeedReady()))
+        (!isAndroidNative() || this.appVisible())
       ) {
         // A cold notification launch or background return can reset the tracker
         // after the kernel's one-time visible-enter events. Sample the current
@@ -1260,7 +1261,7 @@ export class MessageThreadComponent implements OnDestroy {
       .then(() => {
         if (this.source !== source || this.scroller !== scroller) return;
         this.kernelReady = true;
-        if (!isAndroidNative() || (this.appVisible() && this.convList.threadFeedReady())) {
+        if (!isAndroidNative() || this.appVisible()) {
           this.applyUnreadDivider(trd.threadId);
           if (missedUnreadAnchor && this.scrollState.firstUnreadSeq !== null)
             this.scrollState.markUnreadReanchorNeeded();
@@ -1701,14 +1702,9 @@ export class MessageThreadComponent implements OnDestroy {
           return;
         }
         this.onMessageDeleted(threadId, seq, 'USER_RETRACTION', false);
-        const deletionSeq = (res.data as { deletionSeq?: unknown } | undefined)
-          ?.deletionSeq;
-        if (
-          this.threadAdapter.syncWithdrawalsAfterMutation() &&
-          typeof deletionSeq === 'number' &&
-          Number.isSafeInteger(deletionSeq)
-        )
-          void this.msgRepo.updateTombstoneTarget(threadId, deletionSeq);
+        // The backend enqueues a thread-content fan-out that pushes a
+        // THREAD_FEED_UPDATED wake; the SSE → DB-worker pipeline advances
+        // tombstoneEndSeq and re-drains the tombstone stream. No eager pull.
       },
       error: () =>
         this.toast.warn(this.transloco.translate('chat.withdrawFailed')),

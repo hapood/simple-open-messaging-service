@@ -32,7 +32,6 @@ export class ConversationListService {
   private readonly repo = inject(ThreadRepository);
   private readonly userService = inject(UserService);
 
-  readonly threadFeedReady = this.repo.threadFeedReady;
   private readonly unreadEntryBoundaries = new Map<
     number,
     UnreadEntryBoundary

@@ -160,7 +160,10 @@ export class S2sController {
     this.roundScheduler.wakeStateFeed(signer, stateFeedEndId);
     // Each field is handled independently: the profile-namespace head wakes
     // that pull when it is ahead of the receiver's cursor.
-    this.profileNamespacePull.wake(signer, BigInt(body.profileNamespaceFeedEndId));
+    this.profileNamespacePull.wake(
+      signer,
+      BigInt(body.profileNamespaceFeedEndId),
+    );
   }
 
   /** The shared compacted identity-binding change feed. An omitted `after`
@@ -188,8 +191,7 @@ export class S2sController {
       afterParam === undefined
         ? undefined
         : this.parseCursorBigInt(afterParam, 'after');
-    const take =
-      takeParam === undefined ? undefined : Number(takeParam);
+    const take = takeParam === undefined ? undefined : Number(takeParam);
     const through =
       throughParam === undefined
         ? undefined
@@ -202,10 +204,7 @@ export class S2sController {
   @Get('profile-namespaces/:nsid')
   async getProfileNamespace(@Req() req: FastifyRequest): Promise<unknown> {
     const raw = (req.params as { nsid?: unknown }).nsid;
-    if (
-      typeof raw !== 'string' ||
-      !/^(0|[1-9][0-9]{0,15})$/.test(raw)
-    ) {
+    if (typeof raw !== 'string' || !/^(0|[1-9][0-9]{0,15})$/.test(raw)) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         'nsid must be a non-negative decimal path parameter',
@@ -413,12 +412,7 @@ export class S2sController {
       throughParam === undefined
         ? undefined
         : this.parseCursorBigInt(throughParam, 'through');
-    return this.peerStateFeed.serve(
-      namespaceId,
-      after,
-      take,
-      through,
-    );
+    return this.peerStateFeed.serve(namespaceId, after, take, through);
   }
 
   @Post('call')
@@ -441,10 +435,7 @@ export class S2sController {
     const parsed = parseFederationResourceRequest(req, {
       pathPrefix: '/s2s/v1/accounts/',
       pathName: 'account',
-      query: [
-        { name: 'publicKey' },
-        { name: 'challenge' },
-      ],
+      query: [{ name: 'publicKey' }, { name: 'challenge' }],
     });
     const account = requireAccount(parsed.pathValue, 'account');
     // The public current-profile lookup doubles as a possession proof: the
@@ -515,12 +506,7 @@ export class S2sController {
     if (!profile) {
       throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
     }
-    const {
-      account: owner,
-      displayName,
-      bio,
-      avatar,
-    } = profile;
+    const { account: owner, displayName, bio, avatar } = profile;
     return { account: owner, displayName, bio, avatar };
   }
 
@@ -554,12 +540,7 @@ export class S2sController {
     );
     if (!profile)
       throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
-    const {
-      account: owner,
-      displayName,
-      bio,
-      avatar,
-    } = profile;
+    const { account: owner, displayName, bio, avatar } = profile;
     return { account: owner, displayName, bio, avatar };
   }
 

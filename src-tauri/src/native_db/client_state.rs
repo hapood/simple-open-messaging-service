@@ -25,7 +25,7 @@ fn preserve_thread_profile(incoming: &mut Value, current: &Value) {
 use super::relationship_projection::{
     apply_group_request_effect, apply_relationship_request_effect, update_live_request_projection,
 };
-use super::{json_text, open, parse_json};
+use super::open;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

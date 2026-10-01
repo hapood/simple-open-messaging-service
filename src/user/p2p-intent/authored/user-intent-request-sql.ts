@@ -24,7 +24,10 @@ export function userIntentRequestSql(input: UserIntentRequestInput): SQL {
   const authoredSql =
     input.authoredSql ??
     authoredIntentWriteSql({
-      author: { account: input.actorAccount, namespaceId: input.actorNamespaceId },
+      author: {
+        account: input.actorAccount,
+        namespaceId: input.actorNamespaceId,
+      },
       receiver: {
         account: input.targetAccount,
         namespaceId: input.targetNamespaceId,

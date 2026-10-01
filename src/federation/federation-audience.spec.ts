@@ -34,9 +34,7 @@ describe('openFederatedAudienceInTx history access', () => {
   it('allows retained history by default', async () => {
     const { tx, values } = transaction();
 
-    await expect(
-      openFederatedAudienceInTx(tx, 7, 11, 9),
-    ).resolves.toBe(true);
+    await expect(openFederatedAudienceInTx(tx, 7, 11, 9)).resolves.toBe(true);
 
     expect(values).toHaveBeenCalledWith(
       expect.objectContaining({

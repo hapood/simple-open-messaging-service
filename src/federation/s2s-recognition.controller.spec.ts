@@ -710,14 +710,12 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
       {} as never,
       {} as never,
     );
-    const acceptInbound = vi
-      .spyOn(service, 'acceptInbound')
-      .mockResolvedValue({
-        domain: 'peer.example',
-        namespaceId: 9,
-        peerAssignedLocalNamespaceId: null,
-        rootPublicKey: TEST_ROOT_KEY,
-      } as never);
+    const acceptInbound = vi.spyOn(service, 'acceptInbound').mockResolvedValue({
+      domain: 'peer.example',
+      namespaceId: 9,
+      peerAssignedLocalNamespaceId: null,
+      rootPublicKey: TEST_ROOT_KEY,
+    } as never);
     const verify = (
       service as unknown as {
         verifyInboundRecognize: (params: {
@@ -864,7 +862,11 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     const service = (
       target as unknown as { service: FederationRecognitionService }
     ).service;
-    (service as unknown as { discovery: { fetchWellKnown: ReturnType<typeof vi.fn> } }).discovery.fetchWellKnown.mockResolvedValue(discoveryDoc);
+    (
+      service as unknown as {
+        discovery: { fetchWellKnown: ReturnType<typeof vi.fn> };
+      }
+    ).discovery.fetchWellKnown.mockResolvedValue(discoveryDoc);
 
     await target.verify({
       domain: 'peer.example',

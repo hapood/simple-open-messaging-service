@@ -307,7 +307,10 @@ export class FederationInboundMessageStoreService {
         .where(
           and(
             eq(tables.federatedMessageTombstone.threadId, threadId),
-            eq(tables.federatedMessageTombstone.publisherNamespaceId, namespaceId),
+            eq(
+              tables.federatedMessageTombstone.publisherNamespaceId,
+              namespaceId,
+            ),
             eq(tables.federatedMessageTombstone.messageSeq, incoming.originSeq),
           ),
         );

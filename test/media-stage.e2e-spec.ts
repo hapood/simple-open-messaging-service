@@ -164,7 +164,10 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     ).rejects.toMatchObject({ bizCode: BusinessCode.QUOTA_EXCEEDED });
 
     const usage = await database.db.query.userQuotaDailyUsage.findFirst({
-      where: and(eq(userQuotaDailyUsage.userId, userId), eq(userQuotaDailyUsage.category, 'requests')),
+      where: and(
+        eq(userQuotaDailyUsage.userId, userId),
+        eq(userQuotaDailyUsage.category, 'requests'),
+      ),
     });
     expect(usage?.count).toBe(2);
     const rolledBackPair = await database.db.query.relationshipPair.findFirst({

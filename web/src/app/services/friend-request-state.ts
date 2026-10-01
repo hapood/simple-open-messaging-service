@@ -37,9 +37,7 @@ export interface FriendRequestProjection {
   peer?: FriendRequestPeer;
   group?: {
     account: string;
-    domain: string;
     namespaceId: number;
-    isLocal: boolean;
     name: string;
     avatar: string;
     description: string;
@@ -55,9 +53,8 @@ export interface FriendIntentProjectionInput {
   requestDirection?: FriendRequestDirection;
   namespaceId: number;
   account: string;
-  domain: string;
   subjectAccount: string;
-  subjectDomain: string;
+  subjectNamespaceId: number;
   status: FriendRequestIntentStatus;
   direction: FriendRequestDirection;
   localThreadId: number | null;
@@ -71,8 +68,6 @@ export interface GroupInviteProjectionInput {
   requestStatus?: RequestRevocationStatus;
   requestDirection?: FriendRequestDirection;
   namespaceId: number;
-  account: string;
-  domain: string;
   status: FriendRequestIntentStatus;
   note: string;
   requestedAt: number | null;
@@ -95,9 +90,8 @@ export function friendRequestKey(
   input: {
     namespaceId: number;
     account: string;
-    domain: string;
     subjectAccount: string;
-    subjectDomain: string;
+    subjectNamespaceId: number;
     direction: FriendRequestDirection;
   },
   targetDirection: FriendRequestDirection,
@@ -108,17 +102,15 @@ export function friendRequestKey(
       ? [
           'friend',
           input.namespaceId,
-          input.domain,
           input.account,
-          input.subjectDomain,
+          input.subjectNamespaceId,
           input.subjectAccount,
         ]
       : [
           'friend',
-          input.namespaceId,
-          input.subjectDomain,
+          input.subjectNamespaceId,
           input.subjectAccount,
-          input.domain,
+          input.namespaceId,
           input.account,
         ],
   );
@@ -126,11 +118,10 @@ export function friendRequestKey(
 
 export function groupRequestKey(
   namespaceId: number,
-  domain: string,
   account: string,
   direction: FriendRequestDirection,
 ): string {
-  return JSON.stringify(['group', namespaceId, domain, account, direction]);
+  return JSON.stringify(['group', namespaceId, account, direction]);
 }
 
 export interface ProjectionTransition {
@@ -216,8 +207,7 @@ export function applyGroupIntentToProjection(
   const record: FriendRequestProjection = {
     key: groupRequestKey(
       input.namespaceId,
-      input.domain,
-      input.account,
+      input.group.account,
       direction,
     ),
     namespaceId: input.namespaceId,
@@ -230,7 +220,7 @@ export function applyGroupIntentToProjection(
     note: input.note,
     requestedAt: input.requestedAt ?? 0,
     group: input.group,
-    sourceLabel: input.group.isLocal ? 'local' : input.group.domain,
+    sourceLabel: input.group.namespaceId === 0 ? 'local' : '',
     requestedSort: input.requestedAt ?? 0,
     updatedAt: now,
   };

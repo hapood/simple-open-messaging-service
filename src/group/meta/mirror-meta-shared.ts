@@ -1,6 +1,9 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../../common/account.js';
-import { toClientIdentity, toClientIdentityOrNull } from '../../common/client-identity.js';
+import {
+  toClientIdentity,
+  toClientIdentityOrNull,
+} from '../../common/client-identity.js';
 import type { ThreadContentLock } from '../../common/locks/thread-content-lock.js';
 import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
@@ -356,12 +359,19 @@ export async function finalizeMirrorMetaRecoveryInTx(
       updatedAt: new Date(),
     })
     .where(eq(groupMeta.threadId, input.threadId));
+  // Side A is always the local endpoint: a mirrored (remotely hosted) group's
+  // local member sits on A, a locally hosted group's member on B with
+  // namespace 0. An active pair on either side keeps the mirror live.
   const membership = await tx.execute<{ active: boolean }>(sql`
     SELECT EXISTS (
       SELECT 1 FROM "RelationshipPair" pair
       WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = ${input.threadId}
-        AND pair.active = true AND pair."endpointBType" = 'USER'
-        AND pair."endpointANamespaceId" = 0
+        AND pair.active = true
+        AND (
+          pair."endpointAType" = 'USER'
+          OR (pair."endpointBType" = 'USER'
+            AND pair."endpointBNamespaceId" = 0)
+        )
     ) AS active
   `);
   const dissolved = !membership.rows[0]?.active;

@@ -297,7 +297,9 @@ describe('TwoFactorService', () => {
   // ── enable / disable / regenerate (atomic Admin-row state) ─────────────────────
 
   it('enableWithBackupCodes atomically enables and replaces backup codes', async () => {
-    const adminUpdate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({}));
+    const adminUpdate = vi.fn(
+      async (_args: { data: Record<string, unknown> }) => ({}),
+    );
     const deleteMany = vi.fn(async () => ({ count: 0 }));
     const created: Array<{ adminId: number; codeHash: string }> = [];
     const createMany = vi.fn(async (args: { data: typeof created }) => {
@@ -365,7 +367,9 @@ describe('TwoFactorService', () => {
   });
 
   it('disable atomically clears the secret + flags and drops backup codes', async () => {
-    const adminUpdate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({}));
+    const adminUpdate = vi.fn(
+      async (_args: { data: Record<string, unknown> }) => ({}),
+    );
     const deleteMany = vi.fn(async () => ({ count: 0 }));
     const { svc } = makeService({
       admin: { update: adminUpdate },
@@ -387,7 +391,9 @@ describe('TwoFactorService', () => {
     const createMany = vi.fn(async (args: { data: unknown[] }) => ({
       count: args.data.length,
     }));
-    const adminUpdate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({}));
+    const adminUpdate = vi.fn(
+      async (_args: { data: Record<string, unknown> }) => ({}),
+    );
     const { svc } = makeService({
       admin: { update: adminUpdate },
       twoFactorBackupCode: { deleteMany, createMany },

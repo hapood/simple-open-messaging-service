@@ -221,21 +221,19 @@ describe('FederationInboundMediaBatchService', () => {
       expectedAuthorizationEpoch: 4,
       dependsOnOriginSeq: null,
     };
-    const { service, database, fileSync, sse, set } = serviceWith(
-      {
-        pendingMedia: batch,
-        message: { threadId: 8, seq: 13 },
-        progress: { errorKind: 'REMOTE_IO' },
-        progressRows: [
-          {
-            digest: 'a'.repeat(64),
-            status: 'DOWNLOADING',
-            bytesReceived: 10n,
-            bytesTotal: 100n,
-          },
-        ],
-      },
-    );
+    const { service, database, fileSync, sse, set } = serviceWith({
+      pendingMedia: batch,
+      message: { threadId: 8, seq: 13 },
+      progress: { errorKind: 'REMOTE_IO' },
+      progressRows: [
+        {
+          digest: 'a'.repeat(64),
+          status: 'DOWNLOADING',
+          bytesReceived: 10n,
+          bytesTotal: 100n,
+        },
+      ],
+    });
     fileSync.runBatch.mockImplementation(
       async (
         _batchId: string,

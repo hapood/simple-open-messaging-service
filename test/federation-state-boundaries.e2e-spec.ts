@@ -137,17 +137,11 @@ describe('federation directed-state boundaries', () => {
     await database.db.insert(relationshipIntent).values(
       rows.map((row) => ({
         authorAccount:
-          row.author === 'local'
-            ? localIdentity!.account
-            : peer.account,
-        authorNamespaceId:
-          row.author === 'local' ? 0 : peer.namespaceId,
+          row.author === 'local' ? localIdentity!.account : peer.account,
+        authorNamespaceId: row.author === 'local' ? 0 : peer.namespaceId,
         receiverAccount:
-          row.author === 'local'
-            ? peer.account
-            : localIdentity!.account,
-        receiverNamespaceId:
-          row.author === 'local' ? peer.namespaceId : 0,
+          row.author === 'local' ? peer.account : localIdentity!.account,
+        receiverNamespaceId: row.author === 'local' ? peer.namespaceId : 0,
         profileNamespaceId: 0,
         status: row.status,
         messageEndSeq: row.messageEndSeq ?? 0,
@@ -517,8 +511,14 @@ describe('federation directed-state boundaries', () => {
         where: and(
           eq(relationshipIntent.authorAccount, inviteDirection.authorAccount),
           eq(relationshipIntent.authorNamespaceId, 0),
-          eq(relationshipIntent.receiverAccount, inviteDirection.receiverAccount),
-          eq(relationshipIntent.receiverNamespaceId, inviteDirection.receiverNamespaceId),
+          eq(
+            relationshipIntent.receiverAccount,
+            inviteDirection.receiverAccount,
+          ),
+          eq(
+            relationshipIntent.receiverNamespaceId,
+            inviteDirection.receiverNamespaceId,
+          ),
         ),
       });
     const writeInvite = () =>
@@ -548,8 +548,14 @@ describe('federation directed-state boundaries', () => {
         and(
           eq(relationshipIntent.authorAccount, inviteDirection.authorAccount),
           eq(relationshipIntent.authorNamespaceId, 0),
-          eq(relationshipIntent.receiverAccount, inviteDirection.receiverAccount),
-          eq(relationshipIntent.receiverNamespaceId, inviteDirection.receiverNamespaceId),
+          eq(
+            relationshipIntent.receiverAccount,
+            inviteDirection.receiverAccount,
+          ),
+          eq(
+            relationshipIntent.receiverNamespaceId,
+            inviteDirection.receiverNamespaceId,
+          ),
         ),
       );
     await writeInvite();
@@ -560,7 +566,10 @@ describe('federation directed-state boundaries', () => {
         eq(relationshipIntent.authorAccount, inviteDirection.authorAccount),
         eq(relationshipIntent.authorNamespaceId, 0),
         eq(relationshipIntent.receiverAccount, inviteDirection.receiverAccount),
-        eq(relationshipIntent.receiverNamespaceId, inviteDirection.receiverNamespaceId),
+        eq(
+          relationshipIntent.receiverNamespaceId,
+          inviteDirection.receiverNamespaceId,
+        ),
       ),
     });
     expect(rows).toHaveLength(1);

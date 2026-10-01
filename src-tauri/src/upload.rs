@@ -5,7 +5,7 @@ use crate::*;
 #[tauri::command]
 pub(crate) async fn upload_stream_file(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ProxyState>,
+    proxy: tauri::State<'_, ServerSessionState>,
     path: String,
     endpoint: String,
     filename: String,
@@ -30,7 +30,7 @@ pub(crate) async fn upload_stream_file(
 
 async fn upload_stream_path_core(
     app: tauri::AppHandle,
-    proxy: ProxyState,
+    proxy: ServerSessionState,
     path: String,
     endpoint: String,
     filename: String,
@@ -75,7 +75,7 @@ async fn upload_stream_path_core(
 /// makes normal Rust ownership close the descriptor on success, error, or cancellation.
 async fn upload_stream_open_file_core(
     app: tauri::AppHandle,
-    proxy: ProxyState,
+    proxy: ServerSessionState,
     mut file: tokio::fs::File,
     endpoint: String,
     filename: String,
@@ -219,7 +219,7 @@ impl ResumablePart {
 /// authoritative offset; every retry re-initializes idempotently and resumes from that offset.
 async fn upload_resumable_open_file(
     app: tauri::AppHandle,
-    proxy: ProxyState,
+    proxy: ServerSessionState,
     file: &mut tokio::fs::File,
     filename: String,
     mime: String,
@@ -446,7 +446,7 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadFd(
     let Some(app) = ANDROID_APP.get().cloned() else {
         return;
     };
-    let proxy = app.state::<ProxyState>().inner().clone();
+    let proxy = app.state::<ServerSessionState>().inner().clone();
     tauri::async_runtime::spawn(async move {
         let result = upload_stream_open_file_core(
             app.clone(),
@@ -492,7 +492,7 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_cancelUpload(
         return;
     };
     cancel_upload(
-        app.state::<ProxyState>(),
+        app.state::<ServerSessionState>(),
         client_message_id.to_string_lossy().into_owned(),
     );
 }
@@ -545,7 +545,7 @@ impl NativeVoicePending {
 #[tauri::command]
 pub(crate) fn retry_native_voice(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ProxyState>,
+    proxy: tauri::State<'_, ServerSessionState>,
     client_message_id: String,
 ) -> Result<(), String> {
     let pending = {
@@ -568,7 +568,7 @@ pub(crate) fn retry_native_voice(
 
 #[cfg(not(desktop))]
 #[tauri::command]
-pub(crate) fn discard_native_voice(proxy: tauri::State<'_, ProxyState>, client_message_id: String) {
+pub(crate) fn discard_native_voice(proxy: tauri::State<'_, ServerSessionState>, client_message_id: String) {
     if let Some(token) = proxy
         .upload_cancels
         .lock()
@@ -609,7 +609,7 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
     let Some(app) = ANDROID_APP.get().cloned() else {
         return;
     };
-    let proxy = app.state::<ProxyState>().inner().clone();
+    let proxy = app.state::<ServerSessionState>().inner().clone();
     let pending = NativeVoicePending {
         path,
         part_id: uuid::Uuid::new_v4().to_string(),
@@ -630,7 +630,7 @@ pub extern "system" fn Java_com_soms_client_RustUploadBridge_uploadVoicePath(
 #[cfg(not(desktop))]
 fn spawn_native_voice_upload(
     app: tauri::AppHandle,
-    proxy: ProxyState,
+    proxy: ServerSessionState,
     pending: NativeVoicePending,
     client_message_id: String,
     retry: bool,
@@ -736,7 +736,7 @@ fn spawn_native_voice_upload(
 /// Cancel one shell streaming upload. Idempotent: a task that already completed or has not reached the
 /// streaming phase simply has no token. Browser cancellation remains owned by HttpClient unsubscribe.
 #[tauri::command]
-pub(crate) fn cancel_upload(proxy: tauri::State<'_, ProxyState>, client_message_id: String) {
+pub(crate) fn cancel_upload(proxy: tauri::State<'_, ServerSessionState>, client_message_id: String) {
     if let Some(token) = proxy
         .upload_cancels
         .lock()

@@ -174,12 +174,12 @@ describe('ThreadAudience schema', () => {
     expect(
       cursorChecks.get('IdentityNamespace_stateFeedPulledThrough_check'),
     ).toContain('stateFeedPulledThrough');
-    expect(
-      cursorChecks.get('ProfileNamespaceFeed_feedId_check'),
-    ).toContain('feedId');
-    expect(
-      cursorChecks.get('ProfileNamespaceInfo_bindings_check'),
-    ).toContain('rootPublicKey');
+    expect(cursorChecks.get('ProfileNamespaceFeed_feedId_check')).toContain(
+      'feedId',
+    );
+    expect(cursorChecks.get('ProfileNamespaceInfo_bindings_check')).toContain(
+      'rootPublicKey',
+    );
     expect(
       cursorChecks.get('FederationThreadSyncState_messageSeqs_check'),
     ).toContain('messageProcessedThroughSeq');

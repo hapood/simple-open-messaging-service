@@ -51,7 +51,10 @@ describe('durable task committed wake and drain', () => {
 
   beforeEach(async () => {
     database = new DatabaseService();
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "DurableTask" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "DurableTask" RESTART IDENTITY CASCADE',
+    );
     store = new DurableTaskStoreService(database);
     queue = new DurableTaskQueueService(database);
     const dispatcher = new DurableTaskDispatcherService();

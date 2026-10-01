@@ -142,15 +142,13 @@ describe('group revocation admission', () => {
         { user: { userId: 3 }, threadAccess: { threadId: 10 } } as never,
         { account: ' Member ', domain: ' PEER.TEST ' } as never,
       );
-      expect(execute).toHaveBeenCalledExactlyOnceWith(
-        {
-          threadId: 10,
-          managerUserId: 3,
-          decision: 'REVOKED',
-          scope,
-          target: { account: 'member', domain: 'peer.test' },
-        },
-      );
+      expect(execute).toHaveBeenCalledExactlyOnceWith({
+        threadId: 10,
+        managerUserId: 3,
+        decision: 'REVOKED',
+        scope,
+        target: { account: 'member', domain: 'peer.test' },
+      });
       expect(result).toEqual({ status: 'APPLIED' });
     },
   );

@@ -94,8 +94,6 @@ export interface FederationMessageQueryPage {
 export class FederationMessageFeedService {
   private readonly logger = new Logger(FederationMessageFeedService.name);
 
-  private readonly localDomain = 'local';
-
   constructor(private readonly database: DatabaseService) {}
 
   async rejectMissingQueryAfter(
@@ -417,7 +415,6 @@ export class FederationMessageFeedService {
         content = toFederatedMessageContent(
           row.contentType,
           row.content,
-          this.localDomain,
         );
         contentDigests = new Set(
           federatedContentDigests(row.contentType, content),

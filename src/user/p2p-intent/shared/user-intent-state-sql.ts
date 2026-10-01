@@ -25,7 +25,8 @@ export function compareEndpoints(
   const rightLocal = right.namespaceId === 0;
   if (leftLocal !== rightLocal) return leftLocal ? -1 : 1;
   return (
-    left.account.localeCompare(right.account) || left.namespaceId - right.namespaceId
+    left.account.localeCompare(right.account) ||
+    left.namespaceId - right.namespaceId
   );
 }
 

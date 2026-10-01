@@ -62,11 +62,7 @@ describe('federated message content projection', () => {
   ] as const)('projects %s without a URL', (contentType, local, wire) => {
     expect(
       JSON.parse(
-        toFederatedMessageContent(
-          contentType,
-          JSON.stringify(local),
-          'local.test',
-        ),
+        toFederatedMessageContent(contentType, JSON.stringify(local)),
       ),
     ).toEqual(wire);
     expect(
@@ -74,7 +70,6 @@ describe('federated message content projection', () => {
         fromFederatedMessageContent(
           contentType,
           JSON.stringify(wire),
-          'local.test',
           new Map([[digestA, 30]]),
         ),
       ),
@@ -90,11 +85,7 @@ describe('federated message content projection', () => {
       name: 'photo.png',
     };
     const wire = JSON.parse(
-      toFederatedMessageContent(
-        ContentType.IMAGE,
-        JSON.stringify(local),
-        'local.test',
-      ),
+      toFederatedMessageContent(ContentType.IMAGE, JSON.stringify(local)),
     );
     expect(wire).toEqual({
       digest: digestA,
@@ -107,7 +98,6 @@ describe('federated message content projection', () => {
         fromFederatedMessageContent(
           ContentType.IMAGE,
           JSON.stringify(wire),
-          'local.test',
           new Map([[digestA, 30]]),
         ),
       ),
@@ -116,7 +106,6 @@ describe('federated message content projection', () => {
       fromFederatedMessageContent(
         ContentType.IMAGE,
         JSON.stringify({ ...wire, name: 'x'.repeat(101) }),
-        'local.test',
         new Map([[digestA, 30]]),
       ),
     ).toThrow('invalid image filename');
@@ -146,7 +135,6 @@ describe('federated message content projection', () => {
       toFederatedMessageContent(
         ContentType.GALLERY,
         JSON.stringify(local),
-        'local.test',
       ),
     ) as { items: Array<Record<string, unknown>> };
 
@@ -168,7 +156,6 @@ describe('federated message content projection', () => {
         fromFederatedMessageContent(
           ContentType.GALLERY,
           JSON.stringify(wire),
-          'local.test',
           new Map([
             [digestA, 1],
             [digestB, 4],
@@ -189,7 +176,6 @@ describe('federated message content projection', () => {
           image: cas(digestA),
           favicon: cas(digestB),
         }),
-        'local.test',
       ),
     );
 
@@ -205,11 +191,7 @@ describe('federated message content projection', () => {
     ).toEqual([digestA, digestB]);
     expect(
       JSON.parse(
-        fromFederatedMessageContent(
-          ContentType.LINK,
-          JSON.stringify(wire),
-          'local.test',
-        ),
+        fromFederatedMessageContent(ContentType.LINK, JSON.stringify(wire)),
       ),
     ).toEqual({
       url: 'https://example.test/article',
@@ -227,15 +209,9 @@ describe('federated message content projection', () => {
       title: 'Open chat',
       description: '',
     });
-    const wire = toFederatedMessageContent(
-      ContentType.LINK,
-      local,
-      'local.test',
-    );
+    const wire = toFederatedMessageContent(ContentType.LINK, local);
     expect(JSON.parse(wire)).toEqual(JSON.parse(local));
-    expect(
-      fromFederatedMessageContent(ContentType.LINK, wire, 'local.test'),
-    ).toBe(local);
+    expect(fromFederatedMessageContent(ContentType.LINK, wire)).toBe(local);
   });
 
   it('rejects relative and malformed LINK targets', () => {
@@ -248,7 +224,6 @@ describe('federated message content projection', () => {
         fromFederatedMessageContent(
           ContentType.LINK,
           JSON.stringify({ url: target, title: '', description: '' }),
-          'local.test',
         ),
       ).toThrow();
     }
@@ -263,9 +238,7 @@ describe('federated message content projection', () => {
     });
 
     expect(
-      JSON.parse(
-        fromFederatedMessageContent(ContentType.LINK, wire, 'local.test'),
-      ),
+      JSON.parse(fromFederatedMessageContent(ContentType.LINK, wire)),
     ).toEqual(JSON.parse(wire));
     expect(federatedContentDigests(ContentType.LINK, wire)).toEqual([]);
   });
@@ -280,7 +253,7 @@ describe('federated message content projection', () => {
     };
     const wire = {
       account: 'carol',
-      domain: 'local.test',
+      domain: 'local',
       displayName: 'Carol',
       bio: 'Distributed systems enthusiast',
       avatarDigest: digestA,
@@ -291,7 +264,6 @@ describe('federated message content projection', () => {
         toFederatedMessageContent(
           ContentType.CONTACT_CARD,
           JSON.stringify(local),
-          'local.test',
         ),
       ),
     ).toEqual(wire);
@@ -303,7 +275,6 @@ describe('federated message content projection', () => {
         fromFederatedMessageContent(
           ContentType.CONTACT_CARD,
           JSON.stringify(wire),
-          'local.test',
         ),
       ),
     ).toEqual(local);
@@ -319,7 +290,6 @@ describe('federated message content projection', () => {
           displayName: 'Group',
           bio: '',
         }),
-        'local.test',
       ),
     ).toThrow('invalid contact card');
     expect(() =>
@@ -332,7 +302,6 @@ describe('federated message content projection', () => {
           bio: '',
           avatarDigest: 'invalid',
         }),
-        'local.test',
       ),
     ).toThrow('invalid media digest');
     expect(() =>
@@ -344,7 +313,6 @@ describe('federated message content projection', () => {
           displayName: 'Carol',
           bio: 'x'.repeat(121),
         }),
-        'local.test',
       ),
     ).toThrow('invalid contact card');
   });
@@ -358,11 +326,7 @@ describe('federated message content projection', () => {
     });
     expect(
       JSON.parse(
-        fromFederatedMessageContent(
-          ContentType.CONTACT_CARD,
-          wire,
-          'local.test',
-        ),
+        fromFederatedMessageContent(ContentType.CONTACT_CARD, wire),
       ),
     ).toEqual(JSON.parse(wire));
   });
@@ -377,7 +341,6 @@ describe('federated message content projection', () => {
           description: '',
           imageDigest: digestA,
         }),
-        'local.test',
       ),
     ).toThrow('invalid fields');
     expect(() =>
@@ -389,7 +352,6 @@ describe('federated message content projection', () => {
           description: '',
           favicon: 'not-a-digest',
         }),
-        'local.test',
       ),
     ).toThrow('invalid media digest');
   });
@@ -405,14 +367,12 @@ describe('federated message content projection', () => {
           messageCount: 3,
           depth: 2,
         }),
-        'local.test',
       ),
     ).toBe(JSON.stringify({ bundleId }));
     expect(() =>
       toFederatedMessageContent(
         ContentType.FORWARD,
         JSON.stringify({ bundleId, summaryLines: [], messageCount: 3 }),
-        'local.test',
       ),
     ).toThrow('invalid fields');
   });
@@ -420,9 +380,9 @@ describe('federated message content projection', () => {
   it('publishes an imported minimal FORWARD card idempotently', () => {
     const imported = JSON.stringify({ bundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV' });
 
-    expect(
-      toFederatedMessageContent(ContentType.FORWARD, imported, 'local.test'),
-    ).toBe(imported);
+    expect(toFederatedMessageContent(ContentType.FORWARD, imported)).toBe(
+      imported,
+    );
     expect(() =>
       toFederatedMessageContent(
         ContentType.FORWARD,
@@ -430,70 +390,57 @@ describe('federated message content projection', () => {
           bundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
           unexpected: true,
         }),
-        'local.test',
       ),
     ).toThrow('invalid fields');
   });
 
   it('rejects the removed CALL message type in both directions', () => {
     expect(() =>
-      toFederatedMessageContent('CALL' as ContentType, '{}', 'local.test'),
+      toFederatedMessageContent('CALL' as ContentType, '{}'),
     ).toThrow();
     expect(() =>
-      fromFederatedMessageContent('CALL' as ContentType, '{}', 'local.test'),
+      fromFederatedMessageContent('CALL' as ContentType, '{}'),
     ).toThrow();
   });
 
   it('drops local quote media previews on publish and rejects them on wire input', () => {
     const local = JSON.stringify({
-      text: 'hello [@Alice](somfp://user/alice%40example.test)',
+      text: 'hello [@Alice](somfp://user/0/alice)',
       quote: { seq: 1, body: 'preview', image: cas(digestA) },
     });
-    const wire = toFederatedMessageContent(
-      ContentType.PURE_TEXT,
-      local,
-      'local.test',
-    );
+    const wire = toFederatedMessageContent(ContentType.PURE_TEXT, local);
     expect(JSON.parse(wire)).toEqual({
-      text: 'hello [@Alice](somfp://user/alice%40example.test)',
+      text: 'hello [@Alice](somfp://user/0/alice)',
     });
     expect(() =>
-      fromFederatedMessageContent(ContentType.PURE_TEXT, local, 'local.test'),
+      fromFederatedMessageContent(ContentType.PURE_TEXT, local),
     ).toThrow('invalid fields');
   });
 
-  it('maps the local mention domain only at the federation boundary', () => {
+  it('passes user mentions through unchanged at the federation boundary', () => {
     const stored = JSON.stringify({
-      text: 'hello [@Alice](somfp://user/alice%40local)',
+      text: 'hello [@Alice](somfp://user/0/alice)',
     });
-    const wire = toFederatedMessageContent(
-      ContentType.PURE_TEXT,
-      stored,
-      'local.test',
-    );
+    const wire = toFederatedMessageContent(ContentType.PURE_TEXT, stored);
     expect(JSON.parse(wire)).toEqual({
-      text: 'hello [@Alice](somfp://user/alice%40local.test)',
+      text: 'hello [@Alice](somfp://user/0/alice)',
     });
     expect(
-      JSON.parse(
-        fromFederatedMessageContent(ContentType.PURE_TEXT, wire, 'local.test'),
-      ),
+      JSON.parse(fromFederatedMessageContent(ContentType.PURE_TEXT, wire)),
     ).toEqual(JSON.parse(stored));
   });
 
-  it.each([
-    'alice',
-    'Alice@example.test',
-    'alice@@example.test',
-    'alice@bad_domain',
-    'alice@local',
-    'alice@printer.local',
-  ])('rejects invalid wire mention address %s', (address) => {
+  it('rejects a wire mention carrying a domain-style address', () => {
+    // The v1 user entity is (namespaceId, account), never account@domain.
+    // A domain-style token is malformed and stays ordinary text; projectTextContent
+    // validates only successfully-parsed entities, so the malformed token round-trips
+    // as plain text rather than throwing.
     const wire = JSON.stringify({
-      text: `hello [@Alice](somfp://user/${encodeURIComponent(address)})`,
+      text: 'hello [@Alice](somfp://user/alice%40example.test)',
     });
-    expect(() =>
-      fromFederatedMessageContent(ContentType.PURE_TEXT, wire, 'local.test'),
-    ).toThrow('valid full address');
+    const result = JSON.parse(
+      fromFederatedMessageContent(ContentType.PURE_TEXT, wire),
+    );
+    expect(result.text).toBe('hello [@Alice](somfp://user/alice%40example.test)');
   });
 });

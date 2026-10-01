@@ -38,12 +38,7 @@ describe('selectInboundMessageProfileDemand', () => {
 
   it('selects GROUP_MEMBER_PROFILE from the group-account prefix', () => {
     expect(
-      selectInboundMessageProfileDemand(
-        { account: '!GROUP' },
-        stored,
-        7,
-        12,
-      ),
+      selectInboundMessageProfileDemand({ account: '!GROUP' }, stored, 7, 12),
     ).toEqual({
       publisherNamespaceId: 7,
       lookup: 'GROUP_MEMBER_PROFILE',

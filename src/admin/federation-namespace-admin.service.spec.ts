@@ -86,10 +86,7 @@ function subject(rowsByCall: unknown[][]) {
 
 describe('FederationNamespaceAdminService', () => {
   it('lists namespaces and reviews for a peer domain', async () => {
-    const { service, execute } = subject([
-      [namespaceRow()],
-      [reviewRow()],
-    ]);
+    const { service, execute } = subject([[namespaceRow()], [reviewRow()]]);
     await expect(service.list('Peer.Example.')).resolves.toMatchObject({
       namespaces: [{ id: 12, rootPublicKey: ROOT_A }],
       reviews: [{ id: 7, kind: 'root-rotation' }],
@@ -104,22 +101,28 @@ describe('FederationNamespaceAdminService', () => {
   });
 
   it('rejects a review without touching the pinned epoch', async () => {
-    const { service, execute } = subject([
-      [reviewRow()],
-      [namespaceRow()],
-    ]);
+    const { service, execute } = subject([[reviewRow()], [namespaceRow()]]);
     await expect(service.reject(7)).resolves.toMatchObject({
       reviewId: 7,
       status: 'rejected',
       activeNamespaceId: 12,
     });
-    const statements = execute.mock.calls.map((call) => sqlText(call[0])).join('\n');
+    const statements = execute.mock.calls
+      .map((call) => sqlText(call[0]))
+      .join('\n');
     expect(statements).toContain('UPDATE "FederationIdentityReview"');
     expect(statements).not.toContain('UPDATE "IdentityNamespace"');
   });
 
   it('approves a root replacement by swapping the pinned key on the same epoch in one commit', async () => {
-    const { service, execute, recordNamespaceChangeInTx, recordClientChangeInTx, notifyProfileNamespaceChange, scheduleRefresh } = subject([
+    const {
+      service,
+      execute,
+      recordNamespaceChangeInTx,
+      recordClientChangeInTx,
+      notifyProfileNamespaceChange,
+      scheduleRefresh,
+    } = subject([
       [reviewRow()],
       [namespaceRow()],
       [], // conflicting pinned-root probe
@@ -132,7 +135,9 @@ describe('FederationNamespaceAdminService', () => {
       status: 'approved',
       activeNamespaceId: 12,
     });
-    const statements = execute.mock.calls.map((call) => sqlText(call[0])).join('\n');
+    const statements = execute.mock.calls
+      .map((call) => sqlText(call[0]))
+      .join('\n');
     expect(statements).toContain('UPDATE "IdentityNamespace"');
     expect(statements).toContain('SET "rootPublicKey" = ');
     expect(statements).toContain('"identityPinnedAt" = now()');
@@ -188,7 +193,9 @@ describe('FederationNamespaceAdminService', () => {
       activeNamespaceId: 12,
       domain: 'moved.example',
     });
-    const statements = execute.mock.calls.map((call) => sqlText(call[0])).join('\n');
+    const statements = execute.mock.calls
+      .map((call) => sqlText(call[0]))
+      .join('\n');
     expect(statements).toContain('SET domain =');
     expect(statements).not.toContain('INSERT INTO "IdentityNamespace"');
     // The re-bind is published on the shared Profile Namespace Feed in the

@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use super::client_state::{apply_state_feed_page_with_resume, ClientStateFeedItem};
 use super::{lifetime, open};
-use crate::{proxy::perform_api_request_with_events, ProxyState};
+use crate::{proxy::perform_api_request_with_events, ServerSessionState};
 
 // This lane owns the persisted state-feed cursor. Network waits do not hold the cache-lifetime lock.
 static STATE_FEED_SYNC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -87,7 +87,7 @@ fn validate(page: &Page, mode: &str, after: i64, through: i64) -> Result<(), Str
 /// Consume one native state-feed wake. Rust fetches and validates pages before atomically applying
 /// each page with its cursor. A concurrent wake observes the new cursor after this lane finishes.
 pub(crate) async fn synchronize(
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     user_id: i64,
     target: i64,
 ) -> Result<i64, String> {

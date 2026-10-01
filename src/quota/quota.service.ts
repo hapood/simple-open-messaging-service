@@ -47,8 +47,15 @@ export class QuotaService implements OnModuleInit {
     const value = JSON.stringify(cfg);
     await this.database.db
       .insert(systemSetting)
-      .values({ key: FEDERATION_QUOTA_DEFAULTS_KEY, value, updatedAt: new Date() })
-      .onConflictDoUpdate({ target: systemSetting.key, set: { value, updatedAt: new Date() } });
+      .values({
+        key: FEDERATION_QUOTA_DEFAULTS_KEY,
+        value,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: systemSetting.key,
+        set: { value, updatedAt: new Date() },
+      });
     this.cfg = cfg;
     await this.refreshAll();
     return this.getDefaultLimits();
@@ -64,11 +71,17 @@ export class QuotaService implements OnModuleInit {
   /** Resolve a domain-facing admin request to its current, verified identity epoch. */
   async activeNamespaceId(domain: string): Promise<number> {
     const peer = await this.database.db.query.identityNamespace.findFirst({
-      where: and(eq(identityNamespace.domain, domain), eq(identityNamespace.active, true)),
+      where: and(
+        eq(identityNamespace.domain, domain),
+        eq(identityNamespace.active, true),
+      ),
       columns: { id: true },
     });
     if (!peer) {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'active quota namespace not found');
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'active quota namespace not found',
+      );
     }
     return peer.id;
   }
@@ -80,7 +93,9 @@ export class QuotaService implements OnModuleInit {
     namespaceId: number,
     tx?: DatabaseTransaction,
   ): Promise<QuotaOverrides> {
-    const peer = await (tx ?? this.database.db).query.identityNamespace.findFirst({
+    const peer = await (
+      tx ?? this.database.db
+    ).query.identityNamespace.findFirst({
       where: eq(identityNamespace.id, namespaceId),
       columns: {
         dailyMsgLimit: true,
@@ -526,13 +541,18 @@ export class QuotaService implements OnModuleInit {
     const ids = this.breaker.trippedEntities(today).map(Number);
     if (ids.length === 0) return [];
     const peers = await this.database.db
-      .select({ namespaceId: identityNamespace.id, domain: identityNamespace.domain })
+      .select({
+        namespaceId: identityNamespace.id,
+        domain: identityNamespace.domain,
+      })
       .from(identityNamespace)
       .where(inArray(identityNamespace.id, ids));
-    return Promise.all(peers.map(async ({ namespaceId, domain }) => ({
-      ...(await this.breakerStatus(namespaceId!)),
-      entity: domain,
-    })));
+    return Promise.all(
+      peers.map(async ({ namespaceId, domain }) => ({
+        ...(await this.breakerStatus(namespaceId!)),
+        entity: domain,
+      })),
+    );
   }
 
   // ── time helpers ─────────────────────────────────────────────────────────
@@ -573,17 +593,20 @@ export class QuotaService implements OnModuleInit {
         count: quotaDailyUsage.count,
       })
       .from(quotaDailyUsage)
-      .where(and(
-        eq(quotaDailyUsage.date, this.utcToday()),
-        inArray(quotaDailyUsage.namespaceId, namespaceIds),
-      ));
+      .where(
+        and(
+          eq(quotaDailyUsage.date, this.utcToday()),
+          inArray(quotaDailyUsage.namespaceId, namespaceIds),
+        ),
+      );
     for (const row of rows) {
       let counts = map.get(row.namespaceId);
       if (!counts) {
         counts = zeroCounts();
         map.set(row.namespaceId, counts);
       }
-      if (row.category in counts) counts[row.category as QuotaCategory] = row.count;
+      if (row.category in counts)
+        counts[row.category as QuotaCategory] = row.count;
     }
     return map;
   }
@@ -603,9 +626,12 @@ export class QuotaService implements OnModuleInit {
     );
   }
 
-  async usageToday(namespaceId: number): Promise<Record<QuotaCategory, { count: number; limit: number }>> {
+  async usageToday(
+    namespaceId: number,
+  ): Promise<Record<QuotaCategory, { count: number; limit: number }>> {
     const overrides = await this.getOverrides(namespaceId);
-    const counts = (await this.countsToday([namespaceId])).get(namespaceId) ?? zeroCounts();
+    const counts =
+      (await this.countsToday([namespaceId])).get(namespaceId) ?? zeroCounts();
     return this.buildUsage(counts, overrides);
   }
 
@@ -615,9 +641,7 @@ export class QuotaService implements OnModuleInit {
       orderBy: asc(identityNamespace.domain),
       columns: { domain: true, trustLevel: true, id: true, active: true },
     });
-    const activePeers = peers.filter(
-      (peer) => peer.id > 0 && peer.active,
-    );
+    const activePeers = peers.filter((peer) => peer.id > 0 && peer.active);
     const namespaceIds = activePeers.map((peer) => peer.id);
     const counts = await this.countsToday(namespaceIds);
     const overrides = await Promise.all(
@@ -642,7 +666,10 @@ export class QuotaService implements OnModuleInit {
     });
   }
 
-  async setLimits(namespaceId: number, overrides: QuotaOverrides): Promise<void> {
+  async setLimits(
+    namespaceId: number,
+    overrides: QuotaOverrides,
+  ): Promise<void> {
     const normalized = normalizeOverrides(overrides);
     const rows = await this.database.db
       .update(identityNamespace)
@@ -654,7 +681,11 @@ export class QuotaService implements OnModuleInit {
       })
       .where(eq(identityNamespace.id, namespaceId))
       .returning({ id: identityNamespace.id });
-    if (rows.length === 0) throw new BusinessException(BusinessCode.NOT_FOUND, 'quota namespace not found');
+    if (rows.length === 0)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'quota namespace not found',
+      );
     await this.recomputeBreaker(namespaceId);
   }
 }

@@ -449,5 +449,4 @@ describe('DurableTaskSchedulerService', () => {
     );
     expect(harness.markFailed.mock.calls[0][1]).not.toContain('secret');
   });
-
 });

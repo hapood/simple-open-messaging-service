@@ -65,6 +65,26 @@ export function parseSomfpUserAddress(
     ? { account, domain }
     : null;
 }
+
+/** Parse the `namespaceId/account` entity id of a v1 user mention. `namespaceId`
+ * is `0` for a subject local to the publishing server and a positive integer
+ * for a foreign subject's namespace; `account` is a wire `UserAccount`. */
+export function parseSomfpUserMentionEntity(
+  entityId: string,
+): { namespaceId: number; account: string } | null {
+  const slash = entityId.indexOf('/');
+  if (slash <= 0 || slash !== entityId.lastIndexOf('/')) return null;
+  const namespaceId = Number(entityId.slice(0, slash));
+  const account = entityId.slice(slash + 1);
+  if (
+    !Number.isInteger(namespaceId) ||
+    namespaceId < 0 ||
+    String(namespaceId) !== entityId.slice(0, slash) ||
+    !isValidSomfpUserAccount(account)
+  )
+    return null;
+  return { namespaceId, account };
+}
 export function isValidGroupAccount(account: string): boolean {
   return GROUP_ACCOUNT_RE.test(account);
 }

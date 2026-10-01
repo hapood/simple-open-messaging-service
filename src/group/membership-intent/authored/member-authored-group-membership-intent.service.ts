@@ -344,8 +344,7 @@ export class MemberAuthoredGroupMembershipIntentService {
       );
     }
     if (applied.peers.size > 0)
-      void this.deps.federation
-        .pushStateFeedNamespaces(applied.peers.keys());
+      void this.deps.federation.pushStateFeedNamespaces(applied.peers.keys());
   }
 
   private async lockAndValidateInTx(
@@ -545,7 +544,6 @@ export class MemberAuthoredGroupMembershipIntentService {
         groupAvatar: row.avatar,
         groupDescription: row.description,
         groupProfileRev: row.profileRev,
-        localDomain: 'local',
         memberAccount: row.memberAccount,
         profileNamespaceId: 0,
         localMemberId: row.localMemberId!,
@@ -612,9 +610,7 @@ export class MemberAuthoredGroupMembershipIntentService {
         groupName: row.name,
         groupAvatar: row.avatar,
         groupDescription: row.description,
-        localDomain: 'local',
         memberAccount: row.memberAccount,
-        memberDomain: row.memberDomain,
         profileNamespaceId: row.profileNamespaceId,
         note: row.groupIntentNote ?? '',
         acceptedAt: new Date(),
@@ -671,9 +667,7 @@ export class MemberAuthoredGroupMembershipIntentService {
         groupAvatar: row.avatar,
         groupDescription: row.description,
         groupProfileRev: row.profileRev,
-        localDomain: 'local',
         memberAccount: row.memberAccount,
-        memberDomain: row.memberDomain,
         profileNamespaceId: row.profileNamespaceId,
         localMemberId: row.localMemberId,
         projectionDirections: row.projectionDirections,

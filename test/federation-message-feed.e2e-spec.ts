@@ -131,13 +131,11 @@ describe('FederationMessageFeedService thread query', () => {
     await database.db
       .insert(peerStateFeed)
       .values({
-        peerDomain,
         namespaceId,
         account: creator.account,
-        domain: localDomain,
         eventType: 'THREAD_CONTENT_HEAD',
         subjectAccount: 'bob',
-        subjectDomain: peerDomain,
+        subjectNamespaceId: namespaceId,
         feedId: BigInt(seq),
         body: { messageEndSeq: seq, tombstoneEndSeq: 0 },
       })
@@ -145,10 +143,9 @@ describe('FederationMessageFeedService thread query', () => {
         target: [
           peerStateFeed.namespaceId,
           peerStateFeed.account,
-          peerStateFeed.domain,
           peerStateFeed.eventType,
           peerStateFeed.subjectAccount,
-          peerStateFeed.subjectDomain,
+          peerStateFeed.subjectNamespaceId,
         ],
         set: {
           feedId: BigInt(seq),
@@ -401,13 +398,11 @@ describe('FederationMessageFeedService thread query', () => {
       .set({ curSeq: 1 })
       .where(eq(messageThread.id, thread.id));
     await database.db.insert(peerStateFeed).values({
-      peerDomain,
       namespaceId,
       account: alice.account,
-      domain: localDomain,
       eventType: 'THREAD_CONTENT_HEAD',
       subjectAccount: 'bob',
-      subjectDomain: peerDomain,
+      subjectNamespaceId: namespaceId,
       feedId: 1n,
       body: { messageEndSeq: 1, tombstoneEndSeq: 0 },
     });
@@ -460,13 +455,11 @@ describe('FederationMessageFeedService thread query', () => {
     // Audience close removes the compacted head. The normal membership finalizer republishes it
     // after reopening; reproduce that post-commit projection step in this service-level fixture.
     await database.db.insert(peerStateFeed).values({
-      peerDomain,
       namespaceId,
       account: alice.account,
-      domain: localDomain,
       eventType: 'THREAD_CONTENT_HEAD',
       subjectAccount: 'bob',
-      subjectDomain: peerDomain,
+      subjectNamespaceId: namespaceId,
       feedId: 2n,
       body: { messageEndSeq: 1, tombstoneEndSeq: 0 },
     });

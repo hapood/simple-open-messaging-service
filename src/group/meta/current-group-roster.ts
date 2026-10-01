@@ -52,11 +52,10 @@ export async function readCurrentGroupMemberInTx(
 export async function readCurrentGroupMemberByAddressInTx(
   tx: DatabaseTransaction,
   groupId: number,
-  identity: { account: string; domain: string; namespaceId?: number },
+  identity: { account: string; namespaceId: number },
 ): Promise<CurrentGroupRosterMember | undefined> {
   validateGroupId(groupId);
-  const namespaceId =
-    identity.namespaceId ?? (identity.domain === 'local' ? 0 : -1);
+  const namespaceId = identity.namespaceId;
   const result = await tx.execute<RosterRow>(sql`
     SELECT fact."memberAccount" AS account, ns.domain AS domain,
       fact."profileNamespaceId" AS "namespaceId", fact.body ->> 'role' AS role,
@@ -143,6 +142,10 @@ export async function readCurrentLocalAuthorizedGroupMemberIdsInTx(
   params: { groupId: number; threadId: number },
 ): Promise<number[]> {
   validateGroupId(params.groupId);
+  // A GROUP_MEMBER pair keeps its local endpoint on side A (constraint
+  // RelationshipPair_local_side_check): the local member of a mirrored
+  // (remotely hosted) group sits on A, while a locally hosted group's member
+  // sits on B with namespace 0. Match the USER endpoint on either side.
   const result = await tx.execute<{ userId: number }>(sql`
     SELECT identity.id AS "userId" FROM "AccountThreadState" participant
     JOIN "MessageThread" thread ON thread.id = participant."threadId"
@@ -152,8 +155,13 @@ export async function readCurrentLocalAuthorizedGroupMemberIdsInTx(
       AND EXISTS (
         SELECT 1 FROM "RelationshipPair" pair WHERE pair.kind = 'GROUP_MEMBER'
           AND pair."threadId" = thread.id AND pair.active = true
-          AND pair."endpointBType" = 'USER' AND pair."endpointBNamespaceId" = 0
-          AND pair."endpointBAccount" = identity.account
+          AND (
+            (pair."endpointAType" = 'USER'
+              AND pair."endpointAAccount" = identity.account)
+            OR (pair."endpointBType" = 'USER'
+              AND pair."endpointBNamespaceId" = 0
+              AND pair."endpointBAccount" = identity.account)
+          )
       ) ORDER BY identity.id
   `);
   return result.rows.map((row) => row.userId);

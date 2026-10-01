@@ -1,11 +1,10 @@
--- Greenfield schema baseline.
--- Future schema changes belong in new migration files.
-
 --
 -- PostgreSQL database dump
 --
 
 
+-- Dumped from database version 18.4 (Debian 18.4-1.pgdg13+1)
+-- Dumped by pg_dump version 18.6 (Ubuntu 18.6-1.pgdg24.04+2)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -13,16 +12,16 @@ SET idle_in_transaction_session_timeout = 0;
 SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
+SET search_path TO public, pg_catalog;
 SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
 --
--- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
+-- Name: public; Type: SCHEMA; Schema: -; Owner: -
 --
 
-COMMENT ON SCHEMA public IS '';
 
 
 --
@@ -279,7 +278,7 @@ BEGIN
     AND NEW.seq = OLD.seq AND NEW."threadId" = OLD."threadId"
     AND NEW."localState" = OLD."localState" AND NEW."isDeleted" = OLD."isDeleted"
     AND NEW."creatorAccount" IS NOT DISTINCT FROM OLD."creatorAccount"
-    AND NEW."creatorNamespaceId" = OLD."creatorNamespaceId"
+    AND NEW."profileNamespaceId" = OLD."profileNamespaceId"
     AND NEW."contentType" = OLD."contentType"
     AND (NEW."contentType" <> 'PURE_TEXT' OR NEW.content IS NOT DISTINCT FROM OLD.content)
     THEN RETURN NEW; END IF;
@@ -327,6 +326,7 @@ CREATE TABLE public."AccountThreadState" (
     "groupMetaFeedEndId" integer,
     "announcementReadFeedId" integer DEFAULT 0 NOT NULL,
     "threadProfileRev" integer DEFAULT 0 NOT NULL,
+    "profileSourceId" integer,
     CONSTRAINT "AccountThreadState_announcementReadFeedId_check" CHECK (("announcementReadFeedId" >= 0)),
     CONSTRAINT "AccountThreadState_groupInviteEndFeedId_check" CHECK (("groupInviteEndFeedId" >= 0)),
     CONSTRAINT "AccountThreadState_groupMetaFeedEndId_check" CHECK ((("groupMetaFeedEndId" IS NULL) OR ("groupMetaFeedEndId" >= 0))),
@@ -336,6 +336,7 @@ CREATE TABLE public."AccountThreadState" (
     CONSTRAINT "AccountThreadState_lastReadSeq_check" CHECK (("lastReadSeq" >= 0)),
     CONSTRAINT "AccountThreadState_messageEndSeq_check" CHECK (("messageEndSeq" >= 0)),
     CONSTRAINT "AccountThreadState_messageVisibleThroughSeq_check" CHECK ((("messageVisibleThroughSeq" IS NULL) OR ("messageVisibleThroughSeq" >= 0))),
+    CONSTRAINT "AccountThreadState_profileSourceId_check" CHECK ((("profileSourceId" IS NULL) OR ("profileSourceId" > 0))),
     CONSTRAINT "AccountThreadState_threadFeedId_check" CHECK (("threadFeedId" > 0)),
     CONSTRAINT "AccountThreadState_threadProfileRev_check" CHECK (("threadProfileRev" >= 0)),
     CONSTRAINT "AccountThreadState_tombstoneEndSeq_check" CHECK (("tombstoneEndSeq" >= 0)),
@@ -360,14 +361,14 @@ CREATE TABLE public."Message" (
     "clientMessageId" character varying(36),
     "originSeq" integer,
     "originServerTime" timestamp(3) with time zone,
-    "sourceNamespaceId" integer DEFAULT 0 NOT NULL,
+    "publisherNamespaceId" integer DEFAULT 0 CONSTRAINT "Message_sourceNamespaceId_not_null" NOT NULL,
     "localState" public."MessageLocalState" DEFAULT 'READY'::public."MessageLocalState" NOT NULL,
     "profileRev" integer DEFAULT 0 NOT NULL,
-    "creatorNamespaceId" integer DEFAULT 0 NOT NULL,
-    CONSTRAINT "Message_origin_seq_check" CHECK ((("sourceNamespaceId" = 0) OR (("originSeq" IS NOT NULL) AND ("originSeq" > 0)))),
+    "profileNamespaceId" integer DEFAULT 0 NOT NULL,
+    CONSTRAINT "Message_origin_seq_check" CHECK ((("publisherNamespaceId" = 0) OR (("originSeq" IS NOT NULL) AND ("originSeq" > 0)))),
     CONSTRAINT "Message_profileRev_check" CHECK (("profileRev" >= 0)),
     CONSTRAINT "Message_seq_check" CHECK ((seq > 0)),
-    CONSTRAINT "Message_system_creator_check" CHECK ((("creatorAccount" IS NOT NULL) AND ((("contentType" = 'SYSTEM'::public."ContentType") AND (("creatorAccount")::text = '$system'::text) AND ("creatorNamespaceId" = 0) AND ("profileRev" = 0) AND ("sourceNamespaceId" = 0)) OR (("contentType" <> 'SYSTEM'::public."ContentType") AND (("creatorAccount")::text <> '$system'::text)))))
+    CONSTRAINT "Message_system_creator_check" CHECK ((("creatorAccount" IS NOT NULL) AND ((("contentType" = 'SYSTEM'::public."ContentType") AND (("creatorAccount")::text = '$system'::text) AND ("profileNamespaceId" = 0) AND ("profileRev" = 0) AND ("publisherNamespaceId" = 0)) OR (("contentType" <> 'SYSTEM'::public."ContentType") AND (("creatorAccount")::text <> '$system'::text)))))
 );
 
 
@@ -382,48 +383,8 @@ CREATE FUNCTION public.attention_message_eligible(m public."Message", s public."
     AND (s."messageVisibleThroughSeq" IS NULL OR m.seq <= s."messageVisibleThroughSeq")
     AND NOT EXISTS (SELECT 1 FROM "Account" a WHERE a.id = s."accountId"
       AND a.account = m."creatorAccount"
-      AND a."namespaceId" = m."creatorNamespaceId")
+      AND a."namespaceId" = m."profileNamespaceId")
     AND NOT s.blocked;
-$$;
-
-
---
--- Name: client_thread_state_after_pair(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.client_thread_state_after_pair() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-DECLARE participant record;
-BEGIN
-  IF NEW."threadId" IS NULL OR NOT NEW.established THEN RETURN NEW; END IF;
-  FOR participant IN
-    SELECT s."accountId" FROM "AccountThreadState" s JOIN "Account" a ON a.id = s."accountId"
-    WHERE s."threadId" = NEW."threadId"
-      AND ((NEW."endpointAType" = 'USER' AND NEW."endpointAAccount" = a.account AND NEW."endpointADomain" = 'local')
-        OR (NEW."endpointBType" = 'USER' AND NEW."endpointBAccount" = a.account AND NEW."endpointBDomain" = 'local'))
-    ORDER BY s."accountId"
-  LOOP
-    PERFORM publish_client_thread_state(participant."accountId", NEW."threadId",
-      CASE WHEN NEW.active AND (TG_OP = 'INSERT' OR NOT OLD.active)
-        THEN floor(extract(epoch FROM CURRENT_TIMESTAMP) * 1000)::bigint ELSE NULL END);
-  END LOOP;
-  RETURN NEW;
-END;
-$$;
-
-
---
--- Name: client_thread_state_after_participant(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.client_thread_state_after_participant() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-  PERFORM publish_client_thread_state(NEW."accountId", NEW."threadId");
-  RETURN NEW;
-END;
 $$;
 
 
@@ -437,65 +398,6 @@ CREATE FUNCTION public.notify_durable_task_work() RETURNS trigger
 BEGIN
   PERFORM pg_notify('durable_task_work', '');
   RETURN NULL;
-END;
-$$;
-
-
---
--- Name: publish_client_thread_state(integer, integer, bigint); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.publish_client_thread_state(owner_id integer, thread_id integer, activation_at bigint DEFAULT NULL::bigint) RETURNS void
-    LANGUAGE plpgsql
-    AS $$
-DECLARE facts record;
-DECLARE previous jsonb;
-DECLARE snapshot jsonb;
-DECLARE profile_ref jsonb;
-DECLARE compact_key text;
-DECLARE position integer;
-DECLARE activated boolean;
-BEGIN
-  PERFORM 1 FROM "Account" WHERE id = owner_id FOR NO KEY UPDATE;
-  SELECT t.type, t."authorityNamespaceId", s.blocked, s.role, s."createdAt", p.active,
-    CASE WHEN t.type = 'GROUP' THEN t."groupAccount"
-      WHEN p."endpointAAccount" = a.account AND p."endpointADomain" = 'local' THEN p."endpointBAccount" ELSE p."endpointAAccount" END AS account,
-    CASE WHEN t.type = 'GROUP' THEN t."groupDomain"
-      WHEN p."endpointAAccount" = a.account AND p."endpointADomain" = 'local' THEN p."endpointBDomain" ELSE p."endpointADomain" END AS domain,
-    CASE WHEN t.type = 'GROUP' THEN t."authorityNamespaceId"
-      WHEN p."endpointAAccount" = a.account AND p."endpointADomain" = 'local' THEN p."endpointBNamespaceId" ELSE p."endpointANamespaceId" END AS namespace_id,
-    COALESCE(i."profileRev", 0) AS profile_rev
-  INTO facts
-  FROM "AccountThreadState" s
-  JOIN "Account" a ON a.id = s."accountId"
-  JOIN "MessageThread" t ON t.id = s."threadId"
-  JOIN "RelationshipPair" p ON p."threadId" = t.id AND p.established
-    AND ((p."endpointAType" = 'USER' AND p."endpointAAccount" = a.account AND p."endpointADomain" = 'local')
-      OR (p."endpointBType" = 'USER' AND p."endpointBAccount" = a.account AND p."endpointBDomain" = 'local'))
-  LEFT JOIN "RelationshipIntent" i ON i."pairId" = p.id AND i."authorSide" =
-    CASE WHEN p."endpointAType" = 'USER' AND p."endpointAAccount" = a.account AND p."endpointADomain" = 'local' THEN 'B' ELSE 'A' END
-  WHERE s."accountId" = owner_id AND s."threadId" = thread_id;
-  IF NOT FOUND THEN RETURN; END IF;
-  compact_key := '["THREAD_STATE",0,"","local","' || thread_id::text || '","local"]';
-  SELECT body INTO previous FROM "ClientStateFeed" WHERE "userId" = owner_id AND "compactionKey" = compact_key;
-  activated := facts.active AND (previous IS NULL OR previous->>'conversationState' <> 'ACTIVE');
-  profile_ref := CASE WHEN previous IS NOT NULL AND NOT activated THEN previous->'profile'
-    ELSE jsonb_build_object('account', facts.account, 'domain', facts.domain,
-      'namespaceId', CASE WHEN facts.domain = 'local' THEN 0 ELSE facts.namespace_id END,
-      'profileRev', facts.profile_rev) END;
-  snapshot := jsonb_build_object('threadId', thread_id, 'type', facts.type,
-    'authorityNamespaceId', facts."authorityNamespaceId", 'blocked', facts.blocked,
-    'role', CASE WHEN facts.active THEN facts.role ELSE NULL END,
-    'conversationState', CASE WHEN facts.active THEN 'ACTIVE' ELSE 'READ_ONLY' END,
-    'establishedAt', CASE WHEN activated AND activation_at IS NOT NULL THEN activation_at
-      ELSE COALESCE((previous->>'establishedAt')::bigint, floor(extract(epoch FROM facts."createdAt") * 1000)::bigint) END,
-    'profile', profile_ref);
-  IF snapshot IS NOT DISTINCT FROM previous THEN RETURN; END IF;
-  UPDATE "Account" SET "clientStateFeedEndId" = "clientStateFeedEndId" + 1
-    WHERE id = owner_id RETURNING "clientStateFeedEndId" INTO position;
-  INSERT INTO "ClientStateFeed" ("userId", account, domain, "eventType", "subjectAccount", "subjectNamespaceId", "namespaceId", "feedId", body, "compactionKey")
-    VALUES (owner_id, '', 'local', 'THREAD_STATE', thread_id::text, 'local', 0, position, snapshot, compact_key)
-    ON CONFLICT ("userId", "compactionKey") DO UPDATE SET body = EXCLUDED.body, "feedId" = EXCLUDED."feedId", "updatedAt" = CURRENT_TIMESTAMP;
 END;
 $$;
 
@@ -516,6 +418,103 @@ $$;
 
 
 --
+-- Name: thread_feed_after_pair(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.thread_feed_after_pair() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE participant record;
+DECLARE seed_revision boolean;
+BEGIN
+  IF NEW."threadId" IS NULL OR NOT NEW.established THEN RETURN NEW; END IF;
+  IF TG_OP = 'INSERT' THEN
+    seed_revision := NEW.kind = 'P2P';
+  ELSE
+    IF OLD.active IS NOT DISTINCT FROM NEW.active
+      AND OLD.established IS NOT DISTINCT FROM NEW.established
+      AND OLD."threadId" IS NOT DISTINCT FROM NEW."threadId" THEN RETURN NEW; END IF;
+    seed_revision := NEW.kind = 'P2P'
+      AND (NOT OLD.established OR (NOT OLD.active AND NEW.active));
+  END IF;
+  FOR participant IN
+    SELECT s."accountId", intent."profileRev" AS "profileRev"
+    FROM "AccountThreadState" s
+    JOIN "Account" a ON a.id = s."accountId"
+    LEFT JOIN LATERAL (
+      SELECT intent."profileRev" AS "profileRev"
+      FROM "RelationshipIntent" intent
+      WHERE NEW.kind = 'P2P'
+        AND intent."authorAccount" = CASE WHEN NEW."endpointAAccount" = a.account
+          THEN NEW."endpointBAccount" ELSE NEW."endpointAAccount" END
+        AND intent."authorNamespaceId" = CASE WHEN NEW."endpointAAccount" = a.account
+          THEN NEW."endpointBNamespaceId" ELSE 0 END
+        AND intent."receiverAccount" = CASE WHEN NEW."endpointAAccount" = a.account
+          THEN NEW."endpointAAccount" ELSE NEW."endpointBAccount" END
+        AND intent."receiverNamespaceId" = CASE WHEN NEW."endpointAAccount" = a.account
+          THEN 0 ELSE NEW."endpointBNamespaceId" END
+      LIMIT 1
+    ) intent ON true
+    WHERE s."threadId" = NEW."threadId"
+      AND ((NEW."endpointAType" = 'USER' AND NEW."endpointAAccount" = a.account)
+        OR (NEW."endpointBType" = 'USER' AND NEW."endpointBAccount" = a.account))
+    ORDER BY s."accountId"
+  LOOP
+    PERFORM 1 FROM "Account" WHERE id = participant."accountId" FOR NO KEY UPDATE;
+    UPDATE "AccountThreadState" s
+    SET "threadFeedId" = 0,
+        "threadProfileRev" = CASE WHEN seed_revision AND participant."profileRev" IS NOT NULL
+          THEN participant."profileRev" ELSE s."threadProfileRev" END,
+        "profileSourceId" = CASE WHEN seed_revision AND participant."profileRev" IS NOT NULL
+          THEN NULL ELSE s."profileSourceId" END
+    WHERE s."accountId" = participant."accountId" AND s."threadId" = NEW."threadId";
+  END LOOP;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: thread_feed_after_participant(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.thread_feed_after_participant() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE initial_rev integer;
+BEGIN
+  SELECT intent."profileRev" INTO initial_rev
+  FROM "RelationshipPair" pair
+  JOIN "Account" self ON self.id = NEW."accountId"
+  LEFT JOIN LATERAL (
+    SELECT i."profileRev" AS "profileRev"
+    FROM "RelationshipIntent" i
+    WHERE pair.kind = 'P2P'
+      AND i."authorAccount" = CASE WHEN pair."endpointAAccount" = self.account
+        THEN pair."endpointBAccount" ELSE pair."endpointAAccount" END
+      AND i."authorNamespaceId" = CASE WHEN pair."endpointAAccount" = self.account
+        THEN pair."endpointBNamespaceId" ELSE 0 END
+      AND i."receiverAccount" = CASE WHEN pair."endpointAAccount" = self.account
+        THEN pair."endpointAAccount" ELSE pair."endpointBAccount" END
+      AND i."receiverNamespaceId" = CASE WHEN pair."endpointAAccount" = self.account
+        THEN 0 ELSE pair."endpointBNamespaceId" END
+    LIMIT 1
+  ) intent ON true
+  WHERE pair."threadId" = NEW."threadId" AND pair.established
+    AND ((pair."endpointAType" = 'USER' AND pair."endpointAAccount" = self.account)
+      OR (pair."endpointBType" = 'USER' AND pair."endpointBAccount" = self.account));
+  IF initial_rev IS NOT NULL AND (initial_rev IS DISTINCT FROM NEW."threadProfileRev"
+    OR NEW."profileSourceId" IS NOT NULL) THEN
+    UPDATE "AccountThreadState" SET "threadProfileRev" = initial_rev,
+      "profileSourceId" = NULL
+    WHERE id = NEW.id;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: thread_feed_before_write(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -527,8 +526,6 @@ BEGIN
   IF TG_OP = 'UPDATE' AND (NEW."accountId" <> OLD."accountId" OR NEW."threadId" <> OLD."threadId") THEN
     RAISE EXCEPTION 'attention owner and thread are immutable';
   END IF;
-  -- Blocking still reconciles attention in the source transaction. Ordinary
-  -- read/head updates already contain the signed delta computed by the writer.
   IF TG_OP = 'UPDATE' AND NEW.blocked IS DISTINCT FROM OLD.blocked THEN
     SELECT "clearedSeq" INTO c FROM "MessageThread" WHERE id = NEW."threadId" FOR NO KEY UPDATE;
     NEW."unreadCount" := thread_unread_count(NEW, c, NEW."lastReadSeq", NEW."messageEndSeq");
@@ -548,7 +545,10 @@ BEGIN
     OR NEW."joinRequestEndFeedId" IS DISTINCT FROM OLD."joinRequestEndFeedId"
     OR NEW."groupInviteEndFeedId" IS DISTINCT FROM OLD."groupInviteEndFeedId"
     OR NEW."joinRequestReadFeedId" IS DISTINCT FROM OLD."joinRequestReadFeedId"
-    OR NEW."groupMetaFeedEndId" IS DISTINCT FROM OLD."groupMetaFeedEndId" THEN
+    OR NEW."groupMetaFeedEndId" IS DISTINCT FROM OLD."groupMetaFeedEndId"
+    OR NEW."threadProfileRev" IS DISTINCT FROM OLD."threadProfileRev"
+    OR NEW.blocked IS DISTINCT FROM OLD.blocked
+    OR NEW.role IS DISTINCT FROM OLD.role THEN
     UPDATE "Account" SET "threadFeedEndId" = "threadFeedEndId" + 1
       WHERE id = NEW."accountId" RETURNING "threadFeedEndId" INTO NEW."threadFeedId";
   END IF;
@@ -597,6 +597,26 @@ CREATE TABLE public."Account" (
     CONSTRAINT "Account_local_identity_check" CHECK ((((domain)::text = 'local'::text) AND ("namespaceId" = 0))),
     CONSTRAINT "Account_threadFeedEndId_check" CHECK (("threadFeedEndId" >= 0))
 );
+
+
+--
+-- Name: AccountThreadState_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public."AccountThreadState_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: AccountThreadState_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public."AccountThreadState_id_seq" OWNED BY public."AccountThreadState".id;
 
 
 --
@@ -829,7 +849,7 @@ CREATE TABLE public."DeletedMessage" (
     "deletionSeq" integer NOT NULL,
     "messageSeq" integer NOT NULL,
     type public."MessageDeleteType" NOT NULL,
-    "sourceNamespaceId" integer DEFAULT 0 NOT NULL,
+    "publisherNamespaceId" integer DEFAULT 0 CONSTRAINT "DeletedMessage_sourceNamespaceId_not_null" NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "DeletedMessage_deletionSeq_check" CHECK (("deletionSeq" > 0)),
@@ -935,7 +955,7 @@ CREATE TABLE public."FederatedMessageTombstone" (
     id bigint NOT NULL,
     "threadId" integer NOT NULL,
     "messageSeq" integer NOT NULL,
-    "sourceNamespaceId" integer NOT NULL,
+    "publisherNamespaceId" integer CONSTRAINT "FederatedMessageTombstone_sourceNamespaceId_not_null" NOT NULL,
     "remoteDeletionSeq" integer NOT NULL,
     type public."MessageDeleteType" NOT NULL,
     "authorityDeletedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -966,6 +986,49 @@ ALTER SEQUENCE public."FederatedMessageTombstone_id_seq" OWNED BY public."Federa
 
 
 --
+-- Name: FederationIdentityReview; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."FederationIdentityReview" (
+    id integer NOT NULL,
+    kind character varying(15) NOT NULL,
+    "matchedNamespaceId" integer NOT NULL,
+    "nextDomain" character varying(63) NOT NULL,
+    "claimedRoot" character varying(44) NOT NULL,
+    claim jsonb NOT NULL,
+    status character varying(15) DEFAULT 'pending'::character varying NOT NULL,
+    "reviewedAt" timestamp(3) with time zone,
+    "verifiedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "FederationIdentityReview_kind_check" CHECK (((kind)::text = ANY ((ARRAY['domain-rebind'::character varying, 'root-rotation'::character varying])::text[]))),
+    CONSTRAINT "FederationIdentityReview_matchedNamespace_check" CHECK (("matchedNamespaceId" > 0)),
+    CONSTRAINT "FederationIdentityReview_reviewed_check" CHECK ((((status)::text = 'pending'::text) = ("reviewedAt" IS NULL))),
+    CONSTRAINT "FederationIdentityReview_status_check" CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'approved'::character varying, 'rejected'::character varying])::text[])))
+);
+
+
+--
+-- Name: FederationIdentityReview_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public."FederationIdentityReview_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: FederationIdentityReview_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public."FederationIdentityReview_id_seq" OWNED BY public."FederationIdentityReview".id;
+
+
+--
 -- Name: FederationMessageReceipt; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -976,29 +1039,6 @@ CREATE TABLE public."FederationMessageReceipt" (
     "messageId" bigint NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "FederationMessageReceipt_peerSeq_check" CHECK (("peerSeq" > 0))
-);
-
-
---
--- Name: FederationNamespaceCandidate; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederationNamespaceCandidate" (
-    "nextDomain" character varying(63) NOT NULL,
-    "matchedNamespaceId" integer,
-    "rootKeyFingerprint" character varying(80) NOT NULL,
-    "rootPublicKey" character varying(44) NOT NULL,
-    "peerAssignedLocalNamespaceId" integer,
-    status character varying(15) DEFAULT 'pending'::character varying NOT NULL,
-    "failedCode" integer,
-    "failedMessage" text,
-    "verifiedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederationNamespaceCandidate_failed_check" CHECK ((((status)::text = 'failed'::text) = (("failedCode" IS NOT NULL) AND ("failedMessage" IS NOT NULL)))),
-    CONSTRAINT "FederationNamespaceCandidate_matchedNamespace_check" CHECK ((("matchedNamespaceId" IS NULL) OR ("matchedNamespaceId" > 0))),
-    CONSTRAINT "FederationNamespaceCandidate_peerAssignedLocalNamespace_check" CHECK ((("peerAssignedLocalNamespaceId" IS NULL) OR ("peerAssignedLocalNamespaceId" > 0))),
-    CONSTRAINT "FederationNamespaceCandidate_status_check" CHECK (((status)::text = ANY (ARRAY[('pending'::character varying)::text, ('failed'::character varying)::text])))
 );
 
 
@@ -1076,7 +1116,7 @@ CREATE TABLE public."FileSyncProgress" (
     "bytesTotal" bigint DEFAULT 0 NOT NULL,
     "bytesReceived" bigint DEFAULT 0 NOT NULL,
     "originDomain" character varying(63),
-    "namespaceId" integer DEFAULT 0 NOT NULL,
+    "publisherNamespaceId" integer DEFAULT 0 CONSTRAINT "FileSyncProgress_namespaceId_not_null" NOT NULL,
     "errorKind" character varying(255),
     "quotaCounted" boolean DEFAULT false NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -1117,7 +1157,7 @@ CREATE TABLE public."ForwardBundle" (
     "assetCount" integer NOT NULL,
     "totalBytes" bigint NOT NULL,
     "sourceDomain" character varying(63),
-    "sourceNamespaceId" integer,
+    "publisherNamespaceId" integer,
     "sourceBundleId" character varying(26),
     "createdBy" integer,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -1238,8 +1278,10 @@ CREATE TABLE public."GroupMetaMemberFeed" (
     "threadId" integer NOT NULL,
     "memberAccount" character varying(31) NOT NULL,
     "profileNamespaceId" integer NOT NULL,
-    CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK (((jsonb_typeof(body) = 'object'::text) AND (((operation = 'MEMBER_UPSERT'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'MEMBER_DEPART'::public."GroupMetaMemberOperation") AND (body = '{}'::jsonb)) OR ((operation = 'GROUP_PROFILE'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb))))),
-    CONSTRAINT "GroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0))
+    "profileSourceSeq" integer,
+    CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK (((jsonb_typeof(body) = 'object'::text) AND (((operation = 'MEMBER_UPSERT'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'MEMBER_DEPART'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'GROUP_PROFILE'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb))))),
+    CONSTRAINT "GroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0)),
+    CONSTRAINT "GroupMetaMemberFeed_profileSourceSeq_check" CHECK ((("profileSourceSeq" IS NULL) OR ("profileSourceSeq" > 0)))
 );
 
 
@@ -1271,7 +1313,6 @@ CREATE TABLE public."GroupRequestProjection" (
 CREATE TABLE public."IdentityNamespace" (
     id integer NOT NULL,
     domain character varying(63) NOT NULL,
-    "rootKeyFingerprint" character varying(80),
     "rootPublicKey" character varying(44),
     "identityPinnedAt" timestamp(3) with time zone,
     "peerAssignedLocalNamespaceId" integer,
@@ -1297,10 +1338,16 @@ CREATE TABLE public."IdentityNamespace" (
     "dailyRequestLimit" integer,
     "dailyFileLimit" integer,
     "dailyFileBytesLimit" bigint,
+    "stateFeedPulledThrough" bigint,
+    "profileNamespaceFeedEndId" bigint DEFAULT 0 NOT NULL,
+    "profileNamespaceFeedPulledThrough" bigint DEFAULT 0 NOT NULL,
     CONSTRAINT "IdentityNamespace_active_check" CHECK (((active = false) OR ((id > 0) AND ("retiredAt" IS NULL)))),
+    CONSTRAINT "IdentityNamespace_profileNamespaceFeedEndId_check" CHECK ((("profileNamespaceFeedEndId" >= 0) AND ((id = 0) OR ("profileNamespaceFeedEndId" = 0)))),
+    CONSTRAINT "IdentityNamespace_profileNamespaceFeedPulledThrough_check" CHECK (("profileNamespaceFeedPulledThrough" >= 0)),
     CONSTRAINT "IdentityNamespace_retiredAt_check" CHECK ((("retiredAt" IS NULL) OR ("retiredAt" >= "createdAt"))),
-    CONSTRAINT "IdentityNamespace_shape_check" CHECK ((((id = 0) AND ((domain)::text = 'local'::text) AND ("rootKeyFingerprint" IS NULL) AND ("rootPublicKey" IS NULL) AND ("identityPinnedAt" IS NULL) AND ("peerAssignedLocalNamespaceId" IS NULL) AND ("retiredAt" IS NULL) AND (active = false) AND (("trustLevel")::text = 'unrecognized'::text) AND ("trustedAt" IS NULL) AND ("lastSuccessAt" IS NULL) AND ("degradedAt" IS NULL) AND ("degradationReason" IS NULL) AND ("degradationCount" = 0) AND ("haltedAt" IS NULL) AND ("haltCode" IS NULL) AND ("haltReason" IS NULL) AND ("recognizesPeer" = false) AND ("peerAcceptanceConfirmed" = false) AND ("localServiceAvailable" = false) AND ("remoteServiceReachable" = false) AND ("resetAt" IS NULL)) OR ((id > 0) AND ((domain)::text <> 'local'::text) AND ("rootKeyFingerprint" IS NOT NULL) AND ("rootPublicKey" IS NOT NULL) AND ("identityPinnedAt" IS NOT NULL) AND (("peerAssignedLocalNamespaceId" IS NULL) OR ("peerAssignedLocalNamespaceId" > 0))))),
+    CONSTRAINT "IdentityNamespace_shape_check" CHECK ((((id = 0) AND ((domain)::text = 'local'::text) AND ("rootPublicKey" IS NULL) AND ("identityPinnedAt" IS NULL) AND ("peerAssignedLocalNamespaceId" IS NULL) AND ("retiredAt" IS NULL) AND (active = false) AND (("trustLevel")::text = 'unrecognized'::text) AND ("trustedAt" IS NULL) AND ("lastSuccessAt" IS NULL) AND ("degradedAt" IS NULL) AND ("degradationReason" IS NULL) AND ("degradationCount" = 0) AND ("haltedAt" IS NULL) AND ("haltCode" IS NULL) AND ("haltReason" IS NULL) AND ("recognizesPeer" = false) AND ("peerAcceptanceConfirmed" = false) AND ("localServiceAvailable" = false) AND ("remoteServiceReachable" = false) AND ("resetAt" IS NULL)) OR ((id > 0) AND ((domain)::text <> 'local'::text) AND ("rootPublicKey" IS NOT NULL) AND ("identityPinnedAt" IS NOT NULL) AND (("peerAssignedLocalNamespaceId" IS NULL) OR ("peerAssignedLocalNamespaceId" > 0))))),
     CONSTRAINT "IdentityNamespace_stateFeedEndId_check" CHECK ((("stateFeedEndId" >= 0) AND ((id <> 0) OR ("stateFeedEndId" = 0)))),
+    CONSTRAINT "IdentityNamespace_stateFeedPulledThrough_check" CHECK ((("stateFeedPulledThrough" IS NULL) OR ("stateFeedPulledThrough" >= 0))),
     CONSTRAINT "IdentityNamespace_trustLevel_check" CHECK ((("trustLevel")::text = ANY (ARRAY[('unrecognized'::character varying)::text, ('establishing'::character varying)::text, ('pending'::character varying)::text, ('available'::character varying)::text, ('degraded'::character varying)::text, ('halted'::character varying)::text])))
 );
 
@@ -1326,13 +1373,71 @@ ALTER SEQUENCE public."IdentityNamespace_id_seq" OWNED BY public."IdentityNamesp
 
 
 --
--- Name: LocalFederationIdentity; Type: TABLE; Schema: public; Owner: -
+-- Name: LocalFederationRoot; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public."LocalFederationIdentity" (
+CREATE TABLE public."LocalFederationRoot" (
+    id integer NOT NULL,
     domain character varying(63) NOT NULL,
-    "rootKeyFingerprint" character varying(80) NOT NULL,
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+    "rootPublicKey" character varying(44) NOT NULL,
+    "rootPrivateKey" character varying(44) NOT NULL,
+    "notBefore" timestamp(3) with time zone NOT NULL,
+    "notAfter" timestamp(3) with time zone NOT NULL,
+    claimable boolean DEFAULT false NOT NULL,
+    "unpublishedAt" timestamp(3) with time zone,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "LocalFederationRoot_claimable_check" CHECK (((claimable = false) OR ("unpublishedAt" IS NULL))),
+    CONSTRAINT "LocalFederationRoot_validity_check" CHECK (("notBefore" < "notAfter"))
+);
+
+
+--
+-- Name: LocalFederationRoot_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public."LocalFederationRoot_id_seq"
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: LocalFederationRoot_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public."LocalFederationRoot_id_seq" OWNED BY public."LocalFederationRoot".id;
+
+
+--
+-- Name: LocalFederationSigningKey; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."LocalFederationSigningKey" (
+    "keyId" character varying(127) NOT NULL,
+    "publicKey" character varying(44) NOT NULL,
+    "privateKey" character varying(44) NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "notBefore" timestamp(3) with time zone NOT NULL,
+    "notAfter" timestamp(3) with time zone NOT NULL,
+    "rootId" integer NOT NULL,
+    CONSTRAINT "LocalFederationSigningKey_validity_check" CHECK (("notBefore" < "notAfter"))
+);
+
+
+--
+-- Name: LocalFederationSigningState; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."LocalFederationSigningState" (
+    domain character varying(63) NOT NULL,
+    "currentKeyId" character varying(127) NOT NULL,
+    "plannedSwitchAt" timestamp(3) with time zone,
+    "plannedSuccessorKeyId" character varying(127),
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "LocalFederationSigningState_plan_check" CHECK ((("plannedSwitchAt" IS NULL) = ("plannedSuccessorKeyId" IS NULL)))
 );
 
 
@@ -1487,10 +1592,8 @@ ALTER SEQUENCE public."Message_id_seq" OWNED BY public."Message".id;
 --
 
 CREATE TABLE public."PeerStateFeed" (
-    "peerDomain" character varying(63) NOT NULL,
     "namespaceId" integer NOT NULL,
     account character varying(31) NOT NULL,
-    domain character varying(63) NOT NULL,
     "eventType" public."PeerStateEventType" NOT NULL,
     "subjectAccount" character varying(31) DEFAULT ''::character varying NOT NULL,
     "subjectNamespaceId" integer DEFAULT 0 NOT NULL,
@@ -1499,21 +1602,7 @@ CREATE TABLE public."PeerStateFeed" (
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "PeerStateFeed_feedId_check" CHECK (("feedId" > 0)),
-    CONSTRAINT "PeerStateFeed_subject_check" CHECK ((("eventType" = 'RELATIONSHIP_INTENT'::public."PeerStateEventType" AND "subjectAccount" <> ''::text AND "subjectNamespaceId" > 0) OR ("eventType" = 'THREAD_CONTENT_HEAD'::public."PeerStateEventType" AND (((account)::text ~~ '!%'::text AND "subjectAccount" = ''::text AND "subjectNamespaceId" = 0) OR ((account)::text !~~ '!%'::text AND "subjectAccount" <> ''::text AND "subjectNamespaceId" = "namespaceId")))))
-);
-
-
---
--- Name: PeerStateFeedPullCursor; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."PeerStateFeedPullCursor" (
-    "peerDomain" character varying(63) NOT NULL,
-    "namespaceId" integer NOT NULL,
-    initialized boolean DEFAULT false NOT NULL,
-    "committedThrough" bigint DEFAULT 0 NOT NULL,
-    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "PeerStateFeedPullCursor_committedThrough_check" CHECK (("committedThrough" >= 0))
+    CONSTRAINT "PeerStateFeed_subject_check" CHECK (((("eventType" = 'RELATIONSHIP_INTENT'::public."PeerStateEventType") AND (("subjectAccount")::text <> ''::text) AND ("subjectNamespaceId" > 0)) OR (("eventType" = 'THREAD_CONTENT_HEAD'::public."PeerStateEventType") AND ((((account)::text ~~ '!%'::text) AND (("subjectAccount")::text = ''::text) AND ("subjectNamespaceId" = 0)) OR (((account)::text !~~ '!%'::text) AND (("subjectAccount")::text <> ''::text) AND ("subjectNamespaceId" = "namespaceId"))))))
 );
 
 
@@ -1539,7 +1628,7 @@ CREATE TABLE public."PendingMedia" (
     "fileCnt" integer DEFAULT 1 NOT NULL,
     "anyFailed" boolean DEFAULT false NOT NULL,
     "originDomain" character varying(63),
-    "namespaceId" integer DEFAULT 0 NOT NULL,
+    "publisherNamespaceId" integer DEFAULT 0 CONSTRAINT "PendingMedia_namespaceId_not_null" NOT NULL,
     "expectedAuthorizationEpoch" integer,
     "dependsOnOriginSeq" integer,
     CONSTRAINT "PendingMedia_depends_on_origin_seq_check" CHECK ((("dependsOnOriginSeq" IS NULL) OR ("dependsOnOriginSeq" > 0))),
@@ -1573,14 +1662,71 @@ ALTER SEQUENCE public."PendingMedia_id_seq" OWNED BY public."PendingMedia".id;
 
 CREATE TABLE public."Profile" (
     account character varying(31) NOT NULL,
-    domain character varying(63) NOT NULL,
-    "namespaceId" integer NOT NULL,
     "profileRev" integer NOT NULL,
     "displayName" character varying(31) NOT NULL,
     avatar text DEFAULT ''::text NOT NULL,
     bio character varying(255) DEFAULT ''::character varying NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "publisherNamespaceId" integer NOT NULL,
+    "profileNamespaceId" integer NOT NULL,
     CONSTRAINT "Profile_profileRev_check" CHECK (("profileRev" > 0))
+);
+
+
+--
+-- Name: ProfileNamespaceChangeFeed; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."ProfileNamespaceChangeFeed" (
+    "publisherNamespaceId" integer NOT NULL,
+    "profileNamespaceId" integer NOT NULL,
+    "changeId" bigint NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "ProfileNamespaceChangeFeed_changeId_check" CHECK (("changeId" > 0))
+);
+
+
+--
+-- Name: ProfileNamespaceChangeFeedHead; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."ProfileNamespaceChangeFeedHead" (
+    id integer NOT NULL,
+    "endId" bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT "ProfileNamespaceChangeFeedHead_endId_check" CHECK (("endId" >= 0)),
+    CONSTRAINT "ProfileNamespaceChangeFeedHead_id_check" CHECK ((id = 0))
+);
+
+
+--
+-- Name: ProfileNamespaceFeed; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."ProfileNamespaceFeed" (
+    "namespaceId" integer NOT NULL,
+    "feedId" bigint NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "ProfileNamespaceFeed_feedId_check" CHECK (("feedId" > 0))
+);
+
+
+--
+-- Name: ProfileNamespaceInfo; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."ProfileNamespaceInfo" (
+    "publisherNamespaceId" integer NOT NULL,
+    "profileNamespaceId" integer NOT NULL,
+    domain character varying(63),
+    "rootPublicKey" character varying(44),
+    "updateFeedId" bigint DEFAULT 0 NOT NULL,
+    expired boolean DEFAULT true NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "ProfileNamespaceInfo_bindings_check" CHECK ((((domain IS NULL) AND ("rootPublicKey" IS NULL)) OR ((domain IS NOT NULL) AND ("rootPublicKey" IS NOT NULL)))),
+    CONSTRAINT "ProfileNamespaceInfo_updateFeedId_check" CHECK (("updateFeedId" >= 0))
 );
 
 
@@ -1625,9 +1771,6 @@ CREATE TABLE public."QuotaFileByteUsage" (
 --
 
 CREATE TABLE public."RelationshipIntent" (
-    id bigint NOT NULL,
-    "pairId" bigint NOT NULL,
-    "authorSide" character varying(1) NOT NULL,
     status public."RelationshipIntentStatus" NOT NULL,
     note character varying(255) DEFAULT ''::character varying NOT NULL,
     "requestedAt" timestamp(3) with time zone,
@@ -1636,30 +1779,18 @@ CREATE TABLE public."RelationshipIntent" (
     "profileRev" integer DEFAULT 0 NOT NULL,
     "messageEndSeq" integer NOT NULL,
     "tombstoneEndSeq" integer NOT NULL,
-    CONSTRAINT "RelationshipIntent_authorSide_check" CHECK ((("authorSide")::text = ANY (ARRAY[('A'::character varying)::text, ('B'::character varying)::text]))),
+    "authorAccount" character varying(31) NOT NULL,
+    "authorNamespaceId" integer NOT NULL,
+    "receiverAccount" character varying(31) NOT NULL,
+    "receiverNamespaceId" integer NOT NULL,
+    "profileNamespaceId" integer NOT NULL,
+    CONSTRAINT "RelationshipIntent_author_namespace_check" CHECK (("authorNamespaceId" >= 0)),
     CONSTRAINT "RelationshipIntent_expiry_check" CHECK ((((status = 'REQUESTED'::public."RelationshipIntentStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NOT NULL) AND ("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval))) OR ((status = 'ACCEPTED'::public."RelationshipIntentStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NULL)) OR ((status = 'REVOKED'::public."RelationshipIntentStatus") AND ("expiresAt" IS NULL)))),
     CONSTRAINT "RelationshipIntent_head_check" CHECK ((("messageEndSeq" >= 0) AND ("tombstoneEndSeq" >= 0))),
-    CONSTRAINT "RelationshipIntent_profileRev_check" CHECK (("profileRev" >= 0))
+    CONSTRAINT "RelationshipIntent_profileNamespaceId_check" CHECK (("profileNamespaceId" >= 0)),
+    CONSTRAINT "RelationshipIntent_profileRev_check" CHECK (("profileRev" >= 0)),
+    CONSTRAINT "RelationshipIntent_receiver_namespace_check" CHECK (("receiverNamespaceId" >= 0))
 );
-
-
---
--- Name: RelationshipIntent_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public."RelationshipIntent_id_seq"
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: RelationshipIntent_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public."RelationshipIntent_id_seq" OWNED BY public."RelationshipIntent".id;
 
 
 --
@@ -1671,19 +1802,19 @@ CREATE TABLE public."RelationshipPair" (
     kind character varying(16) NOT NULL,
     "endpointAType" character varying(8) NOT NULL,
     "endpointAAccount" character varying(31) NOT NULL,
-    "endpointADomain" character varying(63) NOT NULL,
-    "endpointANamespaceId" integer DEFAULT 0 NOT NULL,
     "endpointBType" character varying(8) NOT NULL,
     "endpointBAccount" character varying(31) NOT NULL,
-    "endpointBDomain" character varying(63) NOT NULL,
-    "endpointBNamespaceId" integer DEFAULT 0 NOT NULL,
     "threadId" integer,
     active boolean DEFAULT false NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     established boolean DEFAULT false NOT NULL,
-    CONSTRAINT "RelationshipPair_distinct_endpoints_check" CHECK (((("endpointAType")::text <> ("endpointBType")::text) OR (("endpointAAccount")::text <> ("endpointBAccount")::text) OR (("endpointADomain")::text <> ("endpointBDomain")::text))),
+    "endpointANamespaceId" integer DEFAULT 0 NOT NULL,
+    "endpointBNamespaceId" integer DEFAULT 0 NOT NULL,
+    CONSTRAINT "RelationshipPair_distinct_endpoints_check" CHECK (((("endpointAType")::text <> ("endpointBType")::text) OR (("endpointAAccount")::text <> ("endpointBAccount")::text))),
+    CONSTRAINT "RelationshipPair_endpoint_namespace_check" CHECK (("endpointBNamespaceId" >= 0)),
     CONSTRAINT "RelationshipPair_endpoint_type_check" CHECK (((("endpointAType")::text = ANY (ARRAY[('USER'::character varying)::text, ('GROUP'::character varying)::text])) AND (("endpointBType")::text = ANY (ARRAY[('USER'::character varying)::text, ('GROUP'::character varying)::text])) AND ((((kind)::text = 'P2P'::text) AND (("endpointAType")::text = 'USER'::text) AND (("endpointBType")::text = 'USER'::text)) OR (((kind)::text = 'GROUP_MEMBER'::text) AND (("endpointAType")::text <> ("endpointBType")::text))))),
-    CONSTRAINT "RelationshipPair_kind_check" CHECK (((kind)::text = ANY (ARRAY[('P2P'::character varying)::text, ('GROUP_MEMBER'::character varying)::text])))
+    CONSTRAINT "RelationshipPair_kind_check" CHECK (((kind)::text = ANY (ARRAY[('P2P'::character varying)::text, ('GROUP_MEMBER'::character varying)::text]))),
+    CONSTRAINT "RelationshipPair_local_side_check" CHECK (("endpointANamespaceId" = 0))
 );
 
 
@@ -1718,7 +1849,8 @@ CREATE TABLE public."S2SKeyCache" (
     "notBefore" timestamp(3) with time zone NOT NULL,
     "notAfter" timestamp(3) with time zone NOT NULL,
     "authorizationSignature" character varying(127) NOT NULL,
-    "fetchedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+    "fetchedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    root character varying(44) DEFAULT ''::character varying NOT NULL
 );
 
 
@@ -1791,7 +1923,6 @@ CREATE TABLE public."SystemSetting" (
 
 CREATE TABLE public."ThreadAudience" (
     id bigint NOT NULL,
-    "targetDomain" character varying(63) NOT NULL,
     "targetNamespaceId" integer DEFAULT 0 NOT NULL,
     "localUserId" integer,
     "threadId" integer NOT NULL,
@@ -1800,7 +1931,7 @@ CREATE TABLE public."ThreadAudience" (
     "groupMetaVisibleAfter" bigint DEFAULT 0 NOT NULL,
     CONSTRAINT "ThreadAudience_groupMetaVisibleAfter_check" CHECK (("groupMetaVisibleAfter" >= 0)),
     CONSTRAINT "ThreadAudience_messageAccessAfterSeq_check" CHECK (("messageAccessAfterSeq" >= 0)),
-    CONSTRAINT "ThreadAudience_target_check" CHECK ((((("targetDomain")::text = 'local'::text) AND ("localUserId" IS NOT NULL) AND ("targetNamespaceId" = 0)) OR ((("targetDomain")::text <> 'local'::text) AND ("localUserId" IS NULL) AND ("targetNamespaceId" > 0))))
+    CONSTRAINT "ThreadAudience_target_check" CHECK (((("localUserId" IS NOT NULL) AND ("targetNamespaceId" = 0)) OR (("localUserId" IS NULL) AND ("targetNamespaceId" > 0))))
 );
 
 
@@ -1821,26 +1952,6 @@ CREATE SEQUENCE public."ThreadAudience_id_seq"
 --
 
 ALTER SEQUENCE public."ThreadAudience_id_seq" OWNED BY public."ThreadAudience".id;
-
-
---
--- Name: AccountThreadState_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public."AccountThreadState_id_seq"
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: AccountThreadState_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public."AccountThreadState_id_seq" OWNED BY public."AccountThreadState".id;
 
 
 --
@@ -2094,6 +2205,13 @@ ALTER TABLE ONLY public."FederatedMessageTombstone" ALTER COLUMN id SET DEFAULT 
 
 
 --
+-- Name: FederationIdentityReview id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."FederationIdentityReview" ALTER COLUMN id SET DEFAULT nextval('public."FederationIdentityReview_id_seq"'::regclass);
+
+
+--
 -- Name: FederationThreadHistoryGap id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2122,6 +2240,13 @@ ALTER TABLE ONLY public."IdentityNamespace" ALTER COLUMN id SET DEFAULT nextval(
 
 
 --
+-- Name: LocalFederationRoot id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."LocalFederationRoot" ALTER COLUMN id SET DEFAULT nextval('public."LocalFederationRoot_id_seq"'::regclass);
+
+
+--
 -- Name: LoginCode id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -2147,13 +2272,6 @@ ALTER TABLE ONLY public."MessageThread" ALTER COLUMN id SET DEFAULT nextval('pub
 --
 
 ALTER TABLE ONLY public."PendingMedia" ALTER COLUMN id SET DEFAULT nextval('public."PendingMedia_id_seq"'::regclass);
-
-
---
--- Name: RelationshipIntent id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."RelationshipIntent" ALTER COLUMN id SET DEFAULT nextval('public."RelationshipIntent_id_seq"'::regclass);
 
 
 --
@@ -2319,19 +2437,19 @@ ALTER TABLE ONLY public."FederatedMessageTombstone"
 
 
 --
+-- Name: FederationIdentityReview FederationIdentityReview_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."FederationIdentityReview"
+    ADD CONSTRAINT "FederationIdentityReview_pkey" PRIMARY KEY (id);
+
+
+--
 -- Name: FederationMessageReceipt FederationMessageReceipt_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."FederationMessageReceipt"
     ADD CONSTRAINT "FederationMessageReceipt_pkey" PRIMARY KEY ("namespaceId", "threadId", "peerSeq");
-
-
---
--- Name: FederationNamespaceCandidate FederationNamespaceCandidate_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationNamespaceCandidate"
-    ADD CONSTRAINT "FederationNamespaceCandidate_pkey" PRIMARY KEY ("nextDomain");
 
 
 --
@@ -2415,19 +2533,19 @@ ALTER TABLE ONLY public."GroupAccount"
 
 
 --
--- Name: GroupMeta GroupMeta_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupMeta"
-    ADD CONSTRAINT "GroupMeta_pkey" PRIMARY KEY ("threadId");
-
-
---
 -- Name: GroupMetaMemberFeed GroupMetaMemberFeed_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."GroupMetaMemberFeed"
     ADD CONSTRAINT "GroupMetaMemberFeed_pkey" PRIMARY KEY ("threadId", "feedId");
+
+
+--
+-- Name: GroupMeta GroupMeta_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."GroupMeta"
+    ADD CONSTRAINT "GroupMeta_pkey" PRIMARY KEY ("threadId");
 
 
 --
@@ -2447,11 +2565,35 @@ ALTER TABLE ONLY public."IdentityNamespace"
 
 
 --
--- Name: LocalFederationIdentity LocalFederationIdentity_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: LocalFederationRoot LocalFederationRoot_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."LocalFederationIdentity"
-    ADD CONSTRAINT "LocalFederationIdentity_pkey" PRIMARY KEY (domain);
+ALTER TABLE ONLY public."LocalFederationRoot"
+    ADD CONSTRAINT "LocalFederationRoot_pkey" PRIMARY KEY (id);
+
+
+--
+-- Name: LocalFederationRoot LocalFederationRoot_rootPublicKey_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."LocalFederationRoot"
+    ADD CONSTRAINT "LocalFederationRoot_rootPublicKey_key" UNIQUE ("rootPublicKey");
+
+
+--
+-- Name: LocalFederationSigningKey LocalFederationSigningKey_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."LocalFederationSigningKey"
+    ADD CONSTRAINT "LocalFederationSigningKey_pkey" PRIMARY KEY ("keyId");
+
+
+--
+-- Name: LocalFederationSigningState LocalFederationSigningState_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."LocalFederationSigningState"
+    ADD CONSTRAINT "LocalFederationSigningState_pkey" PRIMARY KEY (domain);
 
 
 --
@@ -2503,19 +2645,11 @@ ALTER TABLE ONLY public."Message"
 
 
 --
--- Name: PeerStateFeedPullCursor PeerStateFeedPullCursor_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."PeerStateFeedPullCursor"
-    ADD CONSTRAINT "PeerStateFeedPullCursor_pkey" PRIMARY KEY ("namespaceId");
-
-
---
 -- Name: PeerStateFeed PeerStateFeed_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."PeerStateFeed"
-    ADD CONSTRAINT "PeerStateFeed_pkey" PRIMARY KEY ("namespaceId", account, domain, "eventType", "subjectAccount", "subjectNamespaceId");
+    ADD CONSTRAINT "PeerStateFeed_pkey" PRIMARY KEY ("namespaceId", account, "eventType", "subjectAccount", "subjectNamespaceId");
 
 
 --
@@ -2527,11 +2661,43 @@ ALTER TABLE ONLY public."PendingMedia"
 
 
 --
+-- Name: ProfileNamespaceChangeFeedHead ProfileNamespaceChangeFeedHead_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ProfileNamespaceChangeFeedHead"
+    ADD CONSTRAINT "ProfileNamespaceChangeFeedHead_pkey" PRIMARY KEY (id);
+
+
+--
+-- Name: ProfileNamespaceChangeFeed ProfileNamespaceChangeFeed_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ProfileNamespaceChangeFeed"
+    ADD CONSTRAINT "ProfileNamespaceChangeFeed_pkey" PRIMARY KEY ("publisherNamespaceId", "profileNamespaceId");
+
+
+--
+-- Name: ProfileNamespaceFeed ProfileNamespaceFeed_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ProfileNamespaceFeed"
+    ADD CONSTRAINT "ProfileNamespaceFeed_pkey" PRIMARY KEY ("namespaceId");
+
+
+--
+-- Name: ProfileNamespaceInfo ProfileNamespaceInfo_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ProfileNamespaceInfo"
+    ADD CONSTRAINT "ProfileNamespaceInfo_pkey" PRIMARY KEY ("publisherNamespaceId", "profileNamespaceId");
+
+
+--
 -- Name: Profile Profile_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."Profile"
-    ADD CONSTRAINT "Profile_pkey" PRIMARY KEY (account, domain, "namespaceId", "profileRev");
+    ADD CONSTRAINT "Profile_pkey" PRIMARY KEY ("publisherNamespaceId", account, "profileNamespaceId", "profileRev");
 
 
 --
@@ -2563,7 +2729,7 @@ ALTER TABLE ONLY public."QuotaFileByteUsage"
 --
 
 ALTER TABLE ONLY public."RelationshipIntent"
-    ADD CONSTRAINT "RelationshipIntent_pkey" PRIMARY KEY ("pairId", "authorSide");
+    ADD CONSTRAINT "RelationshipIntent_pkey" PRIMARY KEY ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId");
 
 
 --
@@ -2571,7 +2737,7 @@ ALTER TABLE ONLY public."RelationshipIntent"
 --
 
 ALTER TABLE ONLY public."RelationshipPair"
-    ADD CONSTRAINT "RelationshipPair_endpoints_key" UNIQUE ("endpointAType", "endpointAAccount", "endpointADomain", "endpointANamespaceId", "endpointBType", "endpointBAccount", "endpointBDomain", "endpointBNamespaceId");
+    ADD CONSTRAINT "RelationshipPair_endpoints_key" UNIQUE ("endpointAType", "endpointAAccount", "endpointBType", "endpointBAccount", "endpointBNamespaceId");
 
 
 --
@@ -2843,14 +3009,21 @@ CREATE INDEX "DurableTask_pending_id_idx" ON public."DurableTask" USING btree (i
 -- Name: FederatedMessageTombstone_source_event_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "FederatedMessageTombstone_source_event_key" ON public."FederatedMessageTombstone" USING btree ("sourceNamespaceId", "threadId", "remoteDeletionSeq");
+CREATE UNIQUE INDEX "FederatedMessageTombstone_source_event_key" ON public."FederatedMessageTombstone" USING btree ("publisherNamespaceId", "threadId", "remoteDeletionSeq");
 
 
 --
 -- Name: FederatedMessageTombstone_target_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "FederatedMessageTombstone_target_key" ON public."FederatedMessageTombstone" USING btree ("threadId", "sourceNamespaceId", "messageSeq");
+CREATE UNIQUE INDEX "FederatedMessageTombstone_target_key" ON public."FederatedMessageTombstone" USING btree ("threadId", "publisherNamespaceId", "messageSeq");
+
+
+--
+-- Name: FederationIdentityReview_one_pending_per_namespace_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "FederationIdentityReview_one_pending_per_namespace_key" ON public."FederationIdentityReview" USING btree ("matchedNamespaceId") WHERE ((status)::text = 'pending'::text);
 
 
 --
@@ -2858,13 +3031,6 @@ CREATE UNIQUE INDEX "FederatedMessageTombstone_target_key" ON public."FederatedM
 --
 
 CREATE INDEX "FederationMessageReceipt_messageId_idx" ON public."FederationMessageReceipt" USING btree ("messageId");
-
-
---
--- Name: FederationNamespaceCandidate_matchedNamespace_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "FederationNamespaceCandidate_matchedNamespace_key" ON public."FederationNamespaceCandidate" USING btree ("matchedNamespaceId") WHERE ("matchedNamespaceId" IS NOT NULL);
 
 
 --
@@ -2952,10 +3118,10 @@ CREATE INDEX "ForwardBundle_createdBy_idx" ON public."ForwardBundle" USING btree
 
 
 --
--- Name: ForwardBundle_sourceNamespace_sourceBundleId_key; Type: INDEX; Schema: public; Owner: -
+-- Name: ForwardBundle_publisherNamespace_sourceBundleId_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "ForwardBundle_sourceNamespace_sourceBundleId_key" ON public."ForwardBundle" USING btree ("sourceNamespaceId", "sourceBundleId");
+CREATE UNIQUE INDEX "ForwardBundle_publisherNamespace_sourceBundleId_key" ON public."ForwardBundle" USING btree ("publisherNamespaceId", "sourceBundleId");
 
 
 --
@@ -3008,10 +3174,24 @@ CREATE UNIQUE INDEX "IdentityNamespace_one_active_per_domain_key" ON public."Ide
 
 
 --
+-- Name: IdentityNamespace_one_epoch_per_root_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "IdentityNamespace_one_epoch_per_root_key" ON public."IdentityNamespace" USING btree ("rootPublicKey") WHERE ((id > 0) AND ("retiredAt" IS NULL) AND ("rootPublicKey" IS NOT NULL));
+
+
+--
 -- Name: IdentityNamespace_trustLevel_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX "IdentityNamespace_trustLevel_idx" ON public."IdentityNamespace" USING btree ("trustLevel");
+
+
+--
+-- Name: LocalFederationRoot_one_claimable_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "LocalFederationRoot_one_claimable_key" ON public."LocalFederationRoot" USING btree (domain) WHERE (claimable = true);
 
 
 --
@@ -3081,7 +3261,7 @@ CREATE INDEX "Message_createdAt_idx" ON public."Message" USING btree ("createdAt
 -- Name: Message_creator_address_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "Message_creator_address_idx" ON public."Message" USING btree ("creatorAccount", "creatorNamespaceId", "sourceNamespaceId");
+CREATE INDEX "Message_creator_address_idx" ON public."Message" USING btree ("creatorAccount", "profileNamespaceId", "publisherNamespaceId");
 
 
 --
@@ -3116,14 +3296,14 @@ CREATE UNIQUE INDEX "Message_threadId_seq_key" ON public."Message" USING btree (
 -- Name: Message_threadId_source_originSeq_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "Message_threadId_source_originSeq_key" ON public."Message" USING btree ("threadId", "sourceNamespaceId", "originSeq");
+CREATE UNIQUE INDEX "Message_threadId_source_originSeq_key" ON public."Message" USING btree ("threadId", "publisherNamespaceId", "originSeq");
 
 
 --
--- Name: PeerStateFeed_peerDomain_feedId_key; Type: INDEX; Schema: public; Owner: -
+-- Name: PeerStateFeed_namespace_feedId_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "PeerStateFeed_peerDomain_feedId_key" ON public."PeerStateFeed" USING btree ("namespaceId", "feedId");
+CREATE UNIQUE INDEX "PeerStateFeed_namespace_feedId_key" ON public."PeerStateFeed" USING btree ("namespaceId", "feedId");
 
 
 --
@@ -3169,6 +3349,20 @@ CREATE INDEX "PendingMedia_threadId_idx" ON public."PendingMedia" USING btree ("
 
 
 --
+-- Name: ProfileNamespaceChangeFeed_changeId_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "ProfileNamespaceChangeFeed_changeId_key" ON public."ProfileNamespaceChangeFeed" USING btree ("changeId");
+
+
+--
+-- Name: ProfileNamespaceFeed_feedId_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "ProfileNamespaceFeed_feedId_key" ON public."ProfileNamespaceFeed" USING btree ("feedId");
+
+
+--
 -- Name: QuotaDailyUsage_date_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3183,31 +3377,17 @@ CREATE INDEX "QuotaFileByteUsage_date_idx" ON public."QuotaFileByteUsage" USING 
 
 
 --
--- Name: SessionToken_pushToken_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "SessionToken_pushToken_key" ON public."SessionToken" USING btree ("pushToken") WHERE ("pushToken" IS NOT NULL);
-
-
---
--- Name: RelationshipIntent_id_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "RelationshipIntent_id_key" ON public."RelationshipIntent" USING btree (id);
-
-
---
 -- Name: RelationshipPair_endpointA_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "RelationshipPair_endpointA_idx" ON public."RelationshipPair" USING btree ("endpointAType", "endpointAAccount", "endpointADomain", "endpointANamespaceId", active);
+CREATE INDEX "RelationshipPair_endpointA_idx" ON public."RelationshipPair" USING btree ("endpointAType", "endpointAAccount", active);
 
 
 --
 -- Name: RelationshipPair_endpointB_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "RelationshipPair_endpointB_idx" ON public."RelationshipPair" USING btree ("endpointBType", "endpointBAccount", "endpointBDomain", "endpointBNamespaceId", active);
+CREATE INDEX "RelationshipPair_endpointB_idx" ON public."RelationshipPair" USING btree ("endpointBType", "endpointBAccount", active);
 
 
 --
@@ -3229,6 +3409,13 @@ CREATE INDEX "RelationshipPair_thread_kind_active_idx" ON public."RelationshipPa
 --
 
 CREATE INDEX "SessionToken_lastSeenAt_active_idx" ON public."SessionToken" USING btree ("lastSeenAt") WHERE ("revokedAt" IS NULL);
+
+
+--
+-- Name: SessionToken_pushToken_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX "SessionToken_pushToken_key" ON public."SessionToken" USING btree ("pushToken") WHERE ("pushToken" IS NOT NULL);
 
 
 --
@@ -3256,28 +3443,28 @@ CREATE INDEX "SessionToken_userId_lastSeenAt_active_idx" ON public."SessionToken
 -- Name: ThreadAudience_local_access_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "ThreadAudience_local_access_idx" ON public."ThreadAudience" USING btree ("localUserId", "threadId") WHERE (("targetDomain")::text = 'local'::text);
+CREATE INDEX "ThreadAudience_local_access_idx" ON public."ThreadAudience" USING btree ("localUserId", "threadId") WHERE ("localUserId" IS NOT NULL);
 
 
 --
 -- Name: ThreadAudience_local_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "ThreadAudience_local_key" ON public."ThreadAudience" USING btree ("targetDomain", "localUserId", "threadId") WHERE (("targetDomain")::text = 'local'::text);
+CREATE UNIQUE INDEX "ThreadAudience_local_key" ON public."ThreadAudience" USING btree ("localUserId", "threadId") WHERE ("localUserId" IS NOT NULL);
 
 
 --
 -- Name: ThreadAudience_peer_access_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX "ThreadAudience_peer_access_idx" ON public."ThreadAudience" USING btree ("targetNamespaceId", "threadId") WHERE (("targetDomain")::text <> 'local'::text);
+CREATE INDEX "ThreadAudience_peer_access_idx" ON public."ThreadAudience" USING btree ("targetNamespaceId", "threadId") WHERE ("localUserId" IS NULL);
 
 
 --
 -- Name: ThreadAudience_peer_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "ThreadAudience_peer_key" ON public."ThreadAudience" USING btree ("targetNamespaceId", "threadId") WHERE (("targetDomain")::text <> 'local'::text);
+CREATE UNIQUE INDEX "ThreadAudience_peer_key" ON public."ThreadAudience" USING btree ("targetNamespaceId", "threadId") WHERE ("localUserId" IS NULL);
 
 
 --
@@ -3386,24 +3573,24 @@ CREATE TRIGGER attention_message_before_write BEFORE INSERT OR DELETE OR UPDATE 
 
 
 --
--- Name: RelationshipPair client_thread_state_after_pair; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER client_thread_state_after_pair AFTER INSERT OR UPDATE OF active, established, "threadId" ON public."RelationshipPair" FOR EACH ROW EXECUTE FUNCTION public.client_thread_state_after_pair();
-
-
---
--- Name: AccountThreadState client_thread_state_after_participant; Type: TRIGGER; Schema: public; Owner: -
---
-
-CREATE TRIGGER client_thread_state_after_participant AFTER INSERT OR UPDATE OF blocked, role ON public."AccountThreadState" FOR EACH ROW EXECUTE FUNCTION public.client_thread_state_after_participant();
-
-
---
 -- Name: RelationshipPair relationship_establishment_before_write; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER relationship_establishment_before_write BEFORE INSERT OR UPDATE ON public."RelationshipPair" FOR EACH ROW EXECUTE FUNCTION public.relationship_establishment_before_write();
+
+
+--
+-- Name: RelationshipPair thread_feed_after_pair; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER thread_feed_after_pair AFTER INSERT OR UPDATE OF active, established, "threadId" ON public."RelationshipPair" FOR EACH ROW EXECUTE FUNCTION public.thread_feed_after_pair();
+
+
+--
+-- Name: AccountThreadState thread_feed_after_participant; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER thread_feed_after_participant AFTER INSERT ON public."AccountThreadState" FOR EACH ROW EXECUTE FUNCTION public.thread_feed_after_participant();
 
 
 --
@@ -3494,11 +3681,11 @@ ALTER TABLE ONLY public."ClientStateFeed"
 
 
 --
--- Name: DeletedMessage DeletedMessage_sourceNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: DeletedMessage DeletedMessage_publisherNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."DeletedMessage"
-    ADD CONSTRAINT "DeletedMessage_sourceNamespaceId_fkey" FOREIGN KEY ("sourceNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+    ADD CONSTRAINT "DeletedMessage_publisherNamespaceId_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3518,11 +3705,11 @@ ALTER TABLE ONLY public."DiagnosticsReport"
 
 
 --
--- Name: FederatedMessageTombstone FederatedMessageTombstone_sourceNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: FederatedMessageTombstone FederatedMessageTombstone_publisherNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."FederatedMessageTombstone"
-    ADD CONSTRAINT "FederatedMessageTombstone_sourceNamespaceId_fkey" FOREIGN KEY ("sourceNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+    ADD CONSTRAINT "FederatedMessageTombstone_publisherNamespaceId_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3531,6 +3718,14 @@ ALTER TABLE ONLY public."FederatedMessageTombstone"
 
 ALTER TABLE ONLY public."FederatedMessageTombstone"
     ADD CONSTRAINT "FederatedMessageTombstone_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON UPDATE CASCADE ON DELETE CASCADE;
+
+
+--
+-- Name: FederationIdentityReview FederationIdentityReview_matchedNamespace_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."FederationIdentityReview"
+    ADD CONSTRAINT "FederationIdentityReview_matchedNamespace_fkey" FOREIGN KEY ("matchedNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
 
 
 --
@@ -3566,14 +3761,6 @@ ALTER TABLE ONLY public."FederationThreadHistoryGap"
 
 
 --
--- Name: FederationNamespaceCandidate FederationNamespaceCandidate_matchedNamespace_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationNamespaceCandidate"
-    ADD CONSTRAINT "FederationNamespaceCandidate_matchedNamespace_fkey" FOREIGN KEY ("matchedNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
-
-
---
 -- Name: FederationThreadHistoryGap FederationThreadHistoryGap_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3606,11 +3793,11 @@ ALTER TABLE ONLY public."FederationThreadSyncState"
 
 
 --
--- Name: FileSyncProgress FileSyncProgress_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: FileSyncProgress FileSyncProgress_publisherNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."FileSyncProgress"
-    ADD CONSTRAINT "FileSyncProgress_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+    ADD CONSTRAINT "FileSyncProgress_publisherNamespaceId_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3638,11 +3825,11 @@ ALTER TABLE ONLY public."ForwardBundleDependency"
 
 
 --
--- Name: ForwardBundle ForwardBundle_sourceNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: ForwardBundle ForwardBundle_publisherNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."ForwardBundle"
-    ADD CONSTRAINT "ForwardBundle_sourceNamespaceId_fkey" FOREIGN KEY ("sourceNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+    ADD CONSTRAINT "ForwardBundle_publisherNamespaceId_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3662,6 +3849,14 @@ ALTER TABLE ONLY public."ForwardMessage"
 
 
 --
+-- Name: GroupMetaMemberFeed GroupMetaMemberFeed_profileNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."GroupMetaMemberFeed"
+    ADD CONSTRAINT "GroupMetaMemberFeed_profileNamespaceId_fkey" FOREIGN KEY ("profileNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+
+
+--
 -- Name: GroupMetaMemberFeed GroupMetaMemberFeed_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3678,13 +3873,6 @@ ALTER TABLE ONLY public."GroupMeta"
 
 
 --
--- Name: GroupMetaMemberFeed GroupMetaMemberFeed_profileNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupMetaMemberFeed"
-    ADD CONSTRAINT "GroupMetaMemberFeed_profileNamespaceId_fkey" FOREIGN KEY ("profileNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
-
-
 -- Name: GroupRequestProjection GroupRequestProjection_profileNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3698,6 +3886,30 @@ ALTER TABLE ONLY public."GroupRequestProjection"
 
 ALTER TABLE ONLY public."GroupRequestProjection"
     ADD CONSTRAINT "GroupRequestProjection_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
+
+
+--
+-- Name: LocalFederationSigningKey LocalFederationSigningKey_root_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."LocalFederationSigningKey"
+    ADD CONSTRAINT "LocalFederationSigningKey_root_fkey" FOREIGN KEY ("rootId") REFERENCES public."LocalFederationRoot"(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: LocalFederationSigningState LocalFederationSigningState_current_key_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."LocalFederationSigningState"
+    ADD CONSTRAINT "LocalFederationSigningState_current_key_fkey" FOREIGN KEY ("currentKeyId") REFERENCES public."LocalFederationSigningKey"("keyId") ON DELETE RESTRICT;
+
+
+--
+-- Name: LocalFederationSigningState LocalFederationSigningState_successor_key_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."LocalFederationSigningState"
+    ADD CONSTRAINT "LocalFederationSigningState_successor_key_fkey" FOREIGN KEY ("plannedSuccessorKeyId") REFERENCES public."LocalFederationSigningKey"("keyId") ON DELETE SET NULL;
 
 
 --
@@ -3749,19 +3961,19 @@ ALTER TABLE ONLY public."MessageThread"
 
 
 --
--- Name: Message Message_creatorNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: Message Message_profileNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."Message"
-    ADD CONSTRAINT "Message_creatorNamespaceId_fkey" FOREIGN KEY ("creatorNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+    ADD CONSTRAINT "Message_profileNamespaceId_fkey" FOREIGN KEY ("profileNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
--- Name: Message Message_sourceNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: Message Message_publisherNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."Message"
-    ADD CONSTRAINT "Message_sourceNamespaceId_fkey" FOREIGN KEY ("sourceNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+    ADD CONSTRAINT "Message_publisherNamespaceId_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3770,14 +3982,6 @@ ALTER TABLE ONLY public."Message"
 
 ALTER TABLE ONLY public."Message"
     ADD CONSTRAINT "Message_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON UPDATE CASCADE ON DELETE RESTRICT;
-
-
---
--- Name: PeerStateFeedPullCursor PeerStateFeedPullCursor_namespace_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."PeerStateFeedPullCursor"
-    ADD CONSTRAINT "PeerStateFeedPullCursor_namespace_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3797,11 +4001,11 @@ ALTER TABLE ONLY public."PendingMedia"
 
 
 --
--- Name: PendingMedia PendingMedia_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: PendingMedia PendingMedia_publisherNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."PendingMedia"
-    ADD CONSTRAINT "PendingMedia_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+    ADD CONSTRAINT "PendingMedia_publisherNamespaceId_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3813,11 +4017,35 @@ ALTER TABLE ONLY public."PendingMedia"
 
 
 --
--- Name: Profile Profile_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: ProfileNamespaceChangeFeed ProfileNamespaceChangeFeed_publisher_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ProfileNamespaceChangeFeed"
+    ADD CONSTRAINT "ProfileNamespaceChangeFeed_publisher_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: ProfileNamespaceFeed ProfileNamespaceFeed_namespace_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ProfileNamespaceFeed"
+    ADD CONSTRAINT "ProfileNamespaceFeed_namespace_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: ProfileNamespaceInfo ProfileNamespaceInfo_publisher_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ProfileNamespaceInfo"
+    ADD CONSTRAINT "ProfileNamespaceInfo_publisher_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: Profile Profile_publisherNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."Profile"
-    ADD CONSTRAINT "Profile_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+    ADD CONSTRAINT "Profile_publisherNamespaceId_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3845,11 +4073,19 @@ ALTER TABLE ONLY public."QuotaFileByteUsage"
 
 
 --
--- Name: RelationshipIntent RelationshipIntent_pairId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: RelationshipIntent RelationshipIntent_authorNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public."RelationshipIntent"
-    ADD CONSTRAINT "RelationshipIntent_pairId_fkey" FOREIGN KEY ("pairId") REFERENCES public."RelationshipPair"(id) ON DELETE CASCADE;
+    ADD CONSTRAINT "RelationshipIntent_authorNamespaceId_fkey" FOREIGN KEY ("authorNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: RelationshipIntent RelationshipIntent_receiverNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."RelationshipIntent"
+    ADD CONSTRAINT "RelationshipIntent_receiverNamespaceId_fkey" FOREIGN KEY ("receiverNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -3985,7 +4221,8 @@ ALTER TABLE ONLY public."WebAuthnCredential"
 --
 
 
--- Required local identities.
+-- Required local identities and feed head sentinels.
 INSERT INTO public."IdentityNamespace" (id, domain) VALUES (0, 'local');
 INSERT INTO public."Account" (account, kind, "disabledAt")
 VALUES ('$system', 'SYSTEM', CURRENT_TIMESTAMP);
+INSERT INTO public."ProfileNamespaceChangeFeedHead" ("id", "endId") VALUES (0, 0);

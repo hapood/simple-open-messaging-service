@@ -166,9 +166,11 @@ describe('WebAuthnService', () => {
         ...args.data,
       }),
     );
-    const adminUpdate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({
-      count: 1,
-    }));
+    const adminUpdate = vi.fn(
+      async (_args: { data: Record<string, unknown> }) => ({
+        count: 1,
+      }),
+    );
     const { svc } = makeService({
       webAuthnCredential: {
         create: credCreate,
@@ -344,9 +346,11 @@ describe('WebAuthnService', () => {
 
   it('removeCredential flips webauthnEnabled off when the last credential is deleted', async () => {
     const deleteMany = vi.fn(async () => ({ count: 1 }));
-    const adminUpdate = vi.fn(async (_args: { data: Record<string, unknown> }) => ({
-      count: 1,
-    }));
+    const adminUpdate = vi.fn(
+      async (_args: { data: Record<string, unknown> }) => ({
+        count: 1,
+      }),
+    );
     const remaining = 0; // the delete leaves zero credentials
     const { svc } = makeService({
       webAuthnCredential: { deleteMany, count: vi.fn(async () => remaining) },

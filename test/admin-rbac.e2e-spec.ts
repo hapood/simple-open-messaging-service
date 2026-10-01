@@ -50,7 +50,10 @@ describe('Admin RBAC + revocation + audit', () => {
   beforeEach(async () => {
     // CASCADE clears Admin, AdminSession, AdminActionLog (all FK-reachable from User), so each
     // case starts from an empty admin set.
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => {

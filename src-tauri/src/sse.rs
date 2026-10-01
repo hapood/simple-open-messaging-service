@@ -8,7 +8,7 @@ use tauri::Emitter;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::{http_client_for, pick_origin_race, ProxyState, SSE_CONNECT_TIMEOUT};
+use crate::{http_client_for, pick_origin_race, ServerSessionState, SSE_CONNECT_TIMEOUT};
 
 // --- desktop SSE supervisor (Rust-owned /events stream) ------------------------------------
 //
@@ -17,7 +17,7 @@ use crate::{http_client_for, pick_origin_race, ProxyState, SSE_CONNECT_TIMEOUT};
 // `RustChannelSseTransport` (web/.../rust-channel-sse.transport.ts) for `isTauri() && !isAndroid`, which
 // calls these commands and receives frames/state over Tauri events. This decouples the long-lived
 // connection from the renderer: it survives a webview reclaim (the stream is tied to the AppHandle, not
-// the window), it reads the Bearer directly from `ProxyState.token` (no JS token handshake), and it
+// the window), it reads the Bearer directly from `ServerSessionState.token` (no JS token handshake), and it
 // never touches `tauri-plugin-http`'s fragile `__TAURI_CHANNEL__` (the source of the "resource id is
 // invalid" churn). Mobile is excluded (`#[cfg(desktop)]`) — Android's Kotlin RealtimeService owns SSE.
 
@@ -123,7 +123,7 @@ fn emit_state(app: &tauri::AppHandle, state: &Arc<Mutex<ConnectionState>>, s: Co
 #[tauri::command]
 pub(crate) fn sse_start(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ProxyState>,
+    proxy: tauri::State<'_, ServerSessionState>,
     sse: tauri::State<'_, SseSupervisor>,
 ) -> Result<(), String> {
     if sse.handle.lock().expect("sse handle lock").is_some() {
@@ -218,7 +218,7 @@ pub(crate) fn sse_replay_hello(
 #[cfg(desktop)]
 async fn sse_supervisor_loop(
     app: tauri::AppHandle,
-    proxy: ProxyState,
+    proxy: ServerSessionState,
     cancel: CancellationToken,
     state: Arc<Mutex<ConnectionState>>,
     wake: Arc<Notify>,
@@ -429,7 +429,7 @@ impl ThreadFeedHead {
 #[allow(clippy::too_many_arguments)]
 async fn open_one_stream(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     cancel: &CancellationToken,
     state: &Arc<Mutex<ConnectionState>>,
     wake: &Notify,
@@ -558,15 +558,9 @@ async fn open_one_stream(
                             },
                         );
                     }
-                    let mut changes = Vec::new();
-                    if !result.states.is_empty() {
-                        changes.push("THREADS");
-                    }
-                    if !result.group_thread_ids.is_empty() {
-                        changes.push("GROUP_META");
-                    }
-                    // Local completion, not a server SSE event. The renderer only receives a wake and
-                    // re-reads committed native storage.
+                    // Local completion, not a server SSE event. The renderer applies the
+                    // committed states incrementally, exactly like the browser worker's
+                    // `thread-feed-committed` event.
                     let _ = feed_app.emit(
                         "soms-sse-event",
                         SseEventPayload {
@@ -575,9 +569,7 @@ async fn open_one_stream(
                             message: "local data committed".into(),
                             data: serde_json::json!({
                                 "userId": user_id,
-                                "cursor": result.cursor,
-                                "changes": changes,
-                                "groupThreadIds": result.group_thread_ids,
+                                "states": result.states,
                             }),
                         },
                     );

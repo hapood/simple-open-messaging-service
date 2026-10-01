@@ -51,11 +51,6 @@ describe('WebdbService native SQLite routing', () => {
     tauriWindow().__TAURI__ = undefined;
   });
 
-  it('does not allow a renderer to start native thread-feed synchronization', async () => {
-    await expect(service.syncThreadFeed(12, 3)).rejects.toThrow('Rust SSE executor');
-    expect(calls).not.toContainEqual(expect.objectContaining({ cmd: 'native_thread_feed_sync' }));
-  });
-
   it('routes thread reads and writes to typed native commands with the active user id', async () => {
     const thread = {
       threadId: 9,
@@ -119,8 +114,8 @@ describe('WebdbService native SQLite routing', () => {
     responses.set('native_db_get_meta', 12);
 
     expect(await service.getProfile(profile)).toEqual(profile);
-    await service.putMeta('stateFeedId', 12);
-    expect(await service.getMeta('stateFeedId')).toBe(12);
+    await service.putSyncState('stateFeedId', 12);
+    expect(await service.getSyncState('stateFeedId')).toBe(12);
   });
 
   it('queries a paginated group roster through native SQLite', async () => {

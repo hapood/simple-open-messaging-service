@@ -14,7 +14,6 @@ export interface GroupMembershipStateRow extends Record<string, unknown> {
   dissolvedAt: string | null;
   pairId: string;
   memberAccount: string;
-  memberDomain: string;
   profileNamespaceId: number;
   memberNote: string | null;
   memberIntentStatus: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' | null;
@@ -99,7 +98,6 @@ export function groupMembershipStateSql(input: {
     )
     SELECT g.*, ${input.pairId}::text AS "pairId",
       ${input.memberAccount}::text AS "memberAccount",
-      member_ns.domain AS "memberDomain",
       ${input.profileNamespaceId}::integer AS "profileNamespaceId",
       side_b.note AS "memberNote",
       side_b.status AS "memberIntentStatus", side_b."profileRev" AS "memberProfileRev",
@@ -130,7 +128,6 @@ export function groupMembershipStateSql(input: {
     FROM ${groupStateSql} g
     LEFT JOIN side_b ON true
     LEFT JOIN side_a ON true
-    JOIN "IdentityNamespace" member_ns ON member_ns.id = ${input.profileNamespaceId}
     LEFT JOIN "Account" local_member ON local_member.account = ${input.memberAccount}
       AND local_member.domain = 'local'
       AND local_member."namespaceId" = 0

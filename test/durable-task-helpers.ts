@@ -33,7 +33,12 @@ export async function waitForAcceptedDurableTask(
   responseBody: unknown,
 ): Promise<void> {
   const data = readResponseData(responseBody);
-  if (data.status === 'APPLIED' || data.status === 'NO_OP' || data.status === 'OK') return;
+  if (
+    data.status === 'APPLIED' ||
+    data.status === 'NO_OP' ||
+    data.status === 'OK'
+  )
+    return;
   const taskId = readTaskId(responseBody);
   await waitForDurableTask(database, taskId);
 }
@@ -106,7 +111,10 @@ export async function waitForLocalRelationshipRequest(
         relationshipIntent.authorNamespaceId,
         relationship.firstEndpoint.namespaceId,
       ),
-      eq(relationshipIntent.receiverAccount, relationship.secondEndpoint.account),
+      eq(
+        relationshipIntent.receiverAccount,
+        relationship.secondEndpoint.account,
+      ),
       eq(
         relationshipIntent.receiverNamespaceId,
         relationship.secondEndpoint.namespaceId,

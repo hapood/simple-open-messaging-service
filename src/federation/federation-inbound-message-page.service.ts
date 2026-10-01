@@ -225,7 +225,6 @@ export class FederationInboundMessagePageService {
           storedContent = fromFederatedMessageContent(
             item.contentType as ContentType,
             item.content,
-            this.config.domain,
             new Map(item.assets.map((asset) => [asset.digest, asset.bytes])),
           );
         } catch {

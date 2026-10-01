@@ -99,7 +99,8 @@ export class FederationInboundFileSync {
       });
       const originDomain = rows[0]?.originDomain;
       const publisherNamespaceId = rows[0]?.publisherNamespaceId;
-      if (publisherNamespaceId && this.quota.isTripped(publisherNamespaceId)) return;
+      if (publisherNamespaceId && this.quota.isTripped(publisherNamespaceId))
+        return;
       if (rows.length > 0) await start?.(batchId);
       const results = await Promise.allSettled(
         rows.map((row) => {
@@ -162,7 +163,12 @@ export class FederationInboundFileSync {
         columns: { digest: true },
       });
       if (!have) {
-        await this.chargeQuota(progressId, row?.publisherNamespaceId, declaredBytes, row);
+        await this.chargeQuota(
+          progressId,
+          row?.publisherNamespaceId,
+          declaredBytes,
+          row,
+        );
         await this.claim(progressId, declaredBytes);
         await this.publishProgress(progressId, 0);
         await this.publishMessageProgress(progressId, true);
@@ -301,7 +307,9 @@ export class FederationInboundFileSync {
   ): Promise<void> {
     const target = await this.progressTarget(progressId);
     if (!target) return;
-    if (!this.sse.hasMediaMessageProgressSubscriber(target.threadId, target.seq))
+    if (
+      !this.sse.hasMediaMessageProgressSubscriber(target.threadId, target.seq)
+    )
       return;
     const [counts] = await this.database.db
       .select({

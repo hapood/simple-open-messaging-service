@@ -128,7 +128,9 @@ export class DurableTaskStoreService {
     const [updated] = await this.database.db
       .update(durableTask)
       .set(values)
-      .where(and(eq(durableTask.id, taskId), eq(durableTask.status, 'PROCESSING')))
+      .where(
+        and(eq(durableTask.id, taskId), eq(durableTask.status, 'PROCESSING')),
+      )
       .returning({ id: durableTask.id });
     if (!updated) {
       throw new Error(

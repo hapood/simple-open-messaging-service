@@ -32,7 +32,10 @@ describe('client message history gaps', () => {
   });
 
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
     const viewer = await seedUser(app, 'viewer');
     const peer = await seedUser(app, 'peer');
     viewerId = viewer.id;

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{json_text, open, parse_json};
-use crate::{perform_api_request, ProxyState};
+use crate::{perform_api_request, ServerSessionState};
 
 pub(super) fn normalize_message_creator(message: &mut Value) {
     if let Some(creator) = message.get_mut("creator").and_then(Value::as_object_mut) {
@@ -896,7 +896,7 @@ pub(crate) fn reduce_message_ranges(
 
 async fn query_message_backend(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     body: Value,
 ) -> Result<MessageBackendResponse, String> {
     let response = perform_api_request(
@@ -986,25 +986,15 @@ async fn read_native_message_head(
     thread_id: i64,
 ) -> Result<Option<i64>, String> {
     super::lifetime::spawn(move || {
-        let value = open()?
+        let head: Option<i64> = open()?
             .query_row(
-                "SELECT value_json FROM sync_state WHERE user_id=?1 AND key=?2",
-                params![user_id, message_head_key(thread_id)],
-                |row| row.get::<_, String>(0),
+                "SELECT message_head FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
+                params![user_id, thread_id],
+                |row| row.get(0),
             )
             .optional()
             .map_err(|error| format!("read native message head: {error}"))?;
-        value
-            .map(|json| parse_json(json))
-            .transpose()?
-            .map(|value| {
-                value
-                    .get("knownNewestSeq")
-                    .and_then(Value::as_i64)
-                    .filter(|seq| *seq >= 0)
-                    .ok_or_else(|| "native message head is invalid".to_string())
-            })
-            .transpose()
+        Ok(head)
     })
     .await
     .map_err(|error| format!("join native message head read: {error}"))?
@@ -1144,7 +1134,7 @@ pub(crate) fn history_gap_is_owned(direction: HistoryDirection, seam: i64, gap_r
 
 async fn bootstrap_message_bounds(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     thread_id: i64,
 ) -> Result<(i64, i64), String> {
     match query_message_backend(app, proxy, serde_json::json!({ "threadId": thread_id })).await? {
@@ -1165,7 +1155,7 @@ async fn bootstrap_message_bounds(
 #[allow(clippy::too_many_arguments)]
 async fn walk_native_history(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     account_epoch: u64,
     user_id: i64,
     thread_id: i64,
@@ -1468,7 +1458,7 @@ pub(crate) async fn commit_native_message_page(
 #[tauri::command]
 pub(crate) async fn native_message_history_get(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ProxyState>,
+    proxy: tauri::State<'_, ServerSessionState>,
     user_id: i64,
     thread_id: i64,
     demand: NativeHistoryDemand,
@@ -1669,35 +1659,21 @@ pub(crate) async fn native_db_put_message_head(
     .map_err(|error| format!("join message head write: {error}"))?
 }
 
-pub(crate) fn decode_deleted_hwm(value_json: &str) -> Result<i64, String> {
-    let value: Value =
-        serde_json::from_str(value_json).map_err(|e| format!("parse deleted hwm: {e}"))?;
-    match value.as_i64() {
-        Some(hwm) if hwm >= 0 => Ok(hwm),
-        _ => Err("deleted hwm must be a non-negative integer".to_string()),
-    }
-}
-
 #[tauri::command]
 pub(crate) async fn native_db_get_deleted_hwm(
     user_id: i64,
     thread_id: i64,
 ) -> Result<i64, String> {
     super::lifetime::spawn(move || {
-        let conn = open()?;
-        let key = format!("deletedHwm:{thread_id}");
-        let value = conn
+        let hwm: Option<i64> = open()?
             .query_row(
-                "SELECT value_json FROM sync_state WHERE user_id=?1 AND key=?2",
-                params![user_id, key],
-                |row| row.get::<_, String>(0),
+                "SELECT deleted_hwm FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
+                params![user_id, thread_id],
+                |row| row.get(0),
             )
             .optional()
             .map_err(|e| format!("get deleted hwm: {e}"))?;
-        match value {
-            Some(value) => decode_deleted_hwm(&value),
-            None => Ok(0),
-        }
+        Ok(hwm.unwrap_or(0))
     })
     .await
     .map_err(|e| format!("join deleted hwm read: {e}"))?
@@ -1753,9 +1729,10 @@ pub(crate) async fn native_db_apply_deleted_messages(
             )?;
         }
         tx.execute(
-            "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,?2,?3)
-             ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
-            params![user_id, format!("deletedHwm:{thread_id}"), hwm.to_string()],
+            "INSERT INTO thread_sync_state(user_id, thread_id, deleted_hwm)
+             VALUES(?1, ?2, ?3)
+             ON CONFLICT(user_id, thread_id) DO UPDATE SET deleted_hwm=excluded.deleted_hwm",
+            params![user_id, thread_id, hwm],
         )
         .map_err(|e| format!("advance deleted hwm: {e}"))?;
         tx.commit()
@@ -1763,10 +1740,6 @@ pub(crate) async fn native_db_apply_deleted_messages(
     })
     .await
     .map_err(|e| format!("join deleted-message write: {e}"))?
-}
-
-fn message_head_key(thread_id: i64) -> String {
-    format!("messageHead:{thread_id}")
 }
 
 fn update_message_head(
@@ -1778,27 +1751,20 @@ fn update_message_head(
     if incoming < 0 {
         return Err("known newest message sequence is invalid".to_string());
     }
-    let key = message_head_key(thread_id);
-    let old = tx
+    let old: Option<i64> = tx
         .query_row(
-            "SELECT value_json FROM sync_state WHERE user_id=?1 AND key=?2",
-            params![user_id, key],
-            |row| row.get::<_, String>(0),
+            "SELECT message_head FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
+            params![user_id, thread_id],
+            |row| row.get(0),
         )
         .optional()
-        .map_err(|error| format!("read message head: {error}"))?
-        .map(|json| parse_json(json).map_err(|error| format!("parse message head: {error}")))
-        .transpose()?
-        .and_then(|value| value.get("knownNewestSeq").and_then(Value::as_i64))
-        .unwrap_or_default();
-    let value = serde_json::json!({
-        "threadId": thread_id,
-        "knownNewestSeq": incoming.max(old),
-    });
+        .map_err(|error| format!("read message head: {error}"))?;
+    let next = incoming.max(old.unwrap_or_default());
     tx.execute(
-        "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,?2,?3)
-         ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
-        params![user_id, key, json_text(&value)?],
+        "INSERT INTO thread_sync_state(user_id, thread_id, message_head)
+         VALUES(?1, ?2, ?3)
+         ON CONFLICT(user_id, thread_id) DO UPDATE SET message_head=excluded.message_head",
+        params![user_id, thread_id, next],
     )
     .map_err(|error| format!("put message head: {error}"))?;
     Ok(())
@@ -2002,8 +1968,8 @@ pub(crate) async fn native_db_delete_messages_by_thread(
         )
         .map_err(|e| format!("delete thread message ranges: {e}"))?;
         tx.execute(
-            "DELETE FROM sync_state WHERE user_id=?1 AND key=?2",
-            params![user_id, message_head_key(thread_id)],
+            "DELETE FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
+            params![user_id, thread_id],
         )
         .map_err(|e| format!("delete message head: {e}"))?;
         tx.commit()

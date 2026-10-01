@@ -57,10 +57,10 @@ describe('shared background storage', () => {
         : result.states[0].unreadCount,
     ).toBe(2);
     await storage.close();
-    const page = new WebdbService(() => null);
+    const page = new WebdbStorage(() => null);
     try {
       await page.openExistingForUser(userId);
-      expect(await page.getMeta('threadFeedCursor')).toBe(1);
+      expect(await page.getSyncState('threadFeedCursor')).toBe(1);
       expect((await page.getThreadStates())[0]).toEqual(result.states[0]);
     } finally {
       await page.close();
@@ -158,7 +158,7 @@ describe('shared background storage', () => {
       storage.mergeThreadStates([{ ...snapshot, previews: undefined }], 1),
     ).rejects.toThrow(TypeError);
     expect(await (await storage.db()).get('threads', 7)).toBeUndefined();
-    expect(await storage.getMeta('threadFeedCursor')).toBeUndefined();
+    expect(await storage.getSyncState('threadFeedCursor')).toBeUndefined();
     await expect(
       storage.mergeThreadStates(
         [
@@ -306,7 +306,7 @@ describe('shared background storage', () => {
     ).rejects.toThrow('conversation identity');
     expect(await db.get('threads', 7)).toEqual(previous);
     expect(await db.get('threads', 8)).toBeUndefined();
-    expect(await storage.getMeta('threadFeedCursor')).toBe(1);
+    expect(await storage.getSyncState('threadFeedCursor')).toBe(1);
   });
 
   it('deletes the unified state and its preview and roster together', async () => {

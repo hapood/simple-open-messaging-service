@@ -78,7 +78,6 @@ describe('GroupService creation', () => {
     };
     const service = new GroupService(
       database as never,
-      {} as never,
       relationshipMutations as never,
       clientStateFeed as never,
       {} as never,

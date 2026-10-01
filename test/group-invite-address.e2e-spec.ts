@@ -101,7 +101,12 @@ describe('group invitations by public address', () => {
     });
     expect(inactive.invited).toEqual([]);
     expect(inactive.skipped).toEqual([
-      { ...address, reason: rejection.reason, code: rejection.code, message: rejection.message },
+      {
+        ...address,
+        reason: rejection.reason,
+        code: rejection.code,
+        message: rejection.message,
+      },
     ]);
   });
 });

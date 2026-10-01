@@ -28,7 +28,10 @@ describe('durable task enqueue', () => {
   afterAll(async () => mod.close());
 
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "DurableTask" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "DurableTask" RESTART IDENTITY CASCADE',
+    );
   });
 
   it('guards and rolls back checkpoint writes for a claimed task', async () => {

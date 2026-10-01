@@ -203,16 +203,15 @@ export class FederationPeerLifecycle {
     ) {
       return;
     }
-    const trustLevel =
-      !existing.active
-        ? 'unrecognized'
-        : existing.recognizesPeer && existing.localServiceAvailable
-          ? !existing.peerAcceptanceConfirmed
-            ? 'establishing'
-            : existing.remoteServiceReachable
-              ? 'available'
-              : 'degraded'
-          : 'unrecognized';
+    const trustLevel = !existing.active
+      ? 'unrecognized'
+      : existing.recognizesPeer && existing.localServiceAvailable
+        ? !existing.peerAcceptanceConfirmed
+          ? 'establishing'
+          : existing.remoteServiceReachable
+            ? 'available'
+            : 'degraded'
+        : 'unrecognized';
     await this.database.db
       .update(tables.identityNamespace)
       .set({
@@ -277,7 +276,7 @@ export class FederationPeerLifecycle {
         rootPublicKey: tables.identityNamespace.rootPublicKey,
       })
       .from(tables.identityNamespace)
-            .where(eq(tables.identityNamespace.domain, domain))
+      .where(eq(tables.identityNamespace.domain, domain))
       .limit(1);
     if (
       peer?.trustLevel !== 'halted' ||
@@ -319,7 +318,8 @@ export class FederationPeerLifecycle {
           id: tables.identityNamespace.id,
           recognizesPeer: tables.identityNamespace.recognizesPeer,
           localServiceAvailable: tables.identityNamespace.localServiceAvailable,
-          peerAcceptanceConfirmed: tables.identityNamespace.peerAcceptanceConfirmed,
+          peerAcceptanceConfirmed:
+            tables.identityNamespace.peerAcceptanceConfirmed,
         })
         .from(tables.identityNamespace)
         .where(eq(tables.identityNamespace.domain, domain))
@@ -359,5 +359,4 @@ export class FederationPeerLifecycle {
     });
     return { domain, trustLevel };
   }
-
 }

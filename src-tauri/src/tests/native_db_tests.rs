@@ -4,7 +4,7 @@ use super::relationship_projection::{
     apply_group_request_effect, apply_relationship_request_effect, update_live_request_projection,
 };
 use super::{
-    decode_deleted_hwm, history_gap_is_owned, reduce_message_ranges, validate_message_ranges,
+    history_gap_is_owned, reduce_message_ranges, validate_message_ranges,
     HistoryDirection, MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 use rusqlite::{params, Connection};
@@ -192,15 +192,6 @@ fn native_message_ranges_persist_canonical_reducer_output() {
         },
     ];
     assert!(validate_message_ranges(42, &invalid).is_err());
-}
-
-#[test]
-fn deleted_hwm_accepts_only_non_negative_integer_json() {
-    assert_eq!(decode_deleted_hwm("12").unwrap(), 12);
-    assert!(decode_deleted_hwm("\"12\"").is_err());
-    assert!(decode_deleted_hwm("\"0\"").is_err());
-    assert!(decode_deleted_hwm("\"012\"").is_err());
-    assert!(decode_deleted_hwm("-1").is_err());
 }
 
 fn test_thread_snapshot(kind: &str, feed: i64, lifecycle: &str) -> serde_json::Value {
@@ -573,17 +564,18 @@ fn native_profiles_keep_exact_revisions_and_local_subject_coordinates() {
         ("own.test", 0, 2, "Old"),
         ("third.test", 7, 3, "Mirror"),
     ] {
-        write_profile(&conn, 1, &serde_json::json!({"account":"alice","domain":domain,"namespaceId":namespace,"profileRev":rev,"name":name,"avatarDigest":null,"bio":""})).unwrap();
+        write_profile(&conn, 1, &serde_json::json!({"account":"alice","domain":domain,"publisherNamespaceId":namespace,"profileNamespaceId":namespace,"profileRev":rev,"name":name,"avatarDigest":null,"bio":""})).unwrap();
     }
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 3);
-    let names: String = conn.query_row("SELECT group_concat(name, ',') FROM (SELECT name FROM profiles WHERE domain='local' AND namespace_id=0 ORDER BY profile_rev)", [], |row| row.get(0)).unwrap();
+    let names: String = conn.query_row("SELECT group_concat(name, ',') FROM (SELECT name FROM profiles WHERE domain='local' AND profile_namespace_id=0 ORDER BY profile_rev)", [], |row| row.get(0)).unwrap();
     assert_eq!(names, "Old,New");
-    let revision = read_profile(&conn, 1, "alice", "local", 0, 3).unwrap().unwrap();
+    let revision = read_profile(&conn, 1, "alice", "local", 7, 0, 3).unwrap().unwrap();
     assert_eq!(revision, serde_json::json!({
         "account":"alice", "domain":"local", "namespaceId":0,
+        "publisherNamespaceId":7, "profileNamespaceId":0,
         "profileRev":3, "name":"New", "avatarDigest":null, "bio":"",
     }));
     assert!(!write_profile(&conn, 1, &revision).unwrap());
@@ -622,10 +614,10 @@ fn native_profile_cache_rejects_missing_text_instead_of_synthesizing_it() {
 fn native_profile_cache_rejects_a_different_avatar_for_one_revision() {
     let conn = profile_cache_db();
     super::contacts::register_namespace(&conn, 1, 0, "local").unwrap();
-    let profile = serde_json::json!({"account":"alice","domain":"local","namespaceId":0,
+    let profile = serde_json::json!({"account":"alice","domain":"local","publisherNamespaceId":0,"profileNamespaceId":0,
         "profileRev":1,"name":"Alice","avatarDigest":"a","bio":""});
     assert!(super::contacts::write_profile(&conn, 1, &profile).unwrap());
-    let changed = serde_json::json!({"account":"alice","domain":"local","namespaceId":0,
+    let changed = serde_json::json!({"account":"alice","domain":"local","publisherNamespaceId":0,"profileNamespaceId":0,
         "profileRev":1,"name":"Alice","avatarDigest":null,"bio":""});
     assert!(super::contacts::write_profile(&conn, 1, &changed).is_err());
 }

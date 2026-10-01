@@ -257,7 +257,6 @@ export class FederationPeerResourceService {
     }
   }
 
-
   private async historicalThreadMatchesRecipient(
     threadId: number,
     threadType: MessageThreadType,

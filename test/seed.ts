@@ -15,6 +15,7 @@ import {
 // user but don't care HOW they authenticated. For the process-boundary federation e2e, see
 // federation-test-helpers.ts, which uses its own Drizzle client.
 import type { INestApplication } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import {
@@ -36,6 +37,13 @@ import { PasswordHasher } from '../src/auth/password-hasher.service';
 export interface SeededUser {
   id: number;
   account: string;
+}
+
+// Root public keys must be unique per active namespace
+// (IdentityNamespace_one_epoch_per_root_key), so fake keys are derived from
+// the domain instead of reusing one constant byte per domain length.
+export function fakeRootPublicKey(domain: string): string {
+  return createHash('sha256').update(`root:${domain}`).digest('base64');
 }
 
 export async function seedFederatedPeerNamespace(
@@ -61,7 +69,7 @@ export async function seedFederatedPeerNamespace(
         .values({
           domain,
           rootKeyFingerprint: `sha256:e2e:${domain}`,
-          rootPublicKey: Buffer.alloc(32, domain.length).toString('base64'),
+          rootPublicKey: fakeRootPublicKey(domain),
           identityPinnedAt: new Date(),
           active: true,
           trustLevel: 'available',
@@ -94,9 +102,7 @@ function localEndpointFirst(
 ): number {
   const leftRemote = left.namespaceId !== 0 ? 1 : 0;
   const rightRemote = right.namespaceId !== 0 ? 1 : 0;
-  return (
-    leftRemote - rightRemote || left.account.localeCompare(right.account)
-  );
+  return leftRemote - rightRemote || left.account.localeCompare(right.account);
 }
 
 /** Resolve the fixed GROUP(A) -> USER(B) relationship pair used by roster assertions. */

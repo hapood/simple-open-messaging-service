@@ -61,7 +61,10 @@ describe('First message after friend-add is delivered (single instance)', () => 
 
   beforeEach(async () => {
     // Truncating User CASCADE-clears threads, messages, invites, etc. — a fresh graph per test.
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => {

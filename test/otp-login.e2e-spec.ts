@@ -49,7 +49,10 @@ describe('OTP login e2e', () => {
   beforeEach(async () => {
     // CASCADE on User also clears SessionToken + LoginCode (both FK→User). All three are listed so a stray
     // row can't leak between tests even if an on-delete weren't CASCADE.
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "LoginCode", "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "LoginCode", "SessionToken", "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => {

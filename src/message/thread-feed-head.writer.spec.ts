@@ -22,7 +22,7 @@ describe('mention projection in the shared head writer', () => {
   const next = { lastReadSeq: 0, messageEndSeq: 8, tombstoneEndSeq: 0 };
   const mention = (seq: number) => ({
     seq,
-    content: '{"text":"[@Reader](somfp://user/reader)"}',
+    content: '{"text":"[@Reader](somfp://user/0/reader)"}',
   });
 
   it('scans the added message interval and chooses the latest semantic mention', async () => {
@@ -130,19 +130,28 @@ describe('mention projection in the shared head writer', () => {
       ...state,
       lastMentionSeq: null,
     });
-    vi.spyOn(ThreadFeedHeadWriter, 'resolveMentionInTx').mockResolvedValue(null);
+    vi.spyOn(ThreadFeedHeadWriter, 'resolveMentionInTx').mockResolvedValue(
+      null,
+    );
     vi.spyOn(ThreadFeedHeadWriter, 'unreadDeltaInTx').mockResolvedValue(0);
     vi.spyOn(ThreadFeedHeadWriter, 'previewSeqsInTx').mockResolvedValue([]);
     const execute = vi.fn().mockResolvedValue({ rows: [] });
     await ThreadFeedHeadWriter.advanceInTx({ execute } as never, 1, {
-      threadId: 2, messageEndSeq: 6, tombstoneEndSeq: 0, profileRev: 100,
+      threadId: 2,
+      messageEndSeq: 6,
+      tombstoneEndSeq: 0,
+      profileRev: 100,
     });
     const update = new PgDialect().sqlToQuery(execute.mock.lastCall![0] as SQL);
     expect(update.sql).toContain("CASE WHEN thread.type = 'P2P'");
     expect(update.sql).toContain('WITH selected_peer_profile AS');
-    expect(update.sql).toContain('SELECT "profileRev" FROM selected_peer_profile');
+    expect(update.sql).toContain(
+      'SELECT "profileRev" FROM selected_peer_profile',
+    );
     expect(update.sql).toContain('SELECT seq FROM selected_peer_profile');
-    expect(update.sql).toContain('"profileSourceId" = CASE WHEN thread.type = \'P2P\'');
+    expect(update.sql).toContain(
+      '"profileSourceId" = CASE WHEN thread.type = \'P2P\'',
+    );
     expect(update.sql).toContain('"profileRev" IS DISTINCT FROM');
     expect(update.sql).toContain('message."creatorAccount" = viewer.account');
     expect(update.sql).toContain('message."profileNamespaceId" = 0');
@@ -157,12 +166,16 @@ describe('mention projection in the shared head writer', () => {
       lastMentionSeq: null,
       profileSourceId: 10,
     });
-    vi.spyOn(ThreadFeedHeadWriter, 'resolveMentionInTx').mockResolvedValue(null);
+    vi.spyOn(ThreadFeedHeadWriter, 'resolveMentionInTx').mockResolvedValue(
+      null,
+    );
     vi.spyOn(ThreadFeedHeadWriter, 'unreadDeltaInTx').mockResolvedValue(0);
     vi.spyOn(ThreadFeedHeadWriter, 'previewSeqsInTx').mockResolvedValue([]);
     const execute = vi.fn().mockResolvedValue({ rows: [] });
     await ThreadFeedHeadWriter.advanceInTx({ execute } as never, 1, {
-      threadId: 2, messageEndSeq: 8, tombstoneEndSeq: 0,
+      threadId: 2,
+      messageEndSeq: 8,
+      tombstoneEndSeq: 0,
     });
     const update = new PgDialect().sqlToQuery(execute.mock.lastCall![0] as SQL);
     expect(update.sql).toContain('message.seq > $');
@@ -174,8 +187,13 @@ describe('mention projection in the shared head writer', () => {
     const execute = vi.fn().mockResolvedValue({ rows: [] });
     await ThreadFeedHeadWriter.advanceGroupMetaCoordinatesInTx(
       { execute } as never,
-      { threadId: 2, userIds: [1], groupMetaFeedEndId: 7,
-        profileRev: 3, profileSourceId: 5 },
+      {
+        threadId: 2,
+        userIds: [1],
+        groupMetaFeedEndId: 7,
+        profileRev: 3,
+        profileSourceId: 5,
+      },
     );
     const update = new PgDialect().sqlToQuery(execute.mock.lastCall![0] as SQL);
     expect(update.sql).toContain('s."profileSourceId" IS NULL');

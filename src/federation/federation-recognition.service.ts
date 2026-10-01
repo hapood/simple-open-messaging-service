@@ -388,7 +388,10 @@ export class FederationRecognitionService {
     const doc = await this.discovery.fetchWellKnown(normalized);
     const now = Date.now();
     const certificate = doc.keys.find(
-      (key) => key.keyId === params.keyId && key.notBefore <= now && now < key.notAfter,
+      (key) =>
+        key.keyId === params.keyId &&
+        key.notBefore <= now &&
+        now < key.notAfter,
     );
     if (!certificate) {
       throw new BusinessException(
@@ -463,11 +466,14 @@ export class FederationRecognitionService {
       )
       .limit(1);
 
-    const requireCoordinateMatch = (epoch: { peerAssignedLocalNamespaceId: number | null }): void => {
+    const requireCoordinateMatch = (epoch: {
+      peerAssignedLocalNamespaceId: number | null;
+    }): void => {
       if (
         params.senderAssignedLocalNamespaceId !== undefined &&
         epoch.peerAssignedLocalNamespaceId !== null &&
-        params.senderAssignedLocalNamespaceId !== epoch.peerAssignedLocalNamespaceId
+        params.senderAssignedLocalNamespaceId !==
+          epoch.peerAssignedLocalNamespaceId
       ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_IDENTITY_MISMATCH,

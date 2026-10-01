@@ -9,13 +9,12 @@ const THREAD_FEED_PREVIEW_COUNT = 3;
 export interface ThreadFeedSyncResult {
   states: LocalThreadAttention[];
   cursor: number;
-  groupThreadIds: number[];
   error?: string;
 }
 
 export interface ThreadFeedSyncStorage {
   withThreadFeedLock?<T>(run: () => Promise<T>): Promise<T>;
-  getMeta(key: string): Promise<unknown>;
+  getSyncState(key: string): Promise<unknown>;
   mergeThreadStates(
     states: ThreadFeedSnapshot[],
     cursor: number,
@@ -49,7 +48,7 @@ async function syncThreadFeedUnlocked(
   _requestGroupMeta?: unknown,
   _resolveGroupMetaProfile?: unknown,
 ): Promise<ThreadFeedSyncResult> {
-  const initial = (await storage.getMeta('threadFeedCursor')) ?? 0;
+  const initial = (await storage.getSyncState('threadFeedCursor')) ?? 0;
   if (
     !Number.isInteger(initial) ||
     Number(initial) < 0 ||
@@ -112,12 +111,11 @@ async function syncThreadFeedUnlocked(
       cursor = page.scannedThrough;
       target = Math.max(target, page.threadFeedEndId);
     }
-    return { states: [...states.values()], cursor, groupThreadIds: [] };
+    return { states: [...states.values()], cursor };
   } catch (error) {
     return {
       states: [...states.values()],
       cursor,
-      groupThreadIds: [],
       error: error instanceof Error ? error.message : String(error),
     };
   }

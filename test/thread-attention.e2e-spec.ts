@@ -138,24 +138,34 @@ describe('transactional thread attention', () => {
       profile: { account: 'peer', domain: 'local', namespaceId: 0 },
     });
 
-    await db.db.update(accountThreadState)
+    await db.db
+      .update(accountThreadState)
       .set({ blocked: true })
       .where(eq(accountThreadState.accountId, userId));
     const blocked = await state();
     expect(blocked.unreadCount).toBe(0);
     expect(blocked.threadFeedId).toBeGreaterThan(initial.threadFeedId);
-    expect((await service.queryThreadFeedDelta(userId, {
-      after: initial.threadFeedId,
-    })).items[0]).toMatchObject({ blocked: true, unreadCount: 0 });
+    expect(
+      (
+        await service.queryThreadFeedDelta(userId, {
+          after: initial.threadFeedId,
+        })
+      ).items[0],
+    ).toMatchObject({ blocked: true, unreadCount: 0 });
 
-    await db.db.update(relationshipPair)
+    await db.db
+      .update(relationshipPair)
       .set({ active: false })
       .where(eq(relationshipPair.threadId, threadId));
     const revoked = await state();
     expect(revoked.threadFeedId).toBeGreaterThan(blocked.threadFeedId);
-    expect((await service.queryThreadFeedDelta(userId, {
-      after: blocked.threadFeedId,
-    })).items[0]).toMatchObject({
+    expect(
+      (
+        await service.queryThreadFeedDelta(userId, {
+          after: blocked.threadFeedId,
+        })
+      ).items[0],
+    ).toMatchObject({
       conversationState: 'READ_ONLY',
       blocked: true,
       profile: first.items[0].profile,
@@ -163,62 +173,107 @@ describe('transactional thread attention', () => {
   });
 
   it('ignores group intents for avatar revisions and advances only from group meta', async () => {
-    const [control] = await db.db.insert(groupAccount)
-      .values({ account: '!avatar-seed' }).returning();
-    const [group] = await db.db.insert(messageThread)
-      .values({ type: 'GROUP', groupAccount: control.account, groupDomain: 'local',
-        groupAccountId: control.id, updatedAt: new Date() })
+    const [control] = await db.db
+      .insert(groupAccount)
+      .values({ account: '!avatar-seed' })
       .returning();
-    await db.db.insert(relationshipPair).values({
-      kind: 'GROUP_MEMBER', threadId: group.id, active: false,
-      endpointAType: 'GROUP', endpointAAccount: control.account,
-      endpointANamespaceId: 0,
-      endpointBType: 'USER', endpointBAccount: 'reader',
-      endpointBNamespaceId: 0,
-    }).returning();
+    const [group] = await db.db
+      .insert(messageThread)
+      .values({
+        type: 'GROUP',
+        groupAccount: control.account,
+        groupDomain: 'local',
+        groupAccountId: control.id,
+        updatedAt: new Date(),
+      })
+      .returning();
+    await db.db
+      .insert(relationshipPair)
+      .values({
+        kind: 'GROUP_MEMBER',
+        threadId: group.id,
+        active: false,
+        endpointAType: 'GROUP',
+        endpointAAccount: control.account,
+        endpointANamespaceId: 0,
+        endpointBType: 'USER',
+        endpointBAccount: 'reader',
+        endpointBNamespaceId: 0,
+      })
+      .returning();
     await db.db.insert(relationshipIntent).values({
-      authorAccount: control.account, authorNamespaceId: 0,
-      receiverAccount: 'reader', receiverNamespaceId: 0,
+      authorAccount: control.account,
+      authorNamespaceId: 0,
+      receiverAccount: 'reader',
+      receiverNamespaceId: 0,
       status: 'ACCEPTED',
-      profileRev: 99, messageEndSeq: 0, tombstoneEndSeq: 0,
-      requestedAt: new Date(), expiresAt: null,
+      profileRev: 99,
+      messageEndSeq: 0,
+      tombstoneEndSeq: 0,
+      requestedAt: new Date(),
+      expiresAt: null,
     });
-    await db.db.insert(accountThreadState).values({ accountId: userId, threadId: group.id });
-    await db.db.update(relationshipPair).set({ active: true, established: true })
+    await db.db
+      .insert(accountThreadState)
+      .values({ accountId: userId, threadId: group.id });
+    await db.db
+      .update(relationshipPair)
+      .set({ active: true, established: true })
       .where(eq(relationshipPair.id, pair.id));
     const initial = await db.db.query.accountThreadState.findFirst({
       where: eq(accountThreadState.threadId, group.id),
     });
     expect(initial?.threadProfileRev).toBe(0);
-    expect((await service.queryThreadFeedDelta(userId, { after: 0 })).items
-      .find((item) => item.threadId === group.id)).toMatchObject({
-        type: 'GROUP', profile: { account: control.account, profileRev: 0 },
-      });
-
-    await db.db.insert(groupMeta).values({ threadId: group.id, metaEndId: 1, profileRev: 3 });
-    await db.db.insert(groupMetaMemberFeed).values({
-      threadId: group.id, feedId: 1, memberAccount: control.account,
-      memberDomain: 'local', operation: 'GROUP_PROFILE', body: { profileRev: 3 },
+    expect(
+      (await service.queryThreadFeedDelta(userId, { after: 0 })).items.find(
+        (item) => item.threadId === group.id,
+      ),
+    ).toMatchObject({
+      type: 'GROUP',
+      profile: { account: control.account, profileRev: 0 },
     });
-    await db.db.transaction((tx) => ThreadFeedHeadWriter.advanceGroupMetaCoordinatesInTx(tx, {
-      threadId: group.id, userIds: [userId], groupMetaFeedEndId: 1, profileRev: 3,
-      profileSourceId: 1,
-    }));
+
+    await db.db
+      .insert(groupMeta)
+      .values({ threadId: group.id, metaEndId: 1, profileRev: 3 });
+    await db.db.insert(groupMetaMemberFeed).values({
+      threadId: group.id,
+      feedId: 1,
+      memberAccount: control.account,
+      memberDomain: 'local',
+      operation: 'GROUP_PROFILE',
+      body: { profileRev: 3 },
+    });
+    await db.db.transaction((tx) =>
+      ThreadFeedHeadWriter.advanceGroupMetaCoordinatesInTx(tx, {
+        threadId: group.id,
+        userIds: [userId],
+        groupMetaFeedEndId: 1,
+        profileRev: 3,
+        profileSourceId: 1,
+      }),
+    );
     const updated = await db.db.query.accountThreadState.findFirst({
       where: eq(accountThreadState.threadId, group.id),
     });
     expect(updated?.threadProfileRev).toBe(3);
     expect(updated?.profileSourceId).toBe(1);
     expect(updated!.threadFeedId).toBeGreaterThan(initial!.threadFeedId);
-    expect((await service.queryThreadFeedDelta(userId, {
-      after: initial!.threadFeedId,
-    })).items.find((item) => item.threadId === group.id)).toMatchObject({
+    expect(
+      (
+        await service.queryThreadFeedDelta(userId, {
+          after: initial!.threadFeedId,
+        })
+      ).items.find((item) => item.threadId === group.id),
+    ).toMatchObject({
       profile: { account: control.account, profileRev: 3 },
     });
-    await db.db.update(groupMeta)
+    await db.db
+      .update(groupMeta)
       .set({ metaEndId: 2, profileRev: 1 })
       .where(eq(groupMeta.threadId, group.id));
-    await db.db.update(groupMetaMemberFeed)
+    await db.db
+      .update(groupMetaMemberFeed)
       .set({ feedId: 2, body: { profileRev: 1 } })
       .where(eq(groupMetaMemberFeed.threadId, group.id));
     await db.db.transaction((tx) =>
@@ -227,9 +282,15 @@ describe('transactional thread attention', () => {
         userIds: [userId],
       }),
     );
-    expect(await db.db.query.accountThreadState.findFirst({
-      where: eq(accountThreadState.threadId, group.id),
-    })).toMatchObject({ groupMetaFeedEndId: 2, threadProfileRev: 1, profileSourceId: 2 });
+    expect(
+      await db.db.query.accountThreadState.findFirst({
+        where: eq(accountThreadState.threadId, group.id),
+      }),
+    ).toMatchObject({
+      groupMetaFeedEndId: 2,
+      threadProfileRev: 1,
+      profileSourceId: 2,
+    });
   });
 
   it('takes the latest counterpart message revision rather than the maximum revision', async () => {

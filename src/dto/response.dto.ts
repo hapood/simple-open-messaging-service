@@ -97,7 +97,12 @@ export class ThreadFeedPreviewDto {
     },
     required: ['account', 'domain', 'namespaceId', 'profileRev'],
   })
-  sender!: { account: string; domain: string; namespaceId: number; profileRev: number };
+  sender!: {
+    account: string;
+    domain: string;
+    namespaceId: number;
+    profileRev: number;
+  };
   @ApiProperty({ enum: ['LIVE', 'USER_RETRACTION', 'MODERATION_REMOVAL'] })
   status!: 'LIVE' | 'USER_RETRACTION' | 'MODERATION_REMOVAL';
   @ApiProperty({ required: false }) text?: string;
@@ -122,7 +127,9 @@ export class ThreadFeedProfileDto {
 export class ThreadFeedStateDto {
   @ApiProperty({ enum: ['P2P', 'GROUP'] }) type!: 'P2P' | 'GROUP';
   @ApiProperty({ minimum: 0 }) authorityNamespaceId!: number;
-  @ApiProperty({ enum: ['ACTIVE', 'READ_ONLY'] }) conversationState!: 'ACTIVE' | 'READ_ONLY';
+  @ApiProperty({ enum: ['ACTIVE', 'READ_ONLY'] }) conversationState!:
+    | 'ACTIVE'
+    | 'READ_ONLY';
   @ApiProperty() blocked!: boolean;
   @ApiProperty({ enum: ['OWNER', 'ADMIN', 'MEMBER'], nullable: true })
   role!: 'OWNER' | 'ADMIN' | 'MEMBER' | null;

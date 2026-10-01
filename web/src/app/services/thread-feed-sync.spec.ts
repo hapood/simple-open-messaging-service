@@ -41,7 +41,7 @@ function storage() {
     getUnresolvedGroupMetaProfiles: vi.fn(async () => []),
     beginGroupMetaRecovery: vi.fn(async () => undefined),
     applyGroupMetaPage: vi.fn(async () => undefined),
-    getMeta: vi.fn(async () => cursor),
+    getSyncState: vi.fn(async (_key: string) => cursor),
     mergeThreadStates: vi.fn(
       async (states: ThreadFeedSnapshot[], next: number) => {
         cursor = next;
@@ -95,7 +95,6 @@ describe('thread feed executor', () => {
         ),
       ).toEqual({
         cursor: 5,
-        groupThreadIds: [],
         states: [],
       });
     }
@@ -117,7 +116,6 @@ describe('thread feed executor', () => {
       await syncThreadFeed(db, 2, repeated, groupMetaRequest, profileResolver),
     ).toEqual({
       cursor: 2,
-      groupThreadIds: [],
       states: [],
     });
     expect(repeated).not.toHaveBeenCalled();
@@ -146,10 +144,9 @@ describe('thread feed executor', () => {
     ]);
     expect(result).toEqual({
       cursor: 3,
-      groupThreadIds: [],
       states: [{ ...snapshot(3), localReadSeq: 0 }],
     });
-    expect(await db.getMeta()).toBe(3);
+    expect(await db.getSyncState('threadFeedCursor')).toBe(3);
   });
 
   it('returns committed pages on failure without retrying and resumes from durable progress on the next wake', async () => {
@@ -195,11 +192,10 @@ describe('thread feed executor', () => {
     );
     expect(result).toEqual({
       cursor: 0,
-      groupThreadIds: [],
       states: [],
       error: 'transaction failed',
     });
-    expect(await db.getMeta()).toBe(0);
+    expect(await db.getSyncState('threadFeedCursor')).toBe(0);
   });
 
   it('advances compacted empty pages and skips requests when already caught up', async () => {
@@ -209,7 +205,6 @@ describe('thread feed executor', () => {
       await syncThreadFeed(db, 5, request, groupMetaRequest, profileResolver),
     ).toEqual({
       cursor: 5,
-      groupThreadIds: [],
       states: [],
     });
     await syncThreadFeed(db, 5, request, groupMetaRequest, profileResolver);

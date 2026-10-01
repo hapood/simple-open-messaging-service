@@ -25,7 +25,7 @@ import {
 import { MemberProfileRepository } from './member-profile-store.service';
 import { FederationNamespaceService } from './federation-namespace.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { isAndroidNative, isTauri } from './runtime';
+import { isAndroidNative } from './runtime';
 import type { ThreadNotificationUpdate } from './thread-notification';
 
 import {
@@ -90,11 +90,6 @@ export class ThreadRepository {
         item.visible !== false && isThreadListFeedId(item.threadFeedId),
     ),
   );
-
-  /** Android message panes may read only after HELLO's thread-feed target is projected. */
-  private readonly _threadFeedReady = signal(!isAndroidNative());
-  readonly threadFeedReady = this._threadFeedReady.asReadonly();
-  private pendingForegroundFeedTarget: number | null = null;
 
   private readonly _status = signal<ConversationLoadStatus>('LOADING');
   readonly status = this._status.asReadonly();
@@ -198,6 +193,36 @@ export class ThreadRepository {
       this.ws.disconnect();
       this.ws.connect();
     });
+    // The database worker reports feed-drain completions directly (it used
+    // to route through the SSE worker as LOCAL_*_COMMITTED events).
+    // Browser path: the DB worker reports drain completions directly with the
+    // changed states inline — the renderer applies them incrementally and
+    // never re-reads the feed database. (Tauri walks sseSub below instead:
+    // Rust emits LOCAL_* without states and the renderer reads the diff.)
+    this.webdb.threadFeedCommitted$
+      .pipe(takeUntilDestroyed())
+      .subscribe((data) => {
+        if (data.userId !== this.userService.sessionUserId()) return;
+        void this.applyThreadStates(data.states, true);
+      });
+    this.webdb.groupMetaCommitted$
+      .pipe(takeUntilDestroyed())
+      .subscribe((data) => {
+        if (data.userId !== this.userService.sessionUserId()) return;
+        this.memberProfiles.notifyChanged(
+          data.threadIds.filter((threadId) =>
+            this._items().some(
+              (thread) => thread.type === 'GROUP' && thread.threadId === threadId,
+            ),
+          ),
+        );
+      });
+    this.webdb.stateFeedCommitted$
+      .pipe(takeUntilDestroyed())
+      .subscribe((data) => {
+        if (data.userId !== this.userService.sessionUserId()) return;
+        void this.refreshCommittedStateFeed();
+      });
     // ── thread-list DATA SSE events (the DB layer is the sole consumer) ──
     this.sseSub = this.ws.eventSubject.subscribe((m) => {
       switch (m.event) {
@@ -212,15 +237,6 @@ export class ThreadRepository {
             },
           );
           break;
-        case 'THREAD_ALIAS_APPLIED': {
-          const data = m.data as ThreadAliasApplied & { userId: number };
-          if (
-            data?.userId > 0 &&
-            data.userId === this.userService.sessionUserId()
-          )
-            this.applyThreadAlias(data);
-          break;
-        }
         case 'STATE_FEED_UPDATED':
           // SSE workers hand the wake directly to the owning database/Rust executor.
           break;
@@ -238,12 +254,6 @@ export class ThreadRepository {
               );
           break;
         }
-        case 'LOCAL_STATE_FEED_COMMITTED': {
-          const data = m.data as { userId?: number } | undefined;
-          if (data?.userId === this.userService.sessionUserId())
-            void this.refreshCommittedStateFeed();
-          break;
-        }
         case 'THREAD_FEED_UPDATED':
           // Worker/Rust owns the feed. The renderer only observes its local completion.
           break;
@@ -255,23 +265,15 @@ export class ThreadRepository {
               console.warn('[profile] local materialization failed', error),
             );
           break;
-        case 'LOCAL_THREAD_FEED_COMMITTED': {
-          const data = m.data as
-            | {
-                userId?: number;
-                cursor?: number;
-                changes?: Array<'THREADS' | 'GROUP_META'>;
-                groupThreadIds?: number[];
-              }
-            | undefined;
-          if (data?.userId === this.userService.sessionUserId()) {
-            const groupProjectionChanged = data.changes?.some(
-              (change) => change === 'GROUP_META',
-            );
-            void this.refreshCommittedThreadFeed(
-              groupProjectionChanged ? data.groupThreadIds : undefined,
-            ).finally(() => this.publishForegroundFeedReady());
-          }
+        // ── Tauri only: Rust emits the thread-alias side effect separately
+        // from the thread-feed states; the renderer applies it inline. ──
+        case 'THREAD_ALIAS_APPLIED': {
+          const data = m.data as ThreadAliasApplied & { userId: number };
+          if (
+            data?.userId > 0 &&
+            data.userId === this.userService.sessionUserId()
+          )
+            this.applyThreadAlias(data);
           break;
         }
       }
@@ -356,30 +358,14 @@ export class ThreadRepository {
    * across users. Resets {@link _status} to LOADING so the freshly-mounted list re-loads on the next HELLO.
    */
   private readonly onAppVisibilityChange = (): void => {
-    if (document.visibilityState !== 'visible') {
-      this._threadFeedReady.set(false);
-      this.pendingForegroundFeedTarget = null;
-      return;
-    }
+    if (document.visibilityState !== 'visible') return;
     // The native stream can have been stopped in the background. Reconnect for a fresh
     // HELLO/feed ceiling before a resident or newly opened message pane resumes reads.
     this.ws.refreshHandshake();
   };
 
-  private publishForegroundFeedReady(): void {
-    if (
-      this.pendingForegroundFeedTarget !== null &&
-      document.visibilityState === 'visible' &&
-      (this.threadFeedCursor ?? -1) >= this.pendingForegroundFeedTarget
-    ) {
-      this._threadFeedReady.set(true);
-    }
-  }
-
   private reset(): void {
     this.sessionEpoch++;
-    this.pendingForegroundFeedTarget = null;
-    this._threadFeedReady.set(!isAndroidNative());
     this.threadStates.clear();
     this.confirmedAliases.clear();
     this.projectionTokens.clear();
@@ -392,7 +378,6 @@ export class ThreadRepository {
     this.localStableReadSeq.clear();
     this.pendingUnknownContentHeads.clear();
     this.threadFeedCursor = undefined;
-    this.threadSync = this.makeThreadSyncFlight();
     // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
   }
 
@@ -453,12 +438,23 @@ export class ThreadRepository {
   /** Set/clear the open thread (UI layer drives this on open/close; used for unread suppression). */
   async setOpenThread(threadId: number | undefined): Promise<void> {
     this._openThreadId.set(threadId);
-    if (threadId !== undefined) {
-      const target =
-        attentionSnapshot(this.threadStates.get(threadId))?.tombstoneEndSeq ??
-        0;
-      await this.messageRepo.openTombstoneStream(threadId, target);
+    if (threadId === undefined) {
+      // Stop signal: the worker finishes the current page and commits it,
+      // then the guard prevents the next page.
+      await this.webdb.drainThreadMisc(null, null, null);
+      return;
     }
+    const snapshot = attentionSnapshot(this.threadStates.get(threadId));
+    const groupMetaEndId = snapshot?.groupMetaFeedEndId ?? '0';
+    const tombstoneEndSeq = snapshot?.tombstoneEndSeq ?? 0;
+    // Open the thread and fire both drains concurrently in one worker
+    // message. The worker reports committed tombstone pages via
+    // tombstoneCommitted$ → deletedSignal$ / slotsChanged.
+    await this.webdb.drainThreadMisc(
+      threadId,
+      groupMetaEndId,
+      tombstoneEndSeq,
+    );
   }
 
   /** Resolve the ConversationItem for a thread the caller knows exists, waiting for a reload if it is not
@@ -510,10 +506,11 @@ export class ThreadRepository {
     if (changed) void this.persistThread(changed);
   }
 
-  /** Successful HTTP acknowledgements refresh names immediately without advancing the durable cursor. */
+  /** Successful HTTP acknowledgements refresh names immediately; the backend
+   *  fan-out pushes a THREAD_FEED_UPDATED wake whose committed states arrive
+   *  via thread-feed-committed / LOCAL_THREAD_FEED_COMMITTED. */
   confirmThreadAlias(result: ThreadAliasApplied): void {
     this.publishThreadAlias(result);
-    if (!isTauri()) void this.syncThreadFeed(result.threadFeedId);
   }
 
   private publishThreadAlias(result: ThreadAliasApplied): void {
@@ -827,11 +824,6 @@ export class ThreadRepository {
   }
 
   private threadFeedCursor: number | undefined;
-  /** Thread-feed drain scheduler: joins concurrent targets (max merge),
-   *  runs one trailing round when a target lands mid-drain. Replaced on
-   *  session reset so a queued trailing round never crosses sessions; the
-   *  epoch guard inside each round is the hard boundary. */
-  private threadSync = this.makeThreadSyncFlight();
 
   /** HELLO (the SSE connect handshake) — the network-refresh half of boot (the cache-paint is owned by
    *  {@link load}, which eager-paints from the IDB cache before HELLO lands). Carries the caller's userId
@@ -848,9 +840,6 @@ export class ThreadRepository {
       d.threadFeedEndId < 0
     )
       return;
-    if (isAndroidNative() && document.visibilityState === 'visible') {
-      this._threadFeedReady.set(false);
-    }
     // 1. Establish the session — opens the per-user IDB on HELLO's userId (cold start: first open; warm
     //    start: already opened by restoreSession's restoreWebdb, idempotent here). The profile fetch is
     //    gated async inside establishSession. The cache-paint is NOT repeated here — load() already eager-
@@ -875,7 +864,7 @@ export class ThreadRepository {
     // HELLO can race the thread-list mount. It awaits the account-level thread-init barrier, but does
     // not provide or own the deletion HWM; reconnects reuse the persisted result.
     if (this.threadFeedCursor === undefined) {
-      const cursor = await this.webdb.getMeta('threadFeedCursor');
+      const cursor = await this.webdb.getSyncState('threadFeedCursor');
       if (epoch !== this.sessionEpoch) return;
       this.threadFeedCursor = typeof cursor === 'number' ? cursor : 0;
     }
@@ -890,22 +879,12 @@ export class ThreadRepository {
     }
     if (port) this.ws.attachThreadFeed(port, d.userId);
     // HELLO is a memory event. The worker/Rust executor commits the state feed,
-    // then publishes LOCAL_STATE_FEED_COMMITTED; the UI only reads its projection.
+    // then reports state-feed-committed; the UI only reads its projection.
     await this.refreshCommittedStateFeed();
     if (epoch !== this.sessionEpoch) return;
-    if (isAndroidNative() && document.visibilityState === 'visible')
-      this.pendingForegroundFeedTarget = Math.max(
-        this.pendingForegroundFeedTarget ?? 0,
-        d.threadFeedEndId,
-      );
     // The HELLO wake reaches the worker/Rust independently. A concurrent completion also
-    // delivers LOCAL_THREAD_FEED_COMMITTED after the cursor and Group Meta pages commit.
-    await this.refreshCommittedThreadFeed(
-      this._items()
-        .filter((item) => item.type === 'GROUP')
-        .map((item) => item.threadId),
-    );
-    this.publishForegroundFeedReady();
+    // delivers thread-feed-committed after the cursor and Group Meta pages commit.
+    await this.refreshCommittedThreadFeed();
   }
 
   private async refreshCommittedStateFeed(): Promise<void> {
@@ -921,49 +900,13 @@ export class ThreadRepository {
     this.applyItems(items);
   }
 
-  private makeThreadSyncFlight(): TrailingSingleFlight<number> {
-    return new TrailingSingleFlight<number>(async (target) => {
-      const epoch = this.sessionEpoch;
-      try {
-        while (
-          this.threadFeedCursor !== undefined &&
-          this.threadFeedCursor < target
-        ) {
-          const result = await this.webdb.syncThreadFeed(
-            target,
-            this.threadFeedCursor,
-          );
-          if (epoch !== this.sessionEpoch) return;
-          await this.refreshCommittedThreadFeed(result.groupThreadIds);
-          if (epoch !== this.sessionEpoch) return;
-          if (result.error) throw new Error(result.error);
-        }
-      } catch (error) {
-        console.warn(
-          '[thread-feed] sync failed; next wake or HELLO retries',
-          error,
-        );
-      } finally {
-        if (epoch === this.sessionEpoch) this.publishForegroundFeedReady();
-      }
-    }, Math.max);
-  }
-
-  private syncThreadFeed(target: number): Promise<void> {
-    if (!Number.isInteger(target) || target < 0) return Promise.resolve();
-    if (this.threadFeedCursor === undefined) return Promise.resolve();
-    return this.threadSync.trigger(target);
-  }
-
   async refreshBackgroundThreadFeed(userId: number): Promise<void> {
     if (userId !== this.userService.sessionUserId()) return;
     await this.refreshCommittedThreadFeed();
   }
 
   /** Completion wakes never initiate HTTP, including after a partially successful background drain. */
-  private async refreshCommittedThreadFeed(
-    committedGroupThreadIds: readonly number[] = [],
-  ): Promise<void> {
+  private async refreshCommittedThreadFeed(): Promise<void> {
     if (this.threadFeedCursor === undefined) return;
     const epoch = this.sessionEpoch;
     try {
@@ -975,14 +918,6 @@ export class ThreadRepository {
       if (epoch !== this.sessionEpoch) return;
       await this.applyThreadStates(changes.states, true);
       if (epoch !== this.sessionEpoch) return;
-      const groupThreadIds = committedGroupThreadIds.filter(
-        (threadId) =>
-          Number.isSafeInteger(threadId) &&
-          this._items().some(
-            (thread) => thread.type === 'GROUP' && thread.threadId === threadId,
-          ),
-      );
-      this.memberProfiles.notifyChanged(groupThreadIds);
       this.threadFeedCursor = Math.max(
         this.threadFeedCursor ?? 0,
         changes.cursor,
@@ -1045,11 +980,18 @@ export class ThreadRepository {
           this.pendingUnknownContentHeads.delete(state.threadId);
           this.applyContentHeadToKnownThread(pending);
         }
+        // Drain-open feedback loop: a committed state for the open thread
+        // re-arms the per-thread Group Meta + tombstone drains with the new
+        // coordinates. The worker's drains coalesce (same target → HWM already
+        // current → no-op → no further notification), so this terminates.
         if (this._openThreadId() === state.threadId)
-          void this.messageRepo.updateTombstoneTarget(
-            state.threadId,
-            snapshot.tombstoneEndSeq,
-          );
+          void this.webdb
+            .drainThreadMisc(
+              state.threadId,
+              snapshot.groupMetaFeedEndId,
+              snapshot.tombstoneEndSeq,
+            )
+            .catch(() => undefined);
       }
       const item = await this.projectThread(state.threadId);
       if (notify && item && snapshot)

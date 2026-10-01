@@ -64,9 +64,7 @@ export class FederationGroupMetaClient {
 }
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
-  return (
-    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
-  );
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function validatePage(
@@ -124,8 +122,5 @@ function mapCursorUnavailable(error: unknown): Error {
     resumeBefore <= resumeAfter
   )
     return new Error('invalid group-meta recovery window');
-  return new RemoteGroupMetaCursorUnavailableError(
-    resumeAfter,
-    resumeBefore,
-  );
+  return new RemoteGroupMetaCursorUnavailableError(resumeAfter, resumeBefore);
 }

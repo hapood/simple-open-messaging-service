@@ -13,9 +13,8 @@ import {
 const friendInput: FriendIntentProjectionInput = {
   namespaceId: 12,
   account: 'alice',
-  domain: 'local',
   subjectAccount: 'bob',
-  subjectDomain: 'remote.test',
+  subjectNamespaceId: 12,
   status: 'REQUESTED',
   direction: 'OUTGOING',
   localThreadId: 7,
@@ -35,8 +34,6 @@ const friendInput: FriendIntentProjectionInput = {
 
 const groupInput: GroupInviteProjectionInput = {
   namespaceId: 0,
-  account: '!group',
-  domain: 'local',
   status: 'REQUESTED',
   note: '',
   requestedAt: 1_000,
@@ -46,8 +43,6 @@ const groupInput: GroupInviteProjectionInput = {
   group: {
     namespaceId: 0,
     account: '!group',
-    domain: 'local',
-    isLocal: true,
     name: 'Group',
     avatar: '',
     description: '',
@@ -140,7 +135,7 @@ describe('request projection effects', () => {
       2_000,
     ).record!;
     expect(request).toMatchObject({
-      key: groupRequestKey(0, 'local', '!group', 'INCOMING'),
+      key: groupRequestKey(0, '!group', 'INCOMING'),
       kind: 'GROUP',
       direction: 'INCOMING',
       status: 'REQUESTED',

@@ -116,11 +116,10 @@ describe('federated Address friend requests', () => {
       .limit(1);
     expect(requesterShell).toBeDefined();
 
-    const aliceNamespaceOnB = (
-      await appB.database.query.identityNamespace.findFirst({
+    const aliceNamespaceOnB =
+      (await appB.database.query.identityNamespace.findFirst({
         where: eq(identityNamespace.domain, FED_DOMAIN_A),
-      })
-    )!;
+      }))!;
     const incoming = await vi.waitFor(
       async () => {
         const rows = await appB.database.execute<{
@@ -298,10 +297,22 @@ describe('federated Address friend requests', () => {
     const readRequest = () =>
       appA.database.query.relationshipIntent.findFirst({
         where: and(
-          eq(relationshipIntent.authorAccount, relationship.firstEndpoint.account),
-          eq(relationshipIntent.authorNamespaceId, relationship.firstEndpoint.namespaceId),
-          eq(relationshipIntent.receiverAccount, relationship.secondEndpoint.account),
-          eq(relationshipIntent.receiverNamespaceId, relationship.secondEndpoint.namespaceId),
+          eq(
+            relationshipIntent.authorAccount,
+            relationship.firstEndpoint.account,
+          ),
+          eq(
+            relationshipIntent.authorNamespaceId,
+            relationship.firstEndpoint.namespaceId,
+          ),
+          eq(
+            relationshipIntent.receiverAccount,
+            relationship.secondEndpoint.account,
+          ),
+          eq(
+            relationshipIntent.receiverNamespaceId,
+            relationship.secondEndpoint.namespaceId,
+          ),
         ),
       });
     const before = await readRequest();
@@ -353,9 +364,18 @@ describe('federated Address friend requests', () => {
       return await appB.database.query.relationshipIntent.findFirst({
         where: and(
           eq(relationshipIntent.authorAccount, mirrored.secondEndpoint.account),
-          eq(relationshipIntent.authorNamespaceId, mirrored.secondEndpoint.namespaceId),
-          eq(relationshipIntent.receiverAccount, mirrored.firstEndpoint.account),
-          eq(relationshipIntent.receiverNamespaceId, mirrored.firstEndpoint.namespaceId),
+          eq(
+            relationshipIntent.authorNamespaceId,
+            mirrored.secondEndpoint.namespaceId,
+          ),
+          eq(
+            relationshipIntent.receiverAccount,
+            mirrored.firstEndpoint.account,
+          ),
+          eq(
+            relationshipIntent.receiverNamespaceId,
+            mirrored.firstEndpoint.namespaceId,
+          ),
         ),
       });
     };
@@ -618,16 +638,40 @@ describe('federated Address friend requests', () => {
         const intents = await appB.database.query.relationshipIntent.findMany({
           where: or(
             and(
-              eq(relationshipIntent.authorAccount, relationship.groupEndpoint.account),
-              eq(relationshipIntent.authorNamespaceId, relationship.groupEndpoint.namespaceId),
-              eq(relationshipIntent.receiverAccount, relationship.memberEndpoint.account),
-              eq(relationshipIntent.receiverNamespaceId, relationship.memberEndpoint.namespaceId),
+              eq(
+                relationshipIntent.authorAccount,
+                relationship.groupEndpoint.account,
+              ),
+              eq(
+                relationshipIntent.authorNamespaceId,
+                relationship.groupEndpoint.namespaceId,
+              ),
+              eq(
+                relationshipIntent.receiverAccount,
+                relationship.memberEndpoint.account,
+              ),
+              eq(
+                relationshipIntent.receiverNamespaceId,
+                relationship.memberEndpoint.namespaceId,
+              ),
             ),
             and(
-              eq(relationshipIntent.authorAccount, relationship.memberEndpoint.account),
-              eq(relationshipIntent.authorNamespaceId, relationship.memberEndpoint.namespaceId),
-              eq(relationshipIntent.receiverAccount, relationship.groupEndpoint.account),
-              eq(relationshipIntent.receiverNamespaceId, relationship.groupEndpoint.namespaceId),
+              eq(
+                relationshipIntent.authorAccount,
+                relationship.memberEndpoint.account,
+              ),
+              eq(
+                relationshipIntent.authorNamespaceId,
+                relationship.memberEndpoint.namespaceId,
+              ),
+              eq(
+                relationshipIntent.receiverAccount,
+                relationship.groupEndpoint.account,
+              ),
+              eq(
+                relationshipIntent.receiverNamespaceId,
+                relationship.groupEndpoint.namespaceId,
+              ),
             ),
           ),
         });
@@ -686,16 +730,40 @@ describe('federated Address friend requests', () => {
         const intents = await appA.database.query.relationshipIntent.findMany({
           where: or(
             and(
-              eq(relationshipIntent.authorAccount, relation.firstEndpoint.account),
-              eq(relationshipIntent.authorNamespaceId, relation.firstEndpoint.namespaceId),
-              eq(relationshipIntent.receiverAccount, relation.secondEndpoint.account),
-              eq(relationshipIntent.receiverNamespaceId, relation.secondEndpoint.namespaceId),
+              eq(
+                relationshipIntent.authorAccount,
+                relation.firstEndpoint.account,
+              ),
+              eq(
+                relationshipIntent.authorNamespaceId,
+                relation.firstEndpoint.namespaceId,
+              ),
+              eq(
+                relationshipIntent.receiverAccount,
+                relation.secondEndpoint.account,
+              ),
+              eq(
+                relationshipIntent.receiverNamespaceId,
+                relation.secondEndpoint.namespaceId,
+              ),
             ),
             and(
-              eq(relationshipIntent.authorAccount, relation.secondEndpoint.account),
-              eq(relationshipIntent.authorNamespaceId, relation.secondEndpoint.namespaceId),
-              eq(relationshipIntent.receiverAccount, relation.firstEndpoint.account),
-              eq(relationshipIntent.receiverNamespaceId, relation.firstEndpoint.namespaceId),
+              eq(
+                relationshipIntent.authorAccount,
+                relation.secondEndpoint.account,
+              ),
+              eq(
+                relationshipIntent.authorNamespaceId,
+                relation.secondEndpoint.namespaceId,
+              ),
+              eq(
+                relationshipIntent.receiverAccount,
+                relation.firstEndpoint.account,
+              ),
+              eq(
+                relationshipIntent.receiverNamespaceId,
+                relation.firstEndpoint.namespaceId,
+              ),
             ),
           ),
         });
@@ -735,9 +803,15 @@ describe('federated Address friend requests', () => {
           await appB.database.query.relationshipIntent.findFirst({
             where: and(
               eq(relationshipIntent.authorAccount, rel.secondEndpoint.account),
-              eq(relationshipIntent.authorNamespaceId, rel.secondEndpoint.namespaceId),
+              eq(
+                relationshipIntent.authorNamespaceId,
+                rel.secondEndpoint.namespaceId,
+              ),
               eq(relationshipIntent.receiverAccount, rel.firstEndpoint.account),
-              eq(relationshipIntent.receiverNamespaceId, rel.firstEndpoint.namespaceId),
+              eq(
+                relationshipIntent.receiverNamespaceId,
+                rel.firstEndpoint.namespaceId,
+              ),
             ),
           }),
         ).toMatchObject({ status: 'REQUESTED' });

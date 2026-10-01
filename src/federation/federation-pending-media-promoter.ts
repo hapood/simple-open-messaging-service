@@ -193,7 +193,10 @@ export class FederationPendingMediaPromoter {
           eq(tables.pendingMedia.direction, 'INBOUND'),
           inArray(tables.pendingMedia.status, ['pending', 'downloading']),
           eq(tables.message.threadId, effect.threadId),
-          eq(tables.pendingMedia.publisherNamespaceId, effect.publisherNamespaceId),
+          eq(
+            tables.pendingMedia.publisherNamespaceId,
+            effect.publisherNamespaceId,
+          ),
           eq(tables.pendingMedia.dependsOnOriginSeq, effect.originSeq),
         ),
       );

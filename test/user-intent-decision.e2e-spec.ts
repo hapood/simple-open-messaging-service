@@ -188,16 +188,40 @@ describe('user intent decision', () => {
           .findMany({
             where: or(
               and(
-                eq(tables.relationshipIntent.authorAccount, firstEndpoint.account),
-                eq(tables.relationshipIntent.authorNamespaceId, firstEndpoint.namespaceId),
-                eq(tables.relationshipIntent.receiverAccount, secondEndpoint.account),
-                eq(tables.relationshipIntent.receiverNamespaceId, secondEndpoint.namespaceId),
+                eq(
+                  tables.relationshipIntent.authorAccount,
+                  firstEndpoint.account,
+                ),
+                eq(
+                  tables.relationshipIntent.authorNamespaceId,
+                  firstEndpoint.namespaceId,
+                ),
+                eq(
+                  tables.relationshipIntent.receiverAccount,
+                  secondEndpoint.account,
+                ),
+                eq(
+                  tables.relationshipIntent.receiverNamespaceId,
+                  secondEndpoint.namespaceId,
+                ),
               ),
               and(
-                eq(tables.relationshipIntent.authorAccount, secondEndpoint.account),
-                eq(tables.relationshipIntent.authorNamespaceId, secondEndpoint.namespaceId),
-                eq(tables.relationshipIntent.receiverAccount, firstEndpoint.account),
-                eq(tables.relationshipIntent.receiverNamespaceId, firstEndpoint.namespaceId),
+                eq(
+                  tables.relationshipIntent.authorAccount,
+                  secondEndpoint.account,
+                ),
+                eq(
+                  tables.relationshipIntent.authorNamespaceId,
+                  secondEndpoint.namespaceId,
+                ),
+                eq(
+                  tables.relationshipIntent.receiverAccount,
+                  firstEndpoint.account,
+                ),
+                eq(
+                  tables.relationshipIntent.receiverNamespaceId,
+                  firstEndpoint.namespaceId,
+                ),
               ),
             ),
           })

@@ -130,6 +130,14 @@ describe('UserService profile refresh', () => {
               .mockResolvedValue(undefined),
             getMeta: vi.fn().mockName('getMeta').mockResolvedValue(undefined),
             putMeta: vi.fn().mockName('putMeta').mockResolvedValue(undefined),
+            getSyncState: vi
+              .fn()
+              .mockName('getSyncState')
+              .mockResolvedValue(undefined),
+            putSyncState: vi
+              .fn()
+              .mockName('putSyncState')
+              .mockResolvedValue(undefined),
             cleanupRelationshipRequests: vi
               .fn()
               .mockName('cleanupRelationshipRequests')
@@ -300,6 +308,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     closeAndDelete: Mock;
     getMeta: Mock;
     putMeta: Mock;
+    getSyncState: Mock;
+    putSyncState: Mock;
     cleanupRelationshipRequests: Mock;
   };
 
@@ -329,10 +339,6 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
               .fn()
               .mockName('closeAndDelete')
               .mockResolvedValue(undefined),
-            // Cache-hit self profile for {id:1, profileRev:0} → gateSelfProfile short-circuits with NO
-            // fetch in these tests (the profile gate is orthogonal — covered by the refresh suite above).
-            // A user/rev that cache-misses (account switch to id:2) falls through to a real fetch, matched
-            // explicitly in that test.
             getMeta: vi.fn().mockName('getMeta').mockResolvedValue({
               id: 1,
               profileRev: 0,
@@ -342,6 +348,14 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
               domain: 'local',
             }),
             putMeta: vi.fn().mockName('putMeta').mockResolvedValue(undefined),
+            getSyncState: vi
+              .fn()
+              .mockName('getSyncState')
+              .mockResolvedValue(undefined),
+            putSyncState: vi
+              .fn()
+              .mockName('putSyncState')
+              .mockResolvedValue(undefined),
             cleanupRelationshipRequests: vi
               .fn()
               .mockName('cleanupRelationshipRequests')

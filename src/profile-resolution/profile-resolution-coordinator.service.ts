@@ -326,7 +326,11 @@ export class ProfileResolutionCoordinatorService {
       key.rev,
     );
     return profile
-      ? this.clientProfile(profile, key.publisherNamespaceId, key.profileNamespaceId)
+      ? this.clientProfile(
+          profile,
+          key.publisherNamespaceId,
+          key.profileNamespaceId,
+        )
       : null;
   }
 

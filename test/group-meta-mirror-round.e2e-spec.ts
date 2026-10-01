@@ -46,7 +46,7 @@ describe('mirror Group Meta rounds', () => {
   const group: MirrorGroupAddress = {
     account: groupAccount,
     domain: originDomain,
-    namespaceId: 0,
+    publisherNamespaceId: 0,
   };
 
   beforeAll(async () => {
@@ -59,7 +59,7 @@ describe('mirror Group Meta rounds', () => {
       database.db,
       originDomain,
     );
-    group.namespaceId = originNamespaceId;
+    group.publisherNamespaceId = originNamespaceId;
 
     const [member] = await database.db
       .insert(user)
@@ -72,7 +72,6 @@ describe('mirror Group Meta rounds', () => {
     localUserId = member.id;
     await database.db.insert(profileTable).values({
       account: localMemberAccount,
-      domain: 'local',
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,
@@ -158,6 +157,7 @@ describe('mirror Group Meta rounds', () => {
     account: memberAccount,
     domain: originDomain,
     role: role as 'MEMBER',
+    profileNamespaceId: originNamespaceId,
     profileRev: 1,
   });
 
@@ -167,7 +167,10 @@ describe('mirror Group Meta rounds', () => {
       operation: 'MEMBER_DEPART',
       account: memberAccount,
       domain: originDomain,
-    }) as MirrorMetaReplicatedItem;
+      role: 'MEMBER',
+      profileNamespaceId: originNamespaceId,
+      profileRev: 1,
+    }) satisfies MirrorMetaReplicatedItem;
 
   const roster = async () =>
     (
@@ -175,7 +178,7 @@ describe('mirror Group Meta rounds', () => {
         .select({
           feedId: groupMetaMemberFeed.feedId,
           memberAccount: groupMetaMemberFeed.memberAccount,
-          memberDomain: groupMetaMemberFeed.memberDomain,
+          profileNamespaceId: groupMetaMemberFeed.profileNamespaceId,
           operation: groupMetaMemberFeed.operation,
           body: groupMetaMemberFeed.body,
         })
@@ -228,7 +231,7 @@ describe('mirror Group Meta rounds', () => {
       threadId,
       feedId: 1,
       memberAccount: 'stale-member',
-      memberDomain: originDomain,
+      profileNamespaceId: originNamespaceId,
       operation: 'MEMBER_UPSERT',
       body: { role: 'MEMBER', profileRev: 1 },
     });
@@ -236,7 +239,12 @@ describe('mirror Group Meta rounds', () => {
       memberUpsert(2, 'peer-one', 'OWNER'),
       memberUpsert(3, 'peer-two'),
       memberUpsert(5, 'peer-three'),
-      { feedId: 9, operation: 'GROUP_PROFILE', profileRev: 4 },
+      {
+        feedId: 9,
+        operation: 'GROUP_PROFILE',
+        profileNamespaceId: originNamespaceId,
+        profileRev: 4,
+      },
     ];
     await expect(
       database.db.transaction((tx) =>
@@ -297,7 +305,7 @@ describe('mirror Group Meta rounds', () => {
       {
         feedId: 9,
         memberAccount: groupAccount,
-        memberDomain: originDomain,
+        profileNamespaceId: originNamespaceId,
         body: { profileRev: 4 },
       },
     );
@@ -380,7 +388,7 @@ describe('mirror Group Meta rounds', () => {
       member: {
         account: 'peer-one',
         domain: originDomain,
-        namespaceId: originNamespaceId,
+        profileNamespaceId: originNamespaceId,
         profileRev: 1,
       },
     });
@@ -405,7 +413,7 @@ describe('mirror Group Meta rounds', () => {
     expect(JSON.parse(transitions[1]!.content as string).member).toMatchObject({
       account: 'peer-one',
       domain: originDomain,
-      namespaceId: originNamespaceId,
+      profileNamespaceId: originNamespaceId,
       profileRev: 1,
     });
     expect(
@@ -791,6 +799,7 @@ describe('mirror Group Meta rounds', () => {
           account: localMemberAccount,
           domain: 'local',
           role: 'MEMBER',
+          profileNamespaceId: 0,
           profileRev: 1,
         },
         through: 5,
@@ -819,9 +828,10 @@ describe('mirror Group Meta rounds', () => {
             operation,
             account: localMemberAccount,
             domain: 'local',
+            profileNamespaceId: 0,
             ...(operation === 'MEMBER_UPSERT'
               ? { role: 'MEMBER' as const, profileRev: 1 }
-              : {}),
+              : { role: 'MEMBER' as const, profileRev: 1 }),
           },
           through: 5,
           reachedBoundary: false,
@@ -867,6 +877,7 @@ describe('mirror Group Meta rounds', () => {
           account: localMemberAccount,
           domain: 'local',
           role: 'MEMBER',
+          profileNamespaceId: 0,
           profileRev: 2,
         },
         through: 5,
@@ -892,6 +903,9 @@ describe('mirror Group Meta rounds', () => {
           operation: 'MEMBER_DEPART',
           account: localMemberAccount,
           domain: 'local',
+          role: 'MEMBER',
+          profileNamespaceId: 0,
+          profileRev: 1,
         },
         through: 5,
         reachedBoundary: false,

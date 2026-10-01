@@ -127,7 +127,7 @@ export function mirrorIntentCompactionKey(input: {
 
 /** The invitee's RELATIONSHIP_INTENT feed body for a received group intent:
  * status, note, timestamps, thread, and
- * the group presentation, isLocal false). `established` mirrors the pair's
+ * the group presentation). `established` mirrors the pair's
  * sticky flag: a kicked former member must read true (sibling CTE reads see
  * the pre-statement snapshot, so a same-statement deactivation stays sticky). */
 export function mirrorIntentFeedBodySql(params: {
@@ -150,7 +150,7 @@ export function mirrorIntentFeedBodySql(params: {
       'established', ${params.established},
       'threadId', ${params.threadId}::integer,
       'group', jsonb_build_object('account', ${params.presentation.groupAccount}::text,
-        'domain', ${params.presentation.groupDomain}::text, 'isLocal', false,
+        'namespaceId', ${params.presentation.groupNamespaceId}::integer,
         'name', ${params.presentation.groupName}::text, 'avatar', ${params.presentation.groupAvatar}::text,
         'description', ${params.presentation.groupDescription}::text,
         'profileRev', ${params.presentation.groupProfileRev}::integer)) || ${provenance}`;

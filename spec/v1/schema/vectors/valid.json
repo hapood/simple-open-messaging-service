@@ -148,7 +148,8 @@
       "name": "feed head wake-up",
       "schema": "urn:somfp:v1:identity#/$defs/feedHeadHint",
       "value": {
-        "stateFeedEndId": "12"
+        "stateFeedEndId": "12",
+        "profileNamespaceFeedEndId": "12"
       }
     },
     {

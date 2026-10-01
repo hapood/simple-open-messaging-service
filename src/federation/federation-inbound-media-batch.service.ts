@@ -178,7 +178,9 @@ export class FederationInboundMediaBatchService {
       columns: { threadId: true, seq: true },
     });
     if (!message) return null;
-    if (!this.sse.hasMediaMessageProgressSubscriber(message.threadId, message.seq))
+    if (
+      !this.sse.hasMediaMessageProgressSubscriber(message.threadId, message.seq)
+    )
       return null;
     const [counts] = await this.database.db
       .select({

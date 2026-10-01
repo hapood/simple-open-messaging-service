@@ -10,7 +10,6 @@ import type { S2SAddress } from './federation-address.js';
 /** Resolves local and foreign federation identities without owning profile materialization. */
 @Injectable()
 export class FederationUserDirectoryService {
-
   constructor(private readonly database: DatabaseService) {}
 
   async findLocalUserId(account: string): Promise<number | null> {

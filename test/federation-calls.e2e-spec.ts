@@ -293,7 +293,11 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       const localBusy = await request(appB.baseUrl)
         .post('/api/v1/calls/initiate')
         .set('Authorization', `Bearer ${tokenFrank}`)
-        .send({ callSid: randomUUID(), threadId: frankThreadId, callType: 'AUDIO' });
+        .send({
+          callSid: randomUUID(),
+          threadId: frankThreadId,
+          callType: 'AUDIO',
+        });
       expect(localBusy.body.code).toBe(BusinessCode.CALL_BUSY);
 
       const busy = await request(appA.baseUrl)

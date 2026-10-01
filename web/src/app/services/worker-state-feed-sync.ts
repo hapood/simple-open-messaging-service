@@ -1,7 +1,7 @@
 import type { ClientStateFeedItem } from './user.service';
 import type { WebdbStorage } from './webdb-storage';
 
-type Storage = Pick<WebdbStorage, 'getMeta' | 'applyStateFeedPage'>;
+type Storage = Pick<WebdbStorage, 'getSyncState' | 'applyStateFeedPage'>;
 type Page = {
   mode: 'full' | 'delta';
   items: ClientStateFeedItem[];
@@ -59,11 +59,11 @@ export async function synchronizeStateFeed(
   request: (query: Query) => Promise<Envelope>,
 ): Promise<number> {
   if (!safeCursor(wake)) throw new Error('invalid state-feed target');
-  const persisted = await storage.getMeta('stateFeedId');
+  const persisted = await storage.getSyncState('stateFeedId');
   if (persisted !== undefined && !safeCursor(persisted))
     throw new Error('invalid state-feed cursor');
   let after = persisted === undefined ? 0 : persisted;
-  const boundary = await storage.getMeta('stateFeedFullThrough');
+  const boundary = await storage.getSyncState('stateFeedFullThrough');
   if (boundary !== undefined && (!safeCursor(boundary) || boundary <= after))
     throw new Error('invalid state-feed full boundary');
   let target = Math.max(

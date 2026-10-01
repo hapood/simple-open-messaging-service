@@ -136,14 +136,14 @@ describe('transactional thread fanout queue', () => {
   }) => ({
     account: user.account,
     domain: 'local',
-    namespaceId: 0,
+    profileNamespaceId: 0,
     profileRev: user.defaultProfileRev,
   });
   const added = {
     type: 'FRIEND_ADDED' as const,
     participants: [
-      { account: 'direct-a', domain: 'local', namespaceId: 0, profileRev: 0 },
-      { account: 'direct-b', domain: 'local', namespaceId: 0, profileRev: 0 },
+      { account: 'direct-a', domain: 'local', profileNamespaceId: 0, profileRev: 0 },
+      { account: 'direct-b', domain: 'local', profileNamespaceId: 0, profileRev: 0 },
     ] as [ReturnType<typeof participant>, ReturnType<typeof participant>],
   };
   async function depart(users: Awaited<ReturnType<typeof departingPair>>) {

@@ -213,10 +213,7 @@ describe('remote member membership intents on the authoritative group', () => {
           ),
           // member-authored direction
           and(
-            eq(
-              tables.relationshipIntent.authorAccount,
-              fixture.member.account,
-            ),
+            eq(tables.relationshipIntent.authorAccount, fixture.member.account),
             eq(
               tables.relationshipIntent.authorNamespaceId,
               fixture.member.namespaceId,
@@ -391,8 +388,7 @@ describe('remote member membership intents on the authoritative group', () => {
 
     const intents = await intentsOf(fixture);
     expect(
-      intents.find((row) => row.authorAccount === fixture.groupAccount)!
-        .status,
+      intents.find((row) => row.authorAccount === fixture.groupAccount)!.status,
     ).toBe('ACCEPTED');
     expect(
       intents.find((row) => row.authorAccount === fixture.member.account),
@@ -442,12 +438,21 @@ describe('remote member membership intents on the authoritative group', () => {
           and(
             eq(tables.relationshipIntent.authorAccount, fixture.groupAccount),
             eq(tables.relationshipIntent.authorNamespaceId, 0),
-            eq(tables.relationshipIntent.receiverAccount, fixture.member.account),
-            eq(tables.relationshipIntent.receiverNamespaceId, fixture.member.namespaceId),
+            eq(
+              tables.relationshipIntent.receiverAccount,
+              fixture.member.account,
+            ),
+            eq(
+              tables.relationshipIntent.receiverNamespaceId,
+              fixture.member.namespaceId,
+            ),
           ),
           and(
             eq(tables.relationshipIntent.authorAccount, fixture.member.account),
-            eq(tables.relationshipIntent.authorNamespaceId, fixture.member.namespaceId),
+            eq(
+              tables.relationshipIntent.authorNamespaceId,
+              fixture.member.namespaceId,
+            ),
             eq(tables.relationshipIntent.receiverAccount, fixture.groupAccount),
             eq(tables.relationshipIntent.receiverNamespaceId, 0),
           ),
@@ -528,8 +533,7 @@ describe('remote member membership intents on the authoritative group', () => {
     expect(result.routed).toBe('noop:dropped-ack');
     const intents = await intentsOf(fixture);
     expect(
-      intents.find((row) => row.authorAccount === fixture.groupAccount)!
-        .status,
+      intents.find((row) => row.authorAccount === fixture.groupAccount)!.status,
     ).toBe('REVOKED');
     expect(
       intents.find((row) => row.authorAccount === fixture.member.account)!

@@ -140,8 +140,7 @@ function localRecipient(input: GroupAuthoredMembershipRequestInput): SQL {
           'expiresAt', floor(extract(epoch FROM v."expiresAt") * 1000)::bigint,
           'threadId', ${input.threadId}::integer,
           'established', (SELECT p.established FROM "RelationshipPair" p WHERE p.id = ${input.pairId}),
-          'group', jsonb_build_object('account', ${input.groupAccount}::text, 'domain', 'local',
-            'isLocal', true, 'name', ${input.groupName}::text, 'avatar', ${input.groupAvatar}::text,
+          'group', jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
             'description', ${input.groupDescription}::text, 'profileRev', ${input.groupProfileRev}::integer)
         ) AS body
       FROM request_state v

@@ -145,8 +145,7 @@ export class MirrorGroupMembershipIntentService {
       this.logger.warn('mirror intent client-state wake failed', error);
     }
     if (peers.size > 0)
-      void this.deps.federation
-        .pushStateFeedNamespaces(peers.keys());
+      void this.deps.federation.pushStateFeedNamespaces(peers.keys());
     return { routed };
   }
 
@@ -326,7 +325,7 @@ export class MirrorGroupMembershipIntentService {
           localMemberId: memberId,
           intent: {
             profileNamespaceId: wireIntent.profileNamespaceId,
-          profileRev: wireIntent.profileRev,
+            profileRev: wireIntent.profileRev,
             note: wireIntent.note,
             requestedAt: intent.requestedAt!,
             expiresAt: intent.expiresAt!,
@@ -346,10 +345,13 @@ export class MirrorGroupMembershipIntentService {
         // cannot revive the member's withdrawn direction or publish it again.
         await tx.execute(
           mirrorIntentWriteSql({
-            ...mirrorGroupDirection({
-          groupAccount: group.account,
-          groupNamespaceId: group.namespaceId,
-        }, memberAccount),
+            ...mirrorGroupDirection(
+              {
+                groupAccount: group.account,
+                groupNamespaceId: group.namespaceId,
+              },
+              memberAccount,
+            ),
             status: 'ACCEPTED',
             note: wireIntent.note,
             requestedAt: wireIntent.requestedAt,
@@ -367,10 +369,13 @@ export class MirrorGroupMembershipIntentService {
         // group-side confirmation without replaying the join transition.
         const confirmed = await tx.execute(
           mirrorIntentWriteSql({
-            ...mirrorGroupDirection({
-          groupAccount: group.account,
-          groupNamespaceId: group.namespaceId,
-        }, memberAccount),
+            ...mirrorGroupDirection(
+              {
+                groupAccount: group.account,
+                groupNamespaceId: group.namespaceId,
+              },
+              memberAccount,
+            ),
             status: 'ACCEPTED',
             note: wireIntent.note,
             requestedAt: wireIntent.requestedAt,

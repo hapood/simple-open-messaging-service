@@ -24,7 +24,12 @@ describe('Federated peer QuotaService (DB-backed)', () => {
     database = mod.get(DatabaseService);
     const created = await database.pool.query<{ id: number }>(
       'INSERT INTO "IdentityNamespace" (domain, "rootKeyFingerprint", "rootPublicKey", "identityPinnedAt", active, "trustLevel") VALUES ($1, $2, $3, NOW(), true, $4) RETURNING id',
-      [PEER, 'sha256:quota-test', Buffer.alloc(32, 1).toString('base64'), 'available'],
+      [
+        PEER,
+        'sha256:quota-test',
+        Buffer.alloc(32, 1).toString('base64'),
+        'available',
+      ],
     );
     namespaceId = created.rows[0].id;
   });
@@ -39,7 +44,9 @@ describe('Federated peer QuotaService (DB-backed)', () => {
   });
 
   afterAll(async () => {
-    await database.pool.query('DELETE FROM "IdentityNamespace" WHERE id = $1', [namespaceId]);
+    await database.pool.query('DELETE FROM "IdentityNamespace" WHERE id = $1', [
+      namespaceId,
+    ]);
     await database.pool.query('DELETE FROM "QuotaDailyUsage"');
     await database.pool.query('DELETE FROM "QuotaFileByteUsage"');
     await mod.close();
@@ -79,10 +86,14 @@ describe('Federated peer QuotaService (DB-backed)', () => {
 
   it('enforces the consolidated peer file-byte cap', async () => {
     await quota.setLimits(namespaceId, { dailyFileBytesLimit: 100n });
-    await expect(quota.preCheckFile(namespaceId, 0, 101n)).rejects.toMatchObject({
+    await expect(
+      quota.preCheckFile(namespaceId, 0, 101n),
+    ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_QUOTA_EXCEEDED,
     });
-    await expect(quota.preCheckFile(namespaceId, 0, 100n)).resolves.toBeUndefined();
+    await expect(
+      quota.preCheckFile(namespaceId, 0, 100n),
+    ).resolves.toBeUndefined();
   });
 
   it('treats a zero media cap as a disabled capability', async () => {
@@ -96,7 +107,9 @@ describe('Federated peer QuotaService (DB-backed)', () => {
 
   it('falls back to the global peer default when an override is null', async () => {
     await quota.setLimits(namespaceId, { dailyMsgLimit: null });
-    expect((await quota.usageToday(namespaceId)).messages.limit).toBeGreaterThan(0);
+    expect(
+      (await quota.usageToday(namespaceId)).messages.limit,
+    ).toBeGreaterThan(0);
   });
 
   it('lists only peers with active namespaces and shows their usage', async () => {

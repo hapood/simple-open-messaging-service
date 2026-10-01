@@ -42,22 +42,22 @@ The canonical wire form of an inline entity is:
 v1 supports user mentions and group-wide audience mentions:
 
 ```text
-[@Alice](somfp://user/alice%40example.com)
+[@Alice](somfp://user/12/alice)
 [@everyone](somfp://audience/all)
 ```
 
 `somfp` is an identifier scheme inside message text, not a transport scheme. An implementation MUST NOT issue a network request for this URI. Relative references, base-URI resolution, queries, fragments, ports, and userinfo are not defined. A canonical v1 URI has exactly one of these two ASCII forms:
 
 ```abnf
-somfp-user     = "somfp://user/" user-account "%40" domain
+somfp-user     = "somfp://user/" namespace-id "/" user-account
 somfp-audience = "somfp://audience/all"
 ```
 
-`user-account` and `domain` strictly use the `UserAccount` and `Domain` ASCII grammars defined by the [core protocol](../protocol.md#62-shared-federation-types). The separating `@` MUST be encoded as `%40` using uppercase hexadecimal. No other character may be percent-encoded. Consequently, `%4a`, `%4A`, encoding an unreserved character, double encoding, an empty host, an extra path segment, a port, a fragment, or a query does not form a canonical v1 entity.
+`namespace-id` is a non-negative decimal integer (`0` for a subject local to the publishing server, a positive integer for a foreign subject's publisher-scoped namespace) and `user-account` strictly uses the `UserAccount` ASCII grammar defined by the [core protocol](../protocol.md#62-shared-federation-types). The `namespace-id` carries the same publisher-scoped meaning as the `namespaceId` field of a profile reference (see [Protocol, Section 6.2.1](../protocol.md#621-local-subject-marker-and-namespace-interpretation)): `0` denotes a subject hosted by the authenticated publisher, and a positive value is the namespace the publisher allocated for that subject's home-server identity. A sender MUST NOT place a transport `Domain` in a user entity; the entity's identity is `(namespaceId, account)`, never `account@domain`.
 
-Two v1 entity URIs are equal only when their complete ASCII byte sequences are equal. A consumer MUST NOT use general URL normalization, host case folding, default-port removal, or percent-decoding followed by re-encoding to create another equivalent form. After successful parsing, the semantic identity of a user entity is the decoded `UserAccount@Domain`; the semantic identity of an audience entity is fixed as `all`.
+Two v1 entity URIs are equal only when their complete ASCII byte sequences are equal. A consumer MUST NOT use general URL normalization, host case folding, default-port removal, or percent-decoding followed by re-encoding to create another equivalent form. After successful parsing, the semantic identity of a user entity is the decoded `(namespaceId, account)`; the semantic identity of an audience entity is fixed as `all`.
 
-- The decoded ID of a user entity is canonical `account@domain`; the label is only a display snapshot.
+- The decoded ID of a user entity is canonical `(namespaceId, account)`; the label is only a display snapshot.
 - `audience/all` may appear only in a GROUP thread.
 - Scheme and entity-type comparisons are case-sensitive; the publisher MUST use the sole canonical forms above.
 - Inside a label, `\`, `[`, and `]` are encoded as `\\`, `\[`, and `\]`, respectively. In ordinary text, a literal `[` is written as `\[` and a literal `\` as `\\`.
@@ -82,7 +82,7 @@ The author server validates that a mention applies to the thread before first pe
   "originCreatedAt": null,
   "createdAt": 1770000000000,
   "contentType": "PURE_TEXT",
-  "content": "{\"text\":\"Hello [@Alice](somfp://user/alice%40example.com)\"}",
+  "content": "{\"text\":\"Hello [@Alice](somfp://user/12/alice)\"}",
   "assets": []
 }
 ```

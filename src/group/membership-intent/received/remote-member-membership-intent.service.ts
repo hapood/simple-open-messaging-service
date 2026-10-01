@@ -124,8 +124,7 @@ export class RemoteMemberMembershipIntentService {
       this.logger.warn('remote member intent client wake failed', error);
     }
     if (peers.size > 0)
-      void this.deps.federation
-        .pushStateFeedNamespaces(peers);
+      void this.deps.federation.pushStateFeedNamespaces(peers);
     return { routed: result.routed };
   }
 
@@ -397,7 +396,6 @@ export class RemoteMemberMembershipIntentService {
         groupAvatar: context.row.avatar,
         groupDescription: context.row.description,
         groupProfileRev: context.row.profileRev,
-        localDomain: 'local',
         memberAccount: context.member.account,
         profileNamespaceId: context.member.namespaceId,
         localMemberId: null,
@@ -528,9 +526,7 @@ export class RemoteMemberMembershipIntentService {
       groupName: context.row.name,
       groupAvatar: context.row.avatar,
       groupDescription: context.row.description,
-      localDomain: 'local',
       memberAccount: member.account,
-      memberDomain: member.domain,
       profileNamespaceId: member.namespaceId,
       // The group's own invitation note survives the completion, exactly like
       // the authored collapse.
@@ -606,9 +602,7 @@ export class RemoteMemberMembershipIntentService {
       groupAvatar: context.row.avatar,
       groupDescription: context.row.description,
       groupProfileRev: context.row.profileRev,
-      localDomain: 'local',
       memberAccount: member.account,
-      memberDomain: member.domain,
       profileNamespaceId: member.namespaceId,
       localMemberId: null,
       projectionDirections: context.row.projectionDirections,

@@ -8,10 +8,10 @@ import {
 } from './message-entity';
 
 describe('message entity codec', () => {
-  const mention = '[@张三](somfp://user/zhangsan%40example.com)';
+  const mention = '[@张三](somfp://user/12/zhangsan)';
 
   it('matches the canonical user mention contract', () => {
-    expect(serializeUserMention('张三', 'zhangsan@example.com')).toBe(mention);
+    expect(serializeUserMention('张三', 12, 'zhangsan')).toBe(mention);
     expect(toDisplayText(`你好 ${mention}`)).toBe('你好 @张三');
     expect(parseMessageEntities(mention)[0]).toEqual(
       expect.objectContaining({
@@ -19,32 +19,29 @@ describe('message entity codec', () => {
         sigil: '@',
         label: '张三',
         entityType: 'user',
-        entityId: 'zhangsan@example.com',
+        entityId: '12/zhangsan',
       }),
     );
   });
 
   it('distinguishes a stable-account mention of me from another user', () => {
-    const me = serializeUserMention('我的新昵称', 'me@example.com');
-    const other = serializeUserMention('张三', 'zhangsan@example.com');
-    const rendered = toRenderMessageEntities(
-      `${me} 和 ${other}`,
-      'ME@example.com',
-    );
+    const me = serializeUserMention('我的新昵称', 0, 'me');
+    const other = serializeUserMention('张三', 12, 'zhangsan');
+    const rendered = toRenderMessageEntities(`${me} 和 ${other}`, 'me');
     expect(rendered.mentionState).toBe('me');
     expect(rendered.segments).toEqual([
       {
         kind: 'mention',
         text: '@我的新昵称',
         target: 'me',
-        account: 'me@example.com',
+        account: '0/me',
       },
       { kind: 'text', text: ' 和 ' },
       {
         kind: 'mention',
         text: '@张三',
         target: 'other',
-        account: 'zhangsan@example.com',
+        account: '12/zhangsan',
       },
     ]);
   });
@@ -61,7 +58,7 @@ describe('message entity codec', () => {
     const inputs = [
       String.raw`C:\Users\张三`,
       mention,
-      String.raw`\[@张三](somfp://user/a)`,
+      String.raw`\[@张三](somfp://user/0/a)`,
       '普通 [@张三] 不是实体',
       `emoji 😀 before ${mention}`,
     ];
@@ -72,9 +69,10 @@ describe('message entity codec', () => {
 
   it('degrades malformed input to text', () => {
     for (const value of [
-      '[@张三](somfp://user/%61lice%40example.com)',
-      '[@张三](somfp://USER/alice%40example.com)',
-      '[@张三](somfp://user/alice%40example.com?extra=1)',
+      '[@张三](somfp://user/alice)',
+      '[@张三](somfp://USER/0/alice)',
+      '[@张三](somfp://user/0/alice?extra=1)',
+      '[@张三](somfp://user/0/%61lice)',
       '[@发布](somfp://topic/release)',
     ]) {
       expect(parseMessageEntities(value)).toEqual([

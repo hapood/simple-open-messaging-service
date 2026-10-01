@@ -19,11 +19,18 @@ interface ParsedAt {
   end: number;
 }
 
-/** Serialize the canonical v1 representation of a user mention. */
-export function serializeUserMention(label: string, account: string): string {
+/** Serialize the canonical v1 representation of a user mention. The entity
+ * identity is the publisher-scoped `(namespaceId, account)` pair; `namespaceId`
+ * is `0` for a subject local to the publishing server and a positive integer
+ * for a foreign subject's namespace. See [Protocol, Section 6.2.1]. */
+export function serializeUserMention(
+  label: string,
+  namespaceId: number,
+  account: string,
+): string {
   if (!label) throw new Error('mention label must not be empty');
   if (!account) throw new Error('mention account must not be empty');
-  return `[@${escapeLabel(label)}](somfp://user/${encodeURIComponent(account)})`;
+  return `[@${escapeLabel(label)}](somfp://user/${namespaceId}/${encodeURIComponent(account)})`;
 }
 
 /** Serialize the canonical v1 representation of a group-wide mention. */
@@ -166,7 +173,7 @@ function parseEntityAt(content: string, start: number): ParsedAt | null {
   } catch {
     return null;
   }
-  if (!entityId || entityId.includes('/')) return null;
+  if (!entityId) return null;
 
   const entityType =
     url.hostname === 'user'
@@ -174,12 +181,27 @@ function parseEntityAt(content: string, start: number): ParsedAt | null {
       : url.hostname === 'audience'
         ? 'audience'
         : null;
-  const canonical =
-    entityType === 'user'
-      ? `somfp://user/${encodeURIComponent(entityId)}`
-      : entityType === 'audience' && entityId === 'all'
-        ? 'somfp://audience/all'
-        : null;
+
+  // A user entity is `somfp://user/<namespaceId>/<account>`: the pathname has
+  // exactly two segments, a non-negative integer namespace and a user account.
+  // An audience entity is `somfp://audience/all` with a single `all` segment.
+  let canonical: string | null = null;
+  if (entityType === 'user') {
+    const segments = entityId.split('/');
+    if (segments.length !== 2) return null;
+    const namespaceId = Number(segments[0]);
+    if (
+      !Number.isInteger(namespaceId) ||
+      namespaceId < 0 ||
+      String(namespaceId) !== segments[0] ||
+      !segments[1]
+    )
+      return null;
+    canonical = `somfp://user/${namespaceId}/${encodeURIComponent(segments[1])}`;
+    entityId = `${namespaceId}/${segments[1]}`;
+  } else if (entityType === 'audience' && entityId === 'all') {
+    canonical = 'somfp://audience/all';
+  }
   if (entityType === null || canonical === null || uriText !== canonical)
     return null;
   const end = closeParen + 1;

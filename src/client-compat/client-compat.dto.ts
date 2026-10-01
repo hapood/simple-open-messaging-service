@@ -18,7 +18,9 @@ export class ClientFirebaseConfigDto {
 export class ClientCompatDto {
   @ApiProperty({ example: 1, description: 'Client HTTP API contract version.' })
   apiVersion!: number;
-  @ApiProperty({ description: 'Server software version, for diagnostics only.' })
+  @ApiProperty({
+    description: 'Server software version, for diagnostics only.',
+  })
   serverVersion!: string;
   @ApiProperty()
   registrationOpen!: boolean;

@@ -236,7 +236,10 @@ export class FederationInboundMessageCommitService {
           and(
             eq(tables.pendingMedia.direction, 'INBOUND'),
             eq(tables.message.threadId, dependency.threadId),
-            eq(tables.pendingMedia.publisherNamespaceId, dependency.publisherNamespaceId),
+            eq(
+              tables.pendingMedia.publisherNamespaceId,
+              dependency.publisherNamespaceId,
+            ),
             eq(tables.pendingMedia.dependsOnOriginSeq, dependency.originSeq),
           ),
         );

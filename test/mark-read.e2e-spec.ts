@@ -37,7 +37,10 @@ describe('POST /thread/mark-read authoritative state', () => {
   afterAll(async () => app.close());
 
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
+    );
     const viewer = await seedUser(app, 'reader', { name: 'Reader' });
     const peer = await seedUser(app, 'peer', { name: 'Peer' });
     viewerId = viewer.id;

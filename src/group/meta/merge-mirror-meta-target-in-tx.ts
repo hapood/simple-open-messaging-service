@@ -21,9 +21,7 @@ export async function mergeMirrorGroupMetaTargetInTx(
   input: { group: MirrorGroupAddress; metaTargetId: number },
 ): Promise<{ threadId: number } | null> {
   const account = normalizeAccount(input.group.account);
-  await lockBusinessAccountsInTx(tx, [
-    { account, domain: input.group.domain },
-  ]);
+  await lockBusinessAccountsInTx(tx, [{ account, domain: input.group.domain }]);
   const mirror = await readGroupState(
     tx,
     and(

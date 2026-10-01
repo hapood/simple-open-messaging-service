@@ -86,7 +86,7 @@ fn sender_profile(
     };
     match reference {
         Some((namespace, revision)) => {
-            super::contacts::read_profile(conn, user_id, account, domain, namespace, revision)
+            super::contacts::read_profile(conn, user_id, account, domain, namespace, namespace, revision)
         }
         None => Ok(None),
     }
@@ -94,7 +94,7 @@ fn sender_profile(
 
 #[cfg(target_os = "android")]
 pub(crate) async fn synchronize(
-    proxy: &crate::ProxyState,
+    proxy: &crate::ServerSessionState,
     user_id: i64,
     target: i32,
 ) -> Result<NotificationBatch, String> {
@@ -102,7 +102,6 @@ pub(crate) async fn synchronize(
     let result = super::attention::sync_thread_feed(None, proxy, user_id, target).await?;
     super::lifetime::spawn_at(Ok(epoch), move || {
         let has_threads = !result.states.is_empty();
-        let group_thread_ids = result.group_thread_ids;
         let cursor = result.cursor;
         let mut batch = assemble(&mut super::open()?, user_id, result.states, result.error)?;
         let mut metadata: Value =
@@ -111,14 +110,10 @@ pub(crate) async fn synchronize(
         if has_threads {
             changes.push("THREADS");
         }
-        if !group_thread_ids.is_empty() {
-            changes.push("GROUP_META");
-        }
         metadata["commit"] = serde_json::json!({
             "userId": user_id,
             "cursor": cursor,
             "changes": changes,
-            "groupThreadIds": group_thread_ids,
         });
         batch.metadata = serde_json::to_string(&metadata).map_err(|e| e.to_string())?;
         batch.account_epoch = epoch;
@@ -267,7 +262,7 @@ mod tests {
         .unwrap()
         .unwrap();
         conn.execute(
-            "INSERT INTO profiles(user_id,account,domain,namespace_id,profile_rev,name,avatar_digest,bio) VALUES(1,'peer','local',0,1,'Peer',?1,'')",
+            "INSERT INTO profiles(user_id,publisher_namespace_id,profile_namespace_id,account,domain,profile_rev,name,avatar_digest,bio) VALUES(1,0,0,'peer','local',1,'Peer',?1,'')",
             [digest.clone()],
         )
         .unwrap();
@@ -308,12 +303,12 @@ mod tests {
         .unwrap()
         .unwrap();
         conn.execute(
-            "INSERT INTO profiles(user_id,account,domain,namespace_id,profile_rev,name,avatar_digest,bio) VALUES(1,'peer','local',0,1,'Old peer',NULL,'')",
+            "INSERT INTO profiles(user_id,publisher_namespace_id,profile_namespace_id,account,domain,profile_rev,name,avatar_digest,bio) VALUES(1,0,0,'peer','local',1,'Old peer',NULL,'')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO profiles(user_id,account,domain,namespace_id,profile_rev,name,avatar_digest,bio) VALUES(1,'peer','local',0,2,'New peer',?1,'')",
+            "INSERT INTO profiles(user_id,publisher_namespace_id,profile_namespace_id,account,domain,profile_rev,name,avatar_digest,bio) VALUES(1,0,0,'peer','local',2,'New peer',?1,'')",
             [digest.clone()],
         )
         .unwrap();
@@ -353,7 +348,7 @@ mod tests {
         delivered.server.as_mut().unwrap().thread_profile_rev = 3;
         save(&conn, &delivered);
         super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
-            "account":"!group","domain":"local","namespaceId":0,"profileRev":3,
+            "account":"!group","domain":"local","publisherNamespaceId":0,"profileNamespaceId":0,"profileRev":3,
             "name":"Resolved group","avatarDigest":null,"bio":"",
         })).unwrap();
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();

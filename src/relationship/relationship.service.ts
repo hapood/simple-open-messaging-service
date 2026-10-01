@@ -161,8 +161,7 @@ export class RelationshipService {
         threadId,
         group: {
           account: state.account,
-          domain: 'local',
-          isLocal: true,
+          namespaceId: 0,
           name: state.name,
           avatar: state.avatar,
           description: state.description,

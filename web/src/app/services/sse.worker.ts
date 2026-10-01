@@ -320,41 +320,10 @@ sw.addEventListener('message', (e: MessageEvent) => {
       const port = m.port;
       threadFeedPort = port;
       threadFeedUserId = m.userId;
-      port.onmessage = (event) => {
-        if (manualClose || threadFeedPort !== port) return;
-        if (event.data?.stateCommit) {
-          post({
-            type: 'event',
-            payload: {
-              event: 'LOCAL_STATE_FEED_COMMITTED',
-              status: 0,
-              message: 'local state committed',
-              data: event.data.stateCommit,
-            },
-          });
-          return;
-        }
-        for (const alias of event.data.aliases)
-          post({
-            type: 'event',
-            payload: {
-              event: 'THREAD_ALIAS_APPLIED',
-              status: 0,
-              message: 'thread alias applied',
-              data: { ...alias, userId: event.data.userId },
-            },
-          });
-        post({
-          type: 'event',
-          payload: {
-            event: 'LOCAL_THREAD_FEED_COMMITTED',
-            status: 0,
-            message: 'local data committed',
-            data: event.data,
-          },
-        });
-      };
-      port.start();
+      // The port is now unidirectional: SSE → DB worker wakes only. The DB
+      // worker reports drain completions directly to the main thread via
+      // postMessage (thread-feed-committed / state-feed-committed), no longer
+      // echoing back through this port.
       if (!manualClose && threadFeedUserId === helloUserId) {
         port.postMessage({ stateTarget: stateFeedTarget });
         port.postMessage({ target: threadFeedTarget });

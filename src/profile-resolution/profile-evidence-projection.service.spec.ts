@@ -17,12 +17,20 @@ function createSubject() {
 }
 
 const accountProjection = {
-  profile: { publisherNamespaceId: 7, profileNamespaceId: 7, account: 'alice', domain: 'member.test', rev: 4 },
+  profile: {
+    publisherNamespaceId: 7,
+    profileNamespaceId: 7,
+    account: 'alice',
+    domain: 'member.test',
+    rev: 4,
+  },
   lookup: ProfileLookup.ACCOUNT_PROFILE,
   projection: { threadId: 9, messageSeq: 6 },
 } as const;
 
-function mockSuccessfulP2PProjection(database: ReturnType<typeof createSubject>['database']) {
+function mockSuccessfulP2PProjection(
+  database: ReturnType<typeof createSubject>['database'],
+) {
   database.db.transaction.mockImplementation(async (work) => {
     const execute = vi
       .fn()
@@ -78,7 +86,9 @@ describe('ProfileEvidenceProjectionService', () => {
       profile: { ...accountProjection.profile, rev: 6 },
       projection: { threadId: 9, messageSeq: 7 },
     });
-    await vi.waitFor(() => expect(database.db.transaction).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(database.db.transaction).toHaveBeenCalledTimes(2),
+    );
 
     expect([...subject['cache'].values()]).toEqual([7]);
   });
@@ -158,7 +168,9 @@ describe('ProfileEvidenceProjectionService', () => {
     database.db.transaction.mockRejectedValue(new Error('projection failed'));
 
     await expect(subject.resolve(accountProjection)).resolves.toBeUndefined();
-    await vi.waitFor(() => expect(database.db.transaction).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(database.db.transaction).toHaveBeenCalledOnce(),
+    );
 
     expect(subject['pending'].size).toBe(0);
     expect(subject['cache'].size).toBe(0);

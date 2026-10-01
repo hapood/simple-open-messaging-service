@@ -26,7 +26,7 @@ export async function truncateTablesForTest(
   const deadline = Date.now() + DRAIN_TIMEOUT_MS;
   for (;;) {
     const { rows } = await pool.query<{ c: number }>(
-      "SELECT count(*)::int AS c FROM \"DurableTask\" WHERE status = 'PROCESSING'",
+      'SELECT count(*)::int AS c FROM "DurableTask" WHERE status = \'PROCESSING\'',
     );
     if ((rows[0]?.c ?? 0) === 0 || Date.now() > deadline) break;
     await sleep(DRAIN_POLL_MS);

@@ -121,7 +121,7 @@ enum OriginMode {
 /// the token Arc, the origin Arc, the config-path Arc are all refcounted), so every protocol handler +
 /// command handler sees the same live values.
 #[derive(Clone)]
-pub(crate) struct ProxyState {
+pub(crate) struct ServerSessionState {
     /// The ACTIVE origin — every transport (api_request/media_request/proxy_media/upload_stream_file)
     /// and the desktop SSE supervisor read THIS. Swapped in-place by `select_origin` on fallback, so the
     /// read sites never change. Cold-start select_origin may flip it from the persisted primary to the
@@ -155,7 +155,7 @@ pub(crate) struct ProxyState {
     /// `notified().await` is not lost — race-free. Unused on mobile (Kotlin owns SSE + the token).
     token_notify: Arc<Notify>,
     /// Cached reqwest client for `proxy_api`, keyed on the origin string. Rebuilt only when the origin
-    /// changes (see `ProxyState::api_client`) — so API calls reuse one connection pool (TCP+TLS
+    /// changes (see `ServerSessionState::api_client`) — so API calls reuse one connection pool (TCP+TLS
     /// keepalive across requests) instead of `http_client_for` building a fresh client (fresh pool, no
     /// reuse) on every single request. `(origin, client)`; the origin tag detects a swap. The SSE
     /// supervisor and bootstrap probes still build per-call clients (infrequent).
@@ -170,7 +170,7 @@ pub(crate) struct ProxyState {
     media_download_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
 }
 
-impl ProxyState {
+impl ServerSessionState {
     fn replace_session_token(&self, token: Option<String>) -> Option<String> {
         if let Ok(mut current) = self.token.lock() {
             if current.is_some() && *current != token {
@@ -197,7 +197,7 @@ impl ProxyState {
         let initial_origin = std::env::var("SOMS_API_ORIGIN")
             .ok().and_then(|s| validate_origin(&s))
             .unwrap_or_else(|| DEFAULT_API_ORIGIN.to_string());
-        ProxyState {
+        ServerSessionState {
             api_origin: Arc::new(Mutex::new(initial_origin.clone())),
             // Pre-setup best guess: primary == active == the boot origin (env/default). setup() overrides both
             // from the persisted files; the secondary starts None until setup reads its file.
@@ -295,7 +295,7 @@ fn tls_posture_for(origin: &str) -> TlsPosture {
 
 /// Build a reqwest client scoped to one origin's TLS posture (see `tls_posture_for`). Redirects
 /// are NEVER followed — an origin pointing at a login-redirect host must not chase into an attacker-
-/// controlled path. The media-proxy client (`ProxyState.http`) is untouched.
+/// controlled path. The media-proxy client (`ServerSessionState.http`) is untouched.
 fn http_client_for(origin: &str) -> reqwest::Client {
     let mut b = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -310,7 +310,7 @@ fn http_client_for(origin: &str) -> reqwest::Client {
 /// feeds the media proxy Arc), and update the live Arc (so `/uploads/*` immediately uses the new host).
 /// Shared writer for configuration and origin fallback logic —
 /// the two persistence surfaces (this file + the web's `SomsSecureStore`) stay consistent.
-fn persist_origin(state: &ProxyState, url: &str) -> Result<String, String> {
+fn persist_origin(state: &ServerSessionState, url: &str) -> Result<String, String> {
     let normalized =
         validate_origin(url).ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
     let path = state.config_path.lock().expect("config_path lock").clone();
@@ -328,7 +328,7 @@ fn persist_origin(state: &ProxyState, url: &str) -> Result<String, String> {
 /// Arc to None → no fallback). Validates via the same `validate_origin` so a malformed URL is never stored.
 /// Does NOT touch the active origin or mode — `select_origin` decides which is active.
 fn persist_origin_secondary(
-    state: &ProxyState,
+    state: &ServerSessionState,
     url: Option<&str>,
 ) -> Result<Option<String>, String> {
     let dir = state
@@ -365,7 +365,7 @@ pub fn run() {
     let proxy_state = android_runtime::proxy_state()
         .expect("Application must initialize the Rust runtime before Tauri").clone();
     #[cfg(not(target_os = "android"))]
-    let proxy_state = ProxyState::new();
+    let proxy_state = ServerSessionState::new();
     let proxy_for_media = proxy_state.clone();
 
     let builder = tauri::Builder::default();
@@ -524,6 +524,7 @@ pub fn run() {
                     native_db::attention::native_profile_resolve,
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_advance_thread_read,
+                    native_db::attention::native_db_drain_thread_misc,
                     native_db::native_db_put_meta,
                     native_db::preferences::native_db_get_preference,
                     native_db::preferences::native_db_put_preference,
@@ -605,6 +606,7 @@ pub fn run() {
                     native_db::attention::native_profile_resolve,
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_advance_thread_read,
+                    native_db::attention::native_db_drain_thread_misc,
                     native_db::native_db_put_meta,
                     native_db::preferences::native_db_get_preference,
                     native_db::preferences::native_db_put_preference,

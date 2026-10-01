@@ -117,7 +117,11 @@ export class AuthoritativeMembershipFinalizerService {
       `);
       audienceChanged = activePeerMembership.rows[0]?.active
         ? false
-        : await closeFederatedAudienceInTx(tx, member.namespaceId, params.threadId);
+        : await closeFederatedAudienceInTx(
+            tx,
+            member.namespaceId,
+            params.threadId,
+          );
     }
 
     // Removing an authoritative audience does not invalidate thread-wide rounds.
@@ -145,10 +149,7 @@ export class AuthoritativeMembershipFinalizerService {
         groupMetaVisibleAfter,
       })
       .onConflictDoNothing({
-        target: [
-          threadAudience.localUserId,
-          threadAudience.threadId,
-        ],
+        target: [threadAudience.localUserId, threadAudience.threadId],
         where: sql`${threadAudience.localUserId} IS NOT NULL`,
       })
       .returning({ id: threadAudience.id });

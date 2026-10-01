@@ -2,7 +2,7 @@ import {
   ALL_MENTION_ID,
   escapePlainText,
   serializeAudienceMention,
-  serializeUserMention,
+  serializeUserMentionFromChipId,
 } from '../../lib/message-entity';
 
 export interface EditorJsonNode {
@@ -46,7 +46,7 @@ export function serializeNativeComposerText(
     out +=
       range.kind === 'all' && range.id === ALL_MENTION_ID
         ? serializeAudienceMention(range.label, 'all')
-        : serializeUserMention(range.label, range.id);
+        : serializeUserMentionFromChipId(range.label, range.id);
     cursor = range.end;
   }
   return out + escapePlainText(text.slice(cursor));
@@ -70,7 +70,7 @@ function serializeInline(nodes: EditorJsonNode[]): string {
       if (id === ALL_MENTION_ID && label) {
         out += serializeAudienceMention(label, 'all');
       } else if (id && label) {
-        out += serializeUserMention(label, id);
+        out += serializeUserMentionFromChipId(label, id);
       } else {
         plain += label ? `@${label}` : '';
       }

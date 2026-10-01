@@ -59,7 +59,8 @@ export async function resolveStoredQuotes<T extends Message>(
             quote.sourceSeq <= g.endSeq),
     );
     const state = states.find(
-      (s) => s.threadId === m.threadId && s.namespaceId === m.publisherNamespaceId,
+      (s) =>
+        s.threadId === m.threadId && s.namespaceId === m.publisherNamespaceId,
     );
     const pending = target
       ? false

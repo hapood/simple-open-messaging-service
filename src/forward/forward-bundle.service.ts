@@ -1429,7 +1429,6 @@ function projectForwardContentToWire(
   return toFederatedMessageContent(
     contentType,
     content,
-    process.env.SOMS_DOMAIN ?? 'local',
   );
 }
 
@@ -1444,7 +1443,6 @@ function projectForwardContentFromWire(
   return fromFederatedMessageContent(
     contentType,
     content,
-    process.env.SOMS_DOMAIN ?? 'local',
     assetBytes,
   );
 }

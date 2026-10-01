@@ -4,14 +4,14 @@ use log::warn;
 use crate::secure_storage;
 use crate::{
     activate_origin, persist_origin, persist_origin_secondary, pick_origin_race,
-    send_with_headers_deadline, validate_origin, HeadersError, OriginMode, ProxyState,
+    send_with_headers_deadline, validate_origin, HeadersError, OriginMode, ServerSessionState,
     API_HEADERS_TIMEOUT, DEFAULT_API_ORIGIN,
 };
 
 // --- frontend-facing commands (origin + token) --------------------------------------------
 
 #[tauri::command]
-pub(crate) fn get_api_origin(state: tauri::State<'_, ProxyState>) -> String {
+pub(crate) fn get_api_origin(state: tauri::State<'_, ServerSessionState>) -> String {
     // Returns the user-configured PRIMARY (stable) — NOT the swapping active origin. On native, request
     // URLs are built in Rust from the active `api_origin` (which select_origin may flip to the secondary);
     // JS never needs the active for URL building, and seeding the JS signal from the stable primary keeps
@@ -28,16 +28,16 @@ pub(crate) fn get_api_origin(state: tauri::State<'_, ProxyState>) -> String {
 /// runtime state: `init_pick_origin`, desktop failover, or Android's `set_active_origin` may change it
 /// without changing either configured address.
 #[tauri::command]
-pub(crate) fn get_active_api_origin(state: tauri::State<'_, ProxyState>) -> String {
+pub(crate) fn get_active_api_origin(state: tauri::State<'_, ServerSessionState>) -> String {
     state.api_origin.lock().expect("origin lock").clone()
 }
 
 /// Whether a real backend origin has been configured — the authoritative "has a SOMS backend been
 /// configured" check the SPA's configGuard uses, independent of the frontend's secureStore-seeded signal
-/// (which can drift). The ProxyState default is a non-routable placeholder (`DEFAULT_API_ORIGIN`), so a
+/// (which can drift). The ServerSessionState default is a non-routable placeholder (`DEFAULT_API_ORIGIN`), so a
 /// non-empty origin is NOT enough: it must also differ from the placeholder.
 #[tauri::command]
-pub(crate) fn is_origin_configured(state: tauri::State<'_, ProxyState>) -> bool {
+pub(crate) fn is_origin_configured(state: tauri::State<'_, ServerSessionState>) -> bool {
     // Reads the PRIMARY — a fallback swap to the secondary must NOT flip this to "configured" (nor must a
     // swap back trip it). The guard asks "did the user configure a real backend" = primary configured.
     let origin = state.api_origin_primary.lock().expect("primary lock");
@@ -49,7 +49,7 @@ pub(crate) fn is_origin_configured(state: tauri::State<'_, ProxyState>) -> bool 
 #[tauri::command]
 pub(crate) fn set_api_origin(
     url: String,
-    state: tauri::State<'_, ProxyState>,
+    state: tauri::State<'_, ServerSessionState>,
 ) -> Result<String, String> {
     persist_origin(&state, &url)
 }
@@ -57,7 +57,7 @@ pub(crate) fn set_api_origin(
 /// The configured LAN (secondary) origin, or null when no fallback is configured (dev, or servers without
 /// SOMS_LAN_DOMAIN). The shell uses this to populate the second server-config field + persist it.
 #[tauri::command]
-pub(crate) fn get_api_origin_secondary(state: tauri::State<'_, ProxyState>) -> Option<String> {
+pub(crate) fn get_api_origin_secondary(state: tauri::State<'_, ServerSessionState>) -> Option<String> {
     state
         .api_origin_secondary
         .lock()
@@ -70,7 +70,7 @@ pub(crate) fn get_api_origin_secondary(state: tauri::State<'_, ProxyState>) -> O
 #[tauri::command]
 pub(crate) fn set_api_origin_secondary(
     url: Option<String>,
-    state: tauri::State<'_, ProxyState>,
+    state: tauri::State<'_, ServerSessionState>,
 ) -> Result<Option<String>, String> {
     persist_origin_secondary(&state, url.as_deref())
 }
@@ -78,7 +78,7 @@ pub(crate) fn set_api_origin_secondary(
 /// Which origin is currently ACTIVE — for the "正在使用内网服务器" indicator. `primary` = normal;
 /// `secondary` = the primary was unreachable and a switch moved to the LAN origin.
 #[tauri::command]
-pub(crate) fn get_origin_mode(state: tauri::State<'_, ProxyState>) -> String {
+pub(crate) fn get_origin_mode(state: tauri::State<'_, ServerSessionState>) -> String {
     match *state.origin_mode.lock().expect("mode lock") {
         OriginMode::Primary => "primary".to_string(),
         OriginMode::Secondary => "secondary".to_string(),
@@ -91,7 +91,7 @@ pub(crate) fn get_origin_mode(state: tauri::State<'_, ProxyState>) -> String {
 /// unauthenticated probe. No-op when no secondary is configured (single-origin). Returns the active origin Rust picked.
 #[tauri::command]
 pub(crate) async fn init_pick_origin(
-    state: tauri::State<'_, ProxyState>,
+    state: tauri::State<'_, ServerSessionState>,
 ) -> Result<String, String> {
     pick_origin_race(&state).await;
     Ok(state.api_origin.lock().expect("origin lock").clone())
@@ -103,7 +103,7 @@ pub(crate) async fn init_pick_origin(
 #[tauri::command]
 pub(crate) fn set_active_origin(
     url: String,
-    state: tauri::State<'_, ProxyState>,
+    state: tauri::State<'_, ServerSessionState>,
 ) -> Result<String, String> {
     let normalized =
         validate_origin(&url).ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
@@ -122,12 +122,12 @@ pub(crate) fn set_active_origin(
 }
 
 #[tauri::command]
-pub(crate) fn set_session_token(token: String, state: tauri::State<'_, ProxyState>) {
+pub(crate) fn set_session_token(token: String, state: tauri::State<'_, ServerSessionState>) {
     state.replace_session_token(Some(token));
 }
 
 #[tauri::command]
-pub(crate) fn clear_session_token(state: tauri::State<'_, ProxyState>) {
+pub(crate) fn clear_session_token(state: tauri::State<'_, ServerSessionState>) {
     state.replace_session_token(None);
 }
 
@@ -140,7 +140,7 @@ pub(crate) fn clear_session_token(state: tauri::State<'_, ProxyState>) {
 #[tauri::command]
 pub(crate) fn begin_logout(
     origin: String,
-    state: tauri::State<'_, ProxyState>,
+    state: tauri::State<'_, ServerSessionState>,
 ) -> Result<(), String> {
     let token = state.replace_session_token(None);
 

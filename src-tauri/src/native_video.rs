@@ -1,4 +1,4 @@
-use crate::{media_cache, ProxyState};
+use crate::{media_cache, ServerSessionState};
 use serde::Serialize;
 use std::{collections::HashMap, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,7 +28,7 @@ pub(crate) struct NativeVideoStream {
 #[tauri::command]
 pub(crate) async fn create_native_video_stream(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ProxyState>,
+    proxy: tauri::State<'_, ServerSessionState>,
     path: String,
 ) -> Result<NativeVideoStream, String> {
     if !valid_source_path(&path) {
@@ -60,7 +60,7 @@ pub(crate) async fn create_native_video_stream(
     })
 }
 
-async fn start_hub(app: tauri::AppHandle, proxy: ProxyState) -> Result<Arc<VideoHub>, String> {
+async fn start_hub(app: tauri::AppHandle, proxy: ServerSessionState) -> Result<Arc<VideoHub>, String> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .map_err(|error| format!("bind video loopback: {error}"))?;
@@ -120,7 +120,7 @@ fn valid_source_path(path: &str) -> bool {
 async fn serve(
     mut socket: TcpStream,
     app: tauri::AppHandle,
-    proxy: ProxyState,
+    proxy: ServerSessionState,
     routes: Arc<RwLock<HashMap<String, String>>>,
 ) -> Result<(), String> {
     let mut request = Vec::new();

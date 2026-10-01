@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn runtime_clone_shares_session_pool_and_shell_resources() {
-    let background = ProxyState::new();
+    let background = ServerSessionState::new();
     background.replace_session_token(Some("test-session".into()));
     let shell = background.clone();
     assert!(Arc::ptr_eq(&background.api_http, &shell.api_http));
@@ -20,7 +20,7 @@ fn runtime_clone_shares_session_pool_and_shell_resources() {
 
 #[test]
 fn attaching_shell_preserves_background_selected_origin() {
-    let background = ProxyState::new();
+    let background = ServerSessionState::new();
     activate_origin(
         &background,
         "https://secondary.example",

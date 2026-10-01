@@ -106,7 +106,6 @@ describe('FriendRequestsComponent federated search progress', () => {
         avatar: '',
         bio: '',
         description: '',
-        isLocal: false,
       };
       const userService = {
         sessionUserId: signal<number | null>(null),

@@ -8,7 +8,7 @@ use log::warn;
 use sha2::{Digest, Sha256};
 use tauri::Manager;
 
-use crate::{is_network_failure, runtime_switch, ProxyState};
+use crate::{is_network_failure, runtime_switch, ServerSessionState};
 
 // --- diagnostics reporting (field-support log bundle upload) ------------------------------
 //
@@ -142,7 +142,7 @@ fn build_diagnostics_bundle(
 /// report id; otherwise an Err string (the caller keeps the cached bundle for retry). `request_id` is
 /// both the X-Request-Id (→ pino req.id) and the on-disk bundle's sha256.
 async fn post_diagnostics_bundle(
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     bundle: &[u8],
     manifest: &serde_json::Value,
     request_id: &str,
@@ -198,7 +198,7 @@ async fn post_diagnostics_bundle(
 /// On-launch retry: re-POST every cached pending bundle (captured during a prior network outage) and
 /// drop the ones that succeed. Best-effort + fire-and-forget (spawned from setup). First sweeps pending
 /// bundles older than the cache cap so repeated offline failures can't fill app_cache_dir.
-pub(crate) async fn retry_pending_diagnostics(app: tauri::AppHandle, proxy: ProxyState) {
+pub(crate) async fn retry_pending_diagnostics(app: tauri::AppHandle, proxy: ServerSessionState) {
     let cache_dir = match app.path().app_cache_dir() {
         Ok(d) => d,
         Err(_) => return,
@@ -362,7 +362,7 @@ pub(crate) fn log_js(
 #[tauri::command]
 pub(crate) async fn report_diagnostics(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ProxyState>,
+    proxy: tauri::State<'_, ServerSessionState>,
     manifest: serde_json::Value,
 ) -> Result<i64, String> {
     let log_dir = app

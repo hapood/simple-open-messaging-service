@@ -1,4 +1,4 @@
-use crate::ProxyState;
+use crate::ServerSessionState;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -144,7 +144,7 @@ fn cache_key(origin: &str, credential: Option<&str>, path: &str) -> String {
     format!("{:x}", hash.finalize())
 }
 
-fn request_identity(proxy: &ProxyState, path: &str) -> (String, Option<String>, String) {
+fn request_identity(proxy: &ServerSessionState, path: &str) -> (String, Option<String>, String) {
     let origin = proxy.api_origin.lock().expect("origin lock").clone();
     let token = proxy.token.lock().ok().and_then(|value| value.clone());
     let key = cache_key(&origin, token.as_deref(), path);
@@ -181,7 +181,7 @@ fn video_thumbnail_path(app: &tauri::AppHandle, key: &str) -> Result<PathBuf, St
 
 pub(crate) async fn get_video_thumbnail(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     source_path: &str,
 ) -> Result<Vec<u8>, String> {
     validate_path(source_path)?;
@@ -195,7 +195,7 @@ pub(crate) async fn get_video_thumbnail(
  * Decode is authoritative: a loopback caller cannot persist arbitrary bytes under an image URL. */
 pub(crate) async fn put_video_thumbnail(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     source_path: &str,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
@@ -241,7 +241,7 @@ pub(crate) async fn put_video_thumbnail(
  * WebP content type and never aliases the original cache file. */
 async fn ensure_chat_thumbnail(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     source_path: &str,
     source_bytes: Vec<u8>,
 ) -> Result<Vec<u8>, String> {
@@ -301,7 +301,7 @@ async fn ensure_chat_thumbnail(
 
 pub(crate) async fn get_or_create_chat_thumbnail(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     source_path: &str,
 ) -> Result<Vec<u8>, String> {
     validate_path(source_path)?;
@@ -315,7 +315,7 @@ pub(crate) async fn get_or_create_chat_thumbnail(
 
 pub(crate) async fn read_chat_thumbnail(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     source_path: &str,
 ) -> Option<Vec<u8>> {
     validate_path(source_path).ok()?;
@@ -327,7 +327,7 @@ pub(crate) async fn read_chat_thumbnail(
  * complete cached original, but it never calls get_or_fetch and therefore never opens the network. */
 pub(crate) async fn get_cached_chat_thumbnail(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     source_path: &str,
 ) -> Result<Vec<u8>, String> {
     validate_path(source_path)?;
@@ -350,7 +350,7 @@ pub(crate) async fn get_cached_chat_thumbnail(
 
 /** Best-effort post-original warm-up. The URI response must not wait for this: a later thumbnail request
  * either hits the completed file or joins the same per-thumbnail lock in ensure_chat_thumbnail. */
-pub(crate) fn warm_chat_thumbnail(app: tauri::AppHandle, proxy: ProxyState, source_path: String) {
+pub(crate) fn warm_chat_thumbnail(app: tauri::AppHandle, proxy: ServerSessionState, source_path: String) {
     tauri::async_runtime::spawn(async move {
         match get_or_create_chat_thumbnail(&app, &proxy, &source_path).await {
             Ok(_) => {
@@ -784,7 +784,7 @@ async fn stream_response_range(
 /** Serve one player Range request while recording the returned bytes in a sparse native cache file. */
 pub(crate) async fn get_or_fetch_range(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     path: &str,
     range_header: &str,
 ) -> Result<CachedRangeResponse, String> {
@@ -1024,7 +1024,7 @@ pub(crate) async fn get_or_fetch_range(
 
 pub(crate) async fn get_or_fetch(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     path: &str,
 ) -> Result<CachedMedia, String> {
     get_or_fetch_inner(app, proxy, path, true, None).await
@@ -1032,7 +1032,7 @@ pub(crate) async fn get_or_fetch(
 
 async fn ensure_cached_file(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     path: &str,
 ) -> Result<CachedMedia, String> {
     get_or_fetch_inner(app, proxy, path, false, None).await
@@ -1040,7 +1040,7 @@ async fn ensure_cached_file(
 
 async fn get_or_fetch_inner(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     path: &str,
     load_bytes: bool,
     observer: Option<&MediaDownloadObserver>,
@@ -1533,7 +1533,7 @@ mod tests;
 #[tauri::command]
 pub(crate) async fn cache_media(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ProxyState>,
+    proxy: tauri::State<'_, ServerSessionState>,
     path: String,
 ) -> Result<CachedMediaFile, String> {
     let media = ensure_cached_file(&app, &proxy, &path).await?;
@@ -1547,7 +1547,7 @@ pub(crate) async fn cache_media(
 #[tauri::command]
 pub(crate) async fn download_media(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ProxyState>,
+    proxy: tauri::State<'_, ServerSessionState>,
     path: String,
     task_id: String,
 ) -> Result<CachedMediaFile, String> {
@@ -1581,7 +1581,7 @@ pub(crate) async fn download_media(
 }
 
 #[tauri::command]
-pub(crate) fn cancel_media_download(proxy: tauri::State<'_, ProxyState>, task_id: String) -> bool {
+pub(crate) fn cancel_media_download(proxy: tauri::State<'_, ServerSessionState>, task_id: String) -> bool {
     let token = proxy
         .media_download_cancels
         .lock()
@@ -1597,7 +1597,7 @@ pub(crate) fn cancel_media_download(proxy: tauri::State<'_, ProxyState>, task_id
 
 async fn cached_media_file(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     path: &str,
     media: CachedMedia,
 ) -> Result<CachedMediaFile, String> {
@@ -1617,7 +1617,7 @@ async fn cached_media_file(
 #[tauri::command]
 pub(crate) async fn save_media_desktop(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ProxyState>,
+    proxy: tauri::State<'_, ServerSessionState>,
     path: String,
     filename: String,
 ) -> Result<String, String> {

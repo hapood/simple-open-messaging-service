@@ -43,10 +43,7 @@ export interface OutboundSignatureHeaders {
 /** Strict-decode an S2S-Root-Key header value: RFC 4648 padded base64 naming
  *  exactly 32 bytes. Returns null on any deviation (Transport and Security 3.3). */
 export function parseRootKeyHeader(value: unknown): string | null {
-  if (
-    typeof value !== 'string' ||
-    !/^[A-Za-z0-9+/]{43}=$/.test(value)
-  ) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(value)) {
     return null;
   }
   return value;

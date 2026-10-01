@@ -75,9 +75,7 @@ describe('LinkPreviewService card generation', () => {
       },
       saveGeneratedWebp,
     );
-    spyThumbnail(service).mockResolvedValue(
-      Buffer.from('webp'),
-    );
+    spyThumbnail(service).mockResolvedValue(Buffer.from('webp'));
 
     const card = await service.buildCardContent('https://example.com');
 
@@ -103,9 +101,7 @@ describe('LinkPreviewService card generation', () => {
         favicon: 'https://static.example.com/favicon.ico',
       },
     );
-    spyThumbnail(service).mockRejectedValue(
-      new Error('unsupported image'),
-    );
+    spyThumbnail(service).mockRejectedValue(new Error('unsupported image'));
     const warn = vi.spyOn(
       (service as unknown as { logger: { warn: (message: string) => void } })
         .logger,
@@ -136,9 +132,7 @@ describe('LinkPreviewService card generation', () => {
       { favicon: 'https://example.com/favicon.ico' },
       vi.fn().mockRejectedValue(new Error('disk unavailable')),
     );
-    spyThumbnail(service).mockResolvedValue(
-      Buffer.from('webp'),
-    );
+    spyThumbnail(service).mockResolvedValue(Buffer.from('webp'));
     const warn = vi.spyOn(
       (service as unknown as { logger: { warn: (message: string) => void } })
         .logger,
@@ -234,9 +228,7 @@ describe('LinkPreviewService card generation', () => {
         url: `/uploads/msg-assets/aa/aa/${digest}`,
       }),
     );
-    spyThumbnail(service).mockResolvedValue(
-      Buffer.from('webp'),
-    );
+    spyThumbnail(service).mockResolvedValue(Buffer.from('webp'));
 
     const started = service.startGeneration(7, 'https://example.com');
     expect(service.getGeneration(7, started.generationId)?.status).toBe(

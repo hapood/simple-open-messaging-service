@@ -8,7 +8,7 @@ import {
 import { p2pPeerRelation } from '../relationship/shared/relationship-address.js';
 import type { NamespacedAddress } from '../common/client-identity.js';
 import type { RequestProjectionStatusValue } from '../../shared/request-projection-status.js';
-import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
@@ -33,7 +33,6 @@ import { ClientStateFeedService } from '../client-state-feed/client-state-feed.s
 import type { PendingClientStateFeedUpdate } from '../client-state-feed/client-state-feed.service.js';
 import { captureThreadStateUpdatesInTx } from '../client-state-feed/capture-thread-state-updates.js';
 import { lockAccountFeedAllocatorsInTx } from '../common/locks/account-feed-allocator-lock.js';
-import { FederationService } from '../federation/federation.service.js';
 import { GroupRelationshipMutationService } from './membership-intent/shared/group-relationship-mutation.service.js';
 import { GroupMetaFeedService } from './meta/group-meta-feed.service.js';
 import { enqueueCurrentThreadFanoutsInTx } from '../message/thread-fanout-task.js';
@@ -64,13 +63,10 @@ import {
  */
 @Injectable()
 export class GroupService {
-  private readonly logger = new Logger(GroupService.name);
-
   @Inject(DurableTaskQueueService)
   private readonly tasks!: DurableTaskQueueService;
   constructor(
     private database: DatabaseService,
-    private readonly federation: FederationService,
     private readonly relationshipMutations: GroupRelationshipMutationService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly groupMeta: GroupMetaFeedService,
@@ -80,7 +76,7 @@ export class GroupService {
   /** Resolve a member's current roster details only after its pair is active. */
   async resolveActiveMember(
     threadId: number,
-    identity: { account: string; domain: string },
+    identity: { account: string; namespaceId: number },
   ): Promise<NamespacedAddress & { name: string }> {
     return this.database.db.transaction(async (tx) => {
       const [thread] = await tx
@@ -895,22 +891,5 @@ export class GroupService {
         'only active group managers may handle requests',
       );
     }
-  }
-
-  private notifyCommandEffects(
-    clientFeedUpdates: Array<{ userId: number; feedId: number }>,
-    statePeers: Iterable<string>,
-    operation: string,
-  ): void {
-    try {
-      this.clientStateFeed.notifyFeedUpdates(clientFeedUpdates);
-    } catch (error) {
-      this.logger.warn(`${operation} client-state wake failed`, error);
-    }
-    void this.federation
-      .pushStateFeedDomains(statePeers)
-      .catch((error: unknown) =>
-        this.logger.warn(`${operation} state-feed wake failed`, error),
-      );
   }
 }

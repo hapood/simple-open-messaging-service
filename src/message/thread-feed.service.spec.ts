@@ -119,7 +119,7 @@ describe('thread feed database previews', () => {
         deletionType: null,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({
-          text: '[@Reader](somfp://user/reader) hi [@All](somfp://audience/all)',
+          text: '[@Reader](somfp://user/0/reader) hi [@All](somfp://audience/all)',
         }),
       },
     ]);
@@ -149,53 +149,45 @@ describe('thread mention semantics', () => {
   it('recognizes user and audience entities but not escaped text or another account', () => {
     const content = (text: string) => JSON.stringify({ text });
     expect(
-      mentionsAccount(content('[@Reader](somfp://user/reader)'), 'reader'),
+      mentionsAccount(content('[@Reader](somfp://user/0/reader)'), 'reader'),
     ).toBe(true);
     expect(
       mentionsAccount(content('[@All](somfp://audience/all)'), 'reader'),
     ).toBe(true);
     expect(
-      mentionsAccount(content('[@Other](somfp://user/other)'), 'reader'),
+      mentionsAccount(content('[@Other](somfp://user/0/other)'), 'reader'),
     ).toBe(false);
     expect(
       mentionsAccount(
-        content(String.raw`\[@Reader](somfp://user/reader)`),
+        content(String.raw`\[@Reader](somfp://user/0/reader)`),
         'reader',
       ),
     ).toBe(false);
     expect(mentionsAccount(content('plain text'), 'reader')).toBe(false);
   });
 
-  it('matches the production full-address entity forms issued by clients', () => {
+  it('matches the production namespace/account entity forms issued by clients', () => {
     const content = (text: string) => JSON.stringify({ text });
-    // The composer serializes chips as full SOMFP addresses: local members as
-    // account@local, federated members as account@home-domain.
+    // The composer serializes chips as v1 user entities: somfp://user/<ns>/<account>.
+    // A local subject uses namespace 0; a foreign subject uses the publisher's
+    // namespace for that subject. mentionsAccount compares the account segment.
     expect(
       mentionsAccount(
-        content('[@Reader](somfp://user/reader%40local)'),
+        content('[@Reader](somfp://user/0/reader)'),
         'reader',
       ),
     ).toBe(true);
     expect(
       mentionsAccount(
-        content('[@Reader](somfp://user/reader%40bravo.test)'),
+        content('[@Reader](somfp://user/12/reader)'),
         'reader',
-        'bravo.test',
       ),
     ).toBe(true);
-    // A same-named account on another node must not badge this node's user.
+    // A different account must not badge this user.
     expect(
       mentionsAccount(
-        content('[@Reader](somfp://user/reader%40bravo.test)'),
+        content('[@Other](somfp://user/0/other)'),
         'reader',
-        'alpha.test',
-      ),
-    ).toBe(false);
-    expect(
-      mentionsAccount(
-        content('[@Other](somfp://user/other%40local)'),
-        'reader',
-        'bravo.test',
       ),
     ).toBe(false);
   });

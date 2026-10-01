@@ -16,9 +16,9 @@ describe('saveTaskCheckpointInTx', () => {
     const h = harness([{ id: 7n }]);
     await saveTaskCheckpointInTx(h.tx as never, 7n, { after: '10' });
     expect(h.set).toHaveBeenCalledWith({ checkpoint: { after: '10' } });
-    expect(
-      new PgDialect().sqlToQuery(h.where.mock.calls[0][0]).params,
-    ).toEqual([7n, 'PROCESSING']);
+    expect(new PgDialect().sqlToQuery(h.where.mock.calls[0][0]).params).toEqual(
+      [7n, 'PROCESSING'],
+    );
   });
 
   it('preserves synchronous state checking by default', async () => {

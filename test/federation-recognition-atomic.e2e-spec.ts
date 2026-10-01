@@ -11,9 +11,7 @@ import { eq } from 'drizzle-orm';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
-import {
-  identityNamespace,
-} from '../src/database/schema.js';
+import { identityNamespace } from '../src/database/schema.js';
 import type { WellKnownDoc } from '../src/federation/discovery.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { FederationRecognitionService } from '../src/federation/federation-recognition.service.js';

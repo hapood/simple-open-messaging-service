@@ -79,7 +79,11 @@ export function verifySigningCertificate(
  *  base64 key); uniqueness and overlap are document-level properties. */
 export function isValidRootKeyEntry(entry: unknown): entry is RootKeyEntry {
   if (!entry || typeof entry !== 'object') return false;
-  const value = entry as { ed25519?: unknown; notBefore?: unknown; notAfter?: unknown };
+  const value = entry as {
+    ed25519?: unknown;
+    notBefore?: unknown;
+    notAfter?: unknown;
+  };
   return (
     typeof value.ed25519 === 'string' &&
     BASE64_KEY_RE.test(value.ed25519) &&

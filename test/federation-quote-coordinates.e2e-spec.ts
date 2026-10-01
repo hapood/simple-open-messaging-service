@@ -72,7 +72,10 @@ describe('federation quote coordinates across three persisted node views', () =>
   });
   afterAll(async () => mod.close());
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "MessageThread", "GroupAccount", "Profile" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "MessageThread", "GroupAccount", "Profile" RESTART IDENTITY CASCADE',
+    );
     const views: View[] = [];
     for (const [domain, namespaceId] of namespaces) {
       const authorityNamespaceId =

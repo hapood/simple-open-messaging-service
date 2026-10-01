@@ -190,8 +190,10 @@ export class RelationshipIntentService {
     changed: boolean;
   }> {
     const pair = await this.lockGroupMutationInTx(tx, params);
-    const groupSide = pair.endpointA.type === 'GROUP' ? pair.endpointA : pair.endpointB;
-    const memberSide = groupSide === pair.endpointA ? pair.endpointB : pair.endpointA;
+    const groupSide =
+      pair.endpointA.type === 'GROUP' ? pair.endpointA : pair.endpointB;
+    const memberSide =
+      groupSide === pair.endpointA ? pair.endpointB : pair.endpointA;
     return this.writeLockedGroupAuthoredIntentInTx(tx, {
       direction:
         params.author === 'GROUP'
@@ -675,7 +677,10 @@ export class RelationshipIntentService {
       kind: 'P2P',
       endpointA: endpointA!,
       endpointB: endpointB!,
-      endpointBNamespaceId: this.pairPeerNamespaceId(firstEndpoint, secondEndpoint),
+      endpointBNamespaceId: this.pairPeerNamespaceId(
+        firstEndpoint,
+        secondEndpoint,
+      ),
       threadId,
       firstSide,
       secondSide: firstSide === 'A' ? 'B' : 'A',
@@ -831,8 +836,6 @@ export class RelationshipIntentService {
     );
   }
 
-
-
   private reverseDirection(direction: IntentDirection): IntentDirection {
     return {
       authorAccount: direction.receiverAccount,
@@ -867,7 +870,10 @@ export class RelationshipIntentService {
         eq(relationshipIntent.authorAccount, direction.authorAccount),
         eq(relationshipIntent.authorNamespaceId, direction.authorNamespaceId),
         eq(relationshipIntent.receiverAccount, direction.receiverAccount),
-        eq(relationshipIntent.receiverNamespaceId, direction.receiverNamespaceId),
+        eq(
+          relationshipIntent.receiverNamespaceId,
+          direction.receiverNamespaceId,
+        ),
       ),
       columns: {
         status: true,

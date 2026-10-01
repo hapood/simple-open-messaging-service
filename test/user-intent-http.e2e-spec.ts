@@ -22,7 +22,10 @@ describe('User intent HTTP contract e2e', () => {
   });
 
   beforeEach(async () => {
-    await truncateTablesForTest(database.pool, 'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE');
+    await truncateTablesForTest(
+      database.pool,
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+    );
   });
 
   afterAll(async () => {
@@ -77,7 +80,10 @@ describe('User intent HTTP contract e2e', () => {
     const rows = await database.db.query.relationshipIntent.findMany({
       where: and(
         eq(tables.relationshipIntent.authorAccount, firstEndpoint.account),
-        eq(tables.relationshipIntent.authorNamespaceId, firstEndpoint.namespaceId),
+        eq(
+          tables.relationshipIntent.authorNamespaceId,
+          firstEndpoint.namespaceId,
+        ),
       ),
     });
     const row = rows[0];
@@ -334,15 +340,33 @@ describe('User intent HTTP contract e2e', () => {
         or(
           and(
             eq(tables.relationshipIntent.authorAccount, firstEndpoint.account),
-            eq(tables.relationshipIntent.authorNamespaceId, firstEndpoint.namespaceId),
-            eq(tables.relationshipIntent.receiverAccount, secondEndpoint.account),
-            eq(tables.relationshipIntent.receiverNamespaceId, secondEndpoint.namespaceId),
+            eq(
+              tables.relationshipIntent.authorNamespaceId,
+              firstEndpoint.namespaceId,
+            ),
+            eq(
+              tables.relationshipIntent.receiverAccount,
+              secondEndpoint.account,
+            ),
+            eq(
+              tables.relationshipIntent.receiverNamespaceId,
+              secondEndpoint.namespaceId,
+            ),
           ),
           and(
             eq(tables.relationshipIntent.authorAccount, secondEndpoint.account),
-            eq(tables.relationshipIntent.authorNamespaceId, secondEndpoint.namespaceId),
-            eq(tables.relationshipIntent.receiverAccount, firstEndpoint.account),
-            eq(tables.relationshipIntent.receiverNamespaceId, firstEndpoint.namespaceId),
+            eq(
+              tables.relationshipIntent.authorNamespaceId,
+              secondEndpoint.namespaceId,
+            ),
+            eq(
+              tables.relationshipIntent.receiverAccount,
+              firstEndpoint.account,
+            ),
+            eq(
+              tables.relationshipIntent.receiverNamespaceId,
+              firstEndpoint.namespaceId,
+            ),
           ),
         ),
       );
@@ -403,9 +427,15 @@ describe('User intent HTTP contract e2e', () => {
       .where(
         and(
           eq(tables.relationshipIntent.authorAccount, firstEndpoint.account),
-          eq(tables.relationshipIntent.authorNamespaceId, firstEndpoint.namespaceId),
+          eq(
+            tables.relationshipIntent.authorNamespaceId,
+            firstEndpoint.namespaceId,
+          ),
           eq(tables.relationshipIntent.receiverAccount, secondEndpoint.account),
-          eq(tables.relationshipIntent.receiverNamespaceId, secondEndpoint.namespaceId),
+          eq(
+            tables.relationshipIntent.receiverNamespaceId,
+            secondEndpoint.namespaceId,
+          ),
         ),
       );
 

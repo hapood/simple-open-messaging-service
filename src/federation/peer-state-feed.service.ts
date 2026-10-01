@@ -375,9 +375,7 @@ export class PeerStateFeedService {
     return target?.feedId ?? 0n;
   }
 
-  async rejectMissingAfter(
-    namespaceId: number,
-  ): Promise<never> {
+  async rejectMissingAfter(namespaceId: number): Promise<never> {
     const feedEndId = await this.readFeedEndId(namespaceId);
     if (feedEndId === 0n)
       throw new Error(`namespace ${namespaceId} has no state feed`);

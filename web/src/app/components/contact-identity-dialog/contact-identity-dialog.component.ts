@@ -129,7 +129,7 @@ export class ContactIdentityDialogComponent {
                   item.kind === 'GROUP' &&
                   item.status === 'REQUESTED' &&
                   item.group?.account === identity.account &&
-                  item.group.domain === identity.domain,
+                  item.group?.namespaceId === identity.namespaceId,
               ),
             ),
           );

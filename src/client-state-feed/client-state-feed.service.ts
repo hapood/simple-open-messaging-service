@@ -21,9 +21,7 @@ export interface ClientStateFeedWrite {
   userId: number;
   account: string;
   domain: string;
-  eventType:
-    | 'RELATIONSHIP_INTENT'
-    | 'INCOMING_INVITE_HEAD';
+  eventType: 'RELATIONSHIP_INTENT' | 'INCOMING_INVITE_HEAD';
   /** Federation context owning this fact. If either relationship endpoint is federated, both
    * authored directions use that captured namespace; only wholly local facts use namespace 0. */
   namespaceId: number;

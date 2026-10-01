@@ -100,7 +100,7 @@ interface ClientFriendIntentBase {
   account: string;
   domain: string;
   subjectAccount: string;
-  subjectDomain: string;
+  subjectNamespaceId: number;
   note: string;
   requestedAt: number | null;
   expiresAt: number | null;
@@ -143,7 +143,7 @@ export interface ClientGroupInviteIntent {
   account: string;
   domain: string;
   subjectAccount: string;
-  subjectDomain: string;
+  subjectNamespaceId: number;
   status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
   note: string;
   requestedAt: number | null;
@@ -152,9 +152,7 @@ export interface ClientGroupInviteIntent {
   threadId: number;
   group: {
     account: string;
-    domain: string;
     namespaceId: number;
-    isLocal: boolean;
     name: string;
     avatar: string;
     description: string;
@@ -171,12 +169,12 @@ type ClientStateBody =
       | 'account'
       | 'domain'
       | 'subjectAccount'
-      | 'subjectDomain'
+      | 'subjectNamespaceId'
       | 'requestedSort'
     >
   | Omit<
       ClientGroupInviteIntent,
-      'key' | 'account' | 'domain' | 'subjectAccount' | 'subjectDomain' | 'kind'
+      'key' | 'account' | 'domain' | 'subjectAccount' | 'subjectNamespaceId' | 'kind'
     >;
 
 export interface FriendIntentPage {
@@ -195,7 +193,7 @@ export type ClientStateFeedItem =
       namespaceId: number;
       eventType: 'RELATIONSHIP_INTENT';
       subjectAccount: string;
-      subjectDomain: string;
+      subjectNamespaceId: number;
       body: ClientStateBody;
     }
   | {
@@ -205,7 +203,7 @@ export type ClientStateFeedItem =
       namespaceId: 0;
       eventType: 'INCOMING_INVITE_HEAD';
       subjectAccount: '';
-      subjectDomain: 'local';
+      subjectNamespaceId: 0;
       body: {
         readThroughFeedId: number;
       };
@@ -382,8 +380,8 @@ export class UserService {
     }
     checkSession();
     const [latest, requestReadHead] = await Promise.all([
-      this.webdb.getMeta('relationshipRequestStateRevision'),
-      this.webdb.getMeta('relationshipRequestReadHead'),
+      this.webdb.getSyncState('relationshipRequestStateRevision'),
+      this.webdb.getSyncState('relationshipRequestReadHead'),
     ]);
     checkSession();
     this.sessionUserId.set(userId);
@@ -399,7 +397,7 @@ export class UserService {
         ? readThroughFeedId
         : 0,
     );
-    const lastCleanup = await this.webdb.getMeta(
+    const lastCleanup = await this.webdb.getSyncState(
       'relationshipRequestCleanupAt',
     );
     checkSession();
@@ -410,7 +408,10 @@ export class UserService {
       void this.webdb
         .cleanupRelationshipRequests()
         .then(() =>
-          this.webdb.putMeta('relationshipRequestCleanupAt', Date.now()),
+          this.webdb.putSyncState(
+            'relationshipRequestCleanupAt',
+            Date.now(),
+          ),
         );
     }
     void this.gateSelfProfile(userId, profileRev).catch(async (error) => {
@@ -645,10 +646,10 @@ export class UserService {
     if (userId === null) return undefined;
     const [cursor, requestRevision, intentRevision, readHead] =
       await Promise.all([
-        this.webdb.getMeta('stateFeedId'),
-        this.webdb.getMeta('relationshipRequestStateRevision'),
-        this.webdb.getMeta('relationshipIntentStateRevision'),
-        this.webdb.getMeta('relationshipRequestReadHead'),
+        this.webdb.getSyncState('stateFeedId'),
+        this.webdb.getSyncState('relationshipRequestStateRevision'),
+        this.webdb.getSyncState('relationshipIntentStateRevision'),
+        this.webdb.getSyncState('relationshipRequestReadHead'),
       ]);
     if (this.sessionUserId() !== userId) return undefined;
     const committed = cursor === undefined ? 0 : cursor;

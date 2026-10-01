@@ -264,8 +264,7 @@ export class GroupRelationshipMutationService {
             threadId,
             group: {
               account: group.account,
-              domain: 'local',
-              isLocal: true,
+              namespaceId: 0,
               name: projectedGroup.name,
               avatar: projectedGroup.avatar,
               description: group.description,
@@ -324,8 +323,7 @@ export class GroupRelationshipMutationService {
           threadId,
           group: {
             account: group.account,
-            domain: group.domain,
-            isLocal: false,
+            namespaceId: group.namespaceId,
             name: projectedGroup.name,
             avatar: projectedGroup.avatar,
             description: group.description,
@@ -470,8 +468,7 @@ export class GroupRelationshipMutationService {
           threadId,
           group: {
             account: state.groupAccount,
-            domain: 'local',
-            isLocal: true,
+            namespaceId: 0,
             name: state.groupName,
             avatar: state.groupAvatar,
             description: state.groupDescription,

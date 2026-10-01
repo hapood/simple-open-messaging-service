@@ -2,7 +2,7 @@ use crate::*;
 
 pub(crate) async fn proxy_media(
     app: tauri::AppHandle,
-    st: ProxyState,
+    st: ServerSessionState,
     request: tauri::http::Request<Vec<u8>>,
     responder: UriSchemeResponder,
 ) {
@@ -265,7 +265,7 @@ async fn probe_client_compat(origin: &str) -> bool {
 
 /// Apply a chosen origin + mode as the active one, notifying the desktop SSE supervisor to reopen on it
 /// (API⇄SSE lockstep). No-op if it's already the active. Shared by `pick_origin_race` + `maybe_switch`.
-pub(crate) fn activate_origin(state: &ProxyState, origin: &str, mode: OriginMode) {
+pub(crate) fn activate_origin(state: &ServerSessionState, origin: &str, mode: OriginMode) {
     let prev = {
         let mut g = state.api_origin.lock().expect("origin lock");
         std::mem::replace(&mut *g, origin.to_string())
@@ -283,7 +283,7 @@ pub(crate) fn activate_origin(state: &ProxyState, origin: &str, mode: OriginMode
 /// init + full-disconnect reconnect — NOT for runtime single-failure (that's `maybe_switch`). No-op when
 /// no secondary is configured (dev / no SOMS_LAN_DOMAIN). Single-flight (one race at a time). Never adopts
 /// a dead origin: if both fail, the active is left as-is.
-pub(crate) async fn pick_origin_race(state: &ProxyState) -> Option<String> {
+pub(crate) async fn pick_origin_race(state: &ServerSessionState) -> Option<String> {
     let Some(secondary) = state
         .api_origin_secondary
         .lock()
@@ -363,7 +363,7 @@ pub(crate) async fn pick_origin_race(state: &ProxyState) -> Option<String> {
 /// Desktop-only runtime switch (the transports + diagnostics call this on a network failure). On Android
 /// Rust is PASSIVE — Kotlin owns the decision and signals via `set_active_origin` — so this is a no-op
 /// there, avoiding a second, divergent decision-maker.
-pub(crate) async fn runtime_switch(state: &ProxyState) {
+pub(crate) async fn runtime_switch(state: &ServerSessionState) {
     let _ = pick_origin_race(state).await;
 }
 
@@ -373,7 +373,7 @@ pub(crate) async fn runtime_switch(state: &ProxyState) {
 /// routing through IPC also lets RUST own the session token (JS never touches it). Mirrors what the
 /// former `proxy_api` did, but as an IPC command: build a reqwest request to `${api_origin}${path}`
 /// (`path` already includes `/api/v1…` + query), forward a whitelist of JS headers (NEVER `authorization`
-/// — Rust injects the Bearer from `ProxyState.token`), buffer the response, return status + headers +
+/// — Rust injects the Bearer from `ServerSessionState.token`), buffer the response, return status + headers +
 /// UTF-8 body. Uses the cached `api_client` (one connection pool per origin). Message/API JSON replies
 /// have a bounded body read as well as bounded headers; media downloads use a separate transport.
 /// Redirects are never followed (same posture as `http_client_for`).
@@ -387,7 +387,7 @@ pub(crate) struct ApiRequestResult {
 #[tauri::command]
 pub(crate) async fn api_request(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ProxyState>,
+    proxy: tauri::State<'_, ServerSessionState>,
     method: String,
     path: String,
     headers: std::collections::HashMap<String, String>,
@@ -399,7 +399,7 @@ pub(crate) async fn api_request(
 
 pub(crate) async fn perform_api_request(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     method: String,
     path: String,
     headers: std::collections::HashMap<String, String>,
@@ -412,7 +412,7 @@ pub(crate) async fn perform_api_request(
 /// Background consumers use the same HTTP policy without a shell event sink.
 pub(crate) async fn perform_api_request_with_events(
     app: Option<&tauri::AppHandle>,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     method: String,
     path: String,
     headers: std::collections::HashMap<String, String>,
@@ -531,7 +531,7 @@ pub(crate) async fn perform_api_request_with_events(
 /// (the resource loader consults `shouldInterceptRequest` → the `proxy_media` scheme handler), but
 /// Android's Chromium WebView rejects non-standard schemes in `fetch()`. `TauriHttpBackend` routes `media://`
 /// requests to THIS command: a reqwest GET to `${api_origin}${path}` with the Bearer injected from
-/// `ProxyState.token` (so JS still never touches the token), returning the raw bytes. Mirrors `proxy_media`
+/// `ServerSessionState.token` (so JS still never touches the token), returning the raw bytes. Mirrors `proxy_media`
 /// but as an IPC command returning bytes (not a scheme-handler `Response`); reuses the cached per-origin
 /// `api_client` (the IP/http permissive-TLS posture + one warm connection pool), so uploads served from a
 /// self-signed LAN IP server resolve the same way API calls do.
@@ -545,7 +545,7 @@ pub(crate) struct MediaRequestResult {
 #[tauri::command]
 pub(crate) async fn media_request(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ProxyState>,
+    proxy: tauri::State<'_, ServerSessionState>,
     path: String,
 ) -> Result<MediaRequestResult, String> {
     // Only /uploads/* is ever proxied as media (parity with `proxy_media`'s gate); reject anything else so

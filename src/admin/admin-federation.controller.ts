@@ -106,12 +106,12 @@ export class AdminFederationController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/identity-reviews')
   @ApiOperation({
-    summary: 'List pending peer identity reviews (domain re-binds, root rotations)',
+    summary:
+      'List pending peer identity reviews (domain re-binds, root rotations)',
   })
   async pendingIdentityReviews() {
     return this.namespaceAdmin.pendingReviews();
   }
-
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.SUPER_ADMIN)
@@ -138,7 +138,9 @@ export class AdminFederationController {
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.SUPER_ADMIN)
-  @Audit('federation.local_root_unpublish', { targetType: 'localFederationRoot' })
+  @Audit('federation.local_root_unpublish', {
+    targetType: 'localFederationRoot',
+  })
   @HttpCode(HttpStatus.OK)
   @Post('admin/federation/local-root-epochs/:id/unpublish')
   @ApiOperation({

@@ -680,8 +680,9 @@ describe('group join decision', () => {
         profile: { account: f.group.account, domain: 'local', profileRev: 1 },
       });
       expect(threadState?.profile.profileRev).toBe(
-        result.intents.find((intent) => intent.authorAccount === f.group.account)
-        ?.profileRev,
+        result.intents.find(
+          (intent) => intent.authorAccount === f.group.account,
+        )?.profileRev,
       );
       expect(result.feed?.body).toMatchObject({ established: true });
       expect(
@@ -1715,7 +1716,9 @@ describe('group join decision', () => {
     });
     const after = await state(rejected);
     expect(
-      after.intents.map((intent) => [intent.authorAccount, intent.status]).sort(),
+      after.intents
+        .map((intent) => [intent.authorAccount, intent.status])
+        .sort(),
     ).toEqual(
       [
         [rejected.group.account, 'REVOKED'],
@@ -1862,7 +1865,9 @@ describe('group join decision', () => {
     const result = await state(f);
     expect(result.pair?.active).toBe(true);
     expect(
-      result.intents.map((intent) => [intent.authorAccount, intent.status]).sort(),
+      result.intents
+        .map((intent) => [intent.authorAccount, intent.status])
+        .sort(),
     ).toEqual(
       [
         [f.group.account, 'ACCEPTED'],
@@ -1893,7 +1898,9 @@ describe('group join decision', () => {
     const result = await state(f);
     expect(result.pair?.active).toBe(true);
     expect(
-      result.intents.map((intent) => [intent.authorAccount, intent.status]).sort(),
+      result.intents
+        .map((intent) => [intent.authorAccount, intent.status])
+        .sort(),
     ).toEqual(
       [
         [f.group.account, 'ACCEPTED'],
@@ -1957,7 +1964,9 @@ describe('group join decision', () => {
     const result = await state(f);
     expect(result.pair?.active).toBe(true);
     expect(
-      result.intents.map((intent) => [intent.authorAccount, intent.status]).sort(),
+      result.intents
+        .map((intent) => [intent.authorAccount, intent.status])
+        .sort(),
     ).toEqual(
       [
         [f.group.account, 'ACCEPTED'],
@@ -2198,7 +2207,9 @@ describe('group join decision', () => {
     let result = await state(f);
     expect(result.pair?.active).toBe(false);
     expect(
-      result.intents.map((intent) => [intent.authorAccount, intent.status]).sort(),
+      result.intents
+        .map((intent) => [intent.authorAccount, intent.status])
+        .sort(),
     ).toEqual(
       [
         [f.group.account, 'REQUESTED'],
@@ -2222,7 +2233,9 @@ describe('group join decision', () => {
     });
     result = await state(g);
     expect(
-      result.intents.map((intent) => [intent.authorAccount, intent.status]).sort(),
+      result.intents
+        .map((intent) => [intent.authorAccount, intent.status])
+        .sort(),
     ).toEqual(
       [
         [g.group.account, 'ACCEPTED'],

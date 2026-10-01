@@ -16,9 +16,7 @@ interface Harness {
  * `select` first serves the row-0 head lookup, then the feed page or the
  * bindings row. `update`/`insert` back the write path.
  */
-function harness(
-  selectResults: Array<Record<string, unknown>[]>,
-): Harness {
+function harness(selectResults: Array<Record<string, unknown>[]>): Harness {
   const reads: Array<Record<string, unknown>[]> = [];
   const upsertValues: unknown[] = [];
   let selectCalls = 0;

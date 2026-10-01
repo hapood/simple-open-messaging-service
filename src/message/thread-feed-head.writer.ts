@@ -1,38 +1,26 @@
 import { sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../database/database.service.js';
-import { parseSomfpUserAddress } from '../common/account.js';
+import { parseSomfpUserMentionEntity } from '../common/account.js';
 import { parseMessageEntities } from '../common/message-entity.js';
-import { loadFederationConfig } from '../federation/federation.config.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import { THREAD_PREVIEW_LIMIT } from './thread-preview-limit.js';
 
-/** Clients serialize mention chips as full SOMFP user addresses (validated at
- * send): `account@local` for same-node members, `account@home-domain` for
- * federated members. The projection compares bare local accounts, so entity
- * ids are normalized back; a full address only matches when its domain is this
- * node, otherwise a same-named account on another node would badge wrongly. */
+/** Clients serialize mention chips as v1 user entities (validated at send):
+ * `somfp://user/<namespaceId>/<account>`. The projection compares the
+ * account segment; `namespaceId: 0` denotes a subject local to the publishing
+ * server, a positive value a foreign subject's namespace. */
 function userMentionTargetsAccount(
   entityId: string,
   account: string,
-  ownDomain?: string,
 ): boolean {
-  const target = account.toLowerCase();
-  const id = entityId.toLowerCase();
-  if (id === target) return true;
-  if (id.endsWith('@local')) return id.slice(0, -'@local'.length) === target;
-  const parsed = parseSomfpUserAddress(entityId);
+  const parsed = parseSomfpUserMentionEntity(entityId);
   if (!parsed) return false;
-  const own = (ownDomain ?? loadFederationConfig().domain).toLowerCase();
-  return (
-    parsed.account.toLowerCase() === target &&
-    parsed.domain.toLowerCase() === own
-  );
+  return parsed.account.toLowerCase() === account.toLowerCase();
 }
 
 export function mentionsAccount(
   content: string,
   account: string,
-  ownDomain?: string,
 ): boolean {
   const text = parseTextMessageContent(content)?.text ?? '';
   return parseMessageEntities(text).some(
@@ -40,7 +28,7 @@ export function mentionsAccount(
       entity.kind === 'entity' &&
       ((entity.entityType === 'audience' && entity.entityId === 'all') ||
         (entity.entityType === 'user' &&
-          userMentionTargetsAccount(entity.entityId, account, ownDomain))),
+          userMentionTargetsAccount(entity.entityId, account))),
   );
 }
 
@@ -298,7 +286,9 @@ export class ThreadFeedHeadWriter {
     const head = result.rows[0];
     if (!head?.metaEndId) return [];
     if (head.profileRev > 0 && head.profileSourceId === null)
-      throw new Error('group profile reference has no matching GROUP_PROFILE item');
+      throw new Error(
+        'group profile reference has no matching GROUP_PROFILE item',
+      );
     return this.advanceGroupMetaCoordinatesInTx(tx, {
       threadId: input.threadId,
       userIds: input.userIds,

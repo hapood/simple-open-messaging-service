@@ -146,8 +146,7 @@ describe('AuthoritativeMembershipFinalizerService', () => {
       });
 
       if (active) expect(audience.close).not.toHaveBeenCalled();
-      else
-        expect(audience.close).toHaveBeenCalledWith(target.tx, 9, 7);
+      else expect(audience.close).toHaveBeenCalledWith(target.tx, 9, 7);
       expect(target.tx.update).not.toHaveBeenCalled();
     },
   );

@@ -5,13 +5,9 @@ import {
   isValidAccount,
   isValidSomfpDomain,
   isValidSomfpUserAccount,
-  parseSomfpUserAddress,
+  parseSomfpUserMentionEntity,
 } from '../common/account.js';
-import {
-  parseMessageEntities,
-  serializeUserMention,
-  transformMessageEntities,
-} from '../common/message-entity.js';
+import { parseMessageEntities } from '../common/message-entity.js';
 import {
   hasUnpairedSurrogate,
   unicodeCodePointLength,
@@ -148,33 +144,17 @@ function validateForwardCard(value: JsonObject): void {
 function projectTextContent(
   value: JsonObject,
   strictQuote = false,
-  domainMapping?: { from: string; to: string },
 ): JsonObject {
   assertKeys(value, ['text'], strictQuote ? [] : ['quote']);
   if (typeof value['text'] !== 'string' || value['text'].length === 0)
     throw new Error('invalid text');
-  const publishingLocalContent = domainMapping?.from === 'local';
   for (const segment of parseMessageEntities(value['text'])) {
     if (segment.kind !== 'entity' || segment.entityType !== 'user') continue;
-    if (publishingLocalContent && segment.entityId.endsWith('@local')) {
-      const account = segment.entityId.slice(0, -'@local'.length);
-      if (isValidSomfpUserAccount(account)) continue;
-    }
-    if (!parseSomfpUserAddress(segment.entityId)) {
-      throw new Error('federated user mention must use a valid full address');
+    if (!parseSomfpUserMentionEntity(segment.entityId)) {
+      throw new Error('federated user mention must use a valid namespace/account entity');
     }
   }
-  const text = domainMapping
-    ? transformMessageEntities(value['text'], (entity) => {
-        if (entity.entityType !== 'user') return entity.raw;
-        const separator = entity.entityId.lastIndexOf('@');
-        const account = entity.entityId.slice(0, separator);
-        const domain = entity.entityId.slice(separator + 1);
-        return domain === domainMapping.from
-          ? serializeUserMention(entity.label, `${account}@${domainMapping.to}`)
-          : entity.raw;
-      })
-    : value['text'];
+  const text = value['text'];
   if (value['quote'] === undefined) return { text };
   if (
     !value['quote'] ||
@@ -235,7 +215,6 @@ function withoutUndefined(value: JsonObject): JsonObject {
 export function toFederatedMessageContent(
   contentType: ContentType,
   content: string,
-  localDomain: string,
 ): string {
   if (!Object.values(ContentType).includes(contentType))
     throw new Error('unknown federated content type');
@@ -243,7 +222,7 @@ export function toFederatedMessageContent(
   switch (contentType) {
     case ContentType.PURE_TEXT:
       return JSON.stringify(
-        projectTextContent(value, false, { from: 'local', to: localDomain }),
+        projectTextContent(value, false),
       );
     case ContentType.IMAGE:
       validateImageName(value);
@@ -338,7 +317,7 @@ export function toFederatedMessageContent(
       }
       return JSON.stringify({
         account: value['account'],
-        domain: value['domain'] === 'local' ? localDomain : value['domain'],
+        domain: value['domain'],
         displayName: value['displayName'],
         bio: value['bio'],
         ...(value['avatar'] === undefined
@@ -384,7 +363,6 @@ export function toFederatedMessageContent(
 export function fromFederatedMessageContent(
   contentType: ContentType,
   content: string,
-  localDomain: string,
   assetBytes: ReadonlyMap<string, number> = new Map(),
 ): string {
   if (!Object.values(ContentType).includes(contentType))
@@ -417,7 +395,7 @@ export function fromFederatedMessageContent(
   switch (contentType) {
     case ContentType.PURE_TEXT:
       return JSON.stringify(
-        projectTextContent(value, true, { from: localDomain, to: 'local' }),
+        projectTextContent(value, true),
       );
     case ContentType.IMAGE:
       validateImageName(value);
@@ -502,7 +480,7 @@ export function fromFederatedMessageContent(
           : { favicon: localCasUrl(value['favicon']) }),
       });
     case ContentType.CONTACT_CARD:
-      validateContactCard(value);
+      validateContactCard(value, true);
       if (value['avatar'] !== undefined) {
         throw new Error('federated contact card must not contain avatar');
       }
@@ -510,7 +488,7 @@ export function fromFederatedMessageContent(
         assertDigest(value['avatarDigest']);
       return JSON.stringify({
         account: value['account'],
-        domain: value['domain'] === localDomain ? 'local' : value['domain'],
+        domain: value['domain'],
         displayName: value['displayName'],
         bio: value['bio'],
         ...(value['avatarDigest'] === undefined

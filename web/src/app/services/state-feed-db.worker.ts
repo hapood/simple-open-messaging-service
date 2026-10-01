@@ -1,13 +1,9 @@
 /// <reference lib="webworker" />
 
 import { WebdbStorage } from './webdb-storage';
-import { attentionSnapshot } from '../../../../shared/thread-attention';
-import {
-  coalesceGroupMetaWakes,
-  coalesceThreadFeedWakes,
-} from './thread-feed-sync';
+import { coalesceThreadFeedWakes } from './thread-feed-sync';
 import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
-import { syncGroupMeta, syncGroupMetaThread } from './group-meta-sync';
+import { syncGroupMetaThread } from './group-meta-sync';
 import { syncTombstoneThread } from './tombstone-sync';
 import { synchronizeStateFeed } from './worker-state-feed-sync';
 import { syncPushThreads, type PushThreadResult } from './push-thread-sync';
@@ -312,26 +308,12 @@ const resolveGroupMetaProfile = async (
   return (await requestProfile(demand)).status === 'READY';
 };
 
-const synchronizeGroupMeta = async (): Promise<number[]> =>
-  syncGroupMeta(
-    storage,
-    requestGroupMeta,
-    resolveGroupMetaProfile,
-  );
-
 type Request =
   | {
       id: number;
       type: 'bind-thread-feed';
       userId: string;
       port: MessagePort;
-    }
-  | {
-      id: number;
-      type: 'thread-sync';
-      userId: string;
-      target: number;
-      after: number;
     }
   | {
       id: number;
@@ -344,8 +326,8 @@ type Request =
       type: 'drain-thread-misc';
       userId: string;
       threadId: number | null;
-      groupMetaEndId: string;
-      tombstoneEndSeq: number;
+      groupMetaEndId: string | null;
+      tombstoneEndSeq: number | null;
     };
 
 addEventListener('message', ({ data }: MessageEvent<Request>) => {
@@ -357,28 +339,6 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
           feedPort?.close();
           const port = data.port;
           feedPort = port;
-          const groupMetaWake = coalesceGroupMetaWakes(
-            (task) => {
-              enqueueConcurrent(() => withUserStorage(data.userId, task));
-            },
-            async (_target) => {
-              if (feedPort !== port) return;
-              try {
-                const groupThreadIds = await synchronizeGroupMeta();
-                if (feedPort === port)
-                  port.postMessage({
-                    userId: Number(data.userId),
-                    changes: groupThreadIds.length ? ['GROUP_META'] : [],
-                    groupThreadIds,
-                  });
-              } catch (error) {
-                console.warn(
-                  '[group-meta] wake failed; next wake retries',
-                  error,
-                );
-              }
-            },
-          );
           const wake = coalesceThreadFeedWakes(
             (task) => {
               enqueueConcurrent(() => withUserStorage(data.userId, task));
@@ -395,24 +355,11 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                     '[thread-feed] wake failed; next wake retries',
                     result.error,
                   );
-                if (!result.error) groupMetaWake(target);
                 if (feedPort === port)
-                  port.postMessage({
+                  postMessage({
+                    type: 'thread-feed-committed',
                     userId: Number(data.userId),
-                    cursor: result.cursor,
-                    changes: result.states.length ? ['THREADS'] : [],
-                    groupThreadIds: [],
-                    aliases: result.states.flatMap((state) =>
-                      state.threadFeedId !== null
-                        ? [
-                            {
-                              threadId: state.threadId,
-                              threadFeedId: state.threadFeedId,
-                              alias: state.alias,
-                            },
-                          ]
-                        : [],
-                    ),
+                    states: result.states,
                   });
               } catch (error) {
                 console.warn(
@@ -435,8 +382,9 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                   requestStateFeed,
                 );
                 if (feedPort === port)
-                  port.postMessage({
-                    stateCommit: { userId: Number(data.userId), cursor },
+                  postMessage({
+                    type: 'state-feed-committed',
+                    userId: Number(data.userId),
                   });
               } catch (error) {
                 console.warn(
@@ -513,46 +461,6 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
           postMessage({ id: data.id, ok: true, result });
           return;
         }
-        if (data.type === 'thread-sync') {
-          const result = await synchronizeNotifications(
-            data.userId,
-            data.target,
-          );
-          let groupThreadIds: number[] = [];
-          let error = result.error;
-          if (!error) {
-            try {
-              groupThreadIds = await synchronizeGroupMeta();
-            } catch (groupError) {
-              error =
-                groupError instanceof Error
-                  ? groupError.message
-                  : String(groupError);
-            }
-          }
-          const changes = await storage.readThreadFeedChanges(data.after);
-          const notificationStates = new Map(
-            result.states.map((state) => [state.threadId, state]),
-          );
-          postMessage({
-            id: data.id,
-            ok: true,
-            result: {
-              ...changes,
-              groupThreadIds,
-              states: changes.states.map((state) => {
-                const transient = notificationStates.get(state.threadId);
-                const previewSource = attentionSnapshot(transient);
-                return previewSource &&
-                  state.threadFeedId === previewSource.threadFeedId
-                  ? { ...state, previews: previewSource.previews }
-                  : state;
-              }),
-              ...(error ? { error } : {}),
-            },
-          });
-          return;
-        }
         if (data.type === 'drain-thread-misc') {
           if (data.threadId === null) {
             // Stop signal: the current page finishes and commits; the guard
@@ -577,11 +485,11 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                   target,
                   guard,
                 );
-                if (feedPort && changed.length)
-                  feedPort.postMessage({
+                if (changed.length)
+                  postMessage({
+                    type: 'group-meta-committed',
                     userId: Number(data.userId),
-                    changes: ['GROUP_META'],
-                    groupThreadIds: changed,
+                    threadIds: changed,
                   });
               } catch (error) {
                 console.warn(
@@ -624,9 +532,15 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
             tombstoneDrains.set(threadId, tombstoneFlight);
           }
           // Fire both concurrently; they share one `openThreadId` guard.
+          // A null target skips that drain (e.g. a tombstone-only advance
+          // from a user retraction must not touch group meta).
           await Promise.all([
-            groupMetaFlight.trigger(data.groupMetaEndId),
-            tombstoneFlight.trigger(data.tombstoneEndSeq),
+            data.groupMetaEndId !== null
+              ? groupMetaFlight.trigger(data.groupMetaEndId)
+              : Promise.resolve(),
+            data.tombstoneEndSeq !== null
+              ? tombstoneFlight.trigger(data.tombstoneEndSeq)
+              : Promise.resolve(),
           ]);
           postMessage({ id: data.id, ok: true });
           return;

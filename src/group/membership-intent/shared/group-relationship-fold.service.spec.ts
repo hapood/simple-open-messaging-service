@@ -1,9 +1,6 @@
-vi.mock(
-  '../../../federation/federation-relationship-thread-state.js',
-  () => ({
-    initializeRelationshipThreadStateInTx: vi.fn(),
-  }),
-);
+vi.mock('../../../federation/federation-relationship-thread-state.js', () => ({
+  initializeRelationshipThreadStateInTx: vi.fn(),
+}));
 import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../../../database/enums.js';
 import { GroupRelationshipFoldService } from './group-relationship-fold.service.js';

@@ -701,19 +701,19 @@ export class FriendRequestsComponent implements OnDestroy {
       id: projection.key,
       projectionKey: projection.key,
       direction: projection.direction,
-      peerId: JSON.stringify(['pending-group', group.domain, group.account]),
+      peerId: JSON.stringify(['pending-group', group.namespaceId, group.account]),
       name: group.name,
       account: group.account,
-      domain: group.domain,
       namespaceId: group.namespaceId,
       reqMessage: group.description,
       status: projection.status,
       date: projection.requestedAt,
       errText: '',
       kind: 'GROUP',
-      sourceLabel: group.isLocal
-        ? this.transloco.translate('friend.localGroup')
-        : group.domain,
+      sourceLabel:
+        group.namespaceId === 0
+          ? this.transloco.translate('friend.localGroup')
+          : '',
       profileRev: group.profileRev,
     };
   }

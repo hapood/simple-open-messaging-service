@@ -207,13 +207,22 @@ type ClientRelationshipIntentItem = Extract<
   { eventType: 'RELATIONSHIP_INTENT' }
 >;
 
-/** A value persisted in the stable `settings` store (keyPath `'key'`), including integer feed cursors.
+/** A value persisted in a stable KV store (`meta` or `syncState`, keyPath `'key'`).
  *  `value` is opaque to the store (structured-cloneable); the caller owns its shape + narrowing.
- *  The thread-list revision cursor stays in-memory in UserService (seeded from /user/my-profile each boot) —
- *  it does NOT live here. */
+ *  `meta` holds non-cursor account state (schemaVersion, selfProfile, selfIdentity, composerDrafts);
+ *  `syncState` holds account-level sync cursors. The thread-list revision cursor stays in-memory in
+ *  UserService (seeded from /user/my-profile each boot) — it does NOT live here. */
 interface MetaRecord {
   key: string;
   value: unknown;
+}
+
+/** Per-thread sync progress, keyed by `threadId` (keyPath `'threadId'`) in the message DB's
+ *  `threadSyncState` store. Each cursor is independently absent until first written. */
+interface ThreadSyncRecord {
+  threadId: number;
+  messageHead?: number;
+  deletedHwm?: number;
 }
 
 type CachedMessageBody = Message;
@@ -262,8 +271,11 @@ function readDeletedHwm(value: unknown): number {
   throw new Error('deleted-message HWM must be a non-negative integer');
 }
 
-function messageHeadKey(threadId: number): string {
-  return `messageHead:${threadId}`;
+function readMessageHead(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (Number.isSafeInteger(value) && (value as number) >= 0)
+    return value as number;
+  throw new Error('message head must be a non-negative integer');
 }
 
 export interface CommitMessagePageInput {
@@ -446,12 +458,18 @@ export interface WebdbSchema extends DBSchema {
     value: FriendRequestProjection;
     indexes: { bucketStatus: [string, string, number, string] };
   };
-  settings: { key: string; value: MetaRecord };
+  /** Non-cursor account state (schemaVersion, selfProfile, selfIdentity, composerDrafts). */
+  meta: { key: string; value: MetaRecord };
+  /** Account-level sync cursors (threadFeedCursor, stateFeedId, stateFeedFullThrough,
+   *  profileNamespaceChangeEndId, relationshipRequestStateRevision,
+   *  relationshipIntentStateRevision, relationshipRequestReadHead,
+   *  relationshipRequestCleanupAt). */
+  syncState: { key: string; value: MetaRecord };
 }
 
 export interface MessageDbSchema extends DBSchema {
-  /** Stable KV store. Its shape is fixed; schemaVersion and coverage values live here. */
-  settings: { key: string; value: MetaRecord };
+  /** Stable KV store for the message-cache schema version. */
+  meta: { key: string; value: MetaRecord };
   /** One record per message, keyed by `[threadId, seq]` (both fields are the keyPath). */
   messages: {
     key: [number, number];
@@ -462,14 +480,17 @@ export interface MessageDbSchema extends DBSchema {
     value: MessageRange;
     indexes: { byThreadRight: [number, number] };
   };
+  /** Per-thread sync cursors (messageHead, deletedHwm), keyed by `threadId`. */
+  threadSyncState: { key: number; value: ThreadSyncRecord };
 }
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 36;
-// Profile-namespace binding cache added (change-feed consumption).
+export const CACHE_SCHEMA_VERSION = 37;
+// Cursors moved out of the generic `settings` bag: account-level cursors now
+// live in a dedicated `syncState` store, per-thread cursors in `threadSyncState`.
 // Message content now stores canonical CAS paths; discard cached contextual URLs.
-export const MESSAGE_CACHE_SCHEMA_VERSION = 6;
+export const MESSAGE_CACHE_SCHEMA_VERSION = 7;
 const IDB_FORMAT_VERSION = 1;
 
 export class LocalCacheUnavailableError extends Error {
@@ -552,7 +573,14 @@ type StateFeedWorkerEvent =
         seq: number;
         type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
       }>;
-    };
+    }
+  | {
+      type: 'thread-feed-committed';
+      userId: number;
+      states: LocalThreadAttention[];
+    }
+  | { type: 'group-meta-committed'; userId: number; threadIds: number[] }
+  | { type: 'state-feed-committed'; userId: number };
 
 /** A request response carrying the pending id. */
 type StateFeedWorkerResponse = {
@@ -578,11 +606,29 @@ export class WebdbStorage {
   readonly profileWake$ = this.profileWake.asObservable();
   /** Emitted by the database worker after each tombstone page commits, so the
    *  message repository can project deletions into mounted sources. */
-  private readonly tombstoneCommitted = new Subject<{
+  protected readonly tombstoneCommitted = new Subject<{
     threadId: number;
     deletions: Array<{ seq: number; type: 'USER_RETRACTION' | 'MODERATION_REMOVAL' }>;
   }>();
   readonly tombstoneCommitted$ = this.tombstoneCommitted.asObservable();
+  /** Emitted by the database worker after a thread-feed drain commits,
+   *  carrying the changed thread states inline — the renderer applies them
+   *  incrementally and never re-reads the feed database. */
+  protected readonly threadFeedCommitted = new Subject<{
+    userId: number;
+    states: LocalThreadAttention[];
+  }>();
+  readonly threadFeedCommitted$ = this.threadFeedCommitted.asObservable();
+  /** Emitted by the database worker after a per-thread Group Meta drain
+   *  commits, so member-profile views re-read the cache for those groups. */
+  protected readonly groupMetaCommitted = new Subject<{
+    userId: number;
+    threadIds: number[];
+  }>();
+  readonly groupMetaCommitted$ = this.groupMetaCommitted.asObservable();
+  /** Emitted by the database worker after a state-feed drain commits. */
+  protected readonly stateFeedCommitted = new Subject<{ userId: number }>();
+  readonly stateFeedCommitted$ = this.stateFeedCommitted.asObservable();
   /** Emitted when the database worker refreshed profile-namespace bindings
    *  after a change-feed sync round, so UI joins re-read the cache. */
   private readonly profileNamespaceWake = new Subject<
@@ -652,21 +698,21 @@ export class WebdbStorage {
   private readonly messageCommitTails = new Map<number, Promise<void>>();
   /** Monotonic account-cache lifetime. Logout/close/full recreation increments it synchronously, so an
    * older async open/recreate can observe that it lost ownership and must never publish/reopen handles. */
-  private cacheEpoch = 0;
+  protected cacheEpoch = 0;
   private accountResetPromise: Promise<IDBPDatabase<WebdbSchema> | null> | null =
     null;
   private accountResetUserId: string | null = null;
   /** Full account-cache operation barrier. Core and message operations are admitted synchronously; full
    * recreation/logout closes admission and waits for every admitted native/IDB operation to settle. */
   private accountOperations = 0;
-  private accountMaintenance = false;
+  protected accountMaintenance = false;
   private accountIdleWaiters: Array<() => void> = [];
   /** Aborted before message-cache maintenance starts. Network work captures this signal and must pass it
    * back when entering a write operation, so a response from the old cache lifetime cannot populate the
    * replacement database. */
   private messageLifetime = new AbortController();
   /** The userId whose DB is open (or being opened). */
-  private currentUserId: string | null = null;
+  protected currentUserId: string | null = null;
   /** Whether `navigator.storage.persist()` has been requested for this origin. */
   private persistedRequested = false;
 
@@ -830,13 +876,13 @@ export class WebdbStorage {
       throw new LocalCacheUnavailableError(`missing local cache: ${name}`);
     const db = await openDB<WebdbSchema>(name);
     this.observeCacheDeletion(db);
-    if (!db.objectStoreNames.contains('settings')) {
+    if (!db.objectStoreNames.contains('meta')) {
       db.close();
       throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
     }
     try {
       if (
-        (await db.get('settings', 'schemaVersion'))?.value !==
+        (await db.get('meta', 'schemaVersion'))?.value !==
         CACHE_SCHEMA_VERSION
       ) {
         db.close();
@@ -861,13 +907,13 @@ export class WebdbStorage {
       throw new LocalCacheUnavailableError(`missing local cache: ${name}`);
     const db = await openDB<MessageDbSchema>(name);
     this.observeCacheDeletion(db);
-    if (!db.objectStoreNames.contains('settings')) {
+    if (!db.objectStoreNames.contains('meta')) {
       db.close();
       throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
     }
     try {
       if (
-        (await db.get('settings', 'schemaVersion'))?.value !==
+        (await db.get('meta', 'schemaVersion'))?.value !==
         MESSAGE_CACHE_SCHEMA_VERSION
       ) {
         db.close();
@@ -921,13 +967,14 @@ export class WebdbStorage {
       'threads',
       'threadPreviews',
       'relationshipRequests',
-      'settings',
+      'meta',
+      'syncState',
     ] as const;
     if (required.some((store) => !db.objectStoreNames.contains(store)))
       return false;
     if (db.objectStoreNames.length !== required.length) return false;
     try {
-      const version = await db.get('settings', 'schemaVersion');
+      const version = await db.get('meta', 'schemaVersion');
       return (
         version?.value === CACHE_SCHEMA_VERSION &&
         db.transaction('members').store.indexNames.contains('thread') &&
@@ -990,8 +1037,9 @@ export class WebdbStorage {
           'requestedSort',
           'key',
         ]);
-        db.createObjectStore('settings', { keyPath: 'key' });
-        transaction.objectStore('settings').put({
+        db.createObjectStore('meta', { keyPath: 'key' });
+        db.createObjectStore('syncState', { keyPath: 'key' });
+        transaction.objectStore('meta').put({
           key: 'schemaVersion',
           value: CACHE_SCHEMA_VERSION,
         });
@@ -1021,7 +1069,7 @@ export class WebdbStorage {
           throw new Error(
             'message cache recreation expected an empty IndexedDB',
           );
-        db.createObjectStore('settings', { keyPath: 'key' });
+        db.createObjectStore('meta', { keyPath: 'key' });
         db.createObjectStore('messages', {
           keyPath: ['threadId', 'seq'],
         });
@@ -1029,7 +1077,8 @@ export class WebdbStorage {
           keyPath: ['threadId', 'left'],
         });
         ranges.createIndex('byThreadRight', ['threadId', 'right']);
-        transaction.objectStore('settings').put({
+        db.createObjectStore('threadSyncState', { keyPath: 'threadId' });
+        transaction.objectStore('meta').put({
           key: 'schemaVersion',
           value: MESSAGE_CACHE_SCHEMA_VERSION,
         });
@@ -1043,15 +1092,16 @@ export class WebdbStorage {
     db: IDBPDatabase<MessageDbSchema>,
   ): Promise<boolean> {
     if (
-      db.objectStoreNames.length !== 3 ||
-      !db.objectStoreNames.contains('settings') ||
+      db.objectStoreNames.length !== 4 ||
+      !db.objectStoreNames.contains('meta') ||
       !db.objectStoreNames.contains('messages') ||
-      !db.objectStoreNames.contains('messageRanges')
+      !db.objectStoreNames.contains('messageRanges') ||
+      !db.objectStoreNames.contains('threadSyncState')
     )
       return false;
     try {
       if (
-        (await db.get('settings', 'schemaVersion'))?.value !==
+        (await db.get('meta', 'schemaVersion'))?.value !==
         MESSAGE_CACHE_SCHEMA_VERSION
       )
         return false;
@@ -1269,7 +1319,7 @@ export class WebdbStorage {
     return new Promise((resolve) => this.messageIdleWaiters.push(resolve));
   }
 
-  /** Number of cached message rows for the active user. Coverage/settings rows are deliberately excluded. */
+  /** Number of cached message rows for the active user. Coverage/thread-sync-state rows are deliberately excluded. */
   async countCachedMessages(): Promise<number> {
     return this.runMessageOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
@@ -1325,7 +1375,7 @@ export class WebdbStorage {
     await this.messageDbPromise;
   }
 
-  // ---- core settings store: keyed synchronization scalars ---------------------------------
+  // ---- core sync-state store: keyed synchronization cursors ------------------------------
 
   async getThreadStates(): Promise<LocalThreadAttention[]> {
     return this.runAccountOperation(async () => {
@@ -1360,13 +1410,13 @@ export class WebdbStorage {
           after,
         });
       const tx = (await this.db()).transaction(
-        ['threads', 'threadPreviews', 'settings'],
+        ['threads', 'threadPreviews', 'syncState'],
         'readonly',
       );
       const [rows, previews, stored] = await Promise.all([
         tx.objectStore('threads').getAll(),
         tx.objectStore('threadPreviews').getAll(),
-        tx.objectStore('settings').get('threadFeedCursor'),
+        tx.objectStore('syncState').get('threadFeedCursor'),
       ]);
       await tx.done;
       const cursor = Number(stored?.value ?? 0);
@@ -1375,7 +1425,6 @@ export class WebdbStorage {
       const byThread = new Map(previews.map((row) => [row.threadId, row]));
       return {
         cursor,
-        groupThreadIds: [],
         states: rows
           .filter(
             (row) => row.threadFeedId > after && row.threadFeedId <= cursor,
@@ -1450,7 +1499,7 @@ export class WebdbStorage {
           'native thread feed synchronization belongs to the Rust SSE executor',
         );
       const tx = (await this.db()).transaction(
-        ['threadPreviews', 'threads', 'namespaces', 'settings'],
+        ['threadPreviews', 'threads', 'namespaces', 'syncState'],
         'readwrite',
       );
       const store = tx.objectStore('threads');
@@ -1499,9 +1548,9 @@ export class WebdbStorage {
           merged.set(next.threadId, next);
         }
         if (scannedThrough !== undefined) {
-          const settings = tx.objectStore('settings');
-          const cursor = await settings.get('threadFeedCursor');
-          await settings.put({
+          const syncState = tx.objectStore('syncState');
+          const cursor = await syncState.get('threadFeedCursor');
+          await syncState.put({
             key: 'threadFeedCursor',
             value: Math.max(Number(cursor?.value ?? 0), scannedThrough),
           });
@@ -1568,13 +1617,32 @@ export class WebdbStorage {
     });
   }
 
-  /** Read a value from the `settings` store, or `undefined` when absent / IDB unavailable. The value is
+  /** Read a value from the `meta` store, or `undefined` when absent / IDB unavailable. The value is
    *  opaque to the store — the caller owns its shape + narrowing. */
   async getMeta(key: string): Promise<unknown> {
     return this.runAccountOperation(() => this.getMetaInternal(key));
   }
 
   private async getMetaInternal(key: string): Promise<unknown> {
+    return this.readStateStore('meta', key);
+  }
+
+  /** Read an account-level sync cursor from the `syncState` store. */
+  async getSyncState(key: string): Promise<unknown> {
+    return this.runAccountOperation(() => this.getSyncStateInternal(key));
+  }
+
+  private async getSyncStateInternal(key: string): Promise<unknown> {
+    return this.readStateStore('syncState', key);
+  }
+
+  /** Shared read for `meta` / `syncState`. On Tauri both map to the native `sync_state` KV (the native
+   *  runtime keeps cursors and self-profile in one table); the browser split is a local-storage
+   *  concern only. */
+  private async readStateStore(
+    store: 'meta' | 'syncState',
+    key: string,
+  ): Promise<unknown> {
     if (isTauri() && this.currentUserId != null) {
       try {
         return (
@@ -1588,7 +1656,7 @@ export class WebdbStorage {
       }
     }
     try {
-      const rec = await (await this.db()).get('settings', key);
+      const rec = await (await this.db()).get(store, key);
       return rec?.value;
     } catch {
       return undefined;
@@ -1603,6 +1671,23 @@ export class WebdbStorage {
   }
 
   private async putMetaInternal(key: string, value: unknown): Promise<void> {
+    return this.writeStateStore('meta', key, value);
+  }
+
+  /** Write an account-level sync cursor to the `syncState` store. */
+  async putSyncState(key: string, value: unknown): Promise<void> {
+    return this.runAccountOperation(() => this.putSyncStateInternal(key, value));
+  }
+
+  private async putSyncStateInternal(key: string, value: unknown): Promise<void> {
+    return this.writeStateStore('syncState', key, value);
+  }
+
+  private async writeStateStore(
+    store: 'meta' | 'syncState',
+    key: string,
+    value: unknown,
+  ): Promise<void> {
     if (isTauri() && this.currentUserId != null) {
       try {
         await tauriInvoke('native_db_put_meta', {
@@ -1616,7 +1701,7 @@ export class WebdbStorage {
       return;
     }
     try {
-      await (await this.db()).put('settings', { key, value });
+      await (await this.db()).put(store, { key, value });
     } catch {
       /* best-effort */
     }
@@ -1795,7 +1880,7 @@ export class WebdbStorage {
       return;
     }
     const tx = (await this.db()).transaction(
-      ['threads', 'namespaces', 'settings'],
+      ['threads', 'namespaces'],
       'readwrite',
     );
     // Presentation-only batch: omitted entries retain their authoritative
@@ -1849,7 +1934,7 @@ export class WebdbStorage {
       return;
     }
     const tx = (await this.db()).transaction(
-      ['threads', 'namespaces', 'settings', 'profiles'],
+      ['threads', 'namespaces', 'profiles'],
       'readwrite',
     );
     const state = await tx.objectStore('threads').get(item.threadId);
@@ -1964,32 +2049,6 @@ export class WebdbStorage {
     });
   }
 
-  /** Execution belongs to the database worker/native runtime, including page commits and cursor. */
-  async syncThreadFeed(
-    target: number,
-    after: number,
-  ): Promise<ThreadFeedSyncResult> {
-    if (this.accountMaintenance || this.currentUserId === null)
-      throw new Error('account cache lifetime expired');
-    const epoch = this.cacheEpoch;
-    const userId = this.currentUserId;
-    if (isTauri())
-      throw new Error(
-        'native feed synchronization belongs to the Rust SSE executor',
-      );
-    const pending = this.requestDbWorker<ThreadFeedSyncResult>({
-      type: 'thread-sync',
-      userId,
-      target,
-      after,
-    });
-    if (!pending) throw new Error('database worker unavailable');
-    const result = await pending;
-    if (epoch !== this.cacheEpoch)
-      throw new Error('account cache lifetime expired');
-    return result;
-  }
-
   /** Submit one authorized profile demand to the platform-owned database executor.
    * READY results are committed there before this promise resolves. */
   async resolveProfileDemand(
@@ -2019,12 +2078,14 @@ export class WebdbStorage {
    *
    *  `threadId === null` is the stop signal: the worker finishes the current
    *  page and commits it, then stops (the next page's guard fails). A non-null
-   *  `threadId` sets it as the open thread and fires both drains concurrently;
-   *  each checks `openThreadId === threadId` between pages. */
+   *  `threadId` sets it as the open thread and fires the requested drains
+   *  concurrently; each checks `openThreadId === threadId` between pages. A
+   *  `null` target skips that drain (e.g. a tombstone-only advance from a
+   *  thread-feed commit must not re-drain Group Meta). */
   async drainThreadMisc(
     threadId: number | null,
-    groupMetaEndId: string,
-    tombstoneEndSeq: number,
+    groupMetaEndId: string | null,
+    tombstoneEndSeq: number | null,
   ): Promise<void> {
     if (this.accountMaintenance || this.currentUserId === null)
       throw new Error('account cache lifetime expired');
@@ -2085,6 +2146,24 @@ export class WebdbStorage {
             threadId: data.threadId,
             deletions: data.tombstones,
           });
+          return;
+        }
+        if (data.type === 'thread-feed-committed') {
+          this.threadFeedCommitted.next({
+            userId: data.userId,
+            states: data.states,
+          });
+          return;
+        }
+        if (data.type === 'group-meta-committed') {
+          this.groupMetaCommitted.next({
+            userId: data.userId,
+            threadIds: data.threadIds,
+          });
+          return;
+        }
+        if (data.type === 'state-feed-committed') {
+          this.stateFeedCommitted.next({ userId: data.userId });
           return;
         }
       };
@@ -2175,7 +2254,7 @@ export class WebdbStorage {
         'profiles',
         'members',
         'relationshipRequests',
-        'settings',
+        'syncState',
       ],
       'readwrite',
     );
@@ -2183,7 +2262,7 @@ export class WebdbStorage {
       if (resetProjection) {
         await tx.objectStore('relationshipRequests').clear();
         await tx
-          .objectStore('settings')
+          .objectStore('syncState')
           .delete('relationshipIntentStateRevision');
       }
       const applyRequestProjectionEffect = async (
@@ -2197,30 +2276,21 @@ export class WebdbStorage {
             | 'account'
             | 'domain'
             | 'subjectAccount'
-            | 'subjectDomain'
+            | 'subjectNamespaceId'
             | 'kind'
           >;
           const groupAuthored = op.account.startsWith('!');
           const groupAccount = groupAuthored ? op.account : op.subjectAccount;
-          const groupDomain = groupAuthored ? op.domain : op.subjectDomain;
           const direction =
             body.direction ?? (groupAuthored ? 'INCOMING' : 'OUTGOING');
-          const group = {
-            ...body.group,
-            namespaceId: body.group.domain === 'local' ? 0 : op.namespaceId,
-          };
+          const group = body.group;
           if (groupAuthored && body.status === 'ACCEPTED') {
             // The group may have accepted a member's outgoing application or
             // completed its own incoming invitation. Both projections belong to
             // this group address; settle any existing pending row, but do not
             // manufacture request history from a compacted terminal fact.
             for (const side of ['INCOMING', 'OUTGOING'] as const) {
-              const key = groupRequestKey(
-                op.namespaceId,
-                groupDomain,
-                groupAccount,
-                side,
-              );
+              const key = groupRequestKey(op.namespaceId, groupAccount, side);
               const current = await store.get(key);
               if (current?.status === 'REQUESTED')
                 await store.put(markProjectionAccepted(current));
@@ -2236,7 +2306,6 @@ export class WebdbStorage {
           if (targetDirection === null) return;
           const key = groupRequestKey(
             op.namespaceId,
-            groupDomain,
             groupAccount,
             targetDirection,
           );
@@ -2244,8 +2313,6 @@ export class WebdbStorage {
             await store.get(key),
             {
               namespaceId: op.namespaceId,
-              account: groupAccount,
-              domain: groupDomain,
               ...body,
               group,
               direction,
@@ -2254,7 +2321,7 @@ export class WebdbStorage {
           );
           if (transition.record) await store.put(transition.record);
           if (transition.becameActionable)
-            await tx.objectStore('settings').put({
+            await tx.objectStore('syncState').put({
               key: 'relationshipRequestStateRevision',
               value: op.feedId,
             });
@@ -2266,7 +2333,7 @@ export class WebdbStorage {
           | 'account'
           | 'domain'
           | 'subjectAccount'
-          | 'subjectDomain'
+          | 'subjectNamespaceId'
           | 'requestedSort'
         >;
         const targetDirection =
@@ -2281,9 +2348,8 @@ export class WebdbStorage {
           {
             namespaceId: op.namespaceId,
             account: op.account,
-            domain: op.domain,
             subjectAccount: op.subjectAccount,
-            subjectDomain: op.subjectDomain,
+            subjectNamespaceId: op.subjectNamespaceId,
             ...body,
             peer: {
               ...body.peer,
@@ -2294,7 +2360,7 @@ export class WebdbStorage {
         );
         if (transition.record) await store.put(transition.record);
         if (transition.becameActionable)
-          await tx.objectStore('settings').put({
+          await tx.objectStore('syncState').put({
             key: 'relationshipRequestStateRevision',
             value: op.feedId,
           });
@@ -2438,7 +2504,7 @@ export class WebdbStorage {
       for (const op of items) {
         if (op.eventType === 'RELATIONSHIP_INTENT') continue;
         if (op.eventType === 'INCOMING_INVITE_HEAD') {
-          await tx.objectStore('settings').put({
+          await tx.objectStore('syncState').put({
             key: 'relationshipRequestReadHead',
             value: op.body,
           });
@@ -2448,9 +2514,9 @@ export class WebdbStorage {
         .filter((item) => item.eventType === 'RELATIONSHIP_INTENT')
         .reduce((highest, item) => Math.max(highest, item.feedId), 0);
       if (intentRevision > 0) {
-        const settings = tx.objectStore('settings');
-        const previous = await settings.get('relationshipIntentStateRevision');
-        await settings.put({
+        const syncState = tx.objectStore('syncState');
+        const previous = await syncState.get('relationshipIntentStateRevision');
+        await syncState.put({
           key: 'relationshipIntentStateRevision',
           value: Math.max(
             intentRevision,
@@ -2459,10 +2525,10 @@ export class WebdbStorage {
         });
       }
       if (fullThrough !== undefined) {
-        const settings = tx.objectStore('settings');
-        if (fullThrough === null) await settings.delete('stateFeedFullThrough');
+        const syncState = tx.objectStore('syncState');
+        if (fullThrough === null) await syncState.delete('stateFeedFullThrough');
         else if (feedId !== null && fullThrough > feedId)
-          await settings.put({
+          await syncState.put({
             key: 'stateFeedFullThrough',
             value: fullThrough,
           });
@@ -2470,7 +2536,7 @@ export class WebdbStorage {
       }
       if (feedId !== null)
         await tx
-          .objectStore('settings')
+          .objectStore('syncState')
           .put({ key: 'stateFeedId', value: feedId });
       await tx.done;
     } catch (error) {
@@ -2611,7 +2677,7 @@ export class WebdbStorage {
     });
   }
 
-  /** Client change-feed cursor, persisted in settings. The HELLO anchor
+  /** Client change-feed cursor, persisted in syncState. The HELLO anchor
    *  (`profileNamespaceChangeEndId`) enables the skip-pull fast path; a
    *  wake (SSE PROFILE_NAMESPACE_UPDATED) or a stale cursor triggers this
    *  pull. Single-flight through the shared TrailingSingleFlight primitive.
@@ -2629,14 +2695,14 @@ export class WebdbStorage {
       // browser path. Native wiring lands with the Tauri executor.
       return;
     }
-    const settings = db.transaction('settings');
-    const cursorRow = await settings.store.get('profileNamespaceChangeEndId');
+    const syncState = db.transaction('syncState');
+    const cursorRow = await syncState.store.get('profileNamespaceChangeEndId');
     const cursor =
       typeof cursorRow?.value === 'number' &&
       Number.isSafeInteger(cursorRow.value)
         ? cursorRow.value
         : 0;
-    await settings.done.catch(() => undefined);
+    await syncState.done.catch(() => undefined);
     if (anchor !== undefined && anchor === cursor) return;
     let after = cursor;
     for (;;) {
@@ -2673,12 +2739,12 @@ export class WebdbStorage {
       const touched = await this.applyProfileNamespaceChanges(page.items);
       if (touched.length)
         await this.resolveProfileNamespacePairs(touched, page.scannedThrough);
-      const writeSettings = db.transaction('settings', 'readwrite');
-      await writeSettings.store.put({
+      const writeSyncState = db.transaction('syncState', 'readwrite');
+      await writeSyncState.store.put({
         key: 'profileNamespaceChangeEndId',
         value: page.scannedThrough,
       });
-      await writeSettings.done;
+      await writeSyncState.done;
       this.profileNamespaceWake.next(touched);
       if (!page.hasMore) return;
       after = page.scannedThrough;
@@ -3298,6 +3364,19 @@ export class WebdbStorage {
     profileRev: number,
     messageSeq: number,
   ): Promise<boolean> {
+    if (isTauri()) {
+      if (this.accountMaintenance || this.currentUserId === null)
+        throw new Error('account cache lifetime expired');
+      return tauriInvoke<boolean>('native_db_record_group_member_profile_ref', {
+        userId: Number(this.currentUserId),
+        threadId,
+        account: identity.account,
+        domain: identity.domain,
+        namespaceId: identity.namespaceId,
+        profileRev,
+        messageSeq,
+      });
+    }
     return this.runAccountOperation(async () => {
       const tx = (await this.db()).transaction('members', 'readwrite');
       const member = await tx.store.get([
@@ -3525,15 +3604,11 @@ export class WebdbStorage {
         throw new Error(
           'native message head belongs to the native source walker',
         );
-      const stored = await (
-        await this.messageDb()
-      ).get('settings', messageHeadKey(threadId));
-      const value = stored?.value as { knownNewestSeq?: unknown } | undefined;
-      return typeof value?.knownNewestSeq === 'number' &&
-        Number.isSafeInteger(value.knownNewestSeq) &&
-        value.knownNewestSeq >= 0
-        ? value.knownNewestSeq
-        : undefined;
+      const record = await (await this.messageDb()).get(
+        'threadSyncState',
+        threadId,
+      );
+      return readMessageHead(record?.messageHead);
     });
   }
 
@@ -3553,22 +3628,15 @@ export class WebdbStorage {
         return;
       }
       const db = await this.messageDb();
-      const tx = db.transaction('settings', 'readwrite');
-      const key = messageHeadKey(threadId);
-      const current = (await tx.store.get(key))?.value as
-        | { knownNewestSeq?: unknown }
-        | undefined;
+      const tx = db.transaction('threadSyncState', 'readwrite');
+      const current = await tx.store.get(threadId);
+      const old = readMessageHead(current?.messageHead) ?? 0;
       await tx.store.put({
-        key,
-        value: {
-          threadId,
-          knownNewestSeq: Math.max(
-            knownNewestSeq,
-            typeof current?.knownNewestSeq === 'number'
-              ? current.knownNewestSeq
-              : 0,
-          ),
-        },
+        threadId,
+        ...(current?.deletedHwm !== undefined
+          ? { deletedHwm: current.deletedHwm }
+          : {}),
+        messageHead: Math.max(knownNewestSeq, old),
       });
       await tx.done;
     });
@@ -3612,7 +3680,7 @@ export class WebdbStorage {
       throw new Error('known newest message sequence is invalid');
 
     const tx = (await this.messageDb()).transaction(
-      ['messages', 'messageRanges', 'settings'],
+      ['messages', 'messageRanges', 'threadSyncState'],
       'readwrite',
     );
     const rangeKey = IDBKeyRange.bound(
@@ -3643,17 +3711,15 @@ export class WebdbStorage {
     await rangeStore.delete(rangeKey);
     for (const range of ranges) await rangeStore.put(range);
     if (input.knownNewestSeq !== undefined) {
-      const key = messageHeadKey(input.threadId);
-      const old = (await tx.objectStore('settings').get(key))?.value as
-        | { knownNewestSeq?: unknown }
-        | undefined;
-      const knownNewestSeq = Math.max(
-        input.knownNewestSeq,
-        typeof old?.knownNewestSeq === 'number' ? old.knownNewestSeq : 0,
-      );
-      await tx.objectStore('settings').put({
-        key,
-        value: { threadId: input.threadId, knownNewestSeq },
+      const syncState = tx.objectStore('threadSyncState');
+      const current = await syncState.get(input.threadId);
+      const old = readMessageHead(current?.messageHead) ?? 0;
+      await syncState.put({
+        threadId: input.threadId,
+        ...(current?.deletedHwm !== undefined
+          ? { deletedHwm: current.deletedHwm }
+          : {}),
+        messageHead: Math.max(input.knownNewestSeq, old),
       });
     }
     await tx.done;
@@ -3701,10 +3767,12 @@ export class WebdbStorage {
         });
         return hwm;
       }
-      const tx = (await this.messageDb()).transaction('settings', 'readonly');
-      const key = `deletedHwm:${threadId}`;
-      const row = await tx.objectStore('settings').get(key);
-      const hwm = readDeletedHwm(row?.value);
+      const tx = (await this.messageDb()).transaction(
+        'threadSyncState',
+        'readonly',
+      );
+      const record = await tx.store.get(threadId);
+      const hwm = readDeletedHwm(record?.deletedHwm);
       await tx.done;
       return hwm;
     });
@@ -3740,7 +3808,7 @@ export class WebdbStorage {
         return;
       }
       const tx = (await this.messageDb()).transaction(
-        ['messages', 'settings'],
+        ['messages', 'threadSyncState'],
         'readwrite',
       );
       for (const item of items) {
@@ -3753,9 +3821,14 @@ export class WebdbStorage {
             deleteMessageSlot(current, threadId, item.messageSeq, item.type),
           );
       }
-      await tx.objectStore('settings').put({
-        key: `deletedHwm:${threadId}`,
-        value: hwm,
+      const syncState = tx.objectStore('threadSyncState');
+      const current = await syncState.get(threadId);
+      await syncState.put({
+        threadId,
+        ...(current?.messageHead !== undefined
+          ? { messageHead: current.messageHead }
+          : {}),
+        deletedHwm: hwm,
       });
       await tx.done;
     });
@@ -3831,7 +3904,7 @@ export class WebdbStorage {
       return;
     }
     const tx = (await this.messageDb()).transaction(
-      ['messages', 'messageRanges', 'settings'],
+      ['messages', 'messageRanges', 'threadSyncState'],
       'readwrite',
     );
     await tx
@@ -3840,7 +3913,7 @@ export class WebdbStorage {
     await tx
       .objectStore('messageRanges')
       .delete(IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]));
-    await tx.objectStore('settings').delete(messageHeadKey(threadId));
+    await tx.objectStore('threadSyncState').delete(threadId);
     await tx.done;
   }
 

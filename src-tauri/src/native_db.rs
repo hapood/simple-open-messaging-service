@@ -23,11 +23,11 @@ pub(crate) mod notifications;
 pub(crate) use client_state::chrono_millis;
 #[cfg(test)]
 use messages::{
-    decode_deleted_hwm, history_gap_is_owned, reduce_message_ranges, validate_message_ranges,
+    history_gap_is_owned, reduce_message_ranges, validate_message_ranges,
     HistoryDirection, MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 
-const CACHE_SCHEMA_VERSION: i64 = 37;
+const CACHE_SCHEMA_VERSION: i64 = 38;
 
 pub(crate) fn invalidate_account_work() -> Result<(), String> {
     drop(lifetime::CACHE_LIFETIME.invalidate()?);
@@ -99,7 +99,7 @@ fn open_cache() -> Result<Connection, String> {
             tx.execute_batch(
                 "DELETE FROM messages;
                  DELETE FROM message_ranges;
-                 DELETE FROM sync_state WHERE key LIKE 'messageHead:%';
+                 DELETE FROM thread_sync_state;
                  PRAGMA user_version = 1;",
             )
             .map_err(|e| format!("clean contextual media cache: {e}"))?;
@@ -138,6 +138,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         "members",
         "relationship_requests",
         "sync_state",
+        "thread_sync_state",
         "notification_global_state",
         "messages",
         "message_ranges",
@@ -260,6 +261,15 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           value_json TEXT NOT NULL,
           PRIMARY KEY (user_id, key)
         );
+        CREATE TABLE IF NOT EXISTS thread_sync_state (
+          user_id INTEGER NOT NULL,
+          thread_id INTEGER NOT NULL,
+          message_head INTEGER,
+          deleted_hwm INTEGER,
+          PRIMARY KEY (user_id, thread_id),
+          CHECK (message_head IS NULL OR message_head >= 0),
+          CHECK (deleted_hwm IS NULL OR deleted_hwm >= 0)
+        );
         CREATE TABLE IF NOT EXISTS notification_global_state (
           account_id INTEGER PRIMARY KEY,
           cursor_thread_id INTEGER,
@@ -324,6 +334,7 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
          DROP TABLE IF EXISTS relationship_requests;
          DROP TABLE IF EXISTS relationship_intents;
          DROP TABLE IF EXISTS sync_state;
+         DROP TABLE IF EXISTS thread_sync_state;
          DROP TABLE IF EXISTS notification_global_state;
          DROP TABLE IF EXISTS notification_feed_state;
          DROP TABLE IF EXISTS notification_thread_state;
@@ -375,7 +386,7 @@ pub(crate) async fn native_db_recreate_messages() -> Result<(), String> {
         tx.execute_batch(
             "DROP TABLE messages;
              DROP TABLE IF EXISTS message_ranges;
-             DELETE FROM sync_state WHERE key LIKE 'messageHead:%';
+             DROP TABLE IF EXISTS thread_sync_state;
              CREATE TABLE messages (
                user_id INTEGER NOT NULL,
                thread_id INTEGER NOT NULL,
@@ -397,7 +408,16 @@ pub(crate) async fn native_db_recreate_messages() -> Result<(), String> {
                CHECK(left_exclusive >= 0 AND right_inclusive > left_exclusive)
              );
              CREATE INDEX message_ranges_by_right
-               ON message_ranges(user_id, thread_id, right_inclusive);",
+               ON message_ranges(user_id, thread_id, right_inclusive);
+             CREATE TABLE thread_sync_state (
+               user_id INTEGER NOT NULL,
+               thread_id INTEGER NOT NULL,
+               message_head INTEGER,
+               deleted_hwm INTEGER,
+               PRIMARY KEY (user_id, thread_id),
+               CHECK (message_head IS NULL OR message_head >= 0),
+               CHECK (deleted_hwm IS NULL OR deleted_hwm >= 0)
+             );",
         )
         .map_err(|e| format!("recreate message cache: {e}"))?;
         tx.commit()
@@ -489,6 +509,7 @@ pub(crate) async fn native_db_clear_user(
             "members",
             "relationship_requests",
             "sync_state",
+            "thread_sync_state",
             "messages",
             "message_ranges",
         ] {
@@ -519,6 +540,7 @@ pub(crate) async fn native_db_clear_all() -> Result<(), String> {
                  DELETE FROM members;
                  DELETE FROM relationship_requests;
                  DELETE FROM sync_state;
+                 DELETE FROM thread_sync_state;
                  DELETE FROM messages;
                  DELETE FROM message_ranges;
                  VACUUM;",

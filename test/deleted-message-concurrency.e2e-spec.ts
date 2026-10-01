@@ -106,7 +106,7 @@ describe('federated message deletion transaction ordering', () => {
       threadId,
       messageSeq: 7,
       sourceDomain: peerDomain,
-      sourceNamespaceId: namespaceId,
+      publisherNamespaceId: namespaceId,
       remoteDeletionSeq,
       type: MessageDeleteType.USER_RETRACTION,
       expectedFederationVersion: 0,
@@ -239,9 +239,8 @@ describe('federated message deletion transaction ordering', () => {
         threadId,
         seq: 14,
         originSeq: 14,
-        sourceNamespaceId: 0,
+        publisherNamespaceId: 0,
         creatorAccount: 'alice',
-        creatorDomain: 'local',
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'home original' }),
         updatedAt: new Date(),
@@ -250,9 +249,8 @@ describe('federated message deletion transaction ordering', () => {
         threadId,
         seq: 13,
         originSeq: 13,
-        sourceNamespaceId: namespaceId,
+        publisherNamespaceId: namespaceId,
         creatorAccount: 'bob',
-        creatorDomain: peerDomain,
         profileNamespaceId: namespaceId,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'peer copy' }),
@@ -275,7 +273,7 @@ describe('federated message deletion transaction ordering', () => {
       threadId,
       messageSeq: 14,
       sourceDomain: peerDomain,
-      sourceNamespaceId: namespaceId,
+      publisherNamespaceId: namespaceId,
       remoteDeletionSeq: 2,
       type: MessageDeleteType.MODERATION_REMOVAL,
       expectedFederationVersion: 0,
@@ -294,7 +292,7 @@ describe('federated message deletion transaction ordering', () => {
     expect(await database.db.query.deletedMessage.findMany()).toMatchObject([
       {
         messageSeq: 14,
-        sourceNamespaceId: namespaceId,
+        publisherNamespaceId: namespaceId,
         type: MessageDeleteType.MODERATION_REMOVAL,
       },
     ]);
@@ -312,14 +310,14 @@ describe('federated message deletion transaction ordering', () => {
     await insertIncoming();
     await database.db
       .update(message)
-      .set({ creatorDomain: 'local', profileNamespaceId: 0 })
+      .set({ profileNamespaceId: 0 })
       .where(eq(message.threadId, threadId));
     await expect(
       deletions.applyFederated({
         threadId,
         messageSeq: 7,
         sourceDomain: peerDomain,
-        sourceNamespaceId: namespaceId,
+        publisherNamespaceId: namespaceId,
         remoteDeletionSeq: 2,
         type: MessageDeleteType.MODERATION_REMOVAL,
         expectedFederationVersion: 0,
@@ -344,9 +342,8 @@ describe('federated message deletion transaction ordering', () => {
       .values({
         threadId,
         seq: 1,
-        sourceNamespaceId: 0,
+        publisherNamespaceId: 0,
         creatorAccount: 'alice',
-        creatorDomain: 'local',
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'home' }),
         updatedAt: new Date(),
@@ -416,10 +413,10 @@ describe('federated message deletion transaction ordering', () => {
       const tombstone = await tx.query.federatedMessageTombstone.findFirst({
         where: and(
           eq(federatedMessageTombstone.threadId, threadId),
-          eq(federatedMessageTombstone.sourceNamespaceId, namespaceId),
+          eq(federatedMessageTombstone.publisherNamespaceId, namespaceId),
           eq(federatedMessageTombstone.messageSeq, 7),
         ),
-        columns: { type: true, sourceNamespaceId: true },
+        columns: { type: true, publisherNamespaceId: true },
       });
       const [{ curSeq: seq }] = await tx
         .update(messageThread)
@@ -431,10 +428,9 @@ describe('federated message deletion transaction ordering', () => {
         .values({
           threadId,
           creatorAccount: 'bob',
-          creatorDomain: peerDomain,
-          profileNamespaceId: namespaceId,
+            profileNamespaceId: namespaceId,
           originSeq: 7,
-          sourceNamespaceId: namespaceId,
+          publisherNamespaceId: namespaceId,
           seq,
           contentType: 'PURE_TEXT',
           content: JSON.stringify({ text: 'federated' }),
@@ -447,7 +443,7 @@ describe('federated message deletion transaction ordering', () => {
           threadId,
           messageSeq: seq,
           type: tombstone.type,
-          sourceNamespaceId: tombstone.sourceNamespaceId,
+          publisherNamespaceId: tombstone.publisherNamespaceId,
           updatedAt: new Date(),
         });
         await tx
@@ -455,7 +451,7 @@ describe('federated message deletion transaction ordering', () => {
           .where(
             and(
               eq(federatedMessageTombstone.threadId, threadId),
-              eq(federatedMessageTombstone.sourceNamespaceId, namespaceId),
+              eq(federatedMessageTombstone.publisherNamespaceId, namespaceId),
               eq(federatedMessageTombstone.messageSeq, 7),
             ),
           );
@@ -469,8 +465,7 @@ describe('federated message deletion transaction ordering', () => {
       where: and(
         eq(message.threadId, threadId),
         eq(message.creatorAccount, 'bob'),
-        eq(message.creatorDomain, peerDomain),
-        eq(message.sourceNamespaceId, namespaceId),
+        eq(message.publisherNamespaceId, namespaceId),
         eq(message.originSeq, 7),
       ),
       columns: { seq: true, isDeleted: true },
@@ -481,7 +476,7 @@ describe('federated message deletion transaction ordering', () => {
       .where(
         and(
           eq(federatedMessageTombstone.threadId, threadId),
-          eq(federatedMessageTombstone.sourceNamespaceId, namespaceId),
+          eq(federatedMessageTombstone.publisherNamespaceId, namespaceId),
         ),
       );
     const logs = await database.db
@@ -490,7 +485,7 @@ describe('federated message deletion transaction ordering', () => {
       .where(
         and(
           eq(deletedMessage.threadId, threadId),
-          eq(deletedMessage.sourceNamespaceId, namespaceId),
+          eq(deletedMessage.publisherNamespaceId, namespaceId),
         ),
       );
     return { stored, tombstones, logs };
@@ -556,9 +551,9 @@ describe('federated message deletion transaction ordering', () => {
 
     const fact = await database.db.query.deletedMessage.findFirst({
       where: eq(deletedMessage.threadId, threadId),
-      columns: { sourceNamespaceId: true },
+      columns: { publisherNamespaceId: true },
     });
-    expect(fact?.sourceNamespaceId).toBe(0);
+    expect(fact?.publisherNamespaceId).toBe(0);
   });
 
   it('allows a newly sent local message without an origin sequence', async () => {
@@ -567,7 +562,6 @@ describe('federated message deletion transaction ordering', () => {
         threadId,
         seq: 1,
         creatorAccount: 'alice',
-        creatorDomain: 'local',
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'local provisional coordinate' }),
         updatedAt: new Date(),
@@ -588,7 +582,6 @@ describe('federated message deletion transaction ordering', () => {
       threadId,
       seq: 1,
       creatorAccount: author.account,
-      creatorDomain: 'local',
       contentType: 'PURE_TEXT',
       content: '{"text":"withdraw"}',
       updatedAt: new Date(),
@@ -667,7 +660,6 @@ describe('federated message deletion transaction ordering', () => {
         threadId,
         seq: 1,
         creatorAccount: author.account,
-        creatorDomain: 'local',
         contentType: 'PURE_TEXT',
         content: '{"text":"business ordering"}',
         updatedAt: new Date(),
@@ -741,8 +733,7 @@ describe('federated message deletion transaction ordering', () => {
           threadId,
           seq: 1,
           creatorAccount: author.account,
-          creatorDomain: 'local',
-          contentType: 'PURE_TEXT',
+            contentType: 'PURE_TEXT',
           content: '{"text":"withdraw concurrently"}',
           updatedAt: new Date(),
         })
@@ -833,9 +824,8 @@ describe('federated message deletion transaction ordering', () => {
         threadId,
         seq: 1,
         creatorAccount: 'bob',
-        creatorDomain: peerDomain,
         profileNamespaceId: namespaceId,
-        sourceNamespaceId: namespaceId,
+        publisherNamespaceId: namespaceId,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'missing coordinate' }),
         updatedAt: new Date(),
@@ -898,12 +888,11 @@ describe('federated message deletion transaction ordering', () => {
         threadId,
         seq: 1,
         creatorAccount: 'bob',
-        creatorDomain: peerDomain,
         profileNamespaceId: namespaceId,
         contentType: 'IMAGE',
         content: JSON.stringify({ digest: 'a'.repeat(64) }),
         originSeq: 7,
-        sourceNamespaceId: namespaceId,
+        publisherNamespaceId: namespaceId,
         localState: 'STUB',
         updatedAt: new Date(),
       })

@@ -21,10 +21,33 @@ interface ParsedAt {
   end: number;
 }
 
-export function serializeUserMention(label: string, account: string): string {
+export function serializeUserMention(
+  label: string,
+  namespaceId: number,
+  account: string,
+): string {
   if (!label) throw new Error('mention label must not be empty');
   if (!account) throw new Error('mention account must not be empty');
-  return `[@${escapeLabel(label)}](somfp://user/${encodeURIComponent(account)})`;
+  return `[@${escapeLabel(label)}](somfp://user/${namespaceId}/${encodeURIComponent(account)})`;
+}
+
+/** Serialize a user mention from a chip id (`namespaceId/account`). The chip
+ * id is the entity id stored on the editor chip; this helper splits it back
+ * into the `(namespaceId, account)` pair for `serializeUserMention`. */
+export function serializeUserMentionFromChipId(
+  label: string,
+  chipId: string,
+): string {
+  const slash = chipId.indexOf('/');
+  if (slash <= 0 || slash !== chipId.lastIndexOf('/')) {
+    throw new Error(`invalid mention chip id: ${chipId}`);
+  }
+  const namespaceId = Number(chipId.slice(0, slash));
+  const account = chipId.slice(slash + 1);
+  if (!Number.isInteger(namespaceId) || namespaceId < 0 || !account) {
+    throw new Error(`invalid mention chip id: ${chipId}`);
+  }
+  return serializeUserMention(label, namespaceId, account);
 }
 
 export function serializeAudienceMention(
@@ -128,9 +151,12 @@ export function toRenderMessageEntities(
     if (segment.kind === 'text') {
       segments.push(segment);
     } else if (segment.entityType === 'user' && segment.entityId) {
+      const slash = segment.entityId.indexOf('/');
+      const accountPart =
+        slash > 0 ? segment.entityId.slice(slash + 1) : segment.entityId;
       const isMe =
         !!normalizedSelf &&
-        segment.entityId.trim().toLocaleLowerCase() === normalizedSelf;
+        accountPart.trim().toLocaleLowerCase() === normalizedSelf;
       if (isMe) mentionState = 'me';
       segments.push({
         kind: 'mention',
@@ -186,7 +212,7 @@ function parseEntityAt(content: string, start: number): ParsedAt | null {
   } catch {
     return null;
   }
-  if (!entityId || entityId.includes('/')) return null;
+  if (!entityId) return null;
 
   const entityType =
     url.hostname === 'user'
@@ -194,12 +220,24 @@ function parseEntityAt(content: string, start: number): ParsedAt | null {
       : url.hostname === 'audience'
         ? 'audience'
         : null;
-  const canonical =
-    entityType === 'user'
-      ? `somfp://user/${encodeURIComponent(entityId)}`
-      : entityType === 'audience' && entityId === 'all'
-        ? 'somfp://audience/all'
-        : null;
+
+  let canonical: string | null = null;
+  if (entityType === 'user') {
+    const segments = entityId.split('/');
+    if (segments.length !== 2) return null;
+    const namespaceId = Number(segments[0]);
+    if (
+      !Number.isInteger(namespaceId) ||
+      namespaceId < 0 ||
+      String(namespaceId) !== segments[0] ||
+      !segments[1]
+    )
+      return null;
+    canonical = `somfp://user/${namespaceId}/${encodeURIComponent(segments[1])}`;
+    entityId = `${namespaceId}/${segments[1]}`;
+  } else if (entityType === 'audience' && entityId === 'all') {
+    canonical = 'somfp://audience/all';
+  }
   if (entityType === null || canonical === null || uriText !== canonical)
     return null;
   const end = closeParen + 1;

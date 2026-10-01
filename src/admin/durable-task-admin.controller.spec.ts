@@ -43,5 +43,4 @@ describe('DurableTaskAdminController', () => {
     expect(listQuery.offset).toHaveBeenCalledWith(10);
     expect(listQuery.limit).toHaveBeenCalledWith(25);
   });
-
 });

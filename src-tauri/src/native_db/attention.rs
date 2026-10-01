@@ -2,14 +2,125 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use log::warn;
+use tauri::Emitter;
 
 use super::client_state::{ClientGroupMetaApply, ClientGroupMetaPage};
 use super::{open, parse_json};
-use crate::{proxy::perform_api_request_with_events, ProxyState};
+use crate::{proxy::perform_api_request_with_events, ServerSessionState};
 
 // All native feed consumers share cursor ownership, including notification wakes.
 // This is not the cache lifetime lock: network waits must not block account cleanup.
 static THREAD_FEED_SYNC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+// The thread currently open in the UI. Per-thread Group Meta + tombstone drains
+// (drain-open mode) check this between pages: switching away lets the current
+// page commit, then stops. `None` means no thread is open (stop signal).
+static OPEN_THREAD_ID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+fn open_thread_id() -> Option<i64> {
+    let value = OPEN_THREAD_ID.load(std::sync::atomic::Ordering::Acquire);
+    (value > 0).then_some(value)
+}
+
+
+/// The serialized shape emitted on the `soms-sse-event` channel for local
+/// (non-server) completion notifications. Mirrors `SseEventPayload` in sse.rs.
+#[derive(Clone, serde::Serialize)]
+struct LocalEventPayload {
+    event: String,
+    status: i64,
+    message: String,
+    data: serde_json::Value,
+}
+
+/// Drive per-thread Group Meta + tombstone drains (drain-open mode) for the
+/// open thread. `thread_id <= 0` is the stop signal: clears `OPEN_THREAD_ID`
+/// so in-flight drains stop after the current page commits. A non-null target
+/// fires that drain; a null target skips it (e.g. a tombstone-only advance
+/// must not touch Group Meta). On completion, emits `LOCAL_GROUP_META_COMMITTED`
+/// and a `tombstone-committed`-equivalent event so the renderer refreshes.
+#[tauri::command]
+pub(crate) async fn native_db_drain_thread_misc(
+    app: tauri::AppHandle,
+    proxy: tauri::State<'_, ServerSessionState>,
+    user_id: i64,
+    thread_id: i64,
+    group_meta_end_id: Option<String>,
+    tombstone_end_seq: Option<i64>,
+) -> Result<(), String> {
+    if user_id <= 0 {
+        return Err("invalid user id".into());
+    }
+    if thread_id <= 0 {
+        // Stop signal.
+        OPEN_THREAD_ID.store(0, std::sync::atomic::Ordering::Release);
+        return Ok(());
+    }
+    OPEN_THREAD_ID.store(thread_id, std::sync::atomic::Ordering::Release);
+    let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
+    // Fire both drains concurrently; they share the `OPEN_THREAD_ID` guard.
+    let group_meta_app = app.clone();
+    let group_meta_proxy = proxy.inner().clone();
+    let group_meta_task = tokio::spawn(async move {
+        if let Some(_target) = group_meta_end_id {
+        // The drain target lives in the threads table (group_meta_feed_end_id),
+        // refreshed by the preceding thread-feed commit, so the caller's target
+        // is redundant — `sync_group_meta_thread` reads it from `group_meta_plans`.
+        let (changed, error) =
+                sync_group_meta_thread(Some(&group_meta_app), &group_meta_proxy, user_id, thread_id, epoch)
+                    .await;
+            if let Some(error) = error {
+                warn!("group-meta per-thread drain failed; next wake retries: {error}");
+            } else if !changed.is_empty() {
+                let _ = group_meta_app.emit(
+                    "soms-sse-event",
+                    LocalEventPayload {
+                        event: "LOCAL_GROUP_META_COMMITTED".into(),
+                        status: 0,
+                        message: "local group meta committed".into(),
+                        data: serde_json::json!({
+                            "userId": user_id,
+                            "threadIds": changed,
+                        }),
+                    },
+                );
+            }
+        }
+    });
+    let tombstone_app = app.clone();
+    let tombstone_proxy = proxy.inner().clone();
+    let tombstone_task = tokio::spawn(async move {
+        if let Some(target) = tombstone_end_seq {
+            match sync_tombstone_thread(Some(&tombstone_app), &tombstone_proxy, user_id, thread_id, target, epoch)
+                .await
+            {
+                Ok(committed) if !committed.is_empty() => {
+                    let _ = tombstone_app.emit(
+                        "soms-sse-event",
+                        LocalEventPayload {
+                            event: "LOCAL_TOMBSTONE_COMMITTED".into(),
+                            status: 0,
+                            message: "local tombstone committed".into(),
+                            data: serde_json::json!({
+                                "userId": user_id,
+                                "threadId": thread_id,
+                                "tombstones": committed.iter().map(|item| serde_json::json!({
+                                    "seq": item.get("messageSeq").and_then(Value::as_i64).unwrap_or(0),
+                                    "type": item.get("type").and_then(Value::as_str).unwrap_or(""),
+                                })).collect::<Vec<_>>(),
+                            }),
+                        },
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => warn!("tombstone per-thread drain failed; next wake retries: {error}"),
+            }
+        }
+    });
+    let _ = tokio::join!(group_meta_task, tombstone_task);
+    Ok(())
+}
 
 fn feed_request(cursor: i32, through: i32) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&serde_json::json!({
@@ -348,7 +459,7 @@ fn find_profile_for_evidence(
 #[tauri::command]
 pub(crate) async fn native_profile_resolve(
     app: tauri::AppHandle,
-    proxy: tauri::State<'_, ProxyState>,
+    proxy: tauri::State<'_, ServerSessionState>,
     user_id: i64,
     selector: Value,
 ) -> Result<Value, String> {
@@ -357,7 +468,7 @@ pub(crate) async fn native_profile_resolve(
 
 async fn resolve_profile(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     user_id: i64,
     selector: Value,
 ) -> Result<Value, String> {
@@ -418,7 +529,7 @@ async fn resolve_profile(
 
 pub(crate) async fn materialize_profile_event(
     app: &tauri::AppHandle,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     user_id: i64,
     key: &Value,
 ) -> Result<(), String> {
@@ -587,7 +698,7 @@ fn commit_group_meta_profile(
 
 async fn resolve_group_meta_profile(
     app: Option<&tauri::AppHandle>,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     user_id: i64,
     epoch: u64,
     reference: GroupMetaProfileReference,
@@ -773,30 +884,36 @@ fn group_meta_plans(conn: &Connection, user_id: i64) -> Result<Vec<GroupMetaPlan
     Ok(plans)
 }
 
-async fn sync_group_meta(
+/// Drain Group Meta for a single thread (drain-open mode). Only the open
+/// thread's Group Meta advances; switching away stops after the current
+/// page commits. Returns the changed thread ids (just `thread_id` when any
+/// page committed).
+async fn sync_group_meta_thread(
     app: Option<&tauri::AppHandle>,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     user_id: i64,
+    thread_id: i64,
     epoch: u64,
 ) -> (Vec<i64>, Option<String>) {
     let mut changed = Vec::new();
-    let result = sync_group_meta_unchecked(app, proxy, user_id, epoch, &mut changed).await;
+    let result = sync_group_meta_thread_unchecked(app, proxy, user_id, thread_id, epoch, &mut changed).await;
     changed.sort_unstable();
     changed.dedup();
     (changed, result.err())
 }
 
-async fn sync_group_meta_unchecked(
+async fn sync_group_meta_thread_unchecked(
     app: Option<&tauri::AppHandle>,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     user_id: i64,
+    thread_id: i64,
     epoch: u64,
     changed: &mut Vec<i64>,
 ) -> Result<(), String> {
     let plans = super::lifetime::spawn_at(Ok(epoch), move || group_meta_plans(&open()?, user_id))
         .await
         .map_err(|e| format!("join group-meta plan read: {e}"))??;
-    for plan in plans {
+    for plan in plans.into_iter().filter(|plan| plan.thread_id == thread_id) {
         let target = plan.target.parse::<u64>().map_err(|e| e.to_string())?;
         let mut after = plan
             .processed_through
@@ -940,13 +1057,113 @@ async fn sync_group_meta_unchecked(
     })
     .await
     .map_err(|e| format!("join unresolved Group Meta profile read: {e}"))??;
-    for reference in references {
-        let thread_id = reference.thread_id;
+    for reference in references.into_iter().filter(|reference| reference.thread_id == thread_id) {
+        let changed_thread_id = reference.thread_id;
         if resolve_group_meta_profile(app, proxy, user_id, epoch, reference).await? {
-            changed.push(thread_id);
+            changed.push(changed_thread_id);
         }
     }
     Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeletedMessagePage {
+    tombstones: Vec<Value>,
+    scanned_through: i64,
+    has_more: bool,
+}
+
+#[derive(Deserialize)]
+struct TombstoneResponse {
+    code: i32,
+    data: Option<DeletedMessagePage>,
+}
+
+/// Drain the deletion (tombstone) feed for one thread up to `target` (drain-open
+/// mode). Checks `open_thread_id() === thread_id` between pages so switching
+/// away lets the current page commit, then stops. Returns the committed
+/// tombstones so the caller can emit a notification.
+async fn sync_tombstone_thread(
+    app: Option<&tauri::AppHandle>,
+    proxy: &ServerSessionState,
+    user_id: i64,
+    thread_id: i64,
+    target: i64,
+    epoch: u64,
+) -> Result<Vec<Value>, String> {
+    let mut committed = Vec::new();
+    let mut hwm = super::lifetime::spawn_at(Ok(epoch), move || {
+        let conn = open()?;
+        let hwm: Option<i64> = conn
+            .query_row(
+                "SELECT deleted_hwm FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
+                rusqlite::params![user_id, thread_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("get deleted hwm: {e}"))?;
+        Ok::<_, String>(hwm.unwrap_or(0))
+    })
+    .await
+    .map_err(|e| format!("join tombstone hwm read: {e}"))??;
+    loop {
+        if open_thread_id() != Some(thread_id) {
+            return Ok(committed);
+        }
+        if hwm >= target {
+            return Ok(committed);
+        }
+        drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
+        let body = serde_json::to_vec(&serde_json::json!({
+            "threadId": thread_id,
+            "after": hwm,
+            "take": 100,
+            "through": target,
+        }))
+        .map_err(|e| format!("encode tombstone request: {e}"))?;
+        let response = perform_api_request_with_events(
+            app,
+            proxy,
+            "POST".into(),
+            "/api/v1/deleted-messages/query".into(),
+            std::collections::HashMap::from([(
+                "content-type".into(),
+                "application/json".into(),
+            )]),
+            Some(body),
+            true,
+        )
+        .await?;
+        if !(200..300).contains(&response.status) {
+            return Err(format!("tombstone HTTP {}", response.status));
+        }
+        let envelope: TombstoneResponse = serde_json::from_str(&response.body)
+            .map_err(|e| format!("decode tombstone response: {e}"))?;
+        if envelope.code != 0 {
+            return Err("tombstone query failed".into());
+        }
+        let page = envelope.data.ok_or("missing tombstone page")?;
+        if page.scanned_through < hwm || (page.scanned_through == hwm && page.has_more) {
+            return Err("invalid tombstone page".into());
+        }
+        let scanned = page.scanned_through;
+        let has_more = page.has_more;
+        let tombstones = page.tombstones;
+        let page_committed = tombstones.clone();
+        super::messages::native_db_apply_deleted_messages(
+            user_id,
+            thread_id,
+            tombstones,
+            scanned,
+        )
+        .await?;
+        committed.extend(page_committed);
+        hwm = scanned;
+        if !has_more {
+            return Ok(committed);
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -954,8 +1171,6 @@ async fn sync_group_meta_unchecked(
 pub(crate) struct ThreadFeedSyncResult {
     pub(crate) states: Vec<LocalThreadAttention>,
     pub(crate) cursor: i32,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) group_thread_ids: Vec<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
 }
@@ -1020,7 +1235,6 @@ fn read_feed_changes(
     Ok(ThreadFeedSyncResult {
         states,
         cursor,
-        group_thread_ids: Vec::new(),
         error: None,
     })
 }
@@ -1040,7 +1254,7 @@ pub(crate) async fn native_thread_feed_changes(
 
 pub(crate) async fn sync_thread_feed(
     app: Option<&tauri::AppHandle>,
-    proxy: &ProxyState,
+    proxy: &ServerSessionState,
     user_id: i64,
     target: i32,
 ) -> Result<ThreadFeedSyncResult, String> {
@@ -1057,7 +1271,6 @@ pub(crate) async fn sync_thread_feed(
     .await
     .map_err(|e| format!("join thread feed cursor read: {e}"))??;
     let mut states: BTreeMap<i32, LocalThreadAttention> = BTreeMap::new();
-    let mut group_thread_ids = Vec::new();
     // Only scheduled polling lacks a wake head. Its first page discovers the server boundary.
     let mut target = (target >= 0).then_some(target);
     let outcome: Result<(), String> = async {
@@ -1110,11 +1323,10 @@ pub(crate) async fn sync_thread_feed(
             cursor = scanned;
             target = Some(target.unwrap_or(head).max(head));
         }
-        let (changed, error) = sync_group_meta(app, proxy, user_id, epoch).await;
-        group_thread_ids = changed;
-        if let Some(error) = error {
-            return Err(error);
-        }
+        // Group Meta is no longer drained inline here. It runs as an independent
+        // per-thread drain driven by `native_db_drain_thread_misc` (drain-open mode):
+        // only the open thread's Group Meta advances, switched-away threads stop
+        // after the current page commits.
         Ok(())
     }
     .await;
@@ -1123,7 +1335,6 @@ pub(crate) async fn sync_thread_feed(
     Ok(ThreadFeedSyncResult {
         states: states.into_values().collect(),
         cursor,
-        group_thread_ids,
         error: outcome.err(),
     })
 }
@@ -1696,7 +1907,7 @@ mod tests {
         assert!(stored.get("profileRev").is_none());
         assert!(stored["peerUser"].get("profileRev").is_none());
         super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
-            "account":"peer","domain":"local","namespaceId":0,"profileRev":2,
+            "account":"peer","domain":"local","publisherNamespaceId":0,"profileNamespaceId":0,"profileRev":2,
             "name":"Selected peer","avatarDigest":null,"bio":"Latest",
         })).unwrap();
         let list = super::super::client_state::read_threads(&conn, 1).unwrap();
@@ -1751,14 +1962,16 @@ mod tests {
         let conn = db();
         super::super::contacts::register_namespace(&conn, 1, 0, "local").unwrap();
         super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
-            "account": "peer", "domain": "local", "namespaceId": 0,
+            "account": "peer", "domain": "local", "publisherNamespaceId": 0, "profileNamespaceId": 0,
             "profileRev": 2, "name": "Peer", "avatarDigest": null, "bio": "About",
         })).unwrap();
         let actual = find_profile_for_evidence(&conn, 1, &serde_json::json!({
-            "type": "EXACT", "account": "peer", "domain": "local", "rev": 2,
+            "type": "EXACT", "account": "peer", "domain": "local",
+            "publisherNamespaceId": 0, "profileNamespaceId": 0, "rev": 2,
         })).unwrap();
         assert_eq!(actual, Some(serde_json::json!({
             "account": "peer", "domain": "local", "namespaceId": 0,
+            "publisherNamespaceId": 0, "profileNamespaceId": 0,
             "profileRev": 2, "name": "Peer", "avatarDigest": null, "bio": "About",
         })));
     }
@@ -1774,7 +1987,7 @@ mod tests {
         group.thread_profile_rev = 2;
         merge_states(&mut conn, 1, vec![group], None).unwrap();
         super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
-            "account": "!team", "domain": "local", "namespaceId": 0,
+            "account": "!team", "domain": "local", "publisherNamespaceId": 0, "profileNamespaceId": 0,
             "profileRev": 2, "name": "Team", "avatarDigest": null, "bio": "",
         })).unwrap();
         assert!(super::super::thread_store::read(&conn, 1, 7).unwrap().unwrap()

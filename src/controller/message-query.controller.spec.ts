@@ -167,6 +167,7 @@ describe('MessageController group mention resolution', () => {
       userId: 8,
       account: 'alice',
       domain: 'local',
+      namespaceId: 0,
       name: 'Alice',
     });
     const controller = new MessageController(
@@ -201,24 +202,26 @@ describe('MessageController group mention resolution', () => {
     return { canonicalize, req, resolveActiveMember };
   }
 
-  it('resolves an exact local address through the shared group member resolver', async () => {
+  it('resolves a namespace/account entity through the shared group member resolver', async () => {
     const { canonicalize, req, resolveActiveMember } = setupMentionResolver();
 
     await expect(
-      canonicalize(req, 'hello [@Old](somfp://user/alice%40local)'),
-    ).resolves.toBe('hello [@Alice](somfp://user/alice%40local)');
+      canonicalize(req, 'hello [@Old](somfp://user/0/alice)'),
+    ).resolves.toBe('hello [@Alice](somfp://user/0/alice)');
     expect(resolveActiveMember).toHaveBeenCalledWith(42, {
+      namespaceId: 0,
       account: 'alice',
-      domain: 'local',
     });
   });
 
-  it('rejects a user mention without a domain', async () => {
+  it('treats a user mention without a namespace as ordinary text', async () => {
     const { canonicalize, req, resolveActiveMember } = setupMentionResolver();
 
+    // A v1 user entity requires two path segments (namespace/account). A single
+    // segment is malformed and stays ordinary text; the resolver is not called.
     await expect(
       canonicalize(req, 'hello [@Alice](somfp://user/alice)'),
-    ).rejects.toMatchObject({ bizCode: BusinessCode.GROUP_TARGET_NOT_MEMBER });
+    ).resolves.toBe('hello [@Alice](somfp://user/alice)');
     expect(resolveActiveMember).not.toHaveBeenCalled();
   });
 });
@@ -372,9 +375,7 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
 
 describe('MessageController.abandonMediaStage', () => {
   it('abandons the caller-owned staged media send', async () => {
-    const abandonMediaStage = vi
-      .fn()
-      .mockResolvedValue({ abandoned: true });
+    const abandonMediaStage = vi.fn().mockResolvedValue({ abandoned: true });
     const controller = new MessageController(
       { abandonMediaStage } as never,
       {} as never,

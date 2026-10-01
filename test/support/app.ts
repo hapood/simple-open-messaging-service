@@ -25,7 +25,8 @@ export async function createTestApp(
   configureModule?.(builder);
   const adapter = new FastifyAdapter();
   const moduleFixture: TestingModule = await builder.compile();
-  const app = moduleFixture.createNestApplication<NestFastifyApplication>(adapter);
+  const app =
+    moduleFixture.createNestApplication<NestFastifyApplication>(adapter);
   // configureApp must precede listen(): it sets the global prefix (must precede route
   // registration, which listen() performs) and registers the multipart parser + static mounts.
   // listen() then runs init + Fastify ready() (initializing route-context lifecycle hooks).

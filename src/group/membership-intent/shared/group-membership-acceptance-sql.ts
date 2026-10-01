@@ -277,7 +277,7 @@ function prepareRecipient(input: GroupMembershipAcceptanceInput): SQL {
       SELECT ${key}::text AS "compactionKey", jsonb_build_object('status', i.status, 'note', i.note,
         'requestedAt', floor(extract(epoch FROM i."requestedAt") * 1000)::bigint, 'expiresAt', NULL,
         'threadId', ${input.threadId}::integer, 'established', true,
-        'group', jsonb_build_object('account', ${input.groupAccount}::text, 'domain', 'local', 'isLocal', true,
+        'group', jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
           'name', ${input.groupName}::text, 'avatar', ${input.groupAvatar}::text, 'description', ${input.groupDescription}::text,
           'profileRev', ${input.groupProfileRev}::integer)) AS body
       FROM accepted_intent i

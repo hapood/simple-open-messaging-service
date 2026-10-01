@@ -34,11 +34,16 @@ export function parseFederationResourcePath(
   if (!rawPath.startsWith(pathPrefix) || rawQuery !== undefined)
     malformed('invalid resource path or query');
   const segments = rawPath.slice(pathPrefix.length).split('/');
-  if (segments.length !== pathNames.length ||
-      new Set(pathNames).size !== pathNames.length)
+  if (
+    segments.length !== pathNames.length ||
+    new Set(pathNames).size !== pathNames.length
+  )
     malformed('invalid resource path segments');
   return Object.fromEntries(
-    pathNames.map((name, index) => [name, decodeComponent(segments[index], name)]),
+    pathNames.map((name, index) => [
+      name,
+      decodeComponent(segments[index], name),
+    ]),
   );
 }
 

@@ -360,7 +360,6 @@ export class AdminFederationBlockDto {
   note?: string;
 }
 
-
 /** Federation namespace reset confirmation. The normalized value must exactly match the path domain. */
 export class AdminFederationResetDto {
   @ApiProperty({

@@ -638,27 +638,6 @@ export class MessageRepository {
     if (emitLiveSignal) this.signal$.next({ threadId, seq: messageEndSeq });
   }
 
-  /** Start this thread's deletion stream when its chatbox is first opened. The
-   *  drain runs in the database worker (per-thread single-flight with an
-   *  open-thread guard); the worker reports committed pages via
-   *  {@link tombstoneCommitted$}, which the constructor projects into
-   *  {@link deletedSignal$} / {@link slotsChanged}. */
-  async openTombstoneStream(threadId: number, target: number): Promise<void> {
-    await this.webdb.drainThreadMisc(
-      threadId,
-      '0',
-      Math.max(0, target),
-    );
-  }
-
-  /** Advance an already-opened stream from a unified content-head or realtime hint.
-   *  Closed/unopened threads deliberately retain only their durable feed head
-   *  and do no tombstone-body I/O. */
-  updateTombstoneTarget(threadId: number, target: number): Promise<void> {
-    if (!Number.isSafeInteger(target) || target < 0) return Promise.resolve();
-    return this.webdb.drainThreadMisc(threadId, '0', target);
-  }
-
   /** Purge all cached history state for a thread when it leaves the user's roster. */
   async deleteByThread(threadId: number): Promise<void> {
     this.maxSeenSeq.delete(threadId);

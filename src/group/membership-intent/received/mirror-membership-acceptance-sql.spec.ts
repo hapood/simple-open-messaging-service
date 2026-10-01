@@ -9,22 +9,35 @@ describe('mirror group membership activation profile selection', () => {
         threadId: 9,
         pairId: 4n,
         presentation: {
-          groupAccount: '!group', groupDomain: 'origin.example',
-          groupNamespaceId: 3, groupName: 'Group', groupAvatar: '',
-          groupDescription: '', groupProfileRev: 7,
+          groupAccount: '!group',
+          groupDomain: 'origin.example',
+          groupNamespaceId: 3,
+          groupName: 'Group',
+          groupAvatar: '',
+          groupDescription: '',
+          groupProfileRev: 7,
         },
-        memberAccount: 'alice', localMemberId: 5,
+        memberAccount: 'alice',
+        localMemberId: 5,
         intent: {
-          profileNamespaceId: 0, profileRev: 6, note: '', requestedAt: null, expiresAt: null,
-          messageEndSeq: 0, tombstoneEndSeq: 0,
+          profileNamespaceId: 0,
+          profileRev: 6,
+          note: '',
+          requestedAt: null,
+          expiresAt: null,
+          messageEndSeq: 0,
+          tombstoneEndSeq: 0,
         },
-        persistStatus: 'ACCEPTED', promote: false,
+        persistStatus: 'ACCEPTED',
+        promote: false,
       }),
     );
     expect(statement.sql).toContain('"threadProfileRev", "profileSourceId"');
     expect(statement.sql).toContain('v."profileRev", NULL');
     expect(statement.sql).toContain('CROSS JOIN persisted_intent v');
-    expect(statement.sql).toContain('"profileSourceId" = EXCLUDED."profileSourceId"');
+    expect(statement.sql).toContain(
+      '"profileSourceId" = EXCLUDED."profileSourceId"',
+    );
     expect(statement.sql).toContain('CROSS JOIN pair_change');
     expect(statement.sql).not.toContain('group_profile_source');
   });

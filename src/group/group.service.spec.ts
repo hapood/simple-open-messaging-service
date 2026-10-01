@@ -146,7 +146,6 @@ function createService(
   const service = new GroupService(
     database as never,
     federation as never,
-    federation as never,
     clientStateFeed as never,
     groupMeta as never,
     messages as never,

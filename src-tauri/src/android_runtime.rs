@@ -186,7 +186,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_queryCallPeer(
     }
 }
 
-static PROXY: OnceLock<crate::ProxyState> = OnceLock::new();
+static PROXY: OnceLock<crate::ServerSessionState> = OnceLock::new();
 
 #[no_mangle]
 pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_isAccountEpochCurrent(
@@ -197,7 +197,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_isAccountEpochCurr
     u8::from(epoch >= 0 && crate::native_db::is_account_epoch_current(epoch as u64))
 }
 
-pub(crate) fn proxy_state() -> Result<&'static crate::ProxyState, String> {
+pub(crate) fn proxy_state() -> Result<&'static crate::ServerSessionState, String> {
     PROXY
         .get()
         .ok_or_else(|| "Android Rust runtime is not initialized".into())
@@ -211,7 +211,7 @@ struct RuntimeOrigins {
     mode: String,
 }
 
-fn apply_origins(state: &crate::ProxyState, origins: RuntimeOrigins) -> Result<(), String> {
+fn apply_origins(state: &crate::ServerSessionState, origins: RuntimeOrigins) -> Result<(), String> {
     let normalize = |value: Option<String>| -> Result<Option<String>, String> {
         value
             .map(|raw| crate::validate_origin(&raw).ok_or_else(|| "invalid runtime origin".into()))
@@ -266,7 +266,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
             let value: String = env.get_string(&token).map_err(|e| e.to_string())?.into();
             Some(value).filter(|value| !value.is_empty())
         };
-        let state = crate::ProxyState::new();
+        let state = crate::ServerSessionState::new();
         // Eagerly start the same async runtime Tauri uses later; this performs no network I/O.
         let _ = tauri::async_runtime::handle();
         apply_origins(&state, origins)?;

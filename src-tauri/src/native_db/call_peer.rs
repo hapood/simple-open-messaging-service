@@ -46,7 +46,7 @@ fn read_call_peer_from_connection(
     ).optional().map_err(|e| format!("read call peer revision: {e}"))?
         .ok_or("call peer thread state missing")?;
     let profile = if profile_rev > 0 {
-        contacts::read_profile(&conn, user_id, account, domain, namespace_id, profile_rev)?
+        contacts::read_profile(&conn, user_id, account, domain, namespace_id, namespace_id, profile_rev)?
     } else {
         None
     };

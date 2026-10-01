@@ -79,12 +79,8 @@ export function userIntentAuthorizationSql(params: {
   targetDomain: string;
   targetNamespaceId: number;
 }): SQL {
-  const {
-    actorAccount,
-    actorNamespaceId,
-    targetAccount,
-    targetNamespaceId,
-  } = params;
+  const { actorAccount, actorNamespaceId, targetAccount, targetNamespaceId } =
+    params;
   return sql`
     SELECT p.active AS "pairActive", p.established AS "pairEstablished",
       p."threadId", t."authorizationEpoch", t."curSeq" AS "threadCurSeq",

@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { relationshipPair } from '../../database/schema.js';
 import type {
   DatabaseService,
@@ -70,7 +70,6 @@ interface ValidatedRevocation {
   readonly threadLock: ThreadContentLock;
   readonly pairId: bigint;
   readonly localMemberId: number | null;
-  readonly peerDomain: string | null;
   readonly input: GroupDisbandMembershipRevocationInput;
 }
 
@@ -106,11 +105,9 @@ export class GroupDisbandMembershipRevocationService {
     }
     if (peers.peers.size === 0)
       return { status: 'APPLIED', transitioned: true };
-    void this.deps.federation
-      .pushStateFeedDomains(peers.peers.keys())
-      .catch((error: unknown) =>
-        this.logger.warn('dissolve revocation state-feed wake failed', error),
-      );
+    // The wake hint is keyed by the publisher namespace; the peer domain is
+    // resolved at send time from the namespace binding.
+    this.deps.federation.pushStateFeedNamespaces(peers.peers);
     return { status: 'APPLIED', transitioned: true };
   }
 
@@ -209,12 +206,24 @@ export class GroupDisbandMembershipRevocationService {
       throw new Error('disband revocation pair changed');
     const groupEndpoint =
       lockedPair.endpointAType === 'GROUP'
-        ? { account: lockedPair.endpointAAccount, namespaceId: lockedPair.endpointANamespaceId }
-        : { account: lockedPair.endpointBAccount, namespaceId: lockedPair.endpointBNamespaceId };
+        ? {
+            account: lockedPair.endpointAAccount,
+            namespaceId: lockedPair.endpointANamespaceId,
+          }
+        : {
+            account: lockedPair.endpointBAccount,
+            namespaceId: lockedPair.endpointBNamespaceId,
+          };
     const memberEndpoint =
       lockedPair.endpointAType === 'GROUP'
-        ? { account: lockedPair.endpointBAccount, namespaceId: lockedPair.endpointBNamespaceId }
-        : { account: lockedPair.endpointAAccount, namespaceId: lockedPair.endpointANamespaceId };
+        ? {
+            account: lockedPair.endpointBAccount,
+            namespaceId: lockedPair.endpointBNamespaceId,
+          }
+        : {
+            account: lockedPair.endpointAAccount,
+            namespaceId: lockedPair.endpointANamespaceId,
+          };
     await lockGroupMemberIntentRowsInTx(tx, groupEndpoint, memberEndpoint);
     // The membership authorization binds `authorized` to a calling member
     // account; a system caller has none, so the bind is a constant and the
@@ -261,7 +270,6 @@ export class GroupDisbandMembershipRevocationService {
       threadLock,
       pairId,
       localMemberId: row.localMemberId,
-      peerDomain: row.profileNamespaceId === 0 ? null : row.memberDomain,
       input: {
         threadId: params.threadId,
         pairId,
@@ -270,9 +278,7 @@ export class GroupDisbandMembershipRevocationService {
         groupAvatar: row.avatar,
         groupDescription: row.description,
         groupProfileRev: row.profileRev,
-        localDomain: 'local',
         memberAccount: member.account,
-        memberDomain: row.memberDomain,
         profileNamespaceId: row.profileNamespaceId,
         localMemberId: row.localMemberId,
         projectionDirections: row.projectionDirections,
@@ -283,7 +289,7 @@ export class GroupDisbandMembershipRevocationService {
   private async applyInTx(
     context: ValidatedRevocation,
     clientUpdates: PendingClientStateFeedUpdate[],
-  ): Promise<Set<string>> {
+  ): Promise<Set<number>> {
     const result = await context.tx.execute<{
       intentChanged: boolean;
       pairChanged: boolean;
@@ -304,8 +310,11 @@ export class GroupDisbandMembershipRevocationService {
           context.localMemberId,
         ])),
       );
-    const peers = new Set<string>();
-    if (context.peerDomain !== null) peers.add(context.peerDomain);
+    // Only a remote member leaves a peer feed to notify; the publisher
+    // namespace is the wake key.
+    const peers = new Set<number>();
+    if (context.input.profileNamespaceId !== 0)
+      peers.add(context.input.profileNamespaceId);
     return peers;
   }
 }

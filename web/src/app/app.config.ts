@@ -37,6 +37,7 @@ import { routes } from './app.routes';
 import { InlineTranslocoLoader } from './i18n/transloco.loader';
 import { isTauri } from './services/runtime';
 import { TauriHttpBackend } from './tauri-http.backend';
+import { provideWebdbService } from './services/webdb.service';
 
 /**
  * Read the CSP nonce the Tauri shell stamped onto an inline element at load time, so Angular can replay
@@ -61,6 +62,7 @@ function readCspNonce(): string | null {
 
 export const appConfig: ApplicationConfig = {
   providers: [
+    provideWebdbService(),
     { provide: CSP_NONCE, useValue: readCspNonce() },
     // Restore the native session from OS secure storage (Android EncryptedSharedPreferences / desktop
     // keyring) BEFORE the router resolves, so isLoggedIn() + the HTTP interceptor see the restored token

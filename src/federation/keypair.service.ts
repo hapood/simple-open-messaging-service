@@ -231,7 +231,9 @@ export class KeypairService
           signingKeyCount: keys.length,
           claimableKeyCount: keys.filter(
             (key) =>
-              key.notAfter > now && root.claimable && root.unpublishedAt === null,
+              key.notAfter > now &&
+              root.claimable &&
+              root.unpublishedAt === null,
           ).length,
         };
       });
@@ -250,9 +252,7 @@ export class KeypairService
     return [...snapshot.keys.values()]
       .filter((key) => {
         const root = snapshot.roots.get(key.rootId);
-        return (
-          root !== undefined && root.claimable && key.notAfter > now
-        );
+        return root !== undefined && root.claimable && key.notAfter > now;
       })
       .sort((a, b) => a.notBefore - b.notBefore || (a.keyId < b.keyId ? -1 : 1))
       .map((key) => this.toCertificate(key, snapshot));
@@ -269,7 +269,8 @@ export class KeypairService
     if (!this.status.available) return null;
     const snapshot = this.snapshot!;
     for (const root of snapshot.roots.values()) {
-      if (root.rootPublicKey === publicKeyB64) return fromB64(root.rootPrivateKey);
+      if (root.rootPublicKey === publicKeyB64)
+        return fromB64(root.rootPrivateKey);
     }
     for (const key of snapshot.keys.values()) {
       if (key.publicKey === publicKeyB64) return fromB64(key.privateKey);
@@ -303,7 +304,7 @@ export class KeypairService
     if (!privateKey) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PUBLIC_KEY_UNRECOGNIZED,
-        'the supplied public key is not part of this server\'s retained key history',
+        "the supplied public key is not part of this server's retained key history",
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -359,10 +360,7 @@ export class KeypairService
         insertedRoot.id,
         domain,
         now,
-        Math.min(
-          now + this.config.signingKey.lifetimeMs,
-          rootNotAfter,
-        ),
+        Math.min(now + this.config.signingKey.lifetimeMs, rootNotAfter),
       );
       await this.insertSigningKey(tx, initial);
       await tx
@@ -569,7 +567,10 @@ export class KeypairService
     if (!keyRows.has(state.currentKeyId)) {
       throw new Error('current signing key row is missing');
     }
-    if (state.plannedSuccessorKeyId && !keyRows.has(state.plannedSuccessorKeyId)) {
+    if (
+      state.plannedSuccessorKeyId &&
+      !keyRows.has(state.plannedSuccessorKeyId)
+    ) {
       throw new Error('planned successor signing key row is missing');
     }
     if (state.plannedSuccessorKeyId) {
@@ -583,7 +584,9 @@ export class KeypairService
       }
     }
     if (keyRows.get(state.currentKeyId)!.rootId !== claimableRootId) {
-      throw new Error('current signing key is not authorized by the claimable root');
+      throw new Error(
+        'current signing key is not authorized by the claimable root',
+      );
     }
     return {
       identityDomain: domain,

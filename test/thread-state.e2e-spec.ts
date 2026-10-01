@@ -104,36 +104,34 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         endpointBNamespaceId: namespaceId,
       })
       .returning();
-    await database.db.insert(tables.relationshipIntent).values(
-      [
-        {
-          authorAccount: owner.account,
-          authorNamespaceId: 0,
-          receiverAccount: target,
-          receiverNamespaceId: namespaceId,
-          status: 'REVOKED' as const,
-          profileNamespaceId: 0,
-          profileRev: 0,
-          messageEndSeq: 0,
-          tombstoneEndSeq: 0,
-          requestedAt: new Date(),
-          expiresAt: null,
-        },
-        {
-          authorAccount: target,
-          authorNamespaceId: namespaceId,
-          receiverAccount: owner.account,
-          receiverNamespaceId: 0,
-          status: 'REVOKED' as const,
-          profileNamespaceId: namespaceId,
-          profileRev: 7,
-          messageEndSeq: 0,
-          tombstoneEndSeq: 0,
-          requestedAt: new Date(),
-          expiresAt: null,
-        },
-      ],
-    );
+    await database.db.insert(tables.relationshipIntent).values([
+      {
+        authorAccount: owner.account,
+        authorNamespaceId: 0,
+        receiverAccount: target,
+        receiverNamespaceId: namespaceId,
+        status: 'REVOKED' as const,
+        profileNamespaceId: 0,
+        profileRev: 0,
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
+        requestedAt: new Date(),
+        expiresAt: null,
+      },
+      {
+        authorAccount: target,
+        authorNamespaceId: namespaceId,
+        receiverAccount: owner.account,
+        receiverNamespaceId: 0,
+        status: 'REVOKED' as const,
+        profileNamespaceId: namespaceId,
+        profileRev: 7,
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
+        requestedAt: new Date(),
+        expiresAt: null,
+      },
+    ]);
     await database.db
       .insert(tables.accountThreadState)
       .values({ accountId: owner.id, threadId: thread.id });
@@ -473,9 +471,11 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     const second = await f.snapshot();
     expect(second?.profile.profileRev).toBe(8);
     expect(second!.threadFeedId).toBeGreaterThan(first!.threadFeedId);
-    await expect(coordinator.start(f.owner.id, 1, exact)).rejects.toMatchObject({
-      bizCode: BusinessCode.NOT_FOUND,
-    });
+    await expect(coordinator.start(f.owner.id, 1, exact)).rejects.toMatchObject(
+      {
+        bizCode: BusinessCode.NOT_FOUND,
+      },
+    );
     await expect(
       coordinator.start(f.owner.id, 1, {
         ...exact,

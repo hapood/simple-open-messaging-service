@@ -209,13 +209,7 @@ describe('FederationInboundMessageRouteService', () => {
     const tx = { execute } as unknown as DatabaseTransaction;
 
     await expect(
-      service().resolveMessage(
-        tx,
-        groupMessage(13),
-        'peer.test',
-        9,
-        7,
-      ),
+      service().resolveMessage(tx, groupMessage(13), 'peer.test', 9, 7),
     ).rejects.toThrow(
       'group mirror may only submit its locally managed authors',
     );

@@ -9,7 +9,9 @@ import { ProfileResolutionCoordinatorService } from '../profile-resolution/profi
 
 @Injectable()
 export class MessageProfileWorkDispatcherService {
-  private readonly logger = new Logger(MessageProfileWorkDispatcherService.name);
+  private readonly logger = new Logger(
+    MessageProfileWorkDispatcherService.name,
+  );
 
   constructor(
     private readonly profileResolutions: ProfileResolutionCoordinatorService,
@@ -26,11 +28,13 @@ export class MessageProfileWorkDispatcherService {
       });
     }
     for (const projection of event.evidenceProjections) {
-      void this.profileEvidenceProjections.resolve(projection).catch((error) => {
-        this.logger.warn(
-          `failed to enqueue committed message profile evidence projection: ${(error as Error).message}`,
-        );
-      });
+      void this.profileEvidenceProjections
+        .resolve(projection)
+        .catch((error) => {
+          this.logger.warn(
+            `failed to enqueue committed message profile evidence projection: ${(error as Error).message}`,
+          );
+        });
     }
   }
 }

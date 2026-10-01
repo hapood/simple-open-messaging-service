@@ -8,7 +8,7 @@ function storage(start = 0) {
   let cursor = start;
   let boundary: number | undefined;
   return {
-    getMeta: vi.fn(async (key: string) =>
+    getSyncState: vi.fn(async (key: string) =>
       key === 'stateFeedId'
         ? cursor
         : key === 'stateFeedFullThrough'
@@ -48,15 +48,15 @@ describe('database-worker state-feed executor', () => {
     await db.openForUser('94082');
     try {
       await db.applyStateFeedPage([], 1, true, 3);
-      expect(await db.getMeta('stateFeedFullThrough')).toBe(3);
-      expect(await db.getMeta('stateFeedId')).toBe(1);
+      expect(await db.getSyncState('stateFeedFullThrough')).toBe(3);
+      expect(await db.getSyncState('stateFeedId')).toBe(1);
       await expect(db.applyStateFeedPage([], 2, false, 1)).rejects.toThrow(
         'invalid state-feed full boundary',
       );
-      expect(await db.getMeta('stateFeedId')).toBe(1);
+      expect(await db.getSyncState('stateFeedId')).toBe(1);
       await db.applyStateFeedPage([], 3, false, null);
-      expect(await db.getMeta('stateFeedFullThrough')).toBeUndefined();
-      expect(await db.getMeta('stateFeedId')).toBe(3);
+      expect(await db.getSyncState('stateFeedFullThrough')).toBeUndefined();
+      expect(await db.getSyncState('stateFeedId')).toBe(3);
     } finally {
       await db.closeAndDelete('94082');
     }
@@ -95,7 +95,7 @@ describe('database-worker state-feed executor', () => {
     await expect(synchronizeStateFeed(db, 3, failed)).rejects.toThrow(
       'offline',
     );
-    expect(await db.getMeta('stateFeedFullThrough')).toBe(3);
+    expect(await db.getSyncState('stateFeedFullThrough')).toBe(3);
     const retry = vi.fn().mockResolvedValue(page('full', 3, 3));
     expect(await synchronizeStateFeed(db, 3, retry)).toBe(3);
     expect(retry).toHaveBeenCalledWith({
@@ -117,7 +117,7 @@ describe('database-worker state-feed executor', () => {
       .mockResolvedValueOnce(page('full', 2, 2));
     expect(await synchronizeStateFeed(db, 9, request)).toBe(2);
     expect(db.applyStateFeedPage).toHaveBeenCalledWith([], 2, true, null);
-    expect(await db.getMeta('stateFeedId')).toBe(2);
+    expect(await db.getSyncState('stateFeedId')).toBe(2);
   });
 
   it('rejects a stalled page without advancing the local cursor', async () => {

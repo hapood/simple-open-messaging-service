@@ -27,6 +27,7 @@ import {
   STATE_FEED_WORKER_FACTORY,
   WebdbService,
 } from './webdb.service';
+import { WebdbStorage } from './webdb-storage';
 
 const peerProfile = {
   account: 'peer',
@@ -83,41 +84,6 @@ describe('WebdbService', () => {
       }
     });
 
-    it('sends a whole thread sync demand to the DB worker and accepts its committed result', async () => {
-      await webdb.close();
-      const worker = {
-        onmessage: null,
-        onerror: null,
-        postMessage: vi.fn(),
-        terminate: vi.fn(),
-      } as unknown as Worker;
-      const workerStorage = new WebdbService(() => worker);
-      await workerStorage.openForUser('1');
-      try {
-        const pending = workerStorage.syncThreadFeed(12, 3);
-        const request = vi.mocked(worker.postMessage).mock.calls[0][0] as {
-          id: number;
-        };
-        expect(request).toMatchObject({
-          type: 'thread-sync',
-          userId: '1',
-          target: 12,
-          after: 3,
-          url: '/api/v1/thread-feed',
-        });
-        worker.onmessage!.call(worker, {
-          data: {
-            id: request.id,
-            ok: true,
-            result: { cursor: 12, states: [] },
-          },
-        } as MessageEvent);
-        expect(await pending).toEqual({ cursor: 12, states: [] });
-      } finally {
-        await workerStorage.closeAndDelete('1');
-      }
-    });
-
     it('binds a transferable port only after the database worker acknowledges the account', async () => {
       await webdb.close();
       const worker = {
@@ -126,7 +92,7 @@ describe('WebdbService', () => {
         postMessage: vi.fn(),
         terminate: vi.fn(),
       } as unknown as Worker;
-      const workerStorage = new WebdbService(() => worker);
+      const workerStorage = new WebdbStorage(() => worker);
       await workerStorage.openForUser('1');
       let port: MessagePort | null = null;
       let workerPort: MessagePort | undefined;
@@ -182,7 +148,7 @@ describe('WebdbService', () => {
       expect(await webdb.getThreads()).toEqual([
         expect.objectContaining({ threadId: 7, type: 'P2P', threadFeedId: 10 }),
       ]);
-      expect(await webdb.getMeta('threadFeedCursor')).toBeUndefined();
+      expect(await webdb.getSyncState('threadFeedCursor')).toBeUndefined();
     });
 
     it('projects a counterpart-only thread revision and preserves it across stale list writes', async () => {
@@ -241,7 +207,7 @@ describe('WebdbService', () => {
         ...rolledBack,
         localReadSeq: 105,
       });
-      expect(await webdb.getMeta('threadFeedCursor')).toBe(10);
+      expect(await webdb.getSyncState('threadFeedCursor')).toBe(10);
     });
 
     it('serializes concurrent local progress and snapshots without losing either', async () => {
@@ -294,7 +260,7 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       await webdb.mergeThreadStates([], 20);
       await webdb.mergeThreadStates([], 10);
-      expect(await webdb.getMeta('threadFeedCursor')).toBe(20);
+      expect(await webdb.getSyncState('threadFeedCursor')).toBe(20);
     });
 
     it('rejects an invalid batch before writing any snapshot or cursor', async () => {
@@ -324,7 +290,7 @@ describe('WebdbService', () => {
         ),
       ).rejects.toThrow('unread count');
       expect(await webdb.getThreadStates()).toEqual([]);
-      expect(await webdb.getMeta('threadFeedCursor')).toBeUndefined();
+      expect(await webdb.getSyncState('threadFeedCursor')).toBeUndefined();
     });
 
     it('normalizes local mirror members without changing the group source and keeps unresolved members', async () => {
@@ -398,7 +364,7 @@ describe('WebdbService', () => {
         profileDomain: 'authority.test', profileNamespaceId: 7,
       });
       expect(await db!.getAll('profiles')).toHaveLength(0);
-      expect(await webdb.getMeta('stateFeedId')).toBeUndefined();
+      expect(await webdb.getSyncState('stateFeedId')).toBeUndefined();
     });
 
     it('rejects incomplete profile text without pinning a placeholder', async () => {
@@ -517,7 +483,7 @@ describe('WebdbService', () => {
         avatarBase64: null,
         bio: '',
       });
-      await webdb.putMeta('stateFeedId', 98);
+      await webdb.putSyncState('stateFeedId', 98);
       await expect(
         webdb.applyGroupMetaPage({
           threadId: 90,
@@ -555,7 +521,7 @@ describe('WebdbService', () => {
         }),
       ).resolves.toBeUndefined();
       expect(await db!.getAll('members')).toHaveLength(2);
-      expect(await webdb.getMeta('stateFeedId')).toBe(98);
+      expect(await webdb.getSyncState('stateFeedId')).toBe(98);
       expect(
         await webdb.getProfile({
           account: 'alice',
@@ -870,11 +836,13 @@ describe('WebdbService', () => {
       expect(db!.name, 'per-user partition key').toBe('soms-webdb-u1');
       expect([...db!.objectStoreNames].sort()).toEqual([
         'members',
+        'meta',
         'namespaces',
         'profileAvatarBlobs',
+        'profileNamespaces',
         'profiles',
         'relationshipRequests',
-        'settings',
+        'syncState',
         'threadPreviews',
         'threads',
       ]);
@@ -883,9 +851,10 @@ describe('WebdbService', () => {
       expect([...messageDb.objectStoreNames].sort()).toEqual([
         'messageRanges',
         'messages',
-        'settings',
+        'meta',
+        'threadSyncState',
       ]);
-      expect((await messageDb.get('settings', 'schemaVersion'))?.value).toBe(
+      expect((await messageDb.get('meta', 'schemaVersion'))?.value).toBe(
         MESSAGE_CACHE_SCHEMA_VERSION,
       );
       expect(await webdb.getMeta('schemaVersion')).toBe(CACHE_SCHEMA_VERSION);
@@ -896,7 +865,7 @@ describe('WebdbService', () => {
       const db = await webdb.openForUser('1');
       await webdb.putMeta('threadHwms', { 7: 9 });
       await webdb.putMeta('stateFeedCursor', 42);
-      await db!.put('settings', {
+      await db!.put('meta', {
         key: 'schemaVersion',
         value: CACHE_SCHEMA_VERSION - 1,
       });
@@ -938,7 +907,7 @@ describe('WebdbService', () => {
         LocalCacheVersionMismatchError,
       );
       const raw = await openDB('soms-webdb-u1');
-      expect((await raw.get('settings', 'sentinel')).value).toBe(
+      expect((await raw.get('meta', 'sentinel')).value).toBe(
         'still-present',
       );
       raw.close();
@@ -1184,7 +1153,7 @@ describe('WebdbService', () => {
             account: kind === 'GROUP' ? '!history' : 'alice',
             domain: 'local',
             subjectAccount: 'bob',
-            subjectDomain: 'local',
+            subjectNamespaceId: 0,
             body: {
               status: 'REVOKED',
               established,
@@ -1198,7 +1167,6 @@ describe('WebdbService', () => {
                       account: '!history',
                       domain: 'local',
                       namespaceId: 0,
-                      isLocal: true,
                       name: 'History',
                       avatar: '',
                       description: '',
@@ -1261,7 +1229,7 @@ describe('WebdbService', () => {
         domain: 'local',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'bob',
-        subjectDomain: 'peer.test',
+        subjectNamespaceId: 12,
         body: {
           status: 'REQUESTED',
           note: '',
@@ -1288,7 +1256,7 @@ describe('WebdbService', () => {
         }),
       ], 13);
 
-      expect(await webdb.getMeta('stateFeedId')).toBe(12);
+      expect(await webdb.getSyncState('stateFeedId')).toBe(12);
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 7),
       ).toMatchObject({
@@ -1316,7 +1284,7 @@ describe('WebdbService', () => {
           domain: 'local',
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: 'bob',
-          subjectDomain: 'local',
+          subjectNamespaceId: 0,
           body: {
             status: 'ACCEPTED',
             note: '',
@@ -1334,7 +1302,7 @@ describe('WebdbService', () => {
           domain: 'local',
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: 'alice',
-          subjectDomain: 'local',
+          subjectNamespaceId: 0,
           body: {
             status: 'ACCEPTED',
             note: '',
@@ -1368,7 +1336,7 @@ describe('WebdbService', () => {
           }),
         }),
       ]);
-      expect(await webdb.getMeta('stateFeedId')).toBe(21);
+      expect(await webdb.getSyncState('stateFeedId')).toBe(21);
     });
 
     it.each(['WITHDRAWN', 'REJECTED'] as const)(
@@ -1380,7 +1348,6 @@ describe('WebdbService', () => {
           account: '!group',
           domain: 'local',
           namespaceId: 0,
-          isLocal: true,
           name: 'Group',
           avatar: '',
           description: '',
@@ -1392,7 +1359,7 @@ describe('WebdbService', () => {
           account: 'me',
           domain: 'local',
           subjectAccount: '!group',
-          subjectDomain: 'local',
+          subjectNamespaceId: 0,
           eventType: 'RELATIONSHIP_INTENT',
           body: {
             status: 'REQUESTED',
@@ -1476,7 +1443,7 @@ describe('WebdbService', () => {
         domain: direction === 'OUTGOING' ? 'local' : 'bravo.test',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: direction === 'OUTGOING' ? 'admin' : 'bravo',
-        subjectDomain: direction === 'OUTGOING' ? 'bravo.test' : 'local',
+        subjectNamespaceId: direction === 'OUTGOING' ? 12 : 0,
         body: {
           status,
           note: '',
@@ -1511,7 +1478,6 @@ describe('WebdbService', () => {
         namespaceId: 0,
         account: '!group',
         domain: 'local',
-        isLocal: true,
         name: 'Group',
         avatar: '',
         description: '',
@@ -1528,7 +1494,7 @@ describe('WebdbService', () => {
         account: direction === 'INCOMING' ? '!group' : 'me',
         domain: 'local',
         subjectAccount: direction === 'INCOMING' ? 'me' : '!group',
-        subjectDomain: 'local',
+        subjectNamespaceId: 0,
         body: {
           status,
           note: '',
@@ -1574,7 +1540,7 @@ describe('WebdbService', () => {
             domain: 'peer.test',
             eventType: 'RELATIONSHIP_INTENT',
             subjectAccount: 'me',
-            subjectDomain: 'local',
+            subjectNamespaceId: 0,
             body: {
               status: 'REQUESTED',
               note: '',
@@ -1624,7 +1590,7 @@ describe('WebdbService', () => {
         domain: direction === 'INCOMING' ? 'peer.test' : 'local.test',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: direction === 'INCOMING' ? 'me' : 'alice',
-        subjectDomain: direction === 'INCOMING' ? 'local.test' : 'peer.test',
+        subjectNamespaceId: direction === 'INCOMING' ? 0 : 12,
         body: {
           status,
           ...(status === 'REVOKED'
@@ -1650,13 +1616,13 @@ describe('WebdbService', () => {
       });
 
       await webdb.applyStateFeedPage([event(10, 'INCOMING', 'REQUESTED')], 10);
-      expect(await webdb.getMeta('relationshipRequestStateRevision')).toBe(10);
+      expect(await webdb.getSyncState('relationshipRequestStateRevision')).toBe(10);
       expect(
         await webdb.getRelationshipRequestPage('RECEIVED', null, 20),
       ).toMatchObject({ total: 1, actionableTotal: 1 });
 
       await webdb.applyStateFeedPage([event(11, 'OUTGOING', 'REVOKED')], 11);
-      expect(await webdb.getMeta('relationshipRequestStateRevision')).toBe(10);
+      expect(await webdb.getSyncState('relationshipRequestStateRevision')).toBe(10);
       expect(await db!.getAll('relationshipRequests')).toEqual([
         expect.objectContaining({
           bucket: 'RECEIVED',
@@ -1689,7 +1655,7 @@ describe('WebdbService', () => {
         domain: 'peer.test',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'me',
-        subjectDomain: 'local.test',
+        subjectNamespaceId: 12,
         body: {
           status: 'REQUESTED',
           note: 'hello',
@@ -1734,8 +1700,8 @@ describe('WebdbService', () => {
           }),
         }),
       ]);
-      expect(await webdb.getMeta('relationshipRequestStateRevision')).toBe(30);
-      expect(await webdb.getMeta('stateFeedId')).toBe(31);
+      expect(await webdb.getSyncState('relationshipRequestStateRevision')).toBe(30);
+      expect(await webdb.getSyncState('stateFeedId')).toBe(31);
     });
 
     it('garbage-collects an expired request projection without creating a User row', async () => {
@@ -1748,7 +1714,7 @@ describe('WebdbService', () => {
         domain: 'local.test',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'alice',
-        subjectDomain: 'peer.test',
+        subjectNamespaceId: 12,
         body: {
           status: 'REQUESTED',
           note: 'hello',
@@ -1793,7 +1759,7 @@ describe('WebdbService', () => {
         domain: 'groups.test',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'me',
-        subjectDomain: 'local.test',
+        subjectNamespaceId: 12,
         body: {
           status: 'REQUESTED',
           note: 'join us',
@@ -1804,8 +1770,6 @@ describe('WebdbService', () => {
           group: {
             namespaceId: 12,
             account: '!group',
-            domain: 'groups.test',
-            isLocal: false,
             name: 'Group',
             avatar: 'group.webp',
             description: 'About group',
@@ -1843,7 +1807,7 @@ describe('WebdbService', () => {
             domain: 'groups.test',
             eventType: 'RELATIONSHIP_INTENT',
             subjectAccount: 'me',
-            subjectDomain: 'local.test',
+            subjectNamespaceId: 12,
             body: {
               status: 'REQUESTED',
               note: 'let me in',
@@ -1854,8 +1818,6 @@ describe('WebdbService', () => {
               group: {
                 namespaceId: 12,
                 account: '!group',
-                domain: 'groups.test',
-                isLocal: false,
                 name: 'Group',
                 avatar: '',
                 description: '',
@@ -1917,7 +1879,7 @@ describe('WebdbService', () => {
       await webdb.applyStateFeedPage([], 4);
 
       expect(await db!.getAll('members')).toHaveLength(2);
-      expect(await webdb.getMeta('stateFeedId')).toBe(4);
+      expect(await webdb.getSyncState('stateFeedId')).toBe(4);
     });
 
     it('atomically creates the thread and attention from one complete feed snapshot', async () => {
@@ -1946,7 +1908,7 @@ describe('WebdbService', () => {
       ]);
       expect(await db!.get('threads', 9)).toMatchObject({ type: 'P2P' });
       expect(attentionSnapshot((await webdb.getThreadStates())[0])).toEqual(head);
-      expect(await webdb.getMeta('threadFeedCursor')).toBe(4);
+      expect(await webdb.getSyncState('threadFeedCursor')).toBe(4);
       const invalid = threadFeedSnapshot(10, {
         threadFeedId: 7,
         profile: { account: 'peer', domain: 'local', namespaceId: -1, profileRev: 0 },
@@ -1955,7 +1917,7 @@ describe('WebdbService', () => {
         threadFeedSnapshot(11, { threadFeedId: 6, profile: peerProfile }), invalid,
       ], 7)).rejects.toThrow();
       expect(await db!.get('threads', 11)).toBeUndefined();
-      expect(await webdb.getMeta('threadFeedCursor')).toBe(4);
+      expect(await webdb.getSyncState('threadFeedCursor')).toBe(4);
     });
 
     it('applies block and unblock deltas from the thread feed', async () => {
@@ -1970,7 +1932,7 @@ describe('WebdbService', () => {
       expect((await webdb.getThreads())[0]).toMatchObject({ blocked: true });
       await webdb.mergeThreadStates([event(6, false)], 6);
       expect((await webdb.getThreads())[0]).toMatchObject({ blocked: false });
-      expect(await webdb.getMeta('threadFeedCursor')).toBe(6);
+      expect(await webdb.getSyncState('threadFeedCursor')).toBe(6);
     });
 
     it('optimistically activates only the greatest newly discovered namespace', async () => {
@@ -2094,7 +2056,7 @@ describe('WebdbService', () => {
         groupMemberCount: 2,
         groupMetaFeedId: '3',
       });
-      expect(await webdb.getMeta('stateFeedId')).toBeUndefined();
+      expect(await webdb.getSyncState('stateFeedId')).toBeUndefined();
       const members = await webdb.queryGroupMembers({ threadId: 9, take: 20 });
       expect(members).toHaveLength(2);
       expect(members.find((member) => member.account === 'bob')).toMatchObject({
@@ -2551,7 +2513,6 @@ describe('WebdbService', () => {
         account: '!dev',
         domain: 'local',
         namespaceId: 0,
-        isLocal: true,
         name: '!dev',
         avatar: '',
         description: '',
@@ -2576,7 +2537,7 @@ describe('WebdbService', () => {
           account: '!dev',
           domain: 'local',
           subjectAccount: 'alice',
-          subjectDomain: 'local',
+          subjectNamespaceId: 0,
           body: { ...common.body, direction: 'INCOMING' },
         },
         {
@@ -2586,7 +2547,7 @@ describe('WebdbService', () => {
           account: 'alice',
           domain: 'local',
           subjectAccount: '!dev',
-          subjectDomain: 'local',
+          subjectNamespaceId: 0,
           body: { ...common.body, direction: 'OUTGOING' },
         },
       ];
@@ -2660,7 +2621,7 @@ describe('WebdbService', () => {
             account: 'alice',
             domain: 'local',
             subjectAccount: '!dev',
-            subjectDomain: 'local',
+            subjectNamespaceId: 0,
             body: {
               ...common.body,
               status: 'REVOKED',
@@ -2728,7 +2689,6 @@ describe('WebdbService', () => {
         account: '!repro-group',
         domain: 'local',
         namespaceId: 0,
-        isLocal: true,
         name: 'LOCAL-GROUP-REPRO',
         avatar: '',
         description: 'created from the Web UI',
@@ -2741,7 +2701,7 @@ describe('WebdbService', () => {
         account: '!repro-group',
         domain: 'local',
         subjectAccount: 'alice',
-        subjectDomain: 'local',
+        subjectNamespaceId: 0,
         body: {
           status: 'ACCEPTED' as const,
           direction: 'INCOMING' as const,

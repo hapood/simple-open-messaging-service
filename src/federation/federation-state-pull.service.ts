@@ -210,7 +210,9 @@ export class FederationStatePullService {
     namespaceId: number,
   ): Promise<bigint> {
     const [row] = await this.database.db
-      .select({ pulledThrough: tables.identityNamespace.stateFeedPulledThrough })
+      .select({
+        pulledThrough: tables.identityNamespace.stateFeedPulledThrough,
+      })
       .from(tables.identityNamespace)
       .where(eq(tables.identityNamespace.id, namespaceId))
       .limit(1);

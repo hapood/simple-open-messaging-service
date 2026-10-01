@@ -51,7 +51,13 @@ describe('DiscoveryService root-authorized signing certificates', () => {
   it('accepts an overlap set for online signing-key rotation', () => {
     const document = service().validateWellKnown('peer.example', {
       protocolVersions: [1],
-      roots: [{ ed25519: rootPublicKey, notBefore: 1_600_000_000_000, notAfter: 1_900_000_000_000 }],
+      roots: [
+        {
+          ed25519: rootPublicKey,
+          notBefore: 1_600_000_000_000,
+          notAfter: 1_900_000_000_000,
+        },
+      ],
       keys: [
         certificate(rootPrivateKey, 'peer.example/key-1', 32),
         certificate(rootPrivateKey, 'peer.example/key-2', 64),
@@ -68,7 +74,13 @@ describe('DiscoveryService root-authorized signing certificates', () => {
     expect(() =>
       service().validateWellKnown('peer.example', {
         protocolVersions: [1],
-        roots: [{ ed25519: rootPublicKey, notBefore: 1_600_000_000_000, notAfter: 1_900_000_000_000 }],
+        roots: [
+          {
+            ed25519: rootPublicKey,
+            notBefore: 1_600_000_000_000,
+            notAfter: 1_900_000_000_000,
+          },
+        ],
         keys: [certificate(otherRoot, 'peer.example/key-1', 32)],
       }),
     ).toThrow('invalid signing certificate');
@@ -79,14 +91,26 @@ describe('DiscoveryService root-authorized signing certificates', () => {
     expect(() =>
       service().validateWellKnown('peer.example', {
         protocolVersions: [1],
-        roots: [{ ed25519: rootPublicKey, notBefore: 1_600_000_000_000, notAfter: 1_900_000_000_000 }],
+        roots: [
+          {
+            ed25519: rootPublicKey,
+            notBefore: 1_600_000_000_000,
+            notAfter: 1_900_000_000_000,
+          },
+        ],
         keys: [key, key],
       }),
     ).toThrow('invalid signing certificate');
     expect(() =>
       service().validateWellKnown('peer.example', {
         protocolVersions: [1],
-        roots: [{ ed25519: rootPublicKey, notBefore: 1_600_000_000_000, notAfter: 1_900_000_000_000 }],
+        roots: [
+          {
+            ed25519: rootPublicKey,
+            notBefore: 1_600_000_000_000,
+            notAfter: 1_900_000_000_000,
+          },
+        ],
         keys: [certificate(rootPrivateKey, 'other.example/key-1', 32)],
       }),
     ).toThrow('invalid signing certificate');
@@ -111,7 +135,13 @@ describe('DiscoveryService peer-key refresh policy', () => {
     };
     return {
       protocolVersions: [1],
-      roots: [{ ed25519: rootPublicKey, notBefore: 1_600_000_000_000, notAfter: 1_900_000_000_000 }],
+      roots: [
+        {
+          ed25519: rootPublicKey,
+          notBefore: 1_600_000_000_000,
+          notAfter: 1_900_000_000_000,
+        },
+      ],
       keys: [
         {
           ...unsigned,

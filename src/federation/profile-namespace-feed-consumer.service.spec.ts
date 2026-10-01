@@ -42,10 +42,10 @@ describe('ProfileNamespaceFeedConsumerService', () => {
     expect(text).toContain('UPDATE "ProfileNamespaceInfo"');
     expect(text).toContain('SET expired = true');
     expect(text).toContain('"updateFeedId" <');
-    expect(recordClientChangeInTx).toHaveBeenCalledWith(
-      tx,
-      { publisherNamespaceId: 12, profileNamespaceId: 5 },
-    );
+    expect(recordClientChangeInTx).toHaveBeenCalledWith(tx, {
+      publisherNamespaceId: 12,
+      profileNamespaceId: 5,
+    });
   });
 
   it('records the changelog entry even when no local cache row matched', async () => {

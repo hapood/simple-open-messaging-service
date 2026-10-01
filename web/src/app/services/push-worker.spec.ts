@@ -178,7 +178,7 @@ describe('Push Service Worker entry', () => {
       'peer@test',
       expect.objectContaining({ body: 'Hello', data: { threadId: 7, seq: 1 } }),
     );
-    expect(await storage.getMeta('threadFeedCursor')).toBe(1);
+    expect(await storage.getSyncState('threadFeedCursor')).toBe(1);
     expect(post).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.COMMITTED,
       userId,
@@ -387,7 +387,7 @@ describe('Push Service Worker entry', () => {
     expect(await readNotificationSince()).toBe(1);
   });
   it('does not suppress a page notification when the page already consumed the target', async () => {
-    await storage.putMeta('threadFeedCursor', 1);
+    await storage.putSyncState('threadFeedCursor', 1);
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
     });
@@ -565,6 +565,6 @@ describe('Push Service Worker entry', () => {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
     });
     expect(show).toHaveBeenCalled();
-    expect(await storage.getMeta('threadFeedCursor')).toBe(1);
+    expect(await storage.getSyncState('threadFeedCursor')).toBe(1);
   });
 });

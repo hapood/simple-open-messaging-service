@@ -66,8 +66,7 @@ import {
   toDisplayText,
 } from '../common/message-entity.js';
 import {
-  isValidSomfpUserAccount,
-  parseSomfpUserAddress,
+  parseSomfpUserMentionEntity,
 } from '../common/account.js';
 import {
   parseTextMessageContent,
@@ -411,17 +410,10 @@ export class MessageService {
             for (const segment of parseMessageEntities(textContent.text)) {
               if (segment.kind !== 'entity' || segment.entityType !== 'user')
                 continue;
-              const localAccount = segment.entityId.endsWith('@local')
-                ? segment.entityId.slice(0, -'@local'.length)
-                : null;
-              if (
-                (localAccount === null ||
-                  !isValidSomfpUserAccount(localAccount)) &&
-                !parseSomfpUserAddress(segment.entityId)
-              ) {
+              if (!parseSomfpUserMentionEntity(segment.entityId)) {
                 throw new BusinessException(
                   BusinessCode.VALIDATION_FAILED,
-                  'user mention must use a valid full address',
+                  'user mention must use a valid namespace/account entity',
                 );
               }
             }

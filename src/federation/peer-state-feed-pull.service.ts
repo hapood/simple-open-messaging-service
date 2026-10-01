@@ -204,7 +204,8 @@ export class PeerStateFeedPullService {
           .from(identityNamespace)
           .where(eq(identityNamespace.id, namespaceId))
           .limit(1);
-        if (!current) throw new Error('state-feed pull namespace row disappeared');
+        if (!current)
+          throw new Error('state-feed pull namespace row disappeared');
         const currentThrough = current.pulledThrough ?? 0n;
         if (currentThrough >= feedId) return false;
         await callbacks.apply(tx, itemPage);
@@ -233,7 +234,8 @@ export class PeerStateFeedPullService {
         .from(identityNamespace)
         .where(eq(identityNamespace.id, namespaceId))
         .limit(1);
-      if (!current) throw new Error('state-feed pull namespace row disappeared');
+      if (!current)
+        throw new Error('state-feed pull namespace row disappeared');
       const currentThrough = current.pulledThrough ?? 0n;
       if (currentThrough < appliedThrough)
         throw new Error('state-feed item cursor did not commit');

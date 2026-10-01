@@ -24,7 +24,10 @@ export interface GroupMetaMemberChange {
   operation: 'MEMBER_UPSERT' | 'MEMBER_DEPART';
 }
 
-function memberKey(member: { profileNamespaceId: number; account: string }): string {
+function memberKey(member: {
+  profileNamespaceId: number;
+  account: string;
+}): string {
   return JSON.stringify([member.profileNamespaceId, member.account]);
 }
 
