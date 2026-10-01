@@ -372,8 +372,8 @@ describe('WebdbService', () => {
       for (const missing of ['name', 'bio']) {
         const profile = {
           account: 'alice',
-          domain: 'local',
-          namespaceId: 0,
+          publisherNamespaceId: 0,
+          profileNamespaceId: 0,
           rev: 1,
           name: 'Alice',
           bio: '',
@@ -391,8 +391,8 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       const profile = {
         account: 'alice',
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         rev: 1,
         name: 'Alice',
         bio: '',
@@ -401,7 +401,11 @@ describe('WebdbService', () => {
       await expect(
         webdb.commitResolvedProfile({ ...profile, avatarBase64: null }),
       ).rejects.toThrow('conflicting cached profile revision');
-      const snapshot = await webdb.getProfile({ ...profile, profileRev: 1 });
+      const snapshot = await webdb.getProfile({
+        publisherNamespaceId: 0,
+        lookup: 'ACCOUNT_PROFILE',
+        target: { profileNamespaceId: 0, account: 'alice', rev: 1 },
+      });
       expect(
         await (
           await webdb.getProfileAvatarBlob(snapshot!.avatarDigest!)
@@ -411,58 +415,51 @@ describe('WebdbService', () => {
 
     it('caches exact profile versions independently and normalizes namespace-zero subjects', async () => {
       const db = await webdb.openForUser('1');
-      const profile = {
+      const base = {
+        publisherNamespaceId: 9,
+        profileNamespaceId: 9,
         account: 'alice',
-        domain: 'local',
-        namespaceId: 9,
-        profileRev: 3,
         name: 'New',
-        avatar: '',
         bio: '',
-        sourceServer: 'authority.test',
       };
+      await webdb.commitResolvedProfile({ ...base, rev: 3, avatarBase64: null });
+      await webdb.commitResolvedProfile({ ...base, rev: 2, name: 'Old', avatarBase64: null });
       await webdb.commitResolvedProfile({
-        ...profile,
-        rev: profile.profileRev,
-        avatarBase64: null,
-      });
-      await webdb.commitResolvedProfile({
-        ...profile,
-        avatarBase64: null,
-        rev: 2,
-        name: 'Old',
-      });
-      await webdb.commitResolvedProfile({
-        ...profile,
-        avatarBase64: null,
-        rev: profile.profileRev,
-        domain: 'third.test',
-        namespaceId: 9,
+        ...base,
+        profileNamespaceId: 8,
+        rev: 3,
         name: 'Mirror',
+        avatarBase64: null,
       });
       expect(
         await webdb.getProfile({
-          ...profile,
-          domain: 'own.test',
-          namespaceId: 0,
+          publisherNamespaceId: 9,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { profileNamespaceId: 9, account: 'alice', rev: 3 },
         }),
-      ).toMatchObject({ domain: 'local', namespaceId: 0, name: 'New' });
+      ).toMatchObject({ name: 'New' });
       expect(
-        await webdb.getProfile({ ...profile, profileRev: 2 }),
+        await webdb.getProfile({
+          publisherNamespaceId: 9,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { profileNamespaceId: 9, account: 'alice', rev: 2 },
+        }),
       ).toMatchObject({ name: 'Old' });
       expect(
         await webdb.getProfile({
-          ...profile,
-          domain: 'third.test',
-          namespaceId: 8,
+          publisherNamespaceId: 9,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { profileNamespaceId: 8, account: 'alice', rev: 3 },
+        }),
+      ).toMatchObject({ name: 'Mirror' });
+      expect(
+        await webdb.getProfile({
+          publisherNamespaceId: 9,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { profileNamespaceId: 7, account: 'alice', rev: 3 },
         }),
       ).toBeUndefined();
       expect(await db!.getAll('profiles')).toHaveLength(3);
-      expect(await db!.getAll('profiles')).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ domain: 'local', namespaceId: 0 }),
-        ]),
-      );
     });
 
     it('applies metadata references without accepting inline profile content', async () => {
@@ -476,8 +473,8 @@ describe('WebdbService', () => {
       );
       await webdb.commitResolvedProfile({
         account: 'alice',
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         rev: 1,
         name: 'Alice',
         avatarBase64: null,
@@ -524,10 +521,9 @@ describe('WebdbService', () => {
       expect(await webdb.getSyncState('stateFeedId')).toBe(98);
       expect(
         await webdb.getProfile({
-          account: 'alice',
-          domain: 'local',
-          namespaceId: 0,
-          profileRev: 1,
+          publisherNamespaceId: 0,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { profileNamespaceId: 0, account: 'alice', rev: 1 },
         }),
       ).toMatchObject({ name: 'Alice' });
     });
@@ -575,6 +571,7 @@ describe('WebdbService', () => {
         await webdb.openForUser('1');
         const message: Message = {
           threadId: 42,
+          namespaceId: 0,
           seq: 4,
           creator: { account: 'alice', domain: 'example.test', namespaceId: 1 },
           profileRev: 3,
@@ -617,6 +614,7 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       const message: Message = {
         threadId: 42,
+        namespaceId: 0,
         seq: 4,
         creator: { account: 'alice', domain: 'example.test', namespaceId: 1 },
         profileRev: 3,
@@ -671,6 +669,7 @@ describe('WebdbService', () => {
       const owner = { account: 'me', domain: 'example.test', namespaceId: 0 };
       const base: Message = {
         threadId: 42,
+        namespaceId: 0,
         seq: 1,
         creator: { account: 'other', domain: 'peer.test', namespaceId: 2 },
         profileRev: 1,
@@ -770,6 +769,7 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       const message: Message = {
         threadId: 42,
+        namespaceId: 0,
         seq: 1,
         creator: { account: '$system', domain: 'local', namespaceId: 0 },
         profileRev: 0,
@@ -809,6 +809,7 @@ describe('WebdbService', () => {
           { length: 120 },
           (_, i): Message => ({
             threadId: 42,
+            namespaceId: 0,
             seq: i + 1,
             creator: { account: '$system', domain: 'local', namespaceId: 0 },
             profileRev: 0,
@@ -1044,8 +1045,8 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       const snapshot = await webdb.commitResolvedProfile({
         account: 'alice',
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         rev: 1,
         name: 'Alice',
         bio: '',
@@ -1945,8 +1946,8 @@ describe('WebdbService', () => {
         account: 'old',
         avatarBase64: null,
         bio: '',
-        domain: 'peer.test',
-        namespaceId: 11,
+        publisherNamespaceId: 11,
+        profileNamespaceId: 11,
         rev: 1,
       });
       await webdb.commitResolvedProfile({
@@ -1954,8 +1955,8 @@ describe('WebdbService', () => {
         account: 'new',
         avatarBase64: null,
         bio: '',
-        domain: 'peer.test',
-        namespaceId: 13,
+        publisherNamespaceId: 13,
+        profileNamespaceId: 13,
         rev: 1,
       });
 
@@ -2202,8 +2203,8 @@ describe('WebdbService', () => {
         account: 'alice',
         avatarBase64: 'YQ==',
         bio: 'About Alice',
-        domain: 'home.example',
-        namespaceId: 12,
+        publisherNamespaceId: 12,
+        profileNamespaceId: 12,
         rev: 6,
       });
       await webdb.commitResolvedProfile({
@@ -2211,8 +2212,8 @@ describe('WebdbService', () => {
         account: 'self',
         avatarBase64: null,
         bio: '',
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         rev: 1,
       });
 
@@ -2275,31 +2276,9 @@ describe('WebdbService', () => {
         group: { memberCount: 2, groupMetaFeedId: '2' },
       });
 
-      const metaEvidence = {
-        type: 'GROUP_META' as const,
-        threadId: 9,
-        profileRev: 6,
-        subject: {
-          type: 'MEMBER' as const,
-          account: 'alice',
-          domain: 'home.example',
-        },
-      };
-      const actual = {
-        namespaceId: 12,
-        account: 'alice',
-        domain: 'home.example',
-        rev: 7,
-      };
-      expect(await webdb.applyGroupMetaProfileDrift(metaEvidence, actual)).toBe(
-        true,
-      );
       expect(
         await webdb.getGroupMember(9, 'alice', 'home.example', 12),
       ).toMatchObject({ profileRev: 7, profileMessageSeq: null });
-      expect(await webdb.applyGroupMetaProfileDrift(metaEvidence, actual)).toBe(
-        false,
-      );
 
       expect(
         await webdb.recordGroupMemberMessageProfile(
@@ -2381,12 +2360,6 @@ describe('WebdbService', () => {
       expect(
         await webdb.getGroupMember(9, 'alice', 'home.example', 12),
       ).toMatchObject({ profileRev: 3, profileMessageSeq: 20, role: 'MEMBER' });
-      expect(
-        await webdb.applyGroupMetaProfileDrift(
-          { ...metaEvidence, profileRev: 3 },
-          actual,
-        ),
-      ).toBe(false);
 
       await webdb.applyGroupMetaPage({
         threadId: 9,
@@ -2481,10 +2454,9 @@ describe('WebdbService', () => {
       });
       expect(
         await webdb.getProfile({
-          account: 'alice',
-          domain: 'home.example',
-          namespaceId: 12,
-          profileRev: 3,
+          publisherNamespaceId: 12,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { profileNamespaceId: 12, account: 'alice', rev: 3 },
         }),
       ).toBeDefined();
     });
@@ -2496,8 +2468,8 @@ describe('WebdbService', () => {
         account: 'bob',
         avatarBase64: null,
         bio: '',
-        domain: 'remote.test',
-        namespaceId: 12,
+        publisherNamespaceId: 12,
+        profileNamespaceId: 12,
         rev: 1,
       });
       await webdb.commitResolvedProfile({
@@ -2505,8 +2477,8 @@ describe('WebdbService', () => {
         account: '!dev',
         avatarBase64: null,
         bio: '',
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         rev: 1,
       });
       const group = {
@@ -2660,18 +2632,16 @@ describe('WebdbService', () => {
       });
       expect(
         await webdb.getProfile({
-          account: 'bob',
-          domain: 'remote.test',
-          namespaceId: 12,
-          profileRev: 1,
+          publisherNamespaceId: 12,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { profileNamespaceId: 12, account: 'bob', rev: 1 },
         }),
       ).toBeDefined();
       expect(
         await webdb.getProfile({
-          account: '!dev',
-          domain: 'local',
-          namespaceId: 0,
-          profileRev: 1,
+          publisherNamespaceId: 0,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { profileNamespaceId: 0, account: '!dev', rev: 1 },
         }),
       ).toBeDefined();
       await webdb.beginGroupMetaRecovery(12, '3');
@@ -2740,8 +2710,8 @@ describe('WebdbService', () => {
 
       await webdb.commitResolvedProfile({
         account: group.account,
-        domain: 'alpha.test',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         rev: 1,
         name: group.name,
         bio: group.description,
@@ -2765,8 +2735,8 @@ describe('WebdbService', () => {
       await webdb.putMeta('sentinel', 'core');
       const profile = await webdb.commitResolvedProfile({
         account: 'alice',
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         rev: 1,
         name: 'Alice',
         bio: '',

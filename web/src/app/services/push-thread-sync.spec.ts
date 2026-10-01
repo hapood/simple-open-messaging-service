@@ -238,6 +238,7 @@ describe('Push thread-feed synchronization', () => {
   it('rebases the server count using local read progress, counting tomb slots and excluding own messages', async () => {
     const message: Message = {
       threadId: 7,
+      namespaceId: 0,
       seq: 1,
       creator: { account: 'peer', domain: 'test', namespaceId: 1 },
       profileRev: 1,

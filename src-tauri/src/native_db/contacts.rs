@@ -218,30 +218,6 @@ pub(crate) async fn native_db_query_group_members(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_apply_group_member_profile_drift(
-    user_id: i64,
-    thread_id: i64,
-    account: String,
-    domain: String,
-    namespace_id: i64,
-    expected_rev: i64,
-    actual_rev: i64,
-) -> Result<bool, String> {
-    if expected_rev < 1 || actual_rev < 1 {
-        return Err("invalid Group Meta profile revision".into());
-    }
-    super::lifetime::spawn(move || {
-        let changed = open()?.execute(
-            "UPDATE members SET profile_rev=?7 WHERE user_id=?1 AND thread_id=?2
-               AND member_account=?3 AND member_domain=?4 AND namespace_id=?5
-               AND profile_rev=?6 AND profile_message_seq IS NULL AND left_state=0",
-            params![user_id, thread_id, account, domain, namespace_id, expected_rev, actual_rev],
-        ).map_err(|e| format!("apply Group Meta profile drift: {e}"))?;
-        Ok(changed > 0)
-    }).await.map_err(|e| format!("join Group Meta profile drift: {e}"))?
-}
-
-#[tauri::command]
 pub(crate) async fn native_db_record_group_member_profile_ref(
     user_id: i64,
     thread_id: i64,

@@ -25,33 +25,26 @@ describe('MemberProfileRepository invalidation', () => {
     repo.changed$.subscribe(changed);
     await repo.queryPage(42, { take: 50, search: 'Alice New' });
     await repo.queryPage(43, { take: 50 });
-    const key = { account: 'alice', domain: 'local', namespaceId: 0, rev: 4 };
+    const key = { publisherNamespaceId: 0, profileNamespaceId: 0, account: 'alice', rev: 4 };
     wakes.next({ event: 'PROFILE_UNAVAILABLE', key, reason: 'PENDING' });
     expect(changed).not.toHaveBeenCalled();
     wakes.next({ event: 'PROFILE_AVAILABLE', key });
     expect(changed).not.toHaveBeenCalled();
-    wakes.next({ event: 'PROFILE_AVAILABLE', key, evidence: {
-      type: 'GROUP_META', threadId: 42, profileRev: 4,
-      subject: { type: 'MEMBER', account: 'alice', domain: 'local' },
-    } });
+    wakes.next({ event: 'PROFILE_AVAILABLE', key });
     expect(changed).toHaveBeenCalledWith([42]);
-    wakes.next({ event: 'PROFILE_AVAILABLE', key, evidence: {
-      type: 'MESSAGE_AUTHOR', threadId: 43, messageSeq: 12, rev: 4,
-    } });
+    wakes.next({ event: 'PROFILE_AVAILABLE', key });
     expect(changed).toHaveBeenCalledWith([43]);
     ended.next();
     changed.mockClear();
-    wakes.next({ event: 'PROFILE_AVAILABLE', key, evidence: {
-      type: 'MESSAGE_AUTHOR', threadId: 42, messageSeq: 12, rev: 4,
-    } });
+    wakes.next({ event: 'PROFILE_AVAILABLE', key });
     expect(changed).not.toHaveBeenCalled();
   });
 
   it('forwards the worker commit event without notifying again for READY or cache hits', async () => {
     const profile = {
       account: 'alice',
-      domain: 'local',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       profileRev: 4,
       name: 'Alice New',
       bio: '',
@@ -70,9 +63,9 @@ describe('MemberProfileRepository invalidation', () => {
                 wake: {
                   event: 'PROFILE_AVAILABLE',
                   key: {
+                    publisherNamespaceId: 0,
+                    profileNamespaceId: 0,
                     account: 'alice',
-                    domain: 'local',
-                    namespaceId: 0,
                     rev: 4,
                   },
                 },
@@ -95,19 +88,18 @@ describe('MemberProfileRepository invalidation', () => {
     const notified = vi.fn();
     db.profileWake$.subscribe(notified);
     try {
-      const selector = {
-        type: 'EXACT' as const,
-        account: 'alice',
-        domain: 'local',
-        rev: 4,
+      const demand = {
+        publisherNamespaceId: 0,
+        lookup: 'ACCOUNT_PROFILE' as const,
+        target: { profileNamespaceId: 0, account: 'alice', rev: 4 },
       };
-      await db.resolveProfileEvidence(selector);
+      await db.resolveProfileDemand(demand);
       expect(notified).toHaveBeenCalledTimes(1);
-      await db.resolveProfileEvidence(selector);
+      await db.resolveProfileDemand(demand);
       await db.applyProfileEvent('PROFILE_AVAILABLE', {
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         account: 'alice',
-        domain: 'local',
-        namespaceId: 0,
         rev: 4,
       });
       expect(notified).toHaveBeenCalledTimes(1);
@@ -124,18 +116,21 @@ describe('MemberProfileRepository invalidation', () => {
       if (wake.event === 'PROFILE_AVAILABLE')
         reads.push(
           db.getProfile({
-            account: wake.key.account,
-            domain: wake.key.domain,
-            namespaceId: wake.key.namespaceId,
-            profileRev: wake.key.rev,
+            publisherNamespaceId: wake.key.publisherNamespaceId,
+            lookup: 'ACCOUNT_PROFILE',
+            target: {
+              profileNamespaceId: wake.key.profileNamespaceId,
+              account: wake.key.account,
+              rev: wake.key.rev,
+            },
           }),
         );
     });
     try {
       await db.commitResolvedProfile({
         account: 'alice',
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         rev: 4,
         name: 'Alice New',
         bio: '',
@@ -148,8 +143,8 @@ describe('MemberProfileRepository invalidation', () => {
       });
       await db.commitResolvedProfile({
         account: 'alice',
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         rev: 4,
         name: 'Alice New',
         bio: '',
@@ -159,8 +154,8 @@ describe('MemberProfileRepository invalidation', () => {
       await expect(
         db.commitResolvedProfile({
           account: 'alice',
-          domain: 'local',
-          namespaceId: 0,
+          publisherNamespaceId: 0,
+          profileNamespaceId: 0,
           rev: 4,
           name: 'Conflicting',
           bio: '',

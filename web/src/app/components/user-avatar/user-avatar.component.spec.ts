@@ -35,29 +35,28 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     async (pending) => {
       const db = TestBed.inject(WebdbService);
       const key = {
-        namespaceId: 1,
+        publisherNamespaceId: 1,
+        profileNamespaceId: 1,
         account: 'alice',
-        domain: 'alpha.test',
         rev: 2,
       };
       const profile = {
-        namespaceId: 1,
+        publisherNamespaceId: 1,
+        profileNamespaceId: 1,
         account: 'alice',
-        domain: 'alpha.test',
         profileRev: 2,
         name: 'Alice',
         avatarDigest: null,
         bio: '',
       };
-      const resolve = vi.spyOn(db, 'resolveProfileEvidence');
+      const resolve = vi.spyOn(db, 'resolveProfileDemand');
       if (pending) resolve.mockResolvedValueOnce({ status: 'PENDING', key });
       resolve.mockResolvedValue({ status: 'READY', profile });
       fixture.componentRef.setInput('src', 'data:image/webp;base64,b2xk');
       fixture.componentRef.setInput('profileEvidence', {
-        type: 'EXACT',
-        account: key.account,
-        domain: key.domain,
-        rev: key.rev,
+        publisherNamespaceId: 1,
+        lookup: 'ACCOUNT_PROFILE',
+        target: { profileNamespaceId: 1, account: 'alice', rev: 2 },
       });
       fixture.detectChanges();
       await vi.waitFor(() => expect(resolve).toHaveBeenCalledTimes(1));

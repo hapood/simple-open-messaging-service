@@ -3126,12 +3126,6 @@ export class WebdbStorage {
     });
   }
 
-  /** A newer remote Meta profile may outrun the compacted member fact. Message
-   * evidence always wins; updating this local reference never advances a feed. */
-  async applyGroupMetaProfileDrift(): Promise<boolean> {
-    return false;
-  }
-
   async commitResolvedGroupMetaProfile(
     reference: GroupMetaProfileReference,
     profile: {

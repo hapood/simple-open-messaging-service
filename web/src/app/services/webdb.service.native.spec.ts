@@ -106,14 +106,18 @@ describe('WebdbService native SQLite routing', () => {
       account: 'alice',
       avatarDigest: null,
       bio: '',
-      domain: 'local',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       profileRev: 6,
     };
     responses.set('native_db_get_profile', profile);
     responses.set('native_db_get_meta', 12);
 
-    expect(await service.getProfile(profile)).toEqual(profile);
+    expect(await service.getProfile({
+      publisherNamespaceId: 0,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 0, account: 'alice', rev: 6 },
+    })).toEqual(profile);
     await service.putSyncState('stateFeedId', 12);
     expect(await service.getSyncState('stateFeedId')).toBe(12);
   });
@@ -180,6 +184,7 @@ describe('WebdbService native SQLite routing', () => {
   it('routes message cache maintenance, point reads, newest reads and thread cleanup to SQLite', async () => {
     const message = {
       threadId: 9,
+      namespaceId: 0,
       seq: 3,
       createdAt: 100,
       updatedAt: 100,

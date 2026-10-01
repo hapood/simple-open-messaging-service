@@ -50,21 +50,20 @@ describe('resolved thread profile identity', () => {
     storage.profileWake$.subscribe(wake);
     const profile = await storage.commitResolvedProfile({
       account: '!group',
-      domain: 'alpha.test',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       rev: 1,
       name: 'Created group',
       bio: 'Description',
       avatarBase64: 'YWJj',
     });
-    expect(profile.domain).toBe('local');
     expect(profile.avatarDigest).toBe(
       'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
     );
     expect(await (await storage.getProfileAvatarBlob(profile.avatarDigest!))?.text()).toBe('abc');
     expect(wake).toHaveBeenCalledWith({
       event: 'PROFILE_AVAILABLE',
-      key: { account: '!group', domain: 'local', namespaceId: 0, rev: 1 },
+      key: { publisherNamespaceId: 0, profileNamespaceId: 0, account: '!group', rev: 1 },
     });
     expect(await storage.getThreads()).toEqual([
       expect.objectContaining({
@@ -89,8 +88,8 @@ describe('resolved thread profile identity', () => {
     );
     await storage.commitResolvedProfile({
       account: 'bob',
-      domain: 'alpha.test',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       rev: 1,
       name: 'Bob',
       bio: '',
@@ -98,8 +97,8 @@ describe('resolved thread profile identity', () => {
     });
     await storage.commitResolvedProfile({
       account: 'bob',
-      domain: 'alpha.test',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       rev: 2,
       name: 'Newer unselected name',
       bio: '',
@@ -118,8 +117,8 @@ describe('resolved thread profile identity', () => {
     await seedThread(stale);
     await storage.commitResolvedProfile({
       account: '!group',
-      domain: 'alpha.test',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       rev: 1,
       name: 'Resolved while attention was in flight',
       bio: 'Description',
@@ -139,8 +138,8 @@ describe('resolved thread profile identity', () => {
   it('does not apply a local snapshot to a foreign namespace or another revision', async () => {
     const profile = {
       account: '!group',
-      domain: 'alpha.test',
-      namespaceId: 0,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
       rev: 1,
       name: 'Local group',
       bio: '',
