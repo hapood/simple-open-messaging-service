@@ -389,7 +389,7 @@ export class GroupRelationshipMutationService {
     )
       return new Map<number, bigint>();
     const member = await accountAddressInTx(tx, memberUserId);
-    if (member.domain !== 'local')
+    if (member.namespaceId !== 0)
       await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
         {
           namespaceId: member.namespaceId!,
@@ -437,7 +437,7 @@ export class GroupRelationshipMutationService {
           : 'INVITATION'),
       membership.request.status === 'REQUESTED',
     );
-    if (member.domain === 'local') {
+    if (member.namespaceId === 0) {
       const [localAccount] = await localAccountsForTargetsInTx(tx, [member]);
       if (!localAccount)
         throw new Error('local invitation recipient is missing');

@@ -77,6 +77,7 @@ export async function seedFederatedPeerNamespace(
           localServiceAvailable: true,
           peerAcceptanceConfirmed: true,
           remoteServiceReachable: true,
+          peerAssignedLocalNamespaceId: 1,
         })
         .returning({ id: identityNamespace.id })
     )[0].id;
@@ -89,6 +90,7 @@ export async function seedFederatedPeerNamespace(
       localServiceAvailable: true,
       peerAcceptanceConfirmed: true,
       remoteServiceReachable: true,
+      peerAssignedLocalNamespaceId: 1,
     })
     .where(eq(identityNamespace.id, namespaceId));
   return namespaceId;

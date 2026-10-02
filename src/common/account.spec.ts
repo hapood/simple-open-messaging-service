@@ -6,7 +6,6 @@ import {
   isValidUserAccount,
   isValidSomfpDomain,
   isValidSomfpUserAccount,
-  parseSomfpUserAddress,
   isValidGroupAccount,
   isValidAccount,
   isGroupAccount,
@@ -85,21 +84,6 @@ describe('account grammar + minting', () => {
     expect(isValidSomfpDomain('chat.example')).toBe(true);
     expect(isValidSomfpDomain('local')).toBe(false);
     expect(isValidSomfpDomain('printer.local')).toBe(false);
-    expect(parseSomfpUserAddress('a@chat.example')).toEqual({
-      account: 'a',
-      domain: 'chat.example',
-    });
-    for (const value of [
-      'a',
-      '@chat.example',
-      'A@chat.example',
-      'a@@chat.example',
-      'a@bad_domain',
-      'a@local',
-      'a@printer.local',
-    ]) {
-      expect(parseSomfpUserAddress(value)).toBeNull();
-    }
   });
 
   it('isGroupAccount discriminates by the sigil', () => {

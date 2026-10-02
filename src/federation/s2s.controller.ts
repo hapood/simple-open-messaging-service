@@ -19,6 +19,7 @@ import { FederationService, type S2SAddress } from './federation.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
+import { FederationMessageProvenanceService } from './federation-message-provenance.service.js';
 import { FederationMessageTombstoneFeedService } from './federation-message-tombstone-feed.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
@@ -66,6 +67,7 @@ export class S2sController {
   constructor(
     private readonly federation: FederationService,
     private readonly messageFeed: FederationMessageFeedService,
+    private readonly messageProvenance: FederationMessageProvenanceService,
     private readonly tombstoneFeed: FederationMessageTombstoneFeedService,
     private readonly settings: SettingsService,
     private readonly peerStateFeed: PeerStateFeedService,
@@ -385,6 +387,36 @@ export class S2sController {
       includeSelf,
       before,
     );
+  }
+
+  /** Confirm whether this server published a message at `(thread, seq)` with the supplied
+   *  canonical content digest. Batched, capped at 64 queries, answered per-query as yes/no. */
+  @Post('message-provenance')
+  @HttpCode(HttpStatus.OK)
+  async postMessageProvenance(@Req() req: FastifyRequest): Promise<{
+    results: {
+      thread: { account: string; peerAccount?: string };
+      seq: number;
+      known: 'yes' | 'no' | 'declined';
+    }[];
+  }> {
+    const body = req.body as { queries?: unknown } | null;
+    if (!body || typeof body !== 'object' || !Array.isArray(body.queries)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'message-provenance requires a queries array',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const queries = this.parseProvenanceQueries(body.queries);
+    const results = await this.messageProvenance.query(queries);
+    return {
+      results: results.map((r) => ({
+        thread: r.thread as { account: string; peerAccount?: string },
+        seq: r.seq,
+        known: r.known,
+      })),
+    };
   }
 
   @Get('state-feed')
@@ -725,6 +757,103 @@ export class S2sController {
       );
     }
     return { type: 'GROUP' as const, account: normalizedAccount };
+  }
+
+  /** Parse and validate the `queries` array of a `POST /s2s/v1/message-provenance` request. Each
+   *  query is a closed object with a `thread` (P2P `{account, peerAccount}` or GROUP `{account}`),
+   *  a positive `seq`, and a 64-character lowercase hex `contentDigest`. */
+  private parseProvenanceQueries(raw: unknown[]): {
+    thread: { account: string; peerAccount: string } | { account: string };
+    seq: number;
+    contentDigest: string;
+  }[] {
+    const digestRe = /^[a-f0-9]{64}$/;
+    const parsed: {
+      thread: { account: string; peerAccount: string } | { account: string };
+      seq: number;
+      contentDigest: string;
+    }[] = [];
+    for (let i = 0; i < raw.length; i++) {
+      const entry = raw[i];
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          `provenance query ${i} is not an object`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const e = entry as Record<string, unknown>;
+      const thread = e['thread'];
+      const seq = e['seq'];
+      const contentDigest = e['contentDigest'];
+      if (
+        !thread ||
+        typeof thread !== 'object' ||
+        Array.isArray(thread)
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          `provenance query ${i} has an invalid thread`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      const t = thread as Record<string, unknown>;
+      const account = t['account'];
+      const peerAccount = t['peerAccount'];
+      let normalizedThread:
+        | { account: string; peerAccount: string }
+        | { account: string };
+      if (typeof account !== 'string') {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          `provenance query ${i} has an invalid thread account`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      if (account.startsWith('!')) {
+        if (peerAccount !== undefined) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            `provenance query ${i} GROUP thread must not carry peerAccount`,
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        normalizedThread = { account };
+      } else {
+        if (typeof peerAccount !== 'string') {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            `provenance query ${i} P2P thread requires peerAccount`,
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        normalizedThread = { account, peerAccount };
+      }
+      if (
+        typeof seq !== 'number' ||
+        !Number.isSafeInteger(seq) ||
+        seq <= 0 ||
+        seq >= 9007199254740991
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          `provenance query ${i} has an invalid seq`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      if (
+        typeof contentDigest !== 'string' ||
+        !digestRe.test(contentDigest)
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          `provenance query ${i} has an invalid contentDigest`,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+      parsed.push({ thread: normalizedThread, seq, contentDigest });
+    }
+    return parsed;
   }
 
   private parseOptionalBoolean(

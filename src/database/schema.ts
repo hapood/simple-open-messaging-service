@@ -70,6 +70,7 @@ export const messageLocalState = pgEnum('MessageLocalState', [
   'STUB',
   'FAILED',
   'READY',
+  'CONFIRMED',
 ]);
 export const pushPlatform = pgEnum('PushPlatform', ['ANDROID', 'WEB', 'IOS']);
 export const uploadSessionStatus = pgEnum('UploadSessionStatus', [
@@ -988,8 +989,15 @@ export const message = pgTable(
     /** Immutable namespace of the stream from which the message was accepted. Zero denotes local creation. */
     publisherNamespaceId: integer().default(0).notNull(),
     /** Local materialization state. STUB and FAILED are client-visible placeholders; only READY
-     * participates in durable message-derived projections and federation publication. */
+     * participates in durable message-derived projections and federation publication. CONFIRMED is
+     * reached after the inbound processing-receipt's recomputed content digest matched the locally
+     * retained digest of the published content. */
     localState: messageLocalState().default('READY').notNull(),
+    /** Hop-independent content digest of the canonical (JCS, RFC 8785) form of `content`, as defined
+     * by Core Protocol §6.1.1. Computed as `sha256(JCS(JSON.parse(content)))` and retained so a
+     * later provenance query (`POST /s2s/v1/message-provenance`) can answer `yes` without keeping
+     * the wire bytes. NULL for messages that predate this column or are not covered by the digest. */
+    contentDigest: varchar({ length: 64 }),
   },
   (table) => [
     check('Message_seq_check', sql`${table.seq} > 0`),
@@ -1045,6 +1053,12 @@ export const message = pgTable(
     index('Message_threadId_ready_seq_idx')
       .on(table.threadId, table.seq)
       .where(sql`${table.localState} = 'READY'`),
+    /** Serves `POST /s2s/v1/message-provenance`: a query locates the retained digest for
+     * `(threadId, seq)` and compares it with the supplied `contentDigest`. Partial on
+     * `contentDigest IS NOT NULL` so pre-column rows and undigested messages are skipped. */
+    index('Message_threadId_seq_contentDigest_idx')
+      .on(table.threadId, table.seq, table.contentDigest)
+      .where(sql`${table.contentDigest} IS NOT NULL`),
     foreignKey({
       columns: [table.publisherNamespaceId],
       foreignColumns: [identityNamespace.id],

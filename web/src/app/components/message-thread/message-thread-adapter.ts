@@ -9,7 +9,7 @@ import type { CbSource } from '../../lib/chat-box/cb-source';
 import type { ChatItemData, MediaStatus } from '../message-cards/chat-item';
 import type {
   ConversationItem,
-  ContactCardTarget,
+  ContactCardSendTarget,
   Message,
   StandardResponse,
 } from '../../services/model';
@@ -61,7 +61,7 @@ export interface SendTextRequest {
 
 export interface SendContactRequest {
   threadId: number;
-  target: ContactCardTarget;
+  target: ContactCardSendTarget;
   clientMessageId: string;
   optimistic: CbItem<ChatItemData>;
   source: MessageThreadSource;

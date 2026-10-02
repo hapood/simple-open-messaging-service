@@ -68,7 +68,7 @@ describe('group disband task handlers', () => {
       ...parent,
       scopeKey: businessAccountScopeKey({
         account: '!group',
-        domain: 'local',
+        profileNamespaceId: 0,
       }),
       taskType: 'FORCE_REVOKE_GROUP_MEMBER',
       payload: {
@@ -93,7 +93,6 @@ describe('group disband task handlers', () => {
       group: { account: '!group', domain: 'local', namespaceId: 0 },
       member: {
         account: 'remote',
-        domain: 'peer.test',
         namespaceId: 5,
       },
       expectedAuthorizationEpoch: 8,
@@ -152,7 +151,7 @@ describe('group disband task handlers', () => {
 
     expect(execute).toHaveBeenCalledWith({
       threadId: 12,
-      memberAddress: { account: 'member', domain: 'local', namespaceId: 0 },
+      memberAddress: { account: 'member', namespaceId: 0 },
     });
   });
 });

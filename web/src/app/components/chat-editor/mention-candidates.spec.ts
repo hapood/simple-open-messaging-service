@@ -1,29 +1,20 @@
 import { isSelfMentionMember } from './mention-candidates';
 
 describe('isSelfMentionMember', () => {
-  it('flags the session identity with the roster domain normalized to local', () => {
+  it('flags the session identity in the local namespace', () => {
     expect(
       isSelfMentionMember(
-        { account: 'alice06295391', domain: 'local' },
-        { account: 'alice06295391', domain: '' },
+        { account: 'alice06295391', namespaceId: 0 },
+        { account: 'alice06295391', namespaceId: 0 },
       ),
     ).toBe(true);
   });
 
-  it('flags the session identity when the profile domain is missing', () => {
+  it('keeps a same-named account in a different namespace mentionable', () => {
     expect(
       isSelfMentionMember(
-        { account: 'alice06295391', domain: '' },
-        { account: 'alice06295391', domain: 'local' },
-      ),
-    ).toBe(true);
-  });
-
-  it('keeps a same-named account on another federation node mentionable', () => {
-    expect(
-      isSelfMentionMember(
-        { account: 'alice06295391', domain: 'local' },
-        { account: 'alice06295391', domain: 'bravo.test' },
+        { account: 'alice06295391', namespaceId: 0 },
+        { account: 'alice06295391', namespaceId: 12 },
       ),
     ).toBe(false);
   });
@@ -32,7 +23,7 @@ describe('isSelfMentionMember', () => {
     expect(
       isSelfMentionMember(undefined, {
         account: 'alice06295391',
-        domain: 'local',
+        namespaceId: 0,
       }),
     ).toBe(false);
   });

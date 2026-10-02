@@ -131,13 +131,11 @@ describe('FederationMessageTombstoneFeedService query', () => {
       })
       .returning();
     await database.db.insert(peerStateFeed).values({
-      peerDomain,
       namespaceId,
       account: alice.account,
-      domain: localDomain,
       eventType: 'THREAD_CONTENT_HEAD',
       subjectAccount: bob.account,
-      subjectDomain: peerDomain,
+      subjectNamespaceId: namespaceId,
       feedId: 1n,
       body: { messageEndSeq: 1, tombstoneEndSeq: deletion.deletionSeq },
     });

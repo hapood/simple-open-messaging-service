@@ -25,6 +25,7 @@ import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
 import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
+import { FederationMessageProvenanceService } from './federation-message-provenance.service.js';
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 import { FederationDownloadRecoveryService } from './federation-download-recovery.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
@@ -294,6 +295,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     FederationReconnectService,
     FederationRecognitionService,
     FederationMessageFeedService,
+    FederationMessageProvenanceService,
     FederationMessageTombstoneFeedService,
     FederationDownloadScheduler,
     FederationHttpScheduler,
@@ -333,6 +335,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     FederationService,
     FederationRecognitionService,
     FederationMessageFeedService,
+    FederationMessageProvenanceService,
     FederationMessageTombstoneFeedService,
     FederationDownloadScheduler,
     FederationHttpScheduler,

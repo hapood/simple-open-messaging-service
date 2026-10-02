@@ -82,9 +82,9 @@ export async function lockThreadContentInTx(
     type: string;
     groupId: number | null;
     account: string | null;
-    domain: string | null;
+    namespaceId: number | null;
   }>(sql`
-    SELECT thread.type, thread.id AS "groupId", thread."groupAccount" AS account, thread."groupDomain" AS domain
+    SELECT thread.type, thread.id AS "groupId", thread."groupAccount" AS account, thread."authorityNamespaceId" AS "namespaceId"
     FROM "MessageThread" thread
     WHERE thread.id = ${threadId}
   `);
@@ -94,25 +94,23 @@ export async function lockThreadContentInTx(
     if (
       thread.groupId === null ||
       thread.account === null ||
-      thread.domain === null
+      thread.namespaceId === null
     )
       throw new Error('group content parent is missing');
     await lockBusinessAccountsInTx(tx, [
-      { account: thread.account, domain: thread.domain },
+      { account: thread.account, profileNamespaceId: thread.namespaceId },
     ]);
   } else {
     const pairs = await tx.execute<{
       id: string;
       endpointAAccount: string;
-      endpointADomain: string;
+      endpointANamespaceId: number;
       endpointBAccount: string;
-      endpointBDomain: string;
+      endpointBNamespaceId: number;
     }>(sql`
-      SELECT pair.id::text AS id, pair."endpointAAccount", a_ns.domain AS "endpointADomain",
-        pair."endpointBAccount", b_ns.domain AS "endpointBDomain"
+      SELECT pair.id::text AS id, pair."endpointAAccount", pair."endpointANamespaceId",
+        pair."endpointBAccount", pair."endpointBNamespaceId"
       FROM "RelationshipPair" pair
-      JOIN "IdentityNamespace" a_ns ON a_ns.id = pair."endpointANamespaceId"
-      JOIN "IdentityNamespace" b_ns ON b_ns.id = pair."endpointBNamespaceId"
       WHERE pair.kind = 'P2P' AND pair."threadId" = ${threadId}
       ORDER BY pair.id
     `);
@@ -121,8 +119,8 @@ export async function lockThreadContentInTx(
     const pair = pairs.rows[0];
     if (pair) {
       await lockBusinessAccountsInTx(tx, [
-        { account: pair.endpointAAccount, domain: pair.endpointADomain },
-        { account: pair.endpointBAccount, domain: pair.endpointBDomain },
+        { account: pair.endpointAAccount, profileNamespaceId: pair.endpointANamespaceId },
+        { account: pair.endpointBAccount, profileNamespaceId: pair.endpointBNamespaceId },
       ]);
       await tx.execute(
         sql`SELECT id FROM "RelationshipPair" WHERE id = ${pair.id} AND "threadId" = ${threadId} FOR NO KEY UPDATE`,

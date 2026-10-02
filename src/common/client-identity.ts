@@ -17,7 +17,7 @@ export function toClientIdentityOrNull(
       ? { account: identity.account, domain: 'local', namespaceId: 0 }
       : null;
   }
-  return { ...identity };
+  return identity.namespaceId === 0 ? null : { ...identity };
 }
 
 /** Compatibility wrapper for call sites that still treat an invalid wire subject
@@ -25,7 +25,6 @@ export function toClientIdentityOrNull(
  * toClientIdentityOrNull when they can warn and drop one enclosing item. */
 export function toClientIdentity(
   identity: NamespacedAddress,
-  _localDomain?: string,
 ): NamespacedAddress {
   const projected = toClientIdentityOrNull(identity);
   if (!projected) throw new Error('invalid local subject namespace');

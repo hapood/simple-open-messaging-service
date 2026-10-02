@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 import { profileTable } from '../../database/schema.js';
 import {
@@ -22,6 +22,10 @@ export async function writeP2PClientRelationshipInTx(
 ): Promise<PendingClientStateFeedUpdate[]> {
   const first = await accountAddressInTx(tx, firstTarget);
   const second = await accountAddressInTx(tx, secondTarget);
+  const domainOf = await namespaceDomainReaderInTx(tx, [
+    first.namespaceId,
+    second.namespaceId,
+  ]);
   const relationship = await intents.readP2PRelationshipInTx(tx, first, second);
   const recipients = await localAccountsForTargetsInTx(tx, [first, second]);
   const pending: Array<{ userId: number; feedId: number }> = [];
@@ -35,17 +39,17 @@ export async function writeP2PClientRelationshipInTx(
     for (const owner of recipients) {
       if (owner.availability !== 'AVAILABLE') continue;
       const outgoing =
-        actor.domain === 'local' && actor.account === owner.account;
+        actor.namespaceId === 0 && actor.account === owner.account;
       const peer = outgoing ? subject : actor;
       const peerIntent = directions.find(
         (direction) =>
           direction.actor.account === peer.account &&
-          direction.actor.domain === peer.domain,
+          direction.actor.namespaceId === peer.namespaceId,
       )?.intent;
       const feedId = await feed.writeInTx(tx, {
         userId: owner.id,
         account: actor.account,
-        domain: actor.domain,
+        domain: domainOf(actor.namespaceId),
         subjectAccount: subject.account,
         subjectNamespaceId: subject.namespaceId,
         namespaceId,
@@ -57,7 +61,11 @@ export async function writeP2PClientRelationshipInTx(
           expiresAt: intent.expiresAt?.getTime() ?? null,
           direction: outgoing ? 'OUTGOING' : 'INCOMING',
           localThreadId: relationship.pair.threadId,
-          peer: await clientInviteUser(tx, peer, peerIntent?.profileRev ?? 0),
+          peer: await clientInviteUser(
+            tx,
+            { ...peer, domain: domainOf(peer.namespaceId) },
+            peerIntent?.profileRev ?? 0,
+          ),
         },
       });
       if (feedId !== null) pending.push({ userId: owner.id, feedId });
@@ -73,6 +81,26 @@ export async function writeP2PClientRelationshipInTx(
       )),
     );
   return pending;
+}
+
+/** Resolve the transport domain for each namespace once per transaction; the
+ * client feed contract still addresses federation contexts by domain. */
+async function namespaceDomainReaderInTx(
+  tx: DatabaseTransaction,
+  namespaceIds: readonly number[],
+): Promise<(namespaceId: number) => string> {
+  const foreign = [...new Set(namespaceIds)].filter((id) => id !== 0);
+  const domains = new Map<number, string>([[0, 'local']]);
+  for (const id of foreign) {
+    const ns = (
+      await tx.execute<{ domain: string }>(
+        sql`SELECT domain FROM "IdentityNamespace" WHERE id = ${id} LIMIT 1`,
+      )
+    ).rows[0];
+    if (!ns) throw new Error(`namespace ${id} does not exist`);
+    domains.set(id, ns.domain);
+  }
+  return (namespaceId) => domains.get(namespaceId)!;
 }
 
 async function clientInviteUser(

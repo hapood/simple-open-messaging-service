@@ -5,9 +5,9 @@ import type {
   DatabaseService,
   DatabaseTransaction,
 } from '../../database/database.service.js';
-import type { NamespacedAddress } from '../../common/client-identity.js';
 import {
   accountAddressInTx,
+  type AccountSubjectAddress,
   type AccountTarget,
 } from '../../user/account-address.js';
 import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
@@ -117,7 +117,7 @@ export class GroupDisbandMembershipRevocationService {
   ): Promise<ValidatedRevocation | GroupDisbandMembershipRevocationResult> {
     // The sweep's payload names the member as a local Account.id or an
     // address; every downstream statement uses the canonical address form.
-    const member: NamespacedAddress = await accountAddressInTx(
+    const member: AccountSubjectAddress = await accountAddressInTx(
       tx,
       params.memberAddress,
     );
@@ -129,6 +129,8 @@ export class GroupDisbandMembershipRevocationService {
       await tx.execute<{
         groupAccount: string;
         groupDomain: string;
+        groupNamespaceId: number;
+        memberDomain: string | null;
         dissolvedAt: string | null;
         pairId: string | null;
         localMemberId: number | null;
@@ -146,14 +148,20 @@ export class GroupDisbandMembershipRevocationService {
         transitioned: false,
       };
     await lockBusinessAccountsInTx(tx, [
-      { account: located.groupAccount, domain: located.groupDomain },
+      {
+        account: located.groupAccount,
+        profileNamespaceId: located.groupNamespaceId,
+      },
     ]);
     await lockRelationshipPairsInTx(tx, [
       {
         kind: 'GROUP_MEMBER',
         addresses: [
           completeBusinessAddress(located.groupAccount, located.groupDomain),
-          completeBusinessAddress(member.account, member.domain),
+          completeBusinessAddress(
+            member.account,
+            located.memberDomain ?? 'local',
+          ),
         ],
       },
     ]);
@@ -168,6 +176,8 @@ export class GroupDisbandMembershipRevocationService {
       await tx.execute<{
         groupAccount: string;
         groupDomain: string;
+        groupNamespaceId: number;
+        memberDomain: string | null;
         dissolvedAt: string | null;
         pairId: string | null;
         localMemberId: number | null;

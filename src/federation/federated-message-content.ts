@@ -1,4 +1,5 @@
 import { ContentType } from '../database/enums.js';
+import { canonicalJson, contentDigest } from './canonical-json.js';
 import { isAbsoluteLinkTarget } from '../message/link-target.js';
 import { extractDigests, MAX_FILE_NAME_LEN } from '../upload/file-content.js';
 import {
@@ -76,10 +77,7 @@ function assertNonEmptyString(value: unknown): asserts value is string {
   }
 }
 
-function validateContactCard(
-  value: JsonObject,
-  allowLocalDomain = false,
-): void {
+function validateContactCard(value: JsonObject): void {
   assertKeys(
     value,
     ['account', 'domain', 'displayName', 'bio'],
@@ -90,10 +88,7 @@ function validateContactCard(
     typeof account !== 'string' ||
     !isValidAccount(account) ||
     typeof value['domain'] !== 'string' ||
-    !(
-      isValidSomfpDomain(value['domain']) ||
-      (allowLocalDomain && value['domain'] === 'local')
-    ) ||
+    !(isValidSomfpDomain(value['domain']) || value['domain'] === 'local') ||
     typeof value['displayName'] !== 'string' ||
     unicodeCodePointLength(value['displayName']) < 1 ||
     unicodeCodePointLength(value['displayName']) > 31 ||
@@ -221,20 +216,20 @@ export function toFederatedMessageContent(
   const value = parseObject(content);
   switch (contentType) {
     case ContentType.PURE_TEXT:
-      return JSON.stringify(
+      return canonicalJson(
         projectTextContent(value, false),
       );
     case ContentType.IMAGE:
       validateImageName(value);
-      return JSON.stringify(
+      return canonicalJson(
         withoutUndefined(projectSingleToWire(value, ['w', 'h', 'name'])),
       );
     case ContentType.FILE:
-      return JSON.stringify(
+      return canonicalJson(
         withoutUndefined(projectSingleToWire(value, ['name', 'mimeType'])),
       );
     case ContentType.VIDEO:
-      return JSON.stringify(
+      return canonicalJson(
         withoutUndefined(
           projectSingleToWire(value, [
             'name',
@@ -246,7 +241,7 @@ export function toFederatedMessageContent(
         ),
       );
     case ContentType.AUDIO:
-      return JSON.stringify(
+      return canonicalJson(
         withoutUndefined(
           projectSingleToWire(value, ['name', 'mimeType', 'duration']),
         ),
@@ -278,7 +273,7 @@ export function toFederatedMessageContent(
           ...projectSingleToWire(record, ['kind', ...fields]),
         });
       });
-      return JSON.stringify({ items });
+      return canonicalJson({ items });
     }
     case ContentType.LINK: {
       assertKeys(
@@ -295,7 +290,7 @@ export function toFederatedMessageContent(
       ) {
         throw new Error('invalid link content');
       }
-      return JSON.stringify({
+      return canonicalJson({
         url: value['url'],
         title: value['title'],
         description: value['description'],
@@ -311,11 +306,11 @@ export function toFederatedMessageContent(
       });
     }
     case ContentType.CONTACT_CARD:
-      validateContactCard(value, true);
+      validateContactCard(value);
       if (value['avatarDigest'] !== undefined) {
         throw new Error('local contact card must not contain avatarDigest');
       }
-      return JSON.stringify({
+      return canonicalJson({
         account: value['account'],
         domain: value['domain'],
         displayName: value['displayName'],
@@ -351,7 +346,7 @@ export function toFederatedMessageContent(
       if (typeof value['bundleId'] !== 'string')
         throw new Error('invalid forward card');
       validateForwardCard({ bundleId: value['bundleId'] });
-      return JSON.stringify({ bundleId: value['bundleId'] });
+      return canonicalJson({ bundleId: value['bundleId'] });
     case ContentType.SYSTEM:
       throw new Error('SYSTEM is not a federated content type');
     default:
@@ -377,7 +372,7 @@ export function fromFederatedMessageContent(
     ]);
     const size = assetBytes.get(value['digest']);
     assertSafeInteger(size);
-    return JSON.stringify(
+    return canonicalJson(
       withoutUndefined({
         ...value,
         url: localCasUrl(value['digest']),
@@ -394,7 +389,7 @@ export function fromFederatedMessageContent(
   };
   switch (contentType) {
     case ContentType.PURE_TEXT:
-      return JSON.stringify(
+      return canonicalJson(
         projectTextContent(value, true),
       );
     case ContentType.IMAGE:
@@ -446,7 +441,7 @@ export function fromFederatedMessageContent(
             : {}),
         });
       });
-      return JSON.stringify({ items });
+      return canonicalJson({ items });
     }
     case ContentType.LINK:
       assertKeys(
@@ -465,7 +460,7 @@ export function fromFederatedMessageContent(
       ) {
         throw new Error('invalid link content');
       }
-      return JSON.stringify({
+      return canonicalJson({
         url: value['url'],
         title: value['title'],
         description: value['description'],
@@ -480,13 +475,13 @@ export function fromFederatedMessageContent(
           : { favicon: localCasUrl(value['favicon']) }),
       });
     case ContentType.CONTACT_CARD:
-      validateContactCard(value, true);
+      validateContactCard(value);
       if (value['avatar'] !== undefined) {
         throw new Error('federated contact card must not contain avatar');
       }
       if (value['avatarDigest'] !== undefined)
         assertDigest(value['avatarDigest']);
-      return JSON.stringify({
+      return canonicalJson({
         account: value['account'],
         domain: value['domain'],
         displayName: value['displayName'],
@@ -538,4 +533,22 @@ export function federatedContentDigests(
     digests.add(digest);
   }
   return [...digests];
+}
+
+/**
+ * The hop-independent content digest of a message, computed over the canonical (JCS) form of the
+ * Federation v1 wire `content` for the given `(contentType, content)`. This is the digest a peer
+ * computes over the wire it receives, so a publisher stores it at creation time and compares it
+ * against the digest carried by a later processing receipt to confirm the content was not altered
+ * in transit. It is also the digest a provenance query (`POST /s2s/v1/message-provenance`) supplies.
+ *
+ * The input `content` is the local stored form; it is projected to the wire form via
+ * `toFederatedMessageContent` before hashing, so the digest is independent of the local storage
+ * field names and matches what every peer computes over the wire.
+ */
+export function wireContentDigest(
+  contentType: ContentType,
+  content: string,
+): string {
+  return contentDigest(toFederatedMessageContent(contentType, content));
 }

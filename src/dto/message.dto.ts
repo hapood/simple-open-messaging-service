@@ -81,11 +81,6 @@ export class ContactCardTargetDto {
   account!: string;
 
   @ApiProperty()
-  @IsString()
-  @IsNotEmpty()
-  domain!: string;
-
-  @ApiProperty()
   @IsInt()
   @Min(0)
   namespaceId!: number;

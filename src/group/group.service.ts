@@ -25,7 +25,10 @@ import {
   profileTable,
 } from '../database/schema.js';
 import { GroupRole, MessageThreadType } from '../database/enums.js';
-import { lockBusinessAccountsInTx } from '../common/locks/account-business-lock.js';
+import {
+  lockBusinessAccountsInTx,
+  type BusinessScopeAddress,
+} from '../common/locks/account-business-lock.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { mintGroupAccount, isP2002 } from '../common/account.js';
@@ -350,7 +353,7 @@ export class GroupService {
   /** Resolve a group address visible to a member without trusting a client-supplied thread id. */
   async findVisibleGroupByAddress(
     userId: number,
-    address: { account: string; domain: string; namespaceId: number },
+    address: { account: string; namespaceId: number },
   ) {
     const [row] = await this.database.db
       .select(groupStateFields)
@@ -361,7 +364,6 @@ export class GroupService {
           eq(accountThreadState.accountId, userId),
           isNull(accountThreadState.messageVisibleThroughSeq),
           eq(groupStateFields.account, address.account),
-          eq(groupStateFields.domain, address.domain),
           eq(groupStateFields.namespaceId, address.namespaceId),
         ),
       )
@@ -445,7 +447,7 @@ export class GroupService {
           }> = [];
           // Entry-scope advisory for the freshly minted group: uncontended, but
           // taken here so the seeding writers keep the entry-lock contract.
-          await lockBusinessAccountsInTx(tx, [{ account, domain: 'local' }]);
+          await lockBusinessAccountsInTx(tx, [{ account, profileNamespaceId: 0 }]);
           // Establish an explicit cleared announcement before any origin feed
           // can be served; subsequent membership/profile facts use later ids.
           await tx.insert(groupMeta).values({
@@ -526,7 +528,7 @@ export class GroupService {
   async resolveDisbandCommandScope(
     threadId: number,
     operatorUserId: number,
-  ): Promise<{ account: string; domain: string }> {
+  ): Promise<BusinessScopeAddress> {
     return this.database.db.transaction(async (tx) => {
       const [state] = await tx
         .select({
@@ -554,7 +556,7 @@ export class GroupService {
         !(await isThreadMutuallyAuthorized(tx, operatorUserId, threadId))
       )
         throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'owner only');
-      return { account: state.account, domain: state.domain };
+      return { account: state.account, profileNamespaceId: state.namespaceId };
     });
   }
 
@@ -592,6 +594,7 @@ export class GroupService {
         .select({
           account: groupStateFields.account,
           domain: groupStateFields.domain,
+          namespaceId: groupStateFields.namespaceId,
         })
         .from(messageThread)
         .innerJoin(group, eq(group.id, messageThread.id))
@@ -599,7 +602,10 @@ export class GroupService {
         .limit(1);
       if (located)
         await lockBusinessAccountsInTx(tx, [
-          { account: located.account, domain: located.domain },
+          {
+            account: located.account,
+            profileNamespaceId: located.namespaceId,
+          },
         ]);
       const mutationLock =
         await this.relationshipMutations.lockGroupMutationInTx(
@@ -734,6 +740,7 @@ export class GroupService {
         .select({
           account: groupStateFields.account,
           domain: groupStateFields.domain,
+          namespaceId: groupStateFields.namespaceId,
         })
         .from(messageThread)
         .innerJoin(group, eq(group.id, messageThread.id))
@@ -741,7 +748,10 @@ export class GroupService {
         .limit(1);
       if (located)
         await lockBusinessAccountsInTx(tx, [
-          { account: located.account, domain: located.domain },
+          {
+            account: located.account,
+            profileNamespaceId: located.namespaceId,
+          },
         ]);
       const locked = await this.relationshipMutations.lockGroupMutationInTx(
         tx,
@@ -791,6 +801,7 @@ export class GroupService {
         .select({
           account: groupStateFields.account,
           domain: groupStateFields.domain,
+          namespaceId: groupStateFields.namespaceId,
         })
         .from(messageThread)
         .innerJoin(group, eq(group.id, messageThread.id))
@@ -798,7 +809,10 @@ export class GroupService {
         .limit(1);
       if (located)
         await lockBusinessAccountsInTx(tx, [
-          { account: located.account, domain: located.domain },
+          {
+            account: located.account,
+            profileNamespaceId: located.namespaceId,
+          },
         ]);
       const locked = await this.relationshipMutations.lockGroupMutationInTx(
         tx,

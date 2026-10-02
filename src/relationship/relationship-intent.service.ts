@@ -22,7 +22,10 @@ import {
   isEffectiveRelationshipIntent,
   type RelationshipIntentStatus,
 } from '../common/relationship-intent-state.js';
-import { lockBusinessAccountsInTx } from '../common/locks/account-business-lock.js';
+import {
+  lockBusinessAccountsInTx,
+  type BusinessScopeAddress,
+} from '../common/locks/account-business-lock.js';
 import { setLockedP2PPairActiveInTx } from './shared/p2p-pair-state.js';
 
 export type { RelationshipIntentStatus } from '../common/relationship-intent-state.js';
@@ -116,7 +119,10 @@ export class RelationshipIntentService {
       localUserId,
       remote,
     );
-    await lockBusinessAccountsInTx(tx, [local, remote]);
+    await lockBusinessAccountsInTx(tx, [
+      local,
+      { account: remote.account, profileNamespaceId: remote.namespaceId },
+    ]);
     const locked = await tx.execute<{
       id: string;
       active: boolean;
@@ -306,16 +312,21 @@ export class RelationshipIntentService {
     const located = await tx.execute<{
       groupAccount: string;
       groupDomain: string;
+      groupNamespaceId: number;
     }>(sql`
       SELECT group_profile.account AS "groupAccount",
-        group_profile.domain AS "groupDomain"
+        group_profile.domain AS "groupDomain",
+        group_profile."namespaceId" AS "groupNamespaceId"
       FROM ${groupStateSql} group_profile
       WHERE group_profile.id = ${params.groupId}
     `);
     const group = located.rows[0];
     if (!group) throw new Error('group relationship endpoint does not exist');
     await lockBusinessAccountsInTx(tx, [
-      { account: group.groupAccount, domain: group.groupDomain },
+      {
+        account: group.groupAccount,
+        profileNamespaceId: group.groupNamespaceId,
+      },
     ]);
     const pair = await this.lockGroupMutationInTx(tx, params);
     const groupEndpoint =
@@ -496,7 +507,7 @@ export class RelationshipIntentService {
       SELECT participant.id FROM "AccountThreadState" participant
       JOIN "Account" owner ON owner.id = participant."accountId"
       WHERE participant."threadId" = ${params.threadId}
-        AND ((owner.account = ${member.account} AND ${member.domain} = 'local')
+        AND ((owner.account = ${member.account} AND ${member.namespaceId} = 0)
           OR owner.id = ANY(${sql.param(projectionUserIds)}::integer[]))
       ORDER BY participant."accountId" FOR NO KEY UPDATE OF participant
     `);
@@ -505,7 +516,7 @@ export class RelationshipIntentService {
 
   async lockGroupBusinessScopeInTx(
     tx: DatabaseTransaction,
-    address: { account: string; domain: string },
+    address: BusinessScopeAddress,
   ): Promise<void> {
     await lockBusinessAccountsInTx(tx, [address]);
   }
@@ -615,7 +626,10 @@ export class RelationshipIntentService {
     const first = await accountAddressInTx(tx, firstUserId);
     const second = await accountAddressInTx(tx, secondUserId);
     const key = this.prepareP2PKey(first, second, threadId);
-    await lockBusinessAccountsInTx(tx, [first, second]);
+    await lockBusinessAccountsInTx(tx, [
+      { account: first.account, profileNamespaceId: first.namespaceId },
+      { account: second.account, profileNamespaceId: second.namespaceId },
+    ]);
     const pair = await this.lockCanonicalPairInTx(tx, key);
     if (pair.threadId !== null) {
       const thread = await tx
@@ -636,7 +650,7 @@ export class RelationshipIntentService {
     remote: { account: string; domain: string; namespaceId: number },
   ): Promise<{
     key: PairKey & { localSide: 'A' | 'B'; remoteSide: 'A' | 'B' };
-    local: { account: string; domain: string };
+    local: BusinessScopeAddress;
   }> {
     const local = await tx.query.account.findFirst({
       where: and(eq(user.id, localUserId), eq(user.domain, 'local')),
@@ -650,7 +664,7 @@ export class RelationshipIntentService {
         localSide: prepared.firstSide,
         remoteSide: prepared.secondSide,
       },
-      local,
+      local: { account: local.account, profileNamespaceId: local.namespaceId },
     };
   }
 

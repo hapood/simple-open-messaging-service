@@ -34,7 +34,8 @@ export type GroupRosterRoleAuthorizationRow = {
  * authorization statement. */
 export function groupRosterRoleLocatorSql(input: { threadId: number }) {
   return sql`
-    SELECT g.account AS "groupAccount", g.domain AS "groupDomain"
+    SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
+      g."namespaceId" AS "groupNamespaceId"
     FROM ${groupStateSql} g WHERE g.id = ${input.threadId}
   `;
 }

@@ -94,9 +94,13 @@ function target() {
       .fn()
       .mockReturnValue('{"account":"alice","domain":"local.example"}'),
   };
+  const messageProvenance = {
+    query: vi.fn(),
+  };
   const controller = new S2sController(
     federation as never,
     messageFeed as never,
+    messageProvenance as never,
     tombstoneFeed as never,
     {} as never,
     peerStateFeed as never,

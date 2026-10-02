@@ -30,7 +30,13 @@ export class GroupRevokeFanoutService {
     return this.database.db.transaction(async (tx) => {
       const threadLock = await requireThreadContentLockInTx(tx, threadId);
       const group = await readGroupState(tx, eq(groupStateFields.id, threadId));
-      if (!group || businessAccountScopeKey(group) !== parent.scopeKey)
+      if (
+        !group ||
+        businessAccountScopeKey({
+          account: group.account,
+          profileNamespaceId: group.namespaceId,
+        }) !== parent.scopeKey
+      )
         throw new Error('revocation task belongs to another group');
       const locked = await tx.execute<{
         id: string;
@@ -153,14 +159,17 @@ export class GroupRevokeFanoutService {
             tombstoneEndSeq: final.tombstoneEndSeq,
           },
           'GROUP',
-          { account: member.account, domain: 'local', namespaceId: 0 },
+          { account: member.account, namespaceId: 0 },
         );
       }
 
       await this.tasks.enqueueTaskInTx(tx, {
         scope: {
           type: 'GROUP',
-          address: { account: group.account, domain: group.domain },
+          address: {
+            account: group.account,
+            profileNamespaceId: group.namespaceId,
+          },
         },
         taskType: DurableTaskType.FORCE_REVOKE_GROUP_MEMBER,
         ...(parent.actorUserId === null
@@ -179,11 +188,7 @@ export class GroupRevokeFanoutService {
                 groupNamespaceId: group.namespaceId,
               }
             : {}),
-          memberUserId: {
-            account: member.account,
-            domain: member.domain,
-            namespaceId: member.namespaceId,
-          },
+          memberUserId: { account: member.account, namespaceId: member.namespaceId },
         },
       });
       await saveTaskCheckpointInTx(tx, parent.id, {

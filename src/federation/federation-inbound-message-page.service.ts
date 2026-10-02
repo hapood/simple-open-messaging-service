@@ -20,7 +20,11 @@ import {
   FEDERATED_MESSAGE_CONTENT_TYPES,
   type FederationMessageFeedMessage,
 } from './federation-message-feed.service.js';
-import { fromFederatedMessageContent } from './federated-message-content.js';
+import { contentDigest } from './canonical-json.js';
+import {
+  fromFederatedMessageContent,
+  wireContentDigest,
+} from './federated-message-content.js';
 import {
   mapFederationOriginSequence,
   type MapFederationOriginSequence,
@@ -256,6 +260,10 @@ export class FederationInboundMessagePageService {
             columns: {
               id: true,
               createdAt: true,
+              contentType: true,
+              content: true,
+              contentDigest: true,
+              localState: true,
             },
           });
           if (localSourceMessage) {
@@ -274,6 +282,31 @@ export class FederationInboundMessagePageService {
                 )}`,
               );
               continue;
+            }
+            // Confirm content integrity against the processing receipt: the peer re-serialized the
+            // accepted content to the canonical (JCS) wire form and returned it. Its digest must
+            // match the digest retained when this server published the message; a mismatch means the
+            // content was altered in transit (or the local stored content drifted) and the message
+            // MUST NOT be promoted to CONFIRMED.
+            const receiptDigest = contentDigest(item.content);
+            if (
+              localSourceMessage.contentDigest !== null &&
+              receiptDigest !== localSourceMessage.contentDigest
+            ) {
+              this.logger.warn(
+                `processing receipt content digest mismatch: ${JSON.stringify({
+                  messageId: localSourceMessage.id.toString(),
+                  peerDomain: domain,
+                  receiptOriginSeq: item.originSeq,
+                  retainedDigest: localSourceMessage.contentDigest,
+                  receiptDigest,
+                })}`,
+              );
+            } else if (localSourceMessage.localState !== 'CONFIRMED') {
+              await tx
+                .update(tables.message)
+                .set({ localState: 'CONFIRMED', updatedAt: new Date() })
+                .where(eq(tables.message.id, localSourceMessage.id));
             }
             if (sequencePolicy) {
               await DeletedMessageService.lockFederatedIdentity(

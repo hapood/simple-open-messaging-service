@@ -412,10 +412,7 @@ export class FederationMessageFeedService {
       let content: string;
       let contentDigests: Set<string>;
       try {
-        content = toFederatedMessageContent(
-          row.contentType,
-          row.content,
-        );
+        content = toFederatedMessageContent(row.contentType, row.content);
         contentDigests = new Set(
           federatedContentDigests(row.contentType, content),
         );

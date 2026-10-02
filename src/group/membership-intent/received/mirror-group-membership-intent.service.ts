@@ -192,7 +192,7 @@ export class MirrorGroupMembershipIntentService {
     if (shell) {
       threadId = shell.id;
       await lockBusinessAccountsInTx(tx, [
-        { account: group.account, domain: group.domain },
+        { account: group.account, profileNamespaceId: group.namespaceId },
       ]);
     } else {
       if (command.body.status !== 'REQUESTED')

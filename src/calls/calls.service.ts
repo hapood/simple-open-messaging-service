@@ -208,7 +208,7 @@ export class CallsService implements OnModuleDestroy {
         'not a P2P thread',
       );
     const localCallee =
-      callee.domain === 'local' && callee.namespaceId === 0
+      callee.namespaceId === 0
         ? await this.database.db.query.account.findFirst({
             where: eq(user.account, callee.account),
             columns: { id: true },
@@ -216,7 +216,7 @@ export class CallsService implements OnModuleDestroy {
         : undefined;
     const calleeId = localCallee?.id ?? null;
     if (
-      (callee.domain === 'local' && calleeId === null) ||
+      (callee.namespaceId === 0 && calleeId === null) ||
       calleeId === callerId
     ) {
       throw new BusinessException(

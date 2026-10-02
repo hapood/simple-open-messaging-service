@@ -428,13 +428,26 @@ export class MessageController {
     const avatar = profile?.avatar
       ? await this.forwardBundles.snapshotAvatarForMessage(profile.avatar)
       : null;
+    // The wire domain is the truth recorded in IdentityNamespace for the
+    // target's namespace: 'local' for namespace 0, the peer's domain for a
+    // positive namespace. The client supplies only namespaceId, never domain.
+    const domain =
+      (await this.federation.activePeerDomainForNamespace(
+        reference.namespaceId,
+      )) ?? (reference.namespaceId === 0 ? 'local' : null);
+    if (domain === null) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'contact target namespace not found',
+      );
+    }
     await this.userQuota.assertCanSend(req.user.userId);
     const data = await this.messageService.writeMsgToThread(
       req.user.userId,
       dto.threadId,
       JSON.stringify({
         account: reference.account,
-        domain: reference.domain,
+        domain,
         displayName: profile?.displayName || reference.account,
         bio: profile?.bio ?? '',
         ...(avatar

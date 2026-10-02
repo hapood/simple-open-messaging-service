@@ -27,6 +27,13 @@ export type MediaStatus = (typeof MEDIA_STATUS)[keyof typeof MEDIA_STATUS];
 
 export type User = S['UserResponseDto'];
 export type ContactCardTarget = ThreadStateSnapshot['profile'];
+/** The wire payload for `send-contact-card`. The client sends only the identity
+ * coordinates the server cannot derive: account, namespaceId, and profileRev.
+ * The server resolves the display `domain` from `IdentityNamespace`. */
+export type ContactCardSendTarget = Pick<
+  ContactCardTarget,
+  'account' | 'namespaceId' | 'profileRev'
+>;
 export type Message = Omit<
   S['MessageResponseDto'],
   'contentType' | 'mediaStatus'

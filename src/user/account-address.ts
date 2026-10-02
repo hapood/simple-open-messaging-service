@@ -1,13 +1,21 @@
 import { eq, inArray } from 'drizzle-orm';
-import type { NamespacedAddress } from '../common/client-identity.js';
 import type {
   Database,
   DatabaseTransaction,
 } from '../database/database.service.js';
 import { account } from '../database/schema.js';
 
-/** Internal commands may identify their local actor by Account.id; foreign subjects use addresses. */
-export type AccountTarget = number | NamespacedAddress;
+/** A persisted subject address without the transport domain. Local subjects are
+ * identified by `namespaceId: 0`; foreign subjects by a positive `namespaceId`
+ * allocated to the subject's home server. */
+export interface AccountSubjectAddress {
+  account: string;
+  namespaceId: number;
+}
+
+/** Internal commands may identify their local actor by Account.id; foreign
+ * subjects use a namespace-scoped address without a transport domain. */
+export type AccountTarget = number | AccountSubjectAddress;
 
 /** Validate a persisted command target without looking up or creating an identity. */
 export function readAccountTarget(value: unknown): AccountTarget {
@@ -19,17 +27,13 @@ export function readAccountTarget(value: unknown): AccountTarget {
   if (
     typeof identity.account !== 'string' ||
     !identity.account ||
-    typeof identity.domain !== 'string' ||
-    !identity.domain ||
     typeof identity.namespaceId !== 'number' ||
     !Number.isSafeInteger(identity.namespaceId) ||
-    identity.namespaceId < 0 ||
-    (identity.domain === 'local') !== (identity.namespaceId === 0)
+    identity.namespaceId < 0
   )
     throw new Error('invalid addressed account target');
   return {
     account: identity.account,
-    domain: identity.domain,
     namespaceId: identity.namespaceId,
   };
 }
@@ -37,14 +41,14 @@ export function readAccountTarget(value: unknown): AccountTarget {
 export async function accountAddressInTx(
   tx: Database | DatabaseTransaction,
   target: AccountTarget,
-): Promise<NamespacedAddress> {
+): Promise<AccountSubjectAddress> {
   if (typeof target !== 'number') return target;
   const local = await tx.query.account.findFirst({
     where: eq(account.id, target),
     columns: { account: true },
   });
   if (!local) throw new Error('local account does not exist');
-  return { account: local.account, domain: 'local', namespaceId: 0 };
+  return { account: local.account, namespaceId: 0 };
 }
 
 /** Resolve actual local recipients after subject normalization; foreign addresses are never accounts. */
@@ -56,7 +60,7 @@ export async function localAccountsForTargetsInTx(
     targets.map((target) => accountAddressInTx(tx, target)),
   );
   const local = addresses
-    .filter((identity) => identity.domain === 'local')
+    .filter((identity) => identity.namespaceId === 0)
     .map((identity) => identity.account);
   if (!local.length) return [];
   return tx

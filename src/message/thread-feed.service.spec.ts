@@ -172,23 +172,14 @@ describe('thread mention semantics', () => {
     // A local subject uses namespace 0; a foreign subject uses the publisher's
     // namespace for that subject. mentionsAccount compares the account segment.
     expect(
-      mentionsAccount(
-        content('[@Reader](somfp://user/0/reader)'),
-        'reader',
-      ),
+      mentionsAccount(content('[@Reader](somfp://user/0/reader)'), 'reader'),
     ).toBe(true);
     expect(
-      mentionsAccount(
-        content('[@Reader](somfp://user/12/reader)'),
-        'reader',
-      ),
+      mentionsAccount(content('[@Reader](somfp://user/12/reader)'), 'reader'),
     ).toBe(true);
     // A different account must not badge this user.
     expect(
-      mentionsAccount(
-        content('[@Other](somfp://user/0/other)'),
-        'reader',
-      ),
+      mentionsAccount(content('[@Other](somfp://user/0/other)'), 'reader'),
     ).toBe(false);
   });
 });

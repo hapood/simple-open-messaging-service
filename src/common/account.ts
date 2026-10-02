@@ -54,18 +54,6 @@ export function isValidSomfpDomain(domain: string): boolean {
   );
 }
 
-export function parseSomfpUserAddress(
-  address: string,
-): { account: string; domain: string } | null {
-  const separator = address.indexOf('@');
-  if (separator <= 0 || separator !== address.lastIndexOf('@')) return null;
-  const account = address.slice(0, separator);
-  const domain = address.slice(separator + 1);
-  return isValidSomfpUserAccount(account) && isValidSomfpDomain(domain)
-    ? { account, domain }
-    : null;
-}
-
 /** Parse the `namespaceId/account` entity id of a v1 user mention. `namespaceId`
  * is `0` for a subject local to the publishing server and a positive integer
  * for a foreign subject's namespace; `account` is a wire `UserAccount`. */

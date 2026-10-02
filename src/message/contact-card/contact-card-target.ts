@@ -2,7 +2,6 @@ import { BusinessCode } from '../../common/business-code.js';
 import { BusinessException } from '../../common/business.exception.js';
 import {
   isValidGroupAccount,
-  isValidSomfpDomain,
   isValidSomfpUserAccount,
 } from '../../common/account.js';
 import type { AccountThreadStateService } from '../../account-thread-state/account-thread-state.service.js';
@@ -25,8 +24,8 @@ export async function assertContactCardTargetVisible(
       isValidSomfpUserAccount(reference.account) ||
       isValidGroupAccount(reference.account)
     ) ||
-    !(reference.domain === 'local' || isValidSomfpDomain(reference.domain)) ||
-    (reference.domain === 'local') !== (reference.namespaceId === 0)
+    !Number.isInteger(reference.namespaceId) ||
+    reference.namespaceId < 0
   ) {
     throw new BusinessException(
       BusinessCode.VALIDATION_FAILED,
@@ -44,7 +43,7 @@ export async function assertContactCardTargetVisible(
         'contact group not found',
       );
     }
-  } else if (reference.domain === 'local') {
+  } else if (reference.namespaceId === 0) {
     const user = await services.users.findUniqueUser({
       account_domain: { account: reference.account, domain: 'local' },
       namespaceId: 0,

@@ -140,6 +140,14 @@ A JSON body MUST be UTF-8 without a BOM and use `Content-Type: application/json`
 
 Each operation specification defines its body's top-level type, required fields, `null` semantics, and unknown-field policy. A missing field, JSON `null`, an empty string, and numeric zero are four distinct JSON representations and MUST NOT substitute for one another. Unless an operation explicitly permits them, a non-finite number, unsafe integer, or unknown field MUST be rejected as malformed. Member order in an ordinary JSON object has no business meaning. Only an operation explicitly requiring canonical JSON or a fixed-order signature MAY include serialization order in a digest or detached signature.
 
+### 6.1.1 Canonical JSON (JCS) for stringified content fields
+
+A field whose type is `JsonObjectString` (a JSON object encoded as a string, such as a message `content` field) MUST be serialized using JSON Canonicalization Scheme (JCS, RFC 8785) so that the same logical value yields byte-identical output across implementations and time. A producer MUST emit the canonical form when it writes such a field onto the wire; a consumer MUST accept any valid JSON object on receipt (member order is still not a business concern at the JSON layer) but MUST re-serialize to the canonical form before storing, re-publishing, or computing a content digest over the parsed value. Two producers serializing the same logical object after JCS normalization produce identical UTF-8 bytes, and therefore identical `Content-Digest` (sha-256) values, even across separate hops.
+
+The canonical form is defined by RFC 8785: object members sorted by member name in UTF-16 code unit order; numbers serialized per ECMAScript `Number.prototype.toString` (minimal length, no trailing zero, no `+` sign in the exponent unless required); strings escaped only where required (`U+0022` `"`, `U+005C` `\`, and `U+0000`–`U+001F`); no insignificant whitespace; output encoded as UTF-8 without a BOM. A producer MUST NOT inject a non-finite number, an unsafe integer, or a `null` where a JSON object is required.
+
+This rule enables a stable, hop-independent content digest over the parsed `content` value: a sender and a later re-publisher of the same message compute the same sha-256 after JCS normalization, so an end-to-end or cached content digest is reproducible without preserving the original wire bytes.
+
 ### 6.2 Shared Federation types
 
 When an operation references a type in this table, it MUST follow the listed format, range, and normalization requirements and MUST NOT redefine or weaken them.

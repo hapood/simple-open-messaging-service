@@ -449,8 +449,8 @@ describe('FederationMessageFeedService thread query', () => {
     const { alice, namespaceId, thread } = await seed();
     await append(thread.id, alice, 1, namespaceId);
     await database.db.transaction(async (tx) => {
-      await closeFederatedAudienceInTx(tx, peerDomain, thread.id);
-      await openFederatedAudienceInTx(tx, peerDomain, thread.id);
+      await closeFederatedAudienceInTx(tx, namespaceId, thread.id);
+      await openFederatedAudienceInTx(tx, namespaceId, thread.id);
     });
     // Audience close removes the compacted head. The normal membership finalizer republishes it
     // after reopening; reproduce that post-commit projection step in this service-level fixture.

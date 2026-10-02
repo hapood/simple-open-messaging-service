@@ -1,4 +1,5 @@
 import { sql, type SQL } from 'drizzle-orm';
+import type { AccountSubjectAddress } from '../../user/account-address.js';
 import { groupStateSql } from '../shared/group-state.js';
 import { authoredIntentWriteSql } from '../../common/sql/authored-relationship-intent-sql.js';
 import { requestProjectionFlipSql } from '../membership-intent/shared/group-membership-projection-sql.js';
@@ -33,15 +34,19 @@ export interface GroupDisbandMembershipRevocationInput {
  * group existence and dissolution are evaluated before member state. */
 export function groupDisbandMembershipRevocationLocatorSql(input: {
   threadId: number;
-  member: { account: string; domain: string; namespaceId: number };
+  member: AccountSubjectAddress;
 }): SQL {
   return sql`
     SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
+      g.namespaceId AS "groupNamespaceId",
+      member_ns.domain AS "memberDomain",
       g."dissolvedAt" AS "dissolvedAt",
       pair.id::text AS "pairId",
       (SELECT a.id FROM "Account" a WHERE a.account = ${input.member.account}
         AND a.domain = 'local' AND a."namespaceId" = 0 LIMIT 1) AS "localMemberId"
     FROM ${groupStateSql} g
+    LEFT JOIN "IdentityNamespace" member_ns
+      ON member_ns.id = ${input.member.namespaceId}
     LEFT JOIN "RelationshipPair" pair ON pair.kind = 'GROUP_MEMBER'
       AND pair."threadId" = g.id AND pair."endpointBType" = 'USER'
       AND pair."endpointBAccount" = ${input.member.account}

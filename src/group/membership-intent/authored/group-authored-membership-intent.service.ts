@@ -1,4 +1,5 @@
 import { lockRelationshipPairsInTx } from '../../../common/locks/relationship-pair-business-lock.js';
+import type { AccountSubjectAddress } from '../../../user/account-address.js';
 import { completeBusinessAddress } from '../../../common/locks/business-address.js';
 import { lockBusinessAccountsInTx } from '../../../common/locks/account-business-lock.js';
 import {
@@ -187,17 +188,17 @@ export class GroupAuthoredMembershipIntentService {
   async executeQueryDeniedRevocation(params: {
     threadId: number;
     group: { account: string; domain: 'local'; namespaceId: 0 };
-    member: { account: string; domain: string; namespaceId: number };
+    member: AccountSubjectAddress;
     expectedAuthorizationEpoch: number;
   }): Promise<QueryDeniedMembershipRevocationResult> {
-    if (params.member.domain === 'local')
+    if (params.member.namespaceId === 0)
       throw new Error('query-denied group revocation requires a remote member');
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
     const peers = await this.deps.database.db.transaction(async (tx) => {
       // Entry-scope advisory before the writer's row locks; nested writers
       // never take advisories themselves.
       await lockBusinessAccountsInTx(tx, [
-        { account: params.group.account, domain: params.group.domain },
+        { account: params.group.account, profileNamespaceId: params.group.namespaceId },
       ]);
       return this.deps.relationshipMutations.writeGroupRelationshipIntentInTx(
         tx,
@@ -290,7 +291,7 @@ export class GroupAuthoredMembershipIntentService {
       namespaceId: candidate.namespaceId,
     };
     await lockBusinessAccountsInTx(tx, [
-      { account: candidate.groupAccount, domain: candidate.groupDomain },
+      { account: candidate.groupAccount, profileNamespaceId: 0 },
     ]);
     await lockRelationshipPairsInTx(tx, [
       {
@@ -436,7 +437,7 @@ export class GroupAuthoredMembershipIntentService {
       namespaceId: located.targetNamespaceId,
     };
     await lockBusinessAccountsInTx(tx, [
-      { account: located.groupAccount, domain: located.groupDomain },
+      { account: located.groupAccount, profileNamespaceId: 0 },
     ]);
     await lockRelationshipPairsInTx(tx, [
       {

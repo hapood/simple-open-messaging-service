@@ -43,7 +43,6 @@ describe('PlaygroundMessageThreadAdapter', () => {
           threadId: 1,
           target: {
             account: 'alice',
-            domain: 'local',
             namespaceId: 0,
             profileRev: 1,
           },

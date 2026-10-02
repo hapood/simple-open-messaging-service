@@ -290,11 +290,11 @@ export class FederationService {
           businessAddresses.push(
             {
               account: request.authorAccount,
-              domain: request.authorDomain,
+              profileNamespaceId: request.authorNamespaceId,
             },
             {
               account: request.subjectAccount,
-              domain: request.subjectDomain,
+              profileNamespaceId: request.subjectNamespaceId,
             },
           );
         } else {
@@ -303,11 +303,11 @@ export class FederationService {
             groupIsAuthor
               ? {
                   account: request.authorAccount,
-                  domain: request.authorDomain,
+                  profileNamespaceId: request.authorNamespaceId,
                 }
               : {
                   account: request.subjectAccount,
-                  domain: request.subjectDomain,
+                  profileNamespaceId: request.subjectNamespaceId,
                 },
           );
         }

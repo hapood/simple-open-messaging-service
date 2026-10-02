@@ -205,8 +205,8 @@ export class MemberAuthoredGroupMembershipIntentService {
           peers: new Map<number, bigint>(),
         };
       await lockBusinessAccountsInTx(tx, [
-        { account, domain: storedDomain },
-        { account: member.account, domain: 'local' },
+        { account, profileNamespaceId: namespaceId },
+        { account: member.account, profileNamespaceId: 0 },
       ]);
       let located = (
         await tx.execute<{ threadId: number }>(sql`
@@ -274,7 +274,7 @@ export class MemberAuthoredGroupMembershipIntentService {
       // Entry-scope advisory before the writer's row locks; nested writers
       // never take advisories themselves.
       await lockBusinessAccountsInTx(tx, [
-        { account: params.group.account, domain: params.group.domain },
+        { account: params.group.account, profileNamespaceId: params.group.namespaceId },
       ]);
       return this.deps.relationshipMutations.writeMemberRelationshipIntentInTx(
         tx,
@@ -395,8 +395,8 @@ export class MemberAuthoredGroupMembershipIntentService {
     // must never be held without it, or the nested mutation writers' late
     // advisory acquisition deadlocks against the advisory-holding fan-out tasks.
     await lockBusinessAccountsInTx(tx, [
-      { account: located.groupAccount, domain: located.groupDomain },
-      { account: member.account, domain: member.domain },
+      { account: located.groupAccount, profileNamespaceId: groupNamespaceId },
+      { account: member.account, profileNamespaceId: 0 },
     ]);
     await lockRelationshipPairsInTx(tx, [
       {

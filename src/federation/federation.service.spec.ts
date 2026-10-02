@@ -158,6 +158,7 @@ describe('thread-query FORBIDDEN convergence', () => {
             {
               groupAccount: '!group',
               groupDomain: members[0]?.groupDomain ?? 'peer.test',
+              groupNamespaceId: 0,
             },
           ],
         })
@@ -301,7 +302,7 @@ describe('thread-query FORBIDDEN convergence', () => {
       harness.relationshipMutations.writeGroupRelationshipIntentInTx,
     ).not.toHaveBeenCalled();
     expect(harness.tasks.enqueueTaskInTx).toHaveBeenCalledWith(harness.tx, {
-      scope: { type: 'GROUP', address: { account: '!group', domain: 'local' } },
+      scope: { type: 'GROUP', address: { account: '!group', profileNamespaceId: 0 } },
       taskType: 'REVOKE_FORBIDDEN_GROUP',
       actorUserId: 99,
       payload: {

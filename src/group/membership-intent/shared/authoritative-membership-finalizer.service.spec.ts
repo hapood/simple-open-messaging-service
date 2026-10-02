@@ -1,4 +1,5 @@
 import { account } from '../../../database/schema.js';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthoritativeMembershipFinalizerService } from './authoritative-membership-finalizer.service.js';
 
@@ -42,6 +43,13 @@ function harness(state: Record<string, unknown>) {
   const where = vi.fn().mockResolvedValue(undefined);
   const set = vi.fn(() => ({ where }));
   const tx = {
+    execute: vi.fn().mockImplementation(async (query) => {
+      const compiled = new PgDialect().sqlToQuery(query);
+      if (compiled.sql.includes('FROM "IdentityNamespace"')) {
+        return { rows: [{ domain: 'peer.test' }] };
+      }
+      return { rows: [] };
+    }),
     query: {
       account: { findFirst: vi.fn().mockResolvedValue({ account: 'alice' }) },
     },

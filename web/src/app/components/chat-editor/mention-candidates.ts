@@ -10,18 +10,10 @@
  * same-named account in a different namespace stays mentionable.
  */
 export function isSelfMentionMember(
-  self:
-    | { account: string; namespaceId?: number | null; domain?: string | null }
-    | null
-    | undefined,
-  member: { account: string; namespaceId?: number | null; domain?: string | null },
+  self: { account: string; namespaceId: number } | null | undefined,
+  member: { account: string; namespaceId: number },
 ): boolean {
   if (!self) return false;
-  if (self.account !== member.account) return false;
-  // Prefer namespaceId when both sides carry it; fall back to the legacy
-  // domain comparison otherwise.
-  if (self.namespaceId != null && member.namespaceId != null) {
-    return self.namespaceId === member.namespaceId;
-  }
-  return (member.domain || 'local') === (self.domain || 'local');
+  return self.account === member.account &&
+    self.namespaceId === member.namespaceId;
 }

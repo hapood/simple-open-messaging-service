@@ -17,7 +17,9 @@ export async function ensureMirrorGroupShellInTx(
 ): Promise<{ threadId: number }> {
   const account = normalizeAccount(group.account);
   const domain = group.domain.trim().toLowerCase();
-  await lockBusinessAccountsInTx(tx, [{ account, domain }]);
+  await lockBusinessAccountsInTx(tx, [
+    { account, profileNamespaceId: group.namespaceId },
+  ]);
   const existing = await readGroupState(
     tx,
     and(

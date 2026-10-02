@@ -68,7 +68,7 @@ export class DurableTaskQueueService {
       for (const field of ['targetUserId', 'memberUserId'] as const) {
         if (payload[field] === undefined) continue;
         const member = readAccountTarget(payload[field]);
-        if (typeof member !== 'number' && member.domain === 'local') {
+        if (typeof member !== 'number' && member.namespaceId === 0) {
           const local = await tx.query.account.findFirst({
             where: eq(account.account, member.account),
             columns: { id: true },
@@ -215,7 +215,7 @@ function resolveScope(scope: DurableTaskScope): {
       'task-scope',
       'USER_PAIR',
       ...ordered.map((address) => [
-        address.domain.toLowerCase(),
+        address.profileNamespaceId,
         address.account,
       ]),
     ]);
@@ -237,16 +237,16 @@ function compareAddresses(
   right: BusinessScopeAddress,
 ): number {
   return (
-    left.domain.toLowerCase().localeCompare(right.domain.toLowerCase()) ||
+    left.profileNamespaceId - right.profileNamespaceId ||
     left.account.localeCompare(right.account)
   );
 }
 
 function validateAddress(address: BusinessScopeAddress): void {
   if (
-    !address.domain ||
+    !Number.isInteger(address.profileNamespaceId) ||
+    address.profileNamespaceId < 0 ||
     !address.account ||
-    address.domain !== address.domain.trim() ||
     address.account !== address.account.trim()
   ) {
     throw new TypeError(
@@ -312,7 +312,7 @@ function mutationCoalescingKey(
     author,
     typeof memberUserId === 'number'
       ? memberUserId
-      : [memberUserId.namespaceId, memberUserId.domain, memberUserId.account],
+      : [memberUserId.namespaceId, memberUserId.account],
   ]);
 }
 

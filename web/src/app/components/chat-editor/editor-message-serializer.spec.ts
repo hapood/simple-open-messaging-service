@@ -13,7 +13,7 @@ describe('serializeEditorBlocks', () => {
           { type: 'text', text: '请 ' },
           {
             type: 'mention',
-            attrs: { id: 'zhangsan@example.com', label: '张三' },
+            attrs: { id: '12/zhangsan', label: '张三' },
           },
           { type: 'text', text: ' 通知 ' },
           {
@@ -24,7 +24,7 @@ describe('serializeEditorBlocks', () => {
       },
     ]);
     expect(stored).toBe(
-      '请 [@张三](somfp://user/zhangsan%40example.com) 通知 [@所有人](somfp://audience/all)',
+      '请 [@张三](somfp://user/12/zhangsan) 通知 [@所有人](somfp://audience/all)',
     );
     expect(toDisplayText(stored)).toBe('请 @张三 通知 @所有人');
   });
@@ -38,7 +38,7 @@ describe('serializeEditorBlocks', () => {
           start: 3,
           end: 6,
           kind: 'user',
-          id: 'zhangsan@example.com',
+          id: '12/zhangsan',
           label: '张三',
         },
         {
@@ -50,7 +50,7 @@ describe('serializeEditorBlocks', () => {
         },
       ]),
     ).toBe(
-      `😀 [@张三](somfp://user/zhangsan%40example.com) \\${literal} [@所有人](somfp://audience/all)`,
+      `😀 [@张三](somfp://user/12/zhangsan) \\${literal} [@所有人](somfp://audience/all)`,
     );
   });
 
@@ -61,7 +61,7 @@ describe('serializeEditorBlocks', () => {
           start: 0,
           end: 2,
           kind: 'user',
-          id: 'wrong@example.com',
+          id: '99/wrong',
           label: '张三',
         },
       ]),
@@ -69,7 +69,7 @@ describe('serializeEditorBlocks', () => {
   });
 
   it('escapes identical protocol syntax when it came from a text node', () => {
-    const literal = '[@张三](somfp://user/zhangsan%40example.com)';
+    const literal = '[@张三](somfp://user/12/zhangsan)';
     const stored = serializeEditorBlocks([
       {
         type: 'paragraph',

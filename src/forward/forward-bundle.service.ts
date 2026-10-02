@@ -1426,10 +1426,7 @@ function projectForwardContentToWire(
   content: string,
 ): string {
   if (!isFederatedContentType(contentType)) return content;
-  return toFederatedMessageContent(
-    contentType,
-    content,
-  );
+  return toFederatedMessageContent(contentType, content);
 }
 
 function projectForwardContentFromWire(
@@ -1440,11 +1437,7 @@ function projectForwardContentFromWire(
   if (!isFederatedContentType(contentType)) {
     throw new Error('invalid forward content type');
   }
-  return fromFederatedMessageContent(
-    contentType,
-    content,
-    assetBytes,
-  );
+  return fromFederatedMessageContent(contentType, content, assetBytes);
 }
 
 /**

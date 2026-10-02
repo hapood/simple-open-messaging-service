@@ -1,4 +1,5 @@
 import { enqueueDepartureFanoutsInTx } from './account-thread-fanout-task.js';
+import { wireContentDigest } from '../federation/federated-message-content.js';
 import {
   groupState as group,
   groupStateFields,
@@ -65,9 +66,7 @@ import {
   parseMessageEntities,
   toDisplayText,
 } from '../common/message-entity.js';
-import {
-  parseSomfpUserMentionEntity,
-} from '../common/account.js';
+import { parseSomfpUserMentionEntity } from '../common/account.js';
 import {
   parseTextMessageContent,
   stringifyTextMessageContent,
@@ -505,6 +504,8 @@ export class MessageService {
               clientMessageId,
               seq,
               originSeq: seq,
+              contentDigest: wireContentDigest(type, storedContent),
+              localState: 'CONFIRMED',
               updatedAt: new Date(),
             })
             .returning();
@@ -629,7 +630,6 @@ export class MessageService {
         event.type === SystemMessageType.GROUP_LEFT
           ? {
               account: event.member.account,
-              domain: event.member.domain,
               namespaceId: event.member.profileNamespaceId,
             }
           : undefined,
@@ -1135,6 +1135,8 @@ export class MessageService {
               clientMessageId,
               seq,
               originSeq: seq,
+              contentDigest: wireContentDigest(stage.contentType, content),
+              localState: 'CONFIRMED',
               updatedAt: new Date(),
             })
             .returning();

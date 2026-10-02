@@ -85,7 +85,6 @@ export class ContactCardShareService {
               threadId,
               target: {
                 account: target.account,
-                domain: target.domain,
                 namespaceId: target.namespaceId,
                 profileRev: chat.profileRev,
               },

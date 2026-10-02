@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { and, eq, isNull } from 'drizzle-orm';
-import { createHash } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { ContentType } from '../src/database/enums.js';
@@ -20,35 +19,31 @@ import {
   federatedContentDigests,
   fromFederatedMessageContent,
 } from '../src/federation/federated-message-content.js';
-import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { seedAcceptedRelationship } from './seed.js';
 import { truncateTablesForTest } from './support/truncate';
 
 const digestA = 'a'.repeat(64);
 const digestB = 'b'.repeat(64);
 
-function sha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
-}
-
 /**
- * Round-trip digest fidelity: for each federated content type, take the URL-free Federation v1 wire
+ * Round-trip fidelity: for each federated content type, take the URL-free Federation v1 wire
  * shape that peer A would send, run it through the inbound projection (`fromFederatedMessageContent`
  * — what the inbound pipeline stores), persist it, then read it back through the outbound feed
  * (`FederationMessageFeedService.query`, which calls `toFederatedMessageContent` internally).
  *
- * The content sha-256 of the original wire and the outbound wire must match: the message body must
- * survive the inbound→store→outbound round-trip byte-for-byte. A mismatch is body loss.
+ * The outbound wire content must equal the original wire content as a JSON object: the message
+ * body must survive the inbound→store→outbound round-trip semantically. The two wire forms are
+ * not byte-identical because the projection renames fields (`url`↔`digest`, `w`↔`width`, …),
+ * so the assertion compares parsed objects, not raw strings. A mismatch is body loss.
  *
- * Envelope fields that are per-hop by design (`createdAt` is the receiver's DB time, not A's) are
- * asserted separately so the per-message content digest stays the fidelity signal.
+ * Envelope fields that are per-hop by design (`createdAt` is the receiver's DB time, not A's)
+ * are asserted separately so the per-message content stays the fidelity signal.
  */
 describe('federation message round-trip digest fidelity', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   let service: FederationMessageFeedService;
   const peerDomain = 'roundtrip-peer.test';
-  const ourDomain = loadFederationConfig().domain;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -60,16 +55,18 @@ describe('federation message round-trip digest fidelity', () => {
   beforeEach(async () => {
     await truncateTablesForTest(
       database.pool,
-      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "IdentityNamespace" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "RelationshipIntent", "RelationshipPair", "ThreadAudience" RESTART IDENTITY CASCADE',
     );
+    await database.pool.query('DELETE FROM "IdentityNamespace" WHERE id <> 0');
     service = new FederationMessageFeedService(database);
   });
 
   afterAll(async () => {
     await truncateTablesForTest(
       database.pool,
-      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "IdentityNamespace" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "RelationshipIntent", "RelationshipPair", "ThreadAudience" RESTART IDENTITY CASCADE',
     );
+    await database.pool.query('DELETE FROM "IdentityNamespace" WHERE id <> 0');
     await mod.close();
   });
 
@@ -121,7 +118,6 @@ describe('federation message round-trip digest fidelity', () => {
     const localContent = fromFederatedMessageContent(
       contentType,
       originalWire,
-      ourDomain,
       assetBytes,
     );
     const [inserted] = await database.db
@@ -182,10 +178,8 @@ describe('federation message round-trip digest fidelity', () => {
     expect(page.messages).toHaveLength(1);
     const outbound = page.messages[0];
     return {
-      originalWire,
-      outboundWire: outbound.content,
-      originalDigest: sha256(originalWire),
-      outboundDigest: sha256(outbound.content),
+      original: JSON.parse(originalWire),
+      outbound: JSON.parse(outbound.content),
       createdAt: outbound.createdAt,
       originCreatedAt: outbound.originCreatedAt,
       originSeq: outbound.originSeq,
@@ -208,7 +202,7 @@ describe('federation message round-trip digest fidelity', () => {
       new Map([[digestA, 30]]),
       new Date('2026-01-01T00:00:00.000Z'),
     );
-    expect(r.outboundDigest).toBe(r.originalDigest);
+    expect(r.outbound).toEqual(r.original);
   });
 
   it('preserves a FILE wire body across the round-trip', async () => {
@@ -223,7 +217,7 @@ describe('federation message round-trip digest fidelity', () => {
       new Map([[digestA, 30]]),
       new Date('2026-01-01T00:00:00.000Z'),
     );
-    expect(r.outboundDigest).toBe(r.originalDigest);
+    expect(r.outbound).toEqual(r.original);
   });
 
   it('preserves a VIDEO wire body across the round-trip', async () => {
@@ -241,7 +235,7 @@ describe('federation message round-trip digest fidelity', () => {
       new Map([[digestA, 9999]]),
       new Date('2026-01-01T00:00:00.000Z'),
     );
-    expect(r.outboundDigest).toBe(r.originalDigest);
+    expect(r.outbound).toEqual(r.original);
   });
 
   it('preserves an AUDIO wire body across the round-trip', async () => {
@@ -257,13 +251,19 @@ describe('federation message round-trip digest fidelity', () => {
       new Map([[digestA, 5000]]),
       new Date('2026-01-01T00:00:00.000Z'),
     );
-    expect(r.outboundDigest).toBe(r.originalDigest);
+    expect(r.outbound).toEqual(r.original);
   });
 
   it('preserves a GALLERY wire body across the round-trip', async () => {
     const wire = JSON.stringify({
       items: [
-        { kind: 'IMAGE', digest: digestA, name: 'a.png', width: 10, height: 20 },
+        {
+          kind: 'IMAGE',
+          digest: digestA,
+          name: 'a.png',
+          width: 10,
+          height: 20,
+        },
         {
           kind: 'VIDEO',
           digest: digestB,
@@ -284,7 +284,7 @@ describe('federation message round-trip digest fidelity', () => {
       ]),
       new Date('2026-01-01T00:00:00.000Z'),
     );
-    expect(r.outboundDigest).toBe(r.originalDigest);
+    expect(r.outbound).toEqual(r.original);
   });
 
   it('preserves a LINK wire body (with optional artwork digests) across the round-trip', async () => {
@@ -305,12 +305,14 @@ describe('federation message round-trip digest fidelity', () => {
       ]),
       new Date('2026-01-01T00:00:00.000Z'),
     );
-    expect(r.outboundDigest).toBe(r.originalDigest);
+    expect(r.outbound).toEqual(r.original);
   });
 
-  it('preserves a PURE_TEXT wire body that mentions the peer domain (no local placeholder)', async () => {
+  it('preserves a PURE_TEXT wire body with a namespace/user mention across the round-trip', async () => {
+    // v1 user entity is (namespaceId, account); the mention survives unchanged because the stored
+    // form and the wire form are the same namespace/account token.
     const wire = JSON.stringify({
-      text: `hi [@Bob](somfp://user/bob%40${peerDomain})`,
+      text: 'hello [@Alice](somfp://user/0/alice)',
     });
     const r = await roundtrip(
       ContentType.PURE_TEXT,
@@ -318,26 +320,11 @@ describe('federation message round-trip digest fidelity', () => {
       new Map(),
       new Date('2026-01-01T00:00:00.000Z'),
     );
-    expect(r.outboundDigest).toBe(r.originalDigest);
+    expect(r.outbound).toEqual(r.original);
+    expect(r.outbound).toEqual(r.original);
   });
 
-  it('preserves a PURE_TEXT wire body that mentions OUR domain (local placeholder round-trip)', async () => {
-    // A sends a message mentioning one of OUR users. Inbound maps @user@<ourDomain> → @user@local
-    // (stored). Outbound must map @user@local → @user@<ourDomain> back. The content digest must match.
-    const wire = JSON.stringify({
-      text: `hi [@Alice](somfp://user/alice%40${ourDomain})`,
-    });
-    const r = await roundtrip(
-      ContentType.PURE_TEXT,
-      wire,
-      new Map(),
-      new Date('2026-01-01T00:00:00.000Z'),
-    );
-    expect(r.outboundDigest).toBe(r.originalDigest);
-    expect(JSON.parse(r.outboundWire)).toEqual(JSON.parse(wire));
-  });
-
-  it('preserves a CONTACT_CARD wire body whose domain is the peer domain', async () => {
+  it('preserves a CONTACT_CARD wire body whose domain is a real SOMFP domain across the round-trip', async () => {
     const wire = JSON.stringify({
       account: 'carol',
       domain: peerDomain,
@@ -351,25 +338,8 @@ describe('federation message round-trip digest fidelity', () => {
       new Map([[digestA, 200]]),
       new Date('2026-01-01T00:00:00.000Z'),
     );
-    expect(r.outboundDigest).toBe(r.originalDigest);
-  });
-
-  it('preserves a CONTACT_CARD wire body whose domain is OUR domain (local placeholder round-trip)', async () => {
-    const wire = JSON.stringify({
-      account: 'carol',
-      domain: ourDomain,
-      displayName: 'Carol',
-      bio: 'hi',
-      avatarDigest: digestA,
-    });
-    const r = await roundtrip(
-      ContentType.CONTACT_CARD,
-      wire,
-      new Map([[digestA, 200]]),
-      new Date('2026-01-01T00:00:00.000Z'),
-    );
-    expect(r.outboundDigest).toBe(r.originalDigest);
-    expect(JSON.parse(r.outboundWire)).toEqual(JSON.parse(wire));
+    expect(r.outbound).toEqual(r.original);
+    expect(r.outbound).toEqual(r.original);
   });
 
   // --- Envelope: per-hop fields that are NOT part of the content digest. ---
@@ -377,7 +347,12 @@ describe('federation message round-trip digest fidelity', () => {
   it('replaces createdAt with the receiver DB time but preserves originCreatedAt for a processing receipt', async () => {
     const originTime = new Date('2026-01-01T00:00:00.000Z');
     const wire = JSON.stringify({ text: 'hello' });
-    const r = await roundtrip(ContentType.PURE_TEXT, wire, new Map(), originTime);
+    const r = await roundtrip(
+      ContentType.PURE_TEXT,
+      wire,
+      new Map(),
+      originTime,
+    );
     // createdAt is the receiver's DB insert time (store-and-forward stamps each hop), NOT A's time.
     expect(r.createdAt).not.toBe(originTime.getTime());
     // A processing receipt (re-serving to the origin publisher) carries the origin coordinates back,

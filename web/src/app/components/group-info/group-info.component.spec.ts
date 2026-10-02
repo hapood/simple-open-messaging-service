@@ -31,7 +31,7 @@ function harness() {
 }
 
 const member = (name: string) =>
-  ({ identityKey: 'alice@local', name }) as ResolvedMemberProfile;
+  ({ identityKey: '[0,"local","alice"]', name }) as ResolvedMemberProfile;
 
 describe('GroupInfoComponent roster query ordering', () => {
   it('does not query the member roster after membership becomes read-only', async () => {
@@ -77,14 +77,14 @@ describe('GroupInfoComponent roster query ordering', () => {
 
 describe('GroupInfoComponent privileged-role action gating', () => {
   const localMember = {
-    identityKey: 'bob@local',
+    identityKey: '[0,"local","bob"]',
     name: 'Bob',
     account: 'bob',
     domain: 'local',
     role: 'MEMBER',
   } as ResolvedMemberProfile;
   const federatedMember = {
-    identityKey: 'charlie@bravo.test',
+    identityKey: '[12,"bravo.test","charlie"]',
     name: 'Charlie',
     account: 'charlie',
     domain: 'bravo.test',

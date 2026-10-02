@@ -7,7 +7,7 @@ import {
 
 describe('account targets', () => {
   it('accepts a foreign address without querying or materializing an account', async () => {
-    const identity = { account: 'alice', domain: 'alpha.test', namespaceId: 7 };
+    const identity = { account: 'alice', namespaceId: 7 };
     expect(await accountAddressInTx({} as never, identity)).toEqual(identity);
     expect(await localAccountsForTargetsInTx({} as never, [identity])).toEqual(
       [],
@@ -23,7 +23,6 @@ describe('account targets', () => {
     findFirst.mockResolvedValue({ account: 'bob' });
     expect(await accountAddressInTx(tx as never, 8)).toEqual({
       account: 'bob',
-      domain: 'local',
       namespaceId: 0,
     });
   });
@@ -34,8 +33,9 @@ describe('account targets', () => {
     1.5,
     null,
     {},
-    { account: 'alice', domain: 'local', namespaceId: 7 },
-    { account: 'alice', domain: 'alpha.test', namespaceId: 0 },
+    { account: 'alice', namespaceId: -1 },
+    { account: '', namespaceId: 7 },
+    { account: 'alice', namespaceId: 1.5 },
   ])('rejects invalid persisted command coordinates: %j', (value) => {
     expect(() => readAccountTarget(value)).toThrow();
   });
@@ -44,12 +44,10 @@ describe('account targets', () => {
     expect(
       readAccountTarget({
         account: 'alice',
-        domain: 'alpha.test',
         namespaceId: 7,
       }),
     ).toEqual({
       account: 'alice',
-      domain: 'alpha.test',
       namespaceId: 7,
     });
   });

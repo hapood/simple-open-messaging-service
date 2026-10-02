@@ -71,7 +71,7 @@ export class AuthoritativeMembershipFinalizerService {
 
     const metaEndId = state.metaEndId ?? 0;
     let audienceChanged: boolean;
-    if (member.domain === 'local') {
+    if (member.namespaceId === 0) {
       const [localAccount] = await localAccountsForTargetsInTx(tx, [member]);
       if (!localAccount)
         throw new Error('local group member account is missing');
@@ -97,9 +97,20 @@ export class AuthoritativeMembershipFinalizerService {
       // REQUESTED may have already opened query authorization without publishing a head.
       // Mutual activation must therefore refresh the compacted content head even when the
       // audience insert is an idempotent no-op.
+      const memberDomain =
+        member.namespaceId === 0
+          ? 'local'
+          : (
+              await tx.execute<{ domain: string }>(sql`
+                SELECT domain FROM "IdentityNamespace"
+                WHERE id = ${member.namespaceId} LIMIT 1
+              `)
+            ).rows[0]?.domain;
+      if (memberDomain === undefined)
+        throw new Error('member namespace does not exist');
       await this.threadContentHeads.projectCurrentInTx(
         tx,
-        member.domain,
+        memberDomain,
         member.namespaceId,
         params.threadId,
       );

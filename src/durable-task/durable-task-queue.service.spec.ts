@@ -106,7 +106,7 @@ describe('DurableTaskQueueService', () => {
       harness.service.enqueueTask({
         scope: {
           type: 'GROUP',
-          address: { account: '!group', domain: 'local' },
+          address: { account: '!group', profileNamespaceId: 0 },
         },
         taskType: 'FORCE_REVOKE_GROUP_MEMBER',
         actorUserId: 7,
@@ -122,11 +122,11 @@ describe('DurableTaskQueueService', () => {
       insertedTaskId: 9n,
     });
     await harness.service.enqueueTask({
-      scope: { type: 'GROUP', address: { account: '!group', domain: 'local' } },
+      scope: { type: 'GROUP', address: { account: '!group', profileNamespaceId: 0 } },
       taskType: 'FORCE_REVOKE_GROUP_MEMBER',
       payload: {
         threadId: 10,
-        memberUserId: { account: 'alice', domain: 'local', namespaceId: 0 },
+        memberUserId: { account: 'alice', profileNamespaceId: 0, namespaceId: 0 },
       },
     });
     expect(harness.values).toHaveBeenCalledWith(
@@ -146,8 +146,8 @@ describe('DurableTaskQueueService', () => {
         scope: {
           type: 'USER_PAIR',
           endpoints: [
-            { domain: 'B.EXAMPLE', account: 'bob' },
-            { domain: 'a.example', account: 'alice' },
+            { profileNamespaceId: 2, account: 'bob' },
+            { profileNamespaceId: 1, account: 'alice' },
           ],
         },
         taskType: 'SEND_FRIEND_REQUEST',
@@ -161,8 +161,8 @@ describe('DurableTaskQueueService', () => {
         scope: {
           type: 'USER_PAIR',
           endpoints: [
-            { domain: 'A.EXAMPLE', account: 'alice' },
-            { domain: 'b.example', account: 'bob' },
+            { profileNamespaceId: 1, account: 'alice' },
+            { profileNamespaceId: 2, account: 'bob' },
           ],
         },
         taskType: 'SEND_FRIEND_REQUEST',
@@ -180,8 +180,8 @@ describe('DurableTaskQueueService', () => {
       scopeKey: JSON.stringify([
         'task-scope',
         'USER_PAIR',
-        ['a.example', 'alice'],
-        ['b.example', 'bob'],
+        [1, 'alice'],
+        [2, 'bob'],
       ]),
       taskType: 'SEND_FRIEND_REQUEST',
       actorUserId: 7,
@@ -198,7 +198,7 @@ describe('DurableTaskQueueService', () => {
     await harness.service.enqueueTask({
       scope: {
         type: 'GROUP',
-        address: { domain: 'CHAT.EXAMPLE', account: 'group-1' },
+        address: { profileNamespaceId: 3, account: 'group-1' },
       },
       taskType: 'DISBAND_GROUP',
       payload: { threadId: 10 },
@@ -211,7 +211,7 @@ describe('DurableTaskQueueService', () => {
         scopeKey: JSON.stringify([
           'business-scope',
           'ACCOUNT',
-          'chat.example',
+          3,
           'group-1',
         ]),
         actorUserId: null,
@@ -236,7 +236,7 @@ describe('DurableTaskQueueService', () => {
     const input = {
       scope: {
         type: 'GROUP' as const,
-        address: { domain: 'chat.example', account: 'group-1' },
+        address: { profileNamespaceId: 3, account: 'group-1' },
       },
       taskType: 'DISBAND_GROUP',
       actorUserId: 7,
@@ -259,7 +259,7 @@ describe('DurableTaskQueueService', () => {
       invalidHarness.service.enqueueTask({
         scope: {
           type: 'GROUP',
-          address: { domain: 'chat.example', account: 'group-1' },
+          address: { profileNamespaceId: 3, account: 'group-1' },
         },
         taskType: 'DISBAND_GROUP',
         payload: cyclic,
@@ -271,7 +271,7 @@ describe('DurableTaskQueueService', () => {
       emptyHarness.service.enqueueTask({
         scope: {
           type: 'GROUP',
-          address: { domain: 'chat.example', account: 'group-1' },
+          address: { profileNamespaceId: 3, account: 'group-1' },
         },
         taskType: 'DISBAND_GROUP',
         payload: { threadId: 10 },

@@ -31,7 +31,7 @@ describe('content parent lock ordering', () => {
                 type,
                 groupId: type === 'GROUP' ? 8 : null,
                 account: '!group',
-                domain: 'peer.test',
+                namespaceId: 5,
               },
             ],
           };
@@ -41,9 +41,9 @@ describe('content parent lock ordering', () => {
               {
                 id: '9',
                 endpointAAccount: 'z',
-                endpointADomain: 'local',
+                endpointANamespaceId: 0,
                 endpointBAccount: 'a',
-                endpointBDomain: 'local',
+                endpointBNamespaceId: 0,
               },
             ],
           };
@@ -68,8 +68,8 @@ describe('content parent lock ordering', () => {
       expect(advisory).toHaveLength(type === 'GROUP' ? 1 : 2);
       if (type === 'P2P')
         expect(advisory.map((query) => query.params[0])).toEqual([
-          '["business-scope","ACCOUNT","local","a"]',
-          '["business-scope","ACCOUNT","local","z"]',
+          '["business-scope","ACCOUNT",0,"a"]',
+          '["business-scope","ACCOUNT",0,"z"]',
         ]);
       const advisoryIndex = queries.findLastIndex((query) =>
         query.sql.includes('pg_advisory_xact_lock'),

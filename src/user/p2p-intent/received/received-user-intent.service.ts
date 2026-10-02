@@ -211,7 +211,7 @@ export class ReceivedUserIntentService {
     // state this command mutates), then the Pair scope, then Thread Content,
     // then the implicit allocator locks.
     await lockBusinessAccountsInTx(tx, [
-      { account: localUser.account, domain: 'local' },
+      { account: localUser.account, profileNamespaceId: 0 },
     ]);
     await lockRelationshipPairsInTx(tx, [
       {

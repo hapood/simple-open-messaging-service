@@ -148,13 +148,20 @@ export class GroupRosterRoleService {
     // One pre-lock locator: the group address names the only business scope.
     // It authorizes nothing; every mutable state is re-read under the locks.
     const located = (
-      await tx.execute<{ groupAccount: string; groupDomain: string }>(
+      await tx.execute<{
+        groupAccount: string;
+        groupDomain: string;
+        groupNamespaceId: number;
+      }>(
         groupRosterRoleLocatorSql({ threadId: params.threadId }),
       )
     ).rows[0];
     if (!located) return { outcome: notFound() };
     await lockBusinessAccountsInTx(tx, [
-      { account: located.groupAccount, domain: located.groupDomain },
+      {
+        account: located.groupAccount,
+        profileNamespaceId: located.groupNamespaceId,
+      },
     ]);
     const threadLock = await requireGroupThreadContentLockUnderGroupInTx(
       tx,

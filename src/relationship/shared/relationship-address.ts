@@ -1,9 +1,9 @@
 import { sql, type SQLWrapper } from 'drizzle-orm';
-import type { NamespacedAddress } from '../../common/client-identity.js';
+import type { AccountSubjectAddress } from '../../user/account-address.js';
 import { relationshipEndpointMatchesUserSql } from './relationship-authorization.js';
 
-export function addressRelation(address: NamespacedAddress) {
-  return sql`(SELECT ${address.account}::text AS account, ${address.domain}::text AS domain,
+export function addressRelation(address: AccountSubjectAddress) {
+  return sql`(SELECT ${address.account}::text AS account,
     ${address.namespaceId}::integer AS "namespaceId")`;
 }
 

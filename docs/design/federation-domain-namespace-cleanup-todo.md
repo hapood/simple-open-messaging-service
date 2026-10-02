@@ -8,10 +8,20 @@ listed verification before moving to the next section.
 
 Identity-coordinate migration is complete. Domain is no longer part of message
 author, profile, group membership, peer-state-feed subject, or client-state-feed
-subject identity. What remains is the **base migration rewrite** (Section 10)
-and **final verification** (Section 13); the incremental migrations
-(`0010_namespace_identity_cutover.sql`) already carry the cutover for deployed
-databases.
+subject identity. The base migration has been rewritten (Section 10) and all
+incremental migrations consolidated into `0000_base.sql`.
+
+The v1 wire user-mention format is now `somfp://user/<namespaceId>/<account>`
+(scheme 2b). Federation inbound/outbound passes message content through
+unchanged — no namespace or domain conversion at the federation boundary.
+CONTACT_CARD's `ContactCardTargetDto` no longer carries `domain`; the server
+resolves the wire `domain` from `IdentityNamespace` by `namespaceId`. Legacy
+compatibility code (`parseSomfpUserAddress`, `allowLocalDomain`, domain
+fallbacks in `isSelfMentionMember`) has been removed.
+
+What remains is **PostgreSQL-backed e2e** (blocked by a pre-existing NestJS DI
+issue unrelated to the migration) and the broader `domain === 'local'` →
+`namespaceId === 0` locality-check cleanup across the codebase.
 
 ## Ground Rules
 
@@ -330,10 +340,60 @@ These were found by broad repository searches and are not fully covered by the s
   - [x] `rg -n "toProfileWireDomain|profileDomainForNamespace|key\.domain|target\.domain|wake\.key\.domain" src shared web/src src-tauri/src` — no identity-keying uses remain; hits are transport/locality/binding only.
   - [x] `rg -n "subjectDomain" src/federation src/client-state-feed src/group src/user web/src spec docs` — only `federation.service.ts` expiry-sweep SQL derivation (`sns.domain AS "subjectDomain"`, co-extracted with `subjectNamespaceId` for the transport-domain component of `toClientIdentity`) and this document remain.
 
-## 13. Final Verification
+## 13. Wire Mention Format & Federation Pass-Through (Scheme 2b)
+
+Goal: replace the user-mention wire format and remove all namespace/domain
+conversion at the federation boundary. The protocol is unreleased, so no
+backwards compatibility is retained.
+
+- [x] `spec/v1/message/text.md`: grammar changed to `somfp-user = "somfp://user/" namespace-id "/" user-account`; examples updated.
+- [x] `spec/v1/schema/vectors/valid.json`: mention vector updated to `somfp://user/12/bob`.
+- [x] `src/common/message-entity.ts`: `serializeUserMention(label, namespaceId, account)`; `parseEntityAt` parses two-segment path `namespaceId/account`.
+- [x] `src/common/account.ts`: added `parseSomfpUserMentionEntity`; removed dead `parseSomfpUserAddress`.
+- [x] `src/common/client-identity.ts`: removed unused `_localDomain` parameter from `toClientIdentity`.
+- [x] `src/federation/federated-message-content.ts`: removed `localDomain` params from `toFederatedMessageContent`/`fromFederatedMessageContent`; removed `domainMapping` from `projectTextContent`; CONTACT_CARD passes through unchanged; removed `allowLocalDomain` switch.
+- [x] `src/controller/message.controller.ts`: mention canonicalization uses `parseSomfpUserMentionEntity` + `serializeUserMention(label, namespaceId, account)`; `resolveActiveMember` takes `{ account, namespaceId }`.
+- [x] `src/message/message.service.ts`: mention validation uses `parseSomfpUserMentionEntity`.
+- [x] `src/message/thread-feed-head.writer.ts`: `mentionsAccount` compares account segment only; removed `ownDomain`.
+- [x] `src/group/group.service.ts`: `resolveActiveMember` identity is `{ account, namespaceId }`.
+- [x] `src/group/meta/current-group-roster.ts`: `readCurrentGroupMemberByAddressInTx` identity is `{ account, namespaceId }`.
+- [x] Frontend `web/src/app/lib/message-entity.ts`: `serializeUserMention(label, namespaceId, account)`; `serializeUserMentionFromChipId`; `toRenderMessageEntities` compares account segments.
+- [x] Frontend `web/src/app/components/chat-editor/mention-candidates.ts`: `isSelfMentionMember` uses `namespaceId` only; removed domain fallback.
+- [x] Frontend mention chip id is `namespaceId/account`; specs updated.
+
+## 14. CONTACT_CARD Client No-Domain
+
+Goal: the client sends only `(account, namespaceId, profileRev)` for a contact
+card target; the server resolves the wire `domain` from `IdentityNamespace`.
+
+- [x] `src/dto/message.dto.ts`: `ContactCardTargetDto` removed `domain`.
+- [x] `src/message/contact-card/contact-card-target.ts`: locality via `namespaceId === 0`; removed `domain` validation.
+- [x] `src/group/group.service.ts`: `findVisibleGroupByAddress` queries by `namespaceId` only.
+- [x] `src/account-thread-state/...`: `findP2PFriendByAddress` queries by `namespaceId`.
+- [x] `src/message/contact-card/contact-card-profile.service.ts`: `findProfile` signature removed `domain`.
+- [x] `src/controller/message.controller.ts`: resolves wire `domain` via `federation.activePeerDomainForNamespace(namespaceId)`.
+- [x] Frontend `web/.../model.ts`: added `ContactCardSendTarget` (no `domain`).
+- [x] Frontend `web/.../message.service.ts`: `sendContactCard` sends only `account, namespaceId, profileRev`.
+- [x] Frontend `web/.../contact-card-share.service.ts`, `message-thread-adapter.ts`: removed `domain` from target.
+- [x] Specs updated (`message-contact-card.spec.ts`, `playground-*.spec.ts`).
+
+## 15. Remaining: Locality-Check Cleanup
+
+Goal: replace `domain === 'local'` locality checks with `namespaceId === 0`
+across the codebase (~60 sites). `domain` should be used only for
+transport/routing/display, never for identity-locality decisions.
+
+Also pending: remove the `messageThread.groupDomain` column (currently
+participates in a unique index and CHECK constraints; replacement is
+`authorityNamespaceId`).
+
+- [ ] Replace `domain === 'local'` / `domain !== 'local'` with `namespaceId === 0` / `namespaceId !== 0` in quota, user, federation, group, message, controller, relationship, durable-task domains.
+- [ ] Remove `messageThread.groupDomain` column from schema + base migration; rebuild unique index on `(groupAccount, authorityNamespaceId)`.
+
+## 16. Final Verification
 
 - [x] `npm run build:be`
-- [x] `npx vitest run shared/ src/` (1740 passed)
+- [x] `npx vitest run shared/ src/` (1736 passed)
 - [x] `cd web && npm run build`
 - [x] `cd admin-web && npm test` (57 passed)
 - [x] `cd admin-web && npm run build`

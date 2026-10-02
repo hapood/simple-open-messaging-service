@@ -297,7 +297,7 @@ export class AccountThreadStateService {
   /** Resolve an existing direct friend, never an identity copied from another group's authority. */
   async findP2PFriendByAddress(
     userId: number,
-    address: { account: string; domain: string },
+    address: { account: string; namespaceId: number },
   ) {
     const result = await this.database.db.execute<{
       account: string;
@@ -311,11 +311,10 @@ export class AccountThreadStateService {
       JOIN ${p2pPeerRelation(sql`pair`, sql`actor`)} friend ON true
       JOIN "MessageThread" thread ON thread.id = pair."threadId" AND thread.type = 'P2P'
       WHERE pair.kind = 'P2P' AND pair.active = true
-        AND friend.account = ${address.account} AND friend.domain = ${address.domain}
-        AND (friend.domain = 'local' OR EXISTS (
+        AND friend.account = ${address.account} AND friend."namespaceId" = ${address.namespaceId}
+        AND (friend."namespaceId" = 0 OR EXISTS (
           SELECT 1 FROM "IdentityNamespace" ns
           WHERE ns.id = friend."namespaceId"
-            AND ns.domain = friend.domain
             AND ns.active = true
             AND ns."retiredAt" IS NULL
         ))

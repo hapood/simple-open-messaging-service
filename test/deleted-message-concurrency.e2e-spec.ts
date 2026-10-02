@@ -428,7 +428,7 @@ describe('federated message deletion transaction ordering', () => {
         .values({
           threadId,
           creatorAccount: 'bob',
-            profileNamespaceId: namespaceId,
+          profileNamespaceId: namespaceId,
           originSeq: 7,
           publisherNamespaceId: namespaceId,
           seq,
@@ -733,7 +733,7 @@ describe('federated message deletion transaction ordering', () => {
           threadId,
           seq: 1,
           creatorAccount: author.account,
-            contentType: 'PURE_TEXT',
+          contentType: 'PURE_TEXT',
           content: '{"text":"withdraw concurrently"}',
           updatedAt: new Date(),
         })

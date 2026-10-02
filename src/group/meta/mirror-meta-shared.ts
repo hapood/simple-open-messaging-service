@@ -111,7 +111,7 @@ export async function lockMirrorGroupInTx(
   group: MirrorGroupAddress,
 ): Promise<void> {
   await lockBusinessAccountsInTx(tx, [
-    { account: normalizeAccount(group.account), domain: group.domain },
+    { account: normalizeAccount(group.account), profileNamespaceId: group.publisherNamespaceId },
   ]);
 }
 

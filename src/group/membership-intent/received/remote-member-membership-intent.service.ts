@@ -174,7 +174,7 @@ export class RemoteMemberMembershipIntentService {
     // The group ACCOUNT scope at the authority (local) domain, before the
     // Pair scope, once per transaction.
     await lockBusinessAccountsInTx(tx, [
-      { account: group.groupAccount, domain: group.groupDomain },
+      { account: group.groupAccount, profileNamespaceId: 0 },
     ]);
     await lockRelationshipPairsInTx(tx, [
       {

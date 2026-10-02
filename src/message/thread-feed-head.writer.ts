@@ -9,19 +9,13 @@ import { THREAD_PREVIEW_LIMIT } from './thread-preview-limit.js';
  * `somfp://user/<namespaceId>/<account>`. The projection compares the
  * account segment; `namespaceId: 0` denotes a subject local to the publishing
  * server, a positive value a foreign subject's namespace. */
-function userMentionTargetsAccount(
-  entityId: string,
-  account: string,
-): boolean {
+function userMentionTargetsAccount(entityId: string, account: string): boolean {
   const parsed = parseSomfpUserMentionEntity(entityId);
   if (!parsed) return false;
   return parsed.account.toLowerCase() === account.toLowerCase();
 }
 
-export function mentionsAccount(
-  content: string,
-  account: string,
-): boolean {
+export function mentionsAccount(content: string, account: string): boolean {
   const text = parseTextMessageContent(content)?.text ?? '';
   return parseMessageEntities(text).some(
     (entity) =>

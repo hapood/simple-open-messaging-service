@@ -60,6 +60,14 @@ describe('relationship client profile references', () => {
       defaultProfileRev: 99,
     };
     const tx = {
+      execute: vi.fn().mockImplementation(async (query) => {
+        const compiled = new PgDialect().sqlToQuery(query);
+        if (compiled.sql.includes('FROM "IdentityNamespace"')) {
+          const id = compiled.params[0] as number;
+          return { rows: [{ domain: id === 0 ? 'local' : 'remote.test' }] };
+        }
+        return { rows: [] };
+      }),
       select: localRecipientQuery([local]),
       query: {
         account: {
@@ -346,6 +354,13 @@ describe('RelationshipService local relationship client-state projection', () =>
       } as never,
     );
     const tx = {
+      execute: vi.fn().mockImplementation(async (query) => {
+        const compiled = new PgDialect().sqlToQuery(query);
+        if (compiled.sql.includes('FROM "IdentityNamespace"')) {
+          return { rows: [{ domain: 'peer.test' }] };
+        }
+        return { rows: [] };
+      }),
       select: localRecipientQuery([
         {
           id: 1,

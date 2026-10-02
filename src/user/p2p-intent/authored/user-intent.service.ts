@@ -349,9 +349,9 @@ export class UserIntentService {
     // The command owns only the local actor's account state. Both endpoints'
     // intent and relationship-derived projections are protected by the Pair.
     await lockBusinessAccountsInTx(tx, [
-      { account: actor.account, domain: 'local' },
+      { account: actor.account, profileNamespaceId: 0 },
       ...(target.domain === 'local'
-        ? [{ account: target.account, domain: 'local' }]
+        ? [{ account: target.account, profileNamespaceId: 0 }]
         : []),
     ]);
     await lockRelationshipPairsInTx(tx, [

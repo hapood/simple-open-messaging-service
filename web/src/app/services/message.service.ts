@@ -22,7 +22,7 @@ import {
   Message,
   MessageQueryRow,
   StandardResponse,
-  type ContactCardTarget,
+  type ContactCardSendTarget,
 } from './model';
 import { apiPrefix } from './constants';
 import { isTauri, listenEvent, tauriInvoke } from './runtime';
@@ -131,12 +131,17 @@ export class MsgService {
 
   sendContactCard(params: {
     threadId: number;
-    target: ContactCardTarget;
+    target: ContactCardSendTarget;
     clientMessageId: string;
   }) {
+    const { account, namespaceId, profileRev } = params.target;
     return this.http.post<StandardResponse<Message>>(
       `${apiPrefix()}/send-contact-card`,
-      params,
+      {
+        threadId: params.threadId,
+        target: { account, namespaceId, profileRev },
+        clientMessageId: params.clientMessageId,
+      },
       { context: new HttpContext().set(REPLAY_SAFE, true) },
     );
   }

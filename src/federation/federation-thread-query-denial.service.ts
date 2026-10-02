@@ -56,9 +56,11 @@ export class FederationThreadQueryDenialService {
         const groupLocations = await tx.execute<{
           groupAccount: string;
           groupDomain: string;
+          groupNamespaceId: number;
         }>(sql`
           SELECT group_profile.account AS "groupAccount",
-            group_profile.domain AS "groupDomain"
+            group_profile.domain AS "groupDomain",
+            group_profile.namespaceId AS "groupNamespaceId"
           FROM "MessageThread" thread
           JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
           WHERE thread.id = ${threadId}
@@ -84,7 +86,7 @@ export class FederationThreadQueryDenialService {
 
         await this.relationshipIntents.lockGroupBusinessScopeInTx(tx, {
           account: groupLocation.groupAccount,
-          domain: groupLocation.groupDomain,
+          profileNamespaceId: groupLocation.groupNamespaceId,
         });
         const lockedGroups = await tx.execute<{
           authorizationEpoch: number;
@@ -151,7 +153,7 @@ export class FederationThreadQueryDenialService {
             type: 'GROUP',
             address: {
               account: groupLocation.groupAccount,
-              domain: groupLocation.groupDomain,
+              profileNamespaceId: groupLocation.groupNamespaceId,
             },
           },
           taskType: DurableTaskType.REVOKE_FORBIDDEN_GROUP,

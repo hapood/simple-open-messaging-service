@@ -23,7 +23,7 @@ export async function admitGroupMembershipProjectionFanoutInTx(
 ): Promise<void> {
   const scopeKey = businessAccountScopeKey({
     account: input.groupAccount,
-    domain: 'local',
+    profileNamespaceId: 0,
   });
   const coalescingKey = groupMembershipProjectionFanoutKey(input.threadId);
   const pending = await tx

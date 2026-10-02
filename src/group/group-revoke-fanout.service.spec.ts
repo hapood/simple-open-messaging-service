@@ -12,14 +12,14 @@ vi.mock('./shared/group-state.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./shared/group-state.js')>()),
   readGroupState: vi
     .fn()
-    .mockResolvedValue({ account: '!group', domain: 'local' }),
+    .mockResolvedValue({ account: '!group', namespaceId: 0 }),
 }));
 
 const parent = {
   id: 10n,
   kind: 'MUTATION',
   scopeType: 'GROUP',
-  scopeKey: businessAccountScopeKey({ account: '!group', domain: 'local' }),
+  scopeKey: businessAccountScopeKey({ account: '!group', profileNamespaceId: 0 }),
   taskType: 'DISBAND_GROUP',
   actorUserId: 7,
   payload: { threadId: 12 },
@@ -115,12 +115,12 @@ describe('GroupRevokeFanoutService', () => {
     await expect(service.insertNextMember(parent, 12)).resolves.toBe(true);
 
     expect(childValues).toHaveBeenCalledWith(tx, {
-      scope: { type: 'GROUP', address: { account: '!group', domain: 'local' } },
+      scope: { type: 'GROUP', address: { account: '!group', profileNamespaceId: 0 } },
       taskType: 'FORCE_REVOKE_GROUP_MEMBER',
       actorUserId: 7,
       payload: {
         threadId: 12,
-        memberUserId: { account: 'member', domain: 'local', namespaceId: 0 },
+        memberUserId: { account: 'member', namespaceId: 0 },
       },
     });
     expect(tx.insert).not.toHaveBeenCalled();

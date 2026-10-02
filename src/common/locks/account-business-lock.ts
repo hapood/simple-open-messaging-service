@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 
 export interface BusinessScopeAddress {
   account: string;
-  domain: string;
+  profileNamespaceId: number;
 }
 
 /** Canonical key for mutable state owned by one acting account. Referencing an
@@ -12,7 +12,7 @@ export function businessAccountScopeKey(address: BusinessScopeAddress): string {
   return JSON.stringify([
     'business-scope',
     'ACCOUNT',
-    address.domain.toLowerCase(),
+    address.profileNamespaceId,
     address.account,
   ]);
 }

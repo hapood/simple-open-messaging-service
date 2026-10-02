@@ -69,14 +69,18 @@ export function readQueryDeniedGroupMembershipRevocationTask(
     domain: groupDomain,
     namespaceId: groupNamespaceId as number,
   };
-  if (businessAccountScopeKey(group) !== task.scopeKey)
+  if (
+    businessAccountScopeKey({
+      account: groupAccount,
+      profileNamespaceId: groupNamespaceId as number,
+    }) !== task.scopeKey
+  )
     throw new Error('forced revoke belongs to another group');
   if (task.payload.direction === 'GROUP') {
     if (
       group.domain !== 'local' ||
       group.namespaceId !== 0 ||
       typeof memberUserId === 'number' ||
-      memberUserId.domain !== denial.peerDomain ||
       memberUserId.namespaceId !== denial.namespaceId
     )
       throw new Error('invalid denied group direction');

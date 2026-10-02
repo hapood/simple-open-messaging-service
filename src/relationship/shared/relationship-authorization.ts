@@ -18,9 +18,7 @@ export const relationshipEndpointMatchesUserSql = (
   const prefix = side === 'A' ? 'endpointA' : 'endpointB';
   return sql`${pairAlias}.${sql.identifier(`${prefix}Type`)} = 'USER'
     AND ${pairAlias}.${sql.identifier(`${prefix}Account`)} = ${identityAlias}.account
-    AND ${pairAlias}.${sql.identifier(`${prefix}NamespaceId`)} = CASE
-      WHEN ${identityAlias}.domain = 'local' THEN 0
-      ELSE ${identityAlias}."namespaceId" END`;
+    AND ${pairAlias}.${sql.identifier(`${prefix}NamespaceId`)} = ${identityAlias}."namespaceId"`;
 };
 
 const pairNamespaceMatchesUsersSql = (
@@ -75,7 +73,7 @@ async function threadRelationshipExists(
     SELECT EXISTS (
       SELECT 1
       FROM "RelationshipPair" pair
-      JOIN (SELECT ${identity.account}::text AS account, ${identity.domain}::text AS domain,
+      JOIN (SELECT ${identity.account}::text AS account,
         ${identity.namespaceId}::integer AS "namespaceId") identity ON true
       WHERE pair."threadId" = ${threadId}
         AND CASE WHEN ${activeOnly} THEN pair.active ELSE pair.established END

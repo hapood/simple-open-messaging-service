@@ -85,9 +85,8 @@ describe('member-home tombstone authority', () => {
       seq: 42,
       originSeq: 7,
       originServerTime: new Date(),
-      sourceNamespaceId: namespaceId,
+      publisherNamespaceId: namespaceId,
       creatorAccount: 'alice',
-      creatorDomain: peerDomain,
       profileNamespaceId: namespaceId,
       contentType: 'PURE_TEXT',
       content: JSON.stringify({ text: 'member submission' }),
@@ -146,7 +145,7 @@ describe('member-home tombstone authority', () => {
       expect(facts).toHaveLength(1);
       expect(facts[0]).toMatchObject({
         messageSeq: 42,
-        sourceNamespaceId: 0,
+        publisherNamespaceId: 0,
         type,
       });
     },
@@ -169,8 +168,7 @@ describe('member-home tombstone authority', () => {
       const [local] = await database.db
         .update(tables.message)
         .set({
-          sourceNamespaceId: 0,
-          creatorDomain: 'local',
+          publisherNamespaceId: 0,
           profileNamespaceId: 0,
           originSeq: null,
         })
@@ -195,7 +193,7 @@ describe('member-home tombstone authority', () => {
         expect(first.deletions).toEqual([{ messageSeq: 42, deletionSeq: 1 }]);
         expect(row?.isDeleted).toBe(true);
         expect(facts).toMatchObject([
-          { messageSeq: 42, type, sourceNamespaceId: namespaceId },
+          { messageSeq: 42, type, publisherNamespaceId: namespaceId },
         ]);
         expect((await apply(type)).deletions).toEqual([]);
       }
@@ -218,8 +216,7 @@ describe('member-home tombstone authority', () => {
     const [local] = await database.db
       .update(tables.message)
       .set({
-        sourceNamespaceId: 0,
-        creatorDomain: 'local',
+        publisherNamespaceId: 0,
         profileNamespaceId: 0,
         originSeq: null,
         isDeleted: true,
@@ -237,7 +234,7 @@ describe('member-home tombstone authority', () => {
       messageSeq: 42,
       deletionSeq: 1,
       type: MessageDeleteType.USER_RETRACTION,
-      sourceNamespaceId: 0,
+      publisherNamespaceId: 0,
       updatedAt: new Date(),
     });
     expect(
@@ -247,7 +244,7 @@ describe('member-home tombstone authority', () => {
       {
         messageSeq: 42,
         type: MessageDeleteType.USER_RETRACTION,
-        sourceNamespaceId: 0,
+        publisherNamespaceId: 0,
       },
     ]);
     expect(

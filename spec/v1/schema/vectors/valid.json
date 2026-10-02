@@ -404,7 +404,7 @@
         {
           "contentType": "PURE_TEXT",
           "content": {
-            "text": "hello [@Bob](somfp://user/bob%40b.example)"
+            "text": "hello [@Bob](somfp://user/12/bob)"
           }
         },
         {

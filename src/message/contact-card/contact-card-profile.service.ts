@@ -10,7 +10,6 @@ export class ContactCardProfileService {
 
   findProfile(target: {
     account: string;
-    domain: string;
     namespaceId: number;
     profileRev: number;
   }) {

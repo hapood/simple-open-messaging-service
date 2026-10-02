@@ -7,7 +7,6 @@ import { SendContactCardDto } from '../dto/message.dto.js';
 
 const target = {
   account: 'bob',
-  domain: 'bravo.test',
   namespaceId: 4,
   profileRev: 7,
 };
@@ -27,6 +26,10 @@ function setup(
       async (_userId: number, address: { account: string }) =>
         address.account === '!group12' ? { id: 12 } : null,
     );
+  const activePeerDomainForNamespace = vi.fn().mockImplementation(
+    async (namespaceId: number) =>
+      namespaceId === 0 ? 'local' : namespaceId === 4 ? 'bravo.test' : null,
+  );
   const controller = Object.assign(
     Object.create(MessageController.prototype) as MessageController,
     {
@@ -34,7 +37,10 @@ function setup(
         findByClientMessageId: vi.fn().mockResolvedValue(null),
         writeMsgToThread,
       },
-      federation: { assertP2PWritable: vi.fn().mockResolvedValue(undefined) },
+      federation: {
+        assertP2PWritable: vi.fn().mockResolvedValue(undefined),
+        activePeerDomainForNamespace,
+      },
       participantService: {
         findP2PFriendByAddress: vi
           .fn()
@@ -43,6 +49,7 @@ function setup(
       users: { findUniqueUser },
       contactProfiles: { findProfile },
       groups: { findVisibleGroupByAddress },
+
       forwardBundles: { snapshotAvatarForMessage },
       userQuota: {
         assertCanSend: vi.fn().mockResolvedValue(undefined),
@@ -72,6 +79,7 @@ function setup(
     findUniqueUser,
     findVisibleGroupByAddress,
     snapshotAvatarForMessage,
+    activePeerDomainForNamespace,
   };
 }
 
@@ -104,6 +112,7 @@ describe('send federated contact card', () => {
     });
     await ctx.controller.sendContactCard(ctx.request, ctx.dto);
     expect(ctx.findProfile).toHaveBeenCalledWith(target);
+    expect(ctx.activePeerDomainForNamespace).toHaveBeenCalledWith(4);
     expect(ctx.snapshotAvatarForMessage).toHaveBeenCalledWith(
       '/uploads/avatars/bob.webp',
     );
@@ -142,7 +151,6 @@ describe('send federated contact card', () => {
     const ctx = setup(null);
     const local = {
       account: 'bob',
-      domain: 'local',
       namespaceId: 0,
       profileRev: 0,
     };
@@ -162,7 +170,6 @@ describe('send federated contact card', () => {
     const ctx = setup(null);
     const group = {
       account: '!group12',
-      domain: 'local',
       namespaceId: 0,
       profileRev: 0,
     };

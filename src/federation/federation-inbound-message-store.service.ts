@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import { contentDigest } from './canonical-json.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { ContentType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
@@ -198,6 +199,7 @@ export class FederationInboundMessageStoreService {
         .values({
           contentType: incoming.contentType as ContentType,
           content: storedContent,
+          contentDigest: contentDigest(incoming.content),
           threadId,
           creatorAccount: creator.account,
           profileNamespaceId: creator.namespaceId,
@@ -280,6 +282,7 @@ export class FederationInboundMessageStoreService {
       .values({
         contentType: incoming.contentType as ContentType,
         content: storedContent,
+        contentDigest: contentDigest(incoming.content),
         threadId,
         creatorAccount: creator.account,
         profileNamespaceId: creator.namespaceId,
