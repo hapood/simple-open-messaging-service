@@ -64,7 +64,12 @@ describe('federation quote coordinates across three persisted node views', () =>
         .values({
           domain,
           rootKeyFingerprint: `sha256:${domain}`,
-          rootPublicKey: Buffer.alloc(32, 3).toString('base64'),
+          // The IdentityNamespace_one_epoch_per_root_key unique index forbids
+          // two non-retired namespaces from sharing a root key, so derive a
+          // distinct 32-byte key per domain instead of a shared placeholder.
+          rootPublicKey: Buffer.from(domain.padEnd(32, '\0'), 'utf8').toString(
+            'base64',
+          ),
           identityPinnedAt: new Date(),
         })
         .returning();
@@ -114,8 +119,22 @@ describe('federation quote coordinates across three persisted node views', () =>
   async function seed(
     view: View,
     seq: number,
-    overrides: Partial<typeof tables.message.$inferInsert> = {},
+    overrides: Partial<typeof tables.message.$inferInsert> & {
+      /** Pre-cutover alias for publisherNamespaceId, kept for test readability. */
+      sourceNamespaceId?: number;
+      /** Pre-cutover alias; a non-local value marks the author as remote. */
+      creatorDomain?: string;
+    } = {},
   ) {
+    const {
+      sourceNamespaceId,
+      creatorDomain,
+      publisherNamespaceId,
+      profileNamespaceId,
+      ...rest
+    } = overrides;
+    const remoteCreator =
+      creatorDomain !== undefined && creatorDomain !== 'local';
     const [row] = await database.db
       .insert(tables.message)
       .values({
@@ -125,14 +144,17 @@ describe('federation quote coordinates across three persisted node views', () =>
         contentType: ContentType.PURE_TEXT,
         content: JSON.stringify({ text: `message ${seq}` }),
         creatorAccount: 'user',
-        creatorDomain: 'local',
         updatedAt: new Date(),
-        ...overrides,
+        // The squashed 0000_base migration renamed sourceNamespaceId to
+        // publisherNamespaceId and replaced creatorDomain with profileNamespaceId.
+        // Map the pre-cutover aliases so seeded mirrors carry the publisher
+        // coordinate that quote-target resolution and publication rely on.
+        publisherNamespaceId:
+          publisherNamespaceId ?? Number(sourceNamespaceId ?? 0),
         profileNamespaceId:
-          overrides.profileNamespaceId ??
-          (overrides.creatorDomain && overrides.creatorDomain !== 'local'
-            ? Number(overrides.sourceNamespaceId)
-            : 0),
+          profileNamespaceId ??
+          (remoteCreator ? Number(sourceNamespaceId ?? 0) : 0),
+        ...rest,
       })
       .returning();
     return row;

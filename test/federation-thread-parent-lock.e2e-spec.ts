@@ -110,7 +110,7 @@ describe('group business scope and content lock ordering', () => {
           [
             businessAccountScopeKey({
               account: parent.account,
-              domain: 'local',
+              profileNamespaceId: 0,
             }),
           ],
         );

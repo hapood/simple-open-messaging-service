@@ -721,8 +721,8 @@ describe('user intent decision', () => {
     // which protects intent and relationship-derived projections.
     expect(businessLocks).toEqual([
       ...[
-        businessAccountScopeKey({ account: alice.account, domain: 'local' }),
-        businessAccountScopeKey({ account: bob.account, domain: 'local' }),
+        businessAccountScopeKey({ account: alice.account, profileNamespaceId: 0 }),
+        businessAccountScopeKey({ account: bob.account, profileNamespaceId: 0 }),
       ].sort(),
       relationshipPairBusinessKey(pairScope(pair!)),
     ]);

@@ -1713,20 +1713,49 @@ CREATE TABLE public."ProfileNamespaceFeed" (
 
 
 --
--- Name: ProfileNamespaceInfo; Type: TABLE; Schema: public; Owner: -
+-- Name: ProfileNamespace; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public."ProfileNamespaceInfo" (
+CREATE TABLE public."ProfileNamespace" (
     "publisherNamespaceId" integer NOT NULL,
     "profileNamespaceId" integer NOT NULL,
     domain character varying(63),
     "rootPublicKey" character varying(44),
     "updateFeedId" bigint DEFAULT 0 NOT NULL,
     expired boolean DEFAULT true NOT NULL,
+    status text DEFAULT 'ACTIVE' NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "ProfileNamespaceInfo_bindings_check" CHECK ((((domain IS NULL) AND ("rootPublicKey" IS NULL)) OR ((domain IS NOT NULL) AND ("rootPublicKey" IS NOT NULL)))),
-    CONSTRAINT "ProfileNamespaceInfo_updateFeedId_check" CHECK (("updateFeedId" >= 0))
+    CONSTRAINT "ProfileNamespace_bindings_check" CHECK ((((domain IS NULL) AND ("rootPublicKey" IS NULL)) OR ((domain IS NOT NULL) AND ("rootPublicKey" IS NOT NULL)))),
+    CONSTRAINT "ProfileNamespace_updateFeedId_check" CHECK (("updateFeedId" >= 0)),
+    CONSTRAINT "ProfileNamespace_status_check" CHECK ((status IN ('ACTIVE', 'ARCHIVED')))
+);
+
+
+--
+-- Name: ProfileNamespaceTombstone; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."ProfileNamespaceTombstone" (
+    "publisherNamespaceId" integer NOT NULL,
+    "profileNamespaceId" integer NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "ProfileNamespaceTombstone_pkey" PRIMARY KEY ("publisherNamespaceId", "profileNamespaceId")
+);
+
+
+--
+-- Name: ProfileTombstone; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public."ProfileTombstone" (
+    "publisherNamespaceId" integer NOT NULL,
+    "profileNamespaceId" integer NOT NULL,
+    account character varying(31) NOT NULL,
+    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT "ProfileTombstone_pkey" PRIMARY KEY ("publisherNamespaceId", "profileNamespaceId", account)
 );
 
 
@@ -2685,11 +2714,11 @@ ALTER TABLE ONLY public."ProfileNamespaceFeed"
 
 
 --
--- Name: ProfileNamespaceInfo ProfileNamespaceInfo_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: ProfileNamespace ProfileNamespace_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."ProfileNamespaceInfo"
-    ADD CONSTRAINT "ProfileNamespaceInfo_pkey" PRIMARY KEY ("publisherNamespaceId", "profileNamespaceId");
+ALTER TABLE ONLY public."ProfileNamespace"
+    ADD CONSTRAINT "ProfileNamespace_pkey" PRIMARY KEY ("publisherNamespaceId", "profileNamespaceId");
 
 
 --
@@ -4033,11 +4062,27 @@ ALTER TABLE ONLY public."ProfileNamespaceFeed"
 
 
 --
--- Name: ProfileNamespaceInfo ProfileNamespaceInfo_publisher_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: ProfileNamespace ProfileNamespace_publisher_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public."ProfileNamespaceInfo"
-    ADD CONSTRAINT "ProfileNamespaceInfo_publisher_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+ALTER TABLE ONLY public."ProfileNamespace"
+    ADD CONSTRAINT "ProfileNamespace_publisher_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: ProfileNamespaceTombstone ProfileNamespaceTombstone_publisher_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ProfileNamespaceTombstone"
+    ADD CONSTRAINT "ProfileNamespaceTombstone_publisher_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: ProfileTombstone ProfileTombstone_publisher_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public."ProfileTombstone"
+    ADD CONSTRAINT "ProfileTombstone_publisher_fkey" FOREIGN KEY ("publisherNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --

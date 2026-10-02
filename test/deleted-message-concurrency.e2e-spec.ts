@@ -633,7 +633,11 @@ describe('federated message deletion transaction ordering', () => {
           updatedAt: new Date(),
         })
         .returning();
-      let scope = { account: author.account, domain: author.domain };
+      // lockThreadContentInTx keys the business scope by profileNamespaceId
+      // (GROUP: authorityNamespaceId, P2P: the pair endpoint namespaceId), so
+      // the held advisory lock must use the same coordinate to actually block
+      // the withdrawal before it reaches the thread/message row locks.
+      let scope = { account: author.account, profileNamespaceId: 0 };
       if (kind === 'GROUP') {
         await database.db
           .update(messageThread)
@@ -643,7 +647,7 @@ describe('federated message deletion transaction ordering', () => {
             groupDomain: peerDomain,
           })
           .where(eq(messageThread.id, threadId));
-        scope = { account: '!lock-parent', domain: peerDomain };
+        scope = { account: '!lock-parent', profileNamespaceId: namespaceId };
       } else {
         await database.db.insert(relationshipPair).values({
           kind: 'P2P',

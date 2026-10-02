@@ -6,6 +6,7 @@ import { FastifyAdapter } from '@nestjs/platform-fastify';
 import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { withBusinessLockCapture } from './business-lock-capture.js';
+import { businessAccountScopeKey } from '../src/common/locks/account-business-lock.js';
 import * as tables from '../src/database/schema.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
@@ -942,8 +943,13 @@ describe('mirror group intent application', () => {
     businessLocks.length = 0;
     const bob = await member('locks');
     await run(bob, invitationBody());
-    const groupIndex = businessLocks.findIndex((key) =>
-      key.includes(`"${group.domain}"`),
+    const groupIndex = businessLocks.findIndex(
+      (key) =>
+        key ===
+        businessAccountScopeKey({
+          account: group.account,
+          profileNamespaceId: group.namespaceId,
+        }),
     );
     const pairIndex = businessLocks.findIndex((key) =>
       key.includes('GROUP_MEMBER'),

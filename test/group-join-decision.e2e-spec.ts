@@ -112,12 +112,15 @@ async function lockGroupScopeInTx(
 ): Promise<void> {
   const thread = await tx.query.messageThread.findFirst({
     where: eq(tables.messageThread.id, threadId),
-    columns: { groupAccount: true, groupDomain: true },
+    columns: { groupAccount: true, authorityNamespaceId: true },
   });
-  if (!thread?.groupAccount || !thread.groupDomain)
+  if (!thread?.groupAccount)
     throw new Error(`group thread ${threadId} is missing its scope address`);
   await lockBusinessAccountsInTx(tx, [
-    { account: thread.groupAccount, domain: thread.groupDomain },
+    {
+      account: thread.groupAccount,
+      profileNamespaceId: thread.authorityNamespaceId,
+    },
   ]);
 }
 
@@ -851,7 +854,7 @@ describe('group join decision', () => {
     await authoredIntents.execute(f.params);
     const scope = pairScope(f.pair);
     expect(businessLocks).toEqual([
-      businessAccountScopeKey({ account: f.group.account, domain: 'local' }),
+      businessAccountScopeKey({ account: f.group.account, profileNamespaceId: 0 }),
       relationshipPairBusinessKey(scope),
     ]);
     const [addressA, addressB] = scope.addresses;
@@ -1046,7 +1049,7 @@ describe('group join decision', () => {
     const key = groupMembershipProjectionFanoutKey(f.group.threadId);
     await database.db.transaction(async (tx) => {
       await lockBusinessAccountsInTx(tx, [
-        { account: f.group.account, domain: 'local' },
+        { account: f.group.account, profileNamespaceId: 0 },
       ]);
       await admitGroupMembershipProjectionFanoutInTx(tx, {
         threadId: f.group.threadId,
@@ -1178,7 +1181,7 @@ describe('group join decision', () => {
     const admit = () =>
       database.db.transaction(async (tx) => {
         await lockBusinessAccountsInTx(tx, [
-          { account: f.group.account, domain: 'local' },
+          { account: f.group.account, profileNamespaceId: 0 },
         ]);
         await admitGroupMembershipProjectionFanoutInTx(tx, {
           threadId: f.group.threadId,
@@ -1332,7 +1335,7 @@ describe('group join decision', () => {
       const blocker = database.db.transaction(
         async (tx: DatabaseTransaction) => {
           await lockBusinessAccountsInTx(tx, [
-            { account: f.group.account, domain: 'local' },
+            { account: f.group.account, profileNamespaceId: 0 },
           ]);
           blockerPid = (
             await tx.execute<{ pid: number }>(
@@ -2014,7 +2017,7 @@ describe('group join decision', () => {
     });
     // Account scope first, then pair scope, once each, like ACK and REVOKE.
     expect(businessLocks).toEqual([
-      businessAccountScopeKey({ account: group.account, domain: 'local' }),
+      businessAccountScopeKey({ account: group.account, profileNamespaceId: 0 }),
       relationshipPairBusinessKey({
         kind: 'GROUP_MEMBER',
         addresses: [`${group.account}@local`, `${invitee.account}@local`],
