@@ -8,7 +8,7 @@ import type {
   ClientStateFeedService,
   PendingClientStateFeedUpdate,
 } from '../../../client-state-feed/client-state-feed.service.js';
-import type { FederationService } from '../../../federation/federation.service.js';
+import type { FederationStateFeedPusher } from '../../../federation/federation-state-feed.events.js';
 import type { PeerStateFeedService } from '../../../federation/peer-state-feed.service.js';
 import type { GroupRelationshipMutationService } from '../shared/group-relationship-mutation.service.js';
 import { normalizeAccount } from '../../../common/account.js';
@@ -70,7 +70,7 @@ export interface RemoteMemberMembershipIntentDependencies {
   database: DatabaseService;
   clientFeed: ClientStateFeedService;
   peerFeed: PeerStateFeedService;
-  federation: Pick<FederationService, 'pushStateFeedNamespaces'>;
+  federation: FederationStateFeedPusher;
   relationshipMutations: GroupRelationshipMutationService;
 }
 

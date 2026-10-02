@@ -8,7 +8,7 @@ import type {
   ClientStateFeedService,
   PendingClientStateFeedUpdate,
 } from '../../../client-state-feed/client-state-feed.service.js';
-import type { FederationService } from '../../../federation/federation.service.js';
+import type { FederationStateFeedPusher } from '../../../federation/federation-state-feed.events.js';
 import type { PeerStateFeedService } from '../../../federation/peer-state-feed.service.js';
 import { openFederatedAudienceInTx } from '../../../federation/federation-audience.js';
 import { initializeRelationshipThreadStateInTx } from '../../../federation/federation-relationship-thread-state.js';
@@ -74,7 +74,7 @@ export interface ReceivedUserIntentDependencies {
   database: DatabaseService;
   clientFeed: ClientStateFeedService;
   peerFeed: PeerStateFeedService;
-  federation: Pick<FederationService, 'pushStateFeedNamespaces'>;
+  federation: FederationStateFeedPusher;
   userIntents: UserIntentService;
 }
 

@@ -9,7 +9,7 @@ import type {
   ClientStateFeedService,
   PendingClientStateFeedUpdate,
 } from '../../../client-state-feed/client-state-feed.service.js';
-import type { FederationService } from '../../../federation/federation.service.js';
+import type { FederationStateFeedPusher } from '../../../federation/federation-state-feed.events.js';
 import type { PeerStateFeedService } from '../../../federation/peer-state-feed.service.js';
 import type { GroupRelationshipMutationService } from '../shared/group-relationship-mutation.service.js';
 import { initializeRelationshipThreadStateInTx } from '../../../federation/federation-relationship-thread-state.js';
@@ -72,7 +72,7 @@ export interface MirrorGroupMembershipIntentDependencies {
   database: DatabaseService;
   clientFeed: ClientStateFeedService;
   peerFeed: PeerStateFeedService;
-  federation: Pick<FederationService, 'pushStateFeedNamespaces'>;
+  federation: FederationStateFeedPusher;
   /** The member-side mutation service owns transition-gated acceptance
    * confirmations sent back to the group authority. */
   memberMutations: GroupRelationshipMutationService;
