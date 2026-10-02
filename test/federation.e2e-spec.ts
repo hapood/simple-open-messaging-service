@@ -1010,6 +1010,75 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     }
   });
 
+  it('Step 2: a federated message is attested by POST /s2s/v1/message-provenance from the peer', async () => {
+    // The 'hi from alice' message from the previous test reached appB. The source (appA) retained a
+    // `contentDigest` for it at creation. A provenance query signed by appB against appA must answer
+    // `yes` for `(thread, seq, contentDigest)` and `no` for a wrong digest. This is the HTTP-level
+    // origin-attestation contract under the real S2S signature guard.
+    const source = await appA.database.query.message.findFirst({
+      where: and(
+        eq(message.content, JSON.stringify({ text: 'hi from alice' })),
+        eq(message.creatorAccount, 'alice'),
+        eq(message.creatorDomain, 'local'),
+      ),
+    });
+    expect(source).toBeDefined();
+    expect(source!.contentDigest).toMatch(/^[0-9a-f]{64}$/);
+    // The wire thread address is the requester (appB) view: account is appB's local member (bob),
+    // peerAccount is appA's author (alice). Confirm by pulling the wire message first.
+    const wire = await request(appB.baseUrl)
+      .get('/api/v1/test/signed-s2s-get')
+      .query({
+        peerDomain: DOM_A,
+        path: `/s2s/v1/messages?account=bob&peerAccount=alice&take=1`,
+      });
+    expect(wire.body.status).toBe(200);
+    const wireMessage = wire.body.body.data.messages[0];
+    expect(wireMessage).toBeDefined();
+    // Provenance query: same thread + seq as the wire message, with the retained digest → yes.
+    const yes = await request(appB.baseUrl)
+      .post('/api/v1/test/signed-s2s-post')
+      .query({
+        peerDomain: DOM_A,
+        path: '/s2s/v1/message-provenance',
+      })
+      .send({
+        queries: [
+          {
+            thread: wireMessage.thread,
+            seq: wireMessage.seq,
+            contentDigest: source!.contentDigest,
+          },
+        ],
+      });
+    expect(yes.body.status).toBe(200);
+    expect(yes.body.body.code).toBe(BusinessCode.OK);
+    expect(yes.body.body.data.results).toEqual([
+      {
+        thread: wireMessage.thread,
+        seq: wireMessage.seq,
+        known: 'yes',
+      },
+    ]);
+    // A wrong digest at the same coordinate → no.
+    const no = await request(appB.baseUrl)
+      .post('/api/v1/test/signed-s2s-post')
+      .query({
+        peerDomain: DOM_A,
+        path: '/s2s/v1/message-provenance',
+      })
+      .send({
+        queries: [
+          {
+            thread: wireMessage.thread,
+            seq: wireMessage.seq,
+            contentDigest: '0'.repeat(64),
+          },
+        ],
+      });
+    expect(no.body.body.data.results[0].known).toBe('no');
+  });
+
   it('Step 2: a federated member can reply to a peer-authored message', async () => {
     await ensureAliceAndBobAreFriends();
     const marker = `quote target ${randomUUID()}`;

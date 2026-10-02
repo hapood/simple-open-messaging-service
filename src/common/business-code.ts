@@ -123,6 +123,7 @@ export enum BusinessCode {
   FEDERATION_DOMAIN_CHANGE_REJECTED = 50028, // administrator rejected a verified domain re-binding candidate; fatal for the relationship
   FEDERATION_ROOT_CHANGE_REJECTED = 50029, // administrator rejected a verified root rotation arrival; operation-level, the pin and lifecycle are retained
   FEDERATION_PUBLIC_KEY_UNRECOGNIZED = 50030, // the supplied public key is not part of this server's retained key history (sealed-challenge service)
+  FEDERATION_PROVENANCE_DECLINED = 50031, // the responder declines the entire message-provenance batch; HTTP 200, no results; not a transport or peer-lifecycle event
 
   // 60xxx settings (admin-managed runtime config)
 

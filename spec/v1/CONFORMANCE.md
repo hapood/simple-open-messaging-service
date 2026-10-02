@@ -14,6 +14,7 @@ An implementation may claim `SOMFP v1 conformant` and publish `1` in discovery `
 | Profiles                | Core, Group Meta, Message     | Mandatory public and exact profile lookup                 |
 | Message Query           | Core, Recognition             | Mandatory                                                 |
 | Message Tombstone Query | Core, Message                 | Mandatory                                                 |
+| Message Provenance      | Core, Recognition, Message    | Mandatory batched origin attestation of a content digest   |
 | Message                 | Core                          | Mandatory, including every v1 content type                |
 | Resources               | Core, Message                 | Mandatory                                                 |
 | Call Profile            | Core, Transport, Message      | Mandatory S2S signaling and endpoint WebRTC/JSEP behavior |

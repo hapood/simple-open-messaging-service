@@ -11,7 +11,7 @@
 // The app prints `FED_APP_READY <port>` on stdout once listening; the harness awaits that. SIGTERM →
 // graceful app.close() (the degradation test stops appB this way to force a real ECONNREFUSED on appA).
 import 'dotenv/config';
-import { Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query } from '@nestjs/common';
 import { Public } from '../src/common/public.decorator.js';
 import { Raw } from '../src/common/raw.decorator.js';
 import { Test } from '@nestjs/testing';
@@ -88,7 +88,36 @@ class TestS2sHookController {
     return { status: upstream.status, body };
   }
 
-  @Get('feed-drain-diagnostics')
+  @Post('signed-s2s-post')
+  async signedPost(
+    @Body() bodyParam: unknown,
+    @Query('peerDomain') peerDomain: string,
+    @Query('path') path: string,
+  ): Promise<{ status: number; body: unknown }> {
+    const base = await this.discovery.resolveBase(peerDomain);
+    const url = new URL(`${base}${path}`);
+    const payload =
+      typeof bodyParam === 'string' ? bodyParam : JSON.stringify(bodyParam ?? {});
+    const headers = await this.sig.signOutbound({
+      method: 'POST',
+      url,
+      body: payload,
+    });
+    const upstream = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: payload,
+      signal: AbortSignal.timeout(5000),
+    });
+    const text = await upstream.text();
+    let body: unknown = text;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      /* keep raw text */
+    }
+    return { status: upstream.status, body };
+  }
   feedDrainDiagnosticSnapshot(): typeof feedDrainDiagnostics {
     return { ...feedDrainDiagnostics };
   }

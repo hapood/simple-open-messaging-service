@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
+import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { ContentType } from '../src/database/enums.js';
@@ -15,10 +16,12 @@ import {
   account as user,
 } from '../src/database/schema.js';
 import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
+import { FederationMessageProvenanceService } from '../src/federation/federation-message-provenance.service.js';
 import {
   federatedContentDigests,
   fromFederatedMessageContent,
 } from '../src/federation/federated-message-content.js';
+import { contentDigest } from '../src/federation/canonical-json.js';
 import { seedAcceptedRelationship } from './seed.js';
 import { truncateTablesForTest } from './support/truncate';
 
@@ -43,6 +46,7 @@ describe('federation message round-trip digest fidelity', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   let service: FederationMessageFeedService;
+  let provenance: FederationMessageProvenanceService;
   const peerDomain = 'roundtrip-peer.test';
 
   beforeAll(async () => {
@@ -59,6 +63,7 @@ describe('federation message round-trip digest fidelity', () => {
     );
     await database.pool.query('DELETE FROM "IdentityNamespace" WHERE id <> 0');
     service = new FederationMessageFeedService(database);
+    provenance = new FederationMessageProvenanceService(database);
   });
 
   afterAll(async () => {
@@ -126,6 +131,7 @@ describe('federation message round-trip digest fidelity', () => {
         seq: 1,
         contentType,
         content: localContent,
+        contentDigest: contentDigest(originalWire),
         threadId: thread.id,
         creatorAccount: bob.account,
         profileNamespaceId: namespaceId,
@@ -177,6 +183,36 @@ describe('federation message round-trip digest fidelity', () => {
     );
     expect(page.messages).toHaveLength(1);
     const outbound = page.messages[0];
+
+    // Provenance: a query for this message's `(thread, seq, contentDigest)` must answer `yes`,
+    // and a query for the same coordinate with a different digest must answer `no`. This is the
+    // origin-attestation contract: the responder confirms it published this content at this
+    // coordinate. The digest is computed over the canonical (JCS) wire form, so it is stable
+    // across the round-trip.
+    const expectedDigest = contentDigest(originalWire);
+    const yesResults = await provenance.query([
+      {
+        thread: { account: 'alice', peerAccount: 'bob' },
+        seq: 1,
+        contentDigest: expectedDigest,
+      },
+    ]);
+    expect(yesResults).toEqual([
+      {
+        thread: { account: 'alice', peerAccount: 'bob' },
+        seq: 1,
+        known: 'yes',
+      },
+    ]);
+    const noResults = await provenance.query([
+      {
+        thread: { account: 'alice', peerAccount: 'bob' },
+        seq: 1,
+        contentDigest: '0'.repeat(64),
+      },
+    ]);
+    expect(noResults[0].known).toBe('no');
+
     return {
       original: JSON.parse(originalWire),
       outbound: JSON.parse(outbound.content),
@@ -406,5 +442,80 @@ describe('federation message round-trip digest fidelity', () => {
     expect(page.messages).toHaveLength(1);
     expect(page.messages[0].originSeq).toBeNull();
     expect(page.messages[0].originCreatedAt).toBeNull();
+  });
+
+  // --- Provenance: batched origin attestation against the real database. ---
+
+  it('answers a batched provenance query with mixed yes/no across threads', async () => {
+    const { bob, namespaceId, thread } = await seed();
+    // Insert two messages with distinct digests on the same P2P thread.
+    const wire1 = JSON.stringify({ text: 'first' });
+    const wire2 = JSON.stringify({ text: 'second' });
+    const digest1 = contentDigest(wire1);
+    const digest2 = contentDigest(wire2);
+    for (const [seq, wire, digest] of [
+      [1, wire1, digest1],
+      [2, wire2, digest2],
+    ] as const) {
+      await database.db.insert(message).values({
+        seq,
+        contentType: ContentType.PURE_TEXT,
+        content: fromFederatedMessageContent(ContentType.PURE_TEXT, wire, new Map()),
+        contentDigest: digest,
+        threadId: thread.id,
+        creatorAccount: bob.account,
+        profileNamespaceId: namespaceId,
+        publisherNamespaceId: namespaceId,
+        originSeq: seq,
+        originServerTime: new Date('2026-08-12T00:00:00.000Z'),
+        profileRev: 0,
+        localState: 'READY',
+        isDeleted: false,
+        updatedAt: new Date(),
+      });
+    }
+    await database.db
+      .update(messageThread)
+      .set({ curSeq: 2 })
+      .where(eq(messageThread.id, thread.id));
+
+    // Batch: seq=1 matches (yes), seq=2 with the wrong digest (no), seq=3 does not exist (no).
+    const results = await provenance.query([
+      { thread: { account: 'alice', peerAccount: 'bob' }, seq: 1, contentDigest: digest1 },
+      { thread: { account: 'alice', peerAccount: 'bob' }, seq: 2, contentDigest: '0'.repeat(64) },
+      { thread: { account: 'alice', peerAccount: 'bob' }, seq: 3, contentDigest: digest2 },
+    ]);
+    expect(results.map((r) => r.known)).toEqual(['yes', 'no', 'no']);
+  });
+
+  it('rejects a duplicate (thread, seq) provenance query against the real database', async () => {
+    const q = {
+      thread: { account: 'alice', peerAccount: 'bob' },
+      seq: 1,
+      contentDigest: '0'.repeat(64),
+    };
+    await expect(provenance.query([q, q])).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_MALFORMED,
+    });
+  });
+
+  it('throws FEDERATION_PROVENANCE_DECLINED when the batch policy declines', async () => {
+    class DecliningProvenance extends FederationMessageProvenanceService {
+      protected shouldDeclineBatch(): boolean {
+        return true;
+      }
+    }
+    const declining = new DecliningProvenance(database);
+    await expect(
+      declining.query([
+        {
+          thread: { account: 'alice', peerAccount: 'bob' },
+          seq: 1,
+          contentDigest: '0'.repeat(64),
+        },
+      ]),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.FEDERATION_PROVENANCE_DECLINED,
+    });
   });
 });

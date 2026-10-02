@@ -67,6 +67,17 @@ export class FederationMessageProvenanceService {
       }
       seen.add(key);
     }
+    // Whole-batch refusal. A responder whose policy declines every query returns the
+    // `FEDERATION_PROVENANCE_DECLINED` error code for the entire batch with no result array,
+    // rather than a per-query `known: "declined"` answer. The two refusal forms are mutually
+    // exclusive per the provenance spec. The default policy does not decline the batch.
+    if (this.shouldDeclineBatch()) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PROVENANCE_DECLINED,
+        'message-provenance batch declined by policy',
+        HttpStatus.OK,
+      );
+    }
 
     const results: MessageProvenanceResult[] = [];
     for (const q of queries) {
@@ -75,9 +86,30 @@ export class FederationMessageProvenanceService {
     return results;
   }
 
+  /** Whether the responder's policy declines the entire batch before answering any query.
+   *  Overridable by a deployer whose privacy or rate policy refuses provenance queries
+   *  wholesale. Returning `true` makes `query()` throw `FEDERATION_PROVENANCE_DECLINED`
+   *  (HTTP 200, no `results`) for every request. The default policy does not decline. */
+  protected shouldDeclineBatch(): boolean {
+    return false;
+  }
+
+  /** Whether the responder's policy declines a single query before answering it. Returning `true`
+   *  makes `queryOne()` answer `known: "declined"` for that query while the rest of the batch is
+   *  still answered. The default policy does not decline. */
+  protected shouldDeclineQuery(_q: MessageProvenanceQuery): boolean {
+    return false;
+  }
+
   private async queryOne(
     q: MessageProvenanceQuery,
   ): Promise<MessageProvenanceResult> {
+    // Per-query refusal. A responder whose policy declines this individual query returns
+    // `known: "declined"` while the rest of the batch keeps its own answers inside the same
+    // HTTP 200/`code` 0 response. The default policy does not decline.
+    if (this.shouldDeclineQuery(q)) {
+      return { thread: q.thread, seq: q.seq, known: 'declined' };
+    }
     // Find candidate messages by the indexed (contentDigest, seq). A matching digest is necessary
     // but not sufficient: the message's thread must also resolve to the query thread.
     const candidates = await this.database.db
