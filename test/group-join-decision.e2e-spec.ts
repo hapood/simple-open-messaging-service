@@ -25,7 +25,7 @@ import {
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { AppModule } from '../src/app.module.js';
 import {
   DatabaseService,

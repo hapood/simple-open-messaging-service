@@ -11,7 +11,7 @@ export async function lockGroupMemberIntentRowsInTx(
   member: { account: string; namespaceId: number },
 ): Promise<void> {
   await tx.execute(
-    sql`SELECT id FROM "RelationshipIntent"
+    sql`SELECT 1 FROM "RelationshipIntent"
       WHERE ("authorAccount" = ${group.account} AND "authorNamespaceId" = ${group.namespaceId}
           AND "receiverAccount" = ${member.account} AND "receiverNamespaceId" = ${member.namespaceId})
         OR ("authorAccount" = ${member.account} AND "authorNamespaceId" = ${member.namespaceId}
