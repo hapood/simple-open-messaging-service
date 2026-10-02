@@ -12,7 +12,7 @@ import { DiscoveryService } from '../federation/discovery.service.js';
 import { SignatureService } from '../federation/signature.service.js';
 import { FederationTransportConfigService } from '../federation/federation-transport-config.service.js';
 import { ProfileNamespaceFeedService } from '../federation/profile-namespace-feed.service.js';
-import { ProfileNamespaceInfoService } from '../federation/profile-namespace-info.service.js';
+import { ProfileNamespaceRefreshService } from '../federation/profile-namespace-refresh.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { ed25519PublicKeyToX25519, sealBox } from '../federation/sealed-box.js';
 
@@ -60,7 +60,7 @@ export class FederationNamespaceAdminService {
   constructor(
     private readonly database: DatabaseService,
     private readonly profileNamespaceFeed: ProfileNamespaceFeedService,
-    private readonly profileNamespaceInfo: ProfileNamespaceInfoService,
+    private readonly profileNamespaceRefresh: ProfileNamespaceRefreshService,
     private readonly sse: SseService,
     @Optional() private readonly recognition?: FederationRecognitionService,
     @Optional() private readonly discovery?: DiscoveryService,
@@ -359,7 +359,7 @@ export class FederationNamespaceAdminService {
           afterCommit: () => {
             if (wakeAt !== undefined)
               this.sse.notifyProfileNamespaceChange(wakeAt);
-            this.profileNamespaceInfo.scheduleRefresh(
+            this.profileNamespaceRefresh.scheduleRefresh(
               {
                 publisherNamespaceId: namespace.id,
                 profileNamespaceId: 0,

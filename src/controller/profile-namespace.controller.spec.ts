@@ -6,18 +6,25 @@ import { BusinessException } from '../common/business.exception.js';
 
 function harness() {
   const namespaceInfo = {
-    resolveBatch: vi.fn().mockResolvedValue([
-      {
-        publisherNamespaceId: 7,
-        profileNamespaceId: 5,
-        domain: 'peer.test',
-        rootPublicKey: 'k'.repeat(43) + '=',
-        updateFeedId: 3,
-        expired: false,
-      },
-    ]),
+    resolveBatch: vi.fn().mockResolvedValue({
+      entries: [
+        {
+          publisherNamespaceId: 7,
+          profileNamespaceId: 5,
+          domain: 'peer.test',
+          rootPublicKey: 'k'.repeat(43) + '=',
+          updateFeedId: 3,
+          expired: false,
+        },
+      ],
+      pendingRefreshes: [],
+    }),
   };
-  const controller = new ProfileNamespaceController(namespaceInfo as never);
+  const refresh = { scheduleRefresh: vi.fn() };
+  const controller = new ProfileNamespaceController(
+    namespaceInfo as never,
+    refresh as never,
+  );
   return { controller, namespaceInfo };
 }
 

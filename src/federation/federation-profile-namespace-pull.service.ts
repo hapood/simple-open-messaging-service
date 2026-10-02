@@ -11,7 +11,7 @@ import { ProfileNamespaceFeedConsumerService } from './profile-namespace-feed-co
 import { ProfileNamespaceFeedPullService } from './profile-namespace-feed-pull.service.js';
 import type { ProfileNamespaceItemEffect } from './profile-namespace-feed-consumer.service.js';
 import type { ProfileNamespaceFeedPage } from './profile-namespace-feed.service.js';
-import type { ProfileNamespaceInfoService } from './profile-namespace-info.service.js';
+import { ProfileNamespaceRefreshService } from './profile-namespace-refresh.service.js';
 
 /** Owns bounded Profile Namespace Feed drains: fetch pages over the trusted
  *  peer channel, apply items through the consumer, advance the per-peer
@@ -31,7 +31,7 @@ export class FederationProfileNamespacePullService {
     private readonly feedPull: ProfileNamespaceFeedPullService,
     private readonly consumer: ProfileNamespaceFeedConsumerService,
     private readonly sse: SseService,
-    private readonly namespaceInfo: ProfileNamespaceInfoService,
+    private readonly namespaceRefresh: ProfileNamespaceRefreshService,
   ) {}
 
   async pullFeedPage(
@@ -82,7 +82,7 @@ export class FederationProfileNamespacePullService {
       afterCommit: async (effect: ProfileNamespaceItemEffect) => {
         this.sse.notifyProfileNamespaceChange(effect.clientChangeId);
         if (effect.expiredLocalRows) {
-          this.namespaceInfo.scheduleRefresh(
+          this.namespaceRefresh.scheduleRefresh(
             {
               publisherNamespaceId: effect.publisherNamespaceId,
               profileNamespaceId: effect.profileNamespaceId,

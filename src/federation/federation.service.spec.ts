@@ -302,7 +302,10 @@ describe('thread-query FORBIDDEN convergence', () => {
       harness.relationshipMutations.writeGroupRelationshipIntentInTx,
     ).not.toHaveBeenCalled();
     expect(harness.tasks.enqueueTaskInTx).toHaveBeenCalledWith(harness.tx, {
-      scope: { type: 'GROUP', address: { account: '!group', profileNamespaceId: 0 } },
+      scope: {
+        type: 'GROUP',
+        address: { account: '!group', profileNamespaceId: 0 },
+      },
       taskType: 'REVOKE_FORBIDDEN_GROUP',
       actorUserId: 99,
       payload: {
@@ -391,16 +394,19 @@ describe('FederationProfileService resource path', () => {
     Object.assign(peerHttp, { get: getSigned });
     Object.assign(profiles, {
       profileNamespaceInfo: {
-        resolveBatch: vi.fn(async () => [
-          {
-            publisherNamespaceId: 12,
-            profileNamespaceId: 5,
-            domain: 'peer.test',
-            rootPublicKey: VOUCHED_ROOT,
-            updateFeedId: '4',
-            expired: false,
-          },
-        ]),
+        resolveBatch: vi.fn(async () => ({
+          entries: [
+            {
+              publisherNamespaceId: 12,
+              profileNamespaceId: 5,
+              domain: 'peer.test',
+              rootPublicKey: VOUCHED_ROOT,
+              updateFeedId: '4',
+              expired: false,
+            },
+          ],
+          pendingRefreshes: [],
+        })),
       },
     });
 
@@ -417,16 +423,19 @@ describe('FederationProfileService resource path', () => {
     Object.assign(peerHttp, { get: getSigned });
     Object.assign(profiles, {
       profileNamespaceInfo: {
-        resolveBatch: vi.fn(async () => [
-          {
-            publisherNamespaceId: 12,
-            profileNamespaceId: 5,
-            domain: null,
-            rootPublicKey: null,
-            updateFeedId: '0',
-            expired: true,
-          },
-        ]),
+        resolveBatch: vi.fn(async () => ({
+          entries: [
+            {
+              publisherNamespaceId: 12,
+              profileNamespaceId: 5,
+              domain: null,
+              rootPublicKey: null,
+              updateFeedId: '0',
+              expired: true,
+            },
+          ],
+          pendingRefreshes: [],
+        })),
       },
     });
     await expect(
@@ -774,7 +783,7 @@ function makeStubs() {
     ed25519.getPublicKey(Uint8Array.from(Buffer.alloc(32, 1))),
   ).toString('base64');
   const profileNamespaceInfo = {
-    resolveBatch: vi.fn(async () => []),
+    resolveBatch: vi.fn(async () => ({ entries: [], pendingRefreshes: [] })),
   };
   const profiles = new FederationProfileService(
     database as never,

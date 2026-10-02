@@ -19,7 +19,8 @@ import { FederationPeerHttp } from './federation-peer-http.js';
 import type { S2SProfile } from './federation-profile.js';
 import { encodeFederationResourceComponent } from './federation-resource-request.js';
 import { sealBox } from './sealed-box.js';
-import type { ProfileNamespaceInfoService } from './profile-namespace-info.service.js';
+import { ProfileNamespaceInfoService } from './profile-namespace-info.service.js';
+import { ProfileNamespaceRefreshService } from './profile-namespace-refresh.service.js';
 
 /** Possession-proof key source for `fetchRemoteAccount` (see there). */
 export type PossessionKey =
@@ -46,6 +47,7 @@ export class FederationProfileService {
     private readonly upload: UploadService,
     private readonly peerHttp: FederationPeerHttp,
     private readonly profileNamespaceInfo: ProfileNamespaceInfoService,
+    private readonly refresh: ProfileNamespaceRefreshService,
   ) {}
 
   async toS2SProfile(user: {
@@ -676,12 +678,16 @@ export class FederationProfileService {
         );
       return row.rootPublicKey;
     }
-    const [entry] = await this.profileNamespaceInfo.resolveBatch([
-      {
-        publisherNamespaceId: possession.publisherNamespaceId,
-        profileNamespaceId: possession.profileNamespaceId,
-      },
-    ]);
+    const { entries, pendingRefreshes } =
+      await this.profileNamespaceInfo.resolveBatch([
+        {
+          publisherNamespaceId: possession.publisherNamespaceId,
+          profileNamespaceId: possession.profileNamespaceId,
+        },
+      ]);
+    for (const pending of pendingRefreshes)
+      this.refresh.scheduleRefresh(pending.pair, pending.triggerFeedId);
+    const entry = entries[0];
     if (
       !entry ||
       entry.expired ||

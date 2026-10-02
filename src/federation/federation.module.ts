@@ -33,6 +33,7 @@ import { ProfileNamespaceFeedService } from './profile-namespace-feed.service.js
 import { ProfileNamespaceFeedConsumerService } from './profile-namespace-feed-consumer.service.js';
 import { ProfileNamespaceFeedPullService } from './profile-namespace-feed-pull.service.js';
 import { ProfileNamespaceInfoService } from './profile-namespace-info.service.js';
+import { ProfileNamespaceRefreshService } from './profile-namespace-refresh.service.js';
 import { FederationProfileNamespacePullService } from './federation-profile-namespace-pull.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
@@ -319,6 +320,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     ProfileNamespaceFeedConsumerService,
     ProfileNamespaceFeedPullService,
     ProfileNamespaceInfoService,
+    ProfileNamespaceRefreshService,
     FederationProfileNamespacePullService,
     FederationStateFeedConsumerService,
     MessageProfileWorkDispatcherService,
@@ -358,6 +360,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     FederationNamespaceService,
     ProfileNamespaceFeedService,
     ProfileNamespaceInfoService,
+    ProfileNamespaceRefreshService,
   ],
 })
 export class FederationModule {}

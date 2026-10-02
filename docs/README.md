@@ -19,6 +19,7 @@ and client behavior.
 ## Design
 
 - [Business mutation SQL pattern](./design/business-mutation-sql-pattern.md)
+- [Provider dependency cleanup](./design/provider-dependency-cleanup.md)
 
 - [Database concurrency and locking](./design/database-concurrency-and-locking.md)
 - [Local call history](./design/local-call-history.md)

@@ -6,14 +6,7 @@ import {
 } from '../group/shared/group-state.js';
 import { toClientIdentity } from '../common/client-identity.js';
 import { localAccountsForTargetsInTx } from '../user/account-address.js';
-import {
-  forwardRef,
-  Injectable,
-  HttpStatus,
-  Inject,
-  Logger,
-  Optional,
-} from '@nestjs/common';
+import { Injectable, HttpStatus, Logger, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { normalizeAccount, isValidAccount } from '../common/account.js';
 import {
@@ -163,7 +156,6 @@ export class FederationService {
     private readonly threadQueryDenials: FederationThreadQueryDenialService,
     private readonly upload: UploadService,
     private readonly participantService: AccountThreadStateService,
-    @Inject(forwardRef(() => RelationshipService))
     private readonly relationships: RelationshipService,
     private readonly quota: QuotaService,
     private readonly linkPreview: LinkPreviewService,

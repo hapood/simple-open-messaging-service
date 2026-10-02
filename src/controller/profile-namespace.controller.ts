@@ -6,6 +6,7 @@ import {
   ProfileNamespaceInfoService,
   type ProfileNamespacePair,
 } from '../federation/profile-namespace-info.service.js';
+import { ProfileNamespaceRefreshService } from '../federation/profile-namespace-refresh.service.js';
 
 interface ProfileNamespaceResolveDto {
   pairs?: unknown;
@@ -16,7 +17,10 @@ interface ProfileNamespaceResolveDto {
  *  publisher id to know whose namespace space each nsid lives in. */
 @Controller('profile-namespaces')
 export class ProfileNamespaceController {
-  constructor(private readonly namespaceInfo: ProfileNamespaceInfoService) {}
+  constructor(
+    private readonly namespaceInfo: ProfileNamespaceInfoService,
+    private readonly refresh: ProfileNamespaceRefreshService,
+  ) {}
 
   @Post('resolve')
   @HttpCode(HttpStatus.OK)
@@ -70,10 +74,11 @@ export class ProfileNamespaceController {
         HttpStatus.BAD_REQUEST,
       );
     }
-    return {
-      entries: await this.namespaceInfo.resolveBatch(
-        raw as ProfileNamespacePair[],
-      ),
-    };
+    const { entries, pendingRefreshes } = await this.namespaceInfo.resolveBatch(
+      raw as ProfileNamespacePair[],
+    );
+    for (const pending of pendingRefreshes)
+      this.refresh.scheduleRefresh(pending.pair, pending.triggerFeedId);
+    return { entries };
   }
 }
