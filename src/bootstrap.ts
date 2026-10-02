@@ -80,6 +80,10 @@ export const GLOBAL_PREFIX_EXCLUSIONS = [
     path: `${FEDERATION_API_PREFIX}/message-tombstones`,
     method: RequestMethod.GET,
   },
+  {
+    path: `${FEDERATION_API_PREFIX}/message-provenance`,
+    method: RequestMethod.POST,
+  },
   { path: `${FEDERATION_API_PREFIX}/call`, method: RequestMethod.POST },
   {
     path: `${FEDERATION_API_PREFIX}/accounts/:account`,

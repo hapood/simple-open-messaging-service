@@ -66,6 +66,7 @@ describe('Federation v1 surface', () => {
         'GET /s2s/v1/accounts/:account',
         'POST /s2s/v1/call',
         'POST /s2s/v1/feed-heads',
+        'POST /s2s/v1/message-provenance',
         'GET /s2s/v1/health',
         'POST /s2s/v1/recognize',
       ].sort(),

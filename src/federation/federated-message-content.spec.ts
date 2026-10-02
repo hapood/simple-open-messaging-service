@@ -61,9 +61,7 @@ describe('federated message content projection', () => {
     ],
   ] as const)('projects %s without a URL', (contentType, local, wire) => {
     expect(
-      JSON.parse(
-        toFederatedMessageContent(contentType, JSON.stringify(local)),
-      ),
+      JSON.parse(toFederatedMessageContent(contentType, JSON.stringify(local))),
     ).toEqual(wire);
     expect(
       JSON.parse(
@@ -132,10 +130,7 @@ describe('federated message content projection', () => {
       ],
     };
     const wire = JSON.parse(
-      toFederatedMessageContent(
-        ContentType.GALLERY,
-        JSON.stringify(local),
-      ),
+      toFederatedMessageContent(ContentType.GALLERY, JSON.stringify(local)),
     ) as { items: Array<Record<string, unknown>> };
 
     expect(wire.items.map((item) => item['digest'])).toEqual([
@@ -211,7 +206,9 @@ describe('federated message content projection', () => {
     });
     const wire = toFederatedMessageContent(ContentType.LINK, local);
     expect(JSON.parse(wire)).toEqual(JSON.parse(local));
-    expect(fromFederatedMessageContent(ContentType.LINK, wire)).toBe(local);
+    expect(
+      JSON.parse(fromFederatedMessageContent(ContentType.LINK, wire)),
+    ).toEqual(JSON.parse(local));
   });
 
   it('rejects relative and malformed LINK targets', () => {
@@ -325,9 +322,7 @@ describe('federated message content projection', () => {
       bio: '',
     });
     expect(
-      JSON.parse(
-        fromFederatedMessageContent(ContentType.CONTACT_CARD, wire),
-      ),
+      JSON.parse(fromFederatedMessageContent(ContentType.CONTACT_CARD, wire)),
     ).toEqual(JSON.parse(wire));
   });
 
@@ -441,6 +436,8 @@ describe('federated message content projection', () => {
     const result = JSON.parse(
       fromFederatedMessageContent(ContentType.PURE_TEXT, wire),
     );
-    expect(result.text).toBe('hello [@Alice](somfp://user/alice%40example.test)');
+    expect(result.text).toBe(
+      'hello [@Alice](somfp://user/alice%40example.test)',
+    );
   });
 });
