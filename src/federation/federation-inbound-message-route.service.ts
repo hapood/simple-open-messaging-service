@@ -360,7 +360,7 @@ export class FederationInboundMessageRouteService {
           AND g.domain = 'local' AND g."namespaceId" = 0
           AND m."publisherNamespaceId" = ${namespaceId}
           AND m."originSeq" = ${messageSeq}
-          AND m."profileNamespaceId" = 0
+          AND m."profileNamespaceId" = ${namespaceId}
           AND m."contentType" <> 'SYSTEM'
         LIMIT 1
       `);

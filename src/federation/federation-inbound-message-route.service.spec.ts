@@ -101,10 +101,10 @@ describe('FederationInboundMessageRouteService', () => {
       7,
     );
     const query = dialect.sqlToQuery(execute.mock.calls[1]![0] as SQL);
-    expect(query.sql).toContain('m."profileNamespaceId" = 0');
-    expect(query.sql).toContain('m."publisherNamespaceId" =');
-    expect(query.sql).toContain('m."originSeq" =');
-    expect(query.params).toEqual(['GROUP', '!group', 9, 7]);
+    expect(query.sql).toContain('m."profileNamespaceId" = $5');
+    expect(query.sql).toContain('m."publisherNamespaceId" = $3');
+    expect(query.sql).toContain('m."originSeq" = $4');
+    expect(query.params).toEqual(['GROUP', '!group', 9, 7, 9]);
   });
 
   it('rejects unknown or foreign-authored member retractions without inventing pending facts', async () => {
