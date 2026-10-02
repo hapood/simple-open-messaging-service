@@ -6,6 +6,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
 import { FederationInboundMessagePageService } from '../src/federation/federation-inbound-message-page.service.js';
+import { FederationInboundMessageStoreService } from '../src/federation/federation-inbound-message-store.service.js';
 import { FederationInboundMessageRouteService } from '../src/federation/federation-inbound-message-route.service.js';
 import { FederationInboundMessageValidatorService } from '../src/federation/federation-inbound-message-validator.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
@@ -35,12 +36,19 @@ describe('third-party group message processing receipts', () => {
     }).compile();
     database = module.get(DatabaseService);
     namespaces = new FederationNamespaceService(database);
+    const threadAccess = new FederationThreadAccessService(database, namespaces);
     pages = new FederationInboundMessagePageService(
-      new FederationThreadAccessService(database, namespaces),
+      threadAccess,
       new FederationInboundMessageValidatorService(),
       new FederationInboundMessageRouteService(),
-      undefined as never,
-      new DeletedMessageService(database),
+      // The receipt path delegates to the store; construct a real one so applyProcessingReceipt
+      // runs against the actual tables (insert paths need forwardBundles/quota and stay unused).
+      new FederationInboundMessageStoreService(
+        threadAccess,
+        undefined as never,
+        undefined as never,
+        new DeletedMessageService(database),
+      ),
     );
   });
   afterAll(async () => module.close());
@@ -111,7 +119,7 @@ describe('third-party group message processing receipts', () => {
   function receipt(): FederationMessageFeedMessage {
     return {
       thread: { account: groupAccount },
-      author: { account: 'alice', domain: authorDomain },
+      author: { account: 'alice', namespaceId: authorNamespace },
       seq: 99,
       originSeq: 42,
       originCreatedAt: createdAt.getTime(),
@@ -154,8 +162,8 @@ describe('third-party group message processing receipts', () => {
       id: messageId,
       seq: 42,
       originSeq: 7,
-      sourceNamespaceId: authorNamespace,
-      creatorDomain: authorDomain,
+      creatorAccount: 'alice',
+      profileNamespaceId: authorNamespace,
       content: JSON.stringify({ text: 'from Alice' }),
       updatedAt: createdAt,
     });

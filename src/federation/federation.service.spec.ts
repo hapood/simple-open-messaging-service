@@ -804,6 +804,7 @@ function makeStubs() {
     threadAccess,
     forwardBundles as never,
     quota as never,
+    deletedMessages as never,
   );
   const inboundMessageRoutes = new FederationInboundMessageRouteService();
   const inboundMessageValidator =
@@ -813,7 +814,6 @@ function makeStubs() {
     inboundMessageValidator,
     inboundMessageRoutes,
     inboundMessageStore,
-    deletedMessages as never,
   );
   const statePull = {
     pullStateFromPeer: vi.fn().mockResolvedValue(5n),

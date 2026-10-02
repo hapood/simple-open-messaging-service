@@ -46,6 +46,7 @@ describe('federation quote coordinates across three persisted node views', () =>
     { assertResponseWritable: vi.fn() } as never,
     {} as never,
     { tickLax: vi.fn() } as never,
+    undefined as never, // receipt path unused in this spec
   );
 
   beforeAll(async () => {

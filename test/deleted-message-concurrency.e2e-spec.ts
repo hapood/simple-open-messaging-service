@@ -144,6 +144,7 @@ describe('federated message deletion transaction ordering', () => {
         { assertResponseWritable: async () => undefined } as never,
         {} as never,
         { tickLax: async () => undefined } as never,
+        undefined as never, // receipt path unused in this spec
       );
       await database.db.transaction(async (tx) => {
         const results = [];

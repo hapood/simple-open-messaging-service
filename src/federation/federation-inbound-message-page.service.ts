@@ -1,17 +1,11 @@
-import {
-  groupState as groupStateTable,
-  groupStateFields,
-} from '../group/shared/group-state.js';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
-import { createHash } from 'node:crypto';
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { ContentType } from '../database/enums.js';
 import * as tables from '../database/schema.js';
 import type { InboundForwardWireBundle } from '../forward/forward-bundle.service.js';
-import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { type Message } from '../message/message.service.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import { loadFederationConfig } from './federation.config.js';
@@ -21,6 +15,7 @@ import {
   type FederationMessageFeedMessage,
 } from './federation-message-feed.service.js';
 import { contentDigest } from './canonical-json.js';
+import { federatedMessageLogContext } from './federation-message-log-context.js';
 import {
   fromFederatedMessageContent,
   wireContentDigest,
@@ -81,6 +76,22 @@ export interface FederationMessagePageApplyOptions {
   threadLock?: ThreadContentLock;
 }
 
+/** A single inbound wire item after Phase 1 pure validation: its wire digest and projected local
+ *  content are already computed, so Phase 2 (inside the transaction) only does route resolution,
+ *  receipt confirmation, and store insertion. Carries the original `itemIndex` so savepoint names
+ *  and the `prefetchedForwardClosures` map stay aligned with the source page. */
+interface PreparedInboundItem {
+  itemIndex: number;
+  item: FederationMessageFeedMessage;
+  author: { account: string; namespaceId: number };
+  sourceTime: Date;
+  incomingText: ReturnType<typeof parseTextMessageContent>;
+  storedContent: string;
+  wireDigest: string;
+  forwardCard?: FederatedForwardCard;
+  forwardClosure?: InboundForwardWireBundle;
+}
+
 /** Applies one validated, bounded peer message page inside the caller-owned cursor transaction. */
 @Injectable()
 export class FederationInboundMessagePageService {
@@ -94,11 +105,17 @@ export class FederationInboundMessagePageService {
     private readonly validator: FederationInboundMessageValidatorService,
     private readonly routes: FederationInboundMessageRouteService,
     private readonly inboundMessageStore: FederationInboundMessageStoreService,
-    private readonly deletedMessages: DeletedMessageService,
   ) {}
 
   /** Apply one bounded message-query page inside the caller's cursor transaction. No network-visible
-   * effects happen here; the returned effects are published only after that transaction commits. */
+   * effects happen here; the returned effects are published only after that transaction commits.
+   *
+   * Two phases:
+   *  1. Pure validation, projection, and digest — outside the per-item savepoints, with no
+   *     database access. Malformed items are warned and filtered here; only well-shaped items
+   *     reach the transaction loop.
+   *  2. Database work only — `assertPeerResponseWritable`, route resolution (locks), and per-item
+   *     `SAVEPOINT` isolation for receipt confirmation (CAS) and store insertion. */
   async apply(
     tx: DatabaseTransaction,
     domain: string,
@@ -113,26 +130,13 @@ export class FederationInboundMessagePageService {
       expectedThreadId,
       historical = false,
     } = options;
-    await this.assertPeerResponseWritable(tx, token);
-    if (sequencePolicy) {
-      for (const item of items) {
-        try {
-          mapFederationOriginSequence(item.seq, sequencePolicy);
-        } catch (error) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            error instanceof Error
-              ? error.message
-              : 'message is outside the frozen reverse window',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-      }
-    }
-    const effects: FederationMessagePageEffect[] = [];
-    for (const [itemIndex, item] of items.entries()) {
-      const savepoint = `federation_message_${itemIndex}`;
-      await tx.execute(sql.raw(`SAVEPOINT ${savepoint}`));
+
+    // PHASE 1 — pure validation, transform, digest. No database access; malformed items are
+    // warned and filtered so the transaction loop only ever sees structurally valid items with
+    // their wire digest and projected local content already computed.
+    const prepared: PreparedInboundItem[] = [];
+    for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      const item = items[itemIndex];
       try {
         this.assertFederatedMessageEnvelope(item);
         const author = this.federatedMessageAuthor(
@@ -165,24 +169,6 @@ export class FederationInboundMessagePageService {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
             'missed message has invalid seq coordinate',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-        const route = await this.resolveMissedThreadInTransaction(
-          tx,
-          item,
-          domain,
-          token.namespaceId,
-          token.peerAssignedLocalNamespaceId,
-        );
-        const profileNamespaceId = route.profileNamespaceId;
-        if (
-          expectedThreadId !== undefined &&
-          route.threadId !== expectedThreadId
-        ) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            'message query returned an item for a different thread',
             HttpStatus.BAD_REQUEST,
           );
         }
@@ -224,21 +210,104 @@ export class FederationInboundMessagePageService {
           );
         }
         this.assertMissedAssetDescriptors(item);
-        let storedContent: string;
-        try {
-          storedContent = fromFederatedMessageContent(
-            item.contentType as ContentType,
-            item.content,
-            new Map(item.assets.map((asset) => [asset.digest, asset.bytes])),
-          );
-        } catch {
+        const storedContent = fromFederatedMessageContent(
+          item.contentType as ContentType,
+          item.content,
+          new Map(item.assets.map((asset) => [asset.digest, asset.bytes])),
+        );
+        const wireDigest = contentDigest(item.content);
+        let forwardCard: FederatedForwardCard | undefined;
+        let forwardClosure: InboundForwardWireBundle | undefined;
+        if (item.contentType === ContentType.FORWARD) {
+          try {
+            forwardCard = JSON.parse(item.content) as FederatedForwardCard;
+          } catch {
+            throw new BusinessException(
+              BusinessCode.FEDERATION_MALFORMED,
+              'invalid FORWARD card JSON',
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+          if (
+            typeof forwardCard.bundleId !== 'string' ||
+            Object.keys(forwardCard).some((key) => key !== 'bundleId')
+          ) {
+            throw new BusinessException(
+              BusinessCode.FEDERATION_MALFORMED,
+              'invalid FORWARD card shape',
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+          forwardClosure = prefetchedForwardClosures.get(itemIndex);
+          if (!forwardClosure) {
+            throw new BusinessException(
+              BusinessCode.FEDERATION_MALFORMED,
+              'FORWARD closure was not prefetched',
+              HttpStatus.BAD_REQUEST,
+            );
+          }
+        }
+        prepared.push({
+          itemIndex,
+          item,
+          author,
+          sourceTime,
+          incomingText,
+          storedContent,
+          wireDigest,
+          forwardCard,
+          forwardClosure,
+        });
+      } catch (error) {
+        this.logger.warn(
+          `filtered malformed inbound message before transaction: ${federatedMessageLogContext(
+            domain,
+            item,
+            error,
+          )}`,
+        );
+      }
+    }
+
+    // PHASE 2 — database work only. Per-item savepoints isolate a single item's failure from the
+    // rest of the batch; well-shaped items cannot fail on pure-shape grounds here (those were
+    // filtered in Phase 1), so savepoint rolls back only database-level conflicts (route/thread
+    // mismatch, conflicting immutable coordinates, store internals) or context-resolution errors.
+    await this.assertPeerResponseWritable(tx, token);
+    const effects: FederationMessagePageEffect[] = [];
+    for (const preparedItem of prepared) {
+      const {
+        itemIndex,
+        item,
+        author,
+        sourceTime,
+        incomingText,
+        storedContent,
+        wireDigest,
+        forwardCard,
+        forwardClosure,
+      } = preparedItem;
+      const savepoint = `federation_message_${itemIndex}`;
+      await tx.execute(sql.raw(`SAVEPOINT ${savepoint}`));
+      try {
+        const route = await this.resolveMissedThreadInTransaction(
+          tx,
+          item,
+          domain,
+          token.namespaceId,
+          token.peerAssignedLocalNamespaceId,
+        );
+        const profileNamespaceId = route.profileNamespaceId;
+        if (
+          expectedThreadId !== undefined &&
+          route.threadId !== expectedThreadId
+        ) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
-            'invalid federated message content',
+            'message query returned an item for a different thread',
             HttpStatus.BAD_REQUEST,
           );
         }
-
         if (route.authority === 'LOCAL') {
           if (item.originSeq === null || item.originCreatedAt === null) {
             this.logger.error(
@@ -250,176 +319,27 @@ export class FederationInboundMessagePageService {
             );
             continue;
           }
-          const localSourceMessage = await tx.query.message.findFirst({
-            where: and(
-              eq(tables.message.threadId, route.threadId),
-              eq(tables.message.seq, item.originSeq),
-              eq(tables.message.creatorAccount, route.creatorAccount),
-              eq(tables.message.profileNamespaceId, route.profileNamespaceId),
-            ),
-            columns: {
-              id: true,
-              createdAt: true,
-              contentType: true,
-              content: true,
-              contentDigest: true,
-              localState: true,
-            },
-          });
-          if (localSourceMessage) {
-            if (
-              localSourceMessage.createdAt.getTime() !== item.originCreatedAt
-            ) {
-              this.logger.error(
-                `ignored a processing receipt with conflicting source time: ${JSON.stringify(
-                  {
-                    messageId: localSourceMessage.id.toString(),
-                    peerDomain: domain,
-                    receiptOriginSeq: item.originSeq,
-                    receiptOriginCreatedAt: item.originCreatedAt,
-                    localCreatedAt: localSourceMessage.createdAt.getTime(),
-                  },
-                )}`,
-              );
-              continue;
-            }
-            // Confirm content integrity against the processing receipt: the peer re-serialized the
-            // accepted content to the canonical (JCS) wire form and returned it. Its digest must
-            // match the digest retained when this server published the message; a mismatch means the
-            // content was altered in transit (or the local stored content drifted) and the message
-            // MUST NOT be promoted to CONFIRMED.
-            const receiptDigest = contentDigest(item.content);
-            if (
-              localSourceMessage.contentDigest !== null &&
-              receiptDigest !== localSourceMessage.contentDigest
-            ) {
-              this.logger.warn(
-                `processing receipt content digest mismatch: ${JSON.stringify({
-                  messageId: localSourceMessage.id.toString(),
-                  peerDomain: domain,
-                  receiptOriginSeq: item.originSeq,
-                  retainedDigest: localSourceMessage.contentDigest,
-                  receiptDigest,
-                })}`,
-              );
-            } else if (localSourceMessage.localState !== 'CONFIRMED') {
-              await tx
-                .update(tables.message)
-                .set({ localState: 'CONFIRMED', updatedAt: new Date() })
-                .where(eq(tables.message.id, localSourceMessage.id));
-            }
-            if (sequencePolicy) {
-              await DeletedMessageService.lockFederatedIdentity(
-                tx,
-                route.threadId,
-                domain,
-                token.namespaceId,
-                item.seq,
-              );
-            }
-            const existingReceipt =
-              await tx.query.federationMessageReceipt.findFirst({
-                where: and(
-                  eq(
-                    tables.federationMessageReceipt.namespaceId,
-                    token.namespaceId,
-                  ),
-                  eq(tables.federationMessageReceipt.threadId, route.threadId),
-                  eq(tables.federationMessageReceipt.peerSeq, item.seq),
-                ),
-                columns: { messageId: true },
-              });
-            if (
-              existingReceipt &&
-              existingReceipt.messageId !== localSourceMessage.id
-            ) {
-              throw new BusinessException(
-                BusinessCode.FEDERATION_MALFORMED,
-                'conflicting processing receipt coordinate',
-                HttpStatus.BAD_REQUEST,
-              );
-            }
-            if (!existingReceipt) {
-              await tx.insert(tables.federationMessageReceipt).values({
-                namespaceId: token.namespaceId,
-                threadId: route.threadId,
-                peerSeq: item.seq,
-                messageId: localSourceMessage.id,
-              });
-            }
-            await this.deletedMessages.applyPendingReceiptInTx(tx, {
-              threadId: route.threadId,
-              peerSeq: item.seq,
-              peerDomain: domain,
-              namespaceId: token.namespaceId,
-              authority:
-                'peerAccount' in item.thread ? 'P2P_HOME' : 'GROUP_ORIGIN',
-              expectedFederationVersion: route.federationVersion,
-              threadLock: options.threadLock,
-            });
-            // Only the group's authoritative server can confirm a local submission.
-            // Other receipts retain peer-coordinate aliases for reference resolution;
-            // they cannot overwrite the original message's authority coordinate.
-            const [authoritativeGroup] =
-              route.profileNamespaceId === 0 && !('peerAccount' in item.thread)
-                ? await tx
-                    .select({ id: groupStateTable.id })
-                    .from(tables.messageThread)
-                    .innerJoin(
-                      groupStateTable,
-                      eq(groupStateTable.id, tables.messageThread.id),
-                    )
-                    .where(
-                      and(
-                        eq(tables.messageThread.id, route.threadId),
-                        eq(groupStateFields.domain, domain),
-                        eq(groupStateFields.namespaceId, token.namespaceId),
-                      ),
-                    )
-                    .limit(1)
-                : [];
-            if (authoritativeGroup) {
-              const confirmed = await tx
-                .update(tables.message)
-                .set({
-                  originSeq: item.seq,
-                  originServerTime: sourceTime,
-                  publisherNamespaceId: token.namespaceId,
-                })
-                .where(
-                  and(
-                    eq(tables.message.id, localSourceMessage.id),
-                    or(
-                      eq(tables.message.publisherNamespaceId, 0),
-                      and(
-                        eq(
-                          tables.message.publisherNamespaceId,
-                          token.namespaceId,
-                        ),
-                        eq(tables.message.originSeq, item.seq),
-                        eq(tables.message.originServerTime, sourceTime),
-                      ),
-                    ),
-                  ),
-                )
-                .returning({ id: tables.message.id });
-              if (confirmed.length !== 1) {
-                throw new BusinessException(
-                  BusinessCode.FEDERATION_MALFORMED,
-                  'conflicting authoritative group confirmation',
-                  HttpStatus.BAD_REQUEST,
-                );
-              }
-            }
-            continue;
-          }
-          this.logger.warn(
-            `processing receipt has no matching published message: ${federatedMessageLogContext(
+          await this.inboundMessageStore.applyProcessingReceipt(tx, {
+            threadLock: options.threadLock,
+            threadId: route.threadId,
+            creatorAccount: route.creatorAccount,
+            profileNamespaceId: route.profileNamespaceId,
+            federationVersion: route.federationVersion,
+            fetchedFromDomain: domain,
+            namespaceId: token.namespaceId,
+            peerSeq: item.seq,
+            originSeq: item.originSeq,
+            originCreatedAt: item.originCreatedAt,
+            isP2PThread: 'peerAccount' in item.thread,
+            logContext: federatedMessageLogContext(
               domain,
               item,
               'LOCAL_SOURCE_MESSAGE_NOT_FOUND',
-            )}`,
-          );
+            ),
+            sourceTime,
+            wireDigest,
+            sequencePolicy,
+          });
           continue;
         }
         if (item.originSeq !== null || item.originCreatedAt !== null) {
@@ -454,39 +374,6 @@ export class FederationInboundMessagePageService {
           }
           continue;
         }
-
-        let forwardCard: FederatedForwardCard | undefined;
-        let forwardClosure: InboundForwardWireBundle | undefined;
-        if (item.contentType === ContentType.FORWARD) {
-          try {
-            forwardCard = JSON.parse(item.content) as FederatedForwardCard;
-          } catch {
-            throw new BusinessException(
-              BusinessCode.FEDERATION_MALFORMED,
-              'invalid FORWARD card JSON',
-              HttpStatus.BAD_REQUEST,
-            );
-          }
-          if (
-            typeof forwardCard.bundleId !== 'string' ||
-            Object.keys(forwardCard).some((key) => key !== 'bundleId')
-          ) {
-            throw new BusinessException(
-              BusinessCode.FEDERATION_MALFORMED,
-              'invalid FORWARD card shape',
-              HttpStatus.BAD_REQUEST,
-            );
-          }
-          forwardClosure = prefetchedForwardClosures.get(itemIndex);
-          if (!forwardClosure) {
-            throw new BusinessException(
-              BusinessCode.FEDERATION_MALFORMED,
-              'FORWARD closure was not prefetched',
-              HttpStatus.BAD_REQUEST,
-            );
-          }
-        }
-
         const stored = await this.inboundMessageStore.store(tx, {
           threadLock: options.threadLock,
           threadId: route.threadId,
@@ -520,6 +407,7 @@ export class FederationInboundMessagePageService {
             toAccount: route.toAccount,
           },
           sequencePolicy,
+          contentDigest: wireDigest,
         });
         if (stored.kind === 'pending') {
           effects.push({
@@ -535,7 +423,6 @@ export class FederationInboundMessagePageService {
           });
           continue;
         }
-
         let deletionSeq: number | undefined;
         if (stored.message.isDeleted) {
           const deletion = await tx.query.deletedMessage.findFirst({
@@ -570,7 +457,9 @@ export class FederationInboundMessagePageService {
           author,
           message: stored.message,
           ...(profileDemand ? { profileDemand } : {}),
-          ...(profileEvidenceProjection ? { profileEvidenceProjection } : {}),
+          ...(profileEvidenceProjection
+            ? { profileEvidenceProjection }
+            : {}),
           deletionSeq,
           forwardClosure,
           remoteForwardBundleId: forwardCard?.bundleId,
@@ -583,7 +472,11 @@ export class FederationInboundMessagePageService {
           error.bizCode === BusinessCode.FEDERATION_MALFORMED
         ) {
           this.logger.warn(
-            `ignored invalid federated message (FEDERATION_MALFORMED): ${federatedMessageLogContext(domain, item, error)}`,
+            `ignored invalid federated message (FEDERATION_MALFORMED): ${federatedMessageLogContext(
+              domain,
+              item,
+              error,
+            )}`,
           );
           continue;
         }
@@ -665,81 +558,3 @@ export class FederationInboundMessagePageService {
   }
 }
 
-/** Build a bounded, control-character-free diagnostic for untrusted message items. */
-function federatedMessageLogContext(
-  peerDomain: string,
-  item: unknown,
-  error: unknown,
-): string {
-  const record = logRecord(item);
-  const content =
-    typeof record?.['content'] === 'string' ? record['content'] : undefined;
-  const author = logAddress(record?.['author']);
-  const thread = logThread(record?.['thread']);
-  const reason =
-    error instanceof Error
-      ? `${safeLogText(error.name, 80)}: ${safeLogText(error.message, 320)}`
-      : safeLogText(error, 320);
-  return JSON.stringify({
-    peerDomain: safeLogText(peerDomain, 253),
-    seq: safeLogText(record?.['seq'], 32),
-    contentType: safeLogText(record?.['contentType'], 80),
-    ...(content === undefined
-      ? {}
-      : {
-          contentBytes: Buffer.byteLength(content),
-          contentSha256: createHash('sha256').update(content).digest('hex'),
-        }),
-    ...(author === undefined ? {} : { author }),
-    ...(thread === undefined ? {} : { thread }),
-    reason,
-  });
-}
-
-function logRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function logAddress(value: unknown): Record<string, string> | undefined {
-  const record = logRecord(value);
-  if (!record) return undefined;
-  return {
-    account: safeLogText(record['account'], 128),
-    namespaceId: safeLogText(record['namespaceId'], 32),
-  };
-}
-
-function logThread(value: unknown): Record<string, unknown> | undefined {
-  const record = logRecord(value);
-  if (!record) return undefined;
-  const type = safeLogText(record['type'], 32);
-  if (type === 'GROUP') {
-    return {
-      type,
-      account: safeLogText(record['account'], 128),
-      domain: safeLogText(record['domain'], 253),
-    };
-  }
-  if (type === 'P2P') {
-    const participants = Array.isArray(record['participants'])
-      ? record['participants']
-          .slice(0, 2)
-          .map(logAddress)
-          .filter((address) => address !== undefined)
-      : [];
-    return { type, participants };
-  }
-  return { type };
-}
-
-function safeLogText(value: unknown, maxLength: number): string {
-  const text =
-    typeof value === 'string'
-      ? value
-      : typeof value === 'number' || typeof value === 'bigint'
-        ? String(value)
-        : '';
-  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, '�').slice(0, maxLength);
-}
