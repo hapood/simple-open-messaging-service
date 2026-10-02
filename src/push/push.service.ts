@@ -3,7 +3,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { configDirectory } from '../common/data-directory.js';
 import {
   HttpStatus,
-  Inject,
   Injectable,
   Logger,
   Optional,
@@ -203,12 +202,10 @@ export class PushService implements OnModuleDestroy {
     private readonly database: DatabaseService,
     private readonly sse: SseService,
     private readonly settings: SettingsService,
-    @Optional()
-    @Inject('SOMS_TEST_FIREBASE_SERVICE_ACCOUNT_PATH')
-    testFirebaseServiceAccountPath?: string,
+    @Optional() fcmCredentialPathOverride?: string,
   ) {
     this.fcmCredentialPath =
-      testFirebaseServiceAccountPath ??
+      fcmCredentialPathOverride ??
       configDirectory('firebase-service-account.json');
     if (existsSync(this.fcmCredentialPath)) {
       process.env.GOOGLE_APPLICATION_CREDENTIALS = this.fcmCredentialPath;

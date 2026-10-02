@@ -13,6 +13,7 @@ import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AllExceptionsFilter } from '../common/exception.filter.js';
 import { BusinessCode } from '../common/business-code.js';
+import { DatabaseService } from '../database/database.service.js';
 import {
   AuthPolicyRegistry,
   AUTH_RATE_LIMIT_POLICIES,
@@ -133,8 +134,21 @@ async function createApp(
       ClientIdentityService,
       RateLimitModeService,
       {
-        provide: 'SOMS_TEST_RATE_LIMIT_CONFIGURATION',
-        useValue: configuration,
+        // Cover the production configuration path (defaults -> DB override):
+        // the stub answers the systemSetting row the service loads in
+        // onModuleInit, replacing the former SOMS_TEST_* token seam.
+        provide: DatabaseService,
+        useValue: {
+          db: {
+            query: {
+              systemSetting: {
+                findFirst: async () => ({
+                  value: JSON.stringify(configuration),
+                }),
+              },
+            },
+          },
+        },
       },
       RateLimitService,
       AuthPolicyRegistry,

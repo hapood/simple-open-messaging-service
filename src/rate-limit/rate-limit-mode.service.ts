@@ -1,10 +1,4 @@
-import {
-  Inject,
-  Injectable,
-  Logger,
-  OnModuleInit,
-  Optional,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { systemSetting } from '../database/schema.js';
@@ -84,19 +78,12 @@ export class RateLimitModeService implements OnModuleInit {
   private readonly logger = new Logger(RateLimitModeService.name);
   private configs: Record<string, AuthRateLimitConfig>;
 
-  constructor(
-    @Optional() private readonly database?: DatabaseService,
-    @Optional()
-    @Inject('SOMS_TEST_RATE_LIMIT_CONFIGURATION')
-    private readonly testConfiguration?: unknown,
-  ) {
-    this.configs = testConfiguration
-      ? parseConfigurationInput(testConfiguration)
-      : defaultConfigs();
+  constructor(@Optional() private readonly database?: DatabaseService) {
+    this.configs = defaultConfigs();
   }
 
   async onModuleInit(): Promise<void> {
-    if (this.database && !this.testConfiguration) {
+    if (this.database) {
       const row = await this.database.db.query.systemSetting.findFirst({
         where: eq(systemSetting.key, AUTH_RATE_LIMIT_SETTING_KEY),
       });

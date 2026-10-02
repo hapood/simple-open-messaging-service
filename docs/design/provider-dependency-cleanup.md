@@ -126,14 +126,16 @@ npx madge --circular --extensions ts src
 Goal: turn the module graph into a DAG and delete both module-level
 `forwardRef` imports.
 
-- [ ] `UploadModule` becomes the CAS core (`UploadService`,
+- [x] `UploadModule` becomes the CAS core (`UploadService`,
       `MediaAssetService`, `MediaAccessService`, `MediaMetadataService`); imports
       only `QuotaModule`. `bootstrap.ts` keeps resolving `MediaAccessService` via
       `app.get()`.
-- [ ] New `ResumableUploadModule` owns `ResumableUploadService` +
+- [x] New `ResumableUploadModule` owns `ResumableUploadService` +
       `UploadController` (the staged-send-to-message promotion that needs
       `MessageService`); imports `UploadModule`, `MessageModule`, `QuotaModule`.
-- [ ] `LinkPreviewModule` and `UploadModule` drop their `forwardRef` imports;
+      `AdminModule` imports it for `MediaTransferAdminController`; `AppModule`
+      registers `UploadController` from it.
+- [x] `LinkPreviewModule` and `UploadModule` drop their `forwardRef` imports;
       resulting chain is
       `ResumableUpload → Message → LinkPreview → Upload → Quota`.
 
@@ -148,16 +150,19 @@ npx vitest run src/upload src/link-preview src/message
 
 Goal: zero test vocabulary in production constructors.
 
-- [ ] `src/settings/settings.service.ts`: delete `SOMS_TEST_VAPID_KEY_PATH`
-      and `SOMS_TEST_FIREBASE_CLIENT_PATH` parameters; use `VAPID_PATH` /
-      `FIREBASE_CLIENT_PATH` directly (both tokens are dead).
-- [ ] `src/push/push.service.ts`: delete
-      `SOMS_TEST_FIREBASE_SERVICE_ACCOUNT_PATH`; use
-      `configDirectory('firebase-service-account.json')` directly (dead token).
-- [ ] `src/rate-limit/rate-limit-mode.service.ts`: delete the
+- [x] `src/settings/settings.service.ts`: replace the
+      `SOMS_TEST_VAPID_KEY_PATH` / `SOMS_TEST_FIREBASE_CLIENT_PATH` tokens with
+      neutral `@Optional()` path-override parameters (`vapidPathOverride`,
+      `firebaseClientPathOverride`). The DI tokens were dead, but the specs
+      inject the paths positionally — the seam itself is a legitimate
+      configuration override once the test vocabulary is gone.
+- [x] `src/push/push.service.ts`: same replacement
+      (`fcmCredentialPathOverride`); the spec injects a non-existent path to
+      keep FCM unconfigured in unit tests.
+- [x] `src/rate-limit/rate-limit-mode.service.ts`: delete the
       `testConfiguration` parameter; `onModuleInit` guard becomes
       `if (this.database)`.
-- [ ] `src/rate-limit/rate-limit.http.spec.ts`: instead of the token, provide
+- [x] `src/rate-limit/rate-limit.http.spec.ts`: instead of the token, provide
       a `DatabaseService` stub whose `db.query.systemSetting.findFirst` resolves
       the configured `rateLimit:authPolicies` row, so the suite covers the
       production `defaultConfigs() → DB override` path.

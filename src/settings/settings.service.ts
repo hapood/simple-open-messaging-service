@@ -1,10 +1,4 @@
-import {
-  Inject,
-  Injectable,
-  Logger,
-  OnModuleInit,
-  Optional,
-} from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import {
   existsSync,
   mkdirSync,
@@ -66,16 +60,12 @@ export class SettingsService implements OnModuleInit {
 
   constructor(
     private readonly database: DatabaseService,
-    @Optional()
-    @Inject('SOMS_TEST_VAPID_KEY_PATH')
-    private readonly testVapidPath?: string,
-    @Optional()
-    @Inject('SOMS_TEST_FIREBASE_CLIENT_PATH')
-    private readonly testFirebaseClientPath?: string,
+    @Optional() private readonly vapidPathOverride?: string,
+    @Optional() private readonly firebaseClientPathOverride?: string,
   ) {}
 
   private get vapidPath(): string {
-    return this.testVapidPath ?? VAPID_PATH;
+    return this.vapidPathOverride ?? VAPID_PATH;
   }
 
   async onModuleInit(): Promise<void> {
@@ -314,7 +304,7 @@ export class SettingsService implements OnModuleInit {
   /** Read + parse data/google-services.json. A missing file is the normal "not yet configured" case.
    *  A malformed file is warned. Never throws — a bad file leaves FCM unconfigured, never crashes boot. */
   private loadFirebaseClientConfig(): FirebaseClientConfig | null {
-    const p = this.testFirebaseClientPath ?? FIREBASE_CLIENT_PATH;
+    const p = this.firebaseClientPathOverride ?? FIREBASE_CLIENT_PATH;
     let raw: string;
     try {
       raw = readFileSync(p, 'utf8');
