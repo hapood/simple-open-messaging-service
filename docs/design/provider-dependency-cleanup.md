@@ -178,18 +178,26 @@ npx vitest run src/rate-limit src/settings src/push
 
 Goal: no new cycles land.
 
-- [ ] Add a check (npm script + CI step) running
+- [x] Add a check (npm script + CI step) running
       `madge --circular --extensions ts src` and failing on any runtime cycle.
-- [ ] Decide the type-only policy: either configure the gate to skip
+      Added `npm run check:cycles` (devDep `madge@8`) + a `Check circular
+    dependencies` step in `.github/workflows/ci.yml`.
+- [x] Decide the type-only policy: either configure the gate to skip
       type-only imports until Section 5 clears them, or fix Section 5 first.
+      Fixed Section 5 first (see below); the gate runs plain `madge` with no
+      skip and reports zero cycles on `src/`.
 
 ## 5. Deferred hygiene (non-blocking)
 
 - [ ] Slim `FederationService` (29 constructor dependencies, 63 methods):
       move owned logic into capability services; keep a thin delegation facade.
-- [ ] Replace the type-only imports of `FederationService` in the
+- [x] Replace the type-only imports of `FederationService` in the
       membership-intent / user-intent family with a narrow state-feed push
-      publisher leaf (clears the remaining madge cycles).
+      publisher leaf (clears the remaining madge cycles). Done: the
+      `FederationStateFeedPusher` seam in
+      `src/federation/federation-state-feed.events.ts` is satisfied
+      structurally by `FederationService`; `madge --circular` now reports zero
+      cycles.
 - [ ] Revisit `FederationThreadAccessService` (fan-in 10): if capture
       delegation pressure returns, extract a `PeerContextService` leaf.
 - [ ] Add class doc comments to the services that still lack them
