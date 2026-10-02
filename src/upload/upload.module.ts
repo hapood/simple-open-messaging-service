@@ -1,34 +1,23 @@
-import { forwardRef, Module } from '@nestjs/common';
-import { UploadController } from './upload.controller.js';
+import { Module } from '@nestjs/common';
 import { UploadService } from './upload.service.js';
 import { MediaAssetService } from './media-asset.service.js';
 import { MediaAccessService } from './media-access.service.js';
-import { MessageModule } from '../message/message.module.js';
-import { QuotaModule } from '../quota/quota.module.js';
-import { ResumableUploadService } from './resumable-upload.service.js';
 import { MediaMetadataService } from './media-metadata.service.js';
 
 @Module({
-  // MessageModule provides MessageService — the media upload routes promote a staged send to a real
-  // Message when the request carries an x-client-message-id header.
-  // forwardRef breaks the module cycle Upload -> Message -> LinkPreview -> Upload. The callback also
-  // defers the ESM binding read until every module has finished initializing.
-  imports: [forwardRef(() => MessageModule), QuotaModule],
-  controllers: [UploadController],
+  // CAS core: content-addressed media storage and authorization. The staged
+  // send promotion routes and ResumableUploadService live in
+  // ResumableUploadModule, which sits on top of this module and MessageModule
+  // so no module below MessageModule imports it back.
+  controllers: [],
   providers: [
     UploadService,
     MediaAssetService,
     MediaAccessService,
-    ResumableUploadService,
     MediaMetadataService,
   ],
   // MediaAccessService is exported so bootstrap.ts can resolve it via app.get() for the /uploads/
   // preHandler gate (the gate runs outside DI's request scope, on the Fastify root instance).
-  exports: [
-    UploadService,
-    MediaAccessService,
-    MediaAssetService,
-    ResumableUploadService,
-  ],
+  exports: [UploadService, MediaAccessService, MediaAssetService],
 })
 export class UploadModule {}

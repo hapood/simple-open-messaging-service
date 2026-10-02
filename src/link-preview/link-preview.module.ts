@@ -1,4 +1,4 @@
-import { forwardRef, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { SafeFetchService } from './safe-fetch.service.js';
 import { OpenGraphService } from './open-graph.service.js';
 import { LinkPreviewService } from './link-preview.service.js';
@@ -11,9 +11,10 @@ import { UploadModule } from '../upload/upload.module.js';
  * exported for LINK send consumption and temporary preview-asset authorization.
  */
 @Module({
-  // LinkPreviewService stores fetched card assets in CAS. forwardRef pairs with UploadModule's deferred
-  // MessageModule import to break Upload -> Message -> LinkPreview -> Upload under native ESM initialization.
-  imports: [forwardRef(() => UploadModule)],
+  // LinkPreviewService stores fetched card assets in CAS. With the staged
+  // send promotion split into ResumableUploadModule, UploadModule no longer
+  // imports MessageModule and this is a plain downward import.
+  imports: [UploadModule],
   controllers: [LinkPreviewController],
   providers: [SafeFetchService, OpenGraphService, LinkPreviewService],
   exports: [LinkPreviewService],

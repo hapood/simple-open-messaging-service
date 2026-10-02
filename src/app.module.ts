@@ -13,6 +13,7 @@ import { ProfileNamespaceController } from './controller/profile-namespace.contr
 import { GroupModule } from './group/group.module.js';
 import { GroupController } from './controller/group.controller.js';
 import { UploadModule } from './upload/upload.module.js';
+import { ResumableUploadModule } from './upload/resumable-upload.module.js';
 import { KvStoreModule } from './kv-store/kv-store.module.js';
 import { AdminModule } from './admin/admin.module.js';
 import { AccountThreadStateModule } from './account-thread-state/account-thread-state.module.js';
@@ -61,6 +62,8 @@ import { DurableTaskSchedulerService } from './durable-task/durable-task-schedul
     MessageModule,
     GroupModule,
     UploadModule,
+    // UploadController (staged send promotion) registers from here.
+    ResumableUploadModule,
     AdminModule,
     AccountThreadStateModule,
     RelationshipModule,

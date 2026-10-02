@@ -32,6 +32,7 @@ import { UserManageModule } from '../user-manage/user-manage.module.js';
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { PushModule } from '../push/push.module.js';
 import { UploadModule } from '../upload/upload.module.js';
+import { ResumableUploadModule } from '../upload/resumable-upload.module.js';
 import { KvStoreModule } from '../kv-store/kv-store.module.js';
 import { DiagnosticsModule } from '../diagnostics/diagnostics.module.js';
 import { AdminDiagnosticsController } from '../diagnostics/diagnostics-admin.controller.js';
@@ -57,6 +58,8 @@ import { MediaStorageStatsService } from './media-storage-stats.service.js';
     // PushService (exported by PushModule) powers admin/push device-token management + test pushes.
     PushModule,
     UploadModule,
+    // ResumableUploadService backs MediaTransferAdminController (export/import transfer).
+    ResumableUploadModule,
     // KvStoreService backs ThrottleGuard's counters (admin/login failure rate-limiting).
     KvStoreModule,
     // DiagnosticsService + DiagnosticsGcService back AdminDiagnosticsController (list/download/gc).
