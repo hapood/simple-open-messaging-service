@@ -44,7 +44,7 @@ interface WellKnownKey {
 
 interface WellKnownDocument {
   protocolVersions: number[];
-  rootKey: { ed25519: string };
+  roots: Array<{ ed25519: string; notBefore: number; notAfter: number }>;
   keys: WellKnownKey[];
 }
 
@@ -133,8 +133,9 @@ describe('database-backed signing-key rotation', () => {
         SOMS_FEDERATION_PREDECESSOR_RETENTION_MS: RETENTION_MS,
         SOMS_FEDERATION_CLOCK_SKEW_BUDGET_MS: SKEW_MS,
         // Inbound Health is strictly cached-only (never triggers discovery), so the
-        // receiver learns the rotated key only through its own proactive refresh rounds.
-        // Compress that cadence too, or the compressed switch window outruns it.
+        // receiver learns the rotated key only through the Health round's coverage-based
+        // certificate refresh. Compress that cadence too, or the compressed switch
+        // window outruns it.
         SOMS_FEDERATION_KEY_REFRESH_POLL_MS: '2000',
       },
     }));
@@ -179,8 +180,11 @@ describe('database-backed signing-key rotation', () => {
       (observed) => observed.length === 2,
     );
     const doc = await wellKnown();
+    const claimableRoot = doc.roots.find(
+      (root) => root.notBefore <= Date.now() && Date.now() < root.notAfter,
+    )!;
     for (const certificate of keys) {
-      expect(verifySigningCertificate(certificate, doc.rootKey.ed25519)).toBe(
+      expect(verifySigningCertificate(certificate, claimableRoot.ed25519)).toBe(
         true,
       );
     }
@@ -212,8 +216,9 @@ describe('database-backed signing-key rotation', () => {
     );
     expect(keys.some((key) => key.keyId === firstKeyId)).toBe(true);
 
-    // A NEW signed request uses the successor; the peer accepts it — from cache or via a
-    // key-miss well-known refresh — without any Recognize restart or lifecycle disturbance.
+    // A NEW signed request uses the successor; the peer accepts it — the successor
+    // certificate was pulled by the Health round's coverage-based refresh — without
+    // any Recognize restart or lifecycle disturbance.
     await resolveResolved();
     const peerOnB = await appB.database.query.identityNamespace.findFirst({
       where: and(
@@ -228,11 +233,13 @@ describe('database-backed signing-key rotation', () => {
   }, 30_000);
 
   it('removes the predecessor after its advertised notAfter', async () => {
-    // key1 stops being published at its notAfter (already stored; ~t0+30s) and its row —
-    // including private material — is deleted by the maintenance tick. With a continuous
-    // rotation the published set never returns to one certificate: each successor is
-    // prepublished before its predecessor expires, so the assertion targets the
-    // predecessor itself, not the set size.
+    // key1 stops being published at its notAfter (already stored; ~t0+30s). With a
+    // continuous rotation the published set never returns to one certificate: each
+    // successor is prepublished before its predecessor expires, so the assertion
+    // targets the predecessor itself, not the set size. Expired key rows are
+    // retained by design (sealed-challenge history), so we assert the predecessor
+    // is gone from the published set and that its row has expired, not that the
+    // row was deleted.
     expect(Date.now()).toBeLessThan(firstKeyNotAfter + 30_000);
     const keys = await pollWellKnown(
       30_000,
@@ -240,6 +247,8 @@ describe('database-backed signing-key rotation', () => {
     );
     expect(keys.length).toBeGreaterThanOrEqual(1);
     const state = await currentState();
-    expect(state.keyRows.map((row) => row.keyId)).not.toContain(firstKeyId);
+    const predecessorRow = state.keyRows.find((row) => row.keyId === firstKeyId);
+    expect(predecessorRow).toBeDefined();
+    expect(predecessorRow!.notAfter.getTime()).toBeLessThanOrEqual(Date.now());
   }, 45_000);
 });

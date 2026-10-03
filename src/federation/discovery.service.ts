@@ -3,7 +3,6 @@ import {
   Injectable,
   Logger,
   OnApplicationShutdown,
-  OnModuleInit,
 } from '@nestjs/common';
 import { lookup, type LookupAddress } from 'node:dns';
 import { resolveSrv } from 'node:dns/promises';
@@ -23,7 +22,6 @@ import { loadFederationConfig } from './federation.config.js';
 import { parseKeyId } from './key-id.js';
 import {
   continuousCoverageEnd,
-  type CoverageInterval,
 } from './peer-key-coverage.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { KeypairService } from './keypair.service.js';
@@ -31,7 +29,7 @@ import { selectFederationProtocolVersion } from './federation-protocol.js';
 import { FederationHttpScheduler } from './federation-http-scheduler.js';
 
 /** Minimum spacing between two well-known refresh attempts for one peer, shared by the
- *  inbound key-miss path and the proactive scheduler. */
+ *  inbound key-miss path and the maintenance entry point. */
 const REFRESH_MIN_SPACING_MS = 30_000;
 const DOMAIN_RE =
   /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/;
@@ -74,14 +72,13 @@ interface CachedRoute {
 }
 
 @Injectable()
-export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
+export class DiscoveryService implements OnApplicationShutdown {
   private readonly logger = new Logger(DiscoveryService.name);
   private readonly config = loadFederationConfig();
   private readonly routes = new Map<string, CachedRoute>();
   /** Single-flight well-known refreshes keyed by `<domain>#<namespaceId>`. */
   private readonly refreshInFlight = new Map<string, Promise<void>>();
   private readonly lastRefreshAttemptAt = new Map<string, number>();
-  private refreshTimer: NodeJS.Timeout | undefined;
 
   constructor(
     private readonly database: DatabaseService,
@@ -90,45 +87,45 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
     private readonly transportConfig: FederationTransportConfigService,
   ) {}
 
-  /** The proactive refresh round runs on a self-scheduling (unref'd) timer so the
-   *  interval follows the configured poll cadence instead of a hard-coded decorator
-   *  constant. Started by the Nest lifecycle, so plain unit-test constructions stay
-   *  timer-free. */
-  onModuleInit(): void {
-    this.schedulePeriodicRefresh();
-  }
-
   onApplicationShutdown(): void {
-    if (this.refreshTimer) clearTimeout(this.refreshTimer);
-    this.refreshTimer = undefined;
+    this.invalidateAllRoutes();
   }
 
-  private schedulePeriodicRefresh(): void {
-    const timer = setTimeout(() => {
-      this.periodicRefresh();
-      this.schedulePeriodicRefresh();
-    }, this.config.peerKeyRefreshPollMs);
-    timer.unref?.();
-    this.refreshTimer = timer;
-  }
-
-  periodicRefresh(): void {
-    void this.refreshDuePeers().catch((error) =>
-      this.logger.warn(
-        `proactive key-refresh round failed: ${(error as Error).message}`,
-      ),
-    );
-  }
-
-  /** Resolve the mandatory SOMFP SRV record while keeping the logical peer as HTTP/TLS authority. */
+  /** Resolve the mandatory SOMFP SRV record while keeping the logical peer as HTTP/TLS authority.
+   *  The route is cached in memory and refreshed explicitly by {@link refreshRoute}; there is no
+   *  lazy TTL. {@link refreshRoute} is driven by the Health round so SRV changes propagate at the
+   *  Health cadence without every request re-querying DNS. */
   async resolveBase(domain: string): Promise<string> {
     const normalized = this.normalizeDomain(domain);
-    const ttlMs = this.transportConfig.get().keyCacheTtlSec * 1000;
     const cached = this.routes.get(normalized);
-    if (cached && Date.now() - cached.fetchedAt < ttlMs) return cached.baseUrl;
+    if (cached) return cached.baseUrl;
+    return this.buildRoute(normalized);
+  }
 
+  /** Force a fresh SRV lookup for one peer, replacing the cached route (and its connection
+   *  pool) when the published target changes. Called by the Health round so SRV edits land at
+   *  the Health cadence. A failed lookup leaves the previous route in place when one exists. */
+  async refreshRoute(domain: string): Promise<void> {
+    const normalized = this.normalizeDomain(domain);
+    try {
+      await this.buildRoute(normalized, /* replace */ true);
+    } catch (error) {
+      if (!this.routes.has(normalized)) throw error;
+      this.logger.warn(
+        `SRV refresh for ${normalized} failed, keeping cached route: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  /** Build (or rebuild) the cached route. When `replace` is set and the SRV target changed,
+   *  the previous dispatcher is closed so its connection pool is reclaimed. */
+  private async buildRoute(
+    normalized: string,
+    replace = false,
+  ): Promise<string> {
     const devRoute = this.config.devRoutes[normalized];
     if (devRoute) {
+      this.maybeClosePreviousDispatcher(normalized, replace);
       this.routes.set(normalized, {
         baseUrl: devRoute,
         connectHost: new URL(devRoute).hostname,
@@ -138,6 +135,7 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
     }
 
     if (this.config.allowInsecureHttp) {
+      this.maybeClosePreviousDispatcher(normalized, replace);
       const baseUrl = `http://${normalized}`;
       this.routes.set(normalized, {
         baseUrl,
@@ -191,14 +189,30 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
       selected.port === 443
         ? `https://${normalized}`
         : `https://${normalized}:${selected.port}`;
+    const previous = replace ? this.routes.get(normalized) : undefined;
+    // Reuse the previous dispatcher when the connect target is unchanged so the
+    // keep-alive pool stays warm across Health-driven SRV refreshes.
+    const dispatcher =
+      previous && previous.connectHost === connectHost
+        ? previous.dispatcher
+        : this.createDispatcher(normalized, connectHost);
+    this.maybeClosePreviousDispatcher(normalized, replace, previous);
     const route: CachedRoute = {
       baseUrl,
       connectHost,
       fetchedAt: Date.now(),
+      dispatcher,
     };
-    route.dispatcher = this.createDispatcher(normalized, connectHost);
     this.routes.set(normalized, route);
     return baseUrl;
+  }
+
+  private maybeClosePreviousDispatcher(
+    normalized: string,
+    replace: boolean,
+    previous: CachedRoute | undefined = this.routes.get(normalized),
+  ): void {
+    if (replace && previous?.dispatcher) void previous.dispatcher.close();
   }
 
   invalidateBase(domain: string): void {
@@ -333,20 +347,22 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
     return doc as WellKnownDoc;
   }
 
+  /** Read-only cached-key lookup used by the inbound signature path. A miss is NOT
+   *  repaired here: certificate freshness is owned by the Health round (and by the
+   *  Recognize bootstrap, which fetches before first use). A missing or expired
+   *  certificate surfaces to the caller as a 401 FEDERATION_BAD_SIGNATURE, which is
+   *  the protocol-correct outcome for an unpublished keyId; a key the peer rotated to
+   *  but the local cache has not yet adopted is filled by the next Health refresh. */
   async getPublicKey(
     domain: string,
     namespaceId: number,
     keyId: string,
   ): Promise<Uint8Array | null> {
-    const normalized = this.normalizeDomain(domain);
-    const cached = await this.cachedPublicKey(normalized, namespaceId, keyId);
-    if (cached) return cached;
-    // Non-Health key miss: single-flight, rate-limited well-known refresh, then
-    // re-resolve from the atomically replaced cache set. A miss that survives the
-    // refresh surfaces to the caller as FEDERATION_BAD_SIGNATURE (401); a fetch
-    // failure propagates as the retryable key-fetch failure (503).
-    await this.refreshPeerKeys(normalized, namespaceId);
-    return this.cachedPublicKey(normalized, namespaceId, keyId);
+    return this.cachedPublicKey(
+      this.normalizeDomain(domain),
+      namespaceId,
+      keyId,
+    );
   }
 
   private async cachedPublicKey(
@@ -412,99 +428,46 @@ export class DiscoveryService implements OnModuleInit, OnApplicationShutdown {
     return flight;
   }
 
-  /** Proactive refresh scheduling: a peer is due when its cached certificate set has no
-   *  current coverage, when the continuous coverage ends within the configured key-cache
-   *  TTL window, or when the cached set is older than that TTL. Coverage is computed from
-   *  the whole set — never from a guessed remote active key or only the largest notAfter. */
-  async refreshDuePeers(): Promise<void> {
-    if (!this.keypair.getStatus().available) return;
+  /** Coverage-based certificate refresh gate, driven by the Health round. Returns true when a
+   *  well-known refresh was started (or already in flight) for this peer. A peer is due when its
+   *  cached certificate set has no current coverage, or the continuous coverage ends within the
+   *  configured refresh window. Coverage is computed from the whole set keyed by namespace — never
+   *  from a guessed remote active key or only the largest notAfter. Maintenance only: the caller's
+   *  Health result stands regardless of the returned promise. */
+  async refreshPeerCertificateIfNeeded(
+    domain: string,
+    namespaceId: number,
+  ): Promise<boolean> {
+    const normalized = this.normalizeDomain(domain);
+    const scope = `${normalized}#${namespaceId}`;
+    if (this.refreshInFlight.has(scope)) return true;
+    const lastAttempt = this.lastRefreshAttemptAt.get(scope) ?? 0;
+    if (Date.now() - lastAttempt < REFRESH_MIN_SPACING_MS) return false;
     const rows = await this.database.db
       .select({
-        domain: tables.s2SKeyCache.domain,
-        namespaceId: tables.s2SKeyCache.namespaceId,
         notBefore: tables.s2SKeyCache.notBefore,
         notAfter: tables.s2SKeyCache.notAfter,
-        fetchedAt: tables.s2SKeyCache.fetchedAt,
       })
-      .from(tables.s2SKeyCache);
+      .from(tables.s2SKeyCache)
+      .where(eq(tables.s2SKeyCache.namespaceId, namespaceId));
     const now = Date.now();
-    const ttlMs = this.transportConfig.get().keyCacheTtlSec * 1000;
-    const byScope = new Map<
-      string,
-      {
-        domain: string;
-        namespaceId: number;
-        intervals: CoverageInterval[];
-        fetchedAt: number;
-      }
-    >();
-    for (const row of rows) {
-      const scope = `${row.domain}#${row.namespaceId}`;
-      const entry = byScope.get(scope) ?? {
-        domain: row.domain,
-        namespaceId: row.namespaceId,
-        intervals: [],
-        fetchedAt: 0,
-      };
-      entry.intervals.push({
+    const coverageEnd = continuousCoverageEnd(
+      rows.map((row) => ({
         notBefore: row.notBefore.getTime(),
         notAfter: row.notAfter.getTime(),
-      });
-      entry.fetchedAt = Math.max(entry.fetchedAt, row.fetchedAt.getTime());
-      byScope.set(scope, entry);
-    }
-    for (const peer of byScope.values()) {
-      const coverageEnd = continuousCoverageEnd(peer.intervals, now);
-      const due =
-        coverageEnd === null ||
-        coverageEnd - now <= ttlMs ||
-        now - peer.fetchedAt > ttlMs;
-      if (due) {
-        void this.refreshPeerKeys(peer.domain, peer.namespaceId).catch(
-          (error) =>
-            this.logger.warn(
-              `proactive key refresh failed for ${peer.domain}: ${(error as Error).message}`,
-            ),
-        );
-      }
-    }
-  }
-
-  /** Maintenance hook after a successful outbound Health round trip: pull the peer's
-   *  certificate set forward promptly when its coverage is about to end, without letting
-   *  the refresh turn the successful Health result into a failure. */
-  refreshAfterHealthSuccess(domain: string, namespaceId: number): void {
-    void (async () => {
-      try {
-        const rows = await this.database.db
-          .select({
-            notBefore: tables.s2SKeyCache.notBefore,
-            notAfter: tables.s2SKeyCache.notAfter,
-          })
-          .from(tables.s2SKeyCache)
-          .where(
-            and(
-              eq(tables.s2SKeyCache.domain, this.normalizeDomain(domain)),
-              eq(tables.s2SKeyCache.namespaceId, namespaceId),
-            ),
-          );
-        const now = Date.now();
-        const coverageEnd = continuousCoverageEnd(
-          rows.map((row) => ({
-            notBefore: row.notBefore.getTime(),
-            notAfter: row.notAfter.getTime(),
-          })),
-          now,
-        );
-        const ttlMs = this.transportConfig.get().keyCacheTtlSec * 1000;
-        if (coverageEnd !== null && coverageEnd - now > ttlMs) return;
-        await this.refreshPeerKeys(domain, namespaceId);
-      } catch (error) {
-        this.logger.warn(
-          `post-Health key refresh failed for ${domain}: ${(error as Error).message}`,
-        );
-      }
-    })();
+      })),
+      now,
+    );
+    const refreshWindowMs =
+      this.transportConfig.get().keyCacheTtlSec * 1000;
+    if (coverageEnd !== null && coverageEnd - now > refreshWindowMs)
+      return false;
+    void this.refreshPeerKeys(normalized, namespaceId).catch((error) =>
+      this.logger.warn(
+        `certificate refresh failed for ${normalized}: ${(error as Error).message}`,
+      ),
+    );
+    return true;
   }
 
   async getCachedPublicKey(

@@ -153,9 +153,7 @@ The implementation has two discovery refresh triggers and one local diagnostic p
    recipient's cache of the requester's key. The recipient's cache of the
    requester's signing keys is maintained by the recipient's outbound Health
    overlap refresh and other ordinary discovery refreshes, not by discovery
-   during inbound Health authentication. The requester may refresh its own local
-   signing-key state and the recipient's discovery document as diagnostics, but
-   those are not the direct repair path for the recipient's verifier. The retry must be a
+   during inbound Health authentication. The retry must be a
    newly constructed request with fresh `Date`, `created`, `expires`, and HTTP
    signature; the failed signed request is never replayed unchanged.
 

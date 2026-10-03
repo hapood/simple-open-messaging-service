@@ -175,13 +175,12 @@ export class FederationRecognitionService {
       where: eq(tables.identityNamespace.domain, domain),
       columns: {
         id: true,
-        recognizesPeer: true,
         peerAcceptanceConfirmed: true,
         localServiceAvailable: true,
       },
     });
     // Health can confirm peer acceptance only after local identity preparation.
-    if (!peer || !peer.recognizesPeer || !peer.localServiceAvailable) {
+    if (!peer || !peer.localServiceAvailable) {
       await this.recognize(domain);
       return;
     }
@@ -338,41 +337,10 @@ export class FederationRecognitionService {
         );
       }
       await this.applyHealthResult(domain, result.status);
-      this.schedulePostHealthKeyRefresh(domain);
       return result.status;
     } finally {
       release();
     }
-  }
-
-  /** Outbound Health overlap refresh: after a successful round trip, pull the peer's
-   *  published certificate set forward when its cached coverage is about to end. This is
-   *  maintenance and must never turn the successful Health result into a failure. */
-  private schedulePostHealthKeyRefresh(domain: string): void {
-    void (async () => {
-      try {
-        const [peer] = await this.database.db
-          .select({
-            id: tables.identityNamespace.id,
-          })
-          .from(tables.identityNamespace)
-          .where(
-            and(
-              eq(tables.identityNamespace.domain, domain),
-              eq(tables.identityNamespace.active, true),
-            ),
-          )
-          .limit(1);
-        if (peer?.id != null) {
-          this.discovery.refreshAfterHealthSuccess(domain, peer.id);
-        }
-      } catch (error) {
-        // Secondary maintenance: the Health result stands regardless.
-        this.logger.debug(
-          `post-Health key refresh scheduling failed for ${domain}: ${(error as Error).message}`,
-        );
-      }
-    })();
   }
 
   private async verifyInboundRecognize(params: {
@@ -683,7 +651,6 @@ export class FederationRecognitionService {
       .update(tables.identityNamespace)
       .set({
         trustLevel: 'pending',
-        recognizesPeer: true,
         localServiceAvailable: true,
         peerAcceptanceConfirmed: false,
         remoteServiceReachable: false,
@@ -709,7 +676,6 @@ export class FederationRecognitionService {
       const next = {
         ...peer,
         identityPinnedAt: peer?.identityPinnedAt ?? now,
-        recognizesPeer: true,
         peerAcceptanceConfirmed: true,
         localServiceAvailable: true,
         remoteServiceReachable: true,
@@ -737,7 +703,6 @@ export class FederationRecognitionService {
       await tx
         .update(tables.identityNamespace)
         .set({
-          recognizesPeer: true,
           peerAcceptanceConfirmed: true,
           localServiceAvailable: true,
           remoteServiceReachable: true,
@@ -772,7 +737,6 @@ export class FederationRecognitionService {
     if (
       !peer ||
       peer.id === null ||
-      !peer.recognizesPeer ||
       !peer.localServiceAvailable ||
       peer.trustLevel === 'halted'
     ) {
@@ -787,14 +751,12 @@ export class FederationRecognitionService {
       columns: {
         id: true,
         trustLevel: true,
-        recognizesPeer: true,
         localServiceAvailable: true,
       },
     });
     return (
       peer?.id != null &&
       peer.trustLevel !== 'halted' &&
-      peer.recognizesPeer &&
       peer.localServiceAvailable
     );
   }
@@ -815,7 +777,6 @@ export class FederationRecognitionService {
       if (
         !peer ||
         !peer.identityPinnedAt ||
-        !peer.recognizesPeer ||
         !peer.localServiceAvailable ||
         peer.trustLevel === 'halted'
       )
@@ -863,7 +824,6 @@ export class FederationRecognitionService {
       if (
         !peer ||
         !peer.identityPinnedAt ||
-        !peer.recognizesPeer ||
         !peer.localServiceAvailable ||
         peer.trustLevel === 'halted'
       )
@@ -1100,7 +1060,6 @@ export class FederationRecognitionService {
       const next = {
         ...peer,
         identityPinnedAt: peer?.identityPinnedAt ?? now,
-        recognizesPeer: true,
         localServiceAvailable: true,
       };
       const trustLevel = this.lifecycle(next);
@@ -1112,7 +1071,6 @@ export class FederationRecognitionService {
       await tx
         .update(tables.identityNamespace)
         .set({
-          recognizesPeer: true,
           localServiceAvailable: true,
           trustLevel,
           trustedAt:
@@ -1202,8 +1160,7 @@ export class FederationRecognitionService {
       return 'halted';
     }
     if (!peer.identityPinnedAt) return 'unrecognized';
-    if (!peer.recognizesPeer || !peer.localServiceAvailable)
-      return 'unrecognized';
+    if (!peer.localServiceAvailable) return 'unrecognized';
     if (!peer.peerAcceptanceConfirmed) return 'establishing';
     return peer.remoteServiceReachable ? 'available' : 'degraded';
   }

@@ -209,7 +209,7 @@ describe('DiscoveryService peer-key refresh policy', () => {
     expect(target['refreshInFlight'].size).toBe(0);
   });
 
-  it('refreshes after a successful Health round trip only when coverage is about to end', async () => {
+  it('refreshes certificate coverage only when it is about to end', async () => {
     const target = service();
     const refreshPeerKeys = vi
       .spyOn(target, 'refreshPeerKeys')
@@ -238,18 +238,16 @@ describe('DiscoveryService peer-key refresh policy', () => {
       notBefore: new Date(now - 60_000),
       notAfter: new Date(now + 86_400_000),
     });
-    target.refreshAfterHealthSuccess('peer.example', 12);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await target.refreshPeerCertificateIfNeeded('peer.example', 12);
     expect(refreshPeerKeys).not.toHaveBeenCalled();
 
-    // Coverage ending inside the TTL window: refresh.
+    // Coverage ending inside the refresh window: refresh.
     rows.length = 0;
     rows.push({
       notBefore: new Date(now - 60_000),
       notAfter: new Date(now + 3_600_000),
     });
-    target.refreshAfterHealthSuccess('peer.example', 12);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await target.refreshPeerCertificateIfNeeded('peer.example', 12);
     expect(refreshPeerKeys).toHaveBeenCalledWith('peer.example', 12);
   });
 });
