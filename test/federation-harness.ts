@@ -491,7 +491,7 @@ export async function assertSeparateDatabases(
 
 /** Reset isolated federation fixtures, including profiles and media without account foreign keys. */
 const FEDERATION_TRUNCATE_SQL =
-  'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "Message", "MessageAsset", "MediaAsset", "S2SKeyCache", "CallTombstone", "PeerStateFeed", "ProfileNamespaceFeed", "ProfileNamespaceInfo", "FileSyncProgress", "ForwardBundle" RESTART IDENTITY CASCADE';
+  'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "Message", "MessageAsset", "MediaAsset", "S2SKeyCache", "PeerStateFeed", "ProfileNamespaceFeed", "ProfileNamespaceInfo", "FileSyncProgress", "ForwardBundle" RESTART IDENTITY CASCADE';
 const FEDERATION_NAMESPACE_RESET_SQL =
   'DELETE FROM "IdentityNamespace" WHERE id <> 0';
 

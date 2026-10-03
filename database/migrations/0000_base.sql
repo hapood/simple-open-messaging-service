@@ -783,23 +783,6 @@ CREATE TABLE public."CallHistory" (
 
 
 --
--- Name: CallTombstone; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."CallTombstone" (
-    "namespaceId" integer NOT NULL,
-    "callSid" character varying(36) NOT NULL,
-    "terminalOp" character varying(16) NOT NULL,
-    "endReason" character varying(16),
-    "initialCallType" character varying(8) NOT NULL,
-    "finalCallType" character varying(8) NOT NULL,
-    "signalIds" jsonb DEFAULT '[]'::jsonb NOT NULL,
-    "expiresAt" timestamp(3) with time zone NOT NULL,
-    "createdAt" timestamp(3) with time zone DEFAULT now() NOT NULL
-);
-
-
---
 -- Name: ClientStateFeed; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2410,14 +2393,6 @@ ALTER TABLE ONLY public."CallHistory"
 
 
 --
--- Name: CallTombstone CallTombstone_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."CallTombstone"
-    ADD CONSTRAINT "CallTombstone_pkey" PRIMARY KEY ("namespaceId", "callSid");
-
-
---
 -- Name: ClientStateFeed ClientStateFeed_compaction_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2962,13 +2937,6 @@ CREATE UNIQUE INDEX "Admin_userId_key" ON public."Admin" USING btree ("userId");
 --
 
 CREATE INDEX "CallHistory_pending_idx" ON public."CallHistory" USING btree (terminal) WHERE ("messageSeq" IS NULL);
-
-
---
--- Name: CallTombstone_expiresAt_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "CallTombstone_expiresAt_idx" ON public."CallTombstone" USING btree ("expiresAt");
 
 
 --
@@ -3683,14 +3651,6 @@ ALTER TABLE ONLY public."Admin"
 
 ALTER TABLE ONLY public."CallHistory"
     ADD CONSTRAINT "CallHistory_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
-
-
---
--- Name: CallTombstone CallTombstone_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."CallTombstone"
-    ADD CONSTRAINT "CallTombstone_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --

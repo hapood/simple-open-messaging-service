@@ -1,17 +1,15 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { and, eq, gt } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { KeyedMutex } from '../common/keyed-mutex.js';
-import { DatabaseService } from '../database/database.service.js';
-import * as tables from '../database/schema.js';
 import {
   type CallSignalPayload,
   parseS2SCallWireFrame,
   type S2SCallFrame,
   toS2SCallWireFrame,
 } from '../calls/federated-call-protocol.js';
+import { callTombstoneCache } from '../calls/call-tombstone-cache.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
 import {
@@ -28,7 +26,6 @@ export class FederationCallBridgeService {
   private readonly delivery = new FederationCallDelivery();
 
   constructor(
-    private readonly database: DatabaseService,
     private readonly peerHttp: FederationPeerHttp,
     private readonly users: FederationUserDirectoryService,
     private readonly participants: AccountThreadStateService,
@@ -135,14 +132,11 @@ export class FederationCallBridgeService {
     );
     if (preflight?.some((handled) => handled === true)) return;
 
-    const terminal = await this.database.db.query.callTombstone.findFirst({
-      where: and(
-        eq(tables.callTombstone.namespaceId, namespaceId),
-        eq(tables.callTombstone.callSid, frame.callSid),
-        gt(tables.callTombstone.expiresAt, new Date()),
-      ),
-      columns: { terminalOp: true },
-    });
+    const terminal = callTombstoneCache.get(
+      namespaceId,
+      frame.callSid,
+      peerDomain,
+    );
     if (terminal) {
       throw new BusinessException(
         terminal.terminalOp === 'cancelled'

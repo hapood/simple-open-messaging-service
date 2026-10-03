@@ -5,6 +5,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { CallsService } from './calls.service.js';
+import { callTombstoneCache } from './call-tombstone-cache.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { BusinessCode } from '../common/business-code.js';
 import { S2sResponseError } from '../federation/federation-errors.js';
@@ -31,7 +32,7 @@ function mkMocks() {
         authorized: true,
         query: {
           account: {
-            findFirst: vi.fn().mockImplementation(({ where, columns }) => {
+            findFirst: vi.fn().mockImplementation(({ where }) => {
               const address = new PgDialect().sqlToQuery(where).params[0];
               return Promise.resolve({
                 id:
@@ -46,7 +47,6 @@ function mkMocks() {
               });
             }),
           },
-          callTombstone: { findFirst: vi.fn().mockResolvedValue(null) },
         },
         delete: vi.fn(() => ({
           where: vi.fn().mockResolvedValue(undefined),
@@ -89,6 +89,7 @@ function mkMocks() {
 }
 
 function mkService(m = mkMocks()) {
+  callTombstoneCache.clear();
   const callState = new CallStateRegistry();
   return {
     svc: new CallsService(
@@ -1178,19 +1179,14 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
   it('a duplicate incoming ring is an idempotent no-op (no second ring, no quota burn)', async () => {
     const { svc, m } = mkService();
     await inbound(svc, { localUserId: 2, frame: mkFrame() });
-    const admission = m.database.db.insert.mock.results[0].value;
-    expect(admission.values).toHaveBeenCalledWith(
-      expect.objectContaining({
-        terminalOp: 'admitted',
-        expiresAt: new Date(Date.now() + 300_000),
-      }),
-    );
+    expect(callTombstoneCache.get(3, 'cs1', 'bbb.local')).toMatchObject({
+      terminalOp: 'admitted',
+      expiresAt: Date.now() + 300_000,
+    });
     await vi.advanceTimersByTimeAsync(1_000);
-    m.database.db.insert.mockClear();
     m.sse.onCallEvent.mockClear();
     m.quota.tick.mockClear();
     await inbound(svc, { localUserId: 2, frame: mkFrame() });
-    expect(m.database.db.insert).not.toHaveBeenCalled();
     expect(m.sse.onCallEvent).not.toHaveBeenCalled();
     expect(m.quota.tick).not.toHaveBeenCalled();
   });
@@ -1559,12 +1555,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       },
     ]);
     await svc.initiate(1, { callSid: 'cs1', threadId: 10, callType: 'AUDIO' });
-    m.database.db.delete.mockReturnValueOnce({
-      where: vi.fn().mockRejectedValue(new Error('protection write failed')),
-    });
-    await expect(svc.cancel(1, 'cs1')).rejects.toThrow(
-      'terminal call persistence failed',
-    );
+    await expect(svc.cancel(1, 'cs1')).resolves.toBeUndefined();
     expect(lastBubbleContent(m)).toMatchObject({ outcome: 'cancelled' });
     expect(callState.get(1)).toBeNull();
     await expect(
@@ -1590,13 +1581,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       callType: 'AUDIO',
     });
 
-    let finishDelete!: () => void;
-    const deleteGate = new Promise<void>((resolve) => {
-      finishDelete = resolve;
-    });
-    m.database.db.delete.mockReturnValue({
-      where: vi.fn(() => deleteGate),
-    });
     const cancelling = svc.cancel(1, 'cs1');
 
     await expect(
@@ -1608,7 +1592,6 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       (e: unknown) => bizCode(e) === BusinessCode.CALL_CANCELLED,
     );
 
-    finishDelete();
     await cancelling;
   });
 
@@ -1625,20 +1608,10 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
         signatureExpiresAtSec,
         frame: mkFrame({ op: 'cancelled' }),
       });
-      const write = m.database.db.insert.mock.results.at(-1)!.value;
-      expect(write.values).toHaveBeenCalledWith(
-        expect.objectContaining({
-          terminalOp: 'cancelled',
-          expiresAt: new Date(
-            Math.min(signatureExpiresAtSec * 1000, now + 300_000),
-          ),
-        }),
-      );
-      m.database.db.query.callTombstone.findFirst.mockResolvedValue({
+      expect(callTombstoneCache.get(3, 'cs1', 'bbb.local')).toMatchObject({
         terminalOp: 'cancelled',
-        signalIds: [],
+        expiresAt: Math.min(signatureExpiresAtSec * 1000, now + 300_000),
       });
-      m.database.db.insert.mockClear();
       await vi.advanceTimersByTimeAsync(1_000);
       await inbound(svc, {
         localUserId: 2,
@@ -1654,25 +1627,27 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     async (prior) => {
       const now = 1_700_000_000_123;
       vi.setSystemTime(now);
-      const { svc, m } = mkService();
-      m.database.db.query.callTombstone.findFirst.mockResolvedValue(prior);
+      const { svc } = mkService();
+      if (prior) {
+        callTombstoneCache.admit({
+          namespaceId: 3,
+          callSid: 'cs1',
+          initialCallType: 'AUDIO',
+          finalCallType: 'AUDIO',
+          expiresAt: 1_700_000_300_000,
+          peerDomain: 'bbb.local',
+        });
+      }
       const expiresAt = new Date(1_700_000_020_000);
       await inbound(svc, {
         localUserId: 2,
         signatureExpiresAtSec: expiresAt.getTime() / 1000,
         frame: mkFrame({ op: 'cancelled' }),
       });
-      const write = m.database.db.insert.mock.results.at(-1)!.value;
-      expect(write.values).toHaveBeenCalledWith(
-        expect.objectContaining({ terminalOp: 'cancelled', expiresAt }),
-      );
-      expect(
-        write.values.mock.results[0].value.onConflictDoUpdate,
-      ).toHaveBeenCalledWith(
-        expect.objectContaining({
-          set: { terminalOp: 'cancelled', expiresAt },
-        }),
-      );
+      expect(callTombstoneCache.get(3, 'cs1', 'bbb.local')).toMatchObject({
+        terminalOp: 'cancelled',
+        expiresAt: expiresAt.getTime(),
+      });
     },
   );
 
@@ -1681,15 +1656,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     vi.setSystemTime(now);
     const { svc, m } = mkService();
     await inbound(svc, { localUserId: 2, frame: mkFrame() });
-    let finishDelete!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      finishDelete = resolve;
-    });
-    m.database.db.delete.mockReturnValue({ where: vi.fn(() => gate) });
-    const declining = svc.decline(2, 'cs1');
-    await vi.advanceTimersByTimeAsync(10_000);
-    finishDelete();
-    await declining;
+    await svc.decline(2, 'cs1');
     const signatureExpiresAtSec = 1_700_000_300;
     expect(m.federation.sendCallFrame).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1698,20 +1665,18 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       }),
       'bbb.local',
     );
-    const write = m.database.db.insert.mock.results.at(-1)!.value;
-    expect(write.values).toHaveBeenCalledWith(
-      expect.objectContaining({
-        expiresAt: new Date(signatureExpiresAtSec * 1000),
-      }),
-    );
+    expect(callTombstoneCache.get(3, 'cs1', 'bbb.local')).toMatchObject({
+      expiresAt: signatureExpiresAtSec * 1000,
+    });
   });
 
   it('maps late frames through cancelled and other terminal tombstones', async () => {
-    const { svc, m } = mkService();
-    m.database.db.query.callTombstone.findFirst.mockResolvedValue({
-      terminalOp: 'cancelled',
-      endReason: null,
-      signalIds: [],
+    const { svc } = mkService();
+    callTombstoneCache.cancelEarly({
+      namespaceId: 3,
+      callSid: 'cs1',
+      expiresAt: Date.now() + 300_000,
+      peerDomain: 'bbb.local',
     });
     await expect(
       inbound(svc, {
@@ -1722,10 +1687,17 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
       (e: unknown) => bizCode(e) === BusinessCode.CALL_CANCELLED,
     );
 
-    m.database.db.query.callTombstone.findFirst.mockResolvedValue({
+    callTombstoneCache.clear();
+    callTombstoneCache.finish({
+      namespaceId: 3,
+      callSid: 'cs1',
       terminalOp: 'ended',
       endReason: 'failed',
+      initialCallType: 'AUDIO',
+      finalCallType: 'AUDIO',
       signalIds: [],
+      expiresAt: Date.now() + 300_000,
+      peerDomain: 'bbb.local',
     });
     await expect(
       inbound(svc, {

@@ -749,7 +749,6 @@ function makeStubs() {
   const quota = {};
   const forwardBundles = {};
   const callBridge = new FederationCallBridgeService(
-    database as never,
     peerHttp,
     users,
     participantService as never,

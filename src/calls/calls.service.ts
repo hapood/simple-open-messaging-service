@@ -7,9 +7,9 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { and, eq, gt, lt, lte } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { callTombstone, account as user } from '../database/schema.js';
+import { account as user } from '../database/schema.js';
 import { SseService } from '../gateway/sse.service.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { PushService } from '../push/push.service.js';
@@ -38,6 +38,7 @@ import {
 import { SIGNATURE_LIFETIME_SEC } from '../federation/signature.service.js';
 import type { CallSignalType } from './federated-call-protocol.js';
 import { CALL_ADMISSION_RETENTION_MS } from './call-timing.js';
+import { callTombstoneCache } from './call-tombstone-cache.js';
 import {
   decideCallTransition,
   decideVideoUpgrade,
@@ -59,6 +60,7 @@ const CONNECT_TIMEOUT_MS = 45_000;
 const FED_SAFETY_NET_MS = 60_000;
 const FED_CONNECT_SAFETY_NET_MS = 60_000;
 const CALL_TERMINAL_RETENTION_MS = 300_000;
+const MAX_CALL_SIGNAL_IDS = 1024;
 type TerminalCallOperation = 'declined' | 'cancelled' | 'missed' | 'ended';
 type RelayedLifecycleOperation = Exclude<
   S2SCallOperation,
@@ -1068,6 +1070,13 @@ export class CallsService implements OnModuleDestroy {
         HttpStatus.BAD_REQUEST,
       );
     }
+    if (call.seenSignalIds.size >= MAX_CALL_SIGNAL_IDS) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'call signal replay window is full',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     await this.quota.tick(call.peerNamespaceId!, 'signals');
     call.seenSignalIds.add(frame.payload.signalId);
     const localUserId = this.localUserId(call);
@@ -1143,44 +1152,25 @@ export class CallsService implements OnModuleDestroy {
     signatureExpiresAtSec: number,
   ): Promise<void> {
     const acceptedAt = Date.now();
-    const tombstone = await this.database.db.query.callTombstone.findFirst({
-      where: and(
-        eq(callTombstone.namespaceId, namespaceId),
-        eq(callTombstone.callSid, frame.callSid),
-        gt(callTombstone.expiresAt, new Date()),
-      ),
-    });
+    const tombstone = callTombstoneCache.get(
+      namespaceId,
+      frame.callSid,
+      peerDomain,
+    );
     if (
       (!tombstone || tombstone.terminalOp === 'admitted') &&
       frame.op === 'cancelled'
     ) {
-      const now = new Date();
       const expiresAt = this.terminalProtectionExpiry(
         signatureExpiresAtSec,
         acceptedAt,
       );
-      await this.database.db
-        .delete(callTombstone)
-        .where(lte(callTombstone.expiresAt, now));
-      await this.database.db
-        .insert(callTombstone)
-        .values({
-          namespaceId,
-          callSid: frame.callSid,
-          terminalOp: 'cancelled',
-          endReason: null,
-          // An early cancellation has no admitted media type. This internal sentinel is never
-          // emitted as a wire/UI media type and cannot authorize an active call.
-          initialCallType: 'UNKNOWN',
-          finalCallType: 'UNKNOWN',
-          signalIds: [],
-          expiresAt,
-        })
-        .onConflictDoUpdate({
-          target: [callTombstone.namespaceId, callTombstone.callSid],
-          set: { terminalOp: 'cancelled', expiresAt },
-          setWhere: eq(callTombstone.terminalOp, 'admitted'),
-        });
+      callTombstoneCache.cancelEarly({
+        namespaceId,
+        callSid: frame.callSid,
+        expiresAt: expiresAt.getTime(),
+        peerDomain,
+      });
       return;
     }
     if (!tombstone) {
@@ -1194,8 +1184,7 @@ export class CallsService implements OnModuleDestroy {
       (['declined', 'cancelled', 'missed', 'ended'] as const).includes(
         frame.op as TerminalCallOperation,
       ) ||
-      (frame.op === 'signal' &&
-        tombstone.signalIds.includes(frame.payload.signalId))
+      (frame.op === 'signal' && tombstone.signalIds.has(frame.payload.signalId))
     ) {
       return;
     }
@@ -1236,30 +1225,20 @@ export class CallsService implements OnModuleDestroy {
     if (call.peerNamespaceId === null || call.peerNamespaceId === undefined)
       throw new Error('federated call has no captured namespace');
     const now = Date.now();
-    await this.database.db
-      .delete(callTombstone)
-      .where(lte(callTombstone.expiresAt, new Date(now)));
-    const inserted = await this.database.db
-      .insert(callTombstone)
-      .values({
-        namespaceId: call.peerNamespaceId,
-        callSid: call.callSid,
-        terminalOp: 'admitted',
-        endReason: null,
-        initialCallType: call.initialCallType,
-        finalCallType: call.callType,
-        signalIds: [],
-        expiresAt: new Date(now + CALL_ADMISSION_RETENTION_MS),
-      })
-      .onConflictDoNothing()
-      .returning({ callSid: callTombstone.callSid });
-    if (inserted.length === 0) {
-      const prior = await this.database.db.query.callTombstone.findFirst({
-        where: and(
-          eq(callTombstone.namespaceId, call.peerNamespaceId),
-          eq(callTombstone.callSid, call.callSid),
-        ),
-      });
+    const inserted = callTombstoneCache.admit({
+      namespaceId: call.peerNamespaceId,
+      callSid: call.callSid,
+      initialCallType: call.initialCallType,
+      finalCallType: call.callType,
+      expiresAt: now + CALL_ADMISSION_RETENTION_MS,
+      peerDomain: call.peerDomain!,
+    });
+    if (!inserted) {
+      const prior = callTombstoneCache.get(
+        call.peerNamespaceId,
+        call.callSid,
+        call.peerDomain!,
+      );
       throw new BusinessException(
         prior?.terminalOp === 'cancelled'
           ? BusinessCode.CALL_CANCELLED
@@ -1316,32 +1295,17 @@ export class CallsService implements OnModuleDestroy {
       throw new Error('federated call has no captured namespace');
     if (!call.terminal) throw new Error('call has no terminal decision');
     const expiresAt = call.terminal.protectionExpiresAt;
-    await this.database.db
-      .delete(callTombstone)
-      .where(lt(callTombstone.expiresAt, new Date()));
-    await this.database.db
-      .insert(callTombstone)
-      .values({
-        namespaceId: call.peerNamespaceId,
-        callSid: call.callSid,
-        terminalOp,
-        endReason,
-        initialCallType: call.initialCallType,
-        finalCallType: call.callType,
-        signalIds: [...call.seenSignalIds],
-        expiresAt,
-      })
-      .onConflictDoUpdate({
-        target: [callTombstone.namespaceId, callTombstone.callSid],
-        set: {
-          terminalOp,
-          endReason,
-          finalCallType: call.callType,
-          signalIds: [...call.seenSignalIds],
-          expiresAt,
-        },
-        setWhere: eq(callTombstone.terminalOp, 'admitted'),
-      });
+    callTombstoneCache.finish({
+      namespaceId: call.peerNamespaceId,
+      callSid: call.callSid,
+      terminalOp,
+      endReason,
+      initialCallType: call.initialCallType,
+      finalCallType: call.callType,
+      signalIds: call.seenSignalIds,
+      expiresAt: expiresAt.getTime(),
+      peerDomain: call.peerDomain,
+    });
   }
 
   // ── terminal persist + bookkeeping ───────────────────────────────────────────

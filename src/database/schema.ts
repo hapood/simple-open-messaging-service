@@ -3004,43 +3004,6 @@ export const quotaDailyAllowance = pgTable(
   ],
 );
 
-/**
- * Bounded Federation v1 call terminal cache. It survives a process restart only long enough to classify
- * signed retries and late frames; it is not a call-history table (local system messages hold terminal history).
- */
-export const callTombstone = pgTable(
-  'CallTombstone',
-  {
-    namespaceId: integer().notNull(),
-    callSid: varchar({ length: 36 }).notNull(),
-    terminalOp: varchar({ length: 16 }).notNull(),
-    endReason: varchar({ length: 16 }),
-    initialCallType: varchar({ length: 8 }).notNull(),
-    finalCallType: varchar({ length: 8 }).notNull(),
-    signalIds: jsonb().$type<string[]>().default([]).notNull(),
-    expiresAt: timestamp({
-      precision: 3,
-      withTimezone: true,
-      mode: 'date',
-    }).notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .defaultNow()
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.namespaceId, table.callSid],
-      name: 'CallTombstone_pkey',
-    }),
-    foreignKey({
-      columns: [table.namespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'CallTombstone_namespaceId_fkey',
-    }).onDelete('restrict'),
-    index('CallTombstone_expiresAt_idx').on(table.expiresAt),
-  ],
-);
-
 /** Per-(userId, UTC-day) additive allowance — local-user counterpart of QuotaDailyAllowance. */
 export const userQuotaDailyAllowance = pgTable(
   'UserQuotaDailyAllowance',

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FederationCallBridgeService } from './federation-call-bridge.service.js';
+import { callTombstoneCache } from '../calls/call-tombstone-cache.js';
 import { toS2SCallWireFrame } from '../calls/federated-call-protocol.js';
 
 describe('federated call identities', () => {
@@ -9,14 +10,8 @@ describe('federated call identities', () => {
     };
     const directory = { findLocalUserId: vi.fn().mockResolvedValue(2) };
     const events = { emitAsync: vi.fn().mockResolvedValue([]) };
+    callTombstoneCache.clear();
     const bridge = new FederationCallBridgeService(
-      {
-        db: {
-          query: {
-            callTombstone: { findFirst: vi.fn().mockResolvedValue(null) },
-          },
-        },
-      } as never,
       {} as never,
       directory as never,
       participants as never,
