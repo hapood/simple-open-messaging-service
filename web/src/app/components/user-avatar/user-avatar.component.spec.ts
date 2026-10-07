@@ -13,12 +13,22 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
   const sessionProfile = signal<unknown>(undefined);
   const conversations = signal<ConversationItem[]>([]);
 
+  let profileWake: Subject<ProfileWake>;
+
   beforeEach(() => {
+    profileWake = new Subject<ProfileWake>();
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
         UserAvatarComponent,
         { provide: UserService, useValue: { sessionProfile } },
+        {
+          provide: WebdbService,
+          useValue: {
+            profileWake$: profileWake.asObservable(),
+            resolveProfileDemand: vi.fn(),
+          },
+        },
         {
           provide: ConversationListService,
           useValue: { items: conversations },
@@ -62,9 +72,7 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
       await vi.waitFor(() => expect(resolve).toHaveBeenCalledTimes(1));
       if (pending) {
         expect(fixture.componentInstance.imgSrc()).toBe('');
-        (
-          db as unknown as { profileWake: Subject<ProfileWake> }
-        ).profileWake.next({ event: 'PROFILE_AVAILABLE', key });
+        profileWake.next({ event: 'PROFILE_AVAILABLE', key });
       }
       await vi.waitFor(() =>
         expect(fixture.componentInstance.initial()).toBe('AL'),

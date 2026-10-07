@@ -78,7 +78,12 @@ class StubThreadComponent {
 class StubEmptyComponent {}
 
 const item = (threadId: number, name: string) =>
-  createP2PConversation(threadId, { account: name, name });
+  createP2PConversation(threadId, {
+    account: name,
+    name,
+    domain: 'chat.example.test',
+    namespaceId: 0,
+  });
 
 describe('ChatPaneComponent A/B coordinator', () => {
   let fixture: ReturnType<typeof TestBed.createComponent<ChatPaneComponent>>;

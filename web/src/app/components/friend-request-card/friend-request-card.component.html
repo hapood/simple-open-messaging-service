@@ -13,7 +13,7 @@
       [name]="requestItem().name ?? ''"
       [account]="requestItem().account"
       [federatedDomain]="
-        requestItem().kind === 'GROUP' || requestItem().domain !== 'local'
+        requestItem().kind === 'GROUP' || requestItem().namespaceId !== 0
           ? requestItem().domain
           : null
       "
@@ -27,7 +27,7 @@
         [domain]="
           requestItem().kind === 'GROUP'
             ? requestItem().sourceLabel
-            : requestItem().domain !== 'local'
+            : requestItem().namespaceId !== 0
               ? requestItem().domain
               : null
         "

@@ -523,8 +523,6 @@
       </div>
     } @else if (friendshipEnded()) {
       <!-- Retained P2P history is read-only: intentionally render no composer or replacement action. -->
-    } @else if (authorityNamespaceInactive()) {
-      <!-- The thread lifecycle is unchanged; only local sending through its archived authority is disabled. -->
     } @else if (leftGroup()) {
       <div class="msg-blocked-banner">
         {{ 'chat.leftGroupBanner' | transloco }}

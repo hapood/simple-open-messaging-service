@@ -15,7 +15,12 @@ describe('thread notification presentation', () => {
     return {
       item: createP2PConversation(
         7,
-        { account: 'peer', name: 'Peer' },
+        {
+          account: 'peer',
+          name: 'Peer',
+          domain: 'chat.example.test',
+          namespaceId: 0,
+        },
         { unreadCount: 101, lastReadSeq: 3 },
       ),
       state: {
@@ -24,7 +29,7 @@ describe('thread notification presentation', () => {
         messageEndSeq: 8,
         tombstoneEndSeq: 1,
         alias: null,
-        threadProfileRev: 0,
+        profileRev: 0,
         groupMetaFeedEndId: null,
         joinRequestEndFeedId: 0,
         joinRequestReadFeedId: -1,
@@ -36,13 +41,13 @@ describe('thread notification presentation', () => {
           {
             seq: 6,
             createdAt: '2026-09-09T00:00:00Z',
-            sender: { account: 'peer', domain: 'test', namespaceId: 0, profileRev: 1 },
+            sender: { account: 'peer', profileNamespaceId: 0, profileRev: 1 },
             status: 'USER_RETRACTION',
           },
           {
             seq: 8,
             createdAt: '2026-09-09T00:00:00Z',
-            sender: { account: 'peer', domain: 'test', namespaceId: 0, profileRev: 1 },
+            sender: { account: 'peer', profileNamespaceId: 0, profileRev: 1 },
             status: 'MODERATION_REMOVAL',
           },
         ],
@@ -62,7 +67,13 @@ describe('thread notification presentation', () => {
     );
     value.item = createGroupConversation(
       7,
-      { id: 7, account: '!group', name: 'Group profile' },
+      {
+        id: 7,
+        account: '!group',
+        name: 'Group profile',
+        domain: '',
+        namespaceId: 0,
+      },
       { alias: 'Stale group label' },
     );
     value.state.alias = 'My group';
@@ -100,7 +111,7 @@ describe('thread notification presentation', () => {
     value.state.previews = [6, 7, 8].map((seq) => ({
       seq,
       createdAt: '2026-09-09T00:00:00Z',
-      sender: { account: 'peer', domain: 'test', namespaceId: 0, profileRev: 1 },
+      sender: { account: 'peer', profileNamespaceId: 0, profileRev: 1 },
       status: 'LIVE' as const,
       text: String(seq),
     }));

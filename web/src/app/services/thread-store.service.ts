@@ -23,7 +23,6 @@ import {
   User,
 } from './model';
 import { MemberProfileRepository } from './member-profile-store.service';
-import { FederationNamespaceService } from './federation-namespace.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { isAndroidNative } from './runtime';
 import type { ThreadNotificationUpdate } from './thread-notification';
@@ -78,7 +77,6 @@ export class ThreadRepository {
   private readonly ws = inject(WebsocketService);
   private readonly messageRepo = inject(MessageRepository);
   private readonly memberProfiles = inject(MemberProfileRepository);
-  private readonly namespaces = inject(FederationNamespaceService);
 
   private readonly _items = signal<ConversationItem[]>([]);
   private readonly threadStates = new Map<number, LocalThreadAttention>();
@@ -409,9 +407,7 @@ export class ThreadRepository {
   private async paintFromCache(): Promise<void> {
     const epoch = this.sessionEpoch;
     try {
-      const namespaces = await this.webdb.getNamespaces();
       if (epoch !== this.sessionEpoch) return;
-      this.namespaces.replace(namespaces);
       if (this._items().length > 0) return; // already populated — don't clobber a fresher state
       const cached = await this.readCachedThreads();
       if (epoch !== this.sessionEpoch) return;
@@ -551,16 +547,6 @@ export class ThreadRepository {
   private withConfirmedAlias(item: ConversationItem): ConversationItem {
     const confirmed = this.confirmedAliases.get(item.threadId);
     return confirmed ? { ...item, alias: confirmed.alias } : item;
-  }
-
-  markAuthorityNamespaceInactive(threadId: number): void {
-    const source = this._items().find((thread) => thread.threadId === threadId);
-    if (!source || source.authorityNamespaceId === 0) return;
-    const domain =
-      source.type === 'P2P' ? source.peerUser.domain : source.group.domain;
-    const namespaceId = source.authorityNamespaceId;
-    this.namespaces.archive(domain, namespaceId);
-    void this.webdb.archiveNamespace(domain, namespaceId);
   }
 
   /** Replace a P2P item's peerUser (avatar/name/bio) after a federated profile sync. No-op for groups /
@@ -891,12 +877,8 @@ export class ThreadRepository {
     const epoch = this.sessionEpoch;
     const cursor = await this.userService.refreshCommittedStateFeed();
     if (epoch !== this.sessionEpoch || cursor === undefined) return;
-    const [items, namespaces] = await Promise.all([
-      this.readCachedThreads(),
-      this.webdb.getNamespaces(),
-    ]);
+    const items = await this.readCachedThreads();
     if (epoch !== this.sessionEpoch) return;
-    this.namespaces.replace(namespaces);
     this.applyItems(items);
   }
 
@@ -965,7 +947,7 @@ export class ThreadRepository {
         this.applyThreadFeedOrder(
           snapshot.threadId,
           snapshot.threadFeedId,
-          snapshot.threadProfileRev,
+          snapshot.profileRev,
         );
         this.applyGroupProjectionHeads(snapshot);
         this.serverLastReadSeq.set(state.threadId, snapshot.lastReadSeq);
@@ -1017,8 +999,8 @@ export class ThreadRepository {
     const count = await this.webdb
       .countUnreadMessageSlots(threadId, range.afterSeq, range.throughSeq, {
         account: me.account,
-        domain: 'local',
-        namespaceId: 0,
+        domain: me.domain,
+        namespaceId: me.namespaceId,
       })
       .catch((error) => {
         if (epoch === this.sessionEpoch)
@@ -1036,9 +1018,7 @@ export class ThreadRepository {
     // Preview membership belongs to the server; optimistic reads only affect
     // attention state and must not prune the conversation summary.
     const preview = server.previews?.at(-1);
-    const namespaceId = preview
-      ? this.namespaces.activeNamespaceId(preview.sender.domain)
-      : null;
+    const namespaceId = preview?.sender.profileNamespaceId ?? null;
     let projected: ConversationItem | undefined;
     this._items.update((items) =>
       items.map((item) => {
@@ -1067,7 +1047,10 @@ export class ThreadRepository {
             : item.lastMessageAt,
           lastMessageSenderId:
             preview && namespaceId != null
-              ? messagePreviewSenderKey({ ...preview.sender, namespaceId })
+              ? messagePreviewSenderKey({
+                  account: preview.sender.account,
+                  profileNamespaceId: namespaceId,
+                })
               : null,
         };
         void this.persistThread(changed);
@@ -1082,7 +1065,7 @@ export class ThreadRepository {
   private applyThreadFeedOrder(
     threadId: number,
     threadFeedId: number,
-    threadProfileRev: number,
+    profileRev: number,
   ): void {
     if (!isThreadListFeedId(threadFeedId))
       throw new Error(`Invalid threadFeedId for thread ${threadId}`);
@@ -1094,14 +1077,14 @@ export class ThreadRepository {
       if (
         current.visible !== false &&
         current.threadFeedId === threadFeedId &&
-        current.profileRev >= threadProfileRev
+        current.profileRev >= profileRev
       )
         return items;
       changed = {
         ...current,
         visible: true,
         threadFeedId,
-        profileRev: Math.max(current.profileRev, threadProfileRev),
+        profileRev: Math.max(current.profileRev, profileRev),
       };
       const next = items.slice();
       next[index] = changed;

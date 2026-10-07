@@ -199,7 +199,7 @@ export type ClientStateFeedItem =
   | {
       feedId: number;
       account: '';
-      domain: 'local';
+      domain: string;
       namespaceId: 0;
       eventType: 'INCOMING_INVITE_HEAD';
       subjectAccount: '';
@@ -612,7 +612,7 @@ export class UserService {
             void this.webdb.putMeta('selfProfile', resolved);
             void this.webdb.putMeta('selfIdentity', {
               account: resolved.account,
-              domain: 'local',
+              domain: resolved.domain,
             });
           }
           return resolved;

@@ -26,7 +26,11 @@ export const MEDIA_STATUS = {
 export type MediaStatus = (typeof MEDIA_STATUS)[keyof typeof MEDIA_STATUS];
 
 export type User = S['UserResponseDto'];
-export type ContactCardTarget = ThreadStateSnapshot['profile'];
+export type ContactCardTarget = {
+  account: string;
+  namespaceId: number;
+  profileRev: number;
+};
 /** The wire payload for `send-contact-card`. The client sends only the identity
  * coordinates the server cannot derive: account, namespaceId, and profileRev.
  * The server resolves the display `domain` from `IdentityNamespace`. */
@@ -62,14 +66,12 @@ export function isRenderableMessageTomb(
   return row.contentType === 'TOMB' && 'creator' in row;
 }
 
-/** Namespace zero and the local sentinel both identify a subject on this server.
- * Source/authority namespace fields are separate and must not use this conversion. */
+/** Identity coordinates are already canonical. Locality is determined only by namespace zero;
+ * the domain always remains the real federation domain supplied by the server. */
 export function localSubjectIdentity<
   T extends { domain: string; namespaceId: number },
 >(identity: T): T {
-  return identity.domain === 'local' || identity.namespaceId === 0
-    ? { ...identity, domain: 'local', namespaceId: 0 }
-    : identity;
+  return identity;
 }
 
 export function messageCreatorKey(creator: MessageCreator): string;
@@ -86,10 +88,13 @@ export function messageCreatorKey(
       ]);
 }
 
-/** JSON-safe identity persisted inside ClientStateFeed preview bodies. PostgreSQL JSONB cannot store the
- * NUL-separated in-memory creator key, so durable thread previews use an explicit tuple encoding. */
-export function messagePreviewSenderKey(creator: MessageCreator): string {
-  return messageCreatorKey(creator);
+/** Stable key for a thread-feed preview sender. The feed carries the account and profile namespace; the
+ * binding domain is joined separately when the sender is rendered. */
+export function messagePreviewSenderKey(sender: {
+  account: string;
+  profileNamespaceId: number;
+}): string {
+  return JSON.stringify([sender.profileNamespaceId, sender.account]);
 }
 
 export function parseUserIdentityKey(key: string): {
@@ -144,7 +149,7 @@ type ConversationItemBase = {
   threadFeedId?: number;
   threadId: number;
   /** Immutable namespace owning this thread's publisher coordinate space. */
-  authorityNamespaceId: number;
+  publisherNamespaceId: number;
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
   lastMessageAt: number | null;
   /** Durable server message ceiling; independent from the evictable local message cache. */
@@ -203,7 +208,11 @@ export type GroupConversationItem = Extract<
   { type: 'GROUP' }
 >;
 
-type P2PPeerInput = Pick<User, 'account' | 'name'> & Partial<Omit<User, 'id'>>;
+type P2PPeerInput = Pick<
+  User,
+  'account' | 'name' | 'domain' | 'namespaceId'
+> &
+  Partial<Omit<User, 'id' | 'account' | 'name' | 'domain' | 'namespaceId'>>;
 
 /** Construct the canonical local projection for a newly activated, empty P2P thread. */
 export function createP2PConversation(
@@ -215,8 +224,6 @@ export function createP2PConversation(
     avatar: '',
     bio: '',
     isGroup: false,
-    domain: 'local',
-    namespaceId: 0,
     createdAt: 0,
     updatedAt: 0,
     profileRev: 0,
@@ -227,7 +234,7 @@ export function createP2PConversation(
   const { profileRev, ...peerUser } = peerProfile;
   return {
     threadId,
-    authorityNamespaceId: peerUser.namespaceId,
+    publisherNamespaceId: peerUser.namespaceId,
     type: 'P2P',
     profileRev,
     role: null,
@@ -249,8 +256,11 @@ export function createP2PConversation(
   };
 }
 
-type GroupInput = Pick<Group, 'id' | 'account' | 'name'> &
-  Partial<Group>;
+type GroupInput = Pick<
+  Group,
+  'id' | 'account' | 'name' | 'domain' | 'namespaceId'
+> &
+  Partial<Omit<Group, 'id' | 'account' | 'name' | 'domain' | 'namespaceId'>>;
 
 /** Construct the canonical local projection for an empty group thread. */
 export function createGroupConversation(
@@ -261,8 +271,6 @@ export function createGroupConversation(
   const groupInput = localSubjectIdentity({
     avatar: '',
     description: '',
-    domain: 'local',
-    namespaceId: 0,
     threadId,
     createdAt: 0,
     updatedAt: 0,
@@ -276,7 +284,7 @@ export function createGroupConversation(
   const { profileRev, ...groupProfile } = groupInput;
   return {
     threadId,
-    authorityNamespaceId: groupProfile.namespaceId,
+    publisherNamespaceId: groupProfile.namespaceId,
     type: 'GROUP',
     profileRev,
     role: null,
@@ -318,9 +326,12 @@ export function displayUserName(u: { name?: string | null }): string {
 export function displayUserAccount(u: {
   account?: string | null;
   domain?: string | null;
+  namespaceId?: number | null;
+  profileNamespaceId?: number | null;
 }): string {
   const account = u.account ?? '';
-  return u.domain && u.domain !== 'local' ? `${account}@${u.domain}` : account;
+  const namespaceId = u.profileNamespaceId ?? u.namespaceId;
+  return namespaceId === 0 || !u.domain ? account : `${account}@${u.domain}`;
 }
 
 export type PersonalQuotaCategory = 'messages' | 'files' | 'requests';

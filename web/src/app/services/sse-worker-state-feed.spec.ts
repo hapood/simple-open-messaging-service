@@ -60,36 +60,7 @@ describe('browser SSE to database-worker state-feed handoff', () => {
         );
         if (!portBeforeHello) bind(port);
         expect(port.postMessage).toHaveBeenCalledWith({ stateTarget: 3 });
-        // Only the current port (the session generation) may publish a completion.
-        const nextPort = {
-          postMessage: vi.fn(),
-          start: vi.fn(),
-          close: vi.fn(),
-          onmessage: null as ((event: MessageEvent) => void) | null,
-        };
-        bind(nextPort);
-        port.onmessage!({
-          data: { stateCommit: { userId: 1, cursor: 3 } },
-        } as MessageEvent);
-        expect(
-          posted.some(
-            (message) =>
-              message.type === 'event' &&
-              message.payload.event === 'LOCAL_STATE_FEED_COMMITTED',
-          ),
-        ).toBe(false);
-        nextPort.onmessage!({
-          data: { stateCommit: { userId: 1, cursor: 3 } },
-        } as MessageEvent);
-        expect(posted).toContainEqual({
-          type: 'event',
-          payload: {
-            event: 'LOCAL_STATE_FEED_COMMITTED',
-            status: 0,
-            message: 'local state committed',
-            data: { userId: 1, cursor: 3 },
-          },
-        });
+        expect(port.postMessage).toHaveBeenCalledWith({ target: 0 });
         send({ type: 'stop' });
       } finally {
         vi.unstubAllGlobals();

@@ -6,6 +6,7 @@ import type {
   FederationPeerStateListResult,
   FederationPredecessorCheckResult,
   FederationReviewDecisionResult,
+  FederationRecognizeResult,
   LocalFederationRootEpoch,
   LocalFederationRootRotationResult,
   LocalFederationRootUnpublishResult,
@@ -116,6 +117,14 @@ export function blockFederationPeer(
 export function unblockFederationPeer(domain: string): Promise<void> {
   return request<void>(
     `/admin/federation/peers/${encodeURIComponent(domain)}/unblock`,
+  );
+}
+
+export function recognizeFederationPeer(
+  domain: string,
+): Promise<FederationRecognizeResult> {
+  return request<FederationRecognizeResult>(
+    `/admin/federation/peers/${encodeURIComponent(domain)}/recognize`,
   );
 }
 

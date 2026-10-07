@@ -1,5 +1,6 @@
 import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { createGroupConversation, createP2PConversation, type ConversationItem } from './model';
 import { threadFeedSnapshot } from './thread-feed.test-helper';
 
@@ -7,7 +8,7 @@ describe('resolved thread profile identity', () => {
   const userId = '919201';
   let storage: WebdbStorage;
   beforeEach(async () => {
-    storage = new WebdbStorage();
+    storage = new WebdbStorage(() => null, new SessionLifecycleService());
     await storage.openForUser(userId);
   });
   afterEach(async () => storage.closeAndDelete(userId));
@@ -34,12 +35,9 @@ describe('resolved thread profile identity', () => {
       threadFeedId: feedId,
       type: item.type,
       role: item.role,
-      authorityNamespaceId: item.authorityNamespaceId,
-      profile: {
-        account: subject.account, domain: subject.domain,
-        namespaceId: subject.namespaceId, profileRev: item.profileRev,
-      },
-      threadProfileRev: item.profileRev,
+      publisherNamespaceId: item.publisherNamespaceId,
+      profileAccount: subject.account,
+      profileRev: item.profileRev,
     })]);
     await storage.putThread({ ...item, threadFeedId: feedId });
   }
@@ -148,7 +146,7 @@ describe('resolved thread profile identity', () => {
     await seedThread(group('bravo.test', 4));
     await storage.commitResolvedProfile(profile);
     expect((await storage.getThreads())[0]).toMatchObject({
-      group: { name: '', domain: 'bravo.test' },
+      group: { name: '' },
     });
     await seedThread(group('local', 0, 2, 92));
     await storage.commitResolvedProfile(profile);

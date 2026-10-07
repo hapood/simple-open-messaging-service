@@ -9,6 +9,7 @@ import {
   rejectFederationIdentityReview,
   blockFederationPeer,
   unblockFederationPeer,
+  recognizeFederationPeer,
   runFederationSelfCheck,
   type FederationPeersQuery,
 } from '@/api/federation';
@@ -87,6 +88,14 @@ export function useRejectFederationIdentityReview() {
 export function useFederationPredecessorCheck() {
   return useMutation({
     mutationFn: (reviewId: number) => federationPredecessorCheck(reviewId),
+  });
+}
+
+export function useRecognizeFederationPeer() {
+  const invalidate = useInvalidateFederation();
+  return useMutation({
+    mutationFn: (domain: string) => recognizeFederationPeer(domain),
+    onSuccess: invalidate,
   });
 }
 

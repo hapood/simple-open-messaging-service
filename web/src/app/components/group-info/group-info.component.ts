@@ -48,7 +48,6 @@ import {
   unicodeCodePointLength,
 } from '../../lib/unicode-text';
 import { ContactCardShareService } from '../../services/contact-card-share.service';
-import { FederationNamespaceService } from '../../services/federation-namespace.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
 import type { ProfileDemand } from '../../../../../shared/profile-demand';
 import {
@@ -104,7 +103,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
   private readonly chatContext = inject(ChatContextService);
   private readonly contactCardShare = inject(ContactCardShareService);
-  private readonly namespaces = inject(FederationNamespaceService);
 
   /** The open thread id (template-bound for the alias editor). */
   readonly threadId = this.convList.openThreadId;
@@ -225,7 +223,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     () =>
       this.isAdmin() &&
       isGroupMetaCurrent(this.userMsgTrd()) &&
-      this.group()?.domain === 'local' &&
       this.group()?.namespaceId === 0,
   );
 
@@ -295,12 +292,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   }
 
   readonly group = computed(() => this.userMsgTrd()?.group);
-  readonly displayDomain = computed(() => {
-    const group = this.group();
-    return group
-      ? this.namespaces.displayDomain(group.domain, group.namespaceId)
-      : 'local';
-  });
+  readonly displayDomain = computed(() => this.group()?.domain ?? '');
   readonly dissolved = computed(() => this.group()?.dissolvedAt != null);
   readonly readOnly = computed(
     () =>
@@ -400,7 +392,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     if (
       me !== undefined &&
       m.account === me.account &&
-      m.domain === (me.domain || 'local')
+      m.namespaceId === me.namespaceId
     )
       return false; // never on self
     const role = this.myRole();
@@ -413,7 +405,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
    * local members: the group origin refuses them for members on other servers,
    * so the owner menu does not offer them there. */
   canChangePrivilegedRole(m: ResolvedMemberProfile): boolean {
-    return this.isOwner() && m.domain === 'local';
+    return this.isOwner() && m.namespaceId === 0;
   }
 
   /** The non-current role an owner can switch a member to (admin↔member toggle; never OWNER). */

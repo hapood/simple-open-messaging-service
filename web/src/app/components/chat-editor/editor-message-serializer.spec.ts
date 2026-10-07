@@ -50,7 +50,7 @@ describe('serializeEditorBlocks', () => {
         },
       ]),
     ).toBe(
-      `😀 [@张三](somfp://user/12/zhangsan) \\${literal} [@所有人](somfp://audience/all)`,
+      `😀 [@张三](somfp://user/12/zhangsan) ${literal} [@所有人](somfp://audience/all)`,
     );
   });
 

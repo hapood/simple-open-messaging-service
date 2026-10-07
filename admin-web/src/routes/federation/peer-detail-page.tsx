@@ -11,6 +11,7 @@ import {
   useFederationPredecessorCheck,
   useBlockFederationPeer,
   useUnblockFederationPeer,
+  useRecognizeFederationPeer,
 } from '@/hooks/use-federation';
 import { useIsSuperAdmin } from '@/hooks/use-me';
 import { useQuotaNodes } from '@/hooks/use-quotas';
@@ -54,6 +55,7 @@ export function PeerDetailPage() {
   const reviews = namespaceData?.reviews;
   const block = useBlockFederationPeer();
   const unblock = useUnblockFederationPeer();
+  const recognize = useRecognizeFederationPeer();
   const approveReview = useApproveFederationIdentityReview();
   const rejectReview = useRejectFederationIdentityReview();
   const predecessorCheck = useFederationPredecessorCheck();
@@ -74,6 +76,20 @@ export function PeerDetailPage() {
         await block.mutateAsync({ domain: d });
         toast.success(t('federation.toast.blocked'));
       }
+    } catch (e) {
+      toast.error(formatApiError(e));
+    }
+  };
+
+  const onRecognize = async () => {
+    if (!window.confirm(t('federation.action.confirmRecognize'))) return;
+    try {
+      const result = await recognize.mutateAsync(d);
+      toast.success(
+        result.status === 'recognized'
+          ? t('federation.toast.recognized')
+          : t('federation.toast.recognitionPending'),
+      );
     } catch (e) {
       toast.error(formatApiError(e));
     }
@@ -151,15 +167,24 @@ export function PeerDetailPage() {
               <PeerStatusBadge level={peer.trustLevel} />
             </div>
             {isSuper ? (
-              <Button
-                variant={blocked ? 'default' : 'destructive'}
-                onClick={onToggleBlock}
-                disabled={block.isPending || unblock.isPending}
-              >
-                {blocked
-                  ? t('federation.action.unblock')
-                  : t('federation.action.block')}
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={onRecognize}
+                  disabled={recognize.isPending}
+                >
+                  {t('federation.action.recognize')}
+                </Button>
+                <Button
+                  variant={blocked ? 'default' : 'destructive'}
+                  onClick={onToggleBlock}
+                  disabled={block.isPending || unblock.isPending}
+                >
+                  {blocked
+                    ? t('federation.action.unblock')
+                    : t('federation.action.block')}
+                </Button>
+              </div>
             ) : null}
           </div>
 

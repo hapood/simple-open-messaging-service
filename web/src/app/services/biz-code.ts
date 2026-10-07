@@ -48,6 +48,8 @@ export const BusinessCode = {
   FEDERATION_PAYLOAD_TOO_LARGE: 50012,
   FEDERATION_CAPABILITY_DISABLED: 50013,
   FEDERATION_NAMESPACE_INACTIVE: 50026,
+  FEDERATION_NAMESPACE_UNRECOVERABLE: 50032,
+  FEDERATION_PROFILE_UNRECOVERABLE: 50033,
   CALL_BUSY: 70004,
 } as const;
 
@@ -103,6 +105,10 @@ const BIZ_CODE_KEY: Readonly<Record<number, string>> = {
     'errors.biz.federationCapabilityDisabled',
   [BusinessCode.FEDERATION_NAMESPACE_INACTIVE]:
     'errors.biz.federationNamespaceInactive',
+  [BusinessCode.FEDERATION_NAMESPACE_UNRECOVERABLE]:
+    'errors.biz.federationNamespaceUnrecoverable',
+  [BusinessCode.FEDERATION_PROFILE_UNRECOVERABLE]:
+    'errors.biz.federationProfileUnrecoverable',
 };
 
 /**

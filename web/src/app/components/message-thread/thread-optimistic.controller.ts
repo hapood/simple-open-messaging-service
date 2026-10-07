@@ -13,6 +13,8 @@ import type { MessageThreadSource } from './message-thread-adapter';
 export interface OptimisticAuthor {
   account: string;
   name: string;
+  domain: string;
+  namespaceId: number;
 }
 
 /** Owns pending-message identity, insertion, reconciliation and newest-end queuing. */
@@ -73,8 +75,8 @@ export class ThreadOptimisticController {
         msgId: placeholderId,
         creator: messageCreatorKey({
           account: author.account,
-          domain: 'local',
-          namespaceId: 0,
+          domain: author.domain,
+          namespaceId: author.namespaceId,
         }),
         isSelf: true,
         isGroupConversation,

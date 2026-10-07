@@ -96,7 +96,6 @@ export class PlaygroundConversationList {
   flushRead(): void {}
   markJoinRequestsReadLocally(): void {}
   confirmThreadAlias(): void {}
-  markAuthorityNamespaceInactive(): void {}
 
   async removeThread(threadId: number): Promise<void> {
     this.conversations.update((items) =>

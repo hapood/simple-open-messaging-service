@@ -134,7 +134,6 @@ import {
 } from '../../services/member-profile-store.service';
 import { ChatContextService } from './chat-context.service';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
-import { FederationNamespaceService } from '../../services/federation-namespace.service';
 import { ALL_MENTION_ID, escapePlainText } from '../../lib/message-entity';
 import type { ChatMember } from '../chat-editor/chat-editor.component';
 import { StableReadTracker } from './stable-read-tracker';
@@ -287,7 +286,6 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly fileDetail = inject(FileDetailService);
   private readonly nav = inject(NavStateMachineService);
   private readonly convList = inject(ConversationListService);
-  private readonly namespaces = inject(FederationNamespaceService);
   private readonly transfers = inject(MediaTransferService);
   private readonly transferState = new ThreadTransferController(
     this.transfers,
@@ -588,13 +586,6 @@ export class MessageThreadComponent implements OnDestroy {
       this.userMsgTrd()?.type === 'P2P' &&
       this.userMsgTrd()?.friendshipActive === false,
   );
-  readonly authorityNamespaceInactive = computed(() => {
-    const thread = this.userMsgTrd();
-    if (!thread || thread.authorityNamespaceId === 0) return false;
-    const domain =
-      thread.type === 'P2P' ? thread.peerUser.domain : thread.group.domain;
-    return !this.namespaces.isActive(domain, thread.authorityNamespaceId);
-  });
   readonly leftGroup = computed(
     () =>
       this.userMsgTrd()?.type === 'GROUP' &&
@@ -838,7 +829,6 @@ export class MessageThreadComponent implements OnDestroy {
         !this.initialLoading() &&
         !this.blockedPeer() &&
         !this.friendshipEnded() &&
-        !this.authorityNamespaceInactive() &&
         !this.leftGroup() &&
         !this.dissolvedGroup() &&
         !this.nativeComposerOccluded() &&
@@ -1612,7 +1602,7 @@ export class MessageThreadComponent implements OnDestroy {
         (item) =>
           item.type === 'P2P' &&
           item.peerUser.account === profile.account &&
-          (item.peerUser.domain || 'local') === profile.domain &&
+          item.peerUser.domain === profile.domain &&
           item.peerUser.namespaceId === profile.namespaceId &&
           item.friendshipActive !== false,
       )?.threadId;
@@ -1624,13 +1614,13 @@ export class MessageThreadComponent implements OnDestroy {
           name: profile.name,
           avatar: profile.avatar,
           bio: profile.bio,
-          domain: profile.domain || 'local',
+          domain: profile.domain,
           namespaceId: profile.namespaceId,
           friendThreadId,
           relationship:
             profile.account === this.userService.sessionProfile()?.account &&
-            profile.domain === 'local' &&
-            profile.namespaceId === 0
+            profile.namespaceId ===
+              this.userService.sessionProfile()?.namespaceId
               ? 'SELF'
               : friendThreadId === undefined
                 ? 'NONE'
@@ -2485,7 +2475,6 @@ export class MessageThreadComponent implements OnDestroy {
       return;
     }
     if (res.code === BusinessCode.FEDERATION_NAMESPACE_INACTIVE) {
-      this.convList.markAuthorityNamespaceInactive(threadId);
       this.toast.warn(translateBizResult(res, this.transloco));
       return;
     }

@@ -23,7 +23,7 @@ describe('ThreadOptimisticController', () => {
     const { controller } = harness(true);
     const item = controller.makeItem(
       'client-id',
-      { account: 'alice', name: 'Alice' },
+      { account: 'alice', name: 'Alice', domain: 'chat.test', namespaceId: 0 },
       false,
       'hello',
       'PURE_TEXT',

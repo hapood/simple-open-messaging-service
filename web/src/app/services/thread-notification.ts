@@ -50,9 +50,7 @@ export function threadNotificationDescriptor(
     .reduce<
       NonNullable<ThreadFeedSnapshot['previews']>[number] | undefined
     >((latest, p) => (!latest || p.seq > latest.seq ? p : latest), undefined);
-  const fallback = preview
-    ? `${preview.sender.account}@${preview.sender.domain}`
-    : 'SOMS';
+  const fallback = preview?.sender.account ?? 'Unknown';
   const title =
     state.alias ||
     (item.type === 'GROUP'

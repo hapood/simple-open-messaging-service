@@ -135,7 +135,9 @@ export function applyFriendIntentToProjection(
   now: number,
 ): ProjectionTransition {
   if (input.status === 'ACCEPTED' && input.direction === 'OUTGOING')
-    return { record: current ?? null, becameActionable: false };
+    return current
+      ? updateLiveProjection(current, 'ACCEPTED', now)
+      : { record: null, becameActionable: false };
   if (input.status === 'REVOKED' && !input.requestStatus)
     return { record: current ?? null, becameActionable: false };
   if (input.status !== 'REQUESTED')

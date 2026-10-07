@@ -191,14 +191,14 @@
                   [account]="candidate.account"
                   [src]="candidate.avatar"
                   [federatedDomain]="
-                    candidate.domain !== 'local' ? candidate.domain : null
+                    candidate.namespaceId !== 0 ? candidate.domain : null
                   "
                 />
                 <div class="candidate-meta">
                   <app-user-identity-label
                     [name]="candidate.name"
                     [domain]="
-                      candidate.domain !== 'local' ? candidate.domain : null
+                      candidate.namespaceId !== 0 ? candidate.domain : null
                     "
                   />
                   <div class="candidate-bio">

@@ -1,5 +1,6 @@
 import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
+import type { ProfileNamespacePairKey } from './webdb-storage';
 import { WebdbService } from './webdb.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { createP2PConversation } from './model';
@@ -15,7 +16,7 @@ describe('shared background storage', () => {
   const profileResolver = vi.fn(async () => false);
 
   beforeEach(() => {
-    storage = new WebdbStorage();
+    storage = new WebdbStorage(() => null, new SessionLifecycleService());
   });
   afterEach(async () => {
     await storage.closeAndDelete(userId);
@@ -31,12 +32,9 @@ describe('shared background storage', () => {
         data: {
           items: [
             threadFeedSnapshot(7, {
-              profile: {
-                account: 'peer',
-                domain: 'local',
-                namespaceId: 0,
-                profileRev: 0,
-              },
+              profileAccount: 'peer',
+              publisherNamespaceId: 0,
+              profileRev: 0,
               messageEndSeq: 2,
               unreadCount: 2,
             }),
@@ -57,7 +55,7 @@ describe('shared background storage', () => {
         : result.states[0].unreadCount,
     ).toBe(2);
     await storage.close();
-    const page = new WebdbStorage(() => null);
+    const page = new WebdbStorage(() => null, new SessionLifecycleService());
     try {
       await page.openExistingForUser(userId);
       expect(await page.getSyncState('threadFeedCursor')).toBe(1);
@@ -74,20 +72,16 @@ describe('shared background storage', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
       sender: {
         account: 'peer',
-        domain: 'local',
-        namespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 3,
       },
       status,
       text: status === 'LIVE' ? `message ${seq}` : undefined,
     });
     const first = threadFeedSnapshot(7, {
-      profile: {
-        account: 'peer',
-        domain: 'local',
-        namespaceId: 0,
-        profileRev: 3,
-      },
+      profileAccount: 'peer',
+      publisherNamespaceId: 0,
+      profileRev: 3,
       threadFeedId: 1,
       messageEndSeq: 9,
       tombstoneEndSeq: 2,
@@ -104,11 +98,10 @@ describe('shared background storage', () => {
     const db = await storage.db();
     expect(await db.get('threads', 7)).toMatchObject({
       profileAccount: 'peer',
-      profileDomain: 'local',
-      profileNamespaceId: 0,
-      threadProfileRev: 3,
+      publisherNamespaceId: 0,
+      profileRev: 3,
     });
-    expect(await db.get('threads', 7)).not.toHaveProperty('profileRev');
+    expect(await db.get('threads', 7)).not.toHaveProperty('threadProfileRev');
     expect(await db.get('threads', 7)).not.toHaveProperty('profile');
     expect(await db.get('threads', 7)).not.toHaveProperty('previews');
     expect(await db.getAll('threadPreviews')).toEqual([
@@ -117,8 +110,7 @@ describe('shared background storage', () => {
         seq: 9,
         createdAt: '2026-01-01T00:00:00.000Z',
         senderAccount: 'peer',
-        senderDomain: 'local',
-        senderNamespaceId: 0,
+        senderProfileNamespaceId: 0,
         senderProfileRev: 3,
         status: 'USER_RETRACTION',
         text: null,
@@ -147,12 +139,9 @@ describe('shared background storage', () => {
   it('does not publish a partial page when a required preview array is absent', async () => {
     await storage.openForUser(userId);
     const snapshot = threadFeedSnapshot(7, {
-      profile: {
-        account: 'peer',
-        domain: 'local',
-        namespaceId: 0,
-        profileRev: 0,
-      },
+      profileAccount: 'peer',
+      publisherNamespaceId: 0,
+      profileRev: 0,
     });
     await expect(
       storage.mergeThreadStates([{ ...snapshot, previews: undefined }], 1),
@@ -187,21 +176,18 @@ describe('shared background storage', () => {
         type: 'GROUP',
         role: 'MEMBER',
         threadFeedId: 1,
-        profile: {
-          account: '!team',
-          domain: 'local',
-          namespaceId: 0,
-          profileRev: 4,
-        },
+        profileAccount: '!team',
+        publisherNamespaceId: 0,
+        profileRev: 4,
       }),
     ]);
     const db = await storage.db();
-    expect(await db.get('threads', 9)).not.toHaveProperty('profileRev');
+    expect(await db.get('threads', 9)).not.toHaveProperty('threadProfileRev');
     expect(await storage.getUnresolvedGroupMetaProfiles()).toContainEqual({
       type: 'GROUP',
       threadId: 9,
       account: '!team',
-      domain: 'local',
+      domain: '',
       namespaceId: 0,
       rev: 4,
     });
@@ -213,49 +199,58 @@ describe('shared background storage', () => {
     expect(await storage.getThreads()).toEqual([]);
     await storage.mergeThreadStates([
       threadFeedSnapshot(7, {
-        profile: {
-          account: 'peer',
-          domain: 'local',
-          namespaceId: 0,
-          profileRev: 4,
-        },
+        profileAccount: 'peer',
+        publisherNamespaceId: 0,
+        profileRev: 4,
       }),
     ]);
     expect((await storage.getThreads())[0].profileRev).toBe(4);
-    expect(await db.get('threads', 7)).not.toHaveProperty('profileRev');
+    expect(await db.get('threads', 7)).not.toHaveProperty('threadProfileRev');
     await storage.putThread(
       createP2PConversation(
         7,
-        { account: 'peer', name: 'Peer' },
+        {
+          account: 'peer',
+          name: 'Peer',
+          domain: 'chat.example.test',
+          namespaceId: 0,
+        },
         { profileRev: 99, threadFeedId: 1 },
       ),
     );
     expect((await storage.getThreads())[0].profileRev).toBe(4);
-    expect(await db.get('threads', 7)).not.toHaveProperty('profileRev');
+    expect(await db.get('threads', 7)).not.toHaveProperty('threadProfileRev');
   });
 
   it('rejects presentation-only writes and atomically rejects a mixed replacement', async () => {
     await storage.openForUser(userId);
-    const peer = createP2PConversation(7, { account: 'peer', name: 'Peer' });
+    const peer = createP2PConversation(7, {
+      account: 'peer',
+      name: 'Peer',
+      domain: 'chat.example.test',
+      namespaceId: 0,
+    });
     await expect(storage.putThread(peer)).rejects.toThrow(
       'matching feed state',
     );
     expect(await (await storage.db()).get('threads', 7)).toBeUndefined();
     await storage.mergeThreadStates([
       threadFeedSnapshot(7, {
-        profile: {
-          account: 'peer',
-          domain: 'local',
-          namespaceId: 0,
-          profileRev: 2,
-        },
+        profileAccount: 'peer',
+        publisherNamespaceId: 0,
+        profileRev: 2,
       }),
     ]);
     const before = await (await storage.db()).get('threads', 7);
     await expect(
       storage.replaceThreads([
         { ...peer, threadFeedId: 1 },
-        createP2PConversation(8, { account: 'other', name: 'Other' }),
+        createP2PConversation(8, {
+          account: 'other',
+          name: 'Other',
+          domain: 'chat.example.test',
+          namespaceId: 0,
+        }),
       ]),
     ).rejects.toThrow('matching feed state');
     expect(await (await storage.db()).get('threads', 7)).toEqual(before);
@@ -267,12 +262,9 @@ describe('shared background storage', () => {
     await storage.mergeThreadStates(
       [
         threadFeedSnapshot(7, {
-          profile: {
-            account: 'peer',
-            domain: 'local',
-            namespaceId: 0,
-            profileRev: 1,
-          },
+          profileAccount: 'peer',
+          publisherNamespaceId: 0,
+          profileRev: 1,
         }),
       ],
       1,
@@ -284,21 +276,15 @@ describe('shared background storage', () => {
         [
           threadFeedSnapshot(8, {
             threadFeedId: 2,
-            profile: {
-              account: 'other',
-              domain: 'local',
-              namespaceId: 0,
-              profileRev: 0,
-            },
+            profileAccount: 'other',
+            publisherNamespaceId: 0,
+            profileRev: 0,
           }),
           threadFeedSnapshot(7, {
             threadFeedId: 3,
-            profile: {
-              account: 'impostor',
-              domain: 'local',
-              namespaceId: 0,
-              profileRev: 2,
-            },
+            profileAccount: 'impostor',
+            publisherNamespaceId: 0,
+            profileRev: 2,
           }),
         ],
         3,
@@ -316,12 +302,9 @@ describe('shared background storage', () => {
         threadFeedSnapshot(7, {
           type: 'GROUP',
           role: 'MEMBER',
-          profile: {
-            account: '!room',
-            domain: 'local',
-            namespaceId: 0,
-            profileRev: 1,
-          },
+          profileAccount: '!room',
+          publisherNamespaceId: 0,
+          profileRev: 1,
           messageEndSeq: 1,
           previews: [
             {
@@ -329,8 +312,7 @@ describe('shared background storage', () => {
               createdAt: '2026-01-01T00:00:00Z',
               sender: {
                 account: 'peer',
-                domain: 'local',
-                namespaceId: 0,
+                profileNamespaceId: 0,
                 profileRev: 1,
               },
               status: 'LIVE',
@@ -362,17 +344,19 @@ describe('shared background storage', () => {
     await storage.openForUser(userId);
     await storage.mergeThreadStates([
       threadFeedSnapshot(7, {
-        profile: {
-          account: 'peer',
-          domain: 'local',
-          namespaceId: 0,
-          profileRev: 0,
-        },
+        profileAccount: 'peer',
+        publisherNamespaceId: 0,
+        profileRev: 0,
       }),
     ]);
     const thread = createP2PConversation(
       7,
-      { account: 'peer', name: 'Peer' },
+      {
+        account: 'peer',
+        name: 'Peer',
+        domain: 'chat.example.test',
+        namespaceId: 0,
+      },
       { threadFeedId: 1 },
     );
     await storage.putThread(thread);
@@ -393,12 +377,9 @@ describe('shared background storage', () => {
     await storage.openForUser(userId);
     const state = {
       ...threadStructure(7, {
-        profile: {
-          account: 'peer',
-          domain: 'local',
-          namespaceId: 0,
-          profileRev: 0,
-        },
+        profileAccount: 'peer',
+        publisherNamespaceId: 0,
+        profileRev: 0,
       }),
       threadId: 7,
       threadFeedId: 1,
@@ -420,7 +401,12 @@ describe('shared background storage', () => {
     await storage.putThread(
       createP2PConversation(
         7,
-        { account: 'peer', name: 'Profile' },
+        {
+          account: 'peer',
+          name: 'Profile',
+          domain: 'chat.example.test',
+          namespaceId: 0,
+        },
         { alias: 'Stale structure' },
       ),
     );
@@ -449,7 +435,7 @@ describe('shared background storage', () => {
 
   it('serializes cursor consumption across two account database owners', async () => {
     await storage.openForUser(userId);
-    const background = new WebdbStorage();
+    const background = new WebdbStorage(() => null, new SessionLifecycleService());
     await background.openExistingForUser(userId);
     const previous = Object.getOwnPropertyDescriptor(navigator, 'locks');
     let tail: Promise<unknown> = Promise.resolve();
@@ -506,7 +492,7 @@ describe('shared background storage', () => {
 
   it('closes the background handle when another context deletes the cache and rejects a late response', async () => {
     await storage.openForUser(userId);
-    const background = new WebdbStorage();
+    const background = new WebdbStorage(() => null, new SessionLifecycleService());
     await background.openExistingForUser(userId);
     let respond!: (value: unknown) => void;
     let started!: () => void;
@@ -555,7 +541,7 @@ describe('profile-namespace change feed consumption', () => {
   let storage: WebdbStorage;
 
   beforeEach(() => {
-    storage = new WebdbStorage();
+    storage = new WebdbStorage(() => null, new SessionLifecycleService());
   });
   afterEach(async () => {
     await storage.closeAndDelete(userId);
@@ -571,6 +557,8 @@ describe('profile-namespace change feed consumption', () => {
           domain: 'peer.test',
           rootPublicKey: 'r'.repeat(44),
           updateFeedId: 4,
+          status: 'ACTIVE',
+          expired: false,
         },
       ],
       0,
@@ -592,6 +580,7 @@ describe('profile-namespace change feed consumption', () => {
       expired: true,
       changeSeq: 7,
       updateFeedId: 4,
+          status: 'ACTIVE',
     });
     // Feed pulled, cache not: the pair is a visible tomb.
     expect(rows[1]).toMatchObject({
@@ -622,6 +611,8 @@ describe('profile-namespace change feed consumption', () => {
           domain: 'stale.test',
           rootPublicKey: 's'.repeat(44),
           updateFeedId: 99,
+          status: 'ACTIVE',
+          expired: false,
         },
       ],
       8,
@@ -629,7 +620,9 @@ describe('profile-namespace change feed consumption', () => {
     const [stale] = await storage.getProfileNamespaceBindings([
       { publisherNamespaceId: 12, profileNamespaceId: 0 },
     ]);
-    expect(stale).toMatchObject({ expired: true, changeSeq: 9 });
+    // The changeSeq guard dropped the older round's answer — not the flag:
+    // the tomb is untouched (the answer carried domain 'stale.test').
+    expect(stale).toMatchObject({ domain: null, expired: true, changeSeq: 9 });
     // An answer from the converged round clears the tomb and pins the
     // round's coordinate.
     await storage.commitProfileNamespaceBindings(
@@ -640,6 +633,8 @@ describe('profile-namespace change feed consumption', () => {
           domain: 'fresh.test',
           rootPublicKey: 'f'.repeat(44),
           updateFeedId: 10,
+          status: 'ACTIVE',
+          expired: false,
         },
       ],
       9,
@@ -652,6 +647,148 @@ describe('profile-namespace change feed consumption', () => {
       expired: false,
       changeSeq: 9,
     });
+  });
+
+  it('stores a stale-window answer as-is: data kept, expired preserved, coordinates pinned', async () => {
+    await storage.openForUser(userId);
+    await storage.commitProfileNamespaceBindings(
+      [
+        {
+          publisherNamespaceId: 12,
+          profileNamespaceId: 0,
+          domain: 'old.test',
+          rootPublicKey: 'o'.repeat(44),
+          updateFeedId: 3,
+          status: 'ACTIVE',
+          expired: false,
+        },
+      ],
+      5,
+    );
+    // The server is mid-refresh and answers with the stale cached value.
+    await storage.commitProfileNamespaceBindings(
+      [
+        {
+          publisherNamespaceId: 12,
+          profileNamespaceId: 0,
+          domain: 'stale-kept.test',
+          rootPublicKey: 's'.repeat(44),
+          updateFeedId: 3,
+          status: 'ACTIVE',
+          expired: true,
+        },
+      ],
+      5,
+    );
+    const [stale] = await storage.getProfileNamespaceBindings([
+      { publisherNamespaceId: 12, profileNamespaceId: 0 },
+    ]);
+    expect(stale).toMatchObject({
+      domain: 'stale-kept.test',
+      expired: true,
+      changeSeq: 5,
+      updateFeedId: 3,
+          status: 'ACTIVE',
+    });
+    // A converged answer at the same round clears the flag.
+    await storage.commitProfileNamespaceBindings(
+      [
+        {
+          publisherNamespaceId: 12,
+          profileNamespaceId: 0,
+          domain: 'fresh.test',
+          rootPublicKey: 'f'.repeat(44),
+          updateFeedId: 6,
+          status: 'ACTIVE',
+          expired: false,
+        },
+      ],
+      5,
+    );
+    const [fresh] = await storage.getProfileNamespaceBindings([
+      { publisherNamespaceId: 12, profileNamespaceId: 0 },
+    ]);
+    expect(fresh).toMatchObject({
+      domain: 'fresh.test',
+      expired: false,
+      updateFeedId: 6,
+          status: 'ACTIVE',
+    });
+  });
+
+  it('emits the expiry wake before a failing resolve, keeps the cursor, and does not re-emit on retry', async () => {
+    await storage.openForUser(userId);
+    const wakes: Array<
+      Array<{ publisherNamespaceId: number; profileNamespaceId: number }>
+    > = [];
+    storage.profileNamespaceWake$.subscribe((pairs) => wakes.push(pairs));
+    const page = {
+      code: 0,
+      data: {
+        items: [
+          { publisherNamespaceId: 12, profileNamespaceId: 0, changeId: 3 },
+        ],
+        scannedThrough: 3,
+        endId: 3,
+        hasMore: false,
+      },
+    };
+    let resolveOk = false;
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes('/user/profile-namespace-feed')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => page,
+        } as unknown as Response;
+      }
+      if (!resolveOk) return { ok: false, status: 503 } as unknown as Response;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          code: 0,
+          data: {
+            status: 'READY',
+            entry: {
+                publisherNamespaceId: 12,
+                profileNamespaceId: 0,
+                domain: 'peer.test',
+                rootPublicKey: 'r'.repeat(44),
+                updateFeedId: 4,
+          status: 'ACTIVE',
+                expired: false,
+              },
+
+          },
+        }),
+      } as unknown as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(storage.pullProfileNamespaceChanges()).rejects.toThrow();
+    // Wake① fired although the resolve round failed; the expiry is applied
+    // and consumers already learned it. The cursor did not move.
+    expect(wakes).toEqual([
+      [{ publisherNamespaceId: 12, profileNamespaceId: 0 }],
+    ]);
+    // The retry re-applies the same page: the stale-replay guard empties
+    // `touched`, so no duplicate wake① and no resolve round — the tomb
+    // converges on the next demand or change instead.
+    resolveOk = true;
+    await storage.pullProfileNamespaceChanges();
+    expect(wakes).toEqual([
+      [{ publisherNamespaceId: 12, profileNamespaceId: 0 }],
+    ]);
+    const [row] = await storage.getProfileNamespaceBindings([
+      { publisherNamespaceId: 12, profileNamespaceId: 0 },
+    ]);
+    expect(row).toMatchObject({ domain: null, expired: true, changeSeq: 3 });
+    // The cursor advanced: the anchor fast path now skips.
+    const calls = fetchMock.mock.calls.length;
+    await storage.pullProfileNamespaceChanges(3);
+    expect(fetchMock.mock.calls.length).toBe(calls);
+    vi.unstubAllGlobals();
   });
 
   it('drains the change feed, resolves touched pairs, and advances the cursor', async () => {
@@ -691,48 +828,120 @@ describe('profile-namespace change feed consumption', () => {
         } as unknown as Response;
       }
       resolveBodies.push(JSON.parse(String(init?.body)));
+      const body = JSON.parse(String(init?.body)) as ProfileNamespacePairKey;
       return {
         ok: true,
         status: 200,
         json: async () => ({
           code: 0,
           data: {
-            entries: [
-              {
-                publisherNamespaceId: 12,
-                profileNamespaceId: 0,
-                domain: 'peer.test',
-                rootPublicKey: 'r'.repeat(44),
-                updateFeedId: 4,
-                expired: false,
-              },
-            ],
+            status: 'READY',
+            entry: {
+              publisherNamespaceId: body.publisherNamespaceId,
+              profileNamespaceId: body.profileNamespaceId,
+              domain: `${body.publisherNamespaceId}-${body.profileNamespaceId}.test`,
+              rootPublicKey: 'r'.repeat(44),
+              updateFeedId: 4,
+              status: 'ACTIVE',
+              expired: false,
+            },
           },
         }),
       } as unknown as Response;
     });
     vi.stubGlobal('fetch', fetchMock);
 
+    const wakes: Array<
+      Array<{ publisherNamespaceId: number; profileNamespaceId: number }>
+    > = [];
+    storage.profileNamespaceWake$.subscribe((pairs) => wakes.push(pairs));
+
     await storage.pullProfileNamespaceChanges(5);
-    expect(fetchMock).toHaveBeenCalledTimes(4); // 2 feed pages + 2 resolve rounds
+    expect(fetchMock).toHaveBeenCalledTimes(5); // 2 feed pages + 3 single-pair resolves
+    // Double wake per page: expiry committed (①) then fresh answers
+    // committed (②), each carrying that page's touched pairs.
+    expect(wakes).toEqual([
+      [
+        { publisherNamespaceId: 12, profileNamespaceId: 0 },
+        { publisherNamespaceId: 15, profileNamespaceId: 2 },
+      ],
+      [
+        { publisherNamespaceId: 12, profileNamespaceId: 0 },
+        { publisherNamespaceId: 15, profileNamespaceId: 2 },
+      ],
+      [{ publisherNamespaceId: 16, profileNamespaceId: 0 }],
+      [{ publisherNamespaceId: 16, profileNamespaceId: 0 }],
+    ]);
     expect(resolveBodies).toEqual([
-      {
-        pairs: [
-          { publisherNamespaceId: 12, profileNamespaceId: 0 },
-          { publisherNamespaceId: 15, profileNamespaceId: 2 },
-        ],
-      },
-      { pairs: [{ publisherNamespaceId: 16, profileNamespaceId: 0 }] },
+      { publisherNamespaceId: 12, profileNamespaceId: 0 },
+      { publisherNamespaceId: 15, profileNamespaceId: 2 },
+      { publisherNamespaceId: 16, profileNamespaceId: 0 },
     ]);
     const [converged] = await storage.getProfileNamespaceBindings([
       { publisherNamespaceId: 12, profileNamespaceId: 0 },
     ]);
-    expect(converged).toMatchObject({ domain: 'peer.test', expired: false });
+    expect(converged).toMatchObject({ domain: '12-0.test', expired: false });
     // The skip fast path: an anchor equal to the persisted cursor makes no
     // network call at all.
     const calls = fetchMock.mock.calls.length;
     await storage.pullProfileNamespaceChanges(5);
     expect(fetchMock.mock.calls.length).toBe(calls);
+    vi.unstubAllGlobals();
+  });
+
+  it('writes a namespace tomb on FEDERATION_NAMESPACE_UNRECOVERABLE and does not mark pending', async () => {
+    await storage.openForUser(userId);
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('/user/profile-namespace-feed')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            code: 0,
+            data: {
+              items: [
+                { publisherNamespaceId: 42, profileNamespaceId: 7, changeId: 1 },
+              ],
+              scannedThrough: 1,
+              endId: 1,
+              hasMore: false,
+            },
+          }),
+        } as unknown as Response;
+      }
+      // resolve answers UNRECOVERABLE (50032)
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ code: 50032, data: null }),
+      } as unknown as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await storage.pullProfileNamespaceChanges();
+
+    // A tomb row is persisted in the dedicated store.
+    const db = (await (storage as unknown as {
+      db: () => Promise<IDBDatabase>;
+    }).db());
+    const tx = db.transaction(
+      ['profileNamespaceTombs', 'profileNamespaces'],
+      'readonly',
+    );
+    const tomb = await tx.objectStore('profileNamespaceTombs').get([42, 7]);
+    expect(tomb).toMatchObject({
+      publisherNamespaceId: 42,
+      profileNamespaceId: 7,
+    });
+    // No READY binding was committed — only the expiry tomb from
+    // applyProfileNamespaceChanges remains (domain null, expired true).
+    const binding = await tx.objectStore('profileNamespaces').get([42, 7]);
+    expect(binding).toMatchObject({
+      publisherNamespaceId: 42,
+      profileNamespaceId: 7,
+      domain: null,
+      expired: true,
+    });
     vi.unstubAllGlobals();
   });
 });
@@ -742,7 +951,7 @@ describe('profile-namespace pull single-flight', () => {
   let storage: WebdbStorage;
 
   beforeEach(() => {
-    storage = new WebdbStorage();
+    storage = new WebdbStorage(() => null, new SessionLifecycleService());
   });
   afterEach(async () => {
     await storage.closeAndDelete(userId);
@@ -804,16 +1013,17 @@ describe('profile-namespace pull single-flight', () => {
         json: async () => ({
           code: 0,
           data: {
-            entries: [
-              {
+            status: 'READY',
+            entry: {
                 publisherNamespaceId: 12,
                 profileNamespaceId: 0,
                 domain: 'peer.test',
                 rootPublicKey: 'r'.repeat(44),
                 updateFeedId: 4,
+          status: 'ACTIVE',
                 expired: false,
               },
-            ],
+
           },
         }),
       } as unknown as Response;

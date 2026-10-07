@@ -240,7 +240,6 @@ export interface FederationPeerState {
   haltReason: string | null;
   id: number;
   active: boolean;
-  recognizesPeer: boolean;
   peerAcceptanceConfirmed: boolean;
   localServiceAvailable: boolean;
   remoteServiceReachable: boolean;
@@ -316,6 +315,12 @@ export interface FederationReviewDecisionResult {
   status: 'approved' | 'rejected';
   domain: string;
   activeNamespaceId: number | null;
+}
+
+export interface FederationRecognizeResult {
+  domain: string;
+  status: 'pending' | 'recognized';
+  message?: string;
 }
 
 export interface FederationPredecessorCheckResult {

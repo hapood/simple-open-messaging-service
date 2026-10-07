@@ -843,11 +843,11 @@ export class FriendRequestsComponent implements OnDestroy {
     const initialUser = this.initialUser();
     if (initialUser) {
       this.activeTab.set(0);
-      if (initialUser.domain !== 'local' && initialUser.domain) {
+      if (initialUser.namespaceId === 0) {
+        this.inviteUser.set(initialUser);
+      } else {
         this.searchText.set(`${initialUser.account}@${initialUser.domain}`);
         this.searchUser();
-      } else {
-        this.inviteUser.set(initialUser);
       }
       return;
     }

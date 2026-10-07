@@ -22,7 +22,10 @@ export function applyThreadStateSnapshot(
   if (current && current.type !== snapshot.type)
     throw new Error('thread type changed');
   const identity = {
-    ...snapshot.profile,
+    account: snapshot.profileAccount,
+    domain: '',
+    namespaceId: 0,
+    profileRev: snapshot.profileRev,
     name: '',
   };
   const base =
@@ -37,7 +40,7 @@ export function applyThreadStateSnapshot(
     ...base,
     threadFeedId: feedId,
     visible: true,
-    authorityNamespaceId: snapshot.authorityNamespaceId,
+    publisherNamespaceId: snapshot.publisherNamespaceId,
     conversationState: snapshot.conversationState,
     blocked: snapshot.blocked,
     role: snapshot.role,

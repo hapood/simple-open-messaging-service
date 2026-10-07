@@ -173,6 +173,8 @@ describe('FriendRequestsComponent federated search progress', () => {
       id: 7,
       account: 'alice',
       name: 'Alice',
+      domain: 'chat.example.test',
+      namespaceId: 0,
     } as User;
     TestBed.configureTestingModule({
       imports: [FriendRequestsComponent],

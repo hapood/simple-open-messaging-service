@@ -71,10 +71,7 @@ export class ContactCardRowComponent {
   readonly cardAvatarType = computed(() =>
     this.isGroupCard() ? UserAvatarType.GROUP : UserAvatarType.OTHER,
   );
-  readonly cardFederatedDomain = computed(() => {
-    const domain = this.card()?.domain;
-    return domain && domain !== 'local' ? domain : null;
-  });
+  readonly cardFederatedDomain = computed(() => this.card()?.domain ?? null);
   openCard(): void {
     const card = this.card();
     if (!card) return;
@@ -103,9 +100,7 @@ export class ContactCardRowComponent {
             ? { namespaceId: conversation.group.namespaceId }
             : conversation?.type === 'P2P'
               ? { namespaceId: conversation.peerUser.namespaceId }
-              : card.domain === 'local'
-                ? { namespaceId: 0 }
-                : {}),
+              : {}),
           relationship:
             card.account === this.userService.sessionProfile()?.account &&
             card.domain ===

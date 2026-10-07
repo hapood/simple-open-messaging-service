@@ -29,11 +29,7 @@ describe('MemberProfileRepository invalidation', () => {
     wakes.next({ event: 'PROFILE_UNAVAILABLE', key, reason: 'PENDING' });
     expect(changed).not.toHaveBeenCalled();
     wakes.next({ event: 'PROFILE_AVAILABLE', key });
-    expect(changed).not.toHaveBeenCalled();
-    wakes.next({ event: 'PROFILE_AVAILABLE', key });
-    expect(changed).toHaveBeenCalledWith([42]);
-    wakes.next({ event: 'PROFILE_AVAILABLE', key });
-    expect(changed).toHaveBeenCalledWith([43]);
+    expect(changed).toHaveBeenCalledWith([42, 43]);
     ended.next();
     changed.mockClear();
     wakes.next({ event: 'PROFILE_AVAILABLE', key });
@@ -83,7 +79,10 @@ describe('MemberProfileRepository invalidation', () => {
       },
       terminate() {},
     };
-    const db = new WebdbStorage(() => worker as unknown as Worker);
+    const db = new WebdbStorage(
+      () => worker as unknown as Worker,
+      new SessionLifecycleService(),
+    );
     await db.openForUser('994202');
     const notified = vi.fn();
     db.profileWake$.subscribe(notified);
@@ -109,7 +108,7 @@ describe('MemberProfileRepository invalidation', () => {
   });
 
   it('announces a committed snapshot only after readers can see it', async () => {
-    const db = new WebdbStorage(() => null);
+    const db = new WebdbStorage(() => null, new SessionLifecycleService());
     await db.openForUser('994201');
     const reads: Promise<unknown>[] = [];
     db.profileWake$.subscribe((wake) => {

@@ -1,4 +1,5 @@
 import type { Mock } from 'vitest';
+import { Subject } from 'rxjs';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideTransloco } from '@jsverse/transloco';
@@ -13,7 +14,8 @@ import { CallRingtoneService } from '../../services/call-ringtone.service';
 import { CallPresentationService } from '../../services/call-presentation.service';
 import { CallScreenComponent } from './call-screen.component';
 import { UserService } from '../../services/user.service';
-import { ConversationListService } from '../../services/conversation-list.service';
+import { WebdbService, WebdbStorage } from '../../services/webdb.service';
+import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 
 describe('CallScreenComponent', () => {
   const callState = signal<CallSnapshot>({ ...IDLE_CALL });
@@ -79,10 +81,13 @@ describe('CallScreenComponent', () => {
         { provide: CallAdapterService, useValue: adapter },
         { provide: CallRingtoneService, useValue: ringtone },
         { provide: CallPresentationService, useValue: presentation },
-        { provide: ConversationListService, useValue: { items: signal([]) } },
+        { provide: WebdbService, useFactory: () => new WebdbStorage(() => null, new SessionLifecycleService()) as WebdbService },
         {
           provide: UserService,
-          useValue: { sessionProfile: signal(undefined) },
+          useValue: {
+            sessionProfile: signal(undefined),
+            sessionUserId: signal(null),
+          },
         },
       ],
     });

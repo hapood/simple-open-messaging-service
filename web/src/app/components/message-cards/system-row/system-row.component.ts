@@ -2,6 +2,7 @@ import {
   parseSystemMessageContent,
   type SystemEventAddress,
 } from '../../../../../../shared/system-message-content';
+import { firstValueFrom } from 'rxjs';
 import { MemberProfileRepository } from '../../../services/member-profile-store.service';
 import { ProfileRepository } from '../../../services/profile-store.service';
 import { WebdbService } from '../../../services/webdb.service';
@@ -126,8 +127,8 @@ export class SystemRowComponent {
     const refresh = () => {
       const current = ++request;
       if (!revision) return;
-      void this.profiles
-        .getProfile({
+      void firstValueFrom(
+        this.profiles.resolve({
           publisherNamespaceId: identity.profileNamespaceId,
           lookup: 'ACCOUNT_PROFILE',
           target: {
@@ -135,10 +136,14 @@ export class SystemRowComponent {
             account: identity.account,
             rev: revision,
           },
-        })
+        }),
+      )
         .then((profile) => {
           if (!cancelled && current === request)
-            this.profileName.set(profile?.name.trim() ?? '');
+            this.profileName.set(profile.name.trim());
+        })
+        .catch(() => {
+          if (!cancelled && current === request) this.profileName.set('');
         });
     };
     refresh();
@@ -220,7 +225,7 @@ export class SystemRowComponent {
     return (
       !!self &&
       identity.account === self.account &&
-      identity.domain === self.domain
+      identity.profileNamespaceId === self.namespaceId
     );
   }
 
@@ -288,7 +293,7 @@ export class SystemRowComponent {
         case 'FRIEND_REMOVED':
           if (
             body.initiator.account === '$system' &&
-            body.initiator.domain === 'local'
+            body.initiator.profileNamespaceId === 0
           )
             return translate('friendRemoved');
           if (this.isCurrentUser(body.initiator))

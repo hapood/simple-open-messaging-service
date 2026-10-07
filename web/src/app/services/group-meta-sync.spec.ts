@@ -18,13 +18,9 @@ function fixture() {
   const state: LocalThreadAttention = {
     ...threadStructure(12, {
       type: 'GROUP',
-      authorityNamespaceId: 7,
-      profile: {
-        account: 'room',
-        domain: 'remote.test',
-        namespaceId: 7,
-        profileRev: 1,
-      },
+      publisherNamespaceId: 7,
+      profileAccount: 'room',
+      profileRev: 1,
     }),
     threadId: 12,
     localReadSeq: 0,
@@ -32,7 +28,7 @@ function fixture() {
     messageEndSeq: 0,
     tombstoneEndSeq: 0,
     alias: null,
-    threadProfileRev: 1,
+    profileRev: 1,
     groupMetaFeedEndId: '3',
     joinRequestEndFeedId: 0,
     joinRequestReadFeedId: -1,

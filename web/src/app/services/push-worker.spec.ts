@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { installPushWorker } from '../../push/push-worker';
 import { WebdbStorage } from './webdb-storage';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { PreferenceStorage } from './preference-storage';
 import { syncPushThreads } from './push-thread-sync';
 import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
@@ -25,7 +26,7 @@ describe('Push Service Worker entry', () => {
 
   beforeEach(async () => {
     await resetNotificationSince();
-    storage = new WebdbStorage();
+    storage = new WebdbStorage(() => null, new SessionLifecycleService());
     await storage.openForUser(String(userId));
     await storage.putMeta('selfProfile', { id: userId, account: 'me' });
     await preferences.set('device', 'soms.lastUserId', userId);
@@ -43,14 +44,15 @@ describe('Push Service Worker entry', () => {
             items: [
               {
                 ...threadStructure(7, {
-                  authorityNamespaceId: 1,
-                  profile: { account: 'peer', domain: 'test', namespaceId: 1, profileRev: 1 },
+                  publisherNamespaceId: 1,
+                  profileAccount: 'peer',
+                  profileRev: 1,
                 }),
                 threadFeedId: 1,
                 messageEndSeq: 1,
                 tombstoneEndSeq: 0,
-                alias: null,
-                threadProfileRev: 1,
+                alias: 'peer@test',
+                profileRev: 1,
                 groupMetaFeedEndId: null,
                 joinRequestEndFeedId: 0,
                 joinRequestReadFeedId: -1,
@@ -63,7 +65,7 @@ describe('Push Service Worker entry', () => {
                   {
                     seq: 1,
                     createdAt: '2026-09-09T00:00:00Z',
-                    sender: { account: 'peer', domain: 'test', namespaceId: 1, profileRev: 1 },
+                    sender: { account: 'peer', profileNamespaceId: 1, profileRev: 1 },
                     status: 'LIVE',
                     text: 'Hello',
                   },

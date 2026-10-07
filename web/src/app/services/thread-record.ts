@@ -3,12 +3,8 @@ import type { ConversationItem } from './model';
 
 export type StoredThreadAttention = Omit<
   LocalThreadAttention,
-  'previews' | 'profile'
-> & {
-  profileAccount: string;
-  profileDomain: string;
-  profileNamespaceId: number;
-};
+  'previews'
+>;
 
 /** One typed row per conversation. State owns the identity, selected avatar revision and
  * server/local read positions; presentation owns only locally materialized display fields. */
@@ -89,11 +85,20 @@ export function storeThreadPresentation(
   };
 }
 
-/** The only conversation-avatar revision comes from the feed-state column. */
-export function restoreThread(row: StoredThread): ConversationItem {
+export interface RestoredThreadSubject {
+  domain: string;
+  namespaceId: number;
+}
+
+/** Restore a stored row into a presentation object. The subject identity is supplied by the
+ * profile-namespace join; the stored row intentionally contains no mutable domain. */
+export function restoreThread(
+  row: StoredThread,
+  subject: RestoredThreadSubject,
+): ConversationItem {
   const common = {
     threadId: row.threadId,
-    authorityNamespaceId: row.authorityNamespaceId,
+    publisherNamespaceId: row.publisherNamespaceId,
     visible: true,
     threadFeedId: row.threadFeedId,
     role: row.role,
@@ -119,7 +124,7 @@ export function restoreThread(row: StoredThread): ConversationItem {
     joinRequestEndFeedId: row.joinRequestEndFeedId,
     joinRequestReadFeedId: row.joinRequestReadFeedId,
     groupInviteEndFeedId: row.groupInviteEndFeedId,
-    profileRev: row.threadProfileRev,
+    profileRev: row.profileRev,
   };
   if (row.type === 'P2P')
     return {
@@ -128,8 +133,8 @@ export function restoreThread(row: StoredThread): ConversationItem {
       peerProfileMessageSeq: row.peerProfileMessageSeq,
       peerUser: {
         account: row.profileAccount,
-        domain: row.profileDomain,
-        namespaceId: row.profileNamespaceId,
+        domain: subject.domain,
+        namespaceId: subject.namespaceId,
         name: row.subjectName,
         avatar: row.subjectAvatar,
         bio: row.subjectBio,
@@ -158,8 +163,8 @@ export function restoreThread(row: StoredThread): ConversationItem {
     group: {
       id: row.subjectId,
       account: row.profileAccount,
-      domain: row.profileDomain,
-      namespaceId: row.profileNamespaceId,
+      domain: subject.domain,
+      namespaceId: subject.namespaceId,
       name: row.subjectName,
       avatar: row.subjectAvatar,
       description: row.subjectBio,
@@ -187,4 +192,11 @@ export function restoreThread(row: StoredThread): ConversationItem {
             text: row.recoveryAnnouncementText!,
           },
   };
+}
+
+/** Storage mutations use an unresolved subject only inside a transaction. */
+export function restoreThreadForStorageMutation(
+  row: StoredThread,
+): ConversationItem {
+  return restoreThread(row, { domain: '', namespaceId: 0 });
 }

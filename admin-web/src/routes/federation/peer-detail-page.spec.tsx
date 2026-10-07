@@ -10,6 +10,10 @@ const state = vi.hoisted(() => ({
 }));
 const block = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
 const unblock = vi.hoisted(() => ({ isPending: false, mutateAsync: vi.fn() }));
+const recognize = vi.hoisted(() => ({
+  isPending: false,
+  mutateAsync: vi.fn(),
+}));
 const approveReview = vi.hoisted(() => ({
   isPending: false,
   mutateAsync: vi.fn(),
@@ -97,6 +101,7 @@ vi.mock('@/hooks/use-federation', () => ({
   useFederationPredecessorCheck: () => predecessorCheck,
   useBlockFederationPeer: () => block,
   useUnblockFederationPeer: () => unblock,
+  useRecognizeFederationPeer: () => recognize,
 }));
 
 function renderPage() {
@@ -116,6 +121,10 @@ describe('PeerDetailPage authorization', () => {
     state.haltCode = null;
     block.mutateAsync.mockReset().mockResolvedValue(undefined);
     unblock.mutateAsync.mockReset().mockResolvedValue(undefined);
+    recognize.mutateAsync.mockReset().mockResolvedValue({
+      domain: 'peer.test',
+      status: 'recognized',
+    });
     toast.success.mockReset();
     toast.error.mockReset();
     approveReview.mutateAsync.mockReset().mockResolvedValue(undefined);
@@ -136,6 +145,23 @@ describe('PeerDetailPage authorization', () => {
     expect(
       screen.queryByRole('button', { name: 'federation.action.block' }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'federation.action.recognize' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('lets a super administrator start recognition and reports success', async () => {
+    state.isSuper = true;
+    renderPage();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'federation.action.recognize' }),
+    );
+
+    await waitFor(() =>
+      expect(recognize.mutateAsync).toHaveBeenCalledWith('peer.test'),
+    );
+    expect(toast.success).toHaveBeenCalledWith('federation.toast.recognized');
   });
 
   it('lets a super administrator block the routed peer and reports success', async () => {

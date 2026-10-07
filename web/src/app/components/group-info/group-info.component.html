@@ -406,7 +406,7 @@
               <div class="member-info">
                 <span class="member-name"
                   >{{ m.name }}
-                  @if (m.account === sessionAccount() && m.domain === 'local') {
+                  @if (m.account === sessionAccount() && m.namespaceId === 0) {
                     {{ 'common.you' | transloco }}
                   }
                 </span>

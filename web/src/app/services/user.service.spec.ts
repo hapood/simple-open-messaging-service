@@ -226,10 +226,13 @@ describe('UserService profile refresh', () => {
       avatar: '',
     });
     expect(TestBed.inject(ProfileRepository).resolve).toHaveBeenCalledWith({
-      type: 'EXACT',
-      account: 'alice',
-      domain: 'local',
-      rev: 2,
+      publisherNamespaceId: 0,
+      lookup: 'ACCOUNT_PROFILE',
+      target: {
+        profileNamespaceId: 0,
+        account: 'alice',
+        rev: 2,
+      },
     });
     expect(TestBed.inject(WebdbService).putMeta).toHaveBeenCalledWith(
       'selfProfile',
@@ -408,7 +411,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('runs request garbage collection on startup when no prior cleanup exists', async () => {
-    webdb.getMeta.mockImplementation(async (key: string) =>
+    webdb.getSyncState.mockImplementation(async (key: string) =>
       key === 'selfProfile'
         ? {
             id: 1,
@@ -425,14 +428,14 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     // The cleanup is fire-and-forget inside establishSession; its completion is marked by the
     // persisted timestamp (written only after the cleanup resolves) — wait on that, not on a sleep.
     await vi.waitFor(() =>
-      expect(webdb.putMeta).toHaveBeenCalledWith(
+      expect(webdb.putSyncState).toHaveBeenCalledWith(
         'relationshipRequestCleanupAt',
         expect.any(Number),
       ),
     );
 
     expect(webdb.cleanupRelationshipRequests).toHaveBeenCalledTimes(1);
-    expect(webdb.putMeta).toHaveBeenCalledWith(
+    expect(webdb.putSyncState).toHaveBeenCalledWith(
       'relationshipRequestCleanupAt',
       expect.any(Number),
     );
@@ -440,7 +443,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('skips startup request garbage collection within the 24-hour interval', async () => {
     const recent = Date.now() - 1_000;
-    webdb.getMeta.mockImplementation(async (key: string) => {
+    webdb.getSyncState.mockImplementation(async (key: string) => {
       if (key === 'relationshipRequestCleanupAt') return recent;
       if (key === 'selfProfile')
         return {
@@ -463,7 +466,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('runs startup request garbage collection when the 24-hour interval has elapsed', async () => {
     const stale = Date.now() - 86_400_000 - 1_000;
-    webdb.getMeta.mockImplementation(async (key: string) => {
+    webdb.getSyncState.mockImplementation(async (key: string) => {
       if (key === 'relationshipRequestCleanupAt') return stale;
       if (key === 'selfProfile')
         return {
@@ -479,7 +482,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
     await svc.establishSession(1, 0);
     await vi.waitFor(() =>
-      expect(webdb.putMeta).toHaveBeenCalledWith(
+      expect(webdb.putSyncState).toHaveBeenCalledWith(
         'relationshipRequestCleanupAt',
         expect.any(Number),
       ),
@@ -489,7 +492,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('restores the local invitation revision and synchronized read head', async () => {
-    webdb.getMeta.mockImplementation(async (key: string) => {
+    webdb.getSyncState.mockImplementation(async (key: string) => {
       if (key === 'relationshipRequestStateRevision') return 12;
       if (key === 'relationshipRequestReadHead')
         return { readThroughFeedId: 9 };

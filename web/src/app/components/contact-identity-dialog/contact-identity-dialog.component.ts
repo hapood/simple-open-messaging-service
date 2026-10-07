@@ -17,7 +17,6 @@ import {
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
 import { DialogActionFooterComponent } from '../dialog-action-footer/dialog-action-footer.component';
-import { FederationNamespaceService } from '../../services/federation-namespace.service';
 
 export interface ContactIdentityDialogData {
   userId?: number;
@@ -53,7 +52,6 @@ export class ContactIdentityDialogComponent {
   private readonly route = inject(RouteService);
   private readonly nav = inject(NavStateMachineService);
   private readonly userService = inject(UserService);
-  private readonly namespaces = inject(FederationNamespaceService);
   readonly identity = input.required<ContactIdentityDialogData>();
   readonly relationship = signal<RelationshipState | undefined>(undefined);
   readonly optimisticFriendThreadId = signal<number | undefined>(undefined);
@@ -70,19 +68,10 @@ export class ContactIdentityDialogComponent {
     this.isGroup() ? UserAvatarType.GROUP : UserAvatarType.OTHER,
   );
   readonly federatedDomain = computed(() => {
-    const identity = this.identity();
-    return identity.domain !== 'local'
-      ? identity.namespaceId === undefined
-        ? identity.domain
-        : this.namespaces.displayDomain(identity.domain, identity.namespaceId)
-      : null;
+    const domain = this.identity().domain;
+    return domain || null;
   });
-  readonly displayDomain = computed(() => {
-    const identity = this.identity();
-    return identity.namespaceId === undefined
-      ? identity.domain
-      : this.namespaces.displayDomain(identity.domain, identity.namespaceId);
-  });
+  readonly displayDomain = computed(() => this.identity().domain);
   readonly actionKey = computed(() => {
     const identity = this.identity();
     if (this.isGroup())
@@ -179,12 +168,13 @@ export class ContactIdentityDialogComponent {
     this.route.closeDlg();
     this.route.popupDlg(PopupType.FRIEND_REQUESTS, {
       initialUser: {
-        id: identity.domain === 'local' ? (identity.userId ?? 0) : 0,
+        id: identity.namespaceId === 0 ? (identity.userId ?? 0) : 0,
         account: identity.account,
         name: identity.name,
         avatar: identity.avatar ?? '',
         bio: identity.bio ?? '',
-        domain: identity.domain === 'local' ? 'local' : identity.domain,
+        domain: identity.domain,
+        namespaceId: identity.namespaceId,
       } as User,
     });
   }
@@ -204,7 +194,7 @@ export class ContactIdentityDialogComponent {
       isGroup: true,
     } as User;
 
-    if (user.id > 0 || user.domain !== 'local') {
+    if (user.id > 0 || identity.namespaceId !== undefined) {
       open(user);
       return;
     }

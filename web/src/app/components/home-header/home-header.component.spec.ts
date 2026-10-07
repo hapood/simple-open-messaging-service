@@ -1,3 +1,4 @@
+import { Subject } from 'rxjs';
 import type { Mock } from 'vitest';
 import {
   computed,
@@ -13,7 +14,8 @@ import {
 } from '@jsverse/transloco';
 import { CspSafeIcuTranspiler } from '../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
-import { ConversationListService } from '../../services/conversation-list.service';
+import { WebdbService, WebdbStorage } from '../../services/webdb.service';
+import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 import {
   ImageDownloadService,
   type ImageDownloadTask,
@@ -86,10 +88,7 @@ describe('HomeHeaderComponent — shared transfer progress', () => {
             cycleMode: vi.fn().mockName('cycleMode'),
           },
         },
-        {
-          provide: ConversationListService,
-          useValue: { items: signal([]) },
-        },
+        { provide: WebdbService, useFactory: () => new WebdbStorage(() => null, new SessionLifecycleService()) as WebdbService },
         {
           provide: NavStateMachineService,
           useValue: { openChat: vi.fn().mockName('openChat') },

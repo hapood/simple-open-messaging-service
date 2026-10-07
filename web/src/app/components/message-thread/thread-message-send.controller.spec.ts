@@ -108,12 +108,11 @@ describe('ThreadMessageSendController', () => {
       kind: 'contact',
       target: {
         account: 'maya',
-        domain: 'local',
         namespaceId: 0,
         profileRev: 2,
       },
       account: 'maya',
-      domain: 'local',
+      domain: 'chat.example.test',
       name: 'Maya',
       avatar: '',
       bio: '',
@@ -125,7 +124,6 @@ describe('ThreadMessageSendController', () => {
       threadId: 3,
       target: {
         account: 'maya',
-        domain: 'local',
         namespaceId: 0,
         profileRev: 2,
       },

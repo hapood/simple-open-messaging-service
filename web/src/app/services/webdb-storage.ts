@@ -1,15 +1,16 @@
 import { RequestProjectionStatus } from '../../../../shared/request-projection-status';
+import { BusinessCode } from './biz-code';
 import { applyThreadStateSnapshot } from './thread-state-projection';
 import { preserveThreadProfile } from './thread-profile-projection';
 import {
   restoreThread,
+  restoreThreadForStorageMutation,
   storeThreadPresentation,
   type StoredThread,
   type StoredThreadAttention,
 } from './thread-record';
 import { signal } from '@angular/core';
-import type { SessionLifecycleService } from './session-lifecycle.service';
-import { Subject, type Subscription } from 'rxjs';
+import { Subject, type Observable, type Subscription } from 'rxjs';
 import { apiPrefix } from './constants';
 import type { ThreadFeedSyncResult } from './thread-feed-sync';
 import type { BrowserNotificationBatch } from './notification-descriptor.model';
@@ -116,12 +117,6 @@ export type ProfileWake =
       reason: string;
     };
 
-export interface NamespaceRecord {
-  domain: string;
-  namespaceId: number;
-  status: 'ACTIVE' | 'ARCHIVED';
-}
-
 /** Cached profile-namespace binding for one (publisher, nsid-in-publisher)
  *  pair. `domain`/`rootPublicKey` mirror the server's resolve answer; a null
  *  domain is a tomb (the publisher reports no binding). An expired row must
@@ -133,6 +128,12 @@ export interface NamespaceRecord {
  *  the sync round's end in the change space, so a resolve answer fetched
  *  before a newer change entry can never resurrect stale bindings. Both are
  *  JSON numbers on the client wire. */
+export interface AccountInvalidationSource {
+  readonly invalidated$: Observable<unknown>;
+}
+
+/** Cached profile-namespace binding for one (publisher, nsid-in-publisher)
+ * pair. */
 export interface ProfileNamespaceBinding {
   publisherNamespaceId: number;
   profileNamespaceId: number;
@@ -141,6 +142,7 @@ export interface ProfileNamespaceBinding {
   updateFeedId: number;
   changeSeq: number;
   expired: boolean;
+  status: 'ACTIVE' | 'ARCHIVED';
   refreshedAt: number;
 }
 
@@ -150,30 +152,23 @@ export interface ProfileNamespacePairKey {
   profileNamespaceId: number;
 }
 
-function profileNamespacePairKey(
-  value: unknown,
-): ProfileNamespacePairKey | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-  const pair = value as Partial<ProfileNamespacePairKey>;
-  if (
-    !Number.isSafeInteger(pair.publisherNamespaceId) ||
-    Number(pair.publisherNamespaceId) < 0 ||
-    !Number.isSafeInteger(pair.profileNamespaceId) ||
-    Number(pair.profileNamespaceId) < 0
-  )
-    return;
-  return {
-    publisherNamespaceId: Number(pair.publisherNamespaceId),
-    profileNamespaceId: Number(pair.profileNamespaceId),
-  };
+/** Federation-reported permanent loss of a namespace binding (the
+ *  FEDERATION_NAMESPACE_UNRECOVERABLE code). A row's presence is the tomb;
+ *  binding content is empty. Sparse by design. */
+export interface ProfileNamespaceTomb {
+  publisherNamespaceId: number;
+  profileNamespaceId: number;
+  createdAt: number;
 }
 
-interface NamespaceRegistryStore {
-  get(key: [string, number]): Promise<NamespaceRecord | undefined>;
-  put(value: NamespaceRecord): Promise<unknown>;
-  index(name: 'domain'): {
-    getAll(query: string): Promise<NamespaceRecord[]>;
-  };
+/** Federation-reported permanent loss of a profile (the
+ *  FEDERATION_PROFILE_UNRECOVERABLE code). Tomb spans every rev, so the key
+ *  omits profileRev. Sparse by design. */
+export interface ProfileTomb {
+  publisherNamespaceId: number;
+  profileNamespaceId: number;
+  account: string;
+  createdAt: number;
 }
 
 /** One materialized roster member selecting an exact profile revision. */
@@ -299,8 +294,7 @@ type StoredThreadPreview = {
   seq: number;
   createdAt: string;
   senderAccount: string;
-  senderDomain: string;
-  senderNamespaceId: number;
+  senderProfileNamespaceId: number;
   senderProfileRev: number;
   status: ThreadPreview['status'];
   text: string | null;
@@ -315,8 +309,7 @@ function storeThreadPreview(
     seq: preview.seq,
     createdAt: preview.createdAt,
     senderAccount: preview.sender.account,
-    senderDomain: preview.sender.domain,
-    senderNamespaceId: preview.sender.namespaceId,
+    senderProfileNamespaceId: preview.sender.profileNamespaceId,
     senderProfileRev: preview.sender.profileRev,
     status: preview.status,
     text: preview.text ?? null,
@@ -329,8 +322,7 @@ function restoreThreadPreview(row: StoredThreadPreview): ThreadPreview {
     createdAt: row.createdAt,
     sender: {
       account: row.senderAccount,
-      domain: row.senderDomain,
-      namespaceId: row.senderNamespaceId,
+      profileNamespaceId: row.senderProfileNamespaceId,
       profileRev: row.senderProfileRev,
     },
     status: row.status,
@@ -341,13 +333,8 @@ function restoreThreadPreview(row: StoredThreadPreview): ThreadPreview {
 function storeThreadAttention(
   state: LocalThreadAttention,
 ): StoredThreadAttention {
-  const { previews: _previews, profile, ...fields } = state;
-  return {
-    ...fields,
-    profileAccount: profile.account,
-    profileDomain: profile.domain,
-    profileNamespaceId: profile.namespaceId,
-  };
+  const { previews: _previews, ...fields } = state;
+  return fields;
 }
 
 function withStoredPreview(
@@ -358,15 +345,13 @@ function withStoredPreview(
     threadId,
     threadFeedId,
     type,
-    authorityNamespaceId,
+    publisherNamespaceId,
     conversationState,
     blocked,
     role,
     profileAccount,
-    profileDomain,
-    profileNamespaceId,
     alias,
-    threadProfileRev,
+    profileRev,
     messageEndSeq,
     tombstoneEndSeq,
     groupMetaFeedEndId,
@@ -383,12 +368,12 @@ function withStoredPreview(
     threadId,
     threadFeedId,
     type,
-    authorityNamespaceId,
+    publisherNamespaceId,
     conversationState,
     blocked,
     role,
     alias,
-    threadProfileRev,
+    profileRev,
     messageEndSeq,
     tombstoneEndSeq,
     groupMetaFeedEndId,
@@ -400,12 +385,7 @@ function withStoredPreview(
     unreadCount,
     lastMentionSeq,
     localReadSeq,
-    profile: {
-      account: profileAccount,
-      domain: profileDomain,
-      namespaceId: profileNamespaceId,
-      profileRev: threadProfileRev,
-    },
+    profileAccount,
     previews: row ? [restoreThreadPreview(row)] : [],
   };
 }
@@ -419,20 +399,13 @@ function requireThreadIdentity(
     !state ||
     state.threadId !== item.threadId ||
     state.type !== item.type ||
-    state.authorityNamespaceId !== item.authorityNamespaceId ||
-    state.profileAccount !== subject.account ||
-    state.profileDomain !== subject.domain ||
-    state.profileNamespaceId !== subject.namespaceId
+    state.publisherNamespaceId !== item.publisherNamespaceId ||
+    state.profileAccount !== subject.account
   )
     throw new Error('thread presentation has no matching feed state');
 }
 
 export interface WebdbSchema extends DBSchema {
-  namespaces: {
-    key: [string, number];
-    value: NamespaceRecord;
-    indexes: { domain: string };
-  };
   profiles: {
     key: [number, number, string, number];
     value: ProfileSnapshot;
@@ -441,6 +414,14 @@ export interface WebdbSchema extends DBSchema {
   profileNamespaces: {
     key: [number, number];
     value: ProfileNamespaceBinding;
+  };
+  profileNamespaceTombs: {
+    key: [number, number];
+    value: ProfileNamespaceTomb;
+  };
+  profileTombs: {
+    key: [number, number, string];
+    value: ProfileTomb;
   };
   members: {
     key: [number, string, string, number];
@@ -486,7 +467,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 37;
+export const CACHE_SCHEMA_VERSION = 38;
 // Cursors moved out of the generic `settings` bag: account-level cursors now
 // live in a dedicated `syncState` store, per-thread cursors in `threadSyncState`.
 // Message content now stores canonical CAS paths; discard cached contextual URLs.
@@ -563,9 +544,12 @@ export type StateFeedWorkerFactory = () => Worker | null;
 
 /** Fire-and-forget events the worker pushes without a request id. */
 type StateFeedWorkerEvent =
-  | { type: 'notification-batch'; userId: number; entries: BrowserNotificationBatch['entries'] }
+  | {
+      type: 'notification-batch';
+      userId: number;
+      entries: BrowserNotificationBatch['entries'];
+    }
   | { type: 'profile-wake'; wake: ProfileWake }
-  | { type: 'profile-namespace-wake'; pairs: ProfileNamespacePairKey[] }
   | {
       type: 'tombstone-committed';
       threadId: number;
@@ -583,15 +567,17 @@ type StateFeedWorkerEvent =
   | { type: 'state-feed-committed'; userId: number };
 
 /** A request response carrying the pending id. */
-type StateFeedWorkerResponse = {
-  id: number;
-  ok: true;
-  result?: unknown;
-} | {
-  id: number;
-  ok: false;
-  error: string;
-};
+type StateFeedWorkerResponse =
+  | {
+      id: number;
+      ok: true;
+      result?: unknown;
+    }
+  | {
+      id: number;
+      ok: false;
+      error: string;
+    };
 
 type StateFeedWorkerMessage = StateFeedWorkerEvent | StateFeedWorkerResponse;
 
@@ -608,7 +594,10 @@ export class WebdbStorage {
    *  message repository can project deletions into mounted sources. */
   protected readonly tombstoneCommitted = new Subject<{
     threadId: number;
-    deletions: Array<{ seq: number; type: 'USER_RETRACTION' | 'MODERATION_REMOVAL' }>;
+    deletions: Array<{
+      seq: number;
+      type: 'USER_RETRACTION' | 'MODERATION_REMOVAL';
+    }>;
   }>();
   readonly tombstoneCommitted$ = this.tombstoneCommitted.asObservable();
   /** Emitted by the database worker after a thread-feed drain commits,
@@ -629,8 +618,11 @@ export class WebdbStorage {
   /** Emitted by the database worker after a state-feed drain commits. */
   protected readonly stateFeedCommitted = new Subject<{ userId: number }>();
   readonly stateFeedCommitted$ = this.stateFeedCommitted.asObservable();
-  /** Emitted when the database worker refreshed profile-namespace bindings
-   *  after a change-feed sync round, so UI joins re-read the cache. */
+  /** Emitted twice per change-feed page with the touched pairs: first
+   *  after the expiry transaction commits (consumers mirror the expired
+   *  state: DB first, cache second), then after the resolve round commits
+   *  fresh answers (consumers re-read). A resolve failure still delivers
+   *  the first wake; the expired rows stay until the next retry. */
   private readonly profileNamespaceWake = new Subject<
     ProfileNamespacePairKey[]
   >();
@@ -723,7 +715,7 @@ export class WebdbStorage {
   constructor(
     private readonly stateFeedWorkerFactory: StateFeedWorkerFactory = () =>
       null,
-    lifecycle?: SessionLifecycleService,
+    lifecycle?: AccountInvalidationSource,
   ) {
     this.sessionInvalidation = lifecycle?.invalidated$.subscribe(() => {
       ++this.cacheEpoch;
@@ -882,8 +874,7 @@ export class WebdbStorage {
     }
     try {
       if (
-        (await db.get('meta', 'schemaVersion'))?.value !==
-        CACHE_SCHEMA_VERSION
+        (await db.get('meta', 'schemaVersion'))?.value !== CACHE_SCHEMA_VERSION
       ) {
         db.close();
         throw new LocalCacheVersionMismatchError(name);
@@ -959,8 +950,9 @@ export class WebdbStorage {
     db: IDBPDatabase<WebdbSchema>,
   ): Promise<boolean> {
     const required = [
-      'namespaces',
       'profileNamespaces',
+      'profileNamespaceTombs',
+      'profileTombs',
       'profiles',
       'profileAvatarBlobs',
       'members',
@@ -992,15 +984,6 @@ export class WebdbStorage {
       upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion !== 0)
           throw new Error('cache recreation expected an empty IndexedDB');
-        const namespaces = db.createObjectStore('namespaces', {
-          keyPath: ['domain', 'namespaceId'],
-        });
-        namespaces.createIndex('domain', 'domain');
-        namespaces.put({
-          domain: 'local',
-          namespaceId: 0,
-          status: 'ACTIVE',
-        });
         db.createObjectStore('profiles', {
           keyPath: [
             'publisherNamespaceId',
@@ -1011,6 +994,12 @@ export class WebdbStorage {
         });
         db.createObjectStore('profileNamespaces', {
           keyPath: ['publisherNamespaceId', 'profileNamespaceId'],
+        });
+        db.createObjectStore('profileNamespaceTombs', {
+          keyPath: ['publisherNamespaceId', 'profileNamespaceId'],
+        });
+        db.createObjectStore('profileTombs', {
+          keyPath: ['publisherNamespaceId', 'profileNamespaceId', 'account'],
         });
         db.createObjectStore('profileAvatarBlobs', { keyPath: 'digest' });
         const members = db.createObjectStore('members', {
@@ -1499,7 +1488,7 @@ export class WebdbStorage {
           'native thread feed synchronization belongs to the Rust SSE executor',
         );
       const tx = (await this.db()).transaction(
-        ['threadPreviews', 'threads', 'namespaces', 'syncState'],
+        ['threadPreviews', 'threads', 'syncState'],
         'readwrite',
       );
       const store = tx.objectStore('threads');
@@ -1511,10 +1500,8 @@ export class WebdbStorage {
           if (
             stored &&
             (stored.type !== snapshot.type ||
-              stored.authorityNamespaceId !== snapshot.authorityNamespaceId ||
-              stored.profileAccount !== snapshot.profile.account ||
-              stored.profileDomain !== snapshot.profile.domain ||
-              stored.profileNamespaceId !== snapshot.profile.namespaceId)
+              stored.publisherNamespaceId !== snapshot.publisherNamespaceId ||
+              stored.profileAccount !== snapshot.profileAccount)
           )
             throw new Error('thread feed changed a conversation identity');
           const current = stored
@@ -1525,16 +1512,8 @@ export class WebdbStorage {
             : undefined;
           const next = mergeThreadAttention(current, snapshot);
           if (next !== current) {
-            if (snapshot.profile.namespaceId !== 0)
-              await this.registerNamespace(
-                tx.objectStore(
-                  'namespaces',
-                ) as unknown as NamespaceRegistryStore,
-                snapshot.profile.domain,
-                snapshot.profile.namespaceId,
-              );
             const structure = applyThreadStateSnapshot(
-              stored ? restoreThread(stored) : undefined,
+              stored ? restoreThreadForStorageMutation(stored) : undefined,
               snapshot,
               snapshot.threadFeedId,
             );
@@ -1676,10 +1655,15 @@ export class WebdbStorage {
 
   /** Write an account-level sync cursor to the `syncState` store. */
   async putSyncState(key: string, value: unknown): Promise<void> {
-    return this.runAccountOperation(() => this.putSyncStateInternal(key, value));
+    return this.runAccountOperation(() =>
+      this.putSyncStateInternal(key, value),
+    );
   }
 
-  private async putSyncStateInternal(key: string, value: unknown): Promise<void> {
+  private async putSyncStateInternal(
+    key: string,
+    value: unknown,
+  ): Promise<void> {
     return this.writeStateStore('syncState', key, value);
   }
 
@@ -1821,11 +1805,36 @@ export class WebdbStorage {
         alias: thread.alias,
       }));
     }
-    const tx = (await this.db()).transaction('threads', 'readonly');
-    const threads = await tx.store.getAll();
+    const tx = (await this.db()).transaction(
+      ['threads', 'profileNamespaces'],
+      'readonly',
+    );
+    const threads = await tx.objectStore('threads').getAll();
+    const bindings = new Map<string, ProfileNamespaceBinding>();
+    for (const thread of threads) {
+      // A thread's subject pair is (publisherNamespaceId, publisherNamespaceId):
+      // the feed's authority namespace owns the subject's profile namespace.
+      const binding = await tx.objectStore('profileNamespaces').get([
+        thread.publisherNamespaceId,
+        thread.publisherNamespaceId,
+      ]);
+      if (binding)
+        bindings.set(
+          `${thread.publisherNamespaceId}:${thread.publisherNamespaceId}`,
+          binding,
+        );
+    }
     await tx.done;
     return threads
-      .map((thread) => restoreThread(thread))
+      .map((thread) => {
+        const binding = bindings.get(
+          `${thread.publisherNamespaceId}:${thread.publisherNamespaceId}`,
+        );
+        return restoreThread(thread, {
+          domain: binding?.domain ?? '',
+          namespaceId: thread.publisherNamespaceId,
+        });
+      })
       .map((thread) => ({
         ...this.normalizeThreadSubject(thread),
         alias: thread.alias,
@@ -1847,7 +1856,7 @@ export class WebdbStorage {
         id?: number;
         profileRev?: number;
       };
-      return { ...item, peerUser, authorityNamespaceId: peer.namespaceId };
+      return { ...item, peerUser };
     }
     const group = localSubjectIdentity(item.group);
     const { profileRev: _nestedRev, ...groupProfile } =
@@ -1857,7 +1866,6 @@ export class WebdbStorage {
     return {
       ...item,
       group: groupProfile,
-      authorityNamespaceId: group.namespaceId,
     };
   }
 
@@ -1880,7 +1888,7 @@ export class WebdbStorage {
       return;
     }
     const tx = (await this.db()).transaction(
-      ['threads', 'namespaces'],
+      ['threads'],
       'readwrite',
     );
     // Presentation-only batch: omitted entries retain their authoritative
@@ -1903,13 +1911,12 @@ export class WebdbStorage {
       }
       selected.push(
         preserveThreadProfile(
-          { ...item, profileRev: state.threadProfileRev },
-          restoreThread(state),
+          { ...item, profileRev: state.profileRev },
+          restoreThreadForStorageMutation(state),
         ),
       );
     }
     for (const item of selected) {
-      await this.ensureThreadNamespaceInTx(tx.objectStore('namespaces'), item);
       await tx.objectStore('threads').put({
         ...previous.get(item.threadId)!,
         ...storeThreadPresentation(item),
@@ -1934,7 +1941,7 @@ export class WebdbStorage {
       return;
     }
     const tx = (await this.db()).transaction(
-      ['threads', 'namespaces', 'profiles'],
+      ['threads', 'profiles'],
       'readwrite',
     );
     const state = await tx.objectStore('threads').get(item.threadId);
@@ -1944,13 +1951,12 @@ export class WebdbStorage {
       await tx.done;
       throw error;
     }
-    const current = restoreThread(state);
+    const current = restoreThreadForStorageMutation(state);
     item = preserveThreadProfile(
-      { ...item, profileRev: state.threadProfileRev },
+      { ...item, profileRev: state.profileRev },
       current,
     );
     if ((current?.threadFeedId ?? 0) <= (item.threadFeedId ?? 0)) {
-      await this.ensureThreadNamespaceInTx(tx.objectStore('namespaces'), item);
       // Attention writes can carry presentation captured before resolution.
       // The selected immutable profile owns these fields, not the caller's
       // copy of the conversation. Read it in this same write transaction.
@@ -2135,12 +2141,6 @@ export class WebdbStorage {
           this.profileWake.next(data.wake);
           return;
         }
-        if (data.type === 'profile-namespace-wake') {
-          this.profileNamespaceWake.next(
-            data.pairs.filter((pair) => profileNamespacePairKey(pair)),
-          );
-          return;
-        }
         if (data.type === 'tombstone-committed') {
           this.tombstoneCommitted.next({
             threadId: data.threadId,
@@ -2249,7 +2249,6 @@ export class WebdbStorage {
     const tx = db.transaction(
       [
         'threads',
-        'namespaces',
         'profileNamespaces',
         'profiles',
         'members',
@@ -2353,7 +2352,7 @@ export class WebdbStorage {
             ...body,
             peer: {
               ...body.peer,
-              namespaceId: body.peer.domain === 'local' ? 0 : op.namespaceId,
+              namespaceId: op.namespaceId,
             },
           },
           Date.now(),
@@ -2376,12 +2375,6 @@ export class WebdbStorage {
           throw new Error(
             'group-meta sourceServer must be canonical and non-empty',
           );
-        const namespaces = tx.objectStore('namespaces');
-        await this.registerNamespace(
-          namespaces as unknown as NamespaceRegistryStore,
-          update.sourceServer,
-          update.namespaceId,
-        );
         const members = tx.objectStore('members');
         const currentThread = await tx
           .objectStore('threads')
@@ -2404,7 +2397,7 @@ export class WebdbStorage {
                 feedId: item.feedId,
                 text: item.body.text,
               };
-              const presentation = restoreThread(thread);
+              const presentation = restoreThreadForStorageMutation(thread);
               if (presentation.type !== 'GROUP')
                 throw new Error('invalid group structure');
               const next =
@@ -2429,13 +2422,6 @@ export class WebdbStorage {
             // can arrive first and must not create a competing revision in threads.
             continue;
           }
-          await this.registerNamespace(
-            namespaces as unknown as NamespaceRegistryStore,
-            item.namespaceId === update.namespaceId
-              ? update.sourceServer
-              : item.domain,
-            item.namespaceId,
-          );
           const previous = await members
             .index('address')
             .get([
@@ -2472,7 +2458,7 @@ export class WebdbStorage {
         const activeMembers = currentMembers.filter((member) => !member.left);
         const thread = await tx.objectStore('threads').get(update.threadId);
         if (thread?.type === 'GROUP') {
-          const presentation = restoreThread(thread);
+          const presentation = restoreThreadForStorageMutation(thread);
           if (presentation.type !== 'GROUP')
             throw new Error('invalid group structure');
           await tx.objectStore('threads').put({
@@ -2526,7 +2512,8 @@ export class WebdbStorage {
       }
       if (fullThrough !== undefined) {
         const syncState = tx.objectStore('syncState');
-        if (fullThrough === null) await syncState.delete('stateFeedFullThrough');
+        if (fullThrough === null)
+          await syncState.delete('stateFeedFullThrough');
         else if (feedId !== null && fullThrough > feedId)
           await syncState.put({
             key: 'stateFeedFullThrough',
@@ -2582,16 +2569,17 @@ export class WebdbStorage {
     });
   }
 
-  /** Persists fresh resolve answers from one sync round that ended at
+  /** Persists resolve answers from one sync round that ended at
    *  `roundEnd` (change-feed coordinate). A row whose `changeSeq` already
    *  moved past `roundEnd` was expired by a newer round; the stale answer
-   *  must not resurrect it. A row with data clears expiry; a tomb answer
-   *  (null domain — the publisher reports no binding) also clears expiry,
-   *  because "no binding" is itself a current fact. */
+   *  must not resurrect it. The answer's `expired` flag is stored as-is:
+   *  a fresh answer (including a null-domain "no binding" fact) carries
+   *  expired=false; a stale-window answer keeps the row expired until the
+   *  convergence change re-resolves it. */
   async commitProfileNamespaceBindings(
     entries: readonly Omit<
       ProfileNamespaceBinding,
-      'changeSeq' | 'expired' | 'refreshedAt'
+      'changeSeq' | 'refreshedAt'
     >[],
     roundEnd: number,
   ): Promise<void> {
@@ -2617,11 +2605,61 @@ export class WebdbStorage {
         await store.put({
           ...entry,
           changeSeq: Math.max(previous?.changeSeq ?? 0, roundEnd),
-          expired: false,
+          expired: entry.expired === true,
           refreshedAt: Date.now(),
         });
       }
       await tx.done;
+    });
+  }
+
+  /** Persist a permanent-loss tomb for a namespace binding (the
+   *  FEDERATION_NAMESPACE_UNRECOVERABLE code). Sparse by design: a row's
+   *  presence is the tomb; the UI renders "gone". Idempotent — re-writing
+   *  the same key refreshes `createdAt` harmlessly. */
+  async writeProfileNamespaceTomb(
+    pair: ProfileNamespacePairKey,
+  ): Promise<void> {
+    await this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        await tauriInvoke('native_db_write_profile_namespace_tomb', {
+          userId: Number(this.currentUserId),
+          pair,
+        });
+        return;
+      }
+      const db = await this.db();
+      await db.put('profileNamespaceTombs', {
+        publisherNamespaceId: pair.publisherNamespaceId,
+        profileNamespaceId: pair.profileNamespaceId,
+        createdAt: Date.now(),
+      });
+    });
+  }
+
+  /** Persist a permanent-loss tomb for a profile (the
+   *  FEDERATION_PROFILE_UNRECOVERABLE code). Keyed without `profileRev` —
+   *  one tomb spans every revision of the account. */
+  async writeProfileTomb(key: {
+    publisherNamespaceId: number;
+    profileNamespaceId: number;
+    account: string;
+  }): Promise<void> {
+    await this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        await tauriInvoke('native_db_write_profile_tomb', {
+          userId: Number(this.currentUserId),
+          key,
+        });
+        return;
+      }
+      const db = await this.db();
+      await db.put('profileTombs', {
+        publisherNamespaceId: key.publisherNamespaceId,
+        profileNamespaceId: key.profileNamespaceId,
+        account: key.account,
+        createdAt: Date.now(),
+      });
     });
   }
 
@@ -2667,6 +2705,7 @@ export class WebdbStorage {
                 updateFeedId: 0,
                 changeSeq: item.changeId,
                 expired: true,
+                status: 'ACTIVE',
                 refreshedAt: 0,
               },
         );
@@ -2737,118 +2776,107 @@ export class WebdbStorage {
         throw new Error('profile-namespace change feed failed');
       const page = envelope.data;
       const touched = await this.applyProfileNamespaceChanges(page.items);
-      if (touched.length)
-        await this.resolveProfileNamespacePairs(touched, page.scannedThrough);
+      if (touched.length) {
+        // Wake①: the expiry is committed — consumers mirror the expired
+        // state into their caches (DB write first, cache second) and the UI
+        // may already restyle before convergence.
+        this.profileNamespaceWake.next(touched);
+        const { failed } = await this.resolveProfileNamespacePairs(
+          touched,
+          page.scannedThrough,
+        );
+        if (failed.length)
+          throw new Error('profile-namespace resolve failed mid-page');
+        // Wake②: fresh answers are committed — consumers re-read the cache.
+        this.profileNamespaceWake.next(touched);
+      }
       const writeSyncState = db.transaction('syncState', 'readwrite');
       await writeSyncState.store.put({
         key: 'profileNamespaceChangeEndId',
         value: page.scannedThrough,
       });
       await writeSyncState.done;
-      this.profileNamespaceWake.next(touched);
       if (!page.hasMore) return;
       after = page.scannedThrough;
     }
   }
 
-  /** Resolves one round's touched pairs through the server cache. A failure
-   *  leaves the tombs in place; the next wake or demand retries. */
-  private async resolveProfileNamespacePairs(
+  /** Resolves pairs through the server cache (demand rounds and the
+   *  change-feed drain both use this path). A failure leaves the expired
+   *  rows in place; the next wake or demand retries. */
+  /** Resolves pairs through the server cache (demand rounds and the
+   *  change-feed drain both use this path). Each pair is a single POST:
+   *  READY answers are committed; PENDING answers (server planted a tomb,
+   *  refresh scheduled) are skipped — a later wake re-resolves them. A
+   *  failure leaves the expired row in place; the next wake retries. */
+  async resolveProfileNamespacePairs(
     pairs: readonly ProfileNamespacePairKey[],
     roundEnd: number,
-  ): Promise<void> {
-    const response = await fetch(`${apiPrefix()}/profile-namespaces/resolve`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ pairs }),
-    });
-    if (!response.ok)
-      throw new Error(`profile-namespace resolve HTTP ${response.status}`);
-    const envelope = (await response.json()) as {
-      code?: number;
-      data?: {
-        entries: Array<{
-          publisherNamespaceId: number;
-          profileNamespaceId: number;
-          domain: string | null;
-          rootPublicKey: string | null;
-          updateFeedId: number;
-          expired: boolean;
-        }>;
-      };
-    };
-    if (envelope.code !== 0 || !envelope.data)
-      throw new Error('profile-namespace resolve failed');
-    await this.commitProfileNamespaceBindings(envelope.data.entries, roundEnd);
-  }
-
-  async getNamespaces(): Promise<NamespaceRecord[]> {
-    return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null) {
-        return tauriInvoke<NamespaceRecord[]>('native_db_namespaces', {
-          userId: Number(this.currentUserId),
-        });
-      }
-      return (await this.db()).getAll('namespaces');
-    });
-  }
-
-  async archiveNamespace(domain: string, namespaceId: number): Promise<void> {
-    return this.runAccountOperation(async () => {
-      if (namespaceId === 0) return;
-      if (isTauri() && this.currentUserId != null) {
-        await tauriInvoke('native_db_archive_namespace', {
-          userId: Number(this.currentUserId),
-          domain,
-          namespaceId,
-        });
-        return;
-      }
-      const tx = (await this.db()).transaction('namespaces', 'readwrite');
-      const namespaces = tx.objectStore('namespaces');
-      const current = await namespaces.get([domain, namespaceId]);
-      if (current) await namespaces.put({ ...current, status: 'ARCHIVED' });
-      await tx.done;
-    });
-  }
-
-  private async ensureThreadNamespaceInTx(
-    namespaces: NamespaceRegistryStore,
-    thread: ConversationItem,
-  ): Promise<void> {
-    if (thread.authorityNamespaceId === 0) return;
-    const domain =
-      thread.type === 'P2P' ? thread.peerUser.domain : thread.group.domain;
-    await this.registerNamespace(
-      namespaces,
-      domain,
-      thread.authorityNamespaceId,
-    );
-  }
-
-  private async registerNamespace(
-    store: NamespaceRegistryStore,
-    domain: string,
-    namespaceId: number,
-  ): Promise<void> {
-    if (namespaceId === 0 || (await store.get([domain, namespaceId]))) return;
-    const existing = await store.index('domain').getAll(domain);
-    const greatestKnown = existing.reduce(
-      (greatest, row) => Math.max(greatest, row.namespaceId),
-      0,
-    );
-    if (namespaceId > greatestKnown) {
-      for (const row of existing) {
-        if (row.status === 'ACTIVE')
-          await store.put({ ...row, status: 'ARCHIVED' });
+  ): Promise<{
+    pending: ProfileNamespacePairKey[];
+    failed: ProfileNamespacePairKey[];
+    unrecoverable: ProfileNamespacePairKey[];
+  }> {
+    const pending: ProfileNamespacePairKey[] = [];
+    const failed: ProfileNamespacePairKey[] = [];
+    const unrecoverable: ProfileNamespacePairKey[] = [];
+    for (const pair of pairs) {
+      try {
+        const response = await fetch(
+          `${apiPrefix()}/profile-namespaces/resolve`,
+          {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(pair),
+          },
+        );
+        if (!response.ok)
+          throw new Error(
+            `profile-namespace resolve HTTP ${response.status}`,
+          );
+        const envelope = (await response.json()) as {
+          code?: number;
+          data?:
+            | {
+                status: 'READY';
+                entry: {
+                  publisherNamespaceId: number;
+                  profileNamespaceId: number;
+                  domain: string | null;
+                  rootPublicKey: string | null;
+                  updateFeedId: number;
+                  expired: boolean;
+                  status: 'ACTIVE' | 'ARCHIVED';
+                };
+              }
+            | { status: 'PENDING' };
+        };
+        if (envelope.code === BusinessCode.FEDERATION_NAMESPACE_UNRECOVERABLE) {
+          await this.writeProfileNamespaceTomb(pair);
+          unrecoverable.push(pair);
+          continue;
+        }
+        if (envelope.code !== 0 || !envelope.data)
+          throw new Error('profile-namespace resolve failed');
+        if (envelope.data.status === 'PENDING') {
+          pending.push(pair);
+          continue;
+        }
+        await this.commitProfileNamespaceBindings(
+          [envelope.data.entry],
+          roundEnd,
+        );
+      } catch (error) {
+        // A failed request is not PENDING — the server never acknowledged
+        // it. The caller decides whether to retry (demand round) or hold
+        // the cursor (change-feed drain); failed pairs are reported back
+        // instead of being silently swallowed.
+        console.warn('[profile-namespace] resolve failed for pair', pair, error);
+        failed.push(pair);
       }
     }
-    await store.put({
-      domain,
-      namespaceId,
-      status: namespaceId > greatestKnown ? 'ACTIVE' : 'ARCHIVED',
-    });
+    return { pending, failed, unrecoverable };
   }
 
   async getProfile(
@@ -3066,7 +3094,7 @@ export class WebdbStorage {
     return this.runAccountOperation(async () => {
       if (isTauri()) return [];
       const tx = (await this.db()).transaction(
-        ['threads', 'members', 'profiles'],
+        ['threads', 'members', 'profiles', 'profileNamespaces'],
         'readonly',
       );
       const references: import('./group-meta-sync').GroupMetaProfileReference[] =
@@ -3075,25 +3103,30 @@ export class WebdbStorage {
         if (
           state.type !== 'GROUP' ||
           state.conversationState === 'READ_ONLY' ||
-          state.threadProfileRev < 1
+          state.profileRev < 1
         )
           continue;
         const cached = await tx
           .objectStore('profiles')
           .get([
-            state.profileNamespaceId,
-            state.profileNamespaceId,
+            state.publisherNamespaceId,
+            state.publisherNamespaceId,
             state.profileAccount,
-            state.threadProfileRev,
+            state.profileRev,
           ]);
+        const binding = await tx.objectStore('profileNamespaces').get([
+          state.publisherNamespaceId,
+          state.publisherNamespaceId,
+        ]);
+        const domain = binding?.domain ?? '';
         if (!cached)
           references.push({
             type: 'GROUP',
             threadId: state.threadId,
             account: state.profileAccount,
-            domain: state.profileDomain,
-            namespaceId: state.profileNamespaceId,
-            rev: state.threadProfileRev,
+            domain,
+            namespaceId: state.publisherNamespaceId,
+            rev: state.profileRev,
           });
       }
       for (const member of await tx.objectStore('members').getAll()) {
@@ -3149,7 +3182,7 @@ export class WebdbStorage {
     if (reference.type === 'GROUP_MEMBER')
       return this.runAccountOperation(async () => {
         const tx = (await this.db()).transaction(
-          ['members', 'namespaces', 'profiles', 'profileAvatarBlobs'],
+          ['members', 'profiles', 'profileAvatarBlobs'],
           'readwrite',
         );
         const member = await tx
@@ -3164,11 +3197,6 @@ export class WebdbStorage {
           await tx.done;
           return false;
         }
-        await this.registerNamespace(
-          tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
-          reference.domain,
-          reference.namespaceId,
-        );
         await this.writeSnapshot(tx.objectStore('profiles'), {
           publisherNamespaceId: reference.namespaceId,
           profileNamespaceId: reference.namespaceId,
@@ -3185,25 +3213,19 @@ export class WebdbStorage {
       });
     return this.runAccountOperation(async () => {
       const tx = (await this.db()).transaction(
-        ['threads', 'namespaces', 'profiles', 'profileAvatarBlobs'],
+        ['threads', 'profiles', 'profileAvatarBlobs'],
         'readwrite',
       );
       const thread = await tx.objectStore('threads').get(reference.threadId);
       if (
         thread?.type !== 'GROUP' ||
         thread.profileAccount !== reference.account ||
-        thread.profileDomain !== reference.domain ||
-        thread.profileNamespaceId !== reference.namespaceId ||
-        thread.threadProfileRev !== reference.rev
+        thread.publisherNamespaceId !== reference.namespaceId ||
+        thread.profileRev !== reference.rev
       ) {
         await tx.done;
         return false;
       }
-      await this.registerNamespace(
-        tx.objectStore('namespaces') as unknown as NamespaceRegistryStore,
-        reference.domain,
-        reference.namespaceId,
-      );
       await this.writeSnapshot(tx.objectStore('profiles'), {
         publisherNamespaceId: reference.namespaceId,
         profileNamespaceId: reference.namespaceId,
@@ -3248,7 +3270,7 @@ export class WebdbStorage {
     });
     const written = await this.runAccountOperation(async () => {
       const tx = (await this.db()).transaction(
-        ['namespaces', 'profiles', 'profileAvatarBlobs', 'threads'],
+        ['profiles', 'profileAvatarBlobs', 'threads'],
         'readwrite',
       );
       if (avatar) await tx.objectStore('profileAvatarBlobs').put(avatar);
@@ -3259,8 +3281,8 @@ export class WebdbStorage {
       for (const thread of await tx.objectStore('threads').getAll()) {
         if (
           thread.profileAccount === snapshot.account &&
-          thread.profileNamespaceId === snapshot.profileNamespaceId &&
-          thread.threadProfileRev === snapshot.profileRev
+          thread.publisherNamespaceId === snapshot.publisherNamespaceId &&
+          thread.profileRev === snapshot.profileRev
         )
           await tx.objectStore('threads').put({
             ...thread,
@@ -3598,10 +3620,9 @@ export class WebdbStorage {
         throw new Error(
           'native message head belongs to the native source walker',
         );
-      const record = await (await this.messageDb()).get(
-        'threadSyncState',
-        threadId,
-      );
+      const record = await (
+        await this.messageDb()
+      ).get('threadSyncState', threadId);
       return readMessageHead(record?.messageHead);
     });
   }

@@ -7,7 +7,7 @@
           [name]="user().name"
           [account]="user().account"
           [src]="user().avatar"
-          [federatedDomain]="user().domain !== 'local' ? user().domain : null"
+          [federatedDomain]="user().namespaceId !== 0 ? user().domain : null"
         ></app-user-avatar>
       </div>
       <div class="user-meta">

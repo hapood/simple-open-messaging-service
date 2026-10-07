@@ -81,7 +81,11 @@ export async function syncPushThreads(
         state.threadId,
         range.afterSeq,
         range.throughSeq,
-        { account: owner.account, domain: 'local', namespaceId: 0 },
+        {
+          account: owner.account,
+          domain: owner.domain,
+          namespaceId: owner.namespaceId,
+        },
       );
     }
     const projection = projectThreadAttention(state, count)!;

@@ -315,36 +315,19 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         ),
     };
     const profileRepo = {
-      getProfile: vi
+      resolve: vi
         .fn()
-        .mockName('getProfile')
+        .mockName('resolve')
         .mockImplementation(
-          async ({
-            account,
-            domain,
-            namespaceId,
-            profileRev,
-          }: {
-            account: string;
-            domain: string;
-            namespaceId: number;
-            profileRev: number;
+          (demand: {
+            target: { account: string };
           }) => {
-            if (resolutionRepo) return undefined;
             const user = users.find(
               (candidate) =>
-                candidate.account.toLowerCase() === account &&
-                candidate.domain === domain,
+                candidate.account.toLowerCase() ===
+                demand.target.account.toLowerCase(),
             );
-            return user
-              ? {
-                  identity: JSON.stringify([namespaceId, domain, account]),
-                  kind: 'user',
-                  ...user,
-                  profileRev,
-                  account,
-                }
-              : undefined;
+            return of(user);
           },
         ),
     } as unknown as ProfileRepository;
@@ -403,7 +386,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
   it('puts message evidence on the rendered item without resolving on the source', async () => {
     const repository = {
       getProfile: vi.fn().mockResolvedValue(undefined),
-      resolve: vi.fn(),
+      resolve: vi.fn().mockReturnValue(of(undefined)),
     };
     const { src } = setup(
       { code: 0, message: 'ok', data: [row(10, 2)], hasMore: false },
@@ -414,19 +397,30 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     const items = await src.init(-1, 50, 0);
     expect(items[0].data).toMatchObject({
       profileEvidence: {
-        type: 'MESSAGE_AUTHOR',
-        threadId: 42,
-        messageSeq: 10,
+        lookup: 'ACCOUNT_PROFILE',
+        publisherNamespaceId: 0,
+        target: {
+          profileNamespaceId: 0,
+          account: 'alice',
+          rev: 3,
+        },
+      },
+    });
+    expect(repository.resolve).toHaveBeenCalledWith({
+      publisherNamespaceId: 0,
+      lookup: 'ACCOUNT_PROFILE',
+      target: {
+        profileNamespaceId: 0,
+        account: 'alice',
         rev: 3,
       },
     });
-    expect(repository.resolve).not.toHaveBeenCalled();
   });
 
   it('renders the system sender without requesting a sender profile and supplies thread context', async () => {
     const repository = {
       getProfile: vi.fn().mockResolvedValue(undefined),
-      resolve: vi.fn(),
+      resolve: vi.fn().mockReturnValue(of(undefined)),
     };
     const notification = {
       ...row(10, 2),

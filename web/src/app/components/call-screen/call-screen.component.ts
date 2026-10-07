@@ -89,7 +89,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
                   [name]="snap().peerName || '?'"
                   [account]="peer()?.account"
                   [federatedDomain]="
-                    peer()?.domain !== 'local' ? peer()?.domain : null
+                    peer()?.namespaceId === 0 ? null : peer()?.domain
                   "
                   [src]="snap().peerAvatar"
                 ></app-user-avatar>
@@ -128,7 +128,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
                   [name]="snap().peerName || '?'"
                   [account]="peer()?.account"
                   [federatedDomain]="
-                    peer()?.domain !== 'local' ? peer()?.domain : null
+                    peer()?.namespaceId === 0 ? null : peer()?.domain
                   "
                   [src]="snap().peerAvatar"
                 ></app-user-avatar>
@@ -182,7 +182,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
                 [type]="UserAvatarType.OTHER"
                 [name]="snap().peerName || '?'"
                 [account]="peer()?.account"
-                [federatedDomain]="peer()?.domain !== 'local' ? peer()?.domain : null"
+                [federatedDomain]="peer()?.namespaceId === 0 ? null : peer()?.domain"
                 [src]="snap().peerAvatar"
               ></app-user-avatar>
             </div>

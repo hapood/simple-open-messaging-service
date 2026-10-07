@@ -1,5 +1,6 @@
 import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { syncThreadFeed } from './thread-feed-sync';
 import { syncPushThreads } from './push-thread-sync';
 import type { Message } from './model';
@@ -26,14 +27,16 @@ describe('Push thread-feed synchronization', () => {
   function snapshot(feed = 1): ThreadFeedSnapshot {
     return {
       ...threadStructure(7, {
-        profile: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 0 },
+        profileAccount: 'peer',
+        publisherNamespaceId: 0,
+        profileRev: 0,
       }),
       threadId: 7,
       threadFeedId: feed,
       messageEndSeq: 7,
       tombstoneEndSeq: 1,
       alias: null,
-      threadProfileRev: 0,
+      profileRev: 0,
       groupMetaFeedEndId: null,
       joinRequestEndFeedId: 0,
       joinRequestReadFeedId: -1,
@@ -45,7 +48,7 @@ describe('Push thread-feed synchronization', () => {
       previews: [5, 6, 7].map((seq) => ({
         seq,
         createdAt: '2026-09-09T00:00:00Z',
-        sender: { account: 'peer', domain: 'test', namespaceId: 0, profileRev: 1 },
+        sender: { account: 'peer', profileNamespaceId: 0, profileRev: 1 },
         text: String(seq),
         status:
           seq === 7
@@ -71,9 +74,14 @@ describe('Push thread-feed synchronization', () => {
     },
   });
   beforeEach(async () => {
-    storage = new WebdbStorage();
+    storage = new WebdbStorage(() => null, new SessionLifecycleService());
     await storage.openForUser(String(userId));
-    await storage.putMeta('selfProfile', { id: userId, account: 'me' });
+    await storage.putMeta('selfProfile', {
+      id: userId,
+      account: 'me',
+      domain: 'chat.example.test',
+      namespaceId: 0,
+    });
   });
   afterEach(async () => {
     await storage.closeAndDelete(String(userId));
@@ -151,7 +159,7 @@ describe('Push thread-feed synchronization', () => {
       profileResolver,
     );
     await storage.close();
-    storage = new WebdbStorage();
+    storage = new WebdbStorage(() => null, new SessionLifecycleService());
     await storage.openExistingForUser(String(userId));
     const next = {
       ...snapshot(2),
@@ -161,7 +169,7 @@ describe('Push thread-feed synchronization', () => {
         {
           seq: 8,
           createdAt: '2026-09-09T00:00:00Z',
-          sender: { account: 'peer', domain: 'test', namespaceId: 0, profileRev: 1 },
+          sender: { account: 'peer', profileNamespaceId: 0, profileRev: 1 },
           status: 'LIVE' as const,
           text: 'next',
         },
@@ -254,7 +262,7 @@ describe('Push thread-feed synchronization', () => {
       {
         ...message,
         seq: 2,
-        creator: { account: 'me', domain: 'local', namespaceId: 0 },
+        creator: { account: 'me', domain: 'chat.example.test', namespaceId: 0 },
       },
     ]);
     await storage.applyDeletedMessages(

@@ -32,7 +32,7 @@ export class TauriWebdbStorage extends WebdbStorage {
   private readonly ws = inject(WebsocketService);
   private readonly destroyRef = inject(DestroyRef);
 
-  constructor(lifecycle?: SessionLifecycleService) {
+  constructor(lifecycle: SessionLifecycleService) {
     // No browser worker under Tauri: pass a factory that always returns null.
     super(() => null, lifecycle);
     // Rust → renderer local completions feed the same Subjects the browser

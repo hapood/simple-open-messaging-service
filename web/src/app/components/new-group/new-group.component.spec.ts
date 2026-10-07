@@ -6,6 +6,8 @@ import { Subject } from 'rxjs';
 import { GroupService, GrpCreateInfo } from '../../services/group.service';
 import { StandardResponse } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
+import { WebdbService, WebdbStorage } from '../../services/webdb.service';
+import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 import { RouteService } from '../../services/route.service';
 import { NewGroupComponent } from './new-group.component';
 
@@ -22,6 +24,7 @@ describe('NewGroupComponent', () => {
           useValue: { items: signal([]) },
         },
         { provide: HttpClient, useValue: {} },
+        { provide: WebdbService, useFactory: () => new WebdbStorage(() => null, new SessionLifecycleService()) as WebdbService },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
@@ -58,6 +61,7 @@ describe('NewGroupComponent', () => {
           useValue: { items: signal([]) },
         },
         { provide: HttpClient, useValue: {} },
+        { provide: WebdbService, useFactory: () => new WebdbStorage(() => null, new SessionLifecycleService()) as WebdbService },
         {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },

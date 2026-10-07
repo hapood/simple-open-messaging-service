@@ -6,7 +6,9 @@ describe('complete thread-feed structure projection', () => {
   it('creates a thread and retains content across block changes and stale replays', () => {
     const firstSnapshot = threadFeedSnapshot(9, {
       threadFeedId: 2,
-      profile: { account: 'bob', domain: 'local', namespaceId: 0, profileRev: 1 },
+      profileAccount: 'bob',
+      publisherNamespaceId: 0,
+      profileRev: 1,
     });
     const first = applyThreadStateSnapshot(undefined, firstSnapshot, 2);
     expect(first).toMatchObject({ type: 'P2P', threadFeedId: 2, visible: true });
@@ -34,7 +36,9 @@ describe('complete thread-feed structure projection', () => {
   it('changes the default reference on re-establishment without replacing a message-selected peer', () => {
     const initial = threadFeedSnapshot(9, {
       threadFeedId: 2,
-      profile: { account: 'bob', domain: 'local', namespaceId: 0, profileRev: 1 },
+      profileAccount: 'bob',
+      publisherNamespaceId: 0,
+      profileRev: 1,
     });
     const first = applyThreadStateSnapshot(undefined, initial, 2);
     if (first.type !== 'P2P') throw new Error('P2P expected');
@@ -48,7 +52,7 @@ describe('complete thread-feed structure projection', () => {
       {
         ...initial,
         threadFeedId: 4,
-        profile: { ...initial.profile, profileRev: 3 },
+        profileRev: 3,
       },
       4,
     );
@@ -61,7 +65,9 @@ describe('complete thread-feed structure projection', () => {
     const initial = threadFeedSnapshot(9, {
       threadFeedId: 2,
       type: 'GROUP',
-      profile: { account: '!group', domain: 'local', namespaceId: 0, profileRev: 1 },
+      profileAccount: '!group',
+      publisherNamespaceId: 0,
+      profileRev: 1,
     });
     const first = applyThreadStateSnapshot(undefined, initial, 2);
     if (first.type !== 'GROUP') throw new Error('group expected');

@@ -171,14 +171,14 @@
                         [account]="u.account"
                         [src]="u.avatar"
                         [federatedDomain]="
-                          u.domain !== 'local' ? u.domain : null
+                          u.namespaceId !== 0 ? u.domain : null
                         "
                       ></app-user-avatar>
                     </div>
                     <div class="result-meta">
                       <app-user-identity-label
                         [name]="displayUserName(u)"
-                        [domain]="u.domain !== 'local' ? u.domain : null"
+                        [domain]="u.namespaceId !== 0 ? u.domain : null"
                       />
                       <div class="user-account">
                         {{ u.bio || ('friend.noBio' | transloco) }}
@@ -344,7 +344,7 @@
             [name]="req.name ?? ''"
             [account]="req.account"
             [federatedDomain]="
-              req.kind === 'GROUP' || req.domain !== 'local' ? req.domain : null
+              req.kind === 'GROUP' || req.namespaceId !== 0 ? req.domain : null
             "
             [profileEvidence]="profileEvidence(req)"
           />

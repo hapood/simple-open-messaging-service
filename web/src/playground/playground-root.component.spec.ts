@@ -13,6 +13,9 @@ import { CallPresentationService } from '../app/services/call-presentation.servi
 import { InlineTranslocoLoader } from '../app/i18n/transloco.loader';
 import { UserService } from '../app/services/user.service';
 import { PlaygroundCallState } from './playground-call.mock';
+import { Subject } from 'rxjs';
+import { WebdbService, WebdbStorage } from '../app/services/webdb.service';
+import { SessionLifecycleService } from '../app/services/session-lifecycle.service';
 import { PlaygroundRootComponent } from './playground-root.component';
 
 @Component({
@@ -79,6 +82,7 @@ describe('PlaygroundRootComponent', () => {
             sessionUserId: signal(null),
           },
         },
+        { provide: WebdbService, useFactory: () => new WebdbStorage(() => null, new SessionLifecycleService()) as WebdbService },
       ],
     });
     TestBed.overrideComponent(PlaygroundRootComponent, {

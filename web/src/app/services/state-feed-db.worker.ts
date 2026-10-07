@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { WebdbStorage } from './webdb-storage';
+import { BusinessCode } from './biz-code';
 import { coalesceThreadFeedWakes } from './thread-feed-sync';
 import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
 import { syncGroupMetaThread } from './group-meta-sync';
@@ -183,6 +184,18 @@ const requestProfile = async (demand: ProfileDemand) => {
       | { status: 'PENDING'; key: unknown }
       | { status: 'READY'; profile: ResolvedProfile };
   };
+  if (envelope.code === BusinessCode.FEDERATION_PROFILE_UNRECOVERABLE) {
+    // Permanent loss — persist a tomb so the UI renders "gone", then error
+    // the observable: there is no profile to deliver. The tomb spans every
+    // rev, so the key omits profileRev.
+    const t = demand.target;
+    await storage.writeProfileTomb({
+      publisherNamespaceId: demand.publisherNamespaceId,
+      profileNamespaceId: t.profileNamespaceId,
+      account: t.account,
+    });
+    throw new Error('profile permanently lost (UNRECOVERABLE)');
+  }
   if (envelope.code !== 0 || !envelope.data)
     throw new Error(envelope.message ?? 'profile resolution failed');
   if (envelope.data.status === 'PENDING')

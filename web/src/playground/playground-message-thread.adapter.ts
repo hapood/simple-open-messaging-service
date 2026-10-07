@@ -330,6 +330,8 @@ function mockConversation(
     {
       account: peerName.toLocaleLowerCase(),
       name: peerName,
+      domain: 'chat.example.test',
+      namespaceId: 0,
     },
     { alias },
   );

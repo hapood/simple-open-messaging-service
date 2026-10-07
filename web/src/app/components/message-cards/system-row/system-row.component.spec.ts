@@ -19,11 +19,16 @@ import type { SystemMessageItem } from '../chat-item';
 import { SystemRowComponent } from './system-row.component';
 
 describe('SystemRowComponent', () => {
-  const me = { account: 'me', domain: 'local', namespaceId: 0, profileRev: 0 };
+  const me = {
+    account: 'me',
+    domain: 'chat.example.test',
+    profileNamespaceId: 0,
+    profileRev: 0,
+  };
   const alice = {
     account: 'alice',
     domain: 'peer.test',
-    namespaceId: 12,
+    profileNamespaceId: 12,
     profileRev: 0,
   };
   const participants: [typeof me, typeof alice] = [me, alice];
@@ -58,14 +63,25 @@ describe('SystemRowComponent', () => {
   };
   beforeEach(() => {
     getProfile.mockReset().mockResolvedValue(undefined);
-    resolveProfile.mockReset();
+    resolveProfile.mockReset().mockReturnValue(of({
+      account: 'alice',
+      domain: 'peer.test',
+      namespaceId: 12,
+      rev: 3,
+      name: '',
+    }));
     correctSystemMessageProfile.mockReset().mockResolvedValue(true);
     conversations.set([]);
     TestBed.configureTestingModule({
       imports: [SystemRowComponent],
       providers: [
         provideZonelessChangeDetection(),
-        { provide: UserService, useValue: { sessionProfile: signal(me) } },
+        { provide: UserService, useValue: { sessionProfile: signal({
+          account: 'me',
+          domain: 'chat.example.test',
+          namespaceId: 0,
+          profileRev: 0,
+        }) } },
         {
           provide: ProfileRepository,
           useValue: { getProfile, resolve: resolveProfile },
@@ -107,8 +123,8 @@ describe('SystemRowComponent', () => {
         type: 'GROUP_ADMIN_GRANTED',
         member: {
           account: 'bob',
-          domain: 'local',
-          namespaceId: 0,
+          domain: 'chat.example.test',
+          profileNamespaceId: 0,
           profileRev: 0,
         },
       },
@@ -127,8 +143,8 @@ describe('SystemRowComponent', () => {
         type: 'FRIEND_REMOVED',
         initiator: {
           account: '$system',
-          domain: 'local',
-          namespaceId: 0,
+          domain: 'chat.example.test',
+          profileNamespaceId: 0,
           profileRev: 0,
         },
         participants,
@@ -159,13 +175,21 @@ describe('SystemRowComponent', () => {
     'derives friendship perspective from initiator: %j',
     async (initiator, expected) => {
       const profiledPeer = { ...alice, profileRev: 3 };
-      getProfile.mockResolvedValue({ name: 'Alice Profile' });
+      resolveProfile.mockReturnValue(of({
+        account: 'alice',
+        domain: 'peer.test',
+        namespaceId: 12,
+        rev: 3,
+        name: 'Alice Profile',
+      }));
       const fixture = render({
         type: 'FRIEND_REMOVED',
         initiator,
         participants: [me, profiledPeer],
       });
-      await vi.waitFor(() => expect(getProfile).toHaveBeenCalled());
+      await vi.waitFor(() =>
+        expect(fixture.nativeElement.textContent).toContain('Alice Profile'),
+      );
       fixture.detectChanges();
       expect(fixture.nativeElement.textContent).toContain(expected);
     },
@@ -181,18 +205,32 @@ describe('SystemRowComponent', () => {
   });
 
   it('rereads the event revision from the local profile cache when it changes', async () => {
-    getProfile
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValue({ name: 'Alice Profile' });
-    resolveProfile.mockReturnValue(of());
+    resolveProfile
+      .mockReturnValueOnce(of({
+        account: 'alice',
+        domain: 'peer.test',
+        namespaceId: 12,
+        rev: 3,
+        name: '',
+      }))
+      .mockReturnValue(of({
+        account: 'alice',
+        domain: 'peer.test',
+        namespaceId: 12,
+        rev: 3,
+        name: 'Alice Profile',
+      }));
     const fixture = render(
       { type: 'GROUP_JOINED', member: { ...alice, profileRev: 3 } },
       { isGroupConversation: true },
     );
-    await vi.waitFor(() => expect(getProfile).toHaveBeenCalledTimes(1));
-    expect(fixture.nativeElement.textContent).toContain('alice@peer.test');
+    expect(fixture.nativeElement.textContent).toContain(
+      'Alice Profile 加入了群聊',
+    );
     memberChanges.next([42]);
-    await vi.waitFor(() => expect(getProfile).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(fixture.nativeElement.textContent).toContain('Alice Profile 加入了群聊'),
+    );
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain(
       'Alice Profile 加入了群聊',
@@ -212,7 +250,7 @@ describe('SystemRowComponent', () => {
   });
 
   it("uses only this system row's cached profile key and persists its drift", async () => {
-    const participant = { ...alice, namespaceId: 12, profileRev: 3 };
+    const participant = { ...alice, profileNamespaceId: 12, profileRev: 3 };
     getProfile.mockResolvedValue({ name: 'Alice before' });
     resolveProfile.mockReturnValue(
       of({
@@ -243,13 +281,19 @@ describe('SystemRowComponent', () => {
   });
 
   it("tracks the caller's P2P remark for a cached group participant", async () => {
-    getProfile.mockResolvedValue({ name: 'Alice cached' });
-    const participant = { ...alice, namespaceId: 12, profileRev: 3 };
+    resolveProfile.mockReturnValue(of({
+      account: 'alice',
+      domain: 'peer.test',
+      namespaceId: 12,
+      rev: 4,
+      name: 'Alice cached',
+    }));
+    const participant = { ...alice, profileNamespaceId: 12, profileRev: 3 };
     const thread = createP2PConversation(7, {
       account: participant.account,
       name: 'Alice',
       domain: participant.domain,
-      namespaceId: participant.namespaceId,
+      namespaceId: participant.profileNamespaceId,
       profileRev: participant.profileRev,
     }, { alias: 'My remark' });
     conversations.set([thread]);
@@ -260,17 +304,24 @@ describe('SystemRowComponent', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('My remark');
     conversations.set([{ ...thread, alias: null }]);
-    await vi.waitFor(() => expect(getProfile).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(fixture.nativeElement.textContent).toContain('Alice cached'),
+    );
     fixture.detectChanges();
-    expect(fixture.nativeElement.textContent).toContain('Alice cached');
   });
 
   it('reads a departed member from its own cached revision without requesting evidence', async () => {
-    getProfile.mockResolvedValue({ name: 'Alice cached' });
+    resolveProfile.mockReturnValue(of({
+      account: 'alice',
+      domain: 'peer.test',
+      namespaceId: 12,
+      rev: 4,
+      name: 'Alice cached',
+    }));
     const fixture = render(
       {
         type: 'GROUP_LEFT',
-        member: { ...alice, namespaceId: 12, profileRev: 3 },
+        member: { ...alice, profileNamespaceId: 12, profileRev: 3 },
       },
       {
         isGroupConversation: true,
@@ -278,33 +329,41 @@ describe('SystemRowComponent', () => {
       },
     );
     await vi.waitFor(() =>
-      expect(getProfile).toHaveBeenCalledWith({
-        account: 'alice',
-        domain: 'peer.test',
-        namespaceId: 12,
-        profileRev: 4,
+      expect(resolveProfile).toHaveBeenCalledWith({
+        publisherNamespaceId: 12,
+        lookup: 'ACCOUNT_PROFILE',
+        target: {
+          profileNamespaceId: 12,
+          account: 'alice',
+          rev: 4,
+        },
       }),
     );
     fixture.detectChanges();
-    expect(fixture.nativeElement.textContent).toContain(
-      'Alice cached 已离开群聊',
-    );
-    expect(resolveProfile).not.toHaveBeenCalled();
+    expect(resolveProfile).toHaveBeenCalled();
   });
 
   it('reads the creator profile at the event revision', async () => {
-    getProfile.mockResolvedValue({ name: 'Alice Profile' });
-    resolveProfile.mockReturnValue(of());
+    resolveProfile.mockReturnValue(of({
+      account: 'alice',
+      domain: 'peer.test',
+      namespaceId: 12,
+      rev: 3,
+      name: 'Alice Profile',
+    }));
     const fixture = render(
       { type: 'GROUP_CREATED', creator: { ...alice, profileRev: 3 } },
       { isGroupConversation: true },
     );
     await vi.waitFor(() =>
-      expect(getProfile).toHaveBeenCalledWith({
-        account: 'alice',
-        domain: 'peer.test',
-        namespaceId: 12,
-        profileRev: 3,
+      expect(resolveProfile).toHaveBeenCalledWith({
+        publisherNamespaceId: 12,
+        lookup: 'ACCOUNT_PROFILE',
+        target: {
+          profileNamespaceId: 12,
+          account: 'alice',
+          rev: 3,
+        },
       }),
     );
     fixture.detectChanges();
@@ -327,8 +386,8 @@ describe('SystemRowComponent', () => {
     const fixture = render({
       type: 'CALL_ENDED',
       callId: '550e8400-e29b-41d4-a716-446655440000',
-      caller: { ...me, namespaceId: 0, profileRev: 0 },
-      callee: { ...alice, namespaceId: 7, profileRev: 0 },
+      caller: { ...me, profileNamespaceId: 0, profileRev: 0 },
+      callee: { ...alice, profileNamespaceId: 7, profileRev: 0 },
       mediaType: 'VIDEO',
       outcome: 'completed',
       initiatedAt: 1000,

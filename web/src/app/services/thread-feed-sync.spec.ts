@@ -10,19 +10,16 @@ const profileResolver = vi.fn(async () => false);
 
 const snapshot = (feedId: number): ThreadFeedSnapshot => ({
   ...threadStructure(7, {
-    profile: {
-      account: 'peer',
-      domain: 'local',
-      namespaceId: 0,
-      profileRev: 0,
-    },
+    profileAccount: 'peer',
+    publisherNamespaceId: 0,
+    profileRev: 0,
   }),
   threadId: 7,
   threadFeedId: feedId,
   messageEndSeq: feedId,
   tombstoneEndSeq: 0,
   alias: null,
-  threadProfileRev: 0,
+  profileRev: 0,
   groupMetaFeedEndId: null,
   joinRequestEndFeedId: 0,
   joinRequestReadFeedId: -1,

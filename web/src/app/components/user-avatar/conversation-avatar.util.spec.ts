@@ -18,7 +18,8 @@ describe('conversation-avatar util', () => {
     type: 'P2P',
     peerUser: {
       account: 'alice',
-      domain: 'local',
+      domain: 'chat.example.test',
+      namespaceId: 0,
       avatar: '/uploads/u7.png',
     },
     group: { id: 0, account: '!zero', avatar: '' },

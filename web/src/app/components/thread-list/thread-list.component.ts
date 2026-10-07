@@ -38,7 +38,6 @@ import { LanguageService } from '../../services/language.service';
 import { formatListTime } from '../message-cards/date-format';
 import { playFlipList } from '../../lib/flip-list';
 import { ComposerDraftService } from '../../services/composer-draft.service';
-import { FederationNamespaceService } from '../../services/federation-namespace.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
 
 /**
@@ -71,7 +70,6 @@ export class ThreadListComponent implements OnInit {
   private readonly userService = inject(UserService);
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
-  private readonly namespaces = inject(FederationNamespaceService);
   private readonly host = inject(ElementRef);
   readonly composerDrafts = inject(ComposerDraftService);
   private prevRects = new Map<string, DOMRect>();
@@ -178,8 +176,7 @@ export class ThreadListComponent implements OnInit {
       t.lastMessageSenderId ===
         messagePreviewSenderKey({
           account: self.account,
-          domain: 'local',
-          namespaceId: 0,
+          profileNamespaceId: self.namespaceId,
         })
     )
       return this.transloco.translate('chat.youPrefix', { text: base }) ?? '';
@@ -215,16 +212,8 @@ export class ThreadListComponent implements OnInit {
   readonly avatarEvidence = conversationAvatarEvidence;
 
   federatedDomain(t: ConversationItem): string | undefined {
-    if (t.type === 'P2P')
-      return t.peerUser.domain !== 'local'
-        ? this.namespaces.displayDomain(
-            t.peerUser.domain,
-            t.peerUser.namespaceId,
-          )
-        : undefined;
-    return t.group.domain !== 'local'
-      ? this.namespaces.displayDomain(t.group.domain, t.group.namespaceId)
-      : undefined;
+    const domain = t.type === 'P2P' ? t.peerUser.domain : t.group.domain;
+    return domain || undefined;
   }
 
   /** One concise announcement for screen readers; visible badges/icons remain aria-hidden to avoid repetition. */

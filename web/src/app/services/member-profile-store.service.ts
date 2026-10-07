@@ -30,6 +30,7 @@ export class MemberProfileRepository {
   constructor() {
     this.webdb.profileWake$.pipe(takeUntilDestroyed()).subscribe((wake) => {
       if (wake.event !== 'PROFILE_AVAILABLE') return;
+      if (this.queriedThreads.size === 0) return;
       this.notifyChanged([...this.queriedThreads]);
     });
     inject(SessionLifecycleService)

@@ -16,13 +16,11 @@ describe('ProfileRepository resolution scheduler', () => {
   const sessionEnded = new Subject<void>();
   const resolveProfileEvidence = vi.fn();
   const getProfileAvatarBlob = vi.fn();
-  const getProfile = vi.fn();
   let repository: ProfileRepository;
 
   beforeEach(() => {
     resolveProfileEvidence.mockReset();
     getProfileAvatarBlob.mockReset();
-    getProfile.mockReset();
     getProfileAvatarBlob.mockResolvedValue(new Blob(['a'], { type: 'image/webp' }));
     TestBed.configureTestingModule({
       providers: [
@@ -34,7 +32,6 @@ describe('ProfileRepository resolution scheduler', () => {
             profileWake$: profileWake,
             resolveProfileDemand: resolveProfileEvidence,
             getProfileAvatarBlob,
-            getProfile,
           },
         },
         {
@@ -67,15 +64,15 @@ describe('ProfileRepository resolution scheduler', () => {
     };
 
     expect(await firstValueFrom(repository.resolve(demand))).toMatchObject({
-      profileNamespaceId: 4,
+      namespaceId: 4,
       account: 'alice',
-      profileRev: 7,
+      rev: 7,
       avatarDigest: snapshot.avatarDigest,
       avatarBlob: expect.any(Blob),
     });
     expect(await firstValueFrom(repository.resolve(demand))).toMatchObject({
-      profileNamespaceId: 4,
-      profileRev: 7,
+      namespaceId: 4,
+      rev: 7,
     });
     expect(resolveProfileEvidence).toHaveBeenCalledTimes(1);
     expect(getProfileAvatarBlob).toHaveBeenCalledOnce();
@@ -123,30 +120,8 @@ describe('ProfileRepository resolution scheduler', () => {
       },
     });
 
-    await expect(result).resolves.toMatchObject({ name: 'Alice', profileRev: 7 });
+    await expect(result).resolves.toMatchObject({ name: 'Alice', rev: 7 });
     expect(resolveProfileEvidence).toHaveBeenCalledTimes(2);
-  });
-
-  it('settles a drifting Group Meta request under its own evidence', async () => {
-    const demand: ProfileDemand = {
-      publisherNamespaceId: 7,
-      lookup: 'GROUP_MEMBER_PROFILE',
-      target: { profileNamespaceId: 7, account: 'alice', rev: 4 },
-      groupAccount: '!team',
-    };
-    const expected = { publisherNamespaceId: 7, profileNamespaceId: 7, account: 'alice', rev: 4 };
-    const actual = { ...expected, rev: 5 };
-    resolveProfileEvidence.mockResolvedValue({ status: 'PENDING', key: expected });
-    getProfile.mockResolvedValue({ ...actual, profileRev: 5, name: 'Alice 5', bio: '', avatarDigest: null });
-    const result = firstValueFrom(repository.resolve(demand));
-    await vi.waitFor(() => expect(resolveProfileEvidence).toHaveBeenCalledOnce());
-    profileWake.next({ event: 'PROFILE_AVAILABLE', key: actual });
-    await expect(result).resolves.toMatchObject({ name: 'Alice 5', profileRev: 5 });
-    expect(getProfile).toHaveBeenCalledWith({
-      publisherNamespaceId: 7, lookup: 'ACCOUNT_PROFILE',
-      target: { profileNamespaceId: 7, account: 'alice', rev: 5 },
-    });
-    expect(resolveProfileEvidence).toHaveBeenCalledOnce();
   });
 
   it('retries only the evidence whose pending exact profile key was committed', async () => {

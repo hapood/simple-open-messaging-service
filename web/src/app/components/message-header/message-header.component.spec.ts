@@ -49,6 +49,8 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       {
         account: `u${threadId}`,
         name: `User ${threadId}`,
+        domain: 'chat.example.test',
+        namespaceId: 0,
       },
       { unreadCount },
     );
@@ -168,6 +170,8 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       id: 80,
       account: 'group-80',
       name: 'Group 80',
+      domain: 'chat.example.test',
+      namespaceId: 0,
     });
     fixture.componentRef.setInput('userMsgTrd', chat);
 
@@ -179,7 +183,13 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   it('reports group More as expanded while the group panel is open', () => {
     const chat = createGroupConversation(
       8,
-      { id: 80, account: 'group-80', name: 'Group 80' },
+      {
+        id: 80,
+        account: 'group-80',
+        name: 'Group 80',
+        domain: 'chat.example.test',
+        namespaceId: 0,
+      },
       { role: 'ADMIN' },
     );
     canAdministerGroup.set(true);
@@ -194,6 +204,8 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       id: 80,
       account: 'group-80',
       name: 'Group 80',
+      domain: 'chat.example.test',
+      namespaceId: 0,
     });
     const chat = {
       ...active,
@@ -214,6 +226,8 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       id: 80,
       account: 'group-80',
       name: 'Group 80',
+      domain: 'chat.example.test',
+      namespaceId: 0,
     });
     const chat = {
       ...active,

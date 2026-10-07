@@ -459,6 +459,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         this.mediaStageToFailedItem(stage, {
           account: profile.account,
           name: profile.name,
+          domain: profile.domain,
+          namespaceId: profile.namespaceId,
         }),
       );
     }
@@ -470,7 +472,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO' | 'GALLERY';
       createdAt: number;
     },
-    author: { account: string; name: string },
+    author: {
+      account: string;
+      name: string;
+      domain: string;
+      namespaceId: number;
+    },
   ): CbItem<ChatMsgData> {
     const createdAtMs = Number(stage.createdAt) || Date.now();
     const date = new Date(createdAtMs);
@@ -478,11 +485,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const base = {
       type: 'msg' as const,
       msgId,
-      creator: messageCreatorKey({
-        account: author.account,
-        domain: 'local',
-        namespaceId: 0,
-      }),
+      creator: messageCreatorKey(author),
       isSelf: true,
       isGroupConversation: this.conv.type === 'GROUP',
       name: author.name,
@@ -853,9 +856,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       };
   }
 
-  private isSelfAddress(account: string, domain: string): boolean {
+  private isSelfAddress(account: string, namespaceId: number): boolean {
     const self = this.userService.sessionProfile();
-    return self !== undefined && self.account === account && domain === 'local';
+    return (
+      self !== undefined &&
+      self.account === account &&
+      namespaceId === self.namespaceId
+    );
   }
 
   private creatorKey(creator: Message['creator']): string | null {
@@ -1009,15 +1016,19 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         const key = this.creatorKey(message.creator)!;
         const identity = parseUserIdentityKey(key);
         if (!identity) throw new Error('invalid profile identity key');
-        const cached = await this.profileRepo?.getProfile({
-          publisherNamespaceId: identity.namespaceId,
-          lookup: 'ACCOUNT_PROFILE',
-          target: {
-            profileNamespaceId: identity.namespaceId,
-            account: identity.account,
-            rev: message.profileRev,
-          },
-        });
+        const cached = await (this.profileRepo
+          ? firstValueFrom(
+              this.profileRepo.resolve({
+                publisherNamespaceId: identity.namespaceId,
+                lookup: 'ACCOUNT_PROFILE',
+                target: {
+                  profileNamespaceId: identity.namespaceId,
+                  account: identity.account,
+                  rev: message.profileRev,
+                },
+              }),
+            )
+          : Promise.resolve(undefined));
         const presentation = {
           name: cached?.name ?? identity.account,
           account: identity.account,
@@ -1027,7 +1038,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
             message.profileRev,
           ]),
           domain: identity.domain,
-          isSelf: this.isSelfAddress(identity.account, identity.domain),
+          isSelf: this.isSelfAddress(identity.account, identity.namespaceId),
         };
         if (cached) this.profilesBySeq.set(message.seq, presentation);
         if (!this.profiles.has(key))

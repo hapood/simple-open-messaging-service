@@ -1,3 +1,4 @@
+import { Subject } from 'rxjs';
 import type { Mock } from 'vitest';
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
@@ -20,6 +21,8 @@ import {
 } from '../../services/model';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 import { provideHttpClient, withXhr } from '@angular/common/http';
+import { WebdbService, WebdbStorage } from '../../services/webdb.service';
+import { SessionLifecycleService } from '../../services/session-lifecycle.service';
 import { By } from '@angular/platform-browser';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 
@@ -83,8 +86,10 @@ describe('ThreadListComponent', () => {
           provide: UserService,
           useValue: {
             sessionProfile: () => undefined,
+            sessionUserId: signal(null),
           },
         },
+        { provide: WebdbService, useFactory: () => new WebdbStorage(() => null, new SessionLifecycleService()) as WebdbService },
         { provide: RouteService, useValue: { popupDlg: popupSpy } },
       ],
     });
@@ -101,6 +106,8 @@ describe('ThreadListComponent', () => {
     return createP2PConversation(threadId, {
       account: `u${peerId}`,
       name,
+      domain: 'chat.example.test',
+      namespaceId: 0,
     });
   }
 
@@ -262,6 +269,8 @@ describe('ThreadListComponent', () => {
         id: 21,
         account: 'team',
         name: 'Team',
+        domain: 'chat.example.test',
+        namespaceId: 0,
       }),
       p2p(2, 12),
     ]);
@@ -306,6 +315,8 @@ describe('ThreadListComponent', () => {
         id: 21,
         account: 'team',
         name: 'Team',
+        domain: 'chat.example.test',
+        namespaceId: 0,
       }),
       role: 'OWNER' as const,
     };

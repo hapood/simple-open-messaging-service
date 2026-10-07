@@ -12,6 +12,7 @@ import {
   unpublishLocalFederationRoot,
   runFederationSelfCheck,
   unblockFederationPeer,
+  recognizeFederationPeer,
 } from './federation';
 
 const request = vi.hoisted(() => vi.fn());
@@ -37,6 +38,7 @@ describe('federation admin API', () => {
   it('maps block, unblock, and self-check mutations to their server contracts', async () => {
     await blockFederationPeer('peer.test', 'incident');
     await unblockFederationPeer('peer.test');
+    await recognizeFederationPeer('peer.test');
     await federationPendingIdentityReviews();
     await approveFederationIdentityReview(7);
     await rejectFederationIdentityReview(7);
@@ -60,39 +62,43 @@ describe('federation admin API', () => {
     );
     expect(request).toHaveBeenNthCalledWith(
       3,
-      '/admin/federation/identity-reviews',
+      '/admin/federation/peers/peer.test/recognize',
     );
     expect(request).toHaveBeenNthCalledWith(
       4,
+      '/admin/federation/identity-reviews',
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      5,
       '/admin/federation/identity-reviews/7/approve',
       {},
     );
     expect(request).toHaveBeenNthCalledWith(
-      5,
+      6,
       '/admin/federation/identity-reviews/7/reject',
       {},
     );
     expect(request).toHaveBeenNthCalledWith(
-      6,
+      7,
       '/admin/federation/identity-reviews/7/predecessor-check',
       {},
     );
     expect(request).toHaveBeenNthCalledWith(
-      7,
+      8,
       '/admin/federation/local-root-epochs',
     );
     expect(request).toHaveBeenNthCalledWith(
-      8,
+      9,
       '/admin/federation/local-root-epochs/rotate',
       {},
     );
     expect(request).toHaveBeenNthCalledWith(
-      9,
+      10,
       '/admin/federation/local-root-epochs/3/unpublish',
       {},
     );
     expect(request).toHaveBeenNthCalledWith(
-      10,
+      11,
       '/admin/federation/self-check',
       {
         ntpServer: 'ntp.example',

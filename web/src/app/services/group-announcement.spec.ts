@@ -11,7 +11,8 @@ describe('group announcement visibility', () => {
       id: 7,
       account: '!room',
       name: 'Room',
-      domain: 'local',
+      domain: 'chat.example.test',
+      namespaceId: 0,
     });
 
   it('waits for the advertised group-meta head and hides a bounded full drain', () => {

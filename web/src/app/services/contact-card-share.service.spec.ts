@@ -37,6 +37,8 @@ describe('ContactCardShareService', () => {
     const chat = createP2PConversation(5, {
       account: 'alice',
       name: 'Alice',
+      domain: 'chat.example.test',
+      namespaceId: 0,
     });
 
     service.open(chat);
@@ -53,7 +55,6 @@ describe('ContactCardShareService', () => {
         threadId: 7,
         target: {
           account: 'alice',
-          domain: 'local',
           namespaceId: 0,
           profileRev: 0,
         },
@@ -77,7 +78,6 @@ describe('ContactCardShareService', () => {
         threadId: 9,
         target: {
           account: '!group12',
-          domain: 'bravo.test',
           namespaceId: 4,
           profileRev: 6,
         },

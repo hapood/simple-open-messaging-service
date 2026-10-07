@@ -447,12 +447,16 @@
     },
     "action": {
       "viewDetail": "查看详情",
+      "recognize": "重新识别",
+      "confirmRecognize": "要向该对端发起联邦识别吗？",
       "block": "屏蔽",
       "unblock": "取消屏蔽"
     },
     "toast": {
       "blocked": "已屏蔽该对端——在取消屏蔽前拒绝联邦",
       "unblocked": "已取消屏蔽——下次连接将重新握手",
+      "recognized": "联邦识别已完成",
+      "recognitionPending": "联邦识别已发起，等待对端验证或审核",
       "reviewApproved": "身份审核已通过",
       "reviewRejected": "身份审核已拒绝"
     },

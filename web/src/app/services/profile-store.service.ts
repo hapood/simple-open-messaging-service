@@ -19,6 +19,11 @@ export interface ResolvedProfile {
   avatarBlob: Blob | null;
 }
 
+/** How long a PENDING demand suppresses re-requests. The server scheduled a
+ *  wake; the deadline covers a lost wake — the next resolve() after it
+ *  expires retries. */
+const PENDING_TTL_MS = 30_000;
+
 interface ResolutionEntry {
   demandKey: string;
   demand: ProfileDemand;
@@ -26,7 +31,11 @@ interface ResolutionEntry {
   observable: Observable<ResolvedProfile>;
   running: boolean;
   rerun: boolean;
-  state: { kind: 'REQUESTING' } | { kind: 'PENDING'; key: string };
+  /** PENDING state: the server returned a key and scheduled a wake.
+   *  undefined means not pending (requesting or already resolved). The
+   *  deadline suppresses re-requests; a lost wake lets it expire and the
+   *  next resolve() retries. */
+  pending: { key: string; deadline: number } | undefined;
   subscribers: number;
 }
 
@@ -56,17 +65,19 @@ export class ProfileRepository {
       });
   }
 
-  /** Read only an already committed profile for message text presentation. */
-  getProfile(demand: ProfileDemand): Promise<ProfileSnapshot | undefined> {
-    return this.webdb.getProfile(demand);
-  }
-
   /** Resolve one demand through the platform database executor. The main thread performs no HTTP. */
   resolve(demand: ProfileDemand): Observable<ResolvedProfile> {
     demand = normalizeDemand(demand);
     const demandKey = JSON.stringify(demand);
     const existing = this.resolutions.get(demandKey);
-    if (existing) return existing.observable;
+    if (existing) {
+      // A PENDING demand whose TTL expired retries on the next resolve().
+      if (existing.pending && existing.pending.deadline <= Date.now()) {
+        existing.pending = undefined;
+        this.run(existing);
+      }
+      return existing.observable;
+    }
     const cachedKey = this.demandKeys.get(demandKey);
     if (cachedKey) {
       const cached = this.lru.get(cachedKey);
@@ -87,7 +98,7 @@ export class ProfileRepository {
       observable: undefined as unknown as Observable<ResolvedProfile>,
       running: false,
       rerun: false,
-      state: { kind: 'REQUESTING' },
+      pending: undefined,
       subscribers: 0,
     };
     entry.observable = new Observable((subscriber) => {
@@ -119,10 +130,13 @@ export class ProfileRepository {
       .resolveProfileDemand(entry.demand)
       .then(async (result) => {
         if (result.status === 'PENDING') {
-          entry.state = { kind: 'PENDING', key: profileKey(result.key) };
+          entry.pending = {
+            key: profileKey(result.key),
+            deadline: Date.now() + PENDING_TTL_MS,
+          };
           const wake =
             this.demandWakes.get(entry.demandKey) ??
-            this.wakes.get(entry.state.key);
+            this.wakes.get(entry.pending.key);
           if (wake) this.consumeWake(entry, wake);
           return;
         }
@@ -197,8 +211,8 @@ export class ProfileRepository {
     }
     for (const entry of this.resolutions.values())
       if (
-        entry.state.kind === 'PENDING' &&
-        (entry.state.key === key || entry.demandKey === demandKey)
+        entry.pending &&
+        (entry.pending.key === key || entry.demandKey === demandKey)
       )
         this.consumeWake(entry, wake);
   }
@@ -212,8 +226,8 @@ export class ProfileRepository {
       this.resolutions.delete(entry.demandKey);
       return;
     }
-    if (entry.state.kind === 'PENDING' && entry.state.key !== key) return;
-    entry.state = { kind: 'REQUESTING' };
+    if (entry.pending && entry.pending.key !== key) return;
+    entry.pending = undefined;
     this.run(entry);
   }
 }

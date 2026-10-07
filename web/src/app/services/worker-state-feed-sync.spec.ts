@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
+import { SessionLifecycleService } from './session-lifecycle.service';
 import { synchronizeStateFeed } from './worker-state-feed-sync';
 import type { ClientStateFeedItem } from './user.service';
 
@@ -44,7 +45,7 @@ function page(mode: 'full' | 'delta', scannedThrough: number, through: number) {
 
 describe('database-worker state-feed executor', () => {
   it('commits the full boundary and cursor atomically in IndexedDB', async () => {
-    const db = new WebdbStorage();
+    const db = new WebdbStorage(() => null, new SessionLifecycleService());
     await db.openForUser('94082');
     try {
       await db.applyStateFeedPage([], 1, true, 3);

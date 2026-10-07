@@ -32,7 +32,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
               [type]="UserAvatarType.OTHER"
               [name]="state().peerName || '?'"
               [account]="peer()?.account"
-              [federatedDomain]="peer()?.domain !== 'local' ? peer()?.domain : null"
+              [federatedDomain]="peer()?.namespaceId === 0 ? null : peer()?.domain"
               [src]="state().peerAvatar"
             ></app-user-avatar
           ></span>

@@ -54,9 +54,34 @@ describe('WebdbService native SQLite routing', () => {
   it('routes thread reads and writes to typed native commands with the active user id', async () => {
     const thread = {
       threadId: 9,
-      authorityNamespaceId: 0,
+      publisherNamespaceId: 0,
+      profileRev: 0,
+      role: null,
+      lastMessageAt: null,
+      lastMessageSeq: null,
+      muted: false,
+      blocked: false,
+      pinned: false,
+      pinnedAt: null,
+      conversationState: 'ACTIVE',
+      lastReadSeq: null,
+      unreadCount: 0,
+      mentionUnread: [],
+      lastMessagePreview: null,
+      lastMessageSenderId: null,
       type: 'P2P',
-      peerUser: { account: 'peer', domain: 'local', namespaceId: 0 },
+      peerUser: {
+        account: 'peer',
+        name: '',
+        avatar: '',
+        bio: '',
+        isGroup: false,
+        domain: 'chat.test',
+        namespaceId: 0,
+        createdAt: 0,
+        updatedAt: 0,
+        isDeleted: false,
+      },
     } as ConversationItem;
     responses.set('native_db_threads', [thread]);
 

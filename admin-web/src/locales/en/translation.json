@@ -446,12 +446,16 @@
     },
     "action": {
       "viewDetail": "View detail",
+      "recognize": "Recognize",
+      "confirmRecognize": "Start outbound recognition with this peer?",
       "block": "Block",
       "unblock": "Unblock"
     },
     "toast": {
       "blocked": "Peer blocked — federation refused until unblocked",
       "unblocked": "Peer unblocked — will re-handshake on next contact",
+      "recognized": "Recognition completed",
+      "recognitionPending": "Recognition started; waiting for peer verification or review",
       "reviewApproved": "Identity review approved",
       "reviewRejected": "Identity review rejected"
     },
