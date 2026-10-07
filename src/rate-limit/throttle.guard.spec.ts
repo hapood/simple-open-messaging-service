@@ -2,9 +2,9 @@ import type { ExecutionContext } from '@nestjs/common';
 import type { Reflector } from '@nestjs/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { KvStoreService } from '../kv-store/kv-store.service.js';
-import type { ClientIdentityService } from '../rate-limit/client-identity.service.js';
+import type { ClientIdentityService } from './client-identity.service.js';
 import { ThrottleGuard } from './throttle.guard.js';
-import type { FixedWindowPolicyService } from '../rate-limit/fixed-window-policy.service.js';
+import type { FixedWindowPolicyService } from './fixed-window-policy.service.js';
 
 describe('ThrottleGuard', () => {
   it('uses the canonical identity service address and current database policy', async () => {

@@ -36,8 +36,11 @@ import {
   FederationThreadRoundRemoteError,
 } from './federation-thread-round-error.js';
 import { FederationThreadSyncStateService } from './federation-thread-sync-state.service.js';
-import { FederationService } from './federation.service.js';
+import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
+import { FederationStatePullService } from './federation-state-pull.service.js';
+import { FederationThreadQueryDenialService } from './federation-thread-query-denial.service.js';
 import { FederationThreadSourceService } from './federation-thread-source.service.js';
+import { KeypairService } from './keypair.service.js';
 
 type Direction = 'message' | 'tombstone' | 'reverse' | 'meta';
 
@@ -123,13 +126,17 @@ export class FederationThreadRoundSchedulerService
     private readonly forward: FederationThreadForwardRoundExecutorService,
     private readonly reverse: FederationThreadReverseRoundExecutorService,
     private readonly meta: FederationThreadMetaRoundExecutorService,
-    private readonly federation: FederationService,
+    private readonly peerLifecycle: FederationPeerLifecycle,
+    private readonly statePull: FederationStatePullService,
+    private readonly threadQueryDenials: FederationThreadQueryDenialService,
     private readonly sources: FederationThreadSourceService,
+    private readonly keypair: KeypairService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
+    await this.keypair.waitUntilInitialized();
     await this.recoverPendingRounds();
-    for (const peerDomain of await this.federation.listTrustedPeerDomains())
+    for (const peerDomain of await this.peerLifecycle.listTrustedPeerDomains())
       this.wakeStateFeed(peerDomain, 0n);
   }
 
@@ -413,7 +420,7 @@ export class FederationThreadRoundSchedulerService
     const target = this.stateDrainTargets.get(peerDomain);
     if (target === undefined) return;
     this.stateDrainActive.add(peerDomain);
-    const task = this.federation
+    const task = this.statePull
       .pullStateFromPeer(peerDomain, target)
       .then((committedThrough) => {
         this.stateDrainRetryAttempts.delete(peerDomain);
@@ -670,12 +677,13 @@ export class FederationThreadRoundSchedulerService
       );
       if (wrapped) {
         try {
-          const outcome = await this.federation.handleThreadQueryForbidden(
-            threadId,
-            peerDomain,
-            namespaceId,
-            wrapped.authorizationEpoch,
-          );
+          const outcome =
+            await this.threadQueryDenials.handleThreadQueryForbidden(
+              threadId,
+              peerDomain,
+              namespaceId,
+              wrapped.authorizationEpoch,
+            );
           if (outcome === 'STALE') {
             this.wakeStateFeed(peerDomain, 0n);
             return true;

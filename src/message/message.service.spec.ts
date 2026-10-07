@@ -181,7 +181,23 @@ describe('MessageService committed profile work', () => {
       {} as never,
       { emit } as never,
     );
-    const systemContent = {
+    const systemContent: {
+      type: 'FRIEND_ADDED';
+      participants: [
+        {
+          account: string;
+          domain: string;
+          profileNamespaceId: number;
+          profileRev: number;
+        },
+        {
+          account: string;
+          domain: string;
+          profileNamespaceId: number;
+          profileRev: number;
+        },
+      ];
+    } = {
       type: 'FRIEND_ADDED' as const,
       participants: [
         {
@@ -196,7 +212,7 @@ describe('MessageService committed profile work', () => {
           profileNamespaceId: 0,
           profileRev: 2,
         },
-      ] as const,
+      ],
     };
     vi.spyOn(svc, 'writeSystemMessageInTx').mockResolvedValue({
       messageId: 1n,

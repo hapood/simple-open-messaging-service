@@ -8,7 +8,7 @@ import {
 } from '../database/database.service.js';
 import { identityNamespace } from '../database/schema.js';
 import { ProfileNamespaceFeedService } from './profile-namespace-feed.service.js';
-import { ProfileNamespaceInfoService } from './profile-namespace-info.service.js';
+import { ProfileNamespaceService } from './profile-namespace.service.js';
 
 export interface FederationContext {
   domain: string;
@@ -35,8 +35,22 @@ export class FederationNamespaceService {
   constructor(
     private readonly database: DatabaseService,
     private readonly profileNamespaceFeed: ProfileNamespaceFeedService,
-    private readonly profileNamespaceInfo: ProfileNamespaceInfoService,
+    private readonly profileNamespace: ProfileNamespaceService,
   ) {}
+
+  /** Best-effort namespace id → current domain binding for display and routing hints. Null when
+   *  unknown or soft-retired. Authorization paths must capture a full verified context instead of
+   *  trusting this lookup. */
+  async activePeerDomainForNamespace(
+    namespaceId: number,
+  ): Promise<string | null> {
+    const [peer] = await this.database.db
+      .select({ domain: identityNamespace.domain })
+      .from(identityNamespace)
+      .where(eq(identityNamespace.id, namespaceId))
+      .limit(1);
+    return peer?.domain ?? null;
+  }
 
   async captureActive(domain: string): Promise<FederationContext> {
     return this.database.db.transaction((tx) =>
@@ -223,7 +237,7 @@ export class FederationNamespaceService {
     // Handshake seed: the peer's own binding is known from the
     // hostname-verified domain and root of this activation; updateFeedId 0
     // lets the first feed pull refresh the counter.
-    await this.profileNamespaceInfo.seedDirectRowInTx(
+    await this.profileNamespace.seedDirectRowInTx(
       tx,
       created.id,
       identity.domain,

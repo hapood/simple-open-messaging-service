@@ -4,25 +4,21 @@ import { isValidSomfpDomain } from '../common/account.js';
 /**
  * Federation (S2S) configuration. Loaded from env at module-init time (fail-fast via requireEnv).
  */
-export interface FederationConfig {
-  /** This server's public domain — the domain in @user@domain handles and in .well-known/somfp. */
-  domain: string;
+export interface FederationRuntimeConfig {
   /** dev-only: allow plain http:// for localhost federation testing (never in production). */
   allowInsecureHttp: boolean;
-  /** Dev-only static peer routes. This deliberately bypasses DNS/SRV so two local nodes can federate
-   *  over a Docker network while keeping their logical SOMS domains. Forbidden in production. */
+  /** Dev-only static peer routes. */
   devRoutes: Readonly<Record<string, string>>;
-  /** How forwarded LINK artwork and CONTACT_CARD avatars are handled. `trust` preserves the immutable
-   *  bundle snapshot and its downloaded CAS assets; `rebuild` regenerates LINK cards locally and strips
-   *  contact avatars because a card snapshot has no independent resource locator to re-resolve. */
   forwardedResourcePolicy: 'trust' | 'rebuild';
-  /** Local signing-key lifecycle timings (deployment-local, never wire fields). */
   signingKey: SigningKeyLifecycleConfig;
-  /** Local root-identity epoch settings (deployment-local, never wire fields). */
   rootKey: RootKeyLifecycleConfig;
-  /** Interval between proactive peer certificate-set refresh rounds (default 60s,
-   *  minimum 1s). Deployment-local, never a wire field. */
   peerKeyRefreshPollMs: number;
+}
+
+/** Startup configuration including the one-time identity input. */
+export interface FederationConfig extends FederationRuntimeConfig {
+  /** Startup-only identity input. Runtime callers must use KeypairService. */
+  domain: string;
 }
 
 /**
@@ -214,22 +210,26 @@ function loadDevRoutes(allowInsecureHttp: boolean): Record<string, string> {
   return routes;
 }
 
-export function loadFederationConfig(): FederationConfig {
+export function loadFederationRuntimeConfig(): FederationRuntimeConfig {
   const allowInsecureHttp = process.env.SOMS_ALLOW_INSECURE_HTTP === '1';
-  const domain = requireEnv('SOMS_DOMAIN');
-  if (!isValidSomfpDomain(domain)) {
-    throw new Error(
-      'SOMS_DOMAIN must be a canonical SOMFP Domain and must not use the RFC 6762 .local namespace',
-    );
-  }
   return {
-    domain,
     allowInsecureHttp,
     devRoutes: loadDevRoutes(allowInsecureHttp),
     forwardedResourcePolicy: loadForwardedResourcePolicy(),
     signingKey: loadSigningKeyLifecycle(),
     rootKey: loadRootKeyLifecycle(),
     peerKeyRefreshPollMs: loadPeerKeyRefreshPollMs(),
+  };
+}
+
+export function loadFederationConfig(): FederationConfig {
+  const domain = requireEnv('SOMS_DOMAIN');
+  if (!isValidSomfpDomain(domain)) {
+    throw new Error('SOMS_DOMAIN must be a canonical SOMFP Domain');
+  }
+  return {
+    domain,
+    ...loadFederationRuntimeConfig(),
   };
 }
 

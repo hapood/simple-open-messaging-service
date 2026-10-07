@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
@@ -165,14 +166,13 @@ describe('group creation', () => {
     expect(creation).toMatchObject({
       seq: 1,
       creatorAccount: '$system',
-      creatorDomain: 'local',
     });
     expect(JSON.parse(creation!.content)).toEqual({
       type: 'GROUP_CREATED',
       creator: {
         account: owner.account,
-        domain: 'local',
-        namespaceId: 0,
+        domain: localIdentityDomain(),
+        profileNamespaceId: 0,
         profileRev: 1,
       },
     });
@@ -209,7 +209,7 @@ describe('group creation', () => {
       .select({
         feedId: groupMetaMemberFeed.feedId,
         account: groupMetaMemberFeed.memberAccount,
-        domain: groupMetaMemberFeed.memberDomain,
+        namespaceId: groupMetaMemberFeed.profileNamespaceId,
         operation: groupMetaMemberFeed.operation,
         body: groupMetaMemberFeed.body,
       })
@@ -221,9 +221,9 @@ describe('group creation', () => {
       expect.objectContaining({ operation: 'GROUP_PROFILE' }),
       expect.objectContaining({
         account: owner.account,
-        domain: 'local',
+        namespaceId: 0,
         operation: 'MEMBER_UPSERT',
-        body: { role: GroupRole.OWNER, profileRev: 1 },
+        body: { role: GroupRole.OWNER, profileNamespaceId: 0, profileRev: 1 },
       }),
     ]);
     expect(
@@ -241,7 +241,8 @@ describe('group creation', () => {
     ).resolves.toEqual([
       expect.objectContaining({
         account: owner.account,
-        domain: 'local',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
         role: GroupRole.OWNER,
       }),
     ]);

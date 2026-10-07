@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { and, eq, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
@@ -23,10 +23,8 @@ import {
   extractDigestEntries,
   extractDigests,
 } from '../upload/file-content.js';
-import {
-  parseTextMessageContent,
-  stringifyTextMessageContent,
-} from '../../shared/text-message-content.js';
+import { parseTextMessageContent } from '../../shared/text-message-content.js';
+import { withMessageContentQuote } from '../../shared/message-content-quote.js';
 import {
   federationFileSyncKind,
   isFederatedMediaContentType,
@@ -62,12 +60,12 @@ export interface FederationInboundMessageStoreParams {
     content: string;
     ts: number;
     quoteTarget?: S2SQuoteTarget;
+    quoteDigest?: string;
   };
-  /** Digest of the canonical (JCS) wire content, computed by the caller at the inbound boundary —
-   *  the only place the wire form still exists. Retained on insert as the tamper-evidence baseline
-   *  for later processing-receipt comparison and provenance answers; never re-derived here from the
-   *  projected local `content`, whose field names differ from the wire form. */
-  contentDigest: string;
+  /** Digest of the canonical message payload, including assets and quoteDigest. */
+  payloadDigest: string;
+  /** Canonical fingerprint of every immutable field in the received wire envelope. */
+  federationEnvelopeDigest: string;
   expectedFederationVersion: number;
   incomingText: ReturnType<typeof parseTextMessageContent>;
   forwardCard?: FederatedForwardCard;
@@ -96,7 +94,9 @@ export type FederationInboundMessageStoreResult =
 /** Persists one validated inbound message while preserving its transactional identity invariants. */
 @Injectable()
 export class FederationInboundMessageStoreService {
-  private readonly logger = new Logger(FederationInboundMessageStoreService.name);
+  private readonly logger = new Logger(
+    FederationInboundMessageStoreService.name,
+  );
 
   constructor(
     private readonly threadAccess: FederationThreadAccessService,
@@ -105,17 +105,9 @@ export class FederationInboundMessageStoreService {
     private readonly deletedMessages: DeletedMessageService,
   ) {}
 
-  /** Applies one processing receipt — a peer acknowledging a message this server published (or
-   *  re-published through a group origin it owns) — inside the caller's batch transaction.
-   *
-   *  Confirmation is a compare-and-set: the source message is promoted to `CONFIRMED` only while
-   *  its retained `contentDigest` still equals the receipt's wire digest (or was never retained).
-   *  The digest guard lives in SQL, so the compare-and-set cannot tear inside the batch
-   *  transaction. The wire digest is computed once by the caller at the inbound boundary and
-   *  passed in; this method never re-derives it, because the wire form no longer exists here and
-   *  re-deriving from the projected local content would hash a different shape. A mismatch means
-   *  the content was altered in transit or the local stored content drifted; the message is NOT
-   *  promoted and the mismatch is warned. */
+  /** Applies one processing receipt without changing local materialization state. Payload
+   * verification is monotonic: a mismatch records CONFLICT and can never be washed back to
+   * VERIFIED by a later receipt. Envelope-coordinate conflicts remain malformed. */
   async applyProcessingReceipt(
     tx: DatabaseTransaction,
     params: {
@@ -139,8 +131,10 @@ export class FederationInboundMessageStoreService {
       logContext: string;
       /** `new Date(item.createdAt)` — the peer's acceptance time. */
       sourceTime: Date;
-      /** Digest over the canonical (JCS) wire content of the receipt. */
-      wireDigest: string;
+      /** Digest over the canonical message payload of the receipt. */
+      payloadDigest: string;
+      contentType: string;
+      profileRev: number;
       sequencePolicy?: MapFederationOriginSequence;
     },
   ): Promise<void> {
@@ -158,7 +152,9 @@ export class FederationInboundMessageStoreService {
       isP2PThread,
       logContext,
       sourceTime,
-      wireDigest,
+      payloadDigest,
+      contentType,
+      profileRev,
       sequencePolicy,
     } = params;
     const localSourceMessage = await tx.query.message.findFirst({
@@ -171,7 +167,10 @@ export class FederationInboundMessageStoreService {
       columns: {
         id: true,
         createdAt: true,
-        contentDigest: true,
+        payloadDigest: true,
+        contentType: true,
+        profileRev: true,
+        federationPayloadVerification: true,
         localState: true,
       },
     });
@@ -181,51 +180,28 @@ export class FederationInboundMessageStoreService {
       );
       return;
     }
-    if (localSourceMessage.createdAt.getTime() !== originCreatedAt) {
-      this.logger.error(
-        `ignored a processing receipt with conflicting source time: ${JSON.stringify(
-          {
-            messageId: localSourceMessage.id.toString(),
-            peerDomain: domain,
-            receiptOriginSeq: originSeq,
-            receiptOriginCreatedAt: originCreatedAt,
-            localCreatedAt: localSourceMessage.createdAt.getTime(),
-          },
-        )}`,
-      );
-      return;
-    }
-    // Compare-and-set confirmation: promote only while the retained digest still equals the
-    // receipt's wire digest (or was never retained). The guard is evaluated atomically in SQL.
-    const promoted = await tx
-      .update(tables.message)
-      .set({ localState: 'CONFIRMED' })
-      .where(
-        and(
-          eq(tables.message.id, localSourceMessage.id),
-          ne(tables.message.localState, 'CONFIRMED'),
-          or(
-            isNull(tables.message.contentDigest),
-            eq(tables.message.contentDigest, wireDigest),
-          ),
-        ),
-      )
-      .returning({ id: tables.message.id });
     if (
-      promoted.length === 0 &&
-      localSourceMessage.contentDigest !== null &&
-      localSourceMessage.contentDigest !== wireDigest
+      localSourceMessage.createdAt.getTime() !== originCreatedAt ||
+      localSourceMessage.contentType !== contentType ||
+      localSourceMessage.profileRev !== profileRev
     ) {
-      this.logger.warn(
-        `processing receipt content digest mismatch: ${JSON.stringify({
-          messageId: localSourceMessage.id.toString(),
-          peerDomain: domain,
-          receiptOriginSeq: originSeq,
-          retainedDigest: localSourceMessage.contentDigest,
-          receiptDigest: wireDigest,
-        })}`,
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'processing receipt conflicts with the published message envelope',
+        HttpStatus.BAD_REQUEST,
       );
     }
+    const verification =
+      localSourceMessage.payloadDigest === null ||
+      localSourceMessage.payloadDigest === payloadDigest
+        ? localSourceMessage.federationPayloadVerification === 'CONFLICT'
+          ? 'CONFLICT'
+          : 'VERIFIED'
+        : 'CONFLICT';
+    await tx
+      .update(tables.message)
+      .set({ federationPayloadVerification: verification })
+      .where(eq(tables.message.id, localSourceMessage.id));
     if (sequencePolicy) {
       await DeletedMessageService.lockFederatedIdentity(
         tx,
@@ -235,32 +211,6 @@ export class FederationInboundMessageStoreService {
         peerSeq,
       );
     }
-    const existingReceipt = await tx.query.federationMessageReceipt.findFirst({
-      where: and(
-        eq(tables.federationMessageReceipt.namespaceId, namespaceId),
-        eq(tables.federationMessageReceipt.threadId, threadId),
-        eq(tables.federationMessageReceipt.peerSeq, peerSeq),
-      ),
-      columns: { messageId: true },
-    });
-    if (
-      existingReceipt &&
-      existingReceipt.messageId !== localSourceMessage.id
-    ) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'conflicting processing receipt coordinate',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    if (!existingReceipt) {
-      await tx.insert(tables.federationMessageReceipt).values({
-        namespaceId,
-        threadId,
-        peerSeq,
-        messageId: localSourceMessage.id,
-      });
-    }
     await this.deletedMessages.applyPendingReceiptInTx(tx, {
       threadId,
       peerSeq,
@@ -269,6 +219,7 @@ export class FederationInboundMessageStoreService {
       authority: isP2PThread ? 'P2P_HOME' : 'GROUP_ORIGIN',
       expectedFederationVersion: federationVersion,
       threadLock,
+      resolvedMessage: localSourceMessage as Message,
     });
     // Only the group's authoritative server can confirm a local submission.
     // Other receipts retain peer-coordinate aliases for reference resolution;
@@ -291,13 +242,17 @@ export class FederationInboundMessageStoreService {
             )
             .limit(1)
         : [];
-    if (authoritativeGroup) {
+    // The group origin or the P2P counterpart owns the authoritative timeline;
+    // either one may confirm a locally authored submission by writing the
+    // peer-assigned coordinate onto the original row.
+    const coordinateOwner =
+      profileNamespaceId === 0 && (isP2PThread || !!authoritativeGroup);
+    if (coordinateOwner) {
       const confirmed = await tx
         .update(tables.message)
         .set({
           originSeq: peerSeq,
           originServerTime: sourceTime,
-          publisherNamespaceId: namespaceId,
         })
         .where(
           and(
@@ -316,7 +271,7 @@ export class FederationInboundMessageStoreService {
       if (confirmed.length !== 1) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
-          'conflicting authoritative group confirmation',
+          'peer confirmation conflicts with the retained message coordinate',
           HttpStatus.BAD_REQUEST,
         );
       }
@@ -343,7 +298,7 @@ export class FederationInboundMessageStoreService {
       assetBytes,
       downloadAuth,
       sequencePolicy,
-      contentDigest: wireDigest,
+      payloadDigest: wireDigest,
     } = params;
     const creator = incomingCreator;
     if (sequencePolicy) {
@@ -429,7 +384,8 @@ export class FederationInboundMessageStoreService {
         .values({
           contentType: incoming.contentType as ContentType,
           content: storedContent,
-          contentDigest: wireDigest,
+          payloadDigest: wireDigest,
+          federationEnvelopeDigest: params.federationEnvelopeDigest,
           threadId,
           creatorAccount: creator.account,
           profileNamespaceId: creator.namespaceId,
@@ -500,11 +456,10 @@ export class FederationInboundMessageStoreService {
     const seq = sequencePolicy
       ? mapFederationOriginSequence(incoming.originSeq, sequencePolicy)
       : await this.allocateMessageSeq(tx, threadId);
-    if (incomingText && incoming.quoteTarget !== undefined) {
-      storedContent = stringifyTextMessageContent({
-        text: incomingText.text,
-        // Missing references are presentation state, not a reason to reject the message.
-        quote: storeFederationQuote(incoming.quoteTarget, namespaceId),
+    if (incoming.quoteTarget !== undefined) {
+      storedContent = withMessageContentQuote(storedContent, {
+        ...storeFederationQuote(incoming.quoteTarget, namespaceId),
+        digest: incoming.quoteDigest,
       });
     }
     const [message] = await tx
@@ -512,7 +467,8 @@ export class FederationInboundMessageStoreService {
       .values({
         contentType: incoming.contentType as ContentType,
         content: storedContent,
-        contentDigest: wireDigest,
+        payloadDigest: wireDigest,
+        federationEnvelopeDigest: params.federationEnvelopeDigest,
         threadId,
         creatorAccount: creator.account,
         profileNamespaceId: creator.namespaceId,

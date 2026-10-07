@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
@@ -8,7 +10,6 @@ import {
   deletedMessage,
   accountThreadState,
   federatedMessageTombstone,
-  federationMessageReceipt,
   fileSyncProgress,
   identityNamespace,
   message,
@@ -22,6 +23,8 @@ import { ThreadPreviewModule } from '../src/message/thread-preview.module.js';
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
 import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
 import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
+import { wirePayloadDigest } from '../src/federation/federated-message-content.js';
+import { payloadDigest } from '../src/federation/canonical-json.js';
 import { MessageService } from '../src/message/message.service.js';
 import { FederationInboundMessageStoreService } from '../src/federation/federation-inbound-message-store.service.js';
 import { businessAccountScopeKey } from '../src/common/locks/account-business-lock.js';
@@ -78,7 +81,6 @@ describe('federated message deletion transaction ordering', () => {
           .insert(identityNamespace)
           .values({
             domain: peerDomain,
-            rootKeyFingerprint: 'sha256:deleted-message-test',
             rootPublicKey: Buffer.alloc(32, 3).toString('base64'),
             identityPinnedAt: now,
             active: true,
@@ -150,6 +152,15 @@ describe('federated message deletion transaction ordering', () => {
         const results = [];
         for (const originSeq of [7, 8]) {
           const media = mode === 'media' && originSeq === 8;
+          const contentType = media ? 'FILE' : 'PURE_TEXT';
+          const content = media
+            ? JSON.stringify({
+                url: `/uploads/msg-assets/aa/aa/${'a'.repeat(64)}`,
+                name: 'file.txt',
+                size: 1,
+                mimeType: 'text/plain',
+              })
+            : '{"text":"incoming"}';
           const result = await store.store(tx, {
             threadId,
             creator: { account: 'bob', domain: peerDomain },
@@ -159,19 +170,17 @@ describe('federated message deletion transaction ordering', () => {
               originSeq,
               profileRev: 0,
               contentType: media ? 'FILE' : 'PURE_TEXT',
-              content: media
-                ? JSON.stringify({
-                    url: `/uploads/msg-assets/aa/aa/${'a'.repeat(64)}`,
-                    name: 'file.txt',
-                    size: 1,
-                    mimeType: 'text/plain',
-                  })
-                : '{"text":"incoming"}',
+              content,
               ts: Date.now(),
             },
             incomingText: { text: 'incoming' },
             expectedFederationVersion: 0,
             originTime: new Date(),
+            payloadDigest: wirePayloadDigest(
+              contentType as never,
+              content,
+              media ? [{ digest: 'a'.repeat(64), bytes: 1 }] : [],
+            ),
             ...(reverse
               ? {
                   sequencePolicy: {
@@ -230,46 +239,46 @@ describe('federated message deletion transaction ordering', () => {
     },
   );
 
-  it('applies group-origin moderation to a local author by receipt without touching another peer copy', async () => {
+  it('applies group-origin moderation to a peer-confirmed local author without touching another peer copy', async () => {
     await database.db
       .update(messageThread)
       .set({ curSeq: 14 })
       .where(eq(messageThread.id, threadId));
-    await database.db.insert(message).values([
-      {
-        threadId,
-        seq: 14,
-        originSeq: 14,
-        publisherNamespaceId: 0,
-        creatorAccount: 'alice',
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'home original' }),
-        updatedAt: new Date(),
-      },
-      {
-        threadId,
-        seq: 13,
-        originSeq: 13,
-        publisherNamespaceId: namespaceId,
-        creatorAccount: 'bob',
-        profileNamespaceId: namespaceId,
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'peer copy' }),
-        updatedAt: new Date(),
-      },
-    ]);
+    await database.db.insert(message).values(
+      withMessageDigest([
+        {
+          threadId,
+          seq: 14,
+          originSeq: 14,
+          originServerTime: new Date('2026-09-03T00:00:00.000Z'),
+          publisherNamespaceId: 0,
+          creatorAccount: 'alice',
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'home original' }),
+          payloadDigest: wirePayloadDigest(
+            'PURE_TEXT',
+            JSON.stringify({ text: 'home original' }),
+          ),
+          updatedAt: new Date(),
+        },
+        {
+          threadId,
+          seq: 13,
+          originSeq: 13,
+          publisherNamespaceId: namespaceId,
+          creatorAccount: 'bob',
+          profileNamespaceId: namespaceId,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'peer copy' }),
+          payloadDigest: wirePayloadDigest(
+            'PURE_TEXT',
+            JSON.stringify({ text: 'peer copy' }),
+          ),
+          updatedAt: new Date(),
+        },
+      ]),
+    );
 
-    const [home] = await database.db.query.message.findMany({
-      where: eq(message.threadId, threadId),
-      orderBy: (row, { desc }) => [desc(row.seq)],
-      limit: 1,
-    });
-    await database.db.insert(federationMessageReceipt).values({
-      threadId,
-      namespaceId,
-      peerSeq: 14,
-      messageId: home.id,
-    });
     const params = {
       threadId,
       messageSeq: 14,
@@ -333,29 +342,28 @@ describe('federated message deletion transaction ordering', () => {
     expect(await database.db.query.deletedMessage.findMany()).toEqual([]);
   });
 
-  it('ignores a P2P peer tombstone for a retained local author receipt', async () => {
+  it('ignores a P2P peer tombstone for a peer-confirmed local author message', async () => {
     await database.db
       .update(messageThread)
       .set({ curSeq: 1 })
       .where(eq(messageThread.id, threadId));
-    const [home] = await database.db
-      .insert(message)
-      .values({
+    await database.db.insert(message).values(
+      withMessageDigest({
         threadId,
         seq: 1,
+        originSeq: 7,
+        originServerTime: new Date('2026-09-03T00:00:00.000Z'),
         publisherNamespaceId: 0,
         creatorAccount: 'alice',
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'home' }),
+        payloadDigest: wirePayloadDigest(
+          'PURE_TEXT',
+          JSON.stringify({ text: 'home' }),
+        ),
         updatedAt: new Date(),
-      })
-      .returning();
-    await database.db.insert(federationMessageReceipt).values({
-      threadId,
-      namespaceId,
-      peerSeq: 7,
-      messageId: home.id,
-    });
+      }),
+    );
     expect(await apply(9)).toBeNull();
     expect(await database.db.query.message.findFirst()).toMatchObject({
       isDeleted: false,
@@ -394,7 +402,7 @@ describe('federated message deletion transaction ordering', () => {
     expect(await database.db.query.durableTask.findMany()).toHaveLength(2);
   });
 
-  /** The transaction core used by FederationService.storePulledMessage for the stable identity race.
+  /** The transaction core used by inbound message storage for the stable identity race.
    * Optional gates let the test prove lock ordering without timing assumptions. */
   async function insertIncoming(gates?: {
     locked: () => void;
@@ -426,18 +434,24 @@ describe('federated message deletion transaction ordering', () => {
         .returning({ curSeq: messageThread.curSeq });
       const [created] = await tx
         .insert(message)
-        .values({
-          threadId,
-          creatorAccount: 'bob',
-          profileNamespaceId: namespaceId,
-          originSeq: 7,
-          publisherNamespaceId: namespaceId,
-          seq,
-          contentType: 'PURE_TEXT',
-          content: JSON.stringify({ text: 'federated' }),
-          isDeleted: tombstone !== undefined,
-          updatedAt: new Date(),
-        })
+        .values(
+          withMessageDigest({
+            threadId,
+            creatorAccount: 'bob',
+            profileNamespaceId: namespaceId,
+            originSeq: 7,
+            publisherNamespaceId: namespaceId,
+            seq,
+            contentType: 'PURE_TEXT',
+            content: JSON.stringify({ text: 'federated' }),
+            payloadDigest: wirePayloadDigest(
+              'PURE_TEXT',
+              JSON.stringify({ text: 'federated' }),
+            ),
+            isDeleted: tombstone !== undefined,
+            updatedAt: new Date(),
+          }),
+        )
         .returning({ seq: message.seq, isDeleted: message.isDeleted });
       if (tombstone) {
         await DeletedMessageService.ensureFactInTx(tx, {
@@ -559,14 +573,20 @@ describe('federated message deletion transaction ordering', () => {
 
   it('allows a newly sent local message without an origin sequence', async () => {
     await expect(
-      database.db.insert(message).values({
-        threadId,
-        seq: 1,
-        creatorAccount: 'alice',
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'local provisional coordinate' }),
-        updatedAt: new Date(),
-      }),
+      database.db.insert(message).values(
+        withMessageDigest({
+          threadId,
+          seq: 1,
+          creatorAccount: 'alice',
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'local provisional coordinate' }),
+          payloadDigest: wirePayloadDigest(
+            'PURE_TEXT',
+            JSON.stringify({ text: 'local provisional coordinate' }),
+          ),
+          updatedAt: new Date(),
+        }),
+      ),
     ).resolves.toBeDefined();
   });
 
@@ -579,14 +599,17 @@ describe('federated message deletion transaction ordering', () => {
       .update(messageThread)
       .set({ curSeq: 1 })
       .where(eq(messageThread.id, threadId));
-    await database.db.insert(message).values({
-      threadId,
-      seq: 1,
-      creatorAccount: author.account,
-      contentType: 'PURE_TEXT',
-      content: '{"text":"withdraw"}',
-      updatedAt: new Date(),
-    });
+    await database.db.insert(message).values(
+      withMessageDigest({
+        threadId,
+        seq: 1,
+        creatorAccount: author.account,
+        contentType: 'PURE_TEXT',
+        content: '{"text":"withdraw"}',
+        payloadDigest: wirePayloadDigest('PURE_TEXT', '{"text":"withdraw"}'),
+        updatedAt: new Date(),
+      }),
+    );
     await expect(
       deletions.withdraw(author.id, threadId, 1, async () => {
         throw new Error('quota rollback');
@@ -628,7 +651,6 @@ describe('federated message deletion transaction ordering', () => {
         .insert(user)
         .values({
           account: 'alice',
-          domain: 'local',
           namespaceId: 0,
           updatedAt: new Date(),
         })
@@ -661,14 +683,20 @@ describe('federated message deletion transaction ordering', () => {
           endpointBNamespaceId: namespaceId,
         });
       }
-      await database.db.insert(message).values({
-        threadId,
-        seq: 1,
-        creatorAccount: author.account,
-        contentType: 'PURE_TEXT',
-        content: '{"text":"business ordering"}',
-        updatedAt: new Date(),
-      });
+      await database.db.insert(message).values(
+        withMessageDigest({
+          threadId,
+          seq: 1,
+          creatorAccount: author.account,
+          contentType: 'PURE_TEXT',
+          content: '{"text":"business ordering"}',
+          payloadDigest: wirePayloadDigest(
+            'PURE_TEXT',
+            '{"text":"business ordering"}',
+          ),
+          updatedAt: new Date(),
+        }),
+      );
       const blocker = await database.pool.connect();
       let result: Promise<unknown> | undefined;
       try {
@@ -727,21 +755,27 @@ describe('federated message deletion transaction ordering', () => {
         .insert(user)
         .values({
           account: 'alice',
-          domain: 'local',
           namespaceId: 0,
           updatedAt: new Date(),
         })
         .returning();
       const [sent] = await database.db
         .insert(message)
-        .values({
-          threadId,
-          seq: 1,
-          creatorAccount: author.account,
-          contentType: 'PURE_TEXT',
-          content: '{"text":"withdraw concurrently"}',
-          updatedAt: new Date(),
-        })
+        .values(
+          withMessageDigest({
+            threadId,
+            seq: 1,
+            creatorAccount: author.account,
+            contentType: 'PURE_TEXT',
+            content: '{"text":"withdraw concurrently"}',
+            originSeq: 1,
+            payloadDigest: wirePayloadDigest(
+              'PURE_TEXT',
+              '{"text":"withdraw concurrently"}',
+            ),
+            updatedAt: new Date(),
+          }),
+        )
         .returning();
       const receipt = await database.pool.connect();
       let withdrawing: Promise<unknown> | undefined;
@@ -783,10 +817,7 @@ describe('federated message deletion transaction ordering', () => {
             throw new Error('withdrawal did not wait for the thread lock');
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
-        await receipt.query(
-          'INSERT INTO "FederationMessageReceipt" ("namespaceId", "threadId", "peerSeq", "messageId") VALUES ($1, $2, $3, $4)',
-          [namespaceId, threadId, 7, sent.id.toString()],
-        );
+        await receipt.query('SELECT 1');
         await receipt.query('COMMIT');
         expect(await withdrawing).toMatchObject({
           value: { deletionSeq: 1, messageSeq: 1 },
@@ -804,13 +835,11 @@ describe('federated message deletion transaction ordering', () => {
           await database.db.query.message.findFirst({
             where: eq(message.id, sent.id),
           }),
-        ).toMatchObject({ isDeleted: true });
-        expect(
-          await database.db
-            .select()
-            .from(federationMessageReceipt)
-            .where(eq(federationMessageReceipt.messageId, sent.id)),
-        ).toHaveLength(1);
+        ).toMatchObject({
+          isDeleted: true,
+          originSeq: 1,
+          originServerTime: null,
+        });
         if (mode === 'withdrawal')
           expect(
             await deletions.withdraw(author.id, threadId, 1),
@@ -825,16 +854,22 @@ describe('federated message deletion transaction ordering', () => {
 
   it('rejects a remote message without an origin sequence', async () => {
     await expect(
-      database.db.insert(message).values({
-        threadId,
-        seq: 1,
-        creatorAccount: 'bob',
-        profileNamespaceId: namespaceId,
-        publisherNamespaceId: namespaceId,
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'missing coordinate' }),
-        updatedAt: new Date(),
-      }),
+      database.db.insert(message).values(
+        withMessageDigest({
+          threadId,
+          seq: 1,
+          creatorAccount: 'bob',
+          profileNamespaceId: namespaceId,
+          publisherNamespaceId: namespaceId,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'missing coordinate' }),
+          payloadDigest: wirePayloadDigest(
+            'PURE_TEXT',
+            JSON.stringify({ text: 'missing coordinate' }),
+          ),
+          updatedAt: new Date(),
+        }),
+      ),
     ).rejects.toThrow();
   });
 
@@ -889,18 +924,23 @@ describe('federated message deletion transaction ordering', () => {
   it('turns a tombstoned STUB into a formal deletion and cancels its download', async () => {
     const [stub] = await database.db
       .insert(message)
-      .values({
-        threadId,
-        seq: 1,
-        creatorAccount: 'bob',
-        profileNamespaceId: namespaceId,
-        contentType: 'IMAGE',
-        content: JSON.stringify({ digest: 'a'.repeat(64) }),
-        originSeq: 7,
-        publisherNamespaceId: namespaceId,
-        localState: 'STUB',
-        updatedAt: new Date(),
-      })
+      .values(
+        withMessageDigest({
+          threadId,
+          seq: 1,
+          creatorAccount: 'bob',
+          profileNamespaceId: namespaceId,
+          contentType: 'IMAGE',
+          content: JSON.stringify({ digest: 'a'.repeat(64) }),
+          payloadDigest: payloadDigest(
+            JSON.stringify({ digest: 'a'.repeat(64) }),
+          ),
+          originSeq: 7,
+          publisherNamespaceId: namespaceId,
+          localState: 'STUB',
+          updatedAt: new Date(),
+        }),
+      )
       .returning({ id: message.id });
     const [pending] = await database.db
       .insert(pendingMedia)

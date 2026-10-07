@@ -20,7 +20,7 @@ export interface UserIntentRequestInput extends UserIntentFeedInput {
  * with the thread head snapshot. No activation, no audience, no system
  * message: friendship effects wait for the confirm/accept paths. */
 export function userIntentRequestSql(input: UserIntentRequestInput): SQL {
-  const remote = input.targetDomain !== 'local';
+  const remote = input.targetNamespaceId !== 0;
   const authoredSql =
     input.authoredSql ??
     authoredIntentWriteSql({
@@ -42,9 +42,9 @@ export function userIntentRequestSql(input: UserIntentRequestInput): SQL {
     WITH authored AS (
       ${authoredSql}
     ), request_state AS MATERIALIZED (
-      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt"
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.actorAccount} AND "authorNamespaceId" = ${input.actorNamespaceId}
         AND "receiverAccount" = ${input.targetAccount} AND "receiverNamespaceId" = ${input.targetNamespaceId}

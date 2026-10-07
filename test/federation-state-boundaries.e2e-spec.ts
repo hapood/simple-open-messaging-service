@@ -17,7 +17,6 @@ import {
   groupAccount as group,
   messageThread,
   accountThreadState,
-  user,
 } from '../src/database/schema.js';
 import { RelationshipService } from '../src/relationship/relationship.service.js';
 import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
@@ -81,7 +80,7 @@ describe('federation directed-state boundaries', () => {
       peerFeed: {
         lockOutboundStateFeedNamespacesInTx: async () => undefined,
       } as never,
-      federation: { pushStateFeedDomains: async () => undefined },
+      federation: { pushStateFeedNamespaces: async () => undefined },
       namespaces: new FederationNamespaceService(database),
     });
   });
@@ -131,17 +130,17 @@ describe('federation directed-state boundaries', () => {
       peerId,
     );
     const localIdentity = await database.db.query.account.findFirst({
-      where: eq(user.id, localId),
+      where: eq(account.id, localId),
       columns: { account: true, namespaceId: true },
     });
     await database.db.insert(relationshipIntent).values(
       rows.map((row) => ({
         authorAccount:
-          row.author === 'local' ? localIdentity!.account : peer.account,
-        authorNamespaceId: row.author === 'local' ? 0 : peer.namespaceId,
+          row.author === 'local' ? localIdentity!.account : peerId.account,
+        authorNamespaceId: row.author === 'local' ? 0 : peerId.namespaceId,
         receiverAccount:
-          row.author === 'local' ? peer.account : localIdentity!.account,
-        receiverNamespaceId: row.author === 'local' ? peer.namespaceId : 0,
+          row.author === 'local' ? peerId.account : localIdentity!.account,
+        receiverNamespaceId: row.author === 'local' ? peerId.namespaceId : 0,
         profileNamespaceId: 0,
         status: row.status,
         messageEndSeq: row.messageEndSeq ?? 0,
@@ -308,7 +307,7 @@ describe('federation directed-state boundaries', () => {
       },
     ]);
     const localRow = await database.db.query.account.findFirst({
-      where: eq(user.id, local.id),
+      where: eq(account.id, local.id),
       columns: { account: true, namespaceId: true },
     });
     await expect(
@@ -377,7 +376,7 @@ describe('federation directed-state boundaries', () => {
       database,
       clientFeed: feed,
       peerFeed: stateFeed as never,
-      federation: { pushStateFeedDomains: async () => undefined },
+      federation: { pushStateFeedNamespaces: async () => undefined },
       userIntents,
     });
     const consumer = Object.create(
@@ -387,6 +386,7 @@ describe('federation directed-state boundaries', () => {
       receivedUserIntents,
       stateFeed,
       config: { domain: 'local.test' },
+      logger: { error: () => undefined, warn: () => undefined },
     });
     await database.db.transaction((tx) =>
       consumer.applyPageInTx(tx, peer.domain, peer.namespaceId, {
@@ -398,6 +398,7 @@ describe('federation directed-state boundaries', () => {
             feedId: '1',
             body: {
               status: 'REVOKED',
+              namespaceId: peer.namespaceId,
               profileRev: 1,
               note: '',
               requestedAt: null,
@@ -412,7 +413,7 @@ describe('federation directed-state boundaries', () => {
     );
 
     const revokedLocal = await database.db.query.account.findFirst({
-      where: eq(user.id, local.id),
+      where: eq(account.id, local.id),
       columns: { account: true, namespaceId: true },
     });
     const intents = await database.db.query.relationshipIntent.findMany({
@@ -461,7 +462,7 @@ describe('federation directed-state boundaries', () => {
     );
 
     const refreshedLocal = await database.db.query.account.findFirst({
-      where: eq(user.id, local.id),
+      where: eq(account.id, local.id),
       columns: { account: true, namespaceId: true },
     });
     const refreshed = await database.db.query.relationshipIntent.findFirst({

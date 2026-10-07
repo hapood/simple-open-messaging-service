@@ -14,6 +14,9 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { identityNamespace } from '../src/database/schema.js';
 import type { WellKnownDoc } from '../src/federation/discovery.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
+import { ProfileNamespaceChangeStore } from '../src/federation/profile-namespace-change-store.service.js';
+import { ProfileNamespaceFeedService } from '../src/federation/profile-namespace-feed.service.js';
+import { ProfileNamespaceService } from '../src/federation/profile-namespace.service.js';
 import { FederationRecognitionService } from '../src/federation/federation-recognition.service.js';
 import { BusinessCode } from '../src/common/business-code.js';
 
@@ -24,8 +27,23 @@ describe('FederationRecognitionService atomic commit', () => {
   const rootPublicKey = Buffer.alloc(32, 7).toString('base64');
   const document: WellKnownDoc = {
     protocolVersions: [1],
-    rootKey: { ed25519: rootPublicKey },
-    keys: [],
+    roots: [
+      {
+        ed25519: rootPublicKey,
+        notBefore: 0,
+        notAfter: 253402300799999,
+      },
+    ],
+    keys: [
+      {
+        keyId: `${domain}/test-key`,
+        ed25519: rootPublicKey,
+        root: rootPublicKey,
+        notBefore: 0,
+        notAfter: 253402300799999,
+        authorizationSignature: Buffer.alloc(64).toString('base64'),
+      },
+    ],
   };
 
   beforeAll(async () => {
@@ -37,6 +55,23 @@ describe('FederationRecognitionService atomic commit', () => {
 
   async function cleanDomain() {
     await database.pool.query(
+      `WITH doomed AS (
+         SELECT id FROM "IdentityNamespace" WHERE domain = $1
+       )
+       DELETE FROM "ProfileNamespaceFeed"
+       WHERE "namespaceId" IN (SELECT id FROM doomed)`,
+      [domain],
+    );
+    await database.pool.query(
+      `WITH doomed AS (
+         SELECT id FROM "IdentityNamespace" WHERE domain = $1
+       )
+       DELETE FROM "ProfileNamespace"
+       WHERE "publisherNamespaceId" IN (SELECT id FROM doomed)
+          OR "profileNamespaceId" IN (SELECT id FROM doomed)`,
+      [domain],
+    );
+    await database.pool.query(
       'DELETE FROM "IdentityNamespace" WHERE domain = $1',
       [domain],
     );
@@ -44,6 +79,7 @@ describe('FederationRecognitionService atomic commit', () => {
 
   beforeEach(async () => {
     await cleanDomain();
+    vi.restoreAllMocks();
   });
 
   afterAll(async () => {
@@ -65,11 +101,9 @@ describe('FederationRecognitionService atomic commit', () => {
       .values({
         domain,
         rootPublicKey,
-        rootKeyFingerprint: 'test-fingerprint',
         identityPinnedAt: new Date(),
         active: true,
         trustLevel: 'available',
-        recognizesPeer: true,
         peerAcceptanceConfirmed: true,
         localServiceAvailable: true,
         remoteServiceReachable: true,
@@ -79,10 +113,17 @@ describe('FederationRecognitionService atomic commit', () => {
     return namespace!;
   }
 
-  function service(
-    namespaces: FederationNamespaceService = new FederationNamespaceService(
+  function namespaceService(): FederationNamespaceService {
+    const changes = new ProfileNamespaceChangeStore(database);
+    return new FederationNamespaceService(
       database,
-    ),
+      new ProfileNamespaceFeedService(database, {} as never, changes),
+      new ProfileNamespaceService(database, {} as never),
+    );
+  }
+
+  function service(
+    namespaces: FederationNamespaceService = namespaceService(),
   ): FederationRecognitionService {
     return new FederationRecognitionService(
       database,
@@ -95,7 +136,7 @@ describe('FederationRecognitionService atomic commit', () => {
   }
 
   it('commits inbound recognition, namespace, and State Feed cursors together', async () => {
-    await service().acceptInbound(domain, document);
+    await service().acceptInbound(domain, rootPublicKey);
 
     expect(await activeNamespace()).toMatchObject({
       trustLevel: 'available',
@@ -116,7 +157,7 @@ describe('FederationRecognitionService atomic commit', () => {
     });
 
     await expect(
-      service().acceptInbound(domain, document, 901),
+      service().acceptInbound(domain, rootPublicKey, 901),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_IDENTITY_MISMATCH,
     });
@@ -129,7 +170,7 @@ describe('FederationRecognitionService atomic commit', () => {
   it('adopts a first-time sender-assigned local namespace disclosure', async () => {
     await seedActiveNamespace();
 
-    await service().acceptInbound(domain, document, 901);
+    await service().acceptInbound(domain, rootPublicKey, 901);
 
     expect(await activeNamespace()).toMatchObject({
       trustLevel: 'available',
@@ -138,7 +179,7 @@ describe('FederationRecognitionService atomic commit', () => {
   });
 
   it('rolls back the recognition fact when namespace initialization fails', async () => {
-    const failingNamespaces = new FederationNamespaceService(database);
+    const failingNamespaces = namespaceService();
     const activateVerifiedInTx =
       failingNamespaces.activateVerifiedInTx.bind(failingNamespaces);
     vi.spyOn(failingNamespaces, 'activateVerifiedInTx').mockImplementation(
@@ -149,7 +190,7 @@ describe('FederationRecognitionService atomic commit', () => {
     );
 
     await expect(
-      service(failingNamespaces).acceptInbound(domain, document),
+      service(failingNamespaces).acceptInbound(domain, rootPublicKey),
     ).rejects.toThrow('namespace initialization failed');
 
     expect(
@@ -174,13 +215,12 @@ describe('FederationRecognitionService atomic commit', () => {
       discovery as never,
       { signOutbound: vi.fn().mockResolvedValue({}) } as never,
       { get: () => ({ callTimeoutSec: 12 }) } as never,
-      new FederationNamespaceService(database),
+      namespaceService(),
       { emit: () => undefined } as never,
     );
     request.mockImplementationOnce(async () => {
       expect(await activeNamespace()).toMatchObject({
         trustLevel: 'establishing',
-        recognizesPeer: true,
         peerAcceptanceConfirmed: false,
       });
       throw new Error('temporary connection failure');
@@ -242,7 +282,7 @@ describe('FederationRecognitionService atomic commit', () => {
         discovery as never,
         { signOutbound: vi.fn().mockResolvedValue({}) } as never,
         { get: () => ({ callTimeoutSec: 12 }) } as never,
-        new FederationNamespaceService(database),
+        namespaceService(),
         { emit: () => undefined } as never,
       );
 

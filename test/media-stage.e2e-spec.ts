@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { randomUUID } from 'crypto';
 import { and, count, eq, inArray, or } from 'drizzle-orm';
@@ -142,7 +143,11 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
         {
           userId,
           decision: 'REQUESTED',
-          target: { account: targetAccount, domain: 'local' },
+          target: {
+            account: targetAccount,
+            domain: localIdentityDomain(),
+            namespaceId: 0,
+          },
           note,
         },
         { admissionInTx: (tx) => userQuota.tick(userId, 'requests', tx) },
@@ -253,7 +258,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
         and(
           eq(message.threadId, threadId),
           eq(message.creatorAccount, userAccount),
-          eq(message.creatorDomain, 'local'),
+          eq(message.profileNamespaceId, 0),
         ),
       )
       .limit(1);
@@ -284,7 +289,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
         and(
           eq(message.threadId, threadId),
           eq(message.creatorAccount, userAccount),
-          eq(message.creatorDomain, 'local'),
+          eq(message.profileNamespaceId, 0),
         ),
       );
     expect(value).toBe(1);
@@ -354,7 +359,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
         and(
           eq(message.threadId, threadId),
           eq(message.creatorAccount, userAccount),
-          eq(message.creatorDomain, 'local'),
+          eq(message.profileNamespaceId, 0),
           eq(message.contentType, 'GALLERY'),
         ),
       );

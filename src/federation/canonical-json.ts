@@ -75,6 +75,27 @@ export function canonicalContentString(content: string): string {
  *
  * Returns the 64-character lowercase hex digest.
  */
+export function payloadDigest(
+  content: string,
+  assets: ReadonlyArray<{ digest: string; bytes: number }> = [],
+  quoteDigest?: string,
+): string {
+  const canonicalAssets = [...assets]
+    .map(({ digest, bytes }) => ({ digest, bytes }))
+    .sort((a, b) => a.digest.localeCompare(b.digest));
+  return createHash('sha256')
+    .update(
+      canonicalJson({
+        content: JSON.parse(canonicalContentString(content)) as unknown,
+        assets: canonicalAssets,
+        ...(quoteDigest === undefined ? {} : { quoteDigest }),
+      }),
+      'utf8',
+    )
+    .digest('hex');
+}
+
+/** @deprecated Use payloadDigest for message integrity. */
 export function contentDigest(content: string): string {
   return createHash('sha256')
     .update(canonicalContentString(content), 'utf8')

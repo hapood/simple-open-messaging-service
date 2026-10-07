@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { withMessageDigest } from './support/message-fixture.js';
 import request from 'supertest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { eq } from 'drizzle-orm';
@@ -46,30 +47,32 @@ describe('client message history gaps', () => {
       .returning({ id: messageThread.id });
     threadId = thread.id;
     await seedAcceptedRelationship(database.db, viewerId, peer.id, threadId);
-    await database.db.insert(message).values([
-      {
-        threadId,
-        seq: 11,
-        originSeq: 1,
-        contentType: ContentType.PURE_TEXT,
-        content: JSON.stringify({ text: 'before gap' }),
-        creatorAccount: 'peer',
-        creatorDomain: 'local',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      {
-        threadId,
-        seq: 36,
-        originSeq: 26,
-        contentType: ContentType.PURE_TEXT,
-        content: JSON.stringify({ text: 'after gap' }),
-        creatorAccount: 'peer',
-        creatorDomain: 'local',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    ]);
+    await database.db.insert(message).values(
+      withMessageDigest([
+        {
+          threadId,
+          seq: 11,
+          originSeq: 1,
+          contentType: ContentType.PURE_TEXT,
+          content: JSON.stringify({ text: 'before gap' }),
+          creatorAccount: 'peer',
+
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          threadId,
+          seq: 36,
+          originSeq: 26,
+          contentType: ContentType.PURE_TEXT,
+          content: JSON.stringify({ text: 'after gap' }),
+          creatorAccount: 'peer',
+
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]),
+    );
     await database.db.insert(federationThreadHistoryGap).values({
       threadId,
       namespaceId: 0,
@@ -137,7 +140,10 @@ describe('client message history gaps', () => {
       seq: 11,
       contentType: 'TOMB',
       isDeleted: true,
-      creator: { account: 'peer', domain: 'local', namespaceId: 0 },
+      creator: {
+        account: 'peer',
+        namespaceId: 0,
+      },
       deletionType: 'USER_RETRACTION',
     });
     expect(Object.keys(tomb).sort()).toEqual(

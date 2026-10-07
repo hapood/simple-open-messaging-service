@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq, isNull } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
@@ -73,7 +75,6 @@ describe('FederationMessageFeedService thread query', () => {
           .insert(identityNamespace)
           .values({
             domain: peerDomain,
-            rootKeyFingerprint: 'sha256:message-feed-test',
             rootPublicKey: Buffer.alloc(32, 3).toString('base64'),
             identityPinnedAt: now,
             active: true,
@@ -89,7 +90,6 @@ describe('FederationMessageFeedService thread query', () => {
       .insert(user)
       .values({
         account: 'alice',
-        domain: 'local',
         updatedAt: now,
       })
       .returning();
@@ -115,15 +115,16 @@ describe('FederationMessageFeedService thread query', () => {
     namespaceId: number,
   ) {
     const now = new Date();
-    await database.db.insert(message).values({
-      seq,
-      contentType: 'PURE_TEXT',
-      content: JSON.stringify({ text: `message-${seq}` }),
-      threadId,
-      creatorAccount: creator.account,
-      creatorDomain: creator.domain,
-      updatedAt: now,
-    });
+    await database.db.insert(message).values(
+      withMessageDigest({
+        seq,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: `message-${seq}` }),
+        threadId,
+        creatorAccount: creator.account,
+        updatedAt: now,
+      }),
+    );
     await database.db
       .update(messageThread)
       .set({ curSeq: seq })
@@ -203,7 +204,7 @@ describe('FederationMessageFeedService thread query', () => {
                 participants: [
                   {
                     account: alice.account,
-                    domain: 'local',
+                    domain: localIdentityDomain(),
                     namespaceId: 0,
                     profileRev: 0,
                   },
@@ -216,7 +217,6 @@ describe('FederationMessageFeedService thread query', () => {
                 ],
               }),
               creatorAccount: '$system',
-              creatorDomain: 'local',
               profileNamespaceId: 0,
               sourceNamespaceId: 0,
               profileRev: 0,
@@ -368,20 +368,21 @@ describe('FederationMessageFeedService thread query', () => {
     const digest = 'a'.repeat(64);
     const [link] = await database.db
       .insert(message)
-      .values({
-        seq: 1,
-        contentType: 'LINK',
-        content: JSON.stringify({
-          url: 'https://example.test/article',
-          title: 'Example',
-          description: 'Description',
-          image: `/uploads/msg-assets/aa/aa/${digest}`,
+      .values(
+        withMessageDigest({
+          seq: 1,
+          contentType: 'LINK',
+          content: JSON.stringify({
+            url: 'https://example.test/article',
+            title: 'Example',
+            description: 'Description',
+            image: `/uploads/msg-assets/aa/aa/${digest}`,
+          }),
+          threadId: thread.id,
+          creatorAccount: alice.account,
+          updatedAt: new Date(),
         }),
-        threadId: thread.id,
-        creatorAccount: alice.account,
-        creatorDomain: alice.domain,
-        updatedAt: new Date(),
-      })
+      )
       .returning();
     await database.db.insert(mediaAsset).values({
       digest,

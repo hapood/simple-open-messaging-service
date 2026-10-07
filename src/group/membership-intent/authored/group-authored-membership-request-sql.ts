@@ -33,9 +33,7 @@ function localRecipientKey(
     'RELATIONSHIP_INTENT',
     0,
     groupAccount,
-    'local',
     targetAccount,
-    'local',
   ]);
 }
 
@@ -50,7 +48,7 @@ function localRecipientKey(
 export function groupAuthoredMembershipRequestSql(
   input: GroupAuthoredMembershipRequestInput,
 ): SQL {
-  const remote = input.targetDomain !== 'local';
+  const remote = input.targetNamespaceId !== 0;
   return sql`
     WITH authored AS (
       ${authoredIntentWriteSql({
@@ -66,10 +64,10 @@ export function groupAuthoredMembershipRequestSql(
         expiresAt: input.expiresAt,
       })}
     ), request_state AS MATERIALIZED (
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt",
+      SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
         "messageEndSeq", "tombstoneEndSeq" FROM authored
       UNION ALL
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt",
+      SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
         "messageEndSeq", "tombstoneEndSeq"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.groupAccount} AND "authorNamespaceId" = 0
@@ -146,7 +144,7 @@ function localRecipient(input: GroupAuthoredMembershipRequestInput): SQL {
       FROM request_state v
     ), candidate_bodies AS MATERIALIZED (
       SELECT ${input.localTargetId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
-        b."compactionKey", ${input.groupAccount}::text AS account, 'local'::text AS domain,
+        b."compactionKey", ${input.groupAccount}::text AS account, (SELECT domain FROM "IdentityNamespace" WHERE id = 0)::text AS domain,
         ${input.targetAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", b.body
       FROM recipient_body b
     ), ${clientIntentFeedWriteSql()}
@@ -158,7 +156,9 @@ function localRecipient(input: GroupAuthoredMembershipRequestInput): SQL {
 function peerRecipient(input: GroupAuthoredMembershipRequestInput): SQL {
   return sql`
     peer_write AS MATERIALIZED (
-      SELECT jsonb_build_object('status', v.status, 'profileRev', v."profileRev", 'note', v.note,
+      SELECT jsonb_build_object('status', v.status,
+          'namespaceId', v."profileNamespaceId",
+          'profileRev', v."profileRev", 'note', v.note,
           'requestedAt', floor(extract(epoch FROM v."requestedAt") * 1000)::bigint,
           'expiresAt', floor(extract(epoch FROM v."expiresAt") * 1000)::bigint,
           'messageEndSeq', v."messageEndSeq", 'tombstoneEndSeq', v."tombstoneEndSeq") AS body

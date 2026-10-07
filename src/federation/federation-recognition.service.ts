@@ -18,7 +18,6 @@ import {
   FEDERATION_PEER_AVAILABLE,
   type FederationPeerAvailable,
 } from './federation-peer.events.js';
-import { loadFederationConfig } from './federation.config.js';
 import {
   SignatureService,
   type OutboundSignatureHeaders,
@@ -66,11 +65,9 @@ type RecognizeResult =
     }
   | RecognizeFailed;
 
-/** Bounded re-issue window for a `pending` Recognize result: the responder's
- * asynchronous verification commits independently, so the requester observes it
- * by asking again rather than degrading an authenticated, healthy peer. */
-const RECOGNIZE_PENDING_POLL_INTERVAL_MS = 250;
-const RECOGNIZE_PENDING_POLL_BUDGET_MS = 4_000;
+export type OutboundRecognizeResult =
+  | { domain: string; status: 'pending'; message?: string }
+  | { domain: string; status: 'recognized' };
 
 export type FederationRecognitionStage =
   | 'DISCOVERING'
@@ -79,9 +76,11 @@ export type FederationRecognitionStage =
 
 @Injectable()
 export class FederationRecognitionService {
-  private readonly config = loadFederationConfig();
   private readonly logger = new Logger(FederationRecognitionService.name);
-  private readonly inFlight = new Map<string, Promise<void>>();
+  private readonly inFlight = new Map<
+    string,
+    Promise<OutboundRecognizeResult>
+  >();
   private readonly healthInFlight = new Map<
     string,
     Promise<FederationHealthStatus>
@@ -108,7 +107,7 @@ export class FederationRecognitionService {
     private readonly events: EventEmitter2,
   ) {}
 
-  async recognize(peerDomain: string): Promise<void> {
+  async recognize(peerDomain: string): Promise<OutboundRecognizeResult> {
     const domain = this.normalizeDomain(peerDomain);
     const existing = this.inFlight.get(domain);
     if (existing) return existing;
@@ -462,6 +461,7 @@ export class FederationRecognitionService {
         claimedRoot,
         params.senderAssignedLocalNamespaceId,
       );
+      await this.discovery.cacheDocument(normalized, context.namespaceId, doc);
       this.inboundRecognizeResults.set(normalized, {
         expiresAtMs: params.signatureExpires * 1000,
         result: {
@@ -570,6 +570,7 @@ export class FederationRecognitionService {
       claimedRoot,
       params.senderAssignedLocalNamespaceId,
     );
+    await this.discovery.cacheDocument(normalized, context.namespaceId, doc);
     this.inboundRecognizeResults.set(normalized, {
       expiresAtMs: params.signatureExpires * 1000,
       result: {
@@ -909,7 +910,7 @@ export class FederationRecognitionService {
     return peer?.trustLevel === 'degraded' && trustLevel === 'available';
   }
 
-  private async runRecognize(domain: string): Promise<void> {
+  private async runRecognize(domain: string): Promise<OutboundRecognizeResult> {
     this.publishProgress(domain, 'DISCOVERING');
     await this.discovery.resolveBase(domain);
     this.publishProgress(domain, 'VERIFYING_IDENTITY');
@@ -933,77 +934,60 @@ export class FederationRecognitionService {
       : '{}';
     const release = await this.discovery.acquireRequestSlot(domain);
     try {
-      // A `pending` result is a definitive authenticated answer (asynchronous
-      // verification or administrator review in progress), never a transport
-      // failure: re-issue Recognize within a bounded window instead of
-      // degrading, and surface `failed` results without touching reachability.
-      const deadline = Date.now() + RECOGNIZE_PENDING_POLL_BUDGET_MS;
-      let ok: Extract<RecognizeResult, { status: 'recognized' }> | undefined;
-      for (;;) {
-        const headers = await this.signature.signOutbound({
+      const headers = await this.signature.signOutbound({
+        method: 'POST',
+        url,
+        body,
+      });
+      let response: Response;
+      this.publishProgress(domain, 'CONNECTING');
+      try {
+        response = await this.discovery.request(url, {
           method: 'POST',
-          url,
+          headers: { 'content-type': 'application/json', ...headers },
           body,
+          signal: AbortSignal.timeout(
+            this.transportConfig.get().callTimeoutSec * 1000,
+          ),
         });
-        let response: Response;
-        this.publishProgress(domain, 'CONNECTING');
-        try {
-          response = await this.discovery.request(url, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', ...headers },
-            body,
-            signal: AbortSignal.timeout(
-              this.transportConfig.get().callTimeoutSec * 1000,
-            ),
-          });
-        } catch (error) {
-          await this.markTransportDegraded(
-            domain,
-            `Recognize network/timeout: ${(error as Error).message}`,
-          );
-          throw error;
-        }
-        if (response.status !== 200)
-          await this.handleRecognizeHttpFailure(domain, response);
-        let value: unknown;
-        try {
-          value = await response.json();
-        } catch {
-          value = undefined;
-        }
-        const result = this.parseRecognizeResult(value);
-        if (!result) {
-          await this.markTransportDegraded(
-            domain,
-            'Recognize malformed recognized result',
-          );
-          throw new Error(
-            `Recognize ${domain} returned malformed recognized result`,
-          );
-        }
-        if (result.status === 'failed') {
-          throw new BusinessException(
-            result.code,
-            result.message,
-            HttpStatus.CONFLICT,
-          );
-        }
-        if (result.status === 'recognized') {
-          ok = result;
-          break;
-        }
-        if (Date.now() >= deadline) {
-          throw new Error(
-            `Recognize ${domain} is still pending asynchronous verification or local review`,
-          );
-        }
-        await new Promise((resolve) =>
-          setTimeout(resolve, RECOGNIZE_PENDING_POLL_INTERVAL_MS),
+      } catch (error) {
+        await this.markTransportDegraded(
+          domain,
+          `Recognize network/timeout: ${(error as Error).message}`,
         );
+        throw error;
+      }
+      if (response.status !== 200)
+        await this.handleRecognizeHttpFailure(domain, response);
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        value = undefined;
+      }
+      const result = this.parseRecognizeResult(value);
+      if (!result) {
+        await this.markTransportDegraded(
+          domain,
+          'Recognize malformed recognized result',
+        );
+        throw new Error(
+          `Recognize ${domain} returned malformed recognized result`,
+        );
+      }
+      if (result.status === 'failed') {
+        throw new BusinessException(
+          result.code,
+          result.message,
+          HttpStatus.CONFLICT,
+        );
+      }
+      if (result.status === 'pending') {
+        return { domain, status: 'pending', message: result.message };
       }
       await this.recordPeerAssignedLocalNamespace(
         domain,
-        ok.peerAssignedLocalNamespaceId,
+        result.peerAssignedLocalNamespaceId,
       );
       let becameAvailable = false;
       await this.database.db.transaction(async (tx) => {
@@ -1040,6 +1024,7 @@ export class FederationRecognitionService {
           );
       });
       if (becameAvailable) this.emitPeerAvailable(domain);
+      return { domain, status: 'recognized' };
     } finally {
       release();
     }

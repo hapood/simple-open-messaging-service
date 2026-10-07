@@ -202,10 +202,6 @@ export function requireSubjectDomain(
   name: string,
   profileNamespaceId: number,
 ): string {
-  if (profileNamespaceId === 0) {
-    if (value !== 'local') malformed(`${name} must be local for namespaceId 0`);
-    return value;
-  }
   return requireDomain(value, name);
 }
 
@@ -223,13 +219,8 @@ export function requireSafeDecimal(value: string, name: string): number {
 }
 
 export function requireBundleId(value: string, name = 'bundleId'): string {
-  if (
-    Buffer.byteLength(value, 'utf8') < 1 ||
-    Buffer.byteLength(value, 'utf8') > 26 ||
-    value.includes('\0') ||
-    value.includes('/')
-  ) {
-    malformed(`${name} is not a bounded bundle ID`);
+  if (!/^[a-f0-9]{64}$/.test(value)) {
+    malformed(`${name} is not a lowercase SHA-256 bundle digest`);
   }
   return value;
 }

@@ -12,7 +12,7 @@ export class ClientCompatService {
   constructor(private readonly settings: SettingsService) {}
 
   compat(): ClientCompatDto {
-    const identityDomain = process.env.SOMS_DOMAIN?.trim();
+    const identityDomain = this.settings.somsDomain;
     const primaryDomain = process.env.SOMS_WEB_DOMAIN?.trim() || identityDomain;
     const lanDomain = process.env.SOMS_LAN_DOMAIN?.trim();
     const fb = this.settings.getFirebaseConfig();

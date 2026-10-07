@@ -14,7 +14,12 @@ export async function systemAccountIdInTx(
     // Restore the singleton after a database reset; it never joins business relationships.
     await tx
       .insert(account)
-      .values({ account: '$system', kind: 'SYSTEM', disabledAt: new Date() })
+      .values({
+        account: '$system',
+        kind: 'SYSTEM',
+        namespaceId: 0,
+        disabledAt: new Date(),
+      })
       .onConflictDoNothing({ target: account.account });
     system = await tx.query.account.findFirst({
       where: eq(account.kind, 'SYSTEM'),

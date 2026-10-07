@@ -37,7 +37,7 @@ export interface VapidHealthReport {
   firebaseClientConfigured: boolean;
   /** Web Push transport ready (configured AND keypair valid). */
   webPushConfigured: boolean;
-  /** This server's public domain (read-only — from SOMS_DOMAIN env, the federation identity). */
+  /** This server's public domain, read-only from the persisted federation identity snapshot. */
   somsDomain: string;
   /** Human-readable problems (empty when healthy). */
   errors: string[];

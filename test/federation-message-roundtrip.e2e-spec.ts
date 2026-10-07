@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { withMessageDigest } from './support/message-fixture.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
@@ -21,7 +22,7 @@ import {
   federatedContentDigests,
   fromFederatedMessageContent,
 } from '../src/federation/federated-message-content.js';
-import { contentDigest } from '../src/federation/canonical-json.js';
+import { payloadDigest } from '../src/federation/canonical-json.js';
 import { seedAcceptedRelationship } from './seed.js';
 import { truncateTablesForTest } from './support/truncate';
 
@@ -61,7 +62,15 @@ describe('federation message round-trip digest fidelity', () => {
       database.pool,
       'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "RelationshipIntent", "RelationshipPair", "ThreadAudience" RESTART IDENTITY CASCADE',
     );
-    await database.pool.query('DELETE FROM "IdentityNamespace" WHERE id <> 0');
+    await database.pool.query(`DO $$ DECLARE dependent regclass; BEGIN
+        FOR dependent IN
+          SELECT conrelid::regclass FROM pg_constraint
+          WHERE confrelid = '"IdentityNamespace"'::regclass AND contype = 'f'
+        LOOP
+          EXECUTE format('DELETE FROM %s', dependent);
+        END LOOP;
+      END $$;
+      DELETE FROM "IdentityNamespace" WHERE id <> 0;`);
     service = new FederationMessageFeedService(database);
     provenance = new FederationMessageProvenanceService(database);
   });
@@ -71,7 +80,15 @@ describe('federation message round-trip digest fidelity', () => {
       database.pool,
       'TRUNCATE TABLE "PeerStateFeed", "Account", "GroupAccount", "Profile", "MessageThread", "RelationshipIntent", "RelationshipPair", "ThreadAudience" RESTART IDENTITY CASCADE',
     );
-    await database.pool.query('DELETE FROM "IdentityNamespace" WHERE id <> 0');
+    await database.pool.query(`DO $$ DECLARE dependent regclass; BEGIN
+        FOR dependent IN
+          SELECT conrelid::regclass FROM pg_constraint
+          WHERE confrelid = '"IdentityNamespace"'::regclass AND contype = 'f'
+        LOOP
+          EXECUTE format('DELETE FROM %s', dependent);
+        END LOOP;
+      END $$;
+      DELETE FROM "IdentityNamespace" WHERE id <> 0;`);
     await mod.close();
   });
 
@@ -90,7 +107,10 @@ describe('federation message round-trip digest fidelity', () => {
     const namespaceId = namespace.id;
     const [alice] = await database.db
       .insert(user)
-      .values({ account: 'alice', domain: 'local', updatedAt: now })
+      .values({
+        account: 'alice',
+        updatedAt: now,
+      })
       .returning();
     const bob = { account: 'bob', domain: peerDomain, namespaceId };
     const [thread] = await database.db
@@ -127,22 +147,32 @@ describe('federation message round-trip digest fidelity', () => {
     );
     const [inserted] = await database.db
       .insert(message)
-      .values({
-        seq: 1,
-        contentType,
-        content: localContent,
-        contentDigest: contentDigest(originalWire),
-        threadId: thread.id,
-        creatorAccount: bob.account,
-        profileNamespaceId: namespaceId,
-        publisherNamespaceId: namespaceId,
-        originSeq: 1,
-        originServerTime: originTime,
-        profileRev: 0,
-        localState: 'READY',
-        isDeleted: false,
-        updatedAt: new Date(),
-      })
+      .values(
+        withMessageDigest({
+          seq: 1,
+          contentType,
+          content: localContent,
+          payloadDigest: payloadDigest(
+            originalWire,
+            [...federatedContentDigests(contentType, originalWire)].map(
+              (digest) => ({
+                digest,
+                bytes: assetBytes.get(digest) ?? 1,
+              }),
+            ),
+          ),
+          threadId: thread.id,
+          creatorAccount: bob.account,
+          profileNamespaceId: namespaceId,
+          publisherNamespaceId: namespaceId,
+          originSeq: 1,
+          originServerTime: originTime,
+          profileRev: 0,
+          localState: 'READY',
+          isDeleted: false,
+          updatedAt: new Date(),
+        }),
+      )
       .returning({ id: message.id });
     // Persist every CAS asset the wire content references so the outbound feed can describe them.
     for (const digest of federatedContentDigests(contentType, originalWire)) {
@@ -184,17 +214,23 @@ describe('federation message round-trip digest fidelity', () => {
     expect(page.messages).toHaveLength(1);
     const outbound = page.messages[0];
 
-    // Provenance: a query for this message's `(thread, seq, contentDigest)` must answer `yes`,
+    // Provenance: a query for this message's `(thread, seq, payloadDigest)` must answer `yes`,
     // and a query for the same coordinate with a different digest must answer `no`. This is the
     // origin-attestation contract: the responder confirms it published this content at this
     // coordinate. The digest is computed over the canonical (JCS) wire form, so it is stable
     // across the round-trip.
-    const expectedDigest = contentDigest(originalWire);
+    const expectedDigest = payloadDigest(
+      originalWire,
+      [...federatedContentDigests(contentType, originalWire)].map((digest) => ({
+        digest,
+        bytes: assetBytes.get(digest) ?? 1,
+      })),
+    );
     const yesResults = await provenance.query([
       {
         thread: { account: 'alice', peerAccount: 'bob' },
         seq: 1,
-        contentDigest: expectedDigest,
+        payloadDigest: expectedDigest,
       },
     ]);
     expect(yesResults).toEqual([
@@ -208,7 +244,7 @@ describe('federation message round-trip digest fidelity', () => {
       {
         thread: { account: 'alice', peerAccount: 'bob' },
         seq: 1,
-        contentDigest: '0'.repeat(64),
+        payloadDigest: '0'.repeat(64),
       },
     ]);
     expect(noResults[0].known).toBe('no');
@@ -404,19 +440,22 @@ describe('federation message round-trip digest fidelity', () => {
     const wire = JSON.stringify({ text: 'we authored this' });
     await database.db
       .insert(message)
-      .values({
-        seq: 1,
-        contentType: ContentType.PURE_TEXT,
-        content: wire,
-        threadId: thread.id,
-        creatorAccount: 'alice',
-        profileNamespaceId: 0,
-        publisherNamespaceId: 0,
-        profileRev: 0,
-        localState: 'READY',
-        isDeleted: false,
-        updatedAt: new Date(),
-      })
+      .values(
+        withMessageDigest({
+          seq: 1,
+          contentType: ContentType.PURE_TEXT,
+          content: wire,
+          threadId: thread.id,
+          creatorAccount: 'alice',
+          profileNamespaceId: 0,
+          publisherNamespaceId: 0,
+          profileRev: 0,
+          localState: 'READY',
+          isDeleted: false,
+          payloadDigest: payloadDigest(wire),
+          updatedAt: new Date(),
+        }),
+      )
       .returning({ id: message.id });
     await database.db
       .update(messageThread)
@@ -451,28 +490,34 @@ describe('federation message round-trip digest fidelity', () => {
     // Insert two messages with distinct digests on the same P2P thread.
     const wire1 = JSON.stringify({ text: 'first' });
     const wire2 = JSON.stringify({ text: 'second' });
-    const digest1 = contentDigest(wire1);
-    const digest2 = contentDigest(wire2);
+    const digest1 = payloadDigest(wire1, []);
+    const digest2 = payloadDigest(wire2, []);
     for (const [seq, wire, digest] of [
       [1, wire1, digest1],
       [2, wire2, digest2],
     ] as const) {
-      await database.db.insert(message).values({
-        seq,
-        contentType: ContentType.PURE_TEXT,
-        content: fromFederatedMessageContent(ContentType.PURE_TEXT, wire, new Map()),
-        contentDigest: digest,
-        threadId: thread.id,
-        creatorAccount: bob.account,
-        profileNamespaceId: namespaceId,
-        publisherNamespaceId: namespaceId,
-        originSeq: seq,
-        originServerTime: new Date('2026-08-12T00:00:00.000Z'),
-        profileRev: 0,
-        localState: 'READY',
-        isDeleted: false,
-        updatedAt: new Date(),
-      });
+      await database.db.insert(message).values(
+        withMessageDigest({
+          seq,
+          contentType: ContentType.PURE_TEXT,
+          content: fromFederatedMessageContent(
+            ContentType.PURE_TEXT,
+            wire,
+            new Map(),
+          ),
+          payloadDigest: digest,
+          threadId: thread.id,
+          creatorAccount: bob.account,
+          profileNamespaceId: namespaceId,
+          publisherNamespaceId: namespaceId,
+          originSeq: seq,
+          originServerTime: new Date('2026-08-12T00:00:00.000Z'),
+          profileRev: 0,
+          localState: 'READY',
+          isDeleted: false,
+          updatedAt: new Date(),
+        }),
+      );
     }
     await database.db
       .update(messageThread)
@@ -481,9 +526,21 @@ describe('federation message round-trip digest fidelity', () => {
 
     // Batch: seq=1 matches (yes), seq=2 with the wrong digest (no), seq=3 does not exist (no).
     const results = await provenance.query([
-      { thread: { account: 'alice', peerAccount: 'bob' }, seq: 1, contentDigest: digest1 },
-      { thread: { account: 'alice', peerAccount: 'bob' }, seq: 2, contentDigest: '0'.repeat(64) },
-      { thread: { account: 'alice', peerAccount: 'bob' }, seq: 3, contentDigest: digest2 },
+      {
+        thread: { account: 'alice', peerAccount: 'bob' },
+        seq: 1,
+        payloadDigest: digest1,
+      },
+      {
+        thread: { account: 'alice', peerAccount: 'bob' },
+        seq: 2,
+        payloadDigest: '0'.repeat(64),
+      },
+      {
+        thread: { account: 'alice', peerAccount: 'bob' },
+        seq: 3,
+        payloadDigest: digest2,
+      },
     ]);
     expect(results.map((r) => r.known)).toEqual(['yes', 'no', 'no']);
   });
@@ -492,7 +549,7 @@ describe('federation message round-trip digest fidelity', () => {
     const q = {
       thread: { account: 'alice', peerAccount: 'bob' },
       seq: 1,
-      contentDigest: '0'.repeat(64),
+      payloadDigest: '0'.repeat(64),
     };
     await expect(provenance.query([q, q])).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MALFORMED,
@@ -511,7 +568,7 @@ describe('federation message round-trip digest fidelity', () => {
         {
           thread: { account: 'alice', peerAccount: 'bob' },
           seq: 1,
-          contentDigest: '0'.repeat(64),
+          payloadDigest: '0'.repeat(64),
         },
       ]),
     ).rejects.toMatchObject({

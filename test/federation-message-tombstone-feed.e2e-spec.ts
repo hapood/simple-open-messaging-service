@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq, isNull } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
@@ -68,7 +70,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
           .insert(identityNamespace)
           .values({
             domain: peerDomain,
-            rootKeyFingerprint: 'sha256:tombstone-feed-test',
             rootPublicKey: Buffer.alloc(32, 1).toString('base64'),
             identityPinnedAt: now,
             active: true,
@@ -84,7 +85,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
       .insert(user)
       .values({
         account: 'alice',
-        domain: 'local',
+        namespaceId: 0,
         updatedAt: now,
       })
       .returning();
@@ -107,17 +108,19 @@ describe('FederationMessageTombstoneFeedService query', () => {
     });
     const [target] = await database.db
       .insert(message)
-      .values({
-        seq: 1,
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'deleted' }),
-        threadId: thread.id,
-        creatorAccount: alice.account,
-        creatorDomain: alice.domain,
-        isDeleted: true,
-        createdAt: now,
-        updatedAt: now,
-      })
+      .values(
+        withMessageDigest({
+          seq: 1,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'deleted' }),
+          threadId: thread.id,
+          creatorAccount: alice.account,
+
+          isDeleted: true,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      )
       .returning();
     const [deletion] = await database.db
       .insert(deletedMessage)
@@ -172,7 +175,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
       .update(message)
       .set({
         creatorAccount: 'bob',
-        creatorDomain: peerDomain,
         profileNamespaceId: namespaceId,
       })
       .where(eq(message.threadId, thread.id));
@@ -203,7 +205,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
 
     await database.db
       .update(message)
-      .set({ creatorDomain: peerDomain, profileNamespaceId: namespaceId })
+      .set({ profileNamespaceId: namespaceId })
       .where(and(eq(message.threadId, thread.id), eq(message.seq, 1)));
     const filtered = await service.query(
       peerDomain,
@@ -224,21 +226,23 @@ describe('FederationMessageTombstoneFeedService query', () => {
   it('uses the current publisher coordinate for tombstones and maxMessageSeq', async () => {
     const { deletion, namespaceId, thread } = await seedDeletion();
     const now = new Date('2026-08-12T01:03:03.000Z');
-    await database.db.insert(message).values({
-      seq: 2,
-      originSeq: 5,
-      originServerTime: now,
-      contentType: 'PURE_TEXT',
-      content: JSON.stringify({
-        text: 'deleted later in publisher coordinates',
+    await database.db.insert(message).values(
+      withMessageDigest({
+        seq: 2,
+        originSeq: 5,
+        originServerTime: now,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({
+          text: 'deleted later in publisher coordinates',
+        }),
+        threadId: thread.id,
+        creatorAccount: 'alice',
+
+        isDeleted: true,
+        createdAt: now,
+        updatedAt: now,
       }),
-      threadId: thread.id,
-      creatorAccount: 'alice',
-      creatorDomain: 'local',
-      isDeleted: true,
-      createdAt: now,
-      updatedAt: now,
-    });
+    );
     const [laterDeletion] = await database.db
       .insert(deletedMessage)
       .values({
@@ -286,23 +290,25 @@ describe('FederationMessageTombstoneFeedService query', () => {
     const { deletion, namespaceId, thread } = await seedDeletion();
     const now = new Date('2026-08-12T01:04:03.000Z');
     await database.db.insert(message).values(
-      [
-        { seq: 2, originSeq: 10, text: 'filtered-one' },
-        { seq: 3, originSeq: 2, text: 'eligible-two' },
-        { seq: 4, originSeq: 11, text: 'filtered-two' },
-      ].map(({ seq, originSeq, text }) => ({
-        seq,
-        originSeq,
-        originServerTime: now,
-        contentType: 'PURE_TEXT' as const,
-        content: JSON.stringify({ text }),
-        threadId: thread.id,
-        creatorAccount: 'alice',
-        creatorDomain: 'local',
-        isDeleted: true,
-        createdAt: now,
-        updatedAt: now,
-      })),
+      withMessageDigest(
+        [
+          { seq: 2, originSeq: 10, text: 'filtered-one' },
+          { seq: 3, originSeq: 2, text: 'eligible-two' },
+          { seq: 4, originSeq: 11, text: 'filtered-two' },
+        ].map(({ seq, originSeq, text }) => ({
+          seq,
+          originSeq,
+          originServerTime: now,
+          contentType: 'PURE_TEXT' as const,
+          content: JSON.stringify({ text }),
+          threadId: thread.id,
+          creatorAccount: 'alice',
+
+          isDeleted: true,
+          createdAt: now,
+          updatedAt: now,
+        })),
+      ),
     );
     await database.db.insert(deletedMessage).values(
       [2, 3, 4].map((deletionSeq) => ({

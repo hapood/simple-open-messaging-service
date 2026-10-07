@@ -16,8 +16,8 @@ import {
   type SignedRequest,
 } from '../federation/signature.service.js';
 import {
-  loadFederationConfig,
-  type FederationConfig,
+  loadFederationRuntimeConfig,
+  type FederationRuntimeConfig,
 } from '../federation/federation.config.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -27,7 +27,8 @@ import {
 } from '../federation/federation-transport-config.service.js';
 import { parseKeyId } from '../federation/key-id.js';
 
-type SelfCheckConfig = FederationConfig & FederationTransportConfig;
+type SelfCheckConfig = FederationRuntimeConfig &
+  FederationTransportConfig & { domain: string };
 
 /**
  * S2S handshake self-check — diagnoses whether THIS server's federation prerequisites are correctly
@@ -87,8 +88,9 @@ export class FederationSelfCheckService {
   private async doRun(opts: RunOptions): Promise<SelfCheckReport> {
     const startedAt = Date.now();
     const config: SelfCheckConfig = {
-      ...loadFederationConfig(),
+      ...loadFederationRuntimeConfig(),
       ...this.transportConfig.get(),
+      domain: this.keypair.getIdentityDomain(),
     };
     const domain = config.domain;
     const resolver = this.makeResolver(opts.dnsResolver);

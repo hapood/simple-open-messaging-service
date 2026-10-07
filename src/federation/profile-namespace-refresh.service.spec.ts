@@ -8,6 +8,7 @@ interface InsertValues {
   rootPublicKey: string | null;
   updateFeedId: bigint;
   expired: boolean;
+  status: string;
 }
 
 function harness(options?: {
@@ -36,7 +37,14 @@ function harness(options?: {
       },
     }),
   }));
-  const database = { db: { select, insert } };
+  const transaction = vi.fn(async (body: (tx: unknown) => Promise<unknown>) =>
+    body({ insert }),
+  );
+  const database = { db: { select, insert, transaction } };
+  const recordClientChange = vi.fn(async (_tx: unknown, _pair: unknown) => 42n);
+  const feed = { recordClientChangeInTx: recordClientChange };
+  const notifyProfileNamespaceChange = vi.fn();
+  const sse = { notifyProfileNamespaceChange };
   const peerHttp = {
     get: vi.fn(async () => {
       if (options?.parkFirstGet) {
@@ -59,8 +67,17 @@ function harness(options?: {
     peerHttp as never,
     trustedPeers as never,
     threadAccess as never,
+    feed as never,
+    sse as never,
   );
-  return { service, select, peerHttp, upserts };
+  return {
+    service,
+    select,
+    peerHttp,
+    upserts,
+    recordClientChange,
+    notifyProfileNamespaceChange,
+  };
 }
 
 describe('ProfileNamespaceRefreshService stale-response guard', () => {
@@ -70,6 +87,7 @@ describe('ProfileNamespaceRefreshService stale-response guard', () => {
         domain: 'peer.test',
         rootPublicKey: 'r'.repeat(44),
         retiredAt: null,
+        active: true,
         pulledThrough: 0n,
       },
       bindings: [
@@ -77,11 +95,13 @@ describe('ProfileNamespaceRefreshService stale-response guard', () => {
           domain: 'c.test',
           rootPublicKey: 'c'.repeat(44),
           profileNamespaceFeedEndId: '2',
+          status: 'ACTIVE',
         },
         {
           domain: 'c2.test',
           rootPublicKey: 'd'.repeat(44),
           profileNamespaceFeedEndId: '7',
+          status: 'ACTIVE',
         },
       ],
     });
@@ -99,6 +119,86 @@ describe('ProfileNamespaceRefreshService stale-response guard', () => {
       expired: false,
     });
   });
+
+  it('records a client change and wakes devices when a third-party refresh converges', async () => {
+    const {
+      service,
+      upserts,
+      recordClientChange,
+      notifyProfileNamespaceChange,
+    } = harness({
+      directRow: {
+        domain: 'peer.test',
+        rootPublicKey: 'r'.repeat(44),
+        retiredAt: null,
+        active: true,
+        pulledThrough: 0n,
+      },
+      bindings: [
+        {
+          domain: 'c.test',
+          rootPublicKey: 'c'.repeat(44),
+          profileNamespaceFeedEndId: '7',
+          status: 'ACTIVE',
+        },
+      ],
+    });
+    const pair = { publisherNamespaceId: 12, profileNamespaceId: 9 };
+    service.scheduleRefresh(pair, 5n);
+    await vi.waitFor(() => expect(upserts).toHaveLength(1));
+    // The converged upsert and the change entry share one transaction, and
+    // the allocated change id drives the wake broadcast.
+    expect(recordClientChange).toHaveBeenCalledTimes(1);
+    expect(recordClientChange.mock.calls[0]?.[0]).toEqual(expect.anything());
+    expect(recordClientChange.mock.calls[0]?.[1]).toEqual(pair);
+    expect(notifyProfileNamespaceChange).toHaveBeenCalledWith(42n);
+  });
+
+  it('records no client change when every attempt stays behind the trigger', async () => {
+    const {
+      service,
+      peerHttp,
+      recordClientChange,
+      notifyProfileNamespaceChange,
+    } = harness({
+      directRow: {
+        domain: 'peer.test',
+        rootPublicKey: 'r'.repeat(44),
+        retiredAt: null,
+        active: true,
+        pulledThrough: 0n,
+      },
+      bindings: [
+        {
+          domain: 'c.test',
+          rootPublicKey: 'c'.repeat(44),
+          profileNamespaceFeedEndId: '1',
+          status: 'ACTIVE',
+        },
+        {
+          domain: 'c.test',
+          rootPublicKey: 'c'.repeat(44),
+          profileNamespaceFeedEndId: '2',
+          status: 'ACTIVE',
+        },
+        {
+          domain: 'c.test',
+          rootPublicKey: 'c'.repeat(44),
+          profileNamespaceFeedEndId: '3',
+          status: 'ACTIVE',
+        },
+      ],
+    });
+    const pair = { publisherNamespaceId: 12, profileNamespaceId: 9 };
+    service.scheduleRefresh(pair, 5n);
+    // All three attempts answer behind the trigger: the guard discards each
+    // one and the flight fails — no convergence, so no change entry and no
+    // wake (scheduleRefresh logs and swallows the error).
+    await vi.waitFor(() => expect(peerHttp.get).toHaveBeenCalledTimes(3));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(recordClientChange).not.toHaveBeenCalled();
+    expect(notifyProfileNamespaceChange).not.toHaveBeenCalled();
+  });
 });
 
 describe('ProfileNamespaceRefreshService.scheduleRefresh coalescing', () => {
@@ -107,11 +207,12 @@ describe('ProfileNamespaceRefreshService.scheduleRefresh coalescing', () => {
     const gate = new Promise((resolve) => {
       release = resolve;
     });
-    const { service, peerHttp, upserts } = harness({
+    const { service, peerHttp, upserts, recordClientChange } = harness({
       directRow: {
         domain: 'peer.test',
         rootPublicKey: 'r'.repeat(44),
         retiredAt: null,
+        active: true,
         pulledThrough: 4n,
       },
       parkFirstGet: gate,
@@ -120,11 +221,13 @@ describe('ProfileNamespaceRefreshService.scheduleRefresh coalescing', () => {
           domain: 'c1.test',
           rootPublicKey: 'a'.repeat(44),
           profileNamespaceFeedEndId: '5',
+          status: 'ACTIVE',
         },
         {
           domain: 'c2.test',
           rootPublicKey: 'b'.repeat(44),
           profileNamespaceFeedEndId: '9',
+          status: 'ACTIVE',
         },
       ],
     });
@@ -145,6 +248,120 @@ describe('ProfileNamespaceRefreshService.scheduleRefresh coalescing', () => {
     expect(upserts[1]).toMatchObject({
       domain: 'c2.test',
       updateFeedId: 9n,
+      expired: false,
+    });
+    // Coalesced rounds record exactly one change entry each.
+    expect(recordClientChange).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('ProfileNamespaceRefreshService lifecycle status', () => {
+  it('persists the publisher-disclosed ARCHIVED status instead of assuming ACTIVE', async () => {
+    const { service, upserts } = harness({
+      directRow: {
+        domain: 'peer.test',
+        rootPublicKey: 'r'.repeat(44),
+        retiredAt: null,
+        active: true,
+        pulledThrough: 0n,
+      },
+      bindings: [
+        {
+          domain: 'gone.test',
+          rootPublicKey: 'g'.repeat(44),
+          profileNamespaceFeedEndId: '7',
+          status: 'ARCHIVED',
+        },
+      ],
+    });
+    service.scheduleRefresh(
+      { publisherNamespaceId: 12, profileNamespaceId: 9 },
+      5n,
+    );
+    await vi.waitFor(() => expect(upserts).toHaveLength(1));
+    expect(upserts[0]).toMatchObject({
+      domain: 'gone.test',
+      status: 'ARCHIVED',
+      expired: false,
+    });
+  });
+
+  it('rejects a malformed status so it never reaches the database check', async () => {
+    const { service, upserts, peerHttp } = harness({
+      directRow: {
+        domain: 'peer.test',
+        rootPublicKey: 'r'.repeat(44),
+        retiredAt: null,
+        active: true,
+        pulledThrough: 0n,
+      },
+      bindings: [
+        {
+          domain: 'c.test',
+          rootPublicKey: 'c'.repeat(44),
+          profileNamespaceFeedEndId: '7',
+          status: 'ZOMBIE',
+        },
+      ],
+    });
+    service.scheduleRefresh(
+      { publisherNamespaceId: 12, profileNamespaceId: 9 },
+      5n,
+    );
+    // A malformed status fails the flight immediately — it is a protocol
+    // violation, not a stale answer, so no retry is spent (scheduleRefresh
+    // logs and swallows) and nothing reaches the database.
+    await vi.waitFor(() => expect(peerHttp.get).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(upserts).toHaveLength(0);
+  });
+
+  it('converges a reset-retired publisher self-row to ARCHIVED with its retained bindings', async () => {
+    const { service, upserts, peerHttp } = harness({
+      directRow: {
+        domain: 'peer.test',
+        rootPublicKey: 'r'.repeat(44),
+        retiredAt: new Date(),
+        active: false,
+        pulledThrough: 4n,
+      },
+    });
+    service.scheduleRefresh(
+      { publisherNamespaceId: 12, profileNamespaceId: 0 },
+      3n,
+    );
+    await vi.waitFor(() => expect(upserts).toHaveLength(1));
+    // The self-row answers locally from the registry: no s2s fetch, and the
+    // retained bindings stay disclosed with the ARCHIVED lifecycle.
+    expect(peerHttp.get).not.toHaveBeenCalled();
+    expect(upserts[0]).toMatchObject({
+      publisherNamespaceId: 12,
+      profileNamespaceId: 0,
+      domain: 'peer.test',
+      rootPublicKey: 'r'.repeat(44),
+      updateFeedId: 4n,
+      expired: false,
+      status: 'ARCHIVED',
+    });
+  });
+
+  it('converges a live publisher self-row as ACTIVE', async () => {
+    const { service, upserts } = harness({
+      directRow: {
+        domain: 'peer.test',
+        rootPublicKey: 'r'.repeat(44),
+        retiredAt: null,
+        active: true,
+        pulledThrough: 4n,
+      },
+    });
+    service.scheduleRefresh(
+      { publisherNamespaceId: 12, profileNamespaceId: 0 },
+      3n,
+    );
+    await vi.waitFor(() => expect(upserts).toHaveLength(1));
+    expect(upserts[0]).toMatchObject({
+      status: 'ACTIVE',
       expired: false,
     });
   });

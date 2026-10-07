@@ -52,7 +52,7 @@ export function receivedUserIntentWriteSql(
        OR "RelationshipIntent".note IS DISTINCT FROM EXCLUDED.note
        OR "RelationshipIntent"."requestedAt" IS DISTINCT FROM EXCLUDED."requestedAt"
        OR "RelationshipIntent"."expiresAt" IS DISTINCT FROM EXCLUDED."expiresAt"
-    RETURNING status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
+    RETURNING "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
       "messageEndSeq", "tombstoneEndSeq"
   `;
 }

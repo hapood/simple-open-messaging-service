@@ -68,6 +68,7 @@ describe('FederationStatePullService drain window', () => {
         { notifyFeedUpdates: vi.fn() } as never,
         {} as never,
         { resolveDemand } as never,
+        {} as never,
         { emit: vi.fn() } as never,
       );
       try {
@@ -84,6 +85,7 @@ describe('FederationStatePullService drain window', () => {
       items: [],
       scannedThrough: '5',
       stateFeedEndId: '5',
+      profileNamespaceFeedEndId: '0',
       hasMore: false,
     };
     const peerHttp = { get: vi.fn().mockResolvedValue(page) };
@@ -120,9 +122,11 @@ describe('FederationStatePullService drain window', () => {
           domain: 'peer.test',
           namespaceId: 7,
           rootKeyFingerprint: 'root',
+          rootPublicKey: 'root-public-key',
         }),
       } as never,
       stateFeedPull as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -206,11 +210,13 @@ describe('FederationStatePullService drain window', () => {
           domain: 'peer.test',
           namespaceId: 7,
           rootKeyFingerprint: 'root',
+          rootPublicKey: 'root-public-key',
         }),
       } as never,
       stateFeedPull as never,
       { applyPageInTx } as never,
       { notifyFeedUpdates } as never,
+      {} as never,
       {} as never,
       {} as never,
       { emit: vi.fn() } as never,

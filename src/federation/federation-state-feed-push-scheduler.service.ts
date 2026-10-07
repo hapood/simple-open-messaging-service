@@ -8,8 +8,11 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { BusinessException } from '../common/business.exception.js';
 import { S2sResponseError } from './federation-errors.js';
 import { isRetryableFederationNetworkError } from './federation-http-scheduler.js';
-import { FederationService } from './federation.service.js';
+import { FederationStateFeedPushService } from './federation-state-feed-push.service.js';
+import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
+import { FederationNamespaceService } from './federation-namespace.service.js';
 import { FederationStateFeedHeadClient } from './federation-state-feed-head-client.service.js';
+import { KeypairService } from './keypair.service.js';
 import {
   FEDERATION_STATE_FEED_PUSH,
   type FederationStateFeedPush,
@@ -34,13 +37,17 @@ export class FederationStateFeedPushSchedulerService
   private shuttingDown = false;
 
   constructor(
-    private readonly federation: FederationService,
+    private readonly stateFeedPush: FederationStateFeedPushService,
+    private readonly peerLifecycle: FederationPeerLifecycle,
+    private readonly namespaces: FederationNamespaceService,
     private readonly client: FederationStateFeedHeadClient,
+    private readonly keypair: KeypairService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    await this.federation.pushStateFeedDomains(
-      await this.federation.listTrustedPeerDomains(),
+    await this.keypair.waitUntilInitialized();
+    await this.stateFeedPush.pushDomains(
+      await this.peerLifecycle.listTrustedPeerDomains(),
     );
   }
 
@@ -80,7 +87,7 @@ export class FederationStateFeedPushSchedulerService
     this.dirty.delete(key);
     this.active.add(key);
     this.lastAttemptAt.set(key, Date.now());
-    const task = this.federation
+    const task = this.namespaces
       .activePeerDomainForNamespace(target.namespaceId)
       .then((peerDomain) => {
         if (peerDomain === null) return;

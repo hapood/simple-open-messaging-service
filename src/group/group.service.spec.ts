@@ -132,7 +132,7 @@ function createService(
     writeMemberRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
     writeGroupRelationshipIntentInTx: vi.fn().mockResolvedValue(new Map()),
     reconcileGroupJoinRequestManagerInTx: vi.fn().mockResolvedValue(undefined),
-    pushStateFeedDomains: vi.fn().mockResolvedValue(undefined),
+    pushStateFeedNamespaces: vi.fn().mockResolvedValue(undefined),
     ...federationOverrides,
   };
   const clientStateFeed = {

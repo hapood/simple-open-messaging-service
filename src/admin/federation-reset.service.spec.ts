@@ -33,7 +33,15 @@ describe('FederationResetService', () => {
         transaction: vi.fn((run: (value: typeof tx) => unknown) => run(tx)),
       },
     };
-    const service = new FederationResetService(database as never, {} as never);
+    const service = new FederationResetService(
+      database as never,
+      {} as never,
+      {
+        recordNamespaceChangeInTx: vi.fn().mockResolvedValue(1n),
+        recordClientChangeInTx: vi.fn().mockResolvedValue(1n),
+      } as never,
+      { notifyProfileNamespaceChange: vi.fn() } as never,
+    );
 
     await expect(service.preview('Peer.Example.')).resolves.toMatchObject({
       domain: 'peer.example',
@@ -66,7 +74,15 @@ describe('FederationResetService', () => {
         transaction: vi.fn((run: (value: typeof tx) => unknown) => run(tx)),
       },
     };
-    const service = new FederationResetService(database as never, {} as never);
+    const service = new FederationResetService(
+      database as never,
+      {} as never,
+      {
+        recordNamespaceChangeInTx: vi.fn().mockResolvedValue(1n),
+        recordClientChangeInTx: vi.fn().mockResolvedValue(1n),
+      } as never,
+      { notifyProfileNamespaceChange: vi.fn() } as never,
+    );
 
     await expect(service.preview('peer.example')).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
@@ -104,6 +120,11 @@ describe('FederationResetService', () => {
       const service = new FederationResetService(
         database as never,
         namespaces as never,
+        {
+          recordNamespaceChangeInTx: vi.fn().mockResolvedValue(1n),
+          recordClientChangeInTx: vi.fn().mockResolvedValue(1n),
+        } as never,
+        { notifyProfileNamespaceChange: vi.fn() } as never,
       );
 
       if (rollback) {
@@ -120,6 +141,7 @@ describe('FederationResetService', () => {
         archivedNamespaceId: 12,
         activeNamespaceId: null,
         status: 'reset',
+        clientChangeId: 1n,
       });
       expect(namespaces.retireActiveInTx).toHaveBeenCalledWith(
         tx,

@@ -29,7 +29,7 @@ describe('durable task committed wake and drain', () => {
   const input = (payload: Record<string, unknown> = {}) => ({
     scope: {
       type: 'GROUP' as const,
-      address: { domain: 'local', account: '!wake-test' },
+      address: { profileNamespaceId: 0, account: '!wake-test' },
     },
     taskType: 'TEST_COMMAND',
     payload,

@@ -2,30 +2,44 @@ import {
   HttpStatus,
   Injectable,
   Logger,
-  OnApplicationBootstrap,
-  OnApplicationShutdown,
+  OnModuleDestroy,
+  OnModuleInit,
 } from '@nestjs/common';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { randomBytes } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import {
+  account,
+  identityNamespace,
   localFederationRoot,
   localFederationSigningKey,
   localFederationSigningState,
+  messageThread,
 } from '../database/schema.js';
 import {
   loadFederationConfig,
-  type FederationConfig,
+  type SigningKeyLifecycleConfig,
+  type RootKeyLifecycleConfig,
 } from './federation.config.js';
 import {
   signingCertificateStatement,
   type RootKeyEntry,
   type SigningKeyCertificate,
 } from './federation-certificate.js';
+import { parseKeyId } from './key-id.js';
+import type { S2SAddress } from './federation-address.js';
+import { ProfileNamespaceChangeStore } from './profile-namespace-change-store.service.js';
 import { openSealedBox } from './sealed-box.js';
+import { SseService } from '../gateway/sse.service.js';
+
+type KeypairConfig = {
+  domain: string;
+  signingKey: SigningKeyLifecycleConfig;
+  rootKey: RootKeyLifecycleConfig;
+};
 
 export type LocalFederationIdentityStatus =
   | { available: true }
@@ -43,7 +57,7 @@ interface LocalSigningKeyRow {
 }
 
 /** In-memory view of one local root-identity epoch. */
-interface LocalRootRow {
+export interface LocalRootRow {
   id: number;
   domain: string;
   rootPublicKey: string;
@@ -54,11 +68,14 @@ interface LocalRootRow {
   unpublishedAt: number | null;
 }
 
-/** Result of an administrator-triggered root rotation. */
+/** Result of an administrator-triggered root rotation. `clientChangeId` is
+ *  the allocated client change position (decimal string) that announced the
+ *  new (0, 0) binding to devices. */
 export interface RootRotationResult {
   previousRootId: number;
   newRootId: number;
   newRootPublicKey: string;
+  clientChangeId: string;
 }
 
 /** Immutable snapshot of the database-backed local identity, cached for the synchronous getters. */
@@ -105,7 +122,7 @@ const isValidAt = (
  * authorized certificates are removed from the published set in the same commit,
  * which is the revocation channel. The predecessor root entry stays published
  * until an operator unpublishes it after every recognized peer adopted the
- * rotation.
+ * rotation; rotation itself never cleans up.
  *
  * The snapshot is refreshed by the maintenance tick — at most every 30s, and earlier
  * when a persisted lifecycle event (successor prepublication, planned switch,
@@ -114,31 +131,57 @@ const isValidAt = (
  * so receivers still authenticate it while the refresh lands.
  */
 @Injectable()
-export class KeypairService
-  implements OnApplicationBootstrap, OnApplicationShutdown
-{
+export class KeypairService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KeypairService.name);
-  private readonly config: FederationConfig = loadFederationConfig();
+  private readonly config: KeypairConfig = loadFederationConfig();
   private snapshot: LocalKeySnapshot | undefined;
   private status: LocalFederationIdentityStatus = {
     available: false,
     reason: 'federation identity has not been initialized',
   };
   private maintainTimer: NodeJS.Timeout | undefined;
+  private initializationPromise: Promise<void> | undefined;
 
-  constructor(private readonly database: DatabaseService) {}
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly changes: ProfileNamespaceChangeStore,
+    private readonly sse: SseService,
+  ) {}
 
-  async onApplicationBootstrap(): Promise<void> {
+  /** Initialize in onModuleInit, not onApplicationBootstrap: the persisted identity domain is
+   *  boot-input for other modules' init-phase work (e.g. SettingsService's VAPID subject), and
+   *  Nest runs every onModuleInit before any onApplicationBootstrap. Ordering within the phase is
+   *  guaranteed by the SettingsModule → FederationModule import edge. */
+  async onModuleInit(): Promise<void> {
     await this.initialize();
   }
 
-  onApplicationShutdown(): void {
+  onModuleDestroy(): void {
     if (this.maintainTimer) clearTimeout(this.maintainTimer);
     this.maintainTimer = undefined;
   }
 
   /** Public for focused startup tests; normal application startup calls it through the Nest hook. */
   async initialize(): Promise<void> {
+    if (!this.initializationPromise) {
+      this.initializationPromise = this.initializeOnce();
+    }
+    return this.initializationPromise;
+  }
+
+  /** Waits for the singleton startup lifecycle and requires a usable local identity. */
+  async waitUntilInitialized(): Promise<void> {
+    await this.initialize();
+    this.assertAvailable();
+  }
+
+  /** Runs one explicit signing-key maintenance pass after startup initialization. */
+  async maintain(): Promise<void> {
+    await this.initialize();
+    await this.maintainRotation();
+  }
+
+  private async initializeOnce(): Promise<void> {
     try {
       const bootstrapped = await this.bootstrapOrLoad();
       if (!bootstrapped) return;
@@ -161,6 +204,7 @@ export class KeypairService
       this.disable(
         `S2S identity initialization failed: ${(error as Error).message}`,
       );
+      throw error;
     }
   }
 
@@ -176,6 +220,17 @@ export class KeypairService
         HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
+  }
+
+  /** Runtime local domain loaded from IdentityNamespace(0), never re-read from configuration. */
+  getIdentityDomain(): string {
+    this.assertAvailable();
+    return this.snapshot!.identityDomain;
+  }
+
+  /** The wire address of a subject in this publisher's local namespace. */
+  localAddress(account: string): S2SAddress {
+    return { account, domain: this.getIdentityDomain() };
   }
 
   getKeyId(): string {
@@ -198,7 +253,8 @@ export class KeypairService
 
   /** The published roots group (Transport and Security 1.1): every root epoch not
    *  yet unpublished, deterministically ordered. A rotated-out predecessor stays
-   *  listed until an operator unpublishes it after peer adoption. */
+   *  listed until an operator unpublishes it after peer adoption — rotation
+   *  itself never cleans up. */
   getRootGroup(): RootKeyEntry[] {
     this.assertAvailable();
     const snapshot = this.snapshot!;
@@ -252,7 +308,12 @@ export class KeypairService
     return [...snapshot.keys.values()]
       .filter((key) => {
         const root = snapshot.roots.get(key.rootId);
-        return root !== undefined && root.claimable && key.notAfter > now;
+        return (
+          root !== undefined &&
+          root.claimable &&
+          key.notAfter > now &&
+          parseKeyId(key.keyId)?.domain === snapshot.identityDomain
+        );
       })
       .sort((a, b) => a.notBefore - b.notBefore || (a.keyId < b.keyId ? -1 : 1))
       .map((key) => this.toCertificate(key, snapshot));
@@ -333,8 +394,8 @@ export class KeypairService
    */
   async rotateRoot(): Promise<RootRotationResult> {
     this.assertAvailable();
-    const domain = normalizeDomain(this.config.domain);
-    return this.database.db.transaction(async (tx) => {
+    const domain = this.snapshot!.identityDomain;
+    const rotation = await this.database.db.transaction(async (tx) => {
       await tx.execute(KEY_LIFECYCLE_LOCK);
       const snapshot = await this.reloadSnapshot(tx, domain);
       if (!snapshot) throw new Error('local identity rows disappeared');
@@ -379,6 +440,17 @@ export class KeypairService
       const next = await this.reloadSnapshot(tx, domain);
       if (!next) throw new Error('local identity rows disappeared');
       this.snapshot = next;
+      // The replacement is a binding change of namespace 0 — this server
+      // itself: publish it on the shared s2s feed (peers re-pull
+      // /profile-namespaces/0 for the new root public key) and record the
+      // client-visible (0, 0) change so every device wakes and re-resolves
+      // the pair. Both entries share the replacement transaction, so a
+      // crash can never leave the new root claimable but unannounced.
+      await this.changes.recordNamespaceChangeInTx(tx, 0);
+      const clientChangeId = await this.changes.recordClientChangeInTx(tx, {
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
+      });
       this.logger.warn(
         `Rotated S2S root identity: ${previous.rootPublicKey.slice(0, 12)}… -> ${rootPublicKeyB64.slice(0, 12)}…; predecessor-authorized certificates are revoked by this switch`,
       );
@@ -386,8 +458,14 @@ export class KeypairService
         previousRootId: previous.id,
         newRootId: insertedRoot.id,
         newRootPublicKey: rootPublicKeyB64,
+        clientChangeId,
       };
     });
+    this.sse.notifyProfileNamespaceChange(rotation.clientChangeId);
+    return {
+      ...rotation,
+      clientChangeId: rotation.clientChangeId.toString(),
+    };
   }
 
   /**
@@ -397,7 +475,7 @@ export class KeypairService
    */
   async unpublishRoot(rootId: number): Promise<void> {
     this.assertAvailable();
-    const domain = normalizeDomain(this.config.domain);
+    const domain = this.snapshot!.identityDomain;
     await this.database.db.transaction(async (tx) => {
       await tx.execute(KEY_LIFECYCLE_LOCK);
       const snapshot = await this.reloadSnapshot(tx, domain);
@@ -484,9 +562,25 @@ export class KeypairService
    * replacing a pinned identity.
    */
   private async bootstrapOrLoad(): Promise<boolean> {
+    // Configuration is only the startup input. Once this transaction commits,
+    // namespace 0 is the authoritative local-domain record for runtime reads.
     const domain = normalizeDomain(this.config.domain);
     return this.database.db.transaction(async (tx) => {
       await tx.execute(KEY_LIFECYCLE_LOCK);
+      const localNamespace = await tx.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.id, 0),
+        columns: { domain: true },
+      });
+      if (!localNamespace) {
+        await tx.insert(identityNamespace).values({
+          id: 0,
+          domain,
+          rootPublicKey: null,
+          identityPinnedAt: null,
+        });
+      } else if (normalizeDomain(localNamespace.domain) !== domain) {
+        await this.rebindLocalDomainInTx(tx, localNamespace.domain, domain);
+      }
       const snapshot = await this.reloadSnapshot(tx, domain);
       if (snapshot) {
         this.snapshot = snapshot;
@@ -513,6 +607,85 @@ export class KeypairService
       );
       return true;
     });
+  }
+
+  /**
+   * Applies a configured local-domain change without changing the root identity.
+   * A fresh signing certificate is mandatory because KeyId is domain-bound.
+   * Namespace/feed changes and current local subject addresses commit together;
+   * retained old keys remain available only to the sealed-challenge oracle.
+   */
+  private async rebindLocalDomainInTx(
+    tx: Parameters<Parameters<DatabaseService['db']['transaction']>[0]>[0],
+    previousDomain: string,
+    nextDomain: string,
+  ): Promise<void> {
+    const roots = await tx.query.localFederationRoot.findMany();
+    const state = await tx.query.localFederationSigningState.findFirst();
+    if ((roots.length === 0) !== (state === undefined)) {
+      throw new Error('local root identity and signing state are inconsistent');
+    }
+    if (roots.length > 0 && state) {
+      const claimable = roots.filter((root) => root.claimable);
+      if (claimable.length !== 1) {
+        throw new Error('local identity must have exactly one claimable root');
+      }
+      const root = claimable[0]!;
+      const now = Date.now();
+      const rootNotAfter = root.notAfter.getTime();
+      if (rootNotAfter <= now) {
+        throw new Error(
+          'the claimable root epoch has expired; rotate it before changing SOMS_DOMAIN',
+        );
+      }
+      const replacement = this.generateSigningKey(
+        root.id,
+        nextDomain,
+        now,
+        Math.min(now + this.config.signingKey.lifetimeMs, rootNotAfter),
+      );
+      await this.insertSigningKey(tx, replacement);
+      await tx
+        .update(localFederationSigningState)
+        .set({
+          domain: nextDomain,
+          currentKeyId: replacement.keyId,
+          plannedSwitchAt: null,
+          plannedSuccessorKeyId: null,
+          updatedAt: new Date(now),
+        })
+        .where(eq(localFederationSigningState.domain, state.domain));
+      await tx
+        .update(localFederationRoot)
+        .set({ domain: nextDomain })
+        .where(gt(localFederationRoot.id, 0));
+    }
+
+    await tx
+      .update(identityNamespace)
+      .set({ domain: nextDomain })
+      .where(eq(identityNamespace.id, 0));
+    await tx
+      .update(account)
+      .set({ updatedAt: new Date() })
+      .where(eq(account.namespaceId, 0));
+    await tx
+      .update(messageThread)
+      .set({ groupDomain: nextDomain, updatedAt: new Date() })
+      .where(
+        and(
+          eq(messageThread.authorityNamespaceId, 0),
+          eq(messageThread.type, 'GROUP'),
+        ),
+      );
+    await this.changes.recordNamespaceChangeInTx(tx, 0);
+    await this.changes.recordClientChangeInTx(tx, {
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
+    });
+    this.logger.warn(
+      `Re-bound local federation domain ${previousDomain} -> ${nextDomain}; peers must confirm the new domain through Recognize and Health`,
+    );
   }
 
   /** Reload every root epoch and signing-key row; null when the tables are empty. */
@@ -668,7 +841,8 @@ export class KeypairService
    *  double-switch. Expired key rows are never deleted: retained key history
    *  keeps sealed challenges openable forever. */
   private async maintainRotation(): Promise<void> {
-    const domain = normalizeDomain(this.config.domain);
+    const domain = this.snapshot?.identityDomain;
+    if (!domain) throw new Error('local identity has not been loaded');
     await this.database.db.transaction(async (tx) => {
       await tx.execute(KEY_LIFECYCLE_LOCK);
       const snapshot = await this.reloadSnapshot(tx, domain);

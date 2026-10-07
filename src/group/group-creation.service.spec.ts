@@ -42,6 +42,9 @@ describe('GroupService creation', () => {
       insert,
       execute,
       query: {
+        identityNamespace: {
+          findFirst: vi.fn().mockResolvedValue({ domain: 'local.example' }),
+        },
         account: {
           findFirst: vi.fn().mockResolvedValue({
             account: 'owner',
@@ -111,7 +114,7 @@ describe('GroupService creation', () => {
       type: 'GROUP_CREATED',
       creator: {
         account: 'owner',
-        domain: 'local',
+        domain: 'local.example',
         profileNamespaceId: 0,
         profileRev: 2,
       },

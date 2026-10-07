@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProfileNamespaceFeedService } from './profile-namespace-feed.service.js';
+import { ProfileNamespaceChangeStore } from './profile-namespace-change-store.service.js';
 import { BusinessCode } from '../common/business-code.js';
 
 const ROOT = Buffer.alloc(32, 7).toString('base64');
@@ -54,16 +55,23 @@ function harness(selectResults: Array<Record<string, unknown>[]>): Harness {
   const database = {
     db: {
       select,
+      query: {
+        identityNamespace: {
+          findFirst: vi.fn().mockResolvedValue({ domain: 'soms.test' }),
+        },
+      },
       transaction: vi.fn(
         async (fn: (value: typeof txLike) => Promise<unknown>) => fn(txLike),
       ),
     },
   };
   const keypair = { getRootPublicKeyB64: () => ROOT };
+  const changes = new ProfileNamespaceChangeStore(database as never);
   return {
     service: new ProfileNamespaceFeedService(
       database as never,
       keypair as never,
+      changes,
     ),
     reads,
     setReturning,
@@ -187,6 +195,7 @@ describe('ProfileNamespaceFeedService', () => {
     await expect(service.resolveBindings(0)).resolves.toEqual({
       domain: 'soms.test',
       rootPublicKey: ROOT,
+      status: 'ACTIVE',
       profileNamespaceFeedEndId: '7',
     });
   });
@@ -199,17 +208,20 @@ describe('ProfileNamespaceFeedService', () => {
           domain: 'peer.test',
           rootPublicKey: ROOT,
           retiredAt: null,
+          active: true,
         },
       ],
     ]);
     await expect(service.resolveBindings(12)).resolves.toEqual({
       domain: 'peer.test',
       rootPublicKey: ROOT,
+      status: 'ACTIVE',
       profileNamespaceFeedEndId: '7',
     });
 
     // A reset-retired id keeps answering with its last retained bindings so
-    // historical references stay renderable.
+    // historical references stay renderable — disclosed as ARCHIVED so the
+    // puller caches the lifecycle instead of assuming ACTIVE.
     const retired = harness([
       [{ feedEndId: 7n }],
       [
@@ -217,12 +229,14 @@ describe('ProfileNamespaceFeedService', () => {
           domain: 'peer.test',
           rootPublicKey: ROOT,
           retiredAt: new Date(),
+          active: false,
         },
       ],
     ]);
     await expect(retired.service.resolveBindings(12)).resolves.toMatchObject({
       domain: 'peer.test',
       rootPublicKey: ROOT,
+      status: 'ARCHIVED',
     });
 
     const missing = harness([[{ feedEndId: 7n }], []]);

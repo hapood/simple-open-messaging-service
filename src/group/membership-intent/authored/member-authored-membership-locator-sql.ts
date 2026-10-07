@@ -11,10 +11,11 @@ export function memberAuthoredMembershipLocatorSql(input: {
     SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
       g."namespaceId" AS "groupNamespaceId",
       g."dissolvedAt" AS "dissolvedAt",
-      a.account AS "memberAccount"
+      a.account AS "memberAccount",
+      (SELECT domain FROM "IdentityNamespace" WHERE id = 0) AS "memberDomain"
     FROM ${groupStateSql} g
     JOIN "Account" a ON a.id = ${input.memberUserId}
-      AND a.domain = 'local' AND a."namespaceId" = 0
+      AND a."namespaceId" = 0
     WHERE g.id = ${input.threadId}
   `;
 }

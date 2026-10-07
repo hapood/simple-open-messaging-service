@@ -70,9 +70,13 @@ function harness() {
       }),
     },
   };
-  const federation = {
+  const peerLifecycle = {
     listTrustedPeerDomains: vi.fn().mockResolvedValue([]),
+  };
+  const statePull = {
     pullStateFromPeer: vi.fn().mockResolvedValue(0n),
+  };
+  const denials = {
     handleThreadQueryForbidden: vi.fn().mockResolvedValue('P2P_REVOKED'),
   };
   const scheduler = new FederationThreadRoundSchedulerService(
@@ -81,18 +85,26 @@ function harness() {
     forward as never,
     reverse as never,
     { run: vi.fn().mockResolvedValue(false) } as never,
-    federation as never,
+    peerLifecycle as never,
+    statePull as never,
+    denials as never,
     sources as never,
+    {
+      initialize: vi.fn().mockResolvedValue(undefined),
+      waitUntilInitialized: vi.fn().mockResolvedValue(undefined),
+    } as never,
   );
   return {
     scheduler,
     states,
     sources,
+    peerLifecycle,
+    statePull,
+    denials,
     forward,
     reverse,
     database,
     databaseState,
-    federation,
   };
 }
 
@@ -111,7 +123,7 @@ describe('FederationThreadRoundSchedulerService', () => {
       },
     ];
     try {
-      await h.scheduler.onRelationshipStatePublished({ peerDomain: 'a.test' });
+      await h.scheduler.onRelationshipStatePublished({ namespaceId: 1 });
       await vi.waitFor(() => {
         expect(h.forward.runMessages).toHaveBeenCalled();
         expect(h.reverse.run).toHaveBeenCalled();
@@ -168,7 +180,7 @@ describe('FederationThreadRoundSchedulerService', () => {
   it.each(['message', 'tombstone', 'reverse'] as const)(
     'logs handled %s authorization denials only at debug level',
     async (direction) => {
-      const { scheduler, forward, reverse, federation } = harness();
+      const { scheduler, forward, reverse, statePull } = harness();
       const run =
         direction === 'message'
           ? forward.runMessages
@@ -193,7 +205,7 @@ describe('FederationThreadRoundSchedulerService', () => {
       try {
         await scheduler.wake(1, 'a.test', direction);
         await vi.waitFor(() =>
-          expect(federation.pullStateFromPeer).toHaveBeenCalled(),
+          expect(statePull.pullStateFromPeer).toHaveBeenCalled(),
         );
         expect(warn).not.toHaveBeenCalled();
         expect(error).not.toHaveBeenCalled();
@@ -210,11 +222,11 @@ describe('FederationThreadRoundSchedulerService', () => {
   );
 
   it('still reports failures while handling an authorization denial', async () => {
-    const { scheduler, forward, federation } = harness();
+    const { scheduler, forward, denials } = harness();
     const error = vi
       .spyOn(Logger.prototype, 'error')
       .mockImplementation(() => {});
-    federation.handleThreadQueryForbidden.mockRejectedValueOnce(
+    denials.handleThreadQueryForbidden.mockRejectedValueOnce(
       new Error('database unavailable'),
     );
     forward.runMessages.mockRejectedValueOnce(
@@ -241,7 +253,7 @@ describe('FederationThreadRoundSchedulerService', () => {
   it.each(['message', 'tombstone', 'reverse'] as const)(
     'quietly ends inactive %s work and allows a later wake',
     async (direction) => {
-      const { scheduler, forward, reverse, federation } = harness();
+      const { scheduler, forward, reverse, denials } = harness();
       const run =
         direction === 'message'
           ? forward.runMessages
@@ -263,7 +275,7 @@ describe('FederationThreadRoundSchedulerService', () => {
         expect(warn).not.toHaveBeenCalled();
         expect(error).not.toHaveBeenCalled();
         expect(run).toHaveBeenCalledTimes(1);
-        expect(federation.handleThreadQueryForbidden).not.toHaveBeenCalled();
+        expect(denials.handleThreadQueryForbidden).not.toHaveBeenCalled();
         await scheduler.wake(1, 'a.test', direction);
         await new Promise((resolve) => setImmediate(resolve));
         expect(run).toHaveBeenCalledTimes(2);
@@ -652,7 +664,7 @@ describe('FederationThreadRoundSchedulerService', () => {
   });
 
   it('stops every direction on FORBIDDEN and reopens only after a new thread wake', async () => {
-    const { scheduler, forward, federation } = harness();
+    const { scheduler, forward, denials, statePull } = harness();
     forward.runMessages
       .mockRejectedValueOnce(
         new FederationThreadRoundRemoteError(
@@ -664,7 +676,7 @@ describe('FederationThreadRoundSchedulerService', () => {
 
     await scheduler.wake(1, 'a.test', 'message');
     await vi.waitFor(() =>
-      expect(federation.handleThreadQueryForbidden).toHaveBeenCalledWith(
+      expect(denials.handleThreadQueryForbidden).toHaveBeenCalledWith(
         1,
         'a.test',
         7,
@@ -674,7 +686,7 @@ describe('FederationThreadRoundSchedulerService', () => {
     await scheduler.wake(1, 'a.test', 'message');
     expect(forward.runMessages).toHaveBeenCalledOnce();
     await vi.waitFor(() =>
-      expect(federation.pullStateFromPeer).toHaveBeenCalledWith('a.test', 0n),
+      expect(statePull.pullStateFromPeer).toHaveBeenCalledWith('a.test', 0n),
     );
 
     scheduler.onWake({
@@ -690,8 +702,8 @@ describe('FederationThreadRoundSchedulerService', () => {
   });
 
   it('immediately restarts stale FORBIDDEN work without blocking the thread', async () => {
-    const { scheduler, forward, federation } = harness();
-    federation.handleThreadQueryForbidden.mockResolvedValueOnce('STALE');
+    const { scheduler, forward, denials, statePull } = harness();
+    denials.handleThreadQueryForbidden.mockResolvedValueOnce('STALE');
     forward.runMessages
       .mockRejectedValueOnce(
         new FederationThreadRoundRemoteError(
@@ -705,13 +717,13 @@ describe('FederationThreadRoundSchedulerService', () => {
     await vi.waitFor(() =>
       expect(forward.runMessages).toHaveBeenCalledTimes(2),
     );
-    expect(federation.pullStateFromPeer).toHaveBeenCalledWith('a.test', 0n);
+    expect(statePull.pullStateFromPeer).toHaveBeenCalledWith('a.test', 0n);
     await scheduler.onModuleDestroy();
   });
 
   it('stops a denied mirror until the next push without pulling state', async () => {
-    const { scheduler, forward, federation } = harness();
-    federation.handleThreadQueryForbidden.mockResolvedValueOnce(
+    const { scheduler, forward, denials, statePull } = harness();
+    denials.handleThreadQueryForbidden.mockResolvedValueOnce(
       'MIRROR_WAITING_FOR_PUSH',
     );
     forward.runMessages
@@ -725,9 +737,9 @@ describe('FederationThreadRoundSchedulerService', () => {
 
     await scheduler.wake(1, 'a.test', 'message');
     await vi.waitFor(() =>
-      expect(federation.handleThreadQueryForbidden).toHaveBeenCalledOnce(),
+      expect(denials.handleThreadQueryForbidden).toHaveBeenCalledOnce(),
     );
-    expect(federation.pullStateFromPeer).not.toHaveBeenCalled();
+    expect(statePull.pullStateFromPeer).not.toHaveBeenCalled();
 
     await scheduler.wake(1, 'a.test', 'message');
     expect(forward.runMessages).toHaveBeenCalledOnce();
@@ -793,9 +805,9 @@ describe('FederationThreadRoundSchedulerService', () => {
   });
 
   it('single-flights a peer state drain and follows with the greatest dirty target', async () => {
-    const { scheduler, federation } = harness();
+    const { scheduler, statePull } = harness();
     let release!: () => void;
-    federation.pullStateFromPeer
+    statePull.pullStateFromPeer
       .mockImplementationOnce(
         () =>
           new Promise<bigint>((resolve) => {
@@ -806,20 +818,17 @@ describe('FederationThreadRoundSchedulerService', () => {
 
     scheduler.wakeStateFeed('a.test', 7n);
     await vi.waitFor(() =>
-      expect(federation.pullStateFromPeer).toHaveBeenCalledOnce(),
+      expect(statePull.pullStateFromPeer).toHaveBeenCalledOnce(),
     );
     scheduler.wakeStateFeed('a.test', 11n);
     scheduler.wakeStateFeed('a.test', 5n);
-    expect(federation.pullStateFromPeer).toHaveBeenCalledOnce();
+    expect(statePull.pullStateFromPeer).toHaveBeenCalledOnce();
 
     release();
     await vi.waitFor(() =>
-      expect(federation.pullStateFromPeer).toHaveBeenCalledTimes(2),
+      expect(statePull.pullStateFromPeer).toHaveBeenCalledTimes(2),
     );
-    expect(federation.pullStateFromPeer).toHaveBeenLastCalledWith(
-      'a.test',
-      11n,
-    );
+    expect(statePull.pullStateFromPeer).toHaveBeenLastCalledWith('a.test', 11n);
     await scheduler.onModuleDestroy();
   });
 });

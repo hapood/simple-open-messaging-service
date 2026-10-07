@@ -293,7 +293,6 @@ describe('FederationRecognitionService health transitions', () => {
     const prepared = {
       trustLevel: 'establishing',
       identityPinnedAt: new Date(),
-      recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: false,
     };
@@ -408,7 +407,6 @@ describe('FederationRecognitionService health transitions', () => {
       const { database, updateValues } = txDatabase({
         trustLevel: 'establishing',
         identityPinnedAt: new Date(),
-        recognizesPeer: true,
         localServiceAvailable: true,
         peerAcceptanceConfirmed: false,
       });
@@ -441,7 +439,6 @@ describe('FederationRecognitionService health transitions', () => {
     const { database, insertValues } = txDatabase({
       trustLevel: 'degraded',
       identityPinnedAt: new Date(),
-      recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: true,
     });
@@ -468,7 +465,6 @@ describe('FederationRecognitionService health transitions', () => {
     const { database, insertValues } = txDatabase({
       trustLevel: 'available',
       identityPinnedAt: new Date(),
-      recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: true,
     });
@@ -700,6 +696,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     };
     const discovery = {
       fetchWellKnown: vi.fn().mockResolvedValue(doc),
+      cacheDocument: vi.fn().mockResolvedValue(undefined),
     };
     const signature = { verifyWithKey: vi.fn().mockResolvedValue(true) };
     const service = new FederationRecognitionService(

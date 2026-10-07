@@ -161,8 +161,8 @@ history initialization. Feed ordering and current authorization still apply.
 
 `namespaceId` and `profileRev` are required and non-null. `namespaceId`
 identifies the source account's profile subject namespace in the authenticated
-publisher's namespace space under the local-subject marker rules of
-[Core Protocol Section 6.2.1](./protocol.md#local-subject-marker-and-namespace-interpretation);
+publisher's namespace space under the publisher-scoped rules of
+[Core Protocol Section 6.2.1](./protocol.md#621-publisher-scoped-namespace-interpretation);
 because the subject `account` is hosted by the source, the value is `0`. It is
 not a receiver-local namespace, and the consumer interprets and stores it only
 as part of the profile reference emitted

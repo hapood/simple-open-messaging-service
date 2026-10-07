@@ -9,17 +9,17 @@ import {
 
 const snapshot: ThreadFeedSnapshot = {
   type: 'P2P',
-  authorityNamespaceId: 0,
+  publisherNamespaceId: 0,
+  profileAccount: 'peer',
+  profileRev: 0,
   conversationState: 'ACTIVE',
   blocked: false,
   role: null,
-  profile: { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 0 },
   threadId: 7,
   threadFeedId: 1,
   messageEndSeq: 200,
   tombstoneEndSeq: 0,
   alias: null,
-  threadProfileRev: 0,
   groupMetaFeedEndId: null,
   joinRequestEndFeedId: 0,
   joinRequestReadFeedId: -1,
@@ -33,11 +33,7 @@ const initial = () =>
   mergeThreadAttention(undefined, snapshot);
 
 describe('shared attention reconciliation', () => {
-  it('rejects inconsistent avatar revisions and missing announcement coordinates', () => {
-    expect(() => mergeThreadAttention(undefined, {
-      ...snapshot,
-      profile: { ...snapshot.profile, profileRev: 2 },
-    })).toThrow('Inconsistent thread profile revision');
+  it('rejects missing announcement coordinates', () => {
     const missing = { ...snapshot } as Record<string, unknown>;
     delete missing['announcementReadFeedId'];
     expect(() => mergeThreadAttention(undefined, missing as unknown as ThreadFeedSnapshot))
@@ -93,7 +89,6 @@ describe('shared attention reconciliation', () => {
       messageEndSeq: 200,
       tombstoneEndSeq: 0,
       alias: null,
-      threadProfileRev: 0,
       groupMetaFeedEndId: null,
       lastReadSeq: 103,
       unreadCount: 6,
@@ -110,7 +105,6 @@ describe('shared attention reconciliation', () => {
       messageEndSeq: 200,
       tombstoneEndSeq: 0,
       alias: null,
-      threadProfileRev: 0,
       groupMetaFeedEndId: null,
       lastReadSeq: 110,
       unreadCount: 2,
@@ -129,7 +123,6 @@ describe('shared attention reconciliation', () => {
       messageEndSeq: 200,
       tombstoneEndSeq: 0,
       alias: null,
-      threadProfileRev: 0,
       groupMetaFeedEndId: null,
       lastReadSeq: 95,
       unreadCount: 12,
@@ -160,7 +153,6 @@ describe('shared attention reconciliation', () => {
       messageEndSeq: 200,
       tombstoneEndSeq: 0,
       alias: null,
-      threadProfileRev: 0,
       groupMetaFeedEndId: null,
       lastReadSeq: 110,
     });

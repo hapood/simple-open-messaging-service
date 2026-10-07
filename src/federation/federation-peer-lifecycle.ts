@@ -1,5 +1,15 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, count, desc, eq, ilike, isNull, lt, or } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  isNull,
+  lt,
+  or,
+} from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
@@ -47,7 +57,6 @@ export class FederationPeerLifecycle {
     if (
       existing?.trustLevel === 'available' &&
       existing?.active === true &&
-      existing.recognizesPeer &&
       existing.localServiceAvailable &&
       existing.peerAcceptanceConfirmed
     )
@@ -83,7 +92,6 @@ export class FederationPeerLifecycle {
     return (
       existing?.trustLevel !== 'halted' &&
       existing?.active === true &&
-      existing.recognizesPeer &&
       existing.localServiceAvailable &&
       existing.peerAcceptanceConfirmed
     );
@@ -205,7 +213,7 @@ export class FederationPeerLifecycle {
     }
     const trustLevel = !existing.active
       ? 'unrecognized'
-      : existing.recognizesPeer && existing.localServiceAvailable
+      : existing.localServiceAvailable
         ? !existing.peerAcceptanceConfirmed
           ? 'establishing'
           : existing.remoteServiceReachable
@@ -221,6 +229,32 @@ export class FederationPeerLifecycle {
         haltReason: null,
       })
       .where(eq(tables.identityNamespace.domain, domain));
+  }
+
+  /** Locally prepared peers still waiting for the peer's acceptance assertion. */
+  async listRecoverablePeerDomains(): Promise<string[]> {
+    const rows = await this.database.db.query.identityNamespace.findMany({
+      where: and(
+        eq(tables.identityNamespace.trustLevel, 'establishing'),
+        eq(tables.identityNamespace.localServiceAvailable, true),
+        eq(tables.identityNamespace.peerAcceptanceConfirmed, false),
+      ),
+      columns: { domain: true },
+    });
+    return rows.map((r) => r.domain);
+  }
+
+  /** Fully recognized peers participating in startup reconciliation. */
+  async listTrustedPeerDomains(): Promise<string[]> {
+    const rows = await this.database.db.query.identityNamespace.findMany({
+      where: and(
+        inArray(tables.identityNamespace.trustLevel, ['available', 'degraded']),
+        eq(tables.identityNamespace.localServiceAvailable, true),
+        eq(tables.identityNamespace.peerAcceptanceConfirmed, true),
+      ),
+      columns: { domain: true },
+    });
+    return rows.map((row) => row.domain);
   }
 
   async list(opts: {
@@ -316,7 +350,6 @@ export class FederationPeerLifecycle {
           trustLevel: tables.identityNamespace.trustLevel,
           haltCode: tables.identityNamespace.haltCode,
           id: tables.identityNamespace.id,
-          recognizesPeer: tables.identityNamespace.recognizesPeer,
           localServiceAvailable: tables.identityNamespace.localServiceAvailable,
           peerAcceptanceConfirmed:
             tables.identityNamespace.peerAcceptanceConfirmed,
@@ -336,12 +369,11 @@ export class FederationPeerLifecycle {
           HttpStatus.CONFLICT,
         );
       }
-      const trustLevel =
-        !locked.recognizesPeer || !locked.localServiceAvailable
-          ? 'unrecognized'
-          : locked.peerAcceptanceConfirmed
-            ? 'degraded'
-            : 'establishing';
+      const trustLevel = !locked.localServiceAvailable
+        ? 'unrecognized'
+        : locked.peerAcceptanceConfirmed
+          ? 'degraded'
+          : 'establishing';
       await tx
         .update(tables.identityNamespace)
         .set({

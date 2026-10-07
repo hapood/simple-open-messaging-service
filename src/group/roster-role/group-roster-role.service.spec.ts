@@ -50,6 +50,7 @@ function authorizedRow(overrides: object = {}) {
     namespaceId: 0,
     dissolvedAt: null,
     operatorAccount: owner.account,
+    operatorDomain: owner.domain,
     operatorRole: owner.role,
     operatorProfileRev: owner.operatorProfileRev,
     operatorAuthorized: owner.operatorAuthorized,
@@ -123,7 +124,7 @@ describe('GroupRosterRoleService', () => {
       threadId: 10,
       operatorUserId: 1,
       kind: 'TRANSFER_OWNERSHIP',
-      target: { account: 'member', domain: 'local' },
+      target: { account: 'member', namespaceId: 0 },
     });
 
     expect(outcome).toEqual({ status: 'APPLIED' });
@@ -221,7 +222,7 @@ describe('GroupRosterRoleService', () => {
       threadId: 10,
       operatorUserId: 1,
       kind: 'TRANSFER_OWNERSHIP',
-      target: { account: 'member', domain: 'local' },
+      target: { account: 'member', namespaceId: 0 },
     });
 
     expect(outcome).toEqual({ status: 'APPLIED' });
@@ -248,7 +249,7 @@ describe('GroupRosterRoleService', () => {
       threadId: 10,
       operatorUserId: 1,
       kind: 'SET_ROLE',
-      target: { account: 'member', domain: 'local' },
+      target: { account: 'member', namespaceId: 0 },
       role: GroupRole.ADMIN,
     });
 
@@ -284,7 +285,7 @@ describe('GroupRosterRoleService', () => {
       threadId: 10,
       operatorUserId: 1,
       kind: 'SET_ROLE',
-      target: { account: 'member', domain: 'local' },
+      target: { account: 'member', namespaceId: 0 },
       role: GroupRole.ADMIN,
     });
 
@@ -307,7 +308,7 @@ describe('GroupRosterRoleService', () => {
       threadId: 10,
       operatorUserId: 1,
       kind: 'TRANSFER_OWNERSHIP',
-      target: { account: 'member', domain: 'local' },
+      target: { account: 'member', namespaceId: 0 },
     });
 
     expect(outcome).toEqual({
@@ -339,7 +340,7 @@ describe('GroupRosterRoleService', () => {
       threadId: 10,
       operatorUserId: 1,
       kind: 'SET_ROLE',
-      target: { account: 'member', domain: 'local' },
+      target: { account: 'member', namespaceId: 0 },
       role: GroupRole.MEMBER,
     });
 
@@ -372,7 +373,7 @@ describe('GroupRosterRoleService', () => {
       threadId: 10,
       operatorUserId: 1,
       kind: 'TRANSFER_OWNERSHIP',
-      target: { account: 'visitor', domain: 'peer.example' },
+      target: { account: 'visitor', namespaceId: 9 },
     });
 
     expect(outcome).toMatchObject({
@@ -402,7 +403,7 @@ describe('GroupRosterRoleService', () => {
       threadId: 10,
       operatorUserId: 1,
       kind: 'SET_ROLE',
-      target: { account: 'visitor', domain: 'peer.example' },
+      target: { account: 'visitor', namespaceId: 9 },
       role: GroupRole.ADMIN,
     });
 
@@ -425,7 +426,7 @@ describe('GroupRosterRoleService', () => {
       threadId: 10,
       operatorUserId: 1,
       kind: 'TRANSFER_OWNERSHIP',
-      target: { account: 'stranger', domain: 'local' },
+      target: { account: 'stranger', namespaceId: 0 },
     });
 
     expect(outcome).toMatchObject({
@@ -442,7 +443,7 @@ describe('GroupRosterRoleService', () => {
       threadId: 10,
       operatorUserId: 1,
       kind: 'SET_ROLE',
-      target: { account: 'member', domain: 'local' },
+      target: { account: 'member', namespaceId: 0 },
       role: GroupRole.OWNER,
     } as GroupRosterRoleCommand);
 

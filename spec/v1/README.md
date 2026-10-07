@@ -27,7 +27,7 @@ See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and modul
 11. [Resources](./resources.md): parameters, responses, authorization, and errors for media bytes and forward closure.
 12. [Audio and Video Calls](./calls.md): the mandatory end-to-end Call Profile, including S2S frames, endpoint WebRTC/JSEP behavior, lifecycle state, and AUDIO-to-VIDEO upgrade on the same connection.
 13. [Stable Error Registry](./errors.md): stable error codes, HTTP status, retry behavior, and identity actions.
-13. [Machine-readable Release Package](./schema/README.md): JSON Schema, HTTP manifest, positive and negative vectors, and the Conformance CLI.
+14. [Machine-readable Release Package](./schema/README.md): JSON Schema, HTTP manifest, positive and negative vectors, and the Conformance CLI.
 
 The Core Protocol defines shared rules. Transport and Security defines the discovery, TLS, and signature profile shared by all operations. Each remaining operation document defines only its body, authorization, state, and idempotency semantics. Together these documents form one versioned release package, whose status applies to the whole package rather than ordinary chapters.
 

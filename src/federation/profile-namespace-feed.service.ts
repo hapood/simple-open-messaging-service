@@ -13,8 +13,9 @@ import {
   profileNamespaceChangeFeedHead,
   profileNamespaceFeed,
 } from '../database/schema.js';
-import { loadFederationConfig } from './federation.config.js';
 import { KeypairService } from './keypair.service.js';
+import { ProfileNamespaceChangeStore } from './profile-namespace-change-store.service.js';
+import type { NamespaceStatus } from './profile-namespace.service.js';
 
 export interface ProfileNamespaceFeedItem {
   namespaceId: number;
@@ -31,6 +32,10 @@ export interface ProfileNamespaceFeedPage {
 export interface ProfileNamespaceBindings {
   domain: string;
   rootPublicKey: string;
+  /** Lifecycle of the bound namespace at the responder: ACTIVE, or ARCHIVED
+   *  when the responder has reset-retired the id (its last retained bindings
+   *  stay disclosed so historical references keep rendering). */
+  status: NamespaceStatus;
   profileNamespaceFeedEndId: string;
 }
 
@@ -54,12 +59,16 @@ function toClientFeedNumber(value: bigint): number {
 
 /** Publisher side of the Profile Namespace Feed: the shared compacted record
  *  of identity-namespace binding changes (root replacement, domain re-bind,
- *  new namespace item). Consumer-side expiry lives in the pull service. */
+ *  new namespace item). Consumer-side expiry lives in the pull service.
+ *  Change recording itself lives in the leaf ProfileNamespaceChangeStore —
+ *  shared with KeypairService to avoid an import cycle — and is delegated
+ *  here so existing callers keep one seam. */
 @Injectable()
 export class ProfileNamespaceFeedService {
   constructor(
     private readonly database: DatabaseService,
     private readonly keypair: KeypairService,
+    private readonly changes: ProfileNamespaceChangeStore,
   ) {}
 
   /** Publishes one binding change of `namespaceId` by allocating the next
@@ -71,43 +80,12 @@ export class ProfileNamespaceFeedService {
     tx: DatabaseTransaction,
     namespaceId: number,
   ): Promise<bigint> {
-    if (
-      !Number.isSafeInteger(namespaceId) ||
-      namespaceId < LOCAL_NAMESPACE_ID
-    ) {
-      throw new Error('namespace id must be a non-negative safe integer');
-    }
-    const [allocated] = await tx
-      .update(identityNamespace)
-      .set({
-        profileNamespaceFeedEndId: sql`${identityNamespace.profileNamespaceFeedEndId} + 1`,
-      })
-      .where(eq(identityNamespace.id, LOCAL_NAMESPACE_ID))
-      .returning({ feedId: identityNamespace.profileNamespaceFeedEndId });
-    if (!allocated) {
-      throw new Error('local namespace sentinel row is missing');
-    }
-    await tx
-      .insert(profileNamespaceFeed)
-      .values({ namespaceId, feedId: allocated.feedId })
-      .onConflictDoUpdate({
-        target: profileNamespaceFeed.namespaceId,
-        set: { feedId: allocated.feedId, updatedAt: new Date() },
-      });
-    return allocated.feedId;
+    return this.changes.recordNamespaceChangeInTx(tx, namespaceId);
   }
 
-  /** The publisher-wide feed end (row-0 allocator value). The sentinel row
-   *  is created by the base migration and never deleted; a missing row is a
-   *  corrupted invariant and fails loudly instead of answering 0. */
+  /** The publisher-wide feed end (row-0 allocator value). */
   async readFeedEndId(): Promise<bigint> {
-    const [row] = await this.database.db
-      .select({ feedEndId: identityNamespace.profileNamespaceFeedEndId })
-      .from(identityNamespace)
-      .where(eq(identityNamespace.id, LOCAL_NAMESPACE_ID))
-      .limit(1);
-    if (!row) throw new Error('local namespace sentinel row is missing');
-    return row.feedEndId;
+    return this.changes.readFeedEndId();
   }
 
   /** Serves one page of the shared compacted feed. An omitted `after`
@@ -116,7 +94,7 @@ export class ProfileNamespaceFeedService {
    *  puller initializes its cursor directly from the response. */
   /** Records one client-visible binding change: allocates the next change
    *  position from the single-row head and upserts the pair's compacted
-   *  item. MUST run in the same transaction as the ProfileNamespaceInfo /
+   *  item. MUST run in the same transaction as the ProfileNamespace /
    *  IdentityNamespace mutation it publishes, and callers must already hold
    *  every business lock (the head row is a terminal lock). Returns the
    *  allocated position so orchestrators can broadcast a wake after commit. */
@@ -124,36 +102,7 @@ export class ProfileNamespaceFeedService {
     tx: DatabaseTransaction,
     pair: { publisherNamespaceId: number; profileNamespaceId: number },
   ): Promise<bigint> {
-    const [head] = await tx
-      .select({ endId: profileNamespaceChangeFeedHead.endId })
-      .from(profileNamespaceChangeFeedHead)
-      .where(eq(profileNamespaceChangeFeedHead.id, 0))
-      .for('update')
-      .limit(1);
-    if (!head) throw new Error('profile namespace change head row is missing');
-    const changeId = head.endId + 1n;
-    await tx
-      .insert(profileNamespaceChangeFeedHead)
-      .values({ id: 0, endId: changeId })
-      .onConflictDoUpdate({
-        target: profileNamespaceChangeFeedHead.id,
-        set: { endId: changeId },
-      });
-    await tx
-      .insert(profileNamespaceChangeFeed)
-      .values({
-        publisherNamespaceId: pair.publisherNamespaceId,
-        profileNamespaceId: pair.profileNamespaceId,
-        changeId,
-      })
-      .onConflictDoUpdate({
-        target: [
-          profileNamespaceChangeFeed.publisherNamespaceId,
-          profileNamespaceChangeFeed.profileNamespaceId,
-        ],
-        set: { changeId, updatedAt: sql`now()` },
-      });
-    return changeId;
+    return this.changes.recordClientChangeInTx(tx, pair);
   }
 
   /** Serves the merged client changelog: compacted (pair, changeId) items
@@ -331,9 +280,15 @@ export class ProfileNamespaceFeedService {
     }
     const feedEndId = await this.readFeedEndId();
     if (nsid === LOCAL_NAMESPACE_ID) {
+      const local = await this.database.db.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.id, LOCAL_NAMESPACE_ID),
+        columns: { domain: true },
+      });
+      if (!local) throw new Error('local identity namespace is missing');
       return {
-        domain: loadFederationConfig().domain,
+        domain: local.domain,
         rootPublicKey: this.keypair.getRootPublicKeyB64(),
+        status: 'ACTIVE',
         profileNamespaceFeedEndId: feedEndId.toString(),
       };
     }
@@ -341,6 +296,8 @@ export class ProfileNamespaceFeedService {
       .select({
         domain: identityNamespace.domain,
         rootPublicKey: identityNamespace.rootPublicKey,
+        retiredAt: identityNamespace.retiredAt,
+        active: identityNamespace.active,
       })
       .from(identityNamespace)
       .where(eq(identityNamespace.id, nsid))
@@ -360,6 +317,7 @@ export class ProfileNamespaceFeedService {
     return {
       domain: row.domain,
       rootPublicKey: row.rootPublicKey,
+      status: row.active && row.retiredAt === null ? 'ACTIVE' : 'ARCHIVED',
       profileNamespaceFeedEndId: feedEndId.toString(),
     };
   }

@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { DatabaseService } from '../database/database.service.js';
-import { identityNamespace, profileNamespaceInfo } from '../database/schema.js';
+import { identityNamespace, profileNamespace } from '../database/schema.js';
 import { S2sResponseError } from './federation-errors.js';
 import { FederationPeerHttp } from './federation-peer-http.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
@@ -13,14 +13,17 @@ import {
   type ProfileNamespaceBindings,
 } from './profile-namespace-feed.service.js';
 import { TrailingSingleFlight } from '../../shared/trailing-single-flight.js';
-import type { ProfileNamespacePair } from './profile-namespace-info.service.js';
+import type {
+  NamespaceStatus,
+  ProfileNamespacePair,
+} from './profile-namespace.service.js';
 
 const STALE_FETCH_MAX_ATTEMPTS = 3;
 
-/** Outbound ProfileNamespaceInfo refresh engine: per-(publisher, nsid)
+/** Outbound ProfileNamespace refresh engine: per-(publisher, nsid)
  *  coalesced background refreshes with the stale-response guard. This is the
  *  only network caller of the local cache — the cache store itself
- *  (ProfileNamespaceInfoService) answers from local rows exclusively, which
+ *  (ProfileNamespaceService) answers from local rows exclusively, which
  *  keeps the provider import graph acyclic. Avatar-request-shaped:
  *  coalescing per pair, in-flight deduplication, no business locks. */
 @Injectable()
@@ -90,28 +93,39 @@ export class ProfileNamespaceRefreshService {
       // persist as current.
       const end = BigInt(answer.profileNamespaceFeedEndId);
       if (end < triggerFeedId) continue;
-      await this.database.db
-        .insert(profileNamespaceInfo)
-        .values({
-          publisherNamespaceId: pair.publisherNamespaceId,
-          profileNamespaceId: pair.profileNamespaceId,
-          domain: answer.domain,
-          rootPublicKey: answer.rootPublicKey,
-          updateFeedId: end,
-          expired: false,
-        })
-        .onConflictDoUpdate({
-          target: [
-            profileNamespaceInfo.publisherNamespaceId,
-            profileNamespaceInfo.profileNamespaceId,
-          ],
-          set: {
+      // The converged binding is a client-visible change: record it and wake
+      // devices, because the drain or demand that scheduled this refresh
+      // already expired their copies (mirrors refreshDirectRow). Without the
+      // change entry, a client that resolved during the stale window keeps
+      // its expired row forever — nothing ever tells it to re-resolve.
+      const changeId = await this.database.db.transaction(async (tx) => {
+        await tx
+          .insert(profileNamespace)
+          .values({
+            publisherNamespaceId: pair.publisherNamespaceId,
+            profileNamespaceId: pair.profileNamespaceId,
             domain: answer.domain,
             rootPublicKey: answer.rootPublicKey,
             updateFeedId: end,
             expired: false,
-          },
-        });
+            status: answer.status,
+          })
+          .onConflictDoUpdate({
+            target: [
+              profileNamespace.publisherNamespaceId,
+              profileNamespace.profileNamespaceId,
+            ],
+            set: {
+              domain: answer.domain,
+              rootPublicKey: answer.rootPublicKey,
+              updateFeedId: end,
+              expired: false,
+              status: answer.status,
+            },
+          });
+        return this.feed.recordClientChangeInTx(tx, pair);
+      });
+      this.sse.notifyProfileNamespaceChange(changeId);
       return;
     }
     throw new Error(
@@ -125,22 +139,28 @@ export class ProfileNamespaceRefreshService {
         domain: identityNamespace.domain,
         rootPublicKey: identityNamespace.rootPublicKey,
         retiredAt: identityNamespace.retiredAt,
+        active: identityNamespace.active,
         pulledThrough: identityNamespace.profileNamespaceFeedPulledThrough,
       })
       .from(identityNamespace)
       .where(eq(identityNamespace.id, publisherNamespaceId))
       .limit(1);
-    if (!row || row.retiredAt !== null || row.rootPublicKey === null)
+    if (!row || row.rootPublicKey === null)
       throw new Error(
         `publisher namespace ${publisherNamespaceId} has no authoritative binding`,
       );
+    // A reset-retired publisher converges to ARCHIVED with its retained
+    // bindings — the identity is gone but historical references keep
+    // rendering the last-known domain (mirrors the s2s answer semantics).
+    const status: NamespaceStatus =
+      row.active && row.retiredAt === null ? 'ACTIVE' : 'ARCHIVED';
     // updateFeedId aligns with the drain progress we have already applied, so
     // feed entries at or below it never re-expire this row. The converged
     // binding is a client-visible change: record it and wake devices, since
     // the drain that scheduled this refresh already expired their copies.
     const changeId = await this.database.db.transaction(async (tx) => {
       await tx
-        .insert(profileNamespaceInfo)
+        .insert(profileNamespace)
         .values({
           publisherNamespaceId,
           profileNamespaceId: 0,
@@ -148,17 +168,19 @@ export class ProfileNamespaceRefreshService {
           rootPublicKey: row.rootPublicKey,
           updateFeedId: row.pulledThrough,
           expired: false,
+          status,
         })
         .onConflictDoUpdate({
           target: [
-            profileNamespaceInfo.publisherNamespaceId,
-            profileNamespaceInfo.profileNamespaceId,
+            profileNamespace.publisherNamespaceId,
+            profileNamespace.profileNamespaceId,
           ],
           set: {
             domain: row.domain,
             rootPublicKey: row.rootPublicKey,
             updateFeedId: row.pulledThrough,
             expired: false,
+            status,
           },
         });
       return this.feed.recordClientChangeInTx(tx, {
@@ -184,13 +206,18 @@ export class ProfileNamespaceRefreshService {
       publisher.domain,
     );
     try {
-      return await this.trustedPeers.run(context.domain, () =>
+      const answer = await this.trustedPeers.run(context.domain, () =>
         this.peerHttp.get<ProfileNamespaceBindings>(
           `/s2s/v1/profile-namespaces/${nsid}`,
           context.domain,
           64 * 1024,
         ),
       );
+      if (answer.status !== 'ACTIVE' && answer.status !== 'ARCHIVED')
+        throw new Error(
+          `publisher returned an invalid namespace status for nsid ${nsid}`,
+        );
+      return answer;
     } catch (error) {
       if (
         error instanceof S2sResponseError &&

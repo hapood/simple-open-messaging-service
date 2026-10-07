@@ -1,17 +1,19 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { message, messageThread } from '../database/schema.js';
+import {
+  message,
+  messageThread,
+  relationshipPair,
+} from '../database/schema.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 
 /** A single provenance query in a `POST /s2s/v1/message-provenance` request. */
 export interface MessageProvenanceQuery {
-  thread:
-    | { account: string; peerAccount: string }
-    | { account: string };
+  thread: { account: string; peerAccount: string } | { account: string };
   seq: number;
-  contentDigest: string;
+  payloadDigest: string;
 }
 
 /** A single provenance result in the response. */
@@ -24,16 +26,16 @@ export interface MessageProvenanceResult {
 /**
  * Implements `POST /s2s/v1/message-provenance` (Federation v1 Message Provenance Query). A
  * recognized peer asks whether this server published a message at a given `(thread, seq)` whose
- * canonical `content` hashes to the supplied `contentDigest`. The answer is per-query and one of
+ * canonical `content` hashes to the supplied `payloadDigest`. The answer is per-query and one of
  * `yes`, `no`, or `declined`.
  *
- * The responder answers `yes` only when it retained a `contentDigest` for a message at `(thread,
+ * The responder answers `yes` only when it retained a `payloadDigest` for a message at `(thread,
  * seq)` that equals the supplied value. Beyond that honesty rule, the choice among the three
  * states is an implementation decision (Core Protocol §6.1.1 and the provenance spec): this
  * implementation answers `yes`/`no` from its retained digests and never returns `declined`,
  * leaving privacy policy to the deployer.
  *
- * Lookup is driven by the indexed `contentDigest` column: a message whose retained digest matches
+ * Lookup is driven by the indexed `payloadDigest` column: a message whose retained digest matches
  * the query and whose `(threadId, seq)` resolves to the query thread answers `yes`. The thread
  * resolution reuses the same `groupAccount`/`groupDomain` columns the message feed uses, so a
  * GROUP thread is matched by its group account and a P2P thread by its account pair through the
@@ -110,22 +112,19 @@ export class FederationMessageProvenanceService {
     if (this.shouldDeclineQuery(q)) {
       return { thread: q.thread, seq: q.seq, known: 'declined' };
     }
-    // Find candidate messages by the indexed (contentDigest, seq). A matching digest is necessary
+    // Find candidate messages by the indexed (payloadDigest, seq). A matching digest is necessary
     // but not sufficient: the message's thread must also resolve to the query thread.
     const candidates = await this.database.db
       .select({
         threadId: message.threadId,
         seq: message.seq,
-        contentDigest: message.contentDigest,
+        payloadDigest: message.payloadDigest,
       })
       .from(message)
       .where(
-        and(
-          eq(message.contentDigest, q.contentDigest),
-          eq(message.seq, q.seq),
-        ),
+        and(eq(message.payloadDigest, q.payloadDigest), eq(message.seq, q.seq)),
       )
-      .limit(2);
+      .limit(Number.MAX_SAFE_INTEGER);
     if (candidates.length === 0) {
       return { thread: q.thread, seq: q.seq, known: 'no' };
     }
@@ -155,12 +154,24 @@ export class FederationMessageProvenanceService {
     // group account. A local authoritative group also sets groupDomain, but the wire address
     // carries only the account, so matching by account is the contract.
     if ('peerAccount' in queryThread) {
-      // P2P wire thread. The local thread table does not store the peer account pair directly; a
-      // P2P thread is owned by a relationship. Without resolving that relationship here, fall back
-      // to accepting the (threadId, seq, contentDigest) match: the digest is content-addressed and
-      // collision-resistant, so a digest+seq match on any thread is strong evidence of the right
-      // message. A deployer that needs stricter P2P thread binding can override this method.
-      return thread.type === 'P2P';
+      if (thread.type !== 'P2P') return false;
+      const [pair] = await this.database.db
+        .select({ threadId: relationshipPair.threadId })
+        .from(relationshipPair)
+        .where(
+          and(
+            eq(relationshipPair.threadId, threadId),
+            eq(relationshipPair.kind, 'P2P'),
+            eq(relationshipPair.endpointAType, 'USER'),
+            eq(relationshipPair.endpointAAccount, queryThread.account),
+            eq(relationshipPair.endpointANamespaceId, 0),
+            eq(relationshipPair.endpointBType, 'USER'),
+            eq(relationshipPair.endpointBAccount, queryThread.peerAccount),
+            eq(relationshipPair.active, true),
+          ),
+        )
+        .limit(1);
+      return pair !== undefined;
     }
     return (
       thread.type === 'GROUP' && thread.groupAccount === queryThread.account

@@ -32,8 +32,9 @@ describe('ThreadAudience schema', () => {
       result.rows.map((row) => [row.conname, row.definition]),
     );
 
-    expect(constraints.get('ThreadAudience_target_check')).toContain('local');
-    expect(constraints.get('ThreadAudience_target_check')).toContain('<>');
+    expect(constraints.get('ThreadAudience_target_check')).toContain(
+      'targetNamespaceId',
+    );
     expect(constraints.has('ThreadAudience_accessEpoch_check')).toBe(false);
     expect(constraints.has('ThreadAudience_messageAccessAfterSeq_check')).toBe(
       true,
@@ -131,7 +132,6 @@ describe('ThreadAudience schema', () => {
         'FederationThreadSyncState',
         'PeerStateFeed',
         'ProfileNamespaceFeed',
-        'ProfileNamespaceInfo',
       ].sort(),
     );
 
@@ -161,7 +161,6 @@ describe('ThreadAudience schema', () => {
        WHERE conrelid IN (
          '"IdentityNamespace"'::regclass,
          '"ProfileNamespaceFeed"'::regclass,
-         '"ProfileNamespaceInfo"'::regclass,
          '"FederationThreadSyncState"'::regclass
        )`,
     );
@@ -176,9 +175,6 @@ describe('ThreadAudience schema', () => {
     ).toContain('stateFeedPulledThrough');
     expect(cursorChecks.get('ProfileNamespaceFeed_feedId_check')).toContain(
       'feedId',
-    );
-    expect(cursorChecks.get('ProfileNamespaceInfo_bindings_check')).toContain(
-      'rootPublicKey',
     );
     expect(
       cursorChecks.get('FederationThreadSyncState_messageSeqs_check'),

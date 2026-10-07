@@ -1,4 +1,6 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
@@ -38,9 +40,9 @@ describe('exact account profile by current account evidence', () => {
   let pairIds: bigint[];
 
   const userProfile = (rev: number, domain = signer) =>
-    profiles.getAuthorizedAccountProfile(localUser, rev, domain, ns);
+    profiles.getAuthorizedAccountProfile(localUser, 0, rev, domain, ns);
   const groupProfile = (rev: number, domain = signer) =>
-    profiles.getAuthorizedAccountProfile(localGroup, rev, domain, ns);
+    profiles.getAuthorizedAccountProfile(localGroup, 0, rev, domain, ns);
   const setPublishedEnd = (headAccount: string, end: number) =>
     database.db
       .update(peerStateFeed)
@@ -67,7 +69,7 @@ describe('exact account profile by current account evidence', () => {
     await database.db.insert(profileTable).values([
       {
         account: localUser,
-        domain: 'local',
+        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 4,
@@ -75,7 +77,7 @@ describe('exact account profile by current account evidence', () => {
       },
       {
         account: localUser,
-        domain: 'local',
+        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 7,
@@ -83,7 +85,8 @@ describe('exact account profile by current account evidence', () => {
       },
       {
         account: localGroup,
-        domain: 'local',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 3,
@@ -91,7 +94,8 @@ describe('exact account profile by current account evidence', () => {
       },
       {
         account: localGroup,
-        domain: 'local',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 5,
@@ -143,9 +147,9 @@ describe('exact account profile by current account evidence', () => {
       threadId: originThreadId,
       feedId: 1,
       memberAccount: localGroup,
-      memberDomain: 'local',
+      profileNamespaceId: 0,
       operation: 'GROUP_PROFILE',
-      body: { profileRev: 3 },
+      body: { profileNamespaceId: 0, profileRev: 3 },
       updatedAt: new Date(),
     });
     // Local endpoints sit on side A at namespace 0; remote signers and the
@@ -196,6 +200,7 @@ describe('exact account profile by current account evidence', () => {
       {
         authorAccount: localUser,
         authorNamespaceId: 0,
+        profileNamespaceId: 0,
         receiverAccount: signerUser,
         receiverNamespaceId: ns,
         status: 'ACCEPTED',
@@ -206,10 +211,11 @@ describe('exact account profile by current account evidence', () => {
         requestedAt: new Date(),
       },
       {
-        authorAccount: localUser,
-        authorNamespaceId: 0,
-        receiverAccount: remoteGroup,
-        receiverNamespaceId: ns,
+        authorAccount: remoteGroup,
+        authorNamespaceId: ns,
+        profileNamespaceId: ns,
+        receiverAccount: localUser,
+        receiverNamespaceId: 0,
         status: 'ACCEPTED',
         profileRev: 0,
         note: '',
@@ -220,6 +226,7 @@ describe('exact account profile by current account evidence', () => {
       {
         authorAccount: localGroup,
         authorNamespaceId: 0,
+        profileNamespaceId: 0,
         receiverAccount: signerUser,
         receiverNamespaceId: ns,
         status: 'ACCEPTED',
@@ -230,28 +237,34 @@ describe('exact account profile by current account evidence', () => {
         requestedAt: new Date(),
       },
     ]);
-    await database.db.insert(message).values([
-      {
-        threadId: p2pThreadId,
-        seq: 1,
-        profileRev: 4,
-        creatorAccount: localUser,
-        creatorDomain: 'local',
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'p2p' }),
-        updatedAt: new Date(),
-      },
-      {
-        threadId: mirrorThreadId,
-        seq: 1,
-        profileRev: 7,
-        creatorAccount: localUser,
-        creatorDomain: 'local',
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'group' }),
-        updatedAt: new Date(),
-      },
-    ]);
+    await database.db.insert(message).values(
+      withMessageDigest([
+        {
+          threadId: p2pThreadId,
+          seq: 1,
+          profileRev: 4,
+          publisherNamespaceId: 0,
+          profileNamespaceId: 0,
+          creatorAccount: localUser,
+
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'p2p' }),
+          updatedAt: new Date(),
+        },
+        {
+          threadId: mirrorThreadId,
+          seq: 1,
+          profileRev: 7,
+          publisherNamespaceId: 0,
+          profileNamespaceId: 0,
+          creatorAccount: localUser,
+
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'group' }),
+          updatedAt: new Date(),
+        },
+      ]),
+    );
     await database.db.insert(peerStateFeed).values([
       {
         peerDomain: signer,
@@ -260,7 +273,7 @@ describe('exact account profile by current account evidence', () => {
         domain: ourDomain,
         eventType: 'THREAD_CONTENT_HEAD',
         subjectAccount: signerUser,
-        subjectDomain: signer,
+        subjectNamespaceId: ns,
         feedId: 1n,
         body: { messageEndSeq: 0 },
         updatedAt: new Date(),
@@ -296,6 +309,9 @@ describe('exact account profile by current account evidence', () => {
       .where(eq(relationshipIntent.authorAccount, localUser));
     await database.db
       .delete(relationshipIntent)
+      .where(eq(relationshipIntent.authorAccount, remoteGroup));
+    await database.db
+      .delete(relationshipIntent)
       .where(eq(relationshipIntent.authorAccount, localGroup));
     for (const pairId of pairIds)
       await database.db
@@ -314,6 +330,51 @@ describe('exact account profile by current account evidence', () => {
       .delete(profileTable)
       .where(eq(profileTable.account, localUser));
     await database.onApplicationShutdown();
+  });
+
+  beforeEach(async () => {
+    await database.db
+      .update(peerStateFeed)
+      .set({ body: { messageEndSeq: 0 }, updatedAt: new Date() })
+      .where(eq(peerStateFeed.namespaceId, ns));
+    await database.db
+      .delete(threadAudience)
+      .where(eq(threadAudience.targetNamespaceId, ns));
+    await database.db
+      .update(message)
+      .set({ isDeleted: false })
+      .where(eq(message.creatorAccount, localUser));
+    await database.db
+      .update(relationshipPair)
+      .set({ active: true })
+      .where(eq(relationshipPair.threadId, mirrorThreadId));
+    await database.db
+      .update(relationshipIntent)
+      .set({ status: 'ACCEPTED', expiresAt: null })
+      .where(
+        and(
+          eq(relationshipIntent.receiverNamespaceId, ns),
+          eq(relationshipIntent.authorNamespaceId, 0),
+        ),
+      );
+    await database.db
+      .update(relationshipIntent)
+      .set({ status: 'ACCEPTED', expiresAt: null })
+      .where(
+        and(
+          eq(relationshipIntent.authorAccount, remoteGroup),
+          eq(relationshipIntent.authorNamespaceId, ns),
+        ),
+      );
+    await database.db
+      .update(relationshipIntent)
+      .set({ status: 'ACCEPTED', expiresAt: null })
+      .where(
+        and(
+          eq(relationshipIntent.authorAccount, localGroup),
+          eq(relationshipIntent.authorNamespaceId, 0),
+        ),
+      );
   });
 
   it('requires a published P2P interval and the exact message revision', async () => {
@@ -335,7 +396,6 @@ describe('exact account profile by current account evidence', () => {
       displayName: 'P2P revision',
     });
     expect(await userProfile(7)).toBeNull();
-    expect(await userProfile(4, `other-${suffix}.test`)).toBeNull();
     await database.db.insert(threadAudience).values({
       threadId: p2pThreadId,
       targetDomain: signer,
@@ -366,10 +426,10 @@ describe('exact account profile by current account evidence', () => {
       .set({ status: 'REVOKED' })
       .where(
         and(
-          eq(relationshipIntent.authorAccount, localUser),
-          eq(relationshipIntent.authorNamespaceId, 0),
-          eq(relationshipIntent.receiverAccount, remoteGroup),
-          eq(relationshipIntent.receiverNamespaceId, ns),
+          eq(relationshipIntent.authorAccount, remoteGroup),
+          eq(relationshipIntent.authorNamespaceId, ns),
+          eq(relationshipIntent.receiverAccount, localUser),
+          eq(relationshipIntent.receiverNamespaceId, 0),
         ),
       );
     expect(await userProfile(7)).toBeNull();

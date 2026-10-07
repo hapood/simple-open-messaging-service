@@ -1,5 +1,5 @@
 import { enqueueDepartureFanoutsInTx } from './account-thread-fanout-task.js';
-import { wireContentDigest } from '../federation/federated-message-content.js';
+import { wirePayloadDigest } from '../federation/federated-message-content.js';
 import {
   groupState as group,
   groupStateFields,
@@ -61,6 +61,7 @@ import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS, type MediaStatus } from '../common/media-status.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import { localIdentityDomain } from '../common/local-identity.js';
 import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
 import {
   parseMessageEntities,
@@ -72,6 +73,10 @@ import {
   stringifyTextMessageContent,
 } from '../../shared/text-message-content.js';
 import { deriveMessagePreview } from '../../shared/message-preview.js';
+import {
+  parseMessageContentQuote,
+  withMessageContentQuote,
+} from '../../shared/message-content-quote.js';
 import {
   parseSystemMessageContent,
   stringifySystemMessageContent,
@@ -286,13 +291,15 @@ export class MessageService {
     const author = await this.database.db.query.account.findFirst({
       where: and(
         eq(user.id, userId),
-        eq(user.domain, 'local'),
         eq(user.namespaceId, 0),
       ),
-      columns: { account: true, domain: true, namespaceId: true },
+      columns: { account: true, namespaceId: true },
     });
     if (!author) throw new Error('message author does not exist');
-    return author;
+    return {
+      ...author,
+      domain: await localIdentityDomain(this.database.db),
+    };
   }
 
   async isAuthoredBy(
@@ -344,6 +351,7 @@ export class MessageService {
       clearedThroughSeq?: number | null;
       hideCreators?: MessageAuthorAddress[];
     },
+    quoteTargetSeq?: number,
   ): Promise<PublicMessage> {
     if (clientMessageId !== undefined) {
       const existing = await this.findByClientMessageId(clientMessageId);
@@ -426,46 +434,23 @@ export class MessageService {
               'invalid system message content',
             );
           }
-          const quoteSeq = textContent?.quote?.seq;
+          const explicitQuoteSeq = quoteTargetSeq;
+          const contentQuoteSeq = textContent?.quote?.seq;
+          const resolvedQuoteSeq = explicitQuoteSeq ?? contentQuoteSeq;
           const quoteTarget =
-            quoteSeq === undefined || quoteSeq === 0
+            resolvedQuoteSeq === undefined || resolvedQuoteSeq === 0
               ? null
-              : await tx.query.message
-                  .findFirst({
-                    where: and(
-                      eq(message.threadId, threadId),
-                      eq(message.seq, quoteSeq),
-                    ),
-                  })
-                  .then(async (row) => {
-                    if (!row || row.creatorAccount === null) return row;
-                    const snapshot = await tx.query.profileTable.findFirst({
-                      where: and(
-                        eq(profileTable.account, row.creatorAccount),
-                        eq(
-                          profileTable.publisherNamespaceId,
-                          row.publisherNamespaceId,
-                        ),
-                        eq(
-                          profileTable.profileNamespaceId,
-                          authorNamespaceId(row),
-                        ),
-                        eq(profileTable.profileRev, row.profileRev),
-                      ),
-                      columns: { displayName: true },
-                    });
-                    return {
-                      ...row,
-                      creatorItem: snapshot
-                        ? { name: snapshot.displayName }
-                        : undefined,
-                    };
-                  });
-          if (quoteSeq !== undefined && quoteSeq > 0 && !quoteTarget) {
-            throw new BusinessException(
-              BusinessCode.NOT_FOUND,
-              'quoted message not found',
-            );
+              : await tx.query.message.findFirst({
+                  where: and(
+                    eq(message.threadId, threadId),
+                    eq(message.seq, resolvedQuoteSeq),
+                  ),
+                });
+          if (resolvedQuoteSeq !== undefined && resolvedQuoteSeq > 0 && !quoteTarget) {
+            throw new BusinessException(BusinessCode.NOT_FOUND, 'quoted message not found');
+          }
+          if (quoteTarget?.payloadDigest === null) {
+            throw new Error('quoted message has no payload digest');
           }
           if (
             quoteTarget &&
@@ -473,26 +458,30 @@ export class MessageService {
               quoteTarget.contentType === ContentType.SYSTEM ||
               (quoteVisibility?.clearedThroughSeq !== null &&
                 quoteVisibility?.clearedThroughSeq !== undefined &&
-                quoteTarget.seq <= quoteVisibility.clearedThroughSeq) ||
-              (quoteTarget.creatorAccount !== null &&
-                quoteVisibility?.hideCreators?.some(
-                  (creator) =>
-                    creator.account === quoteTarget.creatorAccount &&
-                    creator.namespaceId === authorNamespaceId(quoteTarget),
-                )))
+                quoteTarget.seq <= quoteVisibility.clearedThroughSeq))
           ) {
-            throw new BusinessException(
-              BusinessCode.NOT_FOUND,
-              'quoted message not found',
-            );
+            throw new BusinessException(BusinessCode.NOT_FOUND, 'quoted message not found');
           }
-          const storedContent =
-            textContent && quoteSeq !== undefined
-              ? stringifyTextMessageContent({
-                  text: textContent.text,
-                  quote: { seq: quoteSeq, namespaceId: 0 },
-                })
-              : content;
+          const quoteDigest = quoteTarget?.payloadDigest;
+          let storedContent = content;
+          if (resolvedQuoteSeq !== undefined && resolvedQuoteSeq > 0) {
+            storedContent = withMessageContentQuote(content, {
+              seq: resolvedQuoteSeq,
+              digest: quoteDigest ?? undefined,
+            });
+          }
+
+          const messageDigests = extractDigests(storedContent);
+          const messageAssetRows = messageDigests.length
+            ? await tx
+                .select({ digest: mediaAsset.digest, bytes: mediaAsset.bytes })
+                .from(mediaAsset)
+                .where(inArray(mediaAsset.digest, messageDigests))
+            : [];
+          const payloadAssets = messageAssetRows.map((asset) => ({
+            digest: asset.digest,
+            bytes: Number(asset.bytes),
+          }));
           const [msg] = await tx
             .insert(message)
             .values({
@@ -504,8 +493,14 @@ export class MessageService {
               clientMessageId,
               seq,
               originSeq: seq,
-              contentDigest: wireContentDigest(type, storedContent),
-              localState: 'CONFIRMED',
+              payloadDigest: wirePayloadDigest(
+                type,
+                storedContent,
+                payloadAssets,
+                quoteDigest,
+              ),
+              federationPayloadVerification: 'VERIFIED',
+              localState: 'READY',
               updatedAt: new Date(),
             })
             .returning();
@@ -690,6 +685,7 @@ export class MessageService {
     clientMessageId: string,
     fileCnt = 1,
     retry = false,
+    quoteTargetSeq?: number,
   ): Promise<{ clientMessageId: string }> {
     const author = await this.localAuthor(userId);
     const committed = await this.database.db.query.message.findFirst({
@@ -724,10 +720,12 @@ export class MessageService {
           await tx.insert(pendingMedia).values({
             threadId,
             creatorAccount: author.account,
+            clientMessageId,
             publisherNamespaceId: author.namespaceId,
             contentType,
-            content: '{}',
-            clientMessageId,
+            content: JSON.stringify(
+              quoteTargetSeq === undefined ? {} : { _quoteTargetSeq: quoteTargetSeq },
+            ),
             fileCnt,
             updatedAt: new Date(),
           });
@@ -774,7 +772,9 @@ export class MessageService {
           status: 'pending',
           failReason: null,
           digest: null,
-          content: '{}',
+          content: JSON.stringify(
+            quoteTargetSeq === undefined ? {} : { _quoteTargetSeq: quoteTargetSeq },
+          ),
           createdAt: new Date(),
           updatedAt: new Date(),
         })
@@ -1117,7 +1117,53 @@ export class MessageService {
               'conversation is read-only',
             );
           }
-          const content = unboundContent;
+          const stageMetadata = JSON.parse(stage.content) as {
+            _quoteTargetSeq?: unknown;
+          };
+          const stagedQuoteSeq = stageMetadata._quoteTargetSeq;
+          let content = unboundContent;
+          let quoteDigest: string | undefined;
+          if (stagedQuoteSeq !== undefined) {
+            if (!Number.isSafeInteger(stagedQuoteSeq) || Number(stagedQuoteSeq) < 1) {
+              throw new BusinessException(
+                BusinessCode.VALIDATION_FAILED,
+                'invalid quoted message sequence',
+              );
+            }
+            const quoteTarget = await tx.query.message.findFirst({
+              where: and(
+                eq(message.threadId, stage.threadId),
+                eq(message.seq, Number(stagedQuoteSeq)),
+              ),
+            });
+            const [clearBoundary] = await tx
+              .select({ clearedSeq: messageThread.clearedSeq })
+              .from(messageThread)
+              .where(eq(messageThread.id, stage.threadId));
+            if (
+              !quoteTarget ||
+              quoteTarget.isDeleted ||
+              quoteTarget.contentType === ContentType.SYSTEM ||
+              quoteTarget.payloadDigest === null ||
+              (clearBoundary?.clearedSeq !== null &&
+                clearBoundary?.clearedSeq !== undefined &&
+                quoteTarget.seq <= clearBoundary.clearedSeq)
+            ) {
+              throw new BusinessException(
+                BusinessCode.NOT_FOUND,
+                'quoted message not found',
+              );
+            }
+            quoteDigest = quoteTarget.payloadDigest;
+            content = withMessageContentQuote(content, {
+              seq: Number(stagedQuoteSeq),
+              digest: quoteDigest,
+            });
+          }
+          const stagedAssets = succeeded.map((file) => ({
+            digest: file.digest,
+            bytes: Number((file.payload as unknown as OutboundFilePayload).size),
+          }));
           const [msg] = await tx
             .insert(message)
             .values({
@@ -1135,8 +1181,14 @@ export class MessageService {
               clientMessageId,
               seq,
               originSeq: seq,
-              contentDigest: wireContentDigest(stage.contentType, content),
-              localState: 'CONFIRMED',
+              payloadDigest: wirePayloadDigest(
+                stage.contentType,
+                content,
+                stagedAssets,
+                quoteDigest,
+              ),
+              federationPayloadVerification: 'VERIFIED',
+              localState: 'READY',
               updatedAt: new Date(),
             })
             .returning();
@@ -1545,7 +1597,7 @@ export class MessageService {
       msgs.some(
         (m) =>
           m.publisherNamespaceId > 0 &&
-          parseTextMessageContent(m.content)?.quote,
+          parseMessageContentQuote(m.content),
       )
     ) {
       msgs = await this.database.db.transaction(
@@ -1558,11 +1610,10 @@ export class MessageService {
     }
     const refs = new Map<number, Set<number>>();
     for (const message of msgs) {
-      if (message.contentType !== ContentType.PURE_TEXT) continue;
-      const quoteSeq = parseTextMessageContent(message.content)?.quote?.seq;
-      if (quoteSeq === undefined) continue;
+      const quote = parseMessageContentQuote(message.content);
+      if (!quote) continue;
       const seqs = refs.get(message.threadId) ?? new Set<number>();
-      seqs.add(quoteSeq);
+      seqs.add(quote.seq);
       refs.set(message.threadId, seqs);
     }
     if (refs.size === 0) return msgs;
@@ -1678,28 +1729,26 @@ export class MessageService {
     );
     const byKey = new Map(previews);
     return msgs.map((message) => {
-      if (message.contentType !== ContentType.PURE_TEXT) return message;
-      const content = parseTextMessageContent(message.content);
-      if (!content?.quote) return message;
-      const preview = byKey.get(`${message.threadId}:${content.quote.seq}`);
+      const quote = parseMessageContentQuote(message.content);
+      if (!quote) return message;
+      const preview = byKey.get(`${message.threadId}:${quote.seq}`);
       const viewerFilters =
         filters instanceof Map ? filters.get(message.threadId) : filters;
       const outsideVisibility =
-        content.quote.seq > 0 &&
         ((viewerFilters?.clearedThroughSeq != null &&
-          content.quote.seq <= viewerFilters.clearedThroughSeq) ||
+          quote.seq <= viewerFilters.clearedThroughSeq) ||
           (viewerFilters?.visibleThroughSeq != null &&
-            content.quote.seq > viewerFilters.visibleThroughSeq));
+            quote.seq > viewerFilters.visibleThroughSeq));
       return {
         ...message,
-        content: stringifyTextMessageContent({
-          text: content.text,
+        content: JSON.stringify({
+          ...JSON.parse(message.content),
           quote: {
-            seq: content.quote.seq,
+            ...quote,
             ...(outsideVisibility
               ? { status: 'NOT_FOUND' as const }
-              : content.quote.status
-                ? { status: content.quote.status }
+              : quote.status
+                ? { status: quote.status }
                 : {}),
             ...(preview ?? {}),
           },
@@ -1892,8 +1941,6 @@ export class MessageService {
               m."contentType" = 'PURE_TEXT'
               AND EXISTS (
                 SELECT 1 FROM "Message" source
-                LEFT JOIN "FederationMessageReceipt" receipt
-                  ON receipt."messageId" = source.id AND receipt."threadId" = m."threadId"
                 WHERE source."threadId" = m."threadId"
                   AND source."isDeleted" = false AND source."localState" = 'READY'
                   AND source."contentType" = 'PURE_TEXT'
@@ -1912,9 +1959,6 @@ export class MessageService {
                       AND (
                         (source."publisherNamespaceId" = COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer, m."publisherNamespaceId")
                           AND source."originSeq" = COALESCE((m.content::jsonb -> 'quote' ->> 'sourceSeq')::integer,
-                            (m.content::jsonb -> 'quote' ->> 'seq')::integer))
-                        OR (receipt."namespaceId" = COALESCE((m.content::jsonb -> 'quote' ->> 'namespaceId')::integer, m."publisherNamespaceId")
-                          AND receipt."peerSeq" = COALESCE((m.content::jsonb -> 'quote' ->> 'sourceSeq')::integer,
                             (m.content::jsonb -> 'quote' ->> 'seq')::integer))
                       )
                     )

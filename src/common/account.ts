@@ -43,15 +43,9 @@ export function isValidSomfpUserAccount(account: string): boolean {
   return SOMFP_USER_ACCOUNT_RE.test(account);
 }
 
-/** A globally meaningful SOMFP server identity. RFC 6762 `.local` names are link-local and the bare
- *  `local` label is reserved by SOMS as its persistence marker, so neither is valid on the wire. */
+/** A canonical SOMFP server identity. Locality is carried by namespace context, not by the domain spelling. */
 export function isValidSomfpDomain(domain: string): boolean {
-  return (
-    domain.length <= 253 &&
-    SOMFP_DOMAIN_RE.test(domain) &&
-    domain !== 'local' &&
-    !domain.endsWith('.local')
-  );
+  return domain.length <= 253 && SOMFP_DOMAIN_RE.test(domain);
 }
 
 /** Parse the `namespaceId/account` entity id of a v1 user mention. `namespaceId`

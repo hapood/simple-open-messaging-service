@@ -162,6 +162,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
           ],
           scannedThrough: '2',
           stateFeedEndId: '2',
+          profileNamespaceFeedEndId: '0',
           hasMore: false,
         }),
         apply,
@@ -200,6 +201,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
           ],
           scannedThrough: '2',
           stateFeedEndId: '2',
+          profileNamespaceFeedEndId: '0',
           hasMore: false,
         }),
         apply: firstApply,
@@ -226,6 +228,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
       ],
       scannedThrough: '3',
       stateFeedEndId: '3',
+      profileNamespaceFeedEndId: '0',
       hasMore: false,
     }));
     await resumed.run('peer.test', 12, {
@@ -267,6 +270,7 @@ describe('PeerStateFeedPullService atomic item application', () => {
           ],
           scannedThrough: '3',
           stateFeedEndId: '3',
+          profileNamespaceFeedEndId: '0',
           hasMore: false,
         }),
         apply,

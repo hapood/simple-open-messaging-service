@@ -58,39 +58,48 @@ export class FederationInboundMessageRouteService {
     peerAssignedLocalNamespaceId: number,
   ): ResolvedInboundAuthor {
     if ('authorRef' in item) {
+      const expectedNamespaceId =
+        item.authorRef === 'THREAD_ACCOUNT' ? 0 : peerAssignedLocalNamespaceId;
+      if (item.namespaceId !== expectedNamespaceId) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'P2P author reference conflicts with namespaceId',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
       return item.authorRef === 'THREAD_ACCOUNT'
         ? {
             account: item.thread.account,
-            namespaceId: 0,
+            namespaceId: peerAssignedLocalNamespaceId,
             publisherLocal: true,
             receiverLocal: false,
           }
         : {
             account: item.thread.peerAccount,
-            namespaceId: peerAssignedLocalNamespaceId,
+            namespaceId: 0,
             publisherLocal: false,
             receiverLocal: true,
           };
     }
-    if (item.author.namespaceId === 0) {
+    if (item.namespaceId === 0) {
       return {
         account: item.author.account,
-        namespaceId: 0,
+        namespaceId: item.namespaceId,
         publisherLocal: true,
         receiverLocal: false,
       };
     }
-    if (item.author.namespaceId === peerAssignedLocalNamespaceId) {
+    if (item.namespaceId === peerAssignedLocalNamespaceId) {
       return {
         account: item.author.account,
-        namespaceId: peerAssignedLocalNamespaceId,
+        namespaceId: 0,
         publisherLocal: false,
         receiverLocal: true,
       };
     }
     return {
       account: item.author.account,
-      namespaceId: item.author.namespaceId,
+      namespaceId: item.namespaceId,
       publisherLocal: false,
       receiverLocal: false,
     };
@@ -153,7 +162,6 @@ export class FederationInboundMessageRouteService {
           JOIN ${groupStateSql} group_user ON group_user.id = thread.id
           WHERE thread.type = 'GROUP'
             AND group_user.account = ${normalizeAccount(item.thread.account)}
-            AND group_user.domain = 'local'
             AND group_user."namespaceId" = 0
             AND EXISTS (
               SELECT 1 FROM "RelationshipPair" pair
@@ -200,7 +208,6 @@ export class FederationInboundMessageRouteService {
             AND pair.active = true
             AND thread.type = 'GROUP'
             AND group_user.account = ${normalizeAccount(item.thread.account)}
-            AND group_user.domain = 'local'
             AND group_user."namespaceId" = 0
             AND (
               pair."endpointAType" = 'GROUP'
@@ -247,7 +254,6 @@ export class FederationInboundMessageRouteService {
         WHERE thread.type = 'P2P'
           AND pair.kind = 'P2P'
           AND pair.active = true
-          AND local_user.domain = 'local'
           AND local_user."namespaceId" = 0
           AND local_user.account = ${normalizeAccount(item.thread.peerAccount)}
           AND (
@@ -357,10 +363,20 @@ export class FederationInboundMessageRouteService {
         JOIN "MessageThread" t ON t.id = m."threadId"
         JOIN ${groupStateSql} g ON g.id = t.id
         WHERE g.account = ${normalizeAccount(thread.account)}
-          AND g.domain = 'local' AND g."namespaceId" = 0
-          AND m."publisherNamespaceId" = ${namespaceId}
-          AND m."originSeq" = ${messageSeq}
-          AND m."profileNamespaceId" = ${namespaceId}
+          AND g."namespaceId" = 0
+          AND (
+            (
+              m."publisherNamespaceId" = ${namespaceId}
+              AND m."originSeq" = ${messageSeq}
+              AND m."profileNamespaceId" IN (0, ${namespaceId})
+            )
+            OR (
+              m."publisherNamespaceId" = 0
+              AND m."profileNamespaceId" = 0
+              AND m."originSeq" = ${messageSeq}
+              AND m."originServerTime" IS NOT NULL
+            )
+          )
           AND m."contentType" <> 'SYSTEM'
         LIMIT 1
       `);
@@ -370,7 +386,8 @@ export class FederationInboundMessageRouteService {
           tx,
           {
             thread,
-            author: { account: target.account, namespaceId: 0 },
+            namespaceId: 0,
+            author: { account: target.account, domain: sourceDomain },
           } as FederationMessageFeedMessage,
           sourceDomain,
           namespaceId,

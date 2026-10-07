@@ -26,14 +26,14 @@ function response(data: object) {
 function harness(localGroupAuthority = false) {
   const publishMessage = vi.fn().mockResolvedValue(undefined);
   const publishTombstone = vi.fn().mockResolvedValue(undefined);
-  const federation = {
-    applyForwardMessagePageInTransaction: vi.fn().mockResolvedValue({
-      publish: publishMessage,
-    }),
-    applyForwardTombstonePageInTransaction: vi.fn().mockResolvedValue({
-      publish: publishTombstone,
-    }),
+  const inboundMessageCommits = {
+    applyForwardInTransaction: vi.fn().mockResolvedValue([]),
+    applyTombstonesInTransaction: vi
+      .fn()
+      .mockResolvedValue({ quoteDependencies: [] }),
+    publishSatisfiedQuoteDependencies: publishTombstone,
   };
+  const messageEffects = { publish: publishMessage };
   const threadResources = { fetch: vi.fn() };
   const rounds = {
     runMessages: vi.fn(
@@ -120,7 +120,8 @@ function harness(localGroupAuthority = false) {
   const executor = new FederationThreadForwardRoundExecutorService(
     rounds as never,
     threadResources as never,
-    federation as never,
+    inboundMessageCommits as never,
+    messageEffects as never,
     {
       resolve: vi.fn().mockResolvedValue({
         kind: 'GROUP',
@@ -136,7 +137,7 @@ function harness(localGroupAuthority = false) {
   return {
     executor,
     rounds,
-    federation,
+    inboundMessageCommits,
     threadResources,
     database,
     publishMessage,
@@ -170,10 +171,10 @@ describe('FederationThreadForwardRoundExecutorService', () => {
         h.tx.execute.mock.invocationCallOrder[0],
       );
       expect(
-        h.federation.applyForwardMessagePageInTransaction,
+        h.inboundMessageCommits.applyForwardInTransaction,
       ).not.toHaveBeenCalled();
       expect(
-        h.federation.applyForwardTombstonePageInTransaction,
+        h.inboundMessageCommits.applyTombstonesInTransaction,
       ).not.toHaveBeenCalled();
       expect(h.messageAdvance).not.toHaveBeenCalled();
       expect(h.deletionAdvance).not.toHaveBeenCalled();
@@ -235,6 +236,25 @@ describe('FederationThreadForwardRoundExecutorService', () => {
     expect(h.epochLock).toHaveBeenCalledWith(h.tx, 31, 4);
     expect(h.publishTombstone).toHaveBeenCalledOnce();
     expect(h.publishMessage).not.toHaveBeenCalled();
+  });
+
+  it('publishes the tombstone apply quote dependencies once the page commits', async () => {
+    const h = harness();
+    h.inboundMessageCommits.applyTombstonesInTransaction.mockResolvedValueOnce({
+      quoteDependencies: [
+        { threadId: 9, publisherNamespaceId: 3, originSeq: 12 },
+      ],
+    });
+    h.threadResources.fetch.mockResolvedValueOnce(
+      response({ tombstones: [], scannedThrough: 9, hasMore: false }),
+    );
+
+    await h.executor.runTombstones(31, 'origin.test', 7, 50);
+
+    expect(h.publishTombstone).toHaveBeenCalledOnce();
+    expect(h.publishTombstone).toHaveBeenCalledWith([
+      { threadId: 9, publisherNamespaceId: 3, originSeq: 12 },
+    ]);
   });
 
   it('omits maxMessageSeq after the recovery drain is complete', async () => {

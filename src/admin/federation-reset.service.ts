@@ -4,6 +4,8 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { FederationNamespaceService } from '../federation/federation-namespace.service.js';
+import { ProfileNamespaceFeedService } from '../federation/profile-namespace-feed.service.js';
+import { SseService } from '../gateway/sse.service.js';
 
 export interface FederationResetPreview {
   domain: string;
@@ -38,6 +40,8 @@ export class FederationResetService {
   constructor(
     private readonly database: DatabaseService,
     private readonly namespaces: FederationNamespaceService,
+    private readonly profileNamespaceFeed: ProfileNamespaceFeedService,
+    private readonly sse: SseService,
   ) {}
 
   async preview(domain: string): Promise<FederationResetPreview> {
@@ -129,13 +133,29 @@ export class FederationResetService {
       `);
       this.assertResettable(peerResult.rows[0], normalized);
       const archived = await this.namespaces.retireActiveInTx(tx, normalized);
+      // Broadcast the retirement: a reset is a client-visible change to the
+      // peer's own binding (the nsid-0 pair in this publisher's space), so
+      // publish it on the shared feed and tell every device to re-resolve —
+      // mirroring the admin re-bind / root-rotation paths. Devices that hold
+      // the pre-reset domain then converge to the ARCHIVED status.
+      await this.profileNamespaceFeed.recordNamespaceChangeInTx(
+        tx,
+        archived.namespaceId,
+      );
+      const clientChangeId =
+        await this.profileNamespaceFeed.recordClientChangeInTx(tx, {
+          publisherNamespaceId: archived.namespaceId,
+          profileNamespaceId: 0,
+        });
       return {
         domain: normalized,
         archivedNamespaceId: archived.namespaceId,
         activeNamespaceId: null,
         status: 'reset' as const,
+        clientChangeId,
       };
     });
+    this.sse.notifyProfileNamespaceChange(result.clientChangeId);
     return result;
   }
 

@@ -10,7 +10,7 @@ import {
   type AuthRateLimitPolicyName,
 } from './auth-policy.registry.js';
 import { RATE_LIMIT_POLICY_METADATA } from './rate-limit.decorator.js';
-import { THROTTLE_KEY } from '../auth/throttle.guard.js';
+import { THROTTLE_KEY } from './throttle.guard.js';
 
 function guards(target: object, method: string): unknown[] {
   const descriptor = Object.getOwnPropertyDescriptor(target, method);

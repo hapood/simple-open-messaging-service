@@ -66,7 +66,7 @@ export class FederationThreadSourceService {
         throw new FederationThreadSourceInactiveError(
           `group thread ${threadId} has federation rounds disabled`,
         );
-      if (groupThread.domain !== 'local' && groupThread.domain !== peerDomain) {
+      if (groupThread.namespaceId > 0 && groupThread.domain !== peerDomain) {
         throw new FederationMessageContextError(
           `group thread ${threadId} is not sourced by ${peerDomain}`,
         );
@@ -95,7 +95,7 @@ export class FederationThreadSourceService {
       }
       return {
         kind: 'GROUP',
-        localGroupAuthority: groupThread.domain === 'local',
+        localGroupAuthority: groupThread.namespaceId === 0,
         threadId,
         peerDomain,
         namespaceId,

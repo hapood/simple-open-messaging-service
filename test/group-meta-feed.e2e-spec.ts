@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq, inArray } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
@@ -71,7 +72,7 @@ describe('canonical Group Meta feed', () => {
     ownerUserId = owner.id;
     await database.db.insert(profileTable).values({
       account: ownerAccount,
-      domain: 'local',
+      namespaceId: 0,
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,
@@ -159,6 +160,7 @@ describe('canonical Group Meta feed', () => {
     await database.db.insert(relationshipIntent).values({
       authorAccount: groupAccount,
       authorNamespaceId: 0,
+      profileNamespaceId: 0,
       receiverAccount: remoteAccount,
       receiverNamespaceId: namespaceId,
       messageEndSeq: 0,
@@ -186,7 +188,7 @@ describe('canonical Group Meta feed', () => {
     await database.db.insert(profileTable).values(
       [1, 2, 3].map((profileRev) => ({
         account: groupAccount,
-        domain: 'local',
+        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev,
@@ -202,6 +204,7 @@ describe('canonical Group Meta feed', () => {
       await expect(
         profiles.getAuthorizedAccountProfile(
           groupAccount,
+          0,
           1,
           peerDomain,
           peerNamespaceId,
@@ -210,6 +213,7 @@ describe('canonical Group Meta feed', () => {
       await expect(
         profiles.getAuthorizedAccountProfile(
           groupAccount,
+          0,
           2,
           peerDomain,
           peerNamespaceId,
@@ -218,6 +222,7 @@ describe('canonical Group Meta feed', () => {
       await expect(
         profiles.getAuthorizedAccountProfile(
           groupAccount,
+          0,
           3,
           peerDomain,
           peerNamespaceId,
@@ -226,18 +231,18 @@ describe('canonical Group Meta feed', () => {
       await expect(
         profiles.getAuthorizedAccountProfile(
           groupAccount,
+          0,
           2,
-          peerDomain,
+          otherPeerDomain,
           otherPeerNamespaceId,
         ),
-      ).resolves.toBeNull();
+      ).resolves.toMatchObject({ profileRev: 2 });
     } finally {
       await database.db
         .delete(profileTable)
         .where(
           and(
             eq(profileTable.account, groupAccount),
-            eq(profileTable.domain, 'local'),
             eq(profileTable.profileNamespaceId, 0),
           ),
         );
@@ -246,21 +251,29 @@ describe('canonical Group Meta feed', () => {
 
   const owner = () => ({
     account: ownerAccount,
-    domain: 'local',
-    body: { role: GroupRole.OWNER, profileRev: 1 },
+    profileNamespaceId: 0,
+    body: {
+      role: GroupRole.OWNER,
+      profileNamespaceId: 0,
+      profileRev: 1,
+    },
   });
 
   const member = () => ({
     account: memberAccount,
-    domain: peerDomain,
-    body: { role: GroupRole.MEMBER, profileRev: 1 },
+    profileNamespaceId: peerNamespaceId,
+    body: {
+      role: GroupRole.MEMBER,
+      profileNamespaceId: peerNamespaceId,
+      profileRev: 1,
+    },
   });
 
   async function reconcileDesired(
     tx: Parameters<GroupMetaFeedService['reconcileMembersInTx']>[0],
     members: readonly {
       account: string;
-      domain: string;
+      profileNamespaceId: number;
       body: Record<string, unknown>;
     }[],
   ): Promise<number> {
@@ -270,8 +283,8 @@ describe('canonical Group Meta feed', () => {
         ? { ...member(), operation: 'MEMBER_UPSERT' }
         : {
             account: memberAccount,
-            domain: peerDomain,
-            body: {},
+            profileNamespaceId: peerNamespaceId,
+            body: member().body,
             operation: 'MEMBER_DEPART',
           },
     ]);
@@ -402,10 +415,14 @@ describe('canonical Group Meta feed', () => {
         expect.arrayContaining([
           expect.objectContaining({
             account: ownerAccount,
-            domain: 'local',
+            domain: localIdentityDomain(),
             namespaceId: 0,
             operation: 'MEMBER_UPSERT',
-            body: { role: 'OWNER', profileRev: 1 },
+            body: {
+              role: 'OWNER',
+              profileNamespaceId: 0,
+              profileRev: 1,
+            },
           }),
           expect.objectContaining({
             account: memberAccount,
@@ -415,7 +432,7 @@ describe('canonical Group Meta feed', () => {
           }),
           expect.objectContaining({
             operation: 'GROUP_PROFILE',
-            body: { profileRev: 1 },
+            body: { profileNamespaceId: 0, profileRev: 1 },
           }),
         ]),
       );
@@ -427,7 +444,7 @@ describe('canonical Group Meta feed', () => {
     },
   );
 
-  it('returns only the current roster in full and a bodyless MEMBER_DEPART in delta', async () => {
+  it('returns only the current roster in full and MEMBER_DEPART in delta', async () => {
     await database.db.transaction((tx) =>
       reconcileDesired(tx, [owner(), member()]),
     );
@@ -447,16 +464,20 @@ describe('canonical Group Meta feed', () => {
     });
     expect(full.items).toEqual([
       {
-        feedId: 2,
+        feedId: 1,
         account: ownerAccount,
-        domain: 'local',
+        domain: localIdentityDomain(),
         operation: 'MEMBER_UPSERT',
-        body: { role: GroupRole.OWNER, profileRev: 1 },
+        body: {
+          role: GroupRole.OWNER,
+          namespaceId: 0,
+          profileRev: 1,
+        },
       },
       {
         feedId: 3,
         operation: 'GROUP_PROFILE',
-        body: { profileRev: 1 },
+        body: { namespaceId: 0, profileRev: 1 },
       },
     ]);
 
@@ -473,6 +494,11 @@ describe('canonical Group Meta feed', () => {
         account: memberAccount,
         domain: peerDomain,
         operation: 'MEMBER_DEPART',
+        body: {
+          role: GroupRole.MEMBER,
+          namespaceId: peerNamespaceId,
+          profileRev: 1,
+        },
       },
     ]);
   });
@@ -557,7 +583,11 @@ describe('canonical Group Meta feed', () => {
       feed.appendMemberTransitionInTx(tx, groupId, {
         ...member(),
         operation: 'MEMBER_UPSERT',
-        body: { role: GroupRole.ADMIN, profileRev: 1 },
+        body: {
+          role: GroupRole.ADMIN,
+          profileNamespaceId: peerNamespaceId,
+          profileRev: 1,
+        },
       }),
     );
     const continued = await publisher.serve(
@@ -596,7 +626,11 @@ describe('canonical Group Meta feed', () => {
         feedId: 4,
         account: memberAccount,
         operation: 'MEMBER_UPSERT',
-        body: { role: GroupRole.ADMIN, profileRev: 1 },
+        body: {
+          role: GroupRole.ADMIN,
+          namespaceId: peerNamespaceId,
+          profileRev: 1,
+        },
       }),
     ]);
   });
@@ -623,7 +657,11 @@ describe('canonical Group Meta feed', () => {
         account: memberAccount,
         domain: peerDomain,
         operation: 'MEMBER_UPSERT',
-        body: { role: GroupRole.MEMBER, profileRev: 1 },
+        body: {
+          role: GroupRole.MEMBER,
+          namespaceId: peerNamespaceId,
+          profileRev: 1,
+        },
       },
     ]);
   });

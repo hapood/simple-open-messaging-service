@@ -23,9 +23,8 @@ export class RequestRelationshipDto {
   account!: string;
 
   @ApiProperty({
-    example: 'local',
-    description:
-      "Target home domain. Use the literal 'local' for a local account.",
+    example: 'example.com',
+    description: 'Target home domain. For a local account, use the configured local identity domain.',
   })
   @IsString()
   @IsNotEmpty()
@@ -59,7 +58,7 @@ export class RequestRelationshipDto {
     required: false,
     description: 'Untrusted pending-card display snapshot.',
   })
-  @ValidateIf((value: RequestRelationshipDto) => value.domain !== 'local')
+  @ValidateIf((value: RequestRelationshipDto) => value.namespaceId !== 0)
   @IsString()
   @IsNotEmpty()
   @MaxLength(31)
@@ -84,9 +83,8 @@ export class RevokeRelationshipDto {
   account!: string;
 
   @ApiProperty({
-    example: 'local',
-    description:
-      "Peer home domain. Use the literal 'local' for a local account.",
+    example: 'example.com',
+    description: 'Peer home domain. For a local account, use the configured local identity domain.',
   })
   @IsString()
   @IsNotEmpty()

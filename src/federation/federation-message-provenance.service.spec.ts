@@ -36,11 +36,15 @@ describe('FederationMessageProvenanceService', () => {
   }
 
   function p2pQuery(seq: number, digest: string): MessageProvenanceQuery {
-    return { thread: { account: 'alice', peerAccount: 'bob' }, seq, contentDigest: digest };
+    return {
+      thread: { account: 'alice', peerAccount: 'bob' },
+      seq,
+      payloadDigest: digest,
+    };
   }
 
   function groupQuery(seq: number, digest: string): MessageProvenanceQuery {
-    return { thread: { account: '!group' }, seq, contentDigest: digest };
+    return { thread: { account: '!group' }, seq, payloadDigest: digest };
   }
 
   it('rejects an empty queries array', async () => {
@@ -93,7 +97,7 @@ describe('FederationMessageProvenanceService', () => {
     // queryOne: candidate lookup returns one row whose threadId resolves to a matching GROUP
     // thread. The second queue is the threadMatches lookup.
     const { database } = mockDb([
-      [{ threadId: 7, seq: 1, contentDigest: 'abc' }], // candidate messages
+      [{ threadId: 7, seq: 1, payloadDigest: 'abc' }], // candidate messages
       [{ type: 'GROUP', groupAccount: '!group' }], // threadMatches lookup
     ]);
     const svc = new FederationMessageProvenanceService(database as never);
@@ -105,7 +109,7 @@ describe('FederationMessageProvenanceService', () => {
 
   it('answers no when a candidate matches the digest and seq but the thread does not resolve', async () => {
     const { database } = mockDb([
-      [{ threadId: 7, seq: 1, contentDigest: 'abc' }],
+      [{ threadId: 7, seq: 1, payloadDigest: 'abc' }],
       [{ type: 'GROUP', groupAccount: '!other' }], // different group account
     ]);
     const svc = new FederationMessageProvenanceService(database as never);
@@ -115,9 +119,38 @@ describe('FederationMessageProvenanceService', () => {
     ]);
   });
 
+  it('binds a P2P digest match to the exact relationship account pair', async () => {
+    const { database } = mockDb([
+      [{ threadId: 7, seq: 1, payloadDigest: 'abc' }],
+      [{ type: 'P2P', groupAccount: null }],
+      [], // no alice/bob RelationshipPair owns thread 7
+    ]);
+    const svc = new FederationMessageProvenanceService(database as never);
+    await expect(svc.query([p2pQuery(1, 'abc')])).resolves.toEqual([
+      { thread: { account: 'alice', peerAccount: 'bob' }, seq: 1, known: 'no' },
+    ]);
+  });
+
+  it('does not lose a matching thread after two digest-identical candidates', async () => {
+    const { database } = mockDb([
+      [
+        { threadId: 7, seq: 1, payloadDigest: 'abc' },
+        { threadId: 8, seq: 1, payloadDigest: 'abc' },
+        { threadId: 9, seq: 1, payloadDigest: 'abc' },
+      ],
+      [{ type: 'GROUP', groupAccount: '!other-a' }],
+      [{ type: 'GROUP', groupAccount: '!other-b' }],
+      [{ type: 'GROUP', groupAccount: '!group' }],
+    ]);
+    const svc = new FederationMessageProvenanceService(database as never);
+    await expect(svc.query([groupQuery(1, 'abc')])).resolves.toEqual([
+      { thread: { account: '!group' }, seq: 1, known: 'yes' },
+    ]);
+  });
+
   it('returns per-query declined when shouldDeclineQuery is true for that query only', async () => {
     const { database } = mockDb([
-      [{ threadId: 7, seq: 1, contentDigest: 'abc' }],
+      [{ threadId: 7, seq: 1, payloadDigest: 'abc' }],
       [{ type: 'GROUP', groupAccount: '!group' }],
     ]);
     class DecliningService extends FederationMessageProvenanceService {
@@ -131,7 +164,11 @@ describe('FederationMessageProvenanceService', () => {
       groupQuery(1, 'abc'), // answered yes
     ]);
     expect(results).toEqual([
-      { thread: { account: 'alice', peerAccount: 'bob' }, seq: 1, known: 'declined' },
+      {
+        thread: { account: 'alice', peerAccount: 'bob' },
+        seq: 1,
+        known: 'declined',
+      },
       { thread: { account: '!group' }, seq: 1, known: 'yes' },
     ]);
   });
@@ -173,10 +210,7 @@ describe('FederationMessageProvenanceService', () => {
   it('preserves result order and correlates by value', async () => {
     const { database } = mockDb([[], []]);
     const svc = new FederationMessageProvenanceService(database as never);
-    const results = await svc.query([
-      groupQuery(2, 'd2'),
-      groupQuery(1, 'd1'),
-    ]);
+    const results = await svc.query([groupQuery(2, 'd2'), groupQuery(1, 'd1')]);
     expect(results.map((r) => r.seq)).toEqual([2, 1]);
     expect(results.map((r) => r.known)).toEqual(['no', 'no']);
   });

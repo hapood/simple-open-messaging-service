@@ -1,10 +1,9 @@
-import { Global, Module } from '@nestjs/common';
-import { EventEmitter2, EventEmitterModule } from '@nestjs/event-emitter';
+import { Module } from '@nestjs/common';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { KeypairService } from './keypair.service.js';
 import { SignatureService } from './signature.service.js';
 import { DiscoveryService } from './discovery.service.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
-import { FederationService } from './federation.service.js';
 import { GroupMembershipProjectionService } from '../group/membership-intent/shared/group-membership-projection.service.js';
 import { FederationGroupMetaClient } from './federation-group-meta-client.service.js';
 import { FederationGroupRequestProjectionService } from './federation-group-request-projection.service.js';
@@ -19,6 +18,9 @@ import { AccountThreadStateModule } from '../account-thread-state/account-thread
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { UploadModule } from '../upload/upload.module.js';
 import { MessageModule } from '../message/message.module.js';
+import { ThreadPreviewModule } from '../message/thread-preview.module.js';
+import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.module.js';
+import { QuotaModule } from '../quota/quota.module.js';
 import { QuoteResolutionController } from './quote-resolution.controller.js';
 import { QuoteResolutionCoordinatorService } from './quote-resolution-coordinator.service.js';
 import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
@@ -30,9 +32,10 @@ import { FederationDownloadScheduler } from './federation-download-scheduler.js'
 import { FederationDownloadRecoveryService } from './federation-download-recovery.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
 import { ProfileNamespaceFeedService } from './profile-namespace-feed.service.js';
+import { ProfileNamespaceChangeStore } from './profile-namespace-change-store.service.js';
 import { ProfileNamespaceFeedConsumerService } from './profile-namespace-feed-consumer.service.js';
 import { ProfileNamespaceFeedPullService } from './profile-namespace-feed-pull.service.js';
-import { ProfileNamespaceInfoService } from './profile-namespace-info.service.js';
+import { ProfileNamespaceService } from './profile-namespace.service.js';
 import { ProfileNamespaceRefreshService } from './profile-namespace-refresh.service.js';
 import { FederationProfileNamespacePullService } from './federation-profile-namespace-pull.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
@@ -93,29 +96,33 @@ import { RemoteMemberMembershipIntentService } from '../group/membership-intent/
 import { MirrorGroupMembershipIntentService } from '../group/membership-intent/received/mirror-group-membership-intent.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
-import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
+import { FederationStateFeedPushService } from './federation-state-feed-push.service.js';
+import { FederationInboundMessageEffectsService } from './federation-inbound-message-effects.service.js';
+import { RelationshipIntentExpiryService } from '../relationship/relationship-intent-expiry.service.js';
 
 /**
- * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
- * FederationService needs RelationshipService (RelationshipModule, unified relationship transitions), MessageService
- * (MessageModule, card write on outbound group invite), AccountThreadStateService (relationship reads +
- * raw roster mutators), SseService (GatewayModule), + UploadModule (avatar wire helpers). DatabaseService
- * is provided globally by DatabaseModule.
+ * Federation (S2S). Consumers import this module explicitly when they need its exported services.
+ * The exported services depend on RelationshipService (RelationshipModule, unified relationship
+ * transitions), MessageService (MessageModule, card write on outbound group invite),
+ * AccountThreadStateService (relationship reads + raw roster mutators), SseService (GatewayModule),
+ * + UploadModule (avatar wire helpers). DatabaseService is provided globally by DatabaseModule.
  *
  * Two S2S controllers share the `s2s/v1` prefix: S2sController (unified invite + roster + signed GETs,
  * allow-list-gated via S2sSignatureGuard) and S2sRecognitionController (bidirectional Recognize + Health).
  */
-@Global()
 @Module({
   imports: [
     // EventEmitterModule is NOT global (only forRoot() lives in AppModule) — import it here so
-    // FederationService can emitAsync('call.frame.inbound') for the inbound S2S call bridge.
+    // FederationCallBridgeService can emitAsync('call.frame.inbound') for the inbound S2S call bridge.
     EventEmitterModule,
     RelationshipModule,
     AccountThreadStateModule,
     GatewayModule,
     UploadModule,
     MessageModule,
+    ThreadPreviewModule,
+    ClientStateFeedModule,
+    QuotaModule,
     LinkPreviewModule,
     ForwardBundleModule,
     DurableTaskModule,
@@ -135,26 +142,21 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         DatabaseService,
         ClientStateFeedService,
         PeerStateFeedService,
-        EventEmitter2,
+        FederationStateFeedPushService,
         FederationNamespaceService,
       ],
       useFactory: (
         database: DatabaseService,
         clientFeed: ClientStateFeedService,
         peerFeed: PeerStateFeedService,
-        events: EventEmitter2,
+        stateFeedPush: FederationStateFeedPushService,
         namespaces: FederationNamespaceService,
       ) =>
         new UserIntentService({
           database,
           clientFeed,
           peerFeed,
-          federation: {
-            pushStateFeedNamespaces(namespaceIds) {
-              for (const namespaceId of new Set(namespaceIds))
-                events.emit(FEDERATION_STATE_FEED_PUSH, { namespaceId });
-            },
-          },
+          federation: stateFeedPush,
           namespaces,
         }),
     },
@@ -164,7 +166,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         DatabaseService,
         ClientStateFeedService,
         PeerStateFeedService,
-        EventEmitter2,
+        FederationStateFeedPushService,
         FederationNamespaceService,
         UserIntentService,
       ],
@@ -172,7 +174,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         database: DatabaseService,
         clientFeed: ClientStateFeedService,
         peerFeed: PeerStateFeedService,
-        events: EventEmitter2,
+        stateFeedPush: FederationStateFeedPushService,
         namespaces: FederationNamespaceService,
         userIntents: UserIntentService,
       ) =>
@@ -180,12 +182,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
           database,
           clientFeed,
           peerFeed,
-          federation: {
-            pushStateFeedNamespaces(namespaceIds) {
-              for (const namespaceId of new Set(namespaceIds))
-                events.emit(FEDERATION_STATE_FEED_PUSH, { namespaceId });
-            },
-          },
+          federation: stateFeedPush,
           userIntents,
         }),
     },
@@ -195,7 +192,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         DatabaseService,
         ClientStateFeedService,
         PeerStateFeedService,
-        EventEmitter2,
+        FederationStateFeedPushService,
         FederationNamespaceService,
         GroupRelationshipMutationService,
       ],
@@ -203,7 +200,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         database: DatabaseService,
         clientFeed: ClientStateFeedService,
         peerFeed: PeerStateFeedService,
-        events: EventEmitter2,
+        stateFeedPush: FederationStateFeedPushService,
         namespaces: FederationNamespaceService,
         relationshipMutations: GroupRelationshipMutationService,
       ) =>
@@ -211,12 +208,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
           database,
           clientFeed,
           peerFeed,
-          federation: {
-            pushStateFeedNamespaces(namespaceIds) {
-              for (const namespaceId of new Set(namespaceIds))
-                events.emit(FEDERATION_STATE_FEED_PUSH, { namespaceId });
-            },
-          },
+          federation: stateFeedPush,
           relationshipMutations,
         }),
     },
@@ -226,7 +218,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         DatabaseService,
         ClientStateFeedService,
         PeerStateFeedService,
-        EventEmitter2,
+        FederationStateFeedPushService,
         FederationNamespaceService,
         GroupRelationshipMutationService,
       ],
@@ -234,7 +226,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
         database: DatabaseService,
         clientFeed: ClientStateFeedService,
         peerFeed: PeerStateFeedService,
-        events: EventEmitter2,
+        stateFeedPush: FederationStateFeedPushService,
         namespaces: FederationNamespaceService,
         memberMutations: GroupRelationshipMutationService,
       ) =>
@@ -242,12 +234,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
           database,
           clientFeed,
           peerFeed,
-          federation: {
-            pushStateFeedNamespaces(namespaceIds) {
-              for (const namespaceId of new Set(namespaceIds))
-                events.emit(FEDERATION_STATE_FEED_PUSH, { namespaceId });
-            },
-          },
+          federation: stateFeedPush,
           memberMutations,
         }),
     },
@@ -271,6 +258,9 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     FederationUserDirectoryService,
     FederationCallBridgeService,
     FederationThreadAccessService,
+    FederationStateFeedPushService,
+    FederationInboundMessageEffectsService,
+    RelationshipIntentExpiryService,
     FederationTrustedPeerClient,
     FederationThreadResourceClient,
     FederationProfileService,
@@ -286,7 +276,6 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     FederationPeerResourceService,
     FederationInboundMessageCommitService,
     FederationThreadQueryDenialService,
-    FederationService,
     GroupMembershipProjectionService,
     AuthoritativeMembershipFinalizerService,
     FederationGroupMetaClient,
@@ -317,9 +306,10 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     GroupRelationshipMutationService,
     FederationNamespaceService,
     ProfileNamespaceFeedService,
+    ProfileNamespaceChangeStore,
     ProfileNamespaceFeedConsumerService,
     ProfileNamespaceFeedPullService,
-    ProfileNamespaceInfoService,
+    ProfileNamespaceService,
     ProfileNamespaceRefreshService,
     FederationProfileNamespacePullService,
     FederationStateFeedConsumerService,
@@ -331,10 +321,17 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     RemoteMemberMembershipIntentService,
     MirrorGroupMembershipIntentService,
     FederationThreadQueryDenialService,
+    FederationPeerLifecycle,
+    FederationCallBridgeService,
+    FederationProfileService,
+    FederationThreadAccessService,
+    FederationMediaLocalizationService,
+    FederationStateFeedPushService,
+    FederationInboundMessageEffectsService,
+    RelationshipIntentExpiryService,
     KeypairService,
     SignatureService,
     DiscoveryService,
-    FederationService,
     FederationRecognitionService,
     FederationMessageFeedService,
     FederationMessageProvenanceService,
@@ -359,7 +356,7 @@ import { FEDERATION_STATE_FEED_PUSH } from './federation-state-feed.events.js';
     GroupRelationshipMutationService,
     FederationNamespaceService,
     ProfileNamespaceFeedService,
-    ProfileNamespaceInfoService,
+    ProfileNamespaceService,
     ProfileNamespaceRefreshService,
   ],
 })

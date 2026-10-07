@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { toClientIdentity, toClientIdentityOrNull } from './client-identity.js';
+import { validateNamespacedAddress, validateNamespacedAddressOrNull } from './client-identity.js';
 
-describe('toClientIdentity', () => {
+describe('validateNamespacedAddress', () => {
   it('does not infer locality from the configured domain', () => {
     const source = {
       account: 'not-registered',
       domain: 'bravo.test',
       namespaceId: 7,
     };
-    expect(toClientIdentity(source, 'bravo.test')).toEqual(source);
+    expect(validateNamespacedAddress(source)).toEqual(source);
     expect(source).toEqual({
       account: 'not-registered',
       domain: 'bravo.test',
@@ -18,28 +18,34 @@ describe('toClientIdentity', () => {
 
   it('preserves a foreign subject publisher namespace', () => {
     expect(
-      toClientIdentity(
-        { account: 'member', domain: 'charlie.test', namespaceId: 7 },
-        'bravo.test',
-      ),
+      validateNamespacedAddress({
+        account: 'member',
+        domain: 'charlie.test',
+        namespaceId: 7,
+      }),
     ).toEqual({ account: 'member', domain: 'charlie.test', namespaceId: 7 });
   });
 
-  it('is idempotent for a valid local marker', () => {
-    const identity = { account: 'member', domain: 'local', namespaceId: 0 };
-    expect(toClientIdentity(identity, 'bravo.test')).toEqual(identity);
+  it('preserves a valid namespace-zero address without special domain spelling', () => {
+    const identity = {
+      account: 'member',
+      domain: 'member.example',
+      namespaceId: 0,
+    };
+    expect(validateNamespacedAddress(identity)).toEqual(identity);
   });
 
-  it('lets inbound processors detect and drop local with a positive namespace', () => {
+  it('accepts a real domain with any non-zero namespace', () => {
     expect(
-      toClientIdentityOrNull({
+      validateNamespacedAddressOrNull({
         account: 'member',
-        domain: 'local',
+        domain: 'local.example.test',
         namespaceId: 7,
       }),
-    ).toBeNull();
-    expect(() =>
-      toClientIdentity({ account: 'member', domain: 'local', namespaceId: 7 }),
-    ).toThrow('invalid local subject namespace');
+    ).toEqual({
+      account: 'member',
+      domain: 'local.example.test',
+      namespaceId: 7,
+    });
   });
 });

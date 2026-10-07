@@ -22,7 +22,7 @@ describe('profiled system-event identity', () => {
     expect(
       isProfiledAddress({
         account: '$system',
-        domain: 'local',
+        domain: 'system.example',
         profileNamespaceId: 0,
         profileRev: 0,
       }),
@@ -30,7 +30,7 @@ describe('profiled system-event identity', () => {
     expect(
       isProfiledAddress({
         account: '$system',
-        domain: 'local',
+        domain: 'system.example',
         profileNamespaceId: 0,
         profileRev: 1,
       }),
@@ -38,7 +38,7 @@ describe('profiled system-event identity', () => {
     expect(
       isProfiledAddress({
         account: 'alice',
-        domain: 'local',
+        domain: 'alice.example',
         profileNamespaceId: 0,
         profileRev: 0,
       }),
@@ -47,6 +47,7 @@ describe('profiled system-event identity', () => {
       profileKeyForAddress(
         {
           account: '$system',
+          domain: 'system.example',
           profileNamespaceId: 0,
           profileRev: 0,
         },
@@ -65,9 +66,7 @@ describe('profiled system-event identity', () => {
     expect(
       isProfiledAddress({
         account: 'alice',
-        domain: 'local',
-        profileNamespaceId: 7,
-        profileRev: 2,
+        domain: 'peer.example',
       }),
     ).toBe(false);
     expect(

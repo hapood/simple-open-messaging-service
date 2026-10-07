@@ -202,6 +202,7 @@
         ],
         "scannedThrough": "6",
         "stateFeedEndId": "6",
+        "profileNamespaceFeedEndId": "6",
         "hasMore": false
       }
     },
@@ -230,6 +231,7 @@
           ],
           "scannedThrough": "1",
           "stateFeedEndId": "1",
+          "profileNamespaceFeedEndId": "1",
           "hasMore": false
         },
         {
@@ -251,6 +253,7 @@
           ],
           "scannedThrough": "1",
           "stateFeedEndId": "1",
+          "profileNamespaceFeedEndId": "1",
           "hasMore": false
         },
         {
@@ -272,6 +275,7 @@
           ],
           "scannedThrough": "1",
           "stateFeedEndId": "1",
+          "profileNamespaceFeedEndId": "1",
           "hasMore": false
         }
       ]
@@ -474,7 +478,7 @@
         {
           "contentType": "FORWARD",
           "content": {
-            "bundleId": "b1"
+            "bundleId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           }
         },
         {

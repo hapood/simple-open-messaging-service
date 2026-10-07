@@ -21,23 +21,11 @@ export const relationshipEndpointMatchesUserSql = (
     AND ${pairAlias}.${sql.identifier(`${prefix}NamespaceId`)} = ${identityAlias}."namespaceId"`;
 };
 
-const pairNamespaceMatchesUsersSql = (
-  pairAlias: SQLWrapper,
-  firstIdentityAlias: SQLWrapper,
-  secondIdentityAlias: SQLWrapper,
-) => sql`${pairAlias}."endpointANamespaceId" = ${pairAlias}."endpointBNamespaceId"
-  AND ${pairAlias}."endpointANamespaceId" = CASE
-    WHEN ${firstIdentityAlias}."namespaceId" <> 0
-      THEN ${firstIdentityAlias}."namespaceId"
-    ELSE ${secondIdentityAlias}."namespaceId"
-  END`;
-
 export const relationshipPairMatchesUsersSql = (
   pairAlias: SQLWrapper,
   firstIdentityAlias: SQLWrapper,
   secondIdentityAlias: SQLWrapper,
-) => sql`${pairNamespaceMatchesUsersSql(pairAlias, firstIdentityAlias, secondIdentityAlias)}
-  AND ((
+) => sql`((
     ${relationshipEndpointMatchesUserSql(pairAlias, 'A', firstIdentityAlias)}
     AND ${relationshipEndpointMatchesUserSql(pairAlias, 'B', secondIdentityAlias)}
   ) OR (

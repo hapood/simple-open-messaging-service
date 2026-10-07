@@ -49,9 +49,7 @@ function localRecipientKey(
     'RELATIONSHIP_INTENT',
     0,
     groupAccount,
-    'local',
     memberAccount,
-    'local',
   ]);
 }
 
@@ -117,9 +115,9 @@ export function groupMembershipRevocationSql(
         })
       }
     ), revocation AS MATERIALIZED (
-      SELECT status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT status, "profileRev", note, "requestedAt", "expiresAt"
+      SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.author.account} AND "authorNamespaceId" = ${input.author.namespaceId}
         AND "receiverAccount" = ${input.receiver.account} AND "receiverNamespaceId" = ${input.receiver.namespaceId}
@@ -257,7 +255,7 @@ function localRecipient(
       FROM revocation v
     ), candidate_bodies AS MATERIALIZED (
       SELECT ${input.localMemberId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
-        b."compactionKey", ${input.groupAccount}::text AS account, 'local'::text AS domain,
+        b."compactionKey", ${input.groupAccount}::text AS account, (SELECT domain FROM "IdentityNamespace" WHERE id = 0)::text AS domain,
         ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", b.body
       FROM recipient_body b
     ), ${clientIntentFeedWriteSql()}
@@ -269,7 +267,9 @@ function localRecipient(
 function peerRecipient(input: GroupMembershipRevocationInput): SQL {
   return sql`
     peer_write AS MATERIALIZED (
-      SELECT jsonb_build_object('status', v.status, 'profileRev', v."profileRev", 'note', v.note,
+      SELECT jsonb_build_object('status', v.status,
+          'namespaceId', v."profileNamespaceId",
+          'profileRev', v."profileRev", 'note', v.note,
           'requestedAt', floor(extract(epoch FROM v."requestedAt") * 1000)::bigint,
           'expiresAt', CASE WHEN v."expiresAt" IS NULL THEN NULL
             ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END) AS body

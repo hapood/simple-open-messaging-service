@@ -166,7 +166,7 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
 function localMember(input: GroupMembershipAcceptanceInput): SQL {
   return sql`
     local_member AS MATERIALIZED (
-      SELECT * FROM "Account" WHERE account = ${input.memberAccount} AND domain = 'local' AND "namespaceId" = 0
+      SELECT * FROM "Account" WHERE account = ${input.memberAccount} AND "namespaceId" = 0
     ), member_state AS (
       INSERT INTO "AccountThreadState" ("accountId", "threadId", role, "lastReadSeq", "groupMetaFeedEndId", "threadProfileRev", "profileSourceId", "updatedAt")
       SELECT a.id, ${input.threadId}, p.role::"GroupRole",
@@ -204,7 +204,7 @@ function localMember(input: GroupMembershipAcceptanceInput): SQL {
       SELECT count(*) FROM member_state
     ), recipient_feed AS (
       INSERT INTO "ClientStateFeed" ("userId", account, domain, "namespaceId", "eventType", "subjectAccount", "subjectNamespaceId", "feedId", "compactionKey", body)
-      SELECT a.id, ${input.groupAccount}, 'local', 0, 'RELATIONSHIP_INTENT', ${input.memberAccount}, 'local', a."feedId", b."compactionKey", b.body
+      SELECT a.id, ${input.groupAccount}, (SELECT domain FROM "IdentityNamespace" WHERE id = 0), 0, 'RELATIONSHIP_INTENT', ${input.memberAccount}, 0, a."feedId", b."compactionKey", b.body
       FROM recipient_allocation a CROSS JOIN recipient_body b CROSS JOIN branch_done
       ON CONFLICT ("userId", "compactionKey") DO UPDATE SET "feedId" = EXCLUDED."feedId", body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "userId", "feedId"
@@ -268,9 +268,7 @@ function prepareRecipient(input: GroupMembershipAcceptanceInput): SQL {
     'RELATIONSHIP_INTENT',
     0,
     input.groupAccount,
-    'local',
     input.memberAccount,
-    'local',
   ]);
   return sql`
     recipient_body AS MATERIALIZED (
@@ -283,7 +281,7 @@ function prepareRecipient(input: GroupMembershipAcceptanceInput): SQL {
       FROM accepted_intent i
     ), recipient_allocation AS (
       UPDATE "Account" a SET "clientStateFeedEndId" = a."clientStateFeedEndId" + 1, "updatedAt" = CURRENT_TIMESTAMP
-      FROM recipient_body b WHERE a.account = ${input.memberAccount} AND a.domain = 'local' AND a."namespaceId" = 0
+      FROM recipient_body b WHERE a.account = ${input.memberAccount} AND a."namespaceId" = 0
         AND NOT EXISTS (SELECT 1 FROM "ClientStateFeed" f WHERE f."userId" = a.id AND f."compactionKey" = b."compactionKey" AND f.body = b.body)
       RETURNING a.id, a."clientStateFeedEndId" AS "feedId"
     ), recipient_prepared AS MATERIALIZED (SELECT count(*) FROM recipient_allocation)`;
@@ -372,7 +370,7 @@ export function groupMembershipAcceptanceSql(
       federation: true,
     })},
     ${managerProjections(input)}
-    SELECT i.id::text, i.status, i."profileRev", i.note, i."requestedAt", i."expiresAt",
+    SELECT i.status, i."profileRev", i.note, i."requestedAt", i."expiresAt",
       (SELECT "feedId" FROM recipient_result) AS "recipientFeedId",
       (SELECT "userId" FROM recipient_result) AS "recipientUserId",
       COALESCE((SELECT invalid FROM recipient_result), false) AS "invalidPeerHead",

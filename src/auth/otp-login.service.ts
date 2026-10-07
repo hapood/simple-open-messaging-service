@@ -113,7 +113,7 @@ export class OtpLoginService {
         disabledAt: accountTable.disabledAt,
       })
       .from(accountTable)
-      .where(and(eq(accountTable.id, userId), eq(accountTable.domain, 'local')))
+      .where(and(eq(accountTable.id, userId), eq(accountTable.namespaceId, 0)))
       .limit(1);
     if (!target) {
       throw new BusinessException(
@@ -202,7 +202,7 @@ export class OtpLoginService {
       })
       .from(accountTable)
       .where(
-        and(eq(accountTable.account, acct), eq(accountTable.domain, 'local')),
+        and(eq(accountTable.account, acct), eq(accountTable.namespaceId, 0)),
       )
       .limit(1);
     // Non-revealing: a non-existent / group / disabled account is indistinguishable from a wrong code. NOT

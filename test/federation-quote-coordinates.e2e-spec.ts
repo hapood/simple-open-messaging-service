@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
 import {
@@ -16,6 +17,9 @@ import {
 } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
 import { ContentType } from '../src/database/enums.js';
+import { wirePayloadDigest } from '../src/federation/federated-message-content.js';
+import { forwardBundleDigest } from '../src/forward/forward-bundle.service.js';
+import { payloadDigest } from '../src/federation/canonical-json.js';
 import { FederationInboundMessageStoreService } from '../src/federation/federation-inbound-message-store.service.js';
 import {
   FederationMessageFeedService,
@@ -63,7 +67,6 @@ describe('federation quote coordinates across three persisted node views', () =>
         .insert(tables.identityNamespace)
         .values({
           domain,
-          rootKeyFingerprint: `sha256:${domain}`,
           // The IdentityNamespace_one_epoch_per_root_key unique index forbids
           // two non-retired namespaces from sharing a root key, so derive a
           // distinct 32-byte key per domain instead of a shared placeholder.
@@ -135,16 +138,21 @@ describe('federation quote coordinates across three persisted node views', () =>
     } = overrides;
     const remoteCreator =
       creatorDomain !== undefined && creatorDomain !== 'local';
+    const seededContentType =
+      rest.contentType ?? (ContentType.PURE_TEXT as ContentType);
+    const seededContent =
+      rest.content ?? JSON.stringify({ text: `message ${seq}` });
     const [row] = await database.db
       .insert(tables.message)
       .values({
         threadId: view.threadId,
         seq,
         originSeq: seq,
-        contentType: ContentType.PURE_TEXT,
-        content: JSON.stringify({ text: `message ${seq}` }),
+        contentType: seededContentType,
+        content: seededContent,
         creatorAccount: 'user',
         updatedAt: new Date(),
+        payloadDigest: wirePayloadDigest(seededContentType, seededContent),
         // The squashed 0000_base migration renamed sourceNamespaceId to
         // publisherNamespaceId and replaced creatorDomain with profileNamespaceId.
         // Map the pre-cutover aliases so seeded mirrors carry the publisher
@@ -183,7 +191,6 @@ describe('federation quote coordinates across three persisted node views', () =>
             groupId: view.threadId,
             authorityNamespaceId: view.authorityNamespaceId,
             authorAccount: row.creatorAccount,
-            authorDomain: row.creatorDomain,
           },
         ],
         peer.domain,
@@ -200,11 +207,12 @@ describe('federation quote coordinates across three persisted node views', () =>
     peer: View,
     seq: number,
     quoteTarget: FederationQuoteTarget,
+    quoteDigest?: string,
   ) {
     const result = await database.db.transaction((tx) =>
       store.store(tx, {
         threadId: view.threadId,
-        creator: { account: 'user', domain: peer.domain },
+        creator: { account: 'user', namespaceId: peer.namespaceId },
         fetchedFromDomain: peer.domain,
         namespaceId: peer.namespaceId,
         message: {
@@ -214,10 +222,16 @@ describe('federation quote coordinates across three persisted node views', () =>
           content: JSON.stringify({ text: 'reply' }),
           ts: 1_700_000_000_000,
           quoteTarget,
+          quoteDigest,
         },
         expectedFederationVersion: 0,
         incomingText: { text: 'reply' },
         originTime: new Date(1_700_000_000_000),
+        payloadDigest: payloadDigest(
+          JSON.stringify({ text: 'reply' }),
+          [],
+          quoteDigest,
+        ),
       }),
     );
     if (result.kind !== 'message') throw new Error('text unexpectedly pending');
@@ -239,7 +253,14 @@ describe('federation quote coordinates across three persisted node views', () =>
     const reply = await seed(charlie, 10, {
       content: JSON.stringify({
         text: 'reply',
-        quote: { seq: 8, namespaceId: 0 },
+        quote: {
+          seq: 8,
+          namespaceId: 0,
+          digest: wirePayloadDigest(
+            ContentType.PURE_TEXT,
+            JSON.stringify({ text: 'message 8' }),
+          ),
+        },
       }),
     });
     const submission = await publish(charlie, alpha, reply);
@@ -249,8 +270,9 @@ describe('federation quote coordinates across three persisted node views', () =>
       charlie,
       submission.seq,
       submission.quoteTarget!,
+      submission.quoteDigest,
     );
-    expect(JSON.parse(authoritativeReply.content).quote).toEqual({
+    expect(JSON.parse(authoritativeReply.content).quote).toMatchObject({
       seq: 41,
       namespaceId: 0,
     });
@@ -261,13 +283,14 @@ describe('federation quote coordinates across three persisted node views', () =>
       alpha,
       distribution.seq,
       distribution.quoteTarget!,
+      distribution.quoteDigest,
     );
-    expect(JSON.parse(mirroredReply.content).quote).toEqual({
+    expect(JSON.parse(mirroredReply.content).quote).toMatchObject({
       seq: 41,
       namespaceId: alpha.namespaceId,
     });
     const [projected] = await resolveStoredQuotes(database.db, [mirroredReply]);
-    expect(JSON.parse(projected.content).quote).toEqual({ seq: 3 });
+    expect(JSON.parse(projected.content).quote).toMatchObject({ seq: 3 });
     expect(JSON.parse(mirroredReply.content).quote.seq).toBe(41);
   });
 
@@ -290,7 +313,14 @@ describe('federation quote coordinates across three persisted node views', () =>
     const reply = await seed(charlie, 10, {
       content: JSON.stringify({
         text: 'reply',
-        quote: { seq: 8, namespaceId: 0 },
+        quote: {
+          seq: 8,
+          namespaceId: 0,
+          digest: wirePayloadDigest(
+            ContentType.PURE_TEXT,
+            JSON.stringify({ text: 'message 8' }),
+          ),
+        },
       }),
     });
     const submission = await publish(charlie, alpha, reply);
@@ -300,8 +330,9 @@ describe('federation quote coordinates across three persisted node views', () =>
       charlie,
       submission.seq,
       submission.quoteTarget!,
+      submission.quoteDigest,
     );
-    expect(JSON.parse(authoritativeReply.content).quote).toEqual({
+    expect(JSON.parse(authoritativeReply.content).quote).toMatchObject({
       seq: 8,
       namespaceId: charlie.namespaceId,
     });
@@ -310,7 +341,7 @@ describe('federation quote coordinates across three persisted node views', () =>
     const [projected] = await resolveStoredQuotes(database.db, [
       authoritativeReply,
     ]);
-    expect(JSON.parse(projected.content).quote).toEqual({
+    expect(JSON.parse(projected.content).quote).toMatchObject({
       seq: 42,
       status: 'NOT_FOUND',
     });
@@ -336,7 +367,7 @@ describe('federation quote coordinates across three persisted node views', () =>
         },
       ];
       const imported = await forwards.importClosure(bravo.domain, {
-        id: `absent-quote-${seq}`,
+        id: forwardBundleDigest(messages, []),
         messages,
         children: [],
         assets: [],
@@ -353,7 +384,10 @@ describe('federation quote coordinates across three persisted node views', () =>
 
   it('keeps an explicit absent quote through receipt, redistribution, and reads', async () => {
     const reply = await receive(alpha, charlie, 51, { seq: 0 });
-    expect(JSON.parse(reply.content).quote).toEqual({ seq: 0, namespaceId: 0 });
+    expect(JSON.parse(reply.content).quote).toMatchObject({
+      seq: 0,
+      namespaceId: 0,
+    });
     const distribution = await publish(alpha, bravo, reply);
     expect(distribution.quoteTarget).toEqual({ seq: 0 });
     const mirrored = await receive(
@@ -361,9 +395,10 @@ describe('federation quote coordinates across three persisted node views', () =>
       alpha,
       distribution.seq,
       distribution.quoteTarget!,
+      distribution.quoteDigest,
     );
     const [projected] = await resolveStoredQuotes(database.db, [mirrored]);
-    expect(JSON.parse(projected.content).quote).toEqual({
+    expect(JSON.parse(projected.content).quote).toMatchObject({
       seq: 0,
       status: 'NOT_FOUND',
     });
@@ -374,7 +409,7 @@ describe('federation quote coordinates across three persisted node views', () =>
 
   it('persists a missing target unchanged and distinguishes unpulled from confirmed absence', async () => {
     const reply = await receive(bravo, alpha, 51, { seq: 41 });
-    expect(JSON.parse(reply.content).quote).toEqual({
+    expect(JSON.parse(reply.content).quote).toMatchObject({
       seq: 41,
       namespaceId: alpha.namespaceId,
     });
@@ -398,6 +433,8 @@ describe('federation quote coordinates across three persisted node views', () =>
       creatorDomain: alpha.domain,
     });
     const [resolved] = await resolveStoredQuotes(database.db, [reply]);
-    expect(JSON.parse(resolved.content).quote).toEqual({ seq: target.seq });
+    expect(JSON.parse(resolved.content).quote).toMatchObject({
+      seq: target.seq,
+    });
   });
 });

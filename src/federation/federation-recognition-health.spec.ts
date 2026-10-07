@@ -61,7 +61,6 @@ function availablePeer() {
   return {
     domain: 'peer.example',
     trustLevel: 'available',
-    recognizesPeer: true,
     localServiceAvailable: true,
     peerAcceptanceConfirmed: true,
     remoteServiceReachable: true,

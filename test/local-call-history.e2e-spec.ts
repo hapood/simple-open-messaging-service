@@ -38,13 +38,13 @@ describe('local terminal call history transactions', () => {
         caller: {
           account: 'alice',
           domain: 'a.test',
-          namespaceId: 1,
+          profileNamespaceId: 1,
           profileRev: 0,
         },
         callee: {
           account: 'bob',
           domain: 'b.test',
-          namespaceId: 2,
+          profileNamespaceId: 2,
           profileRev: 0,
         },
         mediaType: 'AUDIO',
@@ -72,7 +72,6 @@ describe('local terminal call history transactions', () => {
     expect(rows[0]).toMatchObject({
       contentType: 'SYSTEM',
       creatorAccount: '$system',
-      creatorDomain: 'local',
       originSeq: null,
     });
     expect(JSON.parse(rows[0].content)).toEqual(call.content);

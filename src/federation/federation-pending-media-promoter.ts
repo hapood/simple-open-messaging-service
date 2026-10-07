@@ -8,9 +8,9 @@ import * as tables from '../database/schema.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
 import { requireInboundPendingMedia } from '../message/pending-media-row.js';
 import {
-  parseTextMessageContent,
-  stringifyTextMessageContent,
-} from '../../shared/text-message-content.js';
+  parseMessageContentQuote,
+  withMessageContentQuote,
+} from '../../shared/message-content-quote.js';
 import { extractDigests } from '../upload/file-content.js';
 
 export interface PendingMediaMaterializationEffect {
@@ -128,14 +128,16 @@ export class FederationPendingMediaPromoter {
           );
       let storedContent = stagedMessage.content;
       if (batch.dependsOnOriginSeq !== null && !tombstone) {
-        const text = parseTextMessageContent(stagedMessage.content);
-        if (!text) throw new Error('pending quote has invalid text content');
-        storedContent = stringifyTextMessageContent({
-          text: text.text,
-          quote:
-            localQuoteSeq == null
-              ? { seq: 0, sourceSeq: batch.dependsOnOriginSeq }
-              : { seq: localQuoteSeq },
+        const quote = parseMessageContentQuote(stagedMessage.content);
+        if (!quote) throw new Error('pending quote is missing quote content');
+        if (!quote.digest)
+          throw new Error('pending quote is missing quote digest');
+        storedContent = withMessageContentQuote(stagedMessage.content, {
+          seq: localQuoteSeq == null ? 0 : localQuoteSeq,
+          digest: quote.digest,
+          ...(localQuoteSeq == null
+            ? { sourceSeq: batch.dependsOnOriginSeq }
+            : {}),
         });
       }
 
@@ -233,24 +235,7 @@ export class FederationPendingMediaPromoter {
         ),
       )
       .limit(1);
-    if (direct) return direct.pendingId === null ? direct.seq : null;
-
-    const receipt = await tx.query.federationMessageReceipt.findFirst({
-      where: and(
-        eq(tables.federationMessageReceipt.namespaceId, namespaceId),
-        eq(tables.federationMessageReceipt.threadId, threadId),
-        eq(tables.federationMessageReceipt.peerSeq, sourceSeq),
-      ),
-      columns: { messageId: true },
-    });
-    if (!receipt) return null;
-    const resolved = await tx.query.message.findFirst({
-      where: and(
-        eq(tables.message.id, receipt.messageId),
-        eq(tables.message.threadId, threadId),
-      ),
-      columns: { seq: true },
-    });
-    return resolved?.seq ?? null;
+    if (!direct) return null;
+    return direct.pendingId === null ? direct.seq : null;
   }
 }

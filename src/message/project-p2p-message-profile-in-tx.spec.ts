@@ -17,7 +17,6 @@ describe('projectP2PMessageProfileInTx', () => {
     const changed = await projectP2PMessageProfileInTx(tx as never, {
       threadLock: { tx, threadId: 9 } as never,
       account: 'alice',
-      domain: 'peer.test',
       publisherNamespaceId: 7,
       namespaceId: 7,
       messageSeq: 6,

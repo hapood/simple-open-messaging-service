@@ -62,7 +62,7 @@ export class GroupInviteAddressDto {
 
   @ApiProperty({
     example: 'example.com',
-    description: "User home domain; 'local' denotes this server.",
+    description: 'User home domain. For a local user, use the configured local identity domain.',
   })
   @IsString()
   @IsNotEmpty()

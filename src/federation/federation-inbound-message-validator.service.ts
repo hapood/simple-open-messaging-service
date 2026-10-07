@@ -1,8 +1,14 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import {
+  isValidGroupAccount,
+  isValidSomfpUserAccount,
+} from '../common/account.js';
 import { ContentType } from '../database/enums.js';
 import { UploadService } from '../upload/upload.service.js';
+import { canonicalJson } from './canonical-json.js';
 import { federatedContentDigests } from './federated-message-content.js';
 import type { FederationMessageFeedMessage } from './federation-message-feed.service.js';
 import { isFederationQuoteTarget } from './federation-quote-target.js';
@@ -10,6 +16,21 @@ import { isFederationQuoteTarget } from './federation-quote-target.js';
 /** Validates the closed wire shape and CAS descriptor manifest of an inbound message item. */
 @Injectable()
 export class FederationInboundMessageValidatorService {
+  /** Fingerprint every immutable wire field at a direct-origin coordinate. The parsed content
+   * object is canonicalized with the outer envelope so insignificant JSON member order cannot
+   * turn an idempotent replay into a conflict. */
+  immutableEnvelopeDigest(item: FederationMessageFeedMessage): string {
+    return createHash('sha256')
+      .update(
+        canonicalJson({
+          ...item,
+          content: JSON.parse(item.content) as unknown,
+        }),
+        'utf8',
+      )
+      .digest('hex');
+  }
+
   assertAssetDescriptors(item: FederationMessageFeedMessage): void {
     const expected = new Set(
       federatedContentDigests(item.contentType as ContentType, item.content),
@@ -97,6 +118,7 @@ export class FederationInboundMessageValidatorService {
       [
         'thread',
         isGroup ? 'author' : 'authorRef',
+        'namespaceId',
         'seq',
         'profileRev',
         'originSeq',
@@ -106,16 +128,30 @@ export class FederationInboundMessageValidatorService {
         'originCreatedAt',
         'assets',
       ],
-      ['quoteTarget'],
+      ['quoteTarget', 'quoteDigest'],
     );
+    const quoteDigest = item.quoteDigest;
     if (
+      quoteDigest !== undefined &&
+      (typeof quoteDigest !== 'string' || !/^[a-f0-9]{64}$/.test(quoteDigest))
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'invalid quote digest',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (
+      !Number.isSafeInteger(item.namespaceId) ||
+      item.namespaceId < 0 ||
+      item.namespaceId > 2_147_483_647 ||
       !Number.isSafeInteger(item.profileRev) ||
       item.profileRev < 0 ||
       item.profileRev > 2_147_483_647
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'federated message has an invalid profileRev',
+        'federated message has an invalid namespaceId or profileRev',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -125,7 +161,12 @@ export class FederationInboundMessageValidatorService {
     );
     if (
       typeof thread['account'] !== 'string' ||
-      ('peerAccount' in thread && typeof thread['peerAccount'] !== 'string')
+      (isGroup
+        ? !isValidGroupAccount(thread['account'])
+        : !isValidSomfpUserAccount(thread['account'])) ||
+      ('peerAccount' in thread &&
+        (typeof thread['peerAccount'] !== 'string' ||
+          !isValidSomfpUserAccount(thread['peerAccount'])))
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
@@ -137,12 +178,13 @@ export class FederationInboundMessageValidatorService {
       const author = assertFields(
         (item as Extract<FederationMessageFeedMessage, { author: unknown }>)
           .author,
-        ['account', 'namespaceId'],
+        ['account', 'domain'],
       );
       if (
         typeof author['account'] !== 'string' ||
-        !Number.isSafeInteger(author['namespaceId']) ||
-        Number(author['namespaceId']) < 0
+        !isValidSomfpUserAccount(author['account']) ||
+        typeof author['domain'] !== 'string' ||
+        author['domain'].trim().length === 0
       ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
@@ -170,12 +212,21 @@ export class FederationInboundMessageValidatorService {
     }
     if (
       item.quoteTarget !== undefined &&
-      (item.contentType !== ContentType.PURE_TEXT ||
-        !isFederationQuoteTarget(item.quoteTarget))
+      !isFederationQuoteTarget(item.quoteTarget)
     ) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         'invalid federated reply target',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (
+      item.contentType === ContentType.SYSTEM &&
+      (item.quoteTarget !== undefined || item.quoteDigest !== undefined)
+    ) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'system messages cannot contain quotes',
         HttpStatus.BAD_REQUEST,
       );
     }

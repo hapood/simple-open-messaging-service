@@ -4,10 +4,11 @@ export interface FederationStateFeedPush {
   namespaceId: number;
 }
 
-/** Narrow seam for scheduling State Feed push wake-ups. FederationService
- *  satisfies this structurally; consumers type their dependency against this
- *  interface so no type edge reaches federation.service.ts (which would close
- *  a module-load cycle through state-pull / state-feed-consumer). */
+/** Narrow seam for scheduling State Feed push wake-ups. Consumers type their
+ *  dependency against this interface so no type edge reaches the service
+ *  classes (which would close a module-load cycle through state-pull /
+ *  state-feed-consumer). FederationStateFeedPushService satisfies this
+ *  structurally. */
 export interface FederationStateFeedPusher {
   pushStateFeedNamespaces(namespaceIds: Iterable<number>): void;
 }

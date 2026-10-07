@@ -1,4 +1,5 @@
 import { accountAddressInTx } from '../src/user/account-address.js';
+import { localIdentityDomain } from './support/local-domain.js';
 import {
   afterAll,
   afterEach,
@@ -65,7 +66,11 @@ describe('group membership re-entry and ownership transfer', () => {
     const sent = await request(app.getHttpServer())
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${first.token}`)
-      .send({ account: second.account, domain: 'local' });
+      .send({
+        account: second.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(sent.body.code).toBe(BusinessCode.OK);
     await waitForLocalRelationshipRequest(
       database.db,
@@ -76,7 +81,11 @@ describe('group membership re-entry and ownership transfer', () => {
     const accepted = await request(app.getHttpServer())
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${second.token}`)
-      .send({ account: first.account, domain: 'local' });
+      .send({
+        account: first.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(accepted.body.code).toBe(BusinessCode.OK);
     expect(accepted.body.data).toMatchObject({ status: 'OK' });
   }
@@ -89,12 +98,18 @@ describe('group membership re-entry and ownership transfer', () => {
     const invited = await request(app.getHttpServer())
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${manager.token}`)
-      .send({ groupId, users: [{ account: member.account, domain: 'local' }] });
+      .send({
+        groupId,
+        users: [{ account: member.account, domain: localIdentityDomain() }],
+      });
     expect(invited.body.code).toBe(BusinessCode.OK);
     expect(
       invited.body.data.invited,
       JSON.stringify(invited.body),
-    ).toContainEqual({ account: member.account, domain: 'local' });
+    ).toContainEqual({
+      account: member.account,
+      domain: localIdentityDomain(),
+    });
     const joined = await request(app.getHttpServer())
       .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${member.token}`)
@@ -114,7 +129,7 @@ describe('group membership re-entry and ownership transfer', () => {
       where: and(
         eq(groupMetaMemberFeed.threadId, threadId),
         eq(groupMetaMemberFeed.memberAccount, member.account),
-        eq(groupMetaMemberFeed.memberDomain, member.domain),
+        eq(groupMetaMemberFeed.profileNamespaceId, member.namespaceId),
       ),
       orderBy: desc(groupMetaMemberFeed.feedId),
     });
@@ -144,7 +159,11 @@ describe('group membership re-entry and ownership transfer', () => {
     const kicked = await request(app.getHttpServer())
       .post('/api/v1/group/kick')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId, account: member.account, domain: 'local' });
+      .send({
+        groupId,
+        account: member.account,
+        domain: localIdentityDomain(),
+      });
     expect(kicked.body.code).toBe(BusinessCode.OK);
     expect(await currentMember(groupId, member.id)).toBeUndefined();
     const departed = await latestMemberFact(groupId, member.id);
@@ -185,7 +204,7 @@ describe('group membership re-entry and ownership transfer', () => {
         where: and(
           eq(message.threadId, groupId),
           eq(message.creatorAccount, 'reentry-member'),
-          eq(message.creatorDomain, 'local'),
+          eq(message.profileNamespaceId, 0),
         ),
       }),
     ).toBeDefined();
@@ -205,7 +224,11 @@ describe('group membership re-entry and ownership transfer', () => {
     const transferred = await request(app.getHttpServer())
       .post('/api/v1/group/transfer')
       .set('Authorization', `Bearer ${oldOwner.token}`)
-      .send({ groupId, account: newOwner.account, domain: 'local' });
+      .send({
+        groupId,
+        account: newOwner.account,
+        namespaceId: 0,
+      });
     expect(transferred.body.code).toBe(BusinessCode.OK);
     expect(await currentMember(groupId, oldOwner.id)).toMatchObject({
       role: 'ADMIN',
@@ -230,7 +253,11 @@ describe('group membership re-entry and ownership transfer', () => {
     const kicked = await request(app.getHttpServer())
       .post('/api/v1/group/kick')
       .set('Authorization', `Bearer ${newOwner.token}`)
-      .send({ groupId, account: oldOwner.account, domain: 'local' });
+      .send({
+        groupId,
+        account: oldOwner.account,
+        domain: localIdentityDomain(),
+      });
     expect(kicked.body.code).toBe(BusinessCode.OK);
     expect(await currentMember(groupId, oldOwner.id)).toBeUndefined();
     expect(await latestMemberFact(groupId, oldOwner.id)).toMatchObject({

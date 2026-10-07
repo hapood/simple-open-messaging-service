@@ -141,7 +141,6 @@ describe('AuthoritativeMembershipFinalizerService', () => {
           groupId: 5,
           memberUserId: {
             account: 'alice',
-            domain: 'peer.test',
             namespaceId: 9,
           },
           active: false,
@@ -187,7 +186,7 @@ describe('AuthoritativeMembershipFinalizerService', () => {
       target.service.finalizeInTx(target.tx as never, {
         threadId: 7,
         groupId: 5,
-        memberUserId: { account: 'alice', domain: 'peer.test', namespaceId: 9 },
+        memberUserId: { account: 'alice', namespaceId: 9 },
         active: true,
         canonicalRosterChanged: true,
         threadLock,
@@ -214,7 +213,7 @@ describe('AuthoritativeMembershipFinalizerService', () => {
       target.service.finalizeInTx(target.tx as never, {
         threadId: 7,
         groupId: 5,
-        memberUserId: { account: 'alice', domain: 'peer.test', namespaceId: 9 },
+        memberUserId: { account: 'alice', namespaceId: 9 },
         active: true,
         canonicalRosterChanged: true,
         threadLock,

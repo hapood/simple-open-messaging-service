@@ -42,7 +42,6 @@ function committed(
     seq,
     threadType: 'P2P',
     publisherNamespaceId: 0,
-    creator,
     contentType: 'PURE_TEXT',
     content: JSON.stringify({ text: 'hello' }),
     isDeleted: false,

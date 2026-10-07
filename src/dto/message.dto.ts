@@ -54,6 +54,16 @@ export class SendMessageDto {
   @IsIn(['PURE_TEXT', 'LINK'])
   contentType?: ContentType;
 
+  @ApiPropertyOptional({
+    example: 31,
+    description: 'Local sequence of the message being quoted.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  quoteTargetSeq?: number;
+
   @ApiProperty({
     required: false,
     example: 'b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b',
@@ -103,6 +113,16 @@ export class SendContactCardDto {
   @ValidateNested()
   @Type(() => ContactCardTargetDto)
   target!: ContactCardTargetDto;
+
+  @ApiPropertyOptional({
+    example: 31,
+    description: 'Local sequence of the message being quoted.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  quoteTargetSeq?: number;
 
   @ApiProperty({ description: 'Client send-idempotency UUID' })
   @IsUUID()
@@ -230,6 +250,16 @@ export class SendForwardDto {
   @IsIn(Object.values(ForwardMode))
   mode!: ForwardMode;
 
+  @ApiPropertyOptional({
+    example: 31,
+    description: 'Local sequence of the message being quoted.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  quoteTargetSeq?: number;
+
   @ApiProperty({ description: 'Client send-idempotency UUID' })
   @IsUUID()
   clientMessageId!: string;
@@ -263,6 +293,16 @@ export class SendMediaDto {
   })
   @IsUUID()
   clientMessageId!: string;
+
+  @ApiPropertyOptional({
+    example: 31,
+    description: 'Local sequence of the message being quoted.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  quoteTargetSeq?: number;
 
   @ApiProperty({
     required: false,

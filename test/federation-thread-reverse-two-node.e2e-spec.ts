@@ -4,6 +4,7 @@ import {
   readGroupState,
 } from '../src/group/shared/group-state.js';
 import type { NamespacedAddress } from '../src/common/client-identity.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import { randomUUID } from 'node:crypto';
 import {
   afterAll,
@@ -101,7 +102,11 @@ describe('federation reverse thread rounds (two nodes)', () => {
     const localFriendRequest = await request(appA.baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'reversecarol', domain: 'local' });
+      .send({
+        account: 'reversecarol',
+        domain: FED_DOMAIN_A,
+        namespaceId: 0,
+      });
     expect(localFriendRequest.body.code).toBe(BusinessCode.OK);
     await waitForLocalRelationshipRequest(
       appA.database,
@@ -112,7 +117,11 @@ describe('federation reverse thread rounds (two nodes)', () => {
     const localFriendAccepted = await request(appA.baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${tokenCarol}`)
-      .send({ account: 'reversealice', domain: 'local' });
+      .send({
+        account: 'reversealice',
+        domain: FED_DOMAIN_A,
+        namespaceId: 0,
+      });
     expect(localFriendAccepted.body.code).toBe(BusinessCode.OK);
     expect(localFriendAccepted.body.data).toMatchObject({ status: 'OK' });
   }, 120_000);
@@ -240,7 +249,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
           await appA.database.query.threadAudience.findFirst({
             where: and(
               eq(threadAudience.threadId, originThreadId),
-              eq(threadAudience.targetDomain, FED_DOMAIN_B),
+              eq(threadAudience.targetNamespaceId, bobAddressOnA.namespaceId),
             ),
           }),
         ).toBeDefined();
@@ -348,21 +357,23 @@ describe('federation reverse thread rounds (two nodes)', () => {
         .set({ curSeq: sql`${messageThread.curSeq} + 1` })
         .where(eq(messageThread.id, mirrorThreadId))
         .returning({ seq: messageThread.curSeq });
-      await tx.insert(message).values({
-        threadId: mirrorThreadId,
-        seq: thread.seq,
-        originSeq: 999,
-        originServerTime: new Date(),
-        sourceNamespaceId: mirrorGroup!.namespaceId,
-        creatorAccount: 'third-member',
-        creatorDomain: 'third.test',
-        profileNamespaceId: mirrorGroup!.namespaceId,
-        profileRev: 0,
-        contentType: ContentType.PURE_TEXT,
-        content: JSON.stringify({ text: 'third-party-copy' }),
-        localState: 'READY',
-        updatedAt: new Date(),
-      });
+      await tx.insert(message).values(
+        withMessageDigest({
+          threadId: mirrorThreadId,
+          seq: thread.seq,
+          originSeq: 999,
+          originServerTime: new Date(),
+          publisherNamespaceId: mirrorGroup!.namespaceId,
+          creatorAccount: 'third-member',
+
+          profileNamespaceId: mirrorGroup!.namespaceId,
+          profileRev: 0,
+          contentType: ContentType.PURE_TEXT,
+          content: JSON.stringify({ text: 'third-party-copy' }),
+          localState: 'READY',
+          updatedAt: new Date(),
+        }),
+      );
     });
     const clientMessageId = randomUUID();
     const staged = await request(appB.baseUrl)
@@ -408,7 +419,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
           localState: 'READY',
           isDeleted: false,
         });
-        expect(source!.originSeq).toBe(received!.seq);
+        expect(source!.originSeq).toBe(received!.seq - 1);
         expect(
           await appA.database.query.message.findFirst({
             where: and(
@@ -479,9 +490,8 @@ describe('federation reverse thread rounds (two nodes)', () => {
           seq: sent.body.data.seq,
           originSeq: origin.seq,
           originServerTime: origin.createdAt,
-          creatorDomain: 'local',
         });
-        expect(source!.sourceNamespaceId).toBeGreaterThan(0);
+        expect(source!.publisherNamespaceId).toBe(0);
       },
       { timeout: 10_000, interval: 100 },
     );
@@ -521,10 +531,10 @@ describe('federation reverse thread rounds (two nodes)', () => {
               eq(deletedMessage.messageSeq, origin.seq),
             ),
           }),
-        ).toMatchObject({ sourceNamespaceId: 0, messageSeq: origin.seq });
+        ).toMatchObject({ publisherNamespaceId: 0, messageSeq: origin.seq });
         const head = await appA.database.query.peerStateFeed.findFirst({
           where: and(
-            eq(peerStateFeed.peerDomain, FED_DOMAIN_B),
+            eq(peerStateFeed.namespaceId, bobAddressOnA.namespaceId),
             eq(peerStateFeed.account, mirrorGroup!.account),
             eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
           ),
@@ -733,7 +743,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
           await appA.database.query.threadAudience.findFirst({
             where: and(
               eq(threadAudience.threadId, originThreadId),
-              eq(threadAudience.targetDomain, FED_DOMAIN_B),
+              eq(threadAudience.targetNamespaceId, bobAddressOnA.namespaceId),
             ),
           }),
         ).toMatchObject({ messageAccessAfterSeq: 0 });
@@ -758,7 +768,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
           where: and(
             eq(message.threadId, mirror.id),
             eq(message.originSeq, state!.messageTargetSeq),
-            eq(message.sourceNamespaceId, mirror.authorityNamespaceId),
+            eq(message.publisherNamespaceId, mirror.authorityNamespaceId),
           ),
         });
         expect(newest?.localState).toBe('READY');
@@ -899,7 +909,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: originThreadId,
-        users: [{ account: 'reversecarol', domain: 'local' }],
+        users: [{ account: 'reversecarol', domain: FED_DOMAIN_A }],
       });
     expect(inviteCarol.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, inviteCarol.body);
@@ -1037,7 +1047,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
         });
         expect(historicalMessage).toMatchObject({
           creatorAccount: 'reversecarol',
-          creatorDomain: FED_DOMAIN_A,
         });
         const departedCarolFacts = await appB.database
           .select({ feedId: groupMetaMemberFeed.feedId })
@@ -1046,7 +1055,12 @@ describe('federation reverse thread rounds (two nodes)', () => {
             and(
               eq(groupMetaMemberFeed.threadId, mirror.id!),
               eq(groupMetaMemberFeed.memberAccount, 'reversecarol'),
-              eq(groupMetaMemberFeed.memberDomain, FED_DOMAIN_A),
+              eq(
+                groupMetaMemberFeed.profileNamespaceId,
+                (await appB.database.query.identityNamespace.findFirst({
+                  where: eq(identityNamespace.domain, FED_DOMAIN_A),
+                }))!.id,
+              ),
             ),
           );
         expect(departedCarolFacts).toEqual([]);
@@ -1088,7 +1102,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
             await appA.database.query.threadAudience.findFirst({
               where: and(
                 eq(threadAudience.threadId, originThreadId),
-                eq(threadAudience.targetDomain, FED_DOMAIN_B),
+                eq(threadAudience.targetNamespaceId, bobAddressOnA.namespaceId),
               ),
             }),
           ).toBeUndefined();
@@ -1449,7 +1463,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .where(
         and(
           eq(threadAudience.threadId, originThreadId),
-          eq(threadAudience.targetDomain, FED_DOMAIN_B),
+          eq(threadAudience.targetNamespaceId, bobAddressOnA.namespaceId),
         ),
       );
     proxy.blockReverseMessages(false);
@@ -1554,7 +1568,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
           await appA.database.query.threadAudience.findFirst({
             where: and(
               eq(threadAudience.threadId, originThreadId),
-              eq(threadAudience.targetDomain, FED_DOMAIN_B),
+              eq(threadAudience.targetNamespaceId, bobAddressOnA.namespaceId),
             ),
           }),
         ).toMatchObject({ messageAccessAfterSeq: hiddenThrough });
@@ -1660,7 +1674,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
           await appA.database.query.threadAudience.findFirst({
             where: and(
               eq(threadAudience.threadId, originThreadId),
-              eq(threadAudience.targetDomain, FED_DOMAIN_B),
+              eq(threadAudience.targetNamespaceId, bobAddressOnA.namespaceId),
             ),
           }),
         ).toBeUndefined();

@@ -8,7 +8,7 @@ import { BusinessCode } from '../common/business-code.js';
 import { MessageService } from '../message/message.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
-import { parseTextMessageContent } from '../../shared/text-message-content.js';
+import { parseMessageContentQuote } from '../../shared/message-content-quote.js';
 import { FederationThreadRoundSchedulerService } from './federation-thread-round-scheduler.service.js';
 
 /** User-scoped asynchronous quote reads. Completion observes committed sync rounds, never polls. */
@@ -64,7 +64,7 @@ export class QuoteResolutionCoordinatorService implements OnModuleDestroy {
       const quote =
         parent &&
         parent.contentType !== 'TOMB' &&
-        parseTextMessageContent(parent.content)?.quote;
+        parseMessageContentQuote(parent.content);
       if (!quote)
         throw new BusinessException(
           BusinessCode.NOT_FOUND,

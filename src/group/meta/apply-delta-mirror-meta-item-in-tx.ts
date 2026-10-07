@@ -1,5 +1,5 @@
 import { eq, sql } from 'drizzle-orm';
-import { toClientIdentity } from '../../common/client-identity.js';
+import { validateNamespacedAddress } from '../../common/client-identity.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 import { messageThread } from '../../database/schema.js';
 import { MessageService } from '../../message/message.service.js';
@@ -217,7 +217,7 @@ async function readCurrentMirrorMemberOperationInTx(
     item.operation === 'GROUP_ANNOUNCEMENT'
   )
     return undefined;
-  const member = toClientIdentity({
+  const member = validateNamespacedAddress({
     account: item.account,
     domain: item.domain,
     namespaceId: item.profileNamespaceId,
@@ -270,7 +270,7 @@ async function writeObservedMembershipTransitionInTx(
     item.operation === 'GROUP_ANNOUNCEMENT'
   )
     return { transitioned: false };
-  const member = toClientIdentity({
+  const member = validateNamespacedAddress({
     account: item.account,
     domain: item.domain,
     namespaceId: item.profileNamespaceId,
@@ -282,7 +282,7 @@ async function writeObservedMembershipTransitionInTx(
     item.operation === 'MEMBER_DEPART' &&
     previousFact?.operation === 'MEMBER_UPSERT';
   if (!joined && !left) return { transitioned: false };
-  if (left && member.domain === 'local') return { transitioned: false };
+  if (left && member.namespaceId === 0) return { transitioned: false };
   const profileNamespaceId =
     item.operation === 'MEMBER_UPSERT'
       ? item.profileNamespaceId
@@ -295,7 +295,7 @@ async function writeObservedMembershipTransitionInTx(
     throw new Error('departing member has no previous profile revision');
   if (profileRev > 0 && profileNamespaceId === null)
     throw new Error('member profile revision has no profile namespace');
-  if (member.domain === 'local') {
+  if (member.namespaceId === 0) {
     const pair = await tx.execute<{ active: boolean }>(sql`
       SELECT active FROM "RelationshipPair"
       WHERE kind = 'GROUP_MEMBER' AND "threadId" = ${threadId}

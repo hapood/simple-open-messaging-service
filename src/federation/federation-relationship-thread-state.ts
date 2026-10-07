@@ -22,7 +22,7 @@ export async function initializeRelationshipThreadStateInTx(
   }>(sql`
     SELECT DISTINCT ON (source."authorNamespaceId") source."authorNamespaceId" AS "namespaceId",
       intent."messageEndSeq", intent."tombstoneEndSeq",
-      (thread.type = 'P2P' OR thread."groupDomain" <> 'local') AS "reverseEnabled"
+      (thread.type = 'P2P' OR thread."authorityNamespaceId" > 0) AS "reverseEnabled"
     FROM "RelationshipPair" pair
     JOIN "MessageThread" thread ON thread.id = pair."threadId"
     CROSS JOIN LATERAL (VALUES

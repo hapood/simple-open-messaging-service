@@ -121,12 +121,13 @@ export class RelationshipService {
         avatar: groupStateFields.avatar,
         description: groupStateFields.description,
         profileRev: groupStateFields.profileRev,
+        namespaceId: groupStateFields.namespaceId,
       })
       .from(messageThread)
       .innerJoin(group, eq(group.id, messageThread.id))
       .where(eq(messageThread.id, threadId))
       .limit(1);
-    if (!state?.groupId || state.domain !== 'local') return;
+    if (!state?.groupId || state.namespaceId !== 0) return;
     const request = await tx.query.relationshipIntent.findFirst({
       where: sql`
         "authorNamespaceId" = 0
@@ -143,7 +144,7 @@ export class RelationshipService {
     const feedId = await this.clientStateFeed.writeInTx(tx, {
       userId: memberUserId,
       account: state.account,
-      domain: 'local',
+      domain: state.domain,
       namespaceId: 0,
       eventType: 'RELATIONSHIP_INTENT',
       subjectAccount: member.account,

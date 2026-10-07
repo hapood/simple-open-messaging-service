@@ -24,17 +24,23 @@ function currentThreadResourceAuthorizationSql(
   return sql`(
     EXISTS (
       SELECT 1
+      FROM "RelationshipPair" pair
+      WHERE pair."threadId" = ${threadId}
+        AND pair.kind = 'P2P'
+        AND pair.active = true
+        AND pair."endpointANamespaceId" = 0
+        AND pair."endpointBNamespaceId" = ${signerNamespaceId}
+    )
+    OR EXISTS (
+      SELECT 1
       FROM "ThreadAudience" audience
       JOIN "MessageThread" authorized_thread
         ON authorized_thread.id = audience."threadId"
-      LEFT JOIN ${groupStateSql} authorized_group
-        ON authorized_group.id = authorized_thread.id
       WHERE audience."threadId" = ${threadId}
-        AND audience."targetNamespaceId" = ${signerNamespaceId}
         AND audience."targetNamespaceId" = ${signerNamespaceId}
         AND audience."localUserId" IS NULL
         AND (authorized_thread.type = 'P2P'
-          OR authorized_group.domain = 'local')
+          OR authorized_thread."authorityNamespaceId" = 0)
     )
     OR EXISTS (
       SELECT 1
@@ -44,7 +50,6 @@ function currentThreadResourceAuthorizationSql(
         ON local_state."threadId" = mirror_thread.id
       JOIN "Account" local_identity
         ON local_identity.id = local_state."accountId"
-       AND local_identity.domain = 'local'
        AND local_identity."namespaceId" = 0
       JOIN "RelationshipPair" pair
         ON pair."threadId" = mirror_thread.id
@@ -63,7 +68,7 @@ function currentThreadResourceAuthorizationSql(
       WHERE mirror_thread.id = ${threadId}
         AND mirror_thread.type = 'GROUP'
         AND mirror_group.domain = ${signerDomain}
-        AND mirror_group."profileNamespaceId" = ${signerNamespaceId}
+        AND mirror_thread."authorityNamespaceId" = ${signerNamespaceId}
         AND (intent.status = 'ACCEPTED'
           OR (intent.status = 'REQUESTED'
             AND intent."expiresAt" > CURRENT_TIMESTAMP))
@@ -95,6 +100,7 @@ export class FederationPeerResourceService {
         messageId: tables.message.id,
         threadId: tables.message.threadId,
         authorNamespaceId: tables.message.profileNamespaceId,
+        publisherNamespaceId: tables.message.publisherNamespaceId,
         threadType: tables.messageThread.type,
         groupId: tables.messageThread.id,
       })
@@ -106,7 +112,13 @@ export class FederationPeerResourceService {
       .where(
         and(
           eq(tables.message.creatorAccount, normalizeAccount(fromAccount)),
-          eq(tables.message.profileNamespaceId, signerNamespaceId),
+          or(
+            eq(tables.message.profileNamespaceId, signerNamespaceId),
+            and(
+              eq(tables.message.publisherNamespaceId, 0),
+              eq(tables.message.profileNamespaceId, 0),
+            ),
+          ),
           eq(tables.message.isDeleted, false),
           eq(tables.message.seq, sourceSeq),
           currentThreadResourceAuthorizationSql(
@@ -118,7 +130,14 @@ export class FederationPeerResourceService {
       );
     let sourceMessage: { id: bigint; threadId: number } | undefined;
     for (const candidate of candidates) {
-      if (candidate.authorNamespaceId !== signerNamespaceId) continue;
+      if (
+        candidate.authorNamespaceId !== signerNamespaceId &&
+        !(
+          candidate.publisherNamespaceId === 0 &&
+          candidate.authorNamespaceId === 0
+        )
+      )
+        continue;
       if (
         !(await this.historicalThreadMatchesRecipient(
           candidate.threadId,
@@ -172,6 +191,8 @@ export class FederationPeerResourceService {
     signerDomain: string,
     signerNamespaceId: number,
   ) {
+    const localBundleId =
+      await this.forwardBundles.resolveWireBundleId(bundleId);
     const [visible] = await this.database.db
       .select({ messageId: tables.forwardMessage.messageId })
       .from(tables.forwardMessage)
@@ -181,7 +202,7 @@ export class FederationPeerResourceService {
       )
       .where(
         and(
-          eq(tables.forwardMessage.bundleId, bundleId),
+          eq(tables.forwardMessage.bundleId, localBundleId),
           eq(tables.message.isDeleted, false),
           currentThreadResourceAuthorizationSql(
             tables.message.threadId,
@@ -196,7 +217,7 @@ export class FederationPeerResourceService {
         BusinessCode.NOT_FOUND,
         'forward bundle not visible to peer',
       );
-    return this.forwardBundles.buildClosure(bundleId);
+    return this.forwardBundles.buildClosure(localBundleId);
   }
 
   async resolveCasFile(

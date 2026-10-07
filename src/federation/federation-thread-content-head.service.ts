@@ -100,7 +100,7 @@ export class FederationThreadContentHeadService {
           (audience."threadId" IS NOT NULL
             AND ((${thread.threadType} = 'P2P' AND pair.id IS NOT NULL)
               OR (${thread.threadType} = 'GROUP'
-                AND ${thread.groupDomain} = 'local'
+                AND ${thread.groupNamespaceId} = 0
                 AND EXISTS (
                   SELECT 1
                   FROM "RelationshipPair" member_pair
@@ -136,8 +136,7 @@ export class FederationThreadContentHeadService {
         throw new Error(`group thread ${threadId} has no group address`);
       // Only an authoritative local group authors the Meta coordinate; a mirror's
       // head must not hand the origin its own applied cursor.
-      const groupAuthored =
-        thread.groupDomain === 'local' && thread.groupNamespaceId === 0;
+      const groupAuthored = thread.groupNamespaceId === 0;
       const metaCoordinate = groupAuthored
         ? (
             await tx.execute<{ metaEndId: number }>(sql`

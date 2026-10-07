@@ -12,7 +12,9 @@ import {
   requireBundleId,
 } from './federation-resource-request.js';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
-import { FederationService, S2sResponseError } from './federation.service.js';
+import { S2sResponseError } from './federation-errors.js';
+import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
+import { FederationInboundMessageEffectsService } from './federation-inbound-message-effects.service.js';
 import {
   FederationThreadResourceClient,
   type FederationThreadResourceResponse,
@@ -47,7 +49,8 @@ export class FederationThreadForwardRoundExecutorService {
   constructor(
     private readonly rounds: FederationThreadForwardRoundService,
     private readonly threadResources: FederationThreadResourceClient,
-    private readonly federation: FederationService,
+    private readonly inboundMessageCommits: FederationInboundMessageCommitService,
+    private readonly messageEffects: FederationInboundMessageEffectsService,
     private readonly sources: FederationThreadSourceService,
     private readonly database: DatabaseService,
   ) {}
@@ -92,12 +95,14 @@ export class FederationThreadForwardRoundExecutorService {
               source,
             );
             if (messageBatch) {
-              const publication =
-                await this.federation.applyForwardMessagePageInTransaction(tx, {
-                  ...messageBatch,
+              const batch = messageBatch;
+              const effects =
+                await this.inboundMessageCommits.applyForwardInTransaction(tx, {
+                  ...batch,
                   threadLock,
                 });
-              publish = publication.publish;
+              publish = () =>
+                this.messageEffects.publish(batch.response.peerDomain, effects);
             }
             if (messageAdvance)
               await FederationThreadSyncStateService.advanceMessageProcessedThroughInTx(
@@ -155,12 +160,16 @@ export class FederationThreadForwardRoundExecutorService {
               source,
             );
             if (tombstoneBatch) {
-              const publication =
-                await this.federation.applyForwardTombstonePageInTransaction(
+              const effect =
+                await this.inboundMessageCommits.applyTombstonesInTransaction(
                   tx,
                   { ...tombstoneBatch, threadLock },
                 );
-              publish = publication.publish;
+              publish = async () => {
+                await this.inboundMessageCommits.publishSatisfiedQuoteDependencies(
+                  effect.quoteDependencies,
+                );
+              };
             }
             if (deletionAdvance)
               await FederationThreadSyncStateService.advanceDeletionProcessedThroughInTx(

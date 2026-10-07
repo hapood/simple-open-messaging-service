@@ -42,7 +42,8 @@ export async function publishMemberMessageProfileInTx(
     SELECT meta."metaEndId" FROM "GroupMeta" meta
     JOIN "MessageThread" thread ON thread.id = meta."threadId"
     WHERE meta."threadId" = ${groupId} AND thread.type = 'GROUP'
-      AND thread."groupDomain" = 'local' AND thread."groupAccountId" IS NOT NULL
+      AND thread."authorityNamespaceId" = 0
+      AND thread."groupAccountId" IS NOT NULL
     FOR NO KEY UPDATE OF meta
   `);
   if (!feed.rows[0]) return false;

@@ -35,7 +35,7 @@ export type QueryDeniedGroupMembershipRevocationTask =
   | {
       direction: 'GROUP';
       threadId: number;
-      group: { account: string; domain: 'local'; namespaceId: 0 };
+      group: { account: string; domain: string; namespaceId: 0 };
       member: Exclude<AccountTarget, number>;
       expectedAuthorizationEpoch: number;
     }
@@ -78,7 +78,6 @@ export function readQueryDeniedGroupMembershipRevocationTask(
     throw new Error('forced revoke belongs to another group');
   if (task.payload.direction === 'GROUP') {
     if (
-      group.domain !== 'local' ||
       group.namespaceId !== 0 ||
       typeof memberUserId === 'number' ||
       memberUserId.namespaceId !== denial.namespaceId
@@ -87,7 +86,7 @@ export function readQueryDeniedGroupMembershipRevocationTask(
     return {
       direction: 'GROUP',
       threadId: denial.threadId,
-      group: { ...group, domain: 'local', namespaceId: 0 },
+      group: { ...group, namespaceId: 0 },
       member: memberUserId,
       expectedAuthorizationEpoch: denial.expectedAuthorizationEpoch,
     };
@@ -116,7 +115,7 @@ export function readForbiddenGroupTask(task: DurableTask): {
 } {
   assertGroupTask(task);
   const { peerDomain, expectedAuthorizationEpoch } = task.payload;
-  if (typeof peerDomain !== 'string' || !peerDomain || peerDomain === 'local')
+  if (typeof peerDomain !== 'string' || !peerDomain)
     throw new Error('invalid denied peer domain');
   if (
     !Number.isSafeInteger(expectedAuthorizationEpoch) ||

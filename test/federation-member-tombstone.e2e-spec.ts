@@ -10,8 +10,9 @@ import { FederationInboundMessageRouteService } from '../src/federation/federati
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { FederationThreadAccessService } from '../src/federation/federation-thread-access.service.js';
 import { DeletedMessageService } from '../src/message/deleted-message.service.js';
-import { MessageService } from '../src/message/message.service.js';
+import { wirePayloadDigest } from '../src/federation/federated-message-content.js';
 import { ThreadPreviewModule } from '../src/message/thread-preview.module.js';
+import { MessageService } from '../src/message/message.service.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { truncateTablesForTest } from './support/truncate';
 
@@ -90,6 +91,10 @@ describe('member-home tombstone authority', () => {
       profileNamespaceId: namespaceId,
       contentType: 'PURE_TEXT',
       content: JSON.stringify({ text: 'member submission' }),
+      payloadDigest: wirePayloadDigest(
+        'PURE_TEXT' as never,
+        JSON.stringify({ text: 'member submission' }),
+      ),
       updatedAt: new Date(),
     });
   });
@@ -170,16 +175,11 @@ describe('member-home tombstone authority', () => {
         .set({
           publisherNamespaceId: 0,
           profileNamespaceId: 0,
-          originSeq: null,
+          originSeq: 7,
+          originServerTime: new Date(),
         })
         .where(eq(tables.message.threadId, threadId))
         .returning({ id: tables.message.id });
-      await database.db.insert(tables.federationMessageReceipt).values({
-        threadId,
-        namespaceId,
-        peerSeq: 7,
-        messageId: local.id,
-      });
       const first = await apply(type);
       const row = await database.db.query.message.findFirst({
         where: eq(tables.message.threadId, threadId),
@@ -218,17 +218,12 @@ describe('member-home tombstone authority', () => {
       .set({
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
-        originSeq: null,
+        originSeq: 7,
+        originServerTime: new Date(),
         isDeleted: true,
       })
       .where(eq(tables.message.threadId, threadId))
       .returning({ id: tables.message.id });
-    await database.db.insert(tables.federationMessageReceipt).values({
-      threadId,
-      namespaceId,
-      peerSeq: 7,
-      messageId: local.id,
-    });
     await database.db.insert(tables.deletedMessage).values({
       threadId,
       messageSeq: 42,
@@ -269,8 +264,7 @@ describe('member-home tombstone authority', () => {
       const [local] = await database.db
         .update(tables.message)
         .set({
-          sourceNamespaceId: 0,
-          creatorDomain: 'local',
+          publisherNamespaceId: 0,
           profileNamespaceId: 0,
           originSeq: null,
         })
@@ -281,11 +275,8 @@ describe('member-home tombstone authority', () => {
         await database.db.query.federatedMessageTombstone.findMany(),
       ).toHaveLength(1);
       await database.db.transaction(async (tx) => {
-        await tx.insert(tables.federationMessageReceipt).values({
-          threadId,
-          namespaceId,
-          peerSeq: 7,
-          messageId: local.id,
+        const resolvedMessage = await tx.query.message.findFirst({
+          where: eq(tables.message.id, local.id),
         });
         await module.get(DeletedMessageService).applyPendingReceiptInTx(tx, {
           threadId,
@@ -293,6 +284,7 @@ describe('member-home tombstone authority', () => {
           peerDomain,
           namespaceId,
           authority: 'GROUP_ORIGIN',
+          resolvedMessage: resolvedMessage!,
           expectedFederationVersion: 0,
         });
       });
@@ -312,7 +304,7 @@ describe('member-home tombstone authority', () => {
         expect(facts).toEqual([]);
       } else {
         expect(facts).toMatchObject([
-          { messageSeq: 42, type, sourceNamespaceId: namespaceId },
+          { messageSeq: 42, type, publisherNamespaceId: namespaceId },
         ]);
       }
     },
@@ -326,7 +318,7 @@ describe('member-home tombstone authority', () => {
     async (type) => {
       await database.db
         .update(tables.message)
-        .set({ creatorDomain: 'local', profileNamespaceId: 0 })
+        .set({ profileNamespaceId: 0 })
         .where(eq(tables.message.threadId, threadId));
       await expect(apply(type)).rejects.toThrow(
         'tombstone has no retained local group thread',

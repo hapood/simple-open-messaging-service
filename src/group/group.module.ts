@@ -15,13 +15,15 @@ import { GroupDisbandMembershipRevocationService } from './disband/group-disband
 import { DatabaseService } from '../database/database.service.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { PeerStateFeedService } from '../federation/peer-state-feed.service.js';
-import { FederationService } from '../federation/federation.service.js';
+import { FederationStateFeedPushService } from '../federation/federation-state-feed-push.service.js';
 import { GroupAuthoredMembershipIntentService } from './membership-intent/authored/group-authored-membership-intent.service.js';
 import { MemberAuthoredGroupMembershipIntentService } from './membership-intent/authored/member-authored-group-membership-intent.service.js';
 import { MessageService } from '../message/message.service.js';
 import { GroupMetaFeedService } from './meta/group-meta-feed.service.js';
 import { GroupRosterRoleService } from './roster-role/group-roster-role.service.js';
 import { GroupRelationshipMutationService } from './membership-intent/shared/group-relationship-mutation.service.js';
+import { FederationModule } from '../federation/federation.module.js';
+import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.module.js';
 
 @Module({
   imports: [
@@ -29,6 +31,8 @@ import { GroupRelationshipMutationService } from './membership-intent/shared/gro
     DurableTaskModule,
     RelationshipModule,
     AccountThreadStateModule,
+    FederationModule,
+    ClientStateFeedModule,
   ],
   // Group routes compose ThreadAccessGuard with RolesGuard. ThreadAccessGuard is exported by
   // AccountThreadStateModule and resolved for the controllers declared in AppModule.
@@ -47,7 +51,7 @@ import { GroupRelationshipMutationService } from './membership-intent/shared/gro
         database: DatabaseService,
         clientFeed: ClientStateFeedService,
         peerFeed: PeerStateFeedService,
-        federation: FederationService,
+        federation: FederationStateFeedPushService,
         relationshipMutations: GroupRelationshipMutationService,
       ) =>
         new GroupAuthoredMembershipIntentService({
@@ -61,7 +65,7 @@ import { GroupRelationshipMutationService } from './membership-intent/shared/gro
         DatabaseService,
         ClientStateFeedService,
         PeerStateFeedService,
-        FederationService,
+        FederationStateFeedPushService,
         GroupRelationshipMutationService,
       ],
     },
@@ -71,7 +75,7 @@ import { GroupRelationshipMutationService } from './membership-intent/shared/gro
         database: DatabaseService,
         clientFeed: ClientStateFeedService,
         relationshipMutations: GroupRelationshipMutationService,
-        federation: FederationService,
+        federation: FederationStateFeedPushService,
       ) =>
         new MemberAuthoredGroupMembershipIntentService({
           database,
@@ -83,7 +87,7 @@ import { GroupRelationshipMutationService } from './membership-intent/shared/gro
         DatabaseService,
         ClientStateFeedService,
         GroupRelationshipMutationService,
-        FederationService,
+        FederationStateFeedPushService,
       ],
     },
     {
@@ -108,7 +112,7 @@ import { GroupRelationshipMutationService } from './membership-intent/shared/gro
         database: DatabaseService,
         clientFeed: ClientStateFeedService,
         peerFeed: PeerStateFeedService,
-        federation: FederationService,
+        federation: FederationStateFeedPushService,
       ) =>
         new GroupDisbandMembershipRevocationService({
           database,
@@ -120,7 +124,7 @@ import { GroupRelationshipMutationService } from './membership-intent/shared/gro
         DatabaseService,
         ClientStateFeedService,
         PeerStateFeedService,
-        FederationService,
+        FederationStateFeedPushService,
       ],
     },
   ],

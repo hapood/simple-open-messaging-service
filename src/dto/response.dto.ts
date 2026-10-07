@@ -46,7 +46,7 @@ export class UserResponseDto {
 
   @ApiProperty({
     example: 'example.com',
-    description: 'Canonical identity domain; local users use local',
+    description: 'Canonical identity domain; local users use this server\'s configured identity domain',
   })
   domain!: string;
 
@@ -91,16 +91,14 @@ export class ThreadFeedPreviewDto {
     type: 'object',
     properties: {
       account: { type: 'string' },
-      domain: { type: 'string' },
-      namespaceId: { type: 'number' },
+      profileNamespaceId: { type: 'number' },
       profileRev: { type: 'number' },
     },
-    required: ['account', 'domain', 'namespaceId', 'profileRev'],
+    required: ['account', 'profileNamespaceId', 'profileRev'],
   })
   sender!: {
     account: string;
-    domain: string;
-    namespaceId: number;
+    profileNamespaceId: number;
     profileRev: number;
   };
   @ApiProperty({ enum: ['LIVE', 'USER_RETRACTION', 'MODERATION_REMOVAL'] })
@@ -118,23 +116,20 @@ export class ThreadAliasResultDto {
 /** Exact counterpart or group identity resolved from the established relationship. */
 export class ThreadFeedProfileDto {
   @ApiProperty() account!: string;
-  @ApiProperty() domain!: string;
-  @ApiProperty({ minimum: 0 }) namespaceId!: number;
-  @ApiProperty({ minimum: 0 }) profileRev!: number;
 }
 
 /** Complete server thread snapshot; structure and attention share one feed coordinate. */
 export class ThreadFeedStateDto {
   @ApiProperty({ enum: ['P2P', 'GROUP'] }) type!: 'P2P' | 'GROUP';
-  @ApiProperty({ minimum: 0 }) authorityNamespaceId!: number;
+  @ApiProperty({ minimum: 0 }) publisherNamespaceId!: number;
   @ApiProperty({ enum: ['ACTIVE', 'READ_ONLY'] }) conversationState!:
     | 'ACTIVE'
     | 'READ_ONLY';
   @ApiProperty() blocked!: boolean;
   @ApiProperty({ enum: ['OWNER', 'ADMIN', 'MEMBER'], nullable: true })
   role!: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
-  @ApiProperty({ type: ThreadFeedProfileDto }) profile!: ThreadFeedProfileDto;
-  @ApiProperty({ minimum: 0 }) threadProfileRev!: number;
+  @ApiProperty() profileAccount!: string;
+  @ApiProperty({ minimum: 0 }) profileRev!: number;
   @ApiProperty({ type: String, nullable: true }) alias!: string | null;
   @ApiProperty({ type: [ThreadFeedPreviewDto], required: false })
   previews?: ThreadFeedPreviewDto[];
@@ -199,7 +194,7 @@ export class MessageAuthorAddressResponseDto {
   @ApiProperty({ example: 'alice' })
   account!: string;
 
-  @ApiProperty({ example: 'local' })
+  @ApiProperty({ example: 'example.com' })
   domain!: string;
 
   @ApiProperty({ example: 7 })
@@ -239,10 +234,10 @@ export class MessageResponseDto {
 
   @ApiProperty({
     type: MessageAuthorAddressResponseDto,
-    example: { account: 'alice', domain: 'local' },
+    example: { account: 'alice', domain: 'example.com' },
     nullable: true,
     description:
-      'Sender address snapshot; SYSTEM notifications use $system@local at namespace 0',
+      'Sender address snapshot; SYSTEM notifications use $system at namespace 0; domain is the configured local identity domain.',
   })
   creator!: MessageAuthorAddressResponseDto | null;
 

@@ -56,7 +56,7 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
   absent, `assets` MUST be empty.
 - The avatar uses the same encoded-size, non-empty-image, and decoded-pixel
   constraints as the public profile avatar in [Resources, Section
-  2.2](../resources.md#22-successful-response). Because the avatar is fetched as image bytes rather than embedded as Base64, its `BlobDescriptor.bytes` MUST be
+  3.2](../resources.md#32-range-requests-and-successful-responses). Because the avatar is fetched as image bytes rather than embedded as Base64, its `BlobDescriptor.bytes` MUST be
   in the inclusive range 1–786,432. A consumer MUST verify the actual byte
   count, digest, image decoding, real dimensions, and the 512-pixel maximum
   for each dimension

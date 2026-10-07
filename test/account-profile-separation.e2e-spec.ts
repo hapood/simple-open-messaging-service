@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
@@ -82,7 +83,6 @@ describe('account controls and exact profiles', () => {
     });
     expect(local).toMatchObject({
       account: owner.account,
-      domain: 'local',
       namespaceId: 0,
       defaultProfileRev: 1,
     });
@@ -199,8 +199,8 @@ describe('account controls and exact profiles', () => {
       .returning();
     await database.db.insert(profileTable).values({
       account: address,
-      domain: 'profile-origin.test',
-      namespaceId,
+      publisherNamespaceId: namespaceId,
+      profileNamespaceId: namespaceId,
       profileRev: 2,
       displayName: 'Received name',
     });

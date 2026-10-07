@@ -41,7 +41,7 @@ export class ProfileNamespaceFeedConsumerService {
     )
       throw new Error('profile namespace feed item is malformed');
     const expired = await tx.execute<{ publisherNamespaceId: number }>(sql`
-      UPDATE "ProfileNamespaceInfo"
+      UPDATE "ProfileNamespace"
       SET expired = true, "updatedAt" = now()
       WHERE "publisherNamespaceId" = ${publisherNamespaceId}
         AND "profileNamespaceId" = ${item.namespaceId}
@@ -49,7 +49,7 @@ export class ProfileNamespaceFeedConsumerService {
       RETURNING "publisherNamespaceId"
     `);
     // The changelog entry is unconditional: devices keep their namespace
-    // caches independently of this server's ProfileNamespaceInfo rows.
+    // caches independently of this server's ProfileNamespace rows.
     const clientChangeId = await this.feed.recordClientChangeInTx(tx, {
       publisherNamespaceId,
       profileNamespaceId: item.namespaceId,

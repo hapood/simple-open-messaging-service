@@ -14,15 +14,14 @@ import { SseService } from '../gateway/sse.service.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { PushService } from '../push/push.service.js';
 import { AccountThreadStateService } from '../account-thread-state/account-thread-state.service.js';
-import {
-  FederationService,
-  S2sResponseError,
-} from '../federation/federation.service.js';
+import { S2sResponseError } from '../federation/federation-errors.js';
 import type {
   S2SCallFrame,
   S2SCallOperation,
-  S2SAddress,
-} from '../federation/federation.service.js';
+} from './federated-call-protocol.js';
+import type { S2SAddress } from '../federation/federation-address.js';
+import { FederationCallBridgeService } from '../federation/federation-call-bridge.service.js';
+import type { OutboundCallFrameParams } from '../federation/federation-call-delivery.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -39,6 +38,7 @@ import { SIGNATURE_LIFETIME_SEC } from '../federation/signature.service.js';
 import type { CallSignalType } from './federated-call-protocol.js';
 import { CALL_ADMISSION_RETENTION_MS } from './call-timing.js';
 import { callTombstoneCache } from './call-tombstone-cache.js';
+import { localIdentityDomain } from '../common/local-identity.js';
 import {
   decideCallTransition,
   decideVideoUpgrade,
@@ -66,7 +66,7 @@ type RelayedLifecycleOperation = Exclude<
   S2SCallOperation,
   'incoming' | 'signal'
 >;
-interface StagedCallSignal {
+export interface StagedCallSignal {
   id: string;
   payload: string;
 }
@@ -134,8 +134,8 @@ interface LiveCall {
   seenSignalIds: Set<string>;
 }
 
-/** The payload FederationService emits on 'call.frame.inbound' (the inbound bridge — see the
- *  FederationService→CallsService event edge). Identities are already resolved to LOCAL ids by the
+/** The payload the federation call bridge emits on 'call.frame.inbound' (the inbound bridge —
+ *  see the FederationCallBridgeService→CallsService event edge). Identities are already resolved to LOCAL ids by the
  *  federation layer; CallsService applies the frame to its in-memory state machine. */
 export interface InboundCallFramePayload {
   /** The LOCAL user this frame is for (the callee for `incoming`; the local participant otherwise). */
@@ -179,7 +179,7 @@ export class CallsService implements OnModuleDestroy {
     private readonly sse: SseService,
     private readonly push: PushService,
     private readonly participants: AccountThreadStateService,
-    private readonly federation: FederationService,
+    private readonly callBridge: FederationCallBridgeService,
     private readonly quota: QuotaService,
     private readonly callState: CallStateRegistry,
     private readonly history: CallHistoryService,
@@ -315,7 +315,7 @@ export class CallsService implements OnModuleDestroy {
         if (call.terminal || this.activeCalls.get(call.callSid) !== call)
           return { callSid: call.callSid, threadId: call.threadId };
         deliveryAttempted = true;
-        await this.federation.sendCallFrame(
+        await this.callBridge.sendFrame(
           {
             fromLocalUserId: callerId,
             to: { account: call.peerAccount!, domain: call.peerDomain! },
@@ -360,6 +360,7 @@ export class CallsService implements OnModuleDestroy {
    *  calls and the federated callee server, using the thread-selected peer profile. */
   private async ring(call: LiveCall): Promise<void> {
     const calleeId = this.requireLocalId(call.calleeId);
+    const localDomain = await localIdentityDomain(this.database.db);
     const caller =
       call.callerId === null
         ? {
@@ -369,14 +370,16 @@ export class CallsService implements OnModuleDestroy {
             account: call.peerAccount!,
             domain: call.peerDomain!,
           }
-        : await this.database.db.query.account.findFirst({
-            where: eq(user.id, call.callerId),
-            columns: { account: true, domain: true },
-            extras: {
-              name: accountProfileFields().name.as('name'),
-              avatar: accountProfileFields().avatar.as('avatar'),
-            },
-          });
+        : await this.database.db.query.account
+            .findFirst({
+              where: eq(user.id, call.callerId),
+              columns: { account: true, namespaceId: true },
+              extras: {
+                name: accountProfileFields().name.as('name'),
+                avatar: accountProfileFields().avatar.as('avatar'),
+              },
+            })
+            .then((row) => (row ? { ...row, domain: localDomain } : undefined));
     this.emit(calleeId, 'incoming', {
       callSid: call.callSid,
       threadId: call.threadId,
@@ -702,8 +705,8 @@ export class CallsService implements OnModuleDestroy {
     if (call.peerDomain) {
       // Federated: relay over S2S to the peer server (the foreign participant isn't on this server).
       // Fire-and-forget: a dropped ICE candidate is harmless (the client re-gathers / retries).
-      void this.federation
-        .sendCallFrame(
+      void this.callBridge
+        .sendFrame(
           {
             fromLocalUserId: this.localUserId(call),
             to: this.peerAddress(call),
@@ -733,10 +736,10 @@ export class CallsService implements OnModuleDestroy {
     }
   }
 
-  // ── inbound S2S frames (the FederationService→CallsService event bridge) ──────
+  // ── inbound S2S frames (the FederationCallBridgeService→CallsService event bridge) ──
 
   /** Apply one inbound federated call frame to the local call state machine. Invoked by the
-   *  'call.frame.inbound' event (FederationService.handleCallFrame resolved the wire identities first).
+   *  'call.frame.inbound' event (FederationCallBridgeService.handleFrame resolved the wire identities first).
    *  Throws on a federated callee-busy (`incoming`) so emitAsync rejects → the caller's server gets a
    *  HTTP 200 business rejection → writes an `unreachable` bubble. */
   @OnEvent('call.frame.inbound', { suppressErrors: false })
@@ -795,7 +798,7 @@ export class CallsService implements OnModuleDestroy {
     }
   }
 
-  /** Resolve an inbound `incoming` retry/collision before FederationService parses either account. */
+  /** Resolve an inbound `incoming` retry/collision before the call bridge parses either account. */
   @OnEvent('call.frame.incoming.preflight', { suppressErrors: false })
   onInboundIncomingPreflight(payload: {
     peerDomain: string;
@@ -1334,12 +1337,12 @@ export class CallsService implements OnModuleDestroy {
           };
         const local = await this.database.db.query.account.findFirst({
           where: eq(user.id, id),
-          columns: { account: true },
+          columns: { account: true, namespaceId: true },
         });
         if (!local) throw new Error('call participant no longer exists');
         return {
           account: local.account,
-          domain: 'local',
+          domain: await localIdentityDomain(this.database.db),
           profileNamespaceId: 0,
           profileRev: 0,
         };
@@ -1557,7 +1560,7 @@ export class CallsService implements OnModuleDestroy {
     }
   }
 
-  /** Enqueue a lifecycle S2S frame for the peer. FederationService preserves per-call lifecycle order;
+  /** Enqueue a lifecycle S2S frame for the peer. The call bridge preserves per-call lifecycle order;
    *  a failed delivery is logged and the peer's timeout remains the final cleanup backstop. */
   private sendFrame(
     call: LiveCall,
@@ -1573,7 +1576,7 @@ export class CallsService implements OnModuleDestroy {
         ? { signatureExpiresAtSec: call.terminal.signatureExpiresAtSec }
         : {}),
     };
-    let params: Parameters<FederationService['sendCallFrame']>[0];
+    let params: OutboundCallFrameParams;
     if (op === 'ended') {
       const endReason = extra.endReason;
       if (
@@ -1587,7 +1590,7 @@ export class CallsService implements OnModuleDestroy {
     } else {
       params = { ...common, op };
     }
-    void this.federation.sendCallFrame(params, call.peerDomain!).catch((e) => {
+    void this.callBridge.sendFrame(params, call.peerDomain!).catch((e) => {
       if (this.convergePeerTerminal(call, e)) return;
       this.logger.warn(
         `failed to relay call frame ${op} (callSid=${call.callSid}): ${(e as Error).message}`,

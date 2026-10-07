@@ -3,32 +3,47 @@ import { describe, expect, it, vi } from 'vitest';
 import { FederationStateFeedPushSchedulerService } from './federation-state-feed-push-scheduler.service.js';
 
 function harness() {
-  const federation = {
+  const stateFeedPush = {
+    pushDomains: vi.fn().mockResolvedValue(undefined),
+  };
+  const peerLifecycle = {
     listTrustedPeerDomains: vi.fn().mockResolvedValue([]),
-    pushStateFeedDomains: vi.fn().mockResolvedValue(undefined),
+  };
+  const namespaces = {
     activePeerDomainForNamespace: vi.fn(async (namespaceId: number) =>
       namespaceId === 1 ? 'a.test' : namespaceId === 2 ? 'b.test' : null,
     ),
   };
   const client = { send: vi.fn().mockResolvedValue(undefined) };
   return {
-    federation,
+    stateFeedPush,
+    peerLifecycle,
+    namespaces,
     client,
     scheduler: new FederationStateFeedPushSchedulerService(
-      federation as never,
+      stateFeedPush as never,
+      peerLifecycle as never,
+      namespaces as never,
       client as never,
+      {
+        initialize: vi.fn().mockResolvedValue(undefined),
+        waitUntilInitialized: vi.fn().mockResolvedValue(undefined),
+      } as never,
     ),
   };
 }
 
 describe('FederationStateFeedPushSchedulerService', () => {
   it('publishes trusted peer namespaces on startup', async () => {
-    const { scheduler, federation } = harness();
-    federation.listTrustedPeerDomains.mockResolvedValue(['a.test', 'b.test']);
+    const { scheduler, stateFeedPush, peerLifecycle } = harness();
+    peerLifecycle.listTrustedPeerDomains.mockResolvedValue([
+      'a.test',
+      'b.test',
+    ]);
 
     await scheduler.onApplicationBootstrap();
 
-    expect(federation.pushStateFeedDomains).toHaveBeenCalledWith([
+    expect(stateFeedPush.pushDomains).toHaveBeenCalledWith([
       'a.test',
       'b.test',
     ]);

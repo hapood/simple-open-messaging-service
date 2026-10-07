@@ -26,7 +26,7 @@ export function userIntentSystemParticipantsSql(input: {
         LIMIT 1
     ), 0)`;
   return sql`(SELECT jsonb_build_array(
-      jsonb_build_object('account', p."endpointAAccount", 'domain', 'local',
+      jsonb_build_object('account', p."endpointAAccount", 'domain', na.domain,
         'profileNamespaceId', p."endpointANamespaceId",
         'profileRev', ${revision({
           author: sql`p."endpointAAccount"`,
@@ -43,6 +43,7 @@ export function userIntentSystemParticipantsSql(input: {
           receiverNamespace: sql`p."endpointANamespaceId"`,
         })}))
     FROM "RelationshipPair" p
+    LEFT JOIN "IdentityNamespace" na ON na.id = p."endpointANamespaceId"
     LEFT JOIN "IdentityNamespace" nb ON nb.id = p."endpointBNamespaceId"
     WHERE p.id = ${input.pairId})`;
 }

@@ -20,33 +20,39 @@ function setup(
     .fn()
     .mockResolvedValue({ digest: 'a'.repeat(64) });
   const findUniqueUser = vi.fn().mockResolvedValue({ account: 'bob' });
+  const findUniqueUserByNamespaceAddress = vi
+    .fn()
+    .mockResolvedValue({ account: 'bob' });
   const findVisibleGroupByAddress = vi
     .fn()
     .mockImplementation(
       async (_userId: number, address: { account: string }) =>
         address.account === '!group12' ? { id: 12 } : null,
     );
-  const activePeerDomainForNamespace = vi.fn().mockImplementation(
-    async (namespaceId: number) =>
+  const activePeerDomainForNamespace = vi
+    .fn()
+    .mockImplementation(async (namespaceId: number) =>
       namespaceId === 0 ? 'local' : namespaceId === 4 ? 'bravo.test' : null,
-  );
+    );
   const controller = Object.assign(
-    Object.create(MessageController.prototype) as MessageController,
+    Object.create(MessageController.prototype) as unknown as {
+      sendContactCard: MessageController['sendContactCard'];
+    },
     {
       messageService: {
         findByClientMessageId: vi.fn().mockResolvedValue(null),
         writeMsgToThread,
       },
-      federation: {
+      threadAccess: {
         assertP2PWritable: vi.fn().mockResolvedValue(undefined),
-        activePeerDomainForNamespace,
       },
+      federationNamespaces: { activePeerDomainForNamespace },
       participantService: {
         findP2PFriendByAddress: vi
           .fn()
           .mockResolvedValue({ ...target, threadId: 9 }),
       },
-      users: { findUniqueUser },
+      users: { findUniqueUser, findUniqueUserByNamespaceAddress },
       contactProfiles: { findProfile },
       groups: { findVisibleGroupByAddress },
 
@@ -76,7 +82,7 @@ function setup(
     dto,
     writeMsgToThread,
     findProfile,
-    findUniqueUser,
+    findUniqueUserByNamespaceAddress,
     findVisibleGroupByAddress,
     snapshotAvatarForMessage,
     activePeerDomainForNamespace,
@@ -130,6 +136,8 @@ describe('send federated contact card', () => {
       ctx.dto.clientMessageId,
       undefined,
       expect.any(Function),
+      undefined,
+      undefined,
     );
   });
 
@@ -158,11 +166,7 @@ describe('send federated contact card', () => {
       ...ctx.dto,
       target: local,
     });
-    expect(ctx.findUniqueUser).toHaveBeenCalledWith({
-      account_domain: { account: 'bob', domain: 'local' },
-      namespaceId: 0,
-      availability: 'AVAILABLE',
-    });
+    expect(ctx.findUniqueUserByNamespaceAddress).toHaveBeenCalledWith(local);
     expect(ctx.findProfile).toHaveBeenCalledWith(local);
   });
 

@@ -1,4 +1,6 @@
 import { MessageVisibilityService } from '../src/message/message-visibility.service.js';
+import { localIdentityDomain } from './support/local-domain.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import {
   beforeAll,
   afterAll,
@@ -135,7 +137,6 @@ describe('transactional thread attention', () => {
       type: 'P2P',
       blocked: false,
       conversationState: 'ACTIVE',
-      profile: { account: 'peer', domain: 'local', namespaceId: 0 },
     });
 
     await db.db
@@ -168,7 +169,6 @@ describe('transactional thread attention', () => {
     ).toMatchObject({
       conversationState: 'READ_ONLY',
       blocked: true,
-      profile: first.items[0].profile,
     });
   });
 
@@ -187,7 +187,7 @@ describe('transactional thread attention', () => {
         updatedAt: new Date(),
       })
       .returning();
-    await db.db
+    const [pair] = await db.db
       .insert(relationshipPair)
       .values({
         kind: 'GROUP_MEMBER',
@@ -204,6 +204,7 @@ describe('transactional thread attention', () => {
     await db.db.insert(relationshipIntent).values({
       authorAccount: control.account,
       authorNamespaceId: 0,
+      profileNamespaceId: 0,
       receiverAccount: 'reader',
       receiverNamespaceId: 0,
       status: 'ACCEPTED',
@@ -230,7 +231,8 @@ describe('transactional thread attention', () => {
       ),
     ).toMatchObject({
       type: 'GROUP',
-      profile: { account: control.account, profileRev: 0 },
+      profileAccount: control.account,
+      profileRev: 0,
     });
 
     await db.db
@@ -240,7 +242,7 @@ describe('transactional thread attention', () => {
       threadId: group.id,
       feedId: 1,
       memberAccount: control.account,
-      memberDomain: 'local',
+      profileNamespaceId: 0,
       operation: 'GROUP_PROFILE',
       body: { profileRev: 3 },
     });
@@ -266,7 +268,8 @@ describe('transactional thread attention', () => {
         })
       ).items.find((item) => item.threadId === group.id),
     ).toMatchObject({
-      profile: { account: control.account, profileRev: 3 },
+      profileAccount: control.account,
+      profileRev: 3,
     });
     await db.db
       .update(groupMeta)
@@ -367,16 +370,18 @@ describe('transactional thread attention', () => {
   ) =>
     db.db
       .insert(message)
-      .values({
-        threadId,
-        seq,
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text }),
-        creatorAccount: 'peer',
-        creatorDomain: 'local',
-        updatedAt: new Date(),
-        ...patch,
-      })
+      .values(
+        withMessageDigest({
+          threadId,
+          seq,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text }),
+          creatorAccount: 'peer',
+
+          updatedAt: new Date(),
+          ...patch,
+        }),
+      )
       .onConflictDoNothing();
   async function run(request: {
     threadId: number;
@@ -635,8 +640,18 @@ describe('transactional thread attention', () => {
       content: JSON.stringify({
         type: 'FRIEND_ADDED',
         participants: [
-          { account: 'reader', domain: 'local', namespaceId: 0, profileRev: 0 },
-          { account: 'peer', domain: 'local', namespaceId: 0, profileRev: 0 },
+          {
+            account: 'reader',
+            domain: localIdentityDomain(),
+            profileNamespaceId: 0,
+            profileRev: 0,
+          },
+          {
+            account: 'peer',
+            domain: localIdentityDomain(),
+            profileNamespaceId: 0,
+            profileRev: 0,
+          },
         ],
       }),
       creatorAccount: '$system',
@@ -657,7 +672,8 @@ describe('transactional thread attention', () => {
         seq: 1,
         sender: expect.objectContaining({
           account: '$system',
-          domain: 'local',
+          profileNamespaceId: 0,
+          profileRev: 0,
         }),
         text: '[System message]',
       }),
@@ -700,8 +716,8 @@ describe('transactional thread attention', () => {
 
   it('counts beyond the old 1000 cap', async () => {
     await db.pool.query(
-      `INSERT INTO "Message" ("threadId",seq,"contentType",content,"creatorAccount","creatorDomain","updatedAt")
-      SELECT $1,s,'PURE_TEXT','{"text":"hello"}'::jsonb,'peer','local',now() FROM generate_series(1,1005) s`,
+      `INSERT INTO "Message" ("threadId",seq,"contentType",content,"creatorAccount","updatedAt","payloadDigest")
+      SELECT $1,s,'PURE_TEXT','{"text":"hello"}'::jsonb,'peer',now(),repeat('c', 64) FROM generate_series(1,1005) s`,
       [threadId],
     );
     await projectCurrentHeads();
@@ -733,12 +749,12 @@ describe('transactional thread attention', () => {
   });
   it('maintains insertion MAX and recomputes retracted mentions above lastReadSeq', async () => {
     await projectCurrentHeads();
-    await put(1, '[@Reader](somfp://user/reader)');
-    await put(2, '[@Reader](somfp://user/reader)');
+    await put(1, '[@Reader](somfp://user/0/reader)');
+    await put(2, '[@Reader](somfp://user/0/reader)');
     await put(3, '[@All](somfp://audience/all)');
     await projectCurrentHeads();
     expect((await state()).lastMentionSeq).toBe(3);
-    await put(2, '[@Reader](somfp://user/reader)');
+    await put(2, '[@Reader](somfp://user/0/reader)');
     await projectCurrentHeads();
     expect((await state()).lastMentionSeq).toBe(3);
     await retractMention(3, 1);
@@ -830,15 +846,17 @@ describe('transactional thread attention', () => {
     const beforeTasks = await db.db.select().from(durableTask);
     await expect(
       db.db.transaction(async (tx) => {
-        await tx.insert(message).values({
-          threadId,
-          seq: 1,
-          contentType: 'PURE_TEXT',
-          content: '{"text":"[@All](somfp://audience/all)"}',
-          creatorAccount: 'peer',
-          creatorDomain: 'local',
-          updatedAt: new Date(),
-        });
+        await tx.insert(message).values(
+          withMessageDigest({
+            threadId,
+            seq: 1,
+            contentType: 'PURE_TEXT',
+            content: '{"text":"[@All](somfp://audience/all)"}',
+            creatorAccount: 'peer',
+
+            updatedAt: new Date(),
+          }),
+        );
         throw new Error('rollback');
       }),
     ).rejects.toThrow('rollback');
@@ -865,7 +883,7 @@ describe('transactional thread attention', () => {
   it('persists visibility bounds without changing projections, feed cursors or tasks', async () => {
     await put(1);
     await put(2);
-    await put(3, '[@Reader](somfp://user/reader)');
+    await put(3, '[@Reader](somfp://user/0/reader)');
     await projectCurrentHeads();
     const before = await state();
     expect(before).toMatchObject({
@@ -924,15 +942,17 @@ describe('transactional thread attention', () => {
         await tx.execute(
           sql`SELECT 1 FROM "MessageThread" WHERE id = ${threadId} FOR UPDATE`,
         );
-        await tx.insert(message).values({
-          threadId,
-          seq: 2,
-          contentType: 'PURE_TEXT',
-          content: '{"text":"late"}',
-          creatorAccount: 'peer',
-          creatorDomain: 'local',
-          updatedAt: new Date(),
-        });
+        await tx.insert(message).values(
+          withMessageDigest({
+            threadId,
+            seq: 2,
+            contentType: 'PURE_TEXT',
+            content: '{"text":"late"}',
+            creatorAccount: 'peer',
+
+            updatedAt: new Date(),
+          }),
+        );
       }),
       run({ threadId, localReadHwm: 2 }),
       db.db.transaction(async (tx) => {

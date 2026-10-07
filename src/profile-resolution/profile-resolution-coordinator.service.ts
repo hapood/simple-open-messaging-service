@@ -180,9 +180,16 @@ export class ProfileResolutionCoordinatorService {
           WHERE pair."threadId" = thread.id
             AND pair.kind = 'GROUP_MEMBER'
             AND pair.established = true
-            AND pair."endpointAType" = 'USER'
-            AND pair."endpointAAccount" = viewer.account
-            AND pair."endpointANamespaceId" = 0
+            AND pair.active = true
+            AND (
+              (pair."endpointAType" = 'USER'
+                AND pair."endpointAAccount" = viewer.account
+                AND pair."endpointANamespaceId" = 0)
+              OR
+              (pair."endpointBType" = 'USER'
+                AND pair."endpointBAccount" = viewer.account
+                AND pair."endpointBNamespaceId" = 0)
+            )
         )
         AND EXISTS (
           SELECT 1 FROM "Message" message
@@ -266,12 +273,13 @@ export class ProfileResolutionCoordinatorService {
             SELECT 1 FROM "RelationshipPair" pair
             WHERE pair.kind = 'P2P'
               AND pair.established = true
+              AND pair.active = true
               AND pair."endpointAType" = 'USER'
               AND pair."endpointAAccount" = self.account
               AND pair."endpointANamespaceId" = 0
               AND pair."endpointBType" = 'USER'
               AND pair."endpointBAccount" = ${account}
-              AND pair."endpointBNamespaceId" = ${demand.target.profileNamespaceId}
+              AND pair."endpointBNamespaceId" = ${demand.publisherNamespaceId}
           )
           OR EXISTS (
             SELECT 1

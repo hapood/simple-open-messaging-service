@@ -79,8 +79,8 @@ describe('durable task enqueue', () => {
     const scope = {
       type: 'USER_PAIR' as const,
       endpoints: [
-        { domain: 'chat.example', account: 'alice' },
-        { domain: 'remote.example', account: 'bob' },
+        { profileNamespaceId: 0, account: 'alice' },
+        { profileNamespaceId: 7, account: 'bob' },
       ] as const,
     };
 
@@ -123,7 +123,7 @@ describe('durable task enqueue', () => {
     const { taskId } = await queue.enqueueTask({
       scope: {
         type: 'GROUP',
-        address: { domain: 'chat.example', account: 'group-1' },
+        address: { profileNamespaceId: 0, account: 'group-1' },
       },
       taskType: 'DISBAND_GROUP',
       actorUserId: 11,
@@ -144,7 +144,7 @@ describe('durable task enqueue', () => {
     const mutation = await queue.enqueueTask({
       scope: {
         type: 'GROUP',
-        address: { domain: 'chat.example', account: 'group-1' },
+        address: { profileNamespaceId: 0, account: 'group-1' },
       },
       taskType: 'GROUP_MUTATION',
       payload: {},
@@ -217,11 +217,11 @@ describe('durable task enqueue', () => {
   it('blocks successors behind unfinished tasks and releases them after rejection or failure', async () => {
     const groupScope = {
       type: 'GROUP' as const,
-      address: { domain: 'chat.example', account: 'group-1' },
+      address: { profileNamespaceId: 0, account: 'group-1' },
     };
     const otherScope = {
       type: 'GROUP' as const,
-      address: { domain: 'chat.example', account: 'group-2' },
+      address: { profileNamespaceId: 0, account: 'group-2' },
     };
     const first = await queue.enqueueTask({
       scope: groupScope,

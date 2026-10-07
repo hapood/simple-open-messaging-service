@@ -1,7 +1,11 @@
 import { Injectable, HttpStatus } from '@nestjs/common';
 import { and, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { account as accountTable, profileTable } from '../database/schema.js';
+import {
+  account as accountTable,
+  identityNamespace,
+  profileTable,
+} from '../database/schema.js';
 import { isValidUserAccount, normalizeAccount } from '../common/account.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -19,8 +23,8 @@ const publicUserColumns = {
   name: sql<string>`COALESCE(${profileTable.displayName}, ${accountTable.account})`,
   avatar: sql<string>`COALESCE(${profileTable.avatar}, '')`,
   bio: sql<string>`COALESCE(${profileTable.bio}, '')`,
-  domain: sql<'local'>`'local'::text`,
-  namespaceId: sql<number>`0::integer`,
+  domain: identityNamespace.domain,
+  namespaceId: accountTable.namespaceId,
   createdAt: accountTable.createdAt,
   updatedAt: accountTable.updatedAt,
   availability: accountTable.availability,
@@ -35,8 +39,29 @@ export class UserService {
     return this.database.db
       .select(publicUserColumns)
       .from(accountTable)
+      .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
       .leftJoin(profileTable, selectedProfile)
       .where(userLookupCondition(where))
+      .limit(1)
+      .then(([row]) => row ?? null);
+  }
+
+  findUniqueUserByNamespaceAddress(
+    address: { account: string; namespaceId: number },
+    availability: 'AVAILABLE' | 'REMOVED' = 'AVAILABLE',
+  ) {
+    return this.database.db
+      .select(publicUserColumns)
+      .from(accountTable)
+      .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
+      .leftJoin(profileTable, selectedProfile)
+      .where(
+        and(
+          eq(accountTable.account, normalizeAccount(address.account)),
+          eq(accountTable.namespaceId, address.namespaceId),
+          eq(accountTable.availability, availability),
+        ),
+      )
       .limit(1)
       .then(([row]) => row ?? null);
   }
@@ -51,6 +76,7 @@ export class UserService {
         disabledAt: accountTable.disabledAt,
       })
       .from(accountTable)
+      .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
       .leftJoin(profileTable, selectedProfile)
       .where(userLookupCondition(where))
       .limit(1)
@@ -67,6 +93,7 @@ export class UserService {
         bio: profileTable.bio,
       })
       .from(accountTable)
+      .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
       .innerJoin(profileTable, selectedProfile)
       .where(eq(accountTable.id, userId))
       .limit(1)
@@ -121,6 +148,7 @@ export class UserService {
       const [row] = await tx
         .select(publicUserColumns)
         .from(accountTable)
+        .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
         .leftJoin(profileTable, selectedProfile)
         .where(eq(accountTable.id, userId));
       return row;
@@ -134,12 +162,11 @@ export class UserService {
       availability?: 'AVAILABLE' | 'REMOVED';
     };
   }) {
-    const addresses = params.where?.addresses?.filter(
-      (address) => address.domain === 'local',
-    );
+    const addresses = params.where?.addresses;
     return this.database.db
       .select(publicUserColumns)
       .from(accountTable)
+      .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
       .leftJoin(profileTable, selectedProfile)
       .where(
         and(
@@ -148,9 +175,17 @@ export class UserService {
             : undefined,
           params.where?.addresses !== undefined
             ? addresses?.length
-              ? inArray(
-                  accountTable.account,
-                  addresses.map((address) => normalizeAccount(address.account)),
+              ? or(
+                  ...addresses.map((address) =>
+                    and(
+                      eq(
+                        accountTable.account,
+                        normalizeAccount(address.account),
+                      ),
+                      eq(identityNamespace.domain, address.domain),
+                      eq(accountTable.namespaceId, 0),
+                    ),
+                  ),
                 )
               : sql`false`
             : undefined,
@@ -177,6 +212,7 @@ export class UserService {
       this.database.db
         .select(publicUserColumns)
         .from(accountTable)
+        .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
         .leftJoin(profileTable, selectedProfile)
         .where(where)
         .orderBy(desc(accountTable.createdAt))
@@ -185,6 +221,7 @@ export class UserService {
       this.database.db
         .select({ value: count() })
         .from(accountTable)
+        .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
         .leftJoin(profileTable, selectedProfile)
         .where(where)
         .then(([row]) => row.value),
@@ -205,6 +242,7 @@ export class UserService {
         .insert(accountTable)
         .values({
           account: address,
+          namespaceId: 0,
           defaultProfileRev: 1,
           hashPwd: params.hashPwd ?? null,
         })
@@ -245,10 +283,14 @@ function userLookupCondition(where: UserLookup) {
     where.id !== undefined
       ? eq(accountTable.id, where.id)
       : where.account_domain
-        ? where.account_domain.domain === 'local' && where.namespaceId === 0
-          ? eq(
-              accountTable.account,
-              normalizeAccount(where.account_domain.account),
+        ? where.namespaceId === 0
+          ? and(
+              eq(
+                accountTable.account,
+                normalizeAccount(where.account_domain.account),
+              ),
+              eq(identityNamespace.domain, where.account_domain.domain),
+              eq(accountTable.namespaceId, 0),
             )
           : sql`false`
         : undefined;

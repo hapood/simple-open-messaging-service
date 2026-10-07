@@ -25,7 +25,6 @@ import { AuditTargetLabelService } from './audit-target-label.service.js';
 import { AdminManageService } from './admin-manage.service.js';
 import { GroupManageService } from './group-manage.service.js';
 import { AdminBootstrapService } from './admin-bootstrap.service.js';
-import { ThrottleGuard } from '../auth/throttle.guard.js';
 import { jwtConstants } from '../auth/constants.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { UserManageModule } from '../user-manage/user-manage.module.js';
@@ -43,6 +42,8 @@ import { FederationResetService } from './federation-reset.service.js';
 import { FederationNamespaceAdminService } from './federation-namespace-admin.service.js';
 import { MessageModule } from '../message/message.module.js';
 import { AccountThreadStateModule } from '../account-thread-state/account-thread-state.module.js';
+import { FederationModule } from '../federation/federation.module.js';
+import { QuotaModule } from '../quota/quota.module.js';
 import { MessageReportAdminController } from './message-report-admin.controller.js';
 import { DurableTaskAdminController } from './durable-task-admin.controller.js';
 import { MediaStorageStatsService } from './media-storage-stats.service.js';
@@ -68,6 +69,8 @@ import { MediaStorageStatsService } from './media-storage-stats.service.js';
     LoggerModule,
     MessageModule,
     AccountThreadStateModule,
+    FederationModule,
+    QuotaModule,
   ],
   controllers: [
     AdminController,
@@ -104,9 +107,6 @@ import { MediaStorageStatsService } from './media-storage-stats.service.js';
     // Self-seeds the bootstrap admin (account=admin) on every app start via OnApplicationBootstrap;
     // idempotent, decoupled from the deploy orchestrator. See admin-bootstrap.service.ts.
     AdminBootstrapService,
-    // ThrottleGuard is opt-in per route via @Throttle (no metadata → canActivate returns true), so it
-    // is safe to register here even though most admin routes don't use it.
-    ThrottleGuard,
     // Global audit: no-ops for any handler without @Audit metadata, so registering it app-wide is safe.
     { provide: APP_INTERCEPTOR, useClass: AdminAuditInterceptor },
   ],

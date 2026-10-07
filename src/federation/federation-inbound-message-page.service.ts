@@ -8,18 +8,14 @@ import * as tables from '../database/schema.js';
 import type { InboundForwardWireBundle } from '../forward/forward-bundle.service.js';
 import { type Message } from '../message/message.service.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
-import { loadFederationConfig } from './federation.config.js';
 import { FederationMessageContextError } from './federation-errors.js';
 import {
   FEDERATED_MESSAGE_CONTENT_TYPES,
   type FederationMessageFeedMessage,
 } from './federation-message-feed.service.js';
-import { contentDigest } from './canonical-json.js';
+import { payloadDigest } from './canonical-json.js';
 import { federatedMessageLogContext } from './federation-message-log-context.js';
-import {
-  fromFederatedMessageContent,
-  wireContentDigest,
-} from './federated-message-content.js';
+import { fromFederatedMessageContent } from './federated-message-content.js';
 import {
   mapFederationOriginSequence,
   type MapFederationOriginSequence,
@@ -88,6 +84,7 @@ interface PreparedInboundItem {
   incomingText: ReturnType<typeof parseTextMessageContent>;
   storedContent: string;
   wireDigest: string;
+  federationEnvelopeDigest: string;
   forwardCard?: FederatedForwardCard;
   forwardClosure?: InboundForwardWireBundle;
 }
@@ -95,7 +92,6 @@ interface PreparedInboundItem {
 /** Applies one validated, bounded peer message page inside the caller-owned cursor transaction. */
 @Injectable()
 export class FederationInboundMessagePageService {
-  private readonly config = loadFederationConfig();
   private readonly logger = new Logger(
     FederationInboundMessagePageService.name,
   );
@@ -137,8 +133,15 @@ export class FederationInboundMessagePageService {
     const prepared: PreparedInboundItem[] = [];
     for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
       const item = items[itemIndex];
+      // A reverse page outside its persisted closure is a page/cursor protocol violation,
+      // not an isolated malformed item. Reject it before per-item filtering.
+      if (sequencePolicy) {
+        mapFederationOriginSequence(item.seq, sequencePolicy);
+      }
       try {
         this.assertFederatedMessageEnvelope(item);
+        const federationEnvelopeDigest =
+          this.validator.immutableEnvelopeDigest(item);
         const author = this.federatedMessageAuthor(
           item,
           domain,
@@ -199,9 +202,25 @@ export class FederationInboundMessagePageService {
           );
         }
         if (
+          item.contentType === ContentType.SYSTEM &&
+          (item.quoteTarget !== undefined || item.quoteDigest !== undefined)
+        ) {
+          throw new BusinessException(
+            BusinessCode.FEDERATION_MALFORMED,
+            'system messages cannot contain quotes',
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        const missingQuoteTarget =
           item.quoteTarget !== undefined &&
-          (item.contentType !== ContentType.PURE_TEXT ||
-            !isFederationQuoteTarget(item.quoteTarget))
+          item.quoteTarget.seq === 0 &&
+          item.quoteDigest === undefined;
+        if (
+          !missingQuoteTarget &&
+          ((item.quoteTarget === undefined) !==
+            (item.quoteDigest === undefined) ||
+            (item.quoteTarget !== undefined &&
+              !isFederationQuoteTarget(item.quoteTarget)))
         ) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,
@@ -215,7 +234,11 @@ export class FederationInboundMessagePageService {
           item.content,
           new Map(item.assets.map((asset) => [asset.digest, asset.bytes])),
         );
-        const wireDigest = contentDigest(item.content);
+        const wireDigest = payloadDigest(
+          item.content,
+          item.assets,
+          item.quoteDigest,
+        );
         let forwardCard: FederatedForwardCard | undefined;
         let forwardClosure: InboundForwardWireBundle | undefined;
         if (item.contentType === ContentType.FORWARD) {
@@ -255,6 +278,7 @@ export class FederationInboundMessagePageService {
           incomingText,
           storedContent,
           wireDigest,
+          federationEnvelopeDigest,
           forwardCard,
           forwardClosure,
         });
@@ -284,6 +308,7 @@ export class FederationInboundMessagePageService {
         incomingText,
         storedContent,
         wireDigest,
+        federationEnvelopeDigest,
         forwardCard,
         forwardClosure,
       } = preparedItem;
@@ -337,7 +362,9 @@ export class FederationInboundMessagePageService {
               'LOCAL_SOURCE_MESSAGE_NOT_FOUND',
             ),
             sourceTime,
-            wireDigest,
+            payloadDigest: wireDigest,
+            contentType: item.contentType,
+            profileRev: item.profileRev,
             sequencePolicy,
           });
           continue;
@@ -357,18 +384,33 @@ export class FederationInboundMessagePageService {
           ),
           columns: {
             id: true,
+            creatorAccount: true,
+            profileNamespaceId: true,
+            profileRev: true,
+            contentType: true,
             originServerTime: true,
+            payloadDigest: true,
+            federationEnvelopeDigest: true,
           },
         });
         if (existingMessage) {
           const previousOriginTime = existingMessage.originServerTime;
-          if (
-            previousOriginTime &&
-            previousOriginTime.getTime() !== sourceTime.getTime()
-          ) {
+          const exactFingerprint =
+            existingMessage.federationEnvelopeDigest !== null &&
+            existingMessage.federationEnvelopeDigest ===
+              federationEnvelopeDigest;
+          const compatibleLegacyRow =
+            existingMessage.federationEnvelopeDigest === null &&
+            existingMessage.creatorAccount === route.creatorAccount &&
+            existingMessage.profileNamespaceId === profileNamespaceId &&
+            existingMessage.profileRev === item.profileRev &&
+            existingMessage.contentType === item.contentType &&
+            existingMessage.payloadDigest === wireDigest &&
+            previousOriginTime?.getTime() === sourceTime.getTime();
+          if (!exactFingerprint && !compatibleLegacyRow) {
             throw new BusinessException(
               BusinessCode.FEDERATION_MALFORMED,
-              'conflicting immutable federated message originCreatedAt',
+              'conflicting immutable federated message envelope',
               HttpStatus.BAD_REQUEST,
             );
           }
@@ -391,6 +433,7 @@ export class FederationInboundMessagePageService {
             content: storedContent,
             ts: item.createdAt,
             quoteTarget: item.quoteTarget,
+            quoteDigest: item.quoteDigest,
           },
           expectedFederationVersion: route.federationVersion,
           incomingText,
@@ -407,7 +450,8 @@ export class FederationInboundMessagePageService {
             toAccount: route.toAccount,
           },
           sequencePolicy,
-          contentDigest: wireDigest,
+          payloadDigest: wireDigest,
+          federationEnvelopeDigest,
         });
         if (stored.kind === 'pending') {
           effects.push({
@@ -457,9 +501,7 @@ export class FederationInboundMessagePageService {
           author,
           message: stored.message,
           ...(profileDemand ? { profileDemand } : {}),
-          ...(profileEvidenceProjection
-            ? { profileEvidenceProjection }
-            : {}),
+          ...(profileEvidenceProjection ? { profileEvidenceProjection } : {}),
           deletionSeq,
           forwardClosure,
           remoteForwardBundleId: forwardCard?.bundleId,
@@ -557,4 +599,3 @@ export class FederationInboundMessagePageService {
     );
   }
 }
-

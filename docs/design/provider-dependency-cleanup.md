@@ -18,22 +18,22 @@ initialization`) aborts 43 e2e spec files during module load.
 
 ```
 FederationThreadAccessService  --ctor-->  FederationNamespaceService
-FederationNamespaceService     --ctor-->  ProfileNamespaceInfoService
-ProfileNamespaceInfoService    --ctor-->  FederationThreadAccessService
+FederationNamespaceService     --ctor-->  ProfileNamespaceService
+ProfileNamespaceService    --ctor-->  FederationThreadAccessService
 ```
 
 **Cycle B (through non-`*Service` providers):**
 
 ```
-ProfileNamespaceInfoService --ctor--> FederationPeerHttp
+ProfileNamespaceService --ctor--> FederationPeerHttp
 FederationPeerHttp          --ctor--> FederationRecognitionService, FederationPeerLifecycle
 FederationPeerLifecycle     --ctor--> FederationRecognitionService
 FederationRecognitionService--ctor--> FederationNamespaceService
-FederationNamespaceService  --ctor--> ProfileNamespaceInfoService   (shared with Cycle A)
+FederationNamespaceService  --ctor--> ProfileNamespaceService   (shared with Cycle A)
 ```
 
 Both cycles share the backbone `FederationNamespaceService →
-ProfileNamespaceInfoService`. The single root cause: `ProfileNamespaceInfoService`
+ProfileNamespaceService`. The single root cause: `ProfileNamespaceService`
 is a local cache store that also performs outbound network IO — its private
 `fetchBindings` path injects `FederationThreadAccessService`,
 `FederationTrustedPeerClient`, and `FederationPeerHttp`, and those three
@@ -79,10 +79,10 @@ Remaining hygiene defects:
 
 ---
 
-## 1. Extract the ProfileNamespaceInfo outbound refresh
+## 1. Extract the ProfileNamespace outbound refresh
 
 Goal: kill Cycles A and B at both levels by cutting all three outbound
-constructor edges of `ProfileNamespaceInfoService` in one move.
+constructor edges of `ProfileNamespaceService` in one move.
 
 - [x] Create `src/federation/profile-namespace-refresh.service.ts`: move the
       refresh flight engine (`refreshFlights`, `scheduleRefresh`, `refresh`,
@@ -90,7 +90,7 @@ constructor edges of `ProfileNamespaceInfoService` in one move.
       `DatabaseService`, `FederationThreadAccessService`,
       `FederationTrustedPeerClient`, `FederationPeerHttp`,
       `ProfileNamespaceFeedService`, `SseService`.
-- [x] `ProfileNamespaceInfoService` keeps `resolveBatch` (cache read + tomb
+- [x] `ProfileNamespaceService` keeps `resolveBatch` (cache read + tomb
       demand fill) and `seedDirectRowInTx`; its only constructor dep becomes
       `DatabaseService`.
 - [x] `resolveBatch` must not call the refresh engine itself — that would
@@ -189,15 +189,21 @@ Goal: no new cycles land.
 
 ## 5. Deferred hygiene (non-blocking)
 
-- [ ] Slim `FederationService` (29 constructor dependencies, 63 methods):
+- [x] Slim `FederationService` (29 constructor dependencies, 63 methods):
       move owned logic into capability services; keep a thin delegation facade.
+      Completed beyond the original scope: dead code was deleted first, the
+      remaining logic moved into capability services (state-feed push,
+      relationship intent expiry, inbound message effects, …), every caller
+      was transitioned to inject the owning service directly, and the facade
+      (`src/federation/federation.service.ts`) was then removed entirely
+      together with its module provider/export entry.
 - [x] Replace the type-only imports of `FederationService` in the
       membership-intent / user-intent family with a narrow state-feed push
       publisher leaf (clears the remaining madge cycles). Done: the
       `FederationStateFeedPusher` seam in
       `src/federation/federation-state-feed.events.ts` is satisfied
-      structurally by `FederationService`; `madge --circular` now reports zero
-      cycles.
+      structurally by `FederationStateFeedPushService`; `madge --circular`
+      now reports zero cycles.
 - [ ] Revisit `FederationThreadAccessService` (fan-in 10): if capture
       delegation pressure returns, extract a `PeerContextService` leaf.
 - [ ] Add class doc comments to the services that still lack them

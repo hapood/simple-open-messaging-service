@@ -41,8 +41,20 @@ describe('group invitations by public address', () => {
     };
     const decoy = { ...direct, namespaceId: mirrorNs };
     await database.db.insert(tables.profileTable).values([
-      { ...direct, profileRev: 1, displayName: 'Friend' },
-      { ...decoy, profileRev: 1, displayName: 'Group copy' },
+      {
+        account: direct.account,
+        publisherNamespaceId: directNs,
+        profileNamespaceId: directNs,
+        profileRev: 1,
+        displayName: 'Friend',
+      },
+      {
+        account: direct.account,
+        publisherNamespaceId: mirrorNs,
+        profileNamespaceId: mirrorNs,
+        profileRev: 1,
+        displayName: 'Group copy',
+      },
     ]);
     const [thread] = await database.db
       .insert(tables.messageThread)

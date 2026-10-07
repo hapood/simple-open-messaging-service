@@ -27,7 +27,7 @@ export interface UserIntentRevocationInput extends UserIntentFeedInput {
  * pair actually transitioning, so a pending withdraw costs only the intent
  * write and the recipient publications. */
 export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
-  const remote = input.targetDomain !== 'local';
+  const remote = input.targetNamespaceId !== 0;
   const threadScope = threadFanoutScopeKey(input.threadId);
   const participants = userIntentSystemParticipantsSql({
     pairId: input.pairId,
@@ -62,9 +62,9 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
     WITH authored AS (
       ${authoredSql}
     ), revocation AS MATERIALIZED (
-      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt"
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.actorAccount} AND "authorNamespaceId" = ${input.actorNamespaceId}
         AND "receiverAccount" = ${input.targetAccount} AND "receiverNamespaceId" = ${input.targetNamespaceId}
@@ -93,7 +93,7 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
       UPDATE "AccountThreadState" s SET "messageVisibleThroughSeq" = m.seq,
         "updatedAt" = CURRENT_TIMESTAMP
       FROM system_message m, "RelationshipPair" p, "Account" a
-      WHERE s."threadId" = ${input.threadId} AND a.id = s."accountId" AND a.domain = 'local'
+      WHERE s."threadId" = ${input.threadId} AND a.id = s."accountId" AND a."namespaceId" = 0
         AND ((p.id = ${input.pairId} AND p."endpointAAccount" = a.account AND p."endpointANamespaceId" = 0)
           OR (p.id = ${input.pairId} AND p."endpointBAccount" = a.account AND p."endpointBNamespaceId" = 0))
       RETURNING s."accountId"
@@ -130,7 +130,7 @@ export function userIntentRevocationSql(input: UserIntentRevocationInput): SQL {
           'accountId', a.id::integer),
         'PENDING'::"DurableTaskStatus"
       FROM "Account" a, departed d
-      WHERE d.departed AND EXISTS (SELECT 1 FROM system_message) AND a.domain = 'local'
+      WHERE d.departed AND EXISTS (SELECT 1 FROM system_message) AND a."namespaceId" = 0
         AND EXISTS (SELECT 1 FROM "RelationshipPair" p WHERE p.id = ${input.pairId}
           AND ((p."endpointAAccount" = a.account AND p."endpointANamespaceId" = 0)
             OR (p."endpointBAccount" = a.account AND p."endpointBNamespaceId" = 0)))

@@ -5,14 +5,10 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 afterEach(() => vi.restoreAllMocks());
 
 // loadFederationConfig() reads SOMS_DOMAIN via requireEnv at construction (field initializer), so it
-// must be set before `new FederationService(...)`. Module-top runs before any test body.
+// must be set before any service under test is constructed. Module-top runs before any test body.
 process.env.SOMS_DOMAIN ??= 'chat.example';
 
-import {
-  clientGroupIntentEndpoints,
-  FederationService,
-  S2sResponseError,
-} from './federation.service.js';
+import { S2sResponseError } from './federation-errors.js';
 import { BusinessCode } from '../common/business-code.js';
 import { ContentType, MessageThreadType } from '../database/enums.js';
 import { UploadService } from '../upload/upload.service.js';
@@ -32,7 +28,6 @@ import { FederationTrustedPeerClient } from './federation-trusted-peer-client.se
 import { FederationThreadResourceClient } from './federation-thread-resource-client.service.js';
 import { FederationProfileService } from './federation-profile.service.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
-import { FederationMediaLocalizationService } from './federation-media-localization.service.js';
 import { FederationInboundMessageStoreService } from './federation-inbound-message-store.service.js';
 import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
 import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
@@ -52,15 +47,12 @@ describe('federated contact-card avatar limits', () => {
   });
 
   function validate(bytes: number) {
-    const { svc } = makeStubs();
-    const target = svc as unknown as {
-      assertMissedAssetDescriptors(item: unknown): void;
-    };
-    target.assertMissedAssetDescriptors({
+    const { inboundMessageValidator } = makeStubs();
+    inboundMessageValidator.assertAssetDescriptors({
       contentType: ContentType.CONTACT_CARD,
       content,
       assets: [{ digest, bytes }],
-    });
+    } as never);
   }
 
   it('accepts the shared profile-avatar decoded-byte ceiling', () => {
@@ -74,19 +66,6 @@ describe('federated contact-card avatar limits', () => {
     expect(() => validate(UploadService.MAX_AVATAR_WIRE_BYTES + 1)).toThrow(
       'contact-card avatar exceeds the profile avatar size limit',
     );
-  });
-});
-
-describe('client group intent compaction identity', () => {
-  it('keeps group-authored and member-authored intents as distinct directed facts', () => {
-    expect(clientGroupIntentEndpoints('!dev', 'alice', 'GROUP')).toEqual({
-      account: '!dev',
-      subjectAccount: 'alice',
-    });
-    expect(clientGroupIntentEndpoints('!dev', 'alice', 'MEMBER')).toEqual({
-      account: 'alice',
-      subjectAccount: '!dev',
-    });
   });
 });
 
@@ -158,7 +137,7 @@ describe('thread-query FORBIDDEN convergence', () => {
             {
               groupAccount: '!group',
               groupDomain: members[0]?.groupDomain ?? 'peer.test',
-              groupNamespaceId: 0,
+              groupNamespaceId: members[0]?.groupDomain === 'peer.test' ? 5 : 0,
             },
           ],
         })
@@ -393,19 +372,17 @@ describe('FederationProfileService resource path', () => {
     });
     Object.assign(peerHttp, { get: getSigned });
     Object.assign(profiles, {
-      profileNamespaceInfo: {
-        resolveBatch: vi.fn(async () => ({
-          entries: [
-            {
-              publisherNamespaceId: 12,
-              profileNamespaceId: 5,
-              domain: 'peer.test',
-              rootPublicKey: VOUCHED_ROOT,
-              updateFeedId: '4',
-              expired: false,
-            },
-          ],
-          pendingRefreshes: [],
+      profileNamespace: {
+        resolveOne: vi.fn(async () => ({
+          status: 'READY',
+          entry: {
+            publisherNamespaceId: 12,
+            profileNamespaceId: 5,
+            domain: 'peer.test',
+            rootPublicKey: VOUCHED_ROOT,
+            updateFeedId: '4',
+            expired: false,
+          },
         })),
       },
     });
@@ -422,19 +399,17 @@ describe('FederationProfileService resource path', () => {
     const getSigned = vi.fn();
     Object.assign(peerHttp, { get: getSigned });
     Object.assign(profiles, {
-      profileNamespaceInfo: {
-        resolveBatch: vi.fn(async () => ({
-          entries: [
-            {
-              publisherNamespaceId: 12,
-              profileNamespaceId: 5,
-              domain: null,
-              rootPublicKey: null,
-              updateFeedId: '0',
-              expired: true,
-            },
-          ],
-          pendingRefreshes: [],
+      profileNamespace: {
+        resolveOne: vi.fn(async () => ({
+          status: 'READY',
+          entry: {
+            publisherNamespaceId: 12,
+            profileNamespaceId: 5,
+            domain: null,
+            rootPublicKey: null,
+            updateFeedId: '0',
+            expired: true,
+          },
         })),
       },
     });
@@ -604,8 +579,8 @@ describe('FederationProfileService resource path', () => {
   });
 });
 
-/** Build a FederationService wired with hand-rolled fakes (the project's spec style — direct
- *  construction, not the Nest DI container). */
+/** Build the peer-facing federation services wired with hand-rolled fakes (the project's spec
+ *  style — direct construction, not the Nest DI container). */
 function makeStubs() {
   const store = {
     messageThread: { findUnique: vi.fn() },
@@ -781,23 +756,15 @@ function makeStubs() {
   const PINNED_ROOT = Buffer.from(
     ed25519.getPublicKey(Uint8Array.from(Buffer.alloc(32, 1))),
   ).toString('base64');
-  const profileNamespaceInfo = {
+  const profileNamespace = {
     resolveBatch: vi.fn(async () => ({ entries: [], pendingRefreshes: [] })),
   };
   const profiles = new FederationProfileService(
     database as never,
     upload as never,
     peerHttp,
-    profileNamespaceInfo as never,
-  );
-  const mediaLocalization = new FederationMediaLocalizationService(
-    database as never,
-    upload as never,
-    mediaRangeClient,
-    {} as never, // messageVisibility
-    forwardBundles as never,
-    inboundMediaBatches,
-    threadAccess,
+    profileNamespace as never,
+    {} as never,
   );
   const inboundMessageStore = new FederationInboundMessageStoreService(
     threadAccess,
@@ -814,9 +781,6 @@ function makeStubs() {
     inboundMessageRoutes,
     inboundMessageStore,
   );
-  const statePull = {
-    pullStateFromPeer: vi.fn().mockResolvedValue(5n),
-  };
   const peerResources = new FederationPeerResourceService(
     database as never,
     forwardBundles as never,
@@ -835,42 +799,11 @@ function makeStubs() {
     {} as never, // durableTasks
     {} as never, // userIntents
   );
-  const svc = new FederationService(
-    database as never,
-    peerLifecycle,
-    mediaRangeClient,
-    inboundMediaBatches,
-    users,
-    callBridge,
-    threadAccess,
-    profiles,
-    mediaLocalization,
-    inboundMessageRoutes,
-    inboundMessageValidator,
-    inboundMessagePages,
-    statePull as never,
-    {} as never, // localSystemMessages
-    peerResources,
-    inboundMessageCommits,
-    threadQueryDenials,
-    upload as never,
-    participantService as never,
-    {} as never, // invite
-    quota as never,
-    {} as never, // linkPreview
-    forwardBundles as never,
-    eventEmitter as never,
-    {} as never, // stateFeed
-    {} as never, // clientStateFeed
-    {} as never, // relationshipIntents
-    {} as never, // groupRelationships
-    {} as never, // relationshipMutations
-  );
   return {
-    svc,
     database,
+    callBridge,
     profiles,
-    profileNamespaceInfo,
+    profileNamespace,
     pinnedRoot: PINNED_ROOT,
     store,
     sse,
@@ -882,19 +815,19 @@ function makeStubs() {
     threadAccess,
     trustedPeers,
     threadResources,
-    profiles,
     inboundMessageStore,
-    statePull,
     peerResources,
     inboundMessageCommits,
     threadQueryDenials,
+    inboundMessageRoutes,
+    inboundMessageValidator,
     upload,
   };
 }
 
-describe('FederationService inbound call preflight', () => {
+describe('FederationCallBridgeService inbound call preflight', () => {
   it('short-circuits an incoming retry before resolving either account', async () => {
-    const { svc, eventEmitter } = makeStubs();
+    const { callBridge, eventEmitter } = makeStubs();
     eventEmitter.emitAsync.mockResolvedValueOnce([true]);
     const frame = {
       callId: '550e8400-e29b-41d4-a716-446655440000',
@@ -903,7 +836,7 @@ describe('FederationService inbound call preflight', () => {
       payload: { callerAccount: 'alice', calleeAccount: 'bob' },
     };
 
-    await svc.handleCallFrame(frame, 'peer.example', 3, 1_700_000_300);
+    await callBridge.handleFrame(frame, 'peer.example', 3, 1_700_000_300);
 
     expect(eventEmitter.emitAsync).toHaveBeenCalledExactlyOnceWith(
       'call.frame.incoming.preflight',
@@ -924,17 +857,7 @@ describe('FederationService inbound call preflight', () => {
   });
 });
 
-describe('FederationService state-feed drain window', () => {
-  it('delegates the bounded drain to the state-pull owner', async () => {
-    const { svc, statePull } = makeStubs();
-
-    await expect(svc.pullStateFromPeer('peer.test', 5n)).resolves.toBe(5n);
-
-    expect(statePull.pullStateFromPeer).toHaveBeenCalledWith('peer.test', 5n);
-  });
-});
-
-describe('FederationService optional range digest', () => {
+describe('FederationMediaRangeClient optional range digest', () => {
   function target() {
     const { mediaRangeClient, recognition } = makeStubs();
     return { mediaRangeClient, recognition };
@@ -1036,7 +959,7 @@ describe('FederationService optional range digest', () => {
   });
 });
 
-describe('FederationService JSON error data', () => {
+describe('FederationPeerHttp JSON error data', () => {
   it('preserves structured data from an HTTP 200 business error', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
       new Response(
@@ -1290,9 +1213,9 @@ describe('FederationThreadResourceClient preflight', () => {
   });
 });
 
-describe('FederationService global missed transport', () => {
+describe('FederationInboundMessageRouteService global missed transport', () => {
   it('resolves a remote message author as an address without creating a per-message User', async () => {
-    const { svc } = makeStubs();
+    const { inboundMessageRoutes } = makeStubs();
     const findUser = vi.fn();
     const insert = vi.fn();
     const execute = vi
@@ -1307,8 +1230,8 @@ describe('FederationService global missed transport', () => {
       query: { user: { findFirst: findUser } },
     };
     const resolveMissedThread = (
-      svc as unknown as {
-        resolveMissedThreadInTransaction: (
+      inboundMessageRoutes as unknown as {
+        resolveMessage: (
           tx: unknown,
           item: unknown,
           sourceDomain: string,
@@ -1316,7 +1239,7 @@ describe('FederationService global missed transport', () => {
           peerAssignedLocalNamespaceId: number,
         ) => Promise<unknown>;
       }
-    ).resolveMissedThreadInTransaction.bind(svc);
+    ).resolveMessage.bind(inboundMessageRoutes);
 
     await expect(
       resolveMissedThread(
@@ -1324,6 +1247,7 @@ describe('FederationService global missed transport', () => {
         {
           thread: { account: 'bob', peerAccount: 'alice' },
           authorRef: 'THREAD_ACCOUNT',
+          namespaceId: 0,
         },
         'peer.test',
         7,
@@ -1335,7 +1259,7 @@ describe('FederationService global missed transport', () => {
       toAccount: 'alice',
       authority: 'PEER',
       creatorAccount: 'bob',
-      profileNamespaceId: 0,
+      profileNamespaceId: 44,
       recipients: [1],
     });
     expect(findUser).not.toHaveBeenCalled();

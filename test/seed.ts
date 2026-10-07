@@ -2,6 +2,7 @@ import {
   groupState as group,
   readGroupState,
 } from '../src/group/shared/group-state.js';
+import { groupMemberPairEndpoints } from '../src/group/membership-intent/shared/group-member-pair-mint.js';
 import {
   accountAddressInTx,
   type AccountTarget,
@@ -32,7 +33,8 @@ import {
   SessionTokenService,
   type SessionClient,
 } from '../src/auth/session-token.service';
-import { PasswordHasher } from '../src/auth/password-hasher.service';
+import { PasswordHasher } from '../src/auth/password-hasher.service.js';
+import { localIdentityDomain } from '../src/common/local-identity';
 
 export interface SeededUser {
   id: number;
@@ -68,12 +70,10 @@ export async function seedFederatedPeerNamespace(
         .insert(identityNamespace)
         .values({
           domain,
-          rootKeyFingerprint: `sha256:e2e:${domain}`,
           rootPublicKey: fakeRootPublicKey(domain),
           identityPinnedAt: new Date(),
           active: true,
           trustLevel: 'available',
-          recognizesPeer: true,
           localServiceAvailable: true,
           peerAcceptanceConfirmed: true,
           remoteServiceReachable: true,
@@ -86,7 +86,6 @@ export async function seedFederatedPeerNamespace(
     .set({
       active: true,
       trustLevel: 'available',
-      recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: true,
       remoteServiceReachable: true,
@@ -107,7 +106,7 @@ function localEndpointFirst(
   return leftRemote - rightRemote || left.account.localeCompare(right.account);
 }
 
-/** Resolve the fixed GROUP(A) -> USER(B) relationship pair used by roster assertions. */
+/** Resolve the canonical GROUP_MEMBER pair used by roster assertions. */
 export async function findGroupRelationship(
   database: Database,
   groupId: number,
@@ -119,15 +118,21 @@ export async function findGroupRelationship(
   ]);
   if (!groupIdentity || !memberIdentity)
     throw new Error('group relationship endpoint missing');
+  const [endpointA, endpointB] = groupMemberPairEndpoints({
+    groupAccount: groupIdentity.account,
+    groupNamespaceId: groupIdentity.namespaceId,
+    memberAccount: memberIdentity.account,
+    profileNamespaceId: memberIdentity.namespaceId,
+  });
   const pair = await database.query.relationshipPair.findFirst({
     where: and(
       eq(relationshipPair.kind, 'GROUP_MEMBER'),
-      eq(relationshipPair.endpointAType, 'GROUP'),
-      eq(relationshipPair.endpointAAccount, groupIdentity.account),
-      eq(relationshipPair.endpointANamespaceId, groupIdentity.namespaceId),
-      eq(relationshipPair.endpointBType, 'USER'),
-      eq(relationshipPair.endpointBAccount, memberIdentity.account),
-      eq(relationshipPair.endpointBNamespaceId, memberIdentity.namespaceId),
+      eq(relationshipPair.endpointAType, endpointA.type),
+      eq(relationshipPair.endpointAAccount, endpointA.account),
+      eq(relationshipPair.endpointANamespaceId, endpointA.namespaceId),
+      eq(relationshipPair.endpointBType, endpointB.type),
+      eq(relationshipPair.endpointBAccount, endpointB.account),
+      eq(relationshipPair.endpointBNamespaceId, endpointB.namespaceId),
     ),
   });
   return {
@@ -298,16 +303,16 @@ export async function seedUser(
       .insert(user)
       .values({
         account,
-        domain: 'local',
         hashPwd: passwordHash,
         mustChangePassword: false,
         defaultProfileRev: 1,
         updatedAt: new Date(),
       })
       .returning({ id: user.id, account: user.account });
+    const localDomain = await localIdentityDomain(tx);
     await tx.insert(profileTable).values({
       account: created.account,
-      domain: 'local',
+      domain: localDomain,
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,

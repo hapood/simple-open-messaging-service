@@ -130,7 +130,7 @@ export class RelationshipController {
           target: { account, domain },
           decision: 'REQUESTED',
           note: dto.note ?? '',
-          ...(domain === 'local'
+          ...(dto.namespaceId === 0
             ? {}
             : {
                 snapshot: {
@@ -142,7 +142,7 @@ export class RelationshipController {
         }),
       );
     }
-    if (domain !== 'local') {
+    if (dto.namespaceId !== undefined && dto.namespaceId !== 0) {
       // The addressed request runs in the intent transaction like the local
       // branch: quota admission inside it, the peer feed item and post-commit
       // wake owned by the composed statement.
@@ -171,7 +171,7 @@ export class RelationshipController {
         decision: 'REQUESTED',
         target: {
           account,
-          domain: 'local',
+          domain,
           ...(dto.namespaceId !== undefined
             ? { namespaceId: dto.namespaceId }
             : {}),

@@ -9,6 +9,8 @@ import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import sharp from 'sharp';
+import { openSealedBox } from '../src/federation/sealed-box.js';
+import type { RootKeyEntry } from '../src/federation/federation-certificate.js';
 import { databaseSchema } from '../src/database/database-schema.js';
 import type { Database } from '../src/database/database.service.js';
 import { DiscoveryService } from '../src/federation/discovery.service.js';
@@ -93,7 +95,16 @@ export interface InMemoryKeypair {
     authorizationSignature: string;
   }>;
   getIdentityEpoch(): number;
+  getIdentityDomain(): string;
+  /** The wire address of a subject in this publisher's local namespace (keypair.service.ts). */
+  localAddress(account: string): { account: string; domain: string };
   getRootKeyFingerprint(): string;
+  waitUntilInitialized(): Promise<void>;
+  getRootGroup(): RootKeyEntry[];
+  getCreatedAt(): number;
+  getRetainedPrivateKey(publicKeyB64: string): Uint8Array | null;
+  isRetainedPublicKey(publicKeyB64: string): boolean;
+  openCardChallenge(publicKey: string, challenge: string): string;
 }
 
 export function makeInMemoryKeypair(domain: string): InMemoryKeypair {
@@ -112,6 +123,17 @@ export function makeInMemoryKeypair(domain: string): InMemoryKeypair {
   const rootKeyFingerprint = `sha256:${createHash('sha256')
     .update(rootPublicKey)
     .digest('base64url')}`;
+  const rootGroup: RootKeyEntry[] = [
+    {
+      ed25519: rootPublicKeyB64,
+      notBefore: 1_700_000_000_000,
+      notAfter: 253_402_300_799_999,
+    },
+  ];
+  const retainedKeys = new Map<string, Uint8Array>([
+    [rootPublicKeyB64, rootPrivateKey],
+    [signingPublicKeyB64, signingPrivateKey],
+  ]);
   const unsignedCertificate = {
     keyId: `${domain}/key-1`,
     ed25519: signingPublicKeyB64,
@@ -138,7 +160,32 @@ export function makeInMemoryKeypair(domain: string): InMemoryKeypair {
       },
     ],
     getIdentityEpoch: () => 1,
+    getIdentityDomain: () => domain,
+    localAddress: (account: string) => ({ account, domain }),
     getRootKeyFingerprint: () => rootKeyFingerprint,
+    waitUntilInitialized: async () => undefined,
+    getRootGroup: () => rootGroup.map((entry) => ({ ...entry })),
+    getCreatedAt: () => unsignedCertificate.notBefore,
+    getRetainedPrivateKey: (publicKeyB64: string) =>
+      retainedKeys.get(publicKeyB64) ?? null,
+    isRetainedPublicKey: (publicKeyB64: string) =>
+      retainedKeys.has(publicKeyB64),
+    openCardChallenge: (publicKey: string, challenge: string) => {
+      const privateKey = retainedKeys.get(publicKey);
+      if (!privateKey)
+        throw new Error(
+          `the supplied public key is not part of this server's retained key history`,
+        );
+      const opened = openSealedBox(
+        Uint8Array.from(Buffer.from(challenge, 'base64')),
+        privateKey,
+      );
+      if (!opened)
+        throw new Error(
+          'the card challenge does not open under the supplied key',
+        );
+      return Buffer.from(opened).toString('utf8');
+    },
   };
 }
 
@@ -238,7 +285,9 @@ export interface FedApp {
   database: Database;
   start: () => Promise<void>;
   stop: () => Promise<void>;
-  restart: () => Promise<void>;
+  /** Re-fork the subprocess on the SAME database + data root. `options.domain` boots it under a
+   *  different SOMS_DOMAIN — the domain re-bind path: same persisted identity, new public name. */
+  restart: (options?: { domain?: string }) => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -258,6 +307,7 @@ interface FedAppConfig {
  *  `stop()` SIGTERMs the child (used by the degradation test to force a real ECONNREFUSED); `restart()`
  *  re-forks on the same port (used by the re-handshake test). */
 function makeFedApp(cfg: FedAppConfig): FedApp {
+  let currentDomain = cfg.domain;
   const pool = new Pool({ connectionString: cfg.dbUrl });
   const database = drizzle({ client: pool, schema: databaseSchema });
   let child: ChildProcess | null = null;
@@ -276,7 +326,7 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
     );
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      SOMS_DOMAIN: cfg.domain,
+      SOMS_DOMAIN: currentDomain,
       DATABASE_URL: cfg.dbUrl,
       APP_PORT: String(cfg.appPort),
       FED_PORT_A: String(cfg.portA),
@@ -358,7 +408,8 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
     database,
     start,
     stop,
-    restart: async () => {
+    restart: async (options?: { domain?: string }) => {
+      if (options?.domain !== undefined) currentDomain = options.domain;
       await stop();
       await start();
     },
@@ -414,18 +465,50 @@ function waitForReady(child: ChildProcess, cfg: FedAppConfig): Promise<void> {
  *  all traffic verbatim by default and is only USED (fault injection) by the resume test, which calls
  *  `proxy.armGetFileTruncation()`. appA→appB stays direct (no fault test on that leg).
  *  `env` is merged into both subprocesses after the standard harness env, so a spec can opt into
- *  the real database-backed signing-key lifecycle (FED_E2E_REAL_KEYPAIR=1 plus lifecycle overrides). */
+ *  the real database-backed signing-key lifecycle (FED_E2E_REAL_KEYPAIR=1 plus lifecycle overrides).
+ *
+ *  `scheme: 'https'` runs the S2S loopback over TLS (both apps listen with the given cert/key and
+ *  verify each other against NODE_EXTRA_CA_CERTS supplied via `env`): the appB→appA leg then routes
+ *  DIRECT — the plain-http fault-injection proxy cannot relay TLS. `extraRoutesOnB` adds loopback
+ *  routes for additional domains hosted by appB (e.g. the post-re-bind domain of the domain-change
+ *  spec), wired into BOTH subprocesses. */
 export async function bootFederationPair(options?: {
   env?: Record<string, string>;
+  extraRoutesOnB?: string[];
+  scheme?: 'http' | 'https';
+  appATls?: { cert: string; key: string };
+  appBTls?: { cert: string; key: string };
 }): Promise<{
   appA: FedApp;
   appB: FedApp;
   proxy: S2sProxy;
 }> {
   ensureCompiledEntry(); // compile the subprocess entry once (staleness-gated)
+  const scheme = options?.scheme ?? 'http';
+  if (scheme === 'https' && (!options?.appATls || !options?.appBTls))
+    throw new Error(
+      'bootFederationPair: scheme https requires TLS material for both apps (appATls + appBTls)',
+    );
+  const tlsEnv = (tls?: {
+    cert: string;
+    key: string;
+  }): Record<string, string> =>
+    tls ? { FED_E2E_TLS_CERT: tls.cert, FED_E2E_TLS_KEY: tls.key } : {};
   const { urlA, urlB } = await ensureFederationDbs();
   const [portA, portB] = await Promise.all([pickFreePort(), pickFreePort()]);
   const proxy = await startS2sProxy(portA); // relays appB → appA (portA)
+  const extraRoutes = Object.fromEntries(
+    (options?.extraRoutesOnB ?? []).map((domain) => [
+      domain,
+      `${scheme}://127.0.0.1:${portB}`,
+    ]),
+  );
+  const sharedEnv: Record<string, string> = {
+    FED_E2E_SCHEME: scheme,
+    ...(Object.keys(extraRoutes).length > 0
+      ? { FED_E2E_EXTRA_ROUTES: JSON.stringify(extraRoutes) }
+      : {}),
+  };
   const poolId = process.env.VITEST_POOL_ID ?? '0';
   const federationDataRoot = join(
     process.env.SOMS_DATA_DIR ?? join(process.cwd(), 'data'),
@@ -446,18 +529,19 @@ export async function bootFederationPair(options?: {
     portA,
     portB,
     dataDir: dataDirA,
-    env: options?.env,
+    env: { ...options?.env, ...sharedEnv, ...tlsEnv(options?.appATls) },
   });
   // appB routes aaa.test through the proxy (portA field = proxy.port), so its signed media calls can
-  // be fault-injected; bbb.test stays appB's own port.
+  // be fault-injected; bbb.test stays appB's own port. Over TLS the proxy leg is replaced by the
+  // direct appA port — the plain-http relay cannot terminate TLS.
   const appB = makeFedApp({
     domain: FED_DOMAIN_B,
     dbUrl: urlB,
     appPort: portB,
-    portA: proxy.port,
+    portA: scheme === 'https' ? portA : proxy.port,
     portB,
     dataDir: dataDirB,
-    env: options?.env,
+    env: { ...options?.env, ...sharedEnv, ...tlsEnv(options?.appBTls) },
   });
   // Clean both persistent stores before any lifecycle hook or recovery scheduler can observe them.
   // Truncating after startup races in-memory recovery work against the replacement fixture state.
@@ -492,8 +576,16 @@ export async function assertSeparateDatabases(
 /** Reset isolated federation fixtures, including profiles and media without account foreign keys. */
 const FEDERATION_TRUNCATE_SQL =
   'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "Message", "MessageAsset", "MediaAsset", "S2SKeyCache", "PeerStateFeed", "ProfileNamespaceFeed", "ProfileNamespace", "FileSyncProgress", "ForwardBundle" RESTART IDENTITY CASCADE';
-const FEDERATION_NAMESPACE_RESET_SQL =
-  'DELETE FROM "IdentityNamespace" WHERE id <> 0';
+const FEDERATION_NAMESPACE_RESET_SQL = `
+  DO $$ DECLARE dependent regclass; BEGIN
+    FOR dependent IN
+      SELECT conrelid::regclass FROM pg_constraint
+      WHERE confrelid = '"IdentityNamespace"'::regclass AND contype = 'f'
+    LOOP
+      EXECUTE format('DELETE FROM %s', dependent);
+    END LOOP;
+  END $$;
+  DELETE FROM "IdentityNamespace" WHERE id <> 0;`;
 
 /** Truncate BOTH apps' databases between tests (in parallel — a test cannot forget one side). */
 export async function truncateFederationDbs(

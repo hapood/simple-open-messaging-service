@@ -14,6 +14,7 @@ import { openFederatedAudienceInTx } from '../../../federation/federation-audien
 import { initializeRelationshipThreadStateInTx } from '../../../federation/federation-relationship-thread-state.js';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
 import { normalizeAccount } from '../../../common/account.js';
+import { localIdentityDomain } from '../../../common/local-identity.js';
 import { lockBusinessAccountsInTx } from '../../../common/locks/account-business-lock.js';
 import { completeBusinessAddress } from '../../../common/locks/business-address.js';
 import { lockRelationshipPairsInTx } from '../../../common/locks/relationship-pair-business-lock.js';
@@ -166,6 +167,7 @@ export class ReceivedUserIntentService {
     const located = (
       await tx.execute<{
         actorAccount: string;
+        actorDomain: string;
         pairId: string | null;
         pairThreadId: number | null;
       }>(
@@ -192,7 +194,7 @@ export class ReceivedUserIntentService {
 
     const localUser: Endpoint = {
       account: located.actorAccount,
-      domain: 'local',
+      domain: await localIdentityDomain(tx),
       namespaceId: 0,
     };
     const peer: Endpoint = {
@@ -217,8 +219,8 @@ export class ReceivedUserIntentService {
       {
         kind: 'P2P',
         addresses: [
-          completeBusinessAddress(localUser.account, 'local'),
-          completeBusinessAddress(peer.account, peer.domain),
+          completeBusinessAddress(localUser.account, 0),
+          completeBusinessAddress(peer.account, peer.namespaceId),
         ],
       },
     ]);
@@ -267,7 +269,7 @@ export class ReceivedUserIntentService {
     if (!row) throw new Error('user intent authorization disappeared');
     // The peer outbound allocator precedes every client-feed allocation,
     // including the AccountThreadState participant trigger below.
-    if (peerDomain !== 'local')
+    if (namespaceId !== 0)
       await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
         { namespaceId },
       ]);
@@ -374,7 +376,7 @@ export class ReceivedUserIntentService {
         actorDomain: context.peer.domain,
         actorNamespaceId: namespaceId,
         targetAccount: context.localUser.account,
-        targetDomain: 'local',
+        targetDomain: context.localUser.domain,
         targetNamespaceId: 0,
         note: wireIntent.note,
         acceptedAt: new Date(),
@@ -512,7 +514,7 @@ export class ReceivedUserIntentService {
         actorDomain: context.peer.domain,
         actorNamespaceId: namespaceId,
         targetAccount: context.localUser.account,
-        targetDomain: 'local',
+        targetDomain: context.localUser.domain,
         targetNamespaceId: 0,
         note: wireIntent.note,
         requestedAt: intent.requestedAt,
@@ -596,7 +598,7 @@ export class ReceivedUserIntentService {
         actorDomain: context.peer.domain,
         actorNamespaceId: namespaceId,
         targetAccount: context.localUser.account,
-        targetDomain: 'local',
+        targetDomain: context.localUser.domain,
         targetNamespaceId: 0,
         localActorId: context.localUserId,
         localTargetId: null,

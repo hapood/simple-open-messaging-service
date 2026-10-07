@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, eq, gt, lte, ne } from 'drizzle-orm';
+import { and, asc, eq, gt, lte, ne, or } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { MessageDeleteType } from '../database/enums.js';
@@ -112,6 +112,7 @@ export class FederationMessageTombstoneFeedService {
             type: deletedMessage.type,
             deletedAt: deletedMessage.createdAt,
             messageSeq: message.seq,
+            publisherNamespaceId: deletedMessage.publisherNamespaceId,
           })
           .from(deletedMessage)
           .innerJoin(
@@ -124,8 +125,13 @@ export class FederationMessageTombstoneFeedService {
           .where(
             and(
               eq(deletedMessage.threadId, threadId),
-              eq(deletedMessage.publisherNamespaceId, 0),
-              groupQueryDirection === 'MIRROR_TO_ORIGIN' ||
+              or(
+                eq(deletedMessage.publisherNamespaceId, 0),
+                groupQueryDirection === 'MIRROR_TO_ORIGIN'
+                  ? eq(deletedMessage.publisherNamespaceId, namespaceId)
+                  : undefined,
+              ),
+              groupQueryDirection !== 'MIRROR_TO_ORIGIN' &&
                 selector.type === 'P2P'
                 ? eq(message.profileNamespaceId, 0)
                 : undefined,

@@ -5,9 +5,7 @@
   "$defs": {
     "bundleId": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 26,
-      "pattern": "^[^/\\u0000]+$"
+      "pattern": "^[a-f0-9]{64}$"
     },
     "asset": {
       "type": "object",

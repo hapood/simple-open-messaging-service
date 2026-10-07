@@ -109,7 +109,7 @@ a fresh value for each lookup, and SHOULD discard the value after
 comparing. The sealed-box construction is defined in
 [Transport and Security, Section 3.7](./transport-security.md#37-sealed-challenge-construction);
 the stateless possession-proof discipline is defined in
-[Peer Recognition, Section 12](./recognition.md#12-sealed-challenge-verification-and-namespace-identity-service).
+[Peer Recognition, Section 12](./recognition.md#12-sealed-challenge-verification-service).
 
 ### 2.2 Exact evidence profiles
 
@@ -119,8 +119,7 @@ Their success `data` is a closed object with exactly these fields:
 ```ts
 interface EvidenceProfile {
   account: Account;
-  // 'local' is the publisher-scoped subject marker of Core Protocol 6.2.1.
-  domain: Domain | 'local';
+  domain: Domain;
   displayName: string;
   bio: string;
   avatar: InlineProfileAvatar | null;
@@ -218,12 +217,12 @@ GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:pro
 
 Path variables are:
 
-| Variable        | Requirement                                                                            |
-| --------------- | -------------------------------------------------------------------------------------- |
-| `groupAccount`  | `GroupAccount` owned by the responding origin                                          |
-| `namespaceId`   | Profile namespace in the responding origin's namespace space                           |
-| `memberAccount` | `UserAccount` of the member                                                            |
-| `profileRev`    | Positive canonical decimal profile revision                                            |
+| Variable        | Requirement                                                  |
+| --------------- | ------------------------------------------------------------ |
+| `groupAccount`  | `GroupAccount` owned by the responding origin                |
+| `namespaceId`   | Profile namespace in the responding origin's namespace space |
+| `memberAccount` | `UserAccount` of the member                                  |
+| `profileRev`    | Positive canonical decimal profile revision                  |
 
 The group origin serves complete member profile snapshots for both the
 current Group Meta member reference and serviceable group messages. The

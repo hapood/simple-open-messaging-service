@@ -92,7 +92,7 @@ interface ProfileNamespaceFeedItem {
 
 `namespaceId` is the affected identity's namespace in the authenticated
 publisher's namespace space, as defined by
-[Core Protocol Section 6.2.1](./protocol.md#local-subject-marker-and-namespace-interpretation);
+[Core Protocol Section 6.2.1](./protocol.md#621-publisher-scoped-namespace-interpretation);
 `0` is the publisher itself (Section 1).
 The item body is the namespace id itself. An item states that the bindings of
 that identity changed at least through `feedId`; it carries no domain, no key,

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
 import { Test } from '@nestjs/testing';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
@@ -51,12 +52,20 @@ describe('group disband task fan-out', () => {
     const sent = await request(app.getHttpServer())
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ account: member.account, domain: 'local' });
+      .send({
+        account: member.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(sent.body.code).toBe(BusinessCode.OK);
     const accepted = await request(app.getHttpServer())
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${member.token}`)
-      .send({ account: owner.account, domain: 'local' });
+      .send({
+        account: owner.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(accepted.body.code).toBe(BusinessCode.OK);
 
     const created = await request(app.getHttpServer())
@@ -69,7 +78,7 @@ describe('group disband task fan-out', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         groupId: threadId,
-        users: [{ account: member.account, domain: 'local' }],
+        users: [{ account: member.account, domain: localIdentityDomain() }],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
     const joined = await request(app.getHttpServer())

@@ -19,7 +19,7 @@ import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
 import { Roles } from './admin-roles.decorator.js';
 import { Audit } from './audit.decorator.js';
-import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
+import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
 import { AdminRole } from '../database/enums.js';
 import {
   AdminLoginDto,

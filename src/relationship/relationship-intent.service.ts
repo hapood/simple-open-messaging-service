@@ -377,7 +377,7 @@ export class RelationshipIntentService {
         FROM ${groupStateSql} group_profile
         WHERE thread.id = ${params.threadId}
           AND thread.id = group_profile.id
-          AND group_profile.domain <> 'local'
+          AND group_profile."namespaceId" > 0
             AND NOT EXISTS (
             SELECT 1
             FROM "RelationshipPair" remaining_pair
@@ -652,19 +652,23 @@ export class RelationshipIntentService {
     key: PairKey & { localSide: 'A' | 'B'; remoteSide: 'A' | 'B' };
     local: BusinessScopeAddress;
   }> {
-    const local = await tx.query.account.findFirst({
-      where: and(eq(user.id, localUserId), eq(user.domain, 'local')),
-      columns: { account: true, domain: true, namespaceId: true },
+    const localAccount = await tx.query.account.findFirst({
+      where: and(eq(user.id, localUserId), eq(user.namespaceId, 0)),
+      columns: { account: true, namespaceId: true },
     });
-    if (!local) throw new Error('local relationship endpoint does not exist');
-    const prepared = this.prepareP2PKey(local, remote, null);
+    if (!localAccount)
+      throw new Error('local relationship endpoint does not exist');
+    const prepared = this.prepareP2PKey(localAccount, remote, null);
     return {
       key: {
         ...prepared,
         localSide: prepared.firstSide,
         remoteSide: prepared.secondSide,
       },
-      local: { account: local.account, profileNamespaceId: local.namespaceId },
+      local: {
+        account: localAccount.account,
+        profileNamespaceId: localAccount.namespaceId,
+      },
     };
   }
 

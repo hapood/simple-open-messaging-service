@@ -53,6 +53,10 @@ describe('SettingsService — Firebase client config (file-based, boot-loaded)',
   async function boot(): Promise<SettingsService> {
     const s = new SettingsService(
       databaseStub,
+      {
+        getIdentityDomain: () => 'settings.test',
+        waitUntilInitialized: async () => undefined,
+      } as never,
       join(dir, 'vapid-key.json'),
       join(dir, 'google-services.json'),
     );

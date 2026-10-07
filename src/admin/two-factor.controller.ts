@@ -13,7 +13,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { Audit } from './audit.decorator.js';
 import { AdminAuthService } from './admin-auth.service.js';
-import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
+import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
 import {
   TwoFactorSetupVerifyDto,
   TwoFactorDisableDto,

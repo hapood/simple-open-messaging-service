@@ -71,7 +71,7 @@ export class GroupRevokeFanoutService {
         )
           return false;
         if (
-          group.domain !== 'local' &&
+          group.namespaceId !== 0 &&
           (group.domain !== denial.peerDomain ||
             group.namespaceId !== denial.namespaceId)
         )
@@ -102,7 +102,7 @@ export class GroupRevokeFanoutService {
           ${
             denial
               ? sql`
-            AND member_ns.domain = ${group.domain === 'local' ? denial.peerDomain : 'local'}
+            AND member."namespaceId" = ${group.namespaceId === 0 ? denial.namespaceId : 0}
           `
               : sql``
           }
@@ -119,7 +119,7 @@ export class GroupRevokeFanoutService {
       if (
         parent.taskType === DurableTaskType.DISBAND_GROUP &&
         member.active &&
-        member.domain === 'local'
+        member.namespaceId === 0
       ) {
         const boundary = await tx.execute<{
           seq: number;
@@ -131,7 +131,7 @@ export class GroupRevokeFanoutService {
           FROM "MessageThread" thread
           JOIN "Message" message ON message."threadId" = thread.id
           JOIN "Account" local ON local.account = ${member.account}
-            AND local.domain = 'local' AND local."namespaceId" = 0
+            AND local."namespaceId" = 0
           WHERE thread.id = ${threadId}
             AND message."contentType" = 'SYSTEM'
             AND message.content::jsonb->>'type' = 'GROUP_DISSOLVED'
@@ -182,13 +182,16 @@ export class GroupRevokeFanoutService {
                 peerDomain: denial.peerDomain,
                 namespaceId: denial.namespaceId,
                 expectedAuthorizationEpoch: denial.expectedAuthorizationEpoch,
-                direction: group.domain === 'local' ? 'GROUP' : 'MEMBER',
+                direction: group.namespaceId === 0 ? 'GROUP' : 'MEMBER',
                 groupAccount: group.account,
                 groupDomain: group.domain,
                 groupNamespaceId: group.namespaceId,
               }
             : {}),
-          memberUserId: { account: member.account, namespaceId: member.namespaceId },
+          memberUserId: {
+            account: member.account,
+            namespaceId: member.namespaceId,
+          },
         },
       });
       await saveTaskCheckpointInTx(tx, parent.id, {

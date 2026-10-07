@@ -180,8 +180,8 @@ export class RemoteMemberMembershipIntentService {
       {
         kind: 'GROUP_MEMBER',
         addresses: [
-          completeBusinessAddress(group.groupAccount, group.groupDomain),
-          completeBusinessAddress(member.account, member.domain),
+          completeBusinessAddress(group.groupAccount, 0),
+          completeBusinessAddress(member.account, member.namespaceId),
         ],
       },
     ]);

@@ -3,7 +3,7 @@ import type {
   Database,
   DatabaseTransaction,
 } from '../database/database.service.js';
-import { account } from '../database/schema.js';
+import { account, identityNamespace } from '../database/schema.js';
 
 /** A persisted subject address without the transport domain. Local subjects are
  * identified by `namespaceId: 0`; foreign subjects by a positive `namespaceId`
@@ -67,11 +67,12 @@ export async function localAccountsForTargetsInTx(
     .select({
       id: account.id,
       account: account.account,
-      domain: account.domain,
+      domain: identityNamespace.domain,
       namespaceId: account.namespaceId,
       availability: account.availability,
     })
     .from(account)
+    .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
     .where(inArray(account.account, [...new Set(local)]))
     .orderBy(account.id);
 }

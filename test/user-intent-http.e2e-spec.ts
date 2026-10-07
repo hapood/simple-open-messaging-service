@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { and, eq, or } from 'drizzle-orm';
@@ -24,7 +25,7 @@ describe('User intent HTTP contract e2e', () => {
   beforeEach(async () => {
     await truncateTablesForTest(
       database.pool,
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "RelationshipPair", "RelationshipIntent", "Message", "ThreadAudience" RESTART IDENTITY CASCADE',
     );
   });
 
@@ -72,7 +73,7 @@ describe('User intent HTTP contract e2e', () => {
       ownerId,
       {
         account: peerAccount,
-        domain: 'local',
+        domain: localIdentityDomain(),
         namespaceId: 0,
       },
     );
@@ -111,7 +112,11 @@ describe('User intent HTTP contract e2e', () => {
     const invite = await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(invite.body.code).toBe(0);
     expect(invite.body.data).toEqual({ status: 'OK' });
 
@@ -142,13 +147,21 @@ describe('User intent HTTP contract e2e', () => {
     await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
 
     // Only the recipient of a live incoming direction may accept it.
     const invalidAccept = await request(http)
       .post('/api/v1/relationship/accept')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(invalidAccept.body.code).toBe(BusinessCode.INVITE_NOT_FOUND);
   });
 
@@ -159,20 +172,28 @@ describe('User intent HTTP contract e2e', () => {
     await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     const afterRequest = await stateFeedEndId(invitee.id);
 
     const accepted = await request(http)
       .post('/api/v1/relationship/accept')
       .set(auth(invitee.token))
-      .send({ account: 'inviter', domain: 'local' });
+      .send({
+        account: 'inviter',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(accepted.body.code).toBe(0);
     expect(accepted.body.data).toMatchObject({ status: 'OK' });
     expect(typeof accepted.body.data.threadId).toBe('number');
 
     const { pair } = await findP2PRelationship(database.db, inviter.id, {
       account: 'invitee',
-      domain: 'local',
+      domain: localIdentityDomain(),
       namespaceId: 0,
     });
     expect(pair?.active).toBe(true);
@@ -233,7 +254,11 @@ describe('User intent HTTP contract e2e', () => {
     const revoked = await request(http)
       .post('/api/v1/relationship/revoke')
       .set(auth(stranger.token))
-      .send({ account: 'inviter', domain: 'local' });
+      .send({
+        account: 'inviter',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(revoked.body.code).toBe(BusinessCode.FRIEND_NOT_FOUND);
   });
 
@@ -244,18 +269,26 @@ describe('User intent HTTP contract e2e', () => {
     await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
 
     const withdrawn = await request(http)
       .post('/api/v1/relationship/revoke')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(withdrawn.body.code).toBe(0);
     expect(withdrawn.body.data).toEqual({ status: 'OK' });
 
     const { pair } = await findP2PRelationship(database.db, inviter.id, {
       account: 'invitee',
-      domain: 'local',
+      domain: localIdentityDomain(),
       namespaceId: 0,
     });
     expect(pair?.active).toBe(false);
@@ -269,7 +302,11 @@ describe('User intent HTTP contract e2e', () => {
     const renewed = await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(renewed.body.code).toBe(0);
     expect(renewed.body.data).toEqual({ status: 'OK' });
     const intent = await pendingIntentStatus(inviter.id, 'invitee');
@@ -287,12 +324,20 @@ describe('User intent HTTP contract e2e', () => {
     await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
 
     const rejected = await request(http)
       .post('/api/v1/relationship/revoke')
       .set(auth(invitee.token))
-      .send({ account: 'inviter', domain: 'local' });
+      .send({
+        account: 'inviter',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(rejected.body.code).toBe(0);
 
     // Rejection revokes the recipient side; the requester stays pending and
@@ -303,7 +348,11 @@ describe('User intent HTTP contract e2e', () => {
     const reApplied = await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(reApplied.body.code).toBe(0);
     expect(reApplied.body.data).toEqual({ status: 'OK' });
     expect((await pendingIntentStatus(inviter.id, 'invitee'))?.status).toBe(
@@ -318,7 +367,11 @@ describe('User intent HTTP contract e2e', () => {
     await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
 
     // Expire the pending direction behind the command's back.
     const { pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
@@ -326,7 +379,7 @@ describe('User intent HTTP contract e2e', () => {
       inviter.id,
       {
         account: 'invitee',
-        domain: 'local',
+        domain: localIdentityDomain(),
         namespaceId: 0,
       },
     );
@@ -375,7 +428,11 @@ describe('User intent HTTP contract e2e', () => {
     const renewed = await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(renewed.body.code).toBe(0);
     expect(renewed.body.data).toEqual({ status: 'OK' });
     expect((await pendingIntentStatus(inviter.id, 'invitee'))?.status).toBe(
@@ -383,7 +440,7 @@ describe('User intent HTTP contract e2e', () => {
     );
     const refreshed = await findP2PRelationship(database.db, inviter.id, {
       account: 'invitee',
-      domain: 'local',
+      domain: localIdentityDomain(),
       namespaceId: 0,
     });
     expect(refreshed.pair?.active).toBe(false);
@@ -393,12 +450,16 @@ describe('User intent HTTP contract e2e', () => {
     const crossed = await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(invitee.token))
-      .send({ account: 'inviter', domain: 'local' });
+      .send({
+        account: 'inviter',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(crossed.body.code).toBe(0);
     expect(typeof crossed.body.data.threadId).toBe('number');
     const activated = await findP2PRelationship(database.db, inviter.id, {
       account: 'invitee',
-      domain: 'local',
+      domain: localIdentityDomain(),
       namespaceId: 0,
     });
     expect(activated.pair?.active).toBe(true);
@@ -411,13 +472,17 @@ describe('User intent HTTP contract e2e', () => {
     await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     const { pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
       database.db,
       inviter.id,
       {
         account: 'invitee',
-        domain: 'local',
+        domain: localIdentityDomain(),
         namespaceId: 0,
       },
     );
@@ -442,7 +507,11 @@ describe('User intent HTTP contract e2e', () => {
     const response = await request(http)
       .post('/api/v1/relationship/revoke')
       .set(auth(inviter.token))
-      .send({ account: 'invitee', domain: 'local' });
+      .send({
+        account: 'invitee',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
       code: BusinessCode.INVITE_EXPIRED,

@@ -47,7 +47,7 @@ import type {
   ClientStateFeedService,
   PendingClientStateFeedUpdate,
 } from '../../../client-state-feed/client-state-feed.service.js';
-import type { FederationService } from '../../../federation/federation.service.js';
+import type { FederationStateFeedPusher } from '../../../federation/federation-state-feed.events.js';
 import type { PeerStateFeedService } from '../../../federation/peer-state-feed.service.js';
 import { RELATIONSHIP_INTENT_REQUEST_TTL_MS } from '../../../common/relationship-intent-state.js';
 import type { GroupRelationshipMutationService } from '../shared/group-relationship-mutation.service.js';
@@ -82,7 +82,7 @@ export interface GroupAuthoredMembershipIntentDependencies {
   database: DatabaseService;
   clientFeed: ClientStateFeedService;
   peerFeed: PeerStateFeedService;
-  federation: FederationService;
+  federation: FederationStateFeedPusher;
   relationshipMutations: GroupRelationshipMutationService;
 }
 
@@ -187,7 +187,7 @@ export class GroupAuthoredMembershipIntentService {
    * mutation locks and fences the captured thread generation at commit time. */
   async executeQueryDeniedRevocation(params: {
     threadId: number;
-    group: { account: string; domain: 'local'; namespaceId: 0 };
+    group: { account: string; domain: string; namespaceId: 0 };
     member: AccountSubjectAddress;
     expectedAuthorizationEpoch: number;
   }): Promise<QueryDeniedMembershipRevocationResult> {
@@ -198,7 +198,10 @@ export class GroupAuthoredMembershipIntentService {
       // Entry-scope advisory before the writer's row locks; nested writers
       // never take advisories themselves.
       await lockBusinessAccountsInTx(tx, [
-        { account: params.group.account, profileNamespaceId: params.group.namespaceId },
+        {
+          account: params.group.account,
+          profileNamespaceId: params.group.namespaceId,
+        },
       ]);
       return this.deps.relationshipMutations.writeGroupRelationshipIntentInTx(
         tx,
@@ -299,9 +302,9 @@ export class GroupAuthoredMembershipIntentService {
         addresses: [
           completeBusinessAddress(
             candidate.groupAccount,
-            candidate.groupDomain,
+            0,
           ),
-          completeBusinessAddress(member.account, member.domain),
+          completeBusinessAddress(member.account, member.namespaceId),
         ],
       },
     ]);
@@ -353,7 +356,7 @@ export class GroupAuthoredMembershipIntentService {
       pairId,
       member,
     );
-    if (!row || row.domain !== 'local' || row.namespaceId !== 0)
+    if (!row || row.namespaceId !== 0)
       throw new Error('group decision requires an authoritative group');
     if (params.scope === 'MEMBER' && !row.pairActive)
       return this.reject(
@@ -443,8 +446,8 @@ export class GroupAuthoredMembershipIntentService {
       {
         kind: 'GROUP_MEMBER',
         addresses: [
-          completeBusinessAddress(located.groupAccount, located.groupDomain),
-          completeBusinessAddress(member.account, member.domain),
+          completeBusinessAddress(located.groupAccount, 0),
+          completeBusinessAddress(member.account, member.namespaceId),
         ],
       },
     ]);
@@ -497,7 +500,7 @@ export class GroupAuthoredMembershipIntentService {
       pairId,
       member,
     );
-    if (!row || row.domain !== 'local' || row.namespaceId !== 0)
+    if (!row || row.namespaceId !== 0)
       throw new Error('join decision requires an authoritative group');
     return this.validateRequestInTx(tx, params, pairId, threadLock, row);
   }
@@ -507,13 +510,13 @@ export class GroupAuthoredMembershipIntentService {
   private async lockParticipantsInTx(
     tx: DatabaseTransaction,
     params: GroupAuthoredMembershipIntentCommand,
-    member: { account: string; domain: string },
+    member: { account: string; domain: string; namespaceId: number },
   ): Promise<void> {
     await tx.execute(
       sql`SELECT participant.id FROM "AccountThreadState" participant
         JOIN "Account" owner ON owner.id = participant."accountId"
         WHERE participant."threadId" = ${params.threadId}
-          AND ((owner.account = ${member.account} AND ${member.domain} = 'local') OR owner.id = ${params.managerUserId})
+          AND ((owner.account = ${member.account} AND owner."namespaceId" = ${member.namespaceId}) OR owner.id = ${params.managerUserId})
         ORDER BY participant."accountId" FOR NO KEY UPDATE OF participant
       `,
     );
@@ -846,7 +849,7 @@ export class GroupAuthoredMembershipIntentService {
     tx: DatabaseTransaction,
     context: ValidatedDecision,
   ): Promise<ValidatedDecision> {
-    if (context.member.domain !== 'local')
+    if (context.member.namespaceId !== 0)
       await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
         {
           namespaceId: context.member.namespaceId,
@@ -859,7 +862,7 @@ export class GroupAuthoredMembershipIntentService {
     await tx.execute(
       sql`SELECT id FROM "Account" WHERE id = ANY(${sql.param(accounts)}::integer[]) ORDER BY id FOR NO KEY UPDATE`,
     );
-    if (context.kind === 'acceptance' && context.member.domain !== 'local')
+    if (context.kind === 'acceptance' && context.member.namespaceId !== 0)
       await tx.execute(
         sql`SELECT "threadId" FROM "FederationThreadSyncState" WHERE "threadId" = ${context.params.threadId} AND "namespaceId" = ${context.member.namespaceId} FOR NO KEY UPDATE`,
       );
@@ -906,7 +909,7 @@ export class GroupAuthoredMembershipIntentService {
         feedId: Number(row.recipientFeedId),
       });
     // The ACK feed belongs only to the applicant's peer. Wake it after commit.
-    return context.member.domain !== 'local' && row.recipientFeedId !== null
+    return context.member.namespaceId !== 0 && row.recipientFeedId !== null
       ? new Map([[context.member.namespaceId, BigInt(row.recipientFeedId)]])
       : new Map();
   }
@@ -935,7 +938,7 @@ export class GroupAuthoredMembershipIntentService {
         feedId: Number(row.recipientFeedId),
       });
     const peers =
-      context.member.domain !== 'local' && row.recipientFeedId !== null
+      context.member.namespaceId !== 0 && row.recipientFeedId !== null
         ? new Map([[context.member.namespaceId, BigInt(row.recipientFeedId)]])
         : new Map();
     if (row.pairChanged && context.localMemberId !== null) {
@@ -987,7 +990,7 @@ export class GroupAuthoredMembershipIntentService {
         threadId: context.params.threadId,
         groupAccount: context.authorization.account,
       });
-    return context.member.domain !== 'local' && row.recipientFeedId !== null
+    return context.member.namespaceId !== 0 && row.recipientFeedId !== null
       ? new Map([[context.member.namespaceId, BigInt(row.recipientFeedId)]])
       : new Map();
   }

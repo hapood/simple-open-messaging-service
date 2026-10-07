@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { withMessageDigest } from './support/message-fixture.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import http from 'node:http';
@@ -86,15 +87,17 @@ async function authorizeDigest(
   if (!author) throw new Error('test message author is missing');
   const [msg] = await database
     .insert(message)
-    .values({
-      contentType: 'IMAGE',
-      content: JSON.stringify({}),
-      threadId: thread.id,
-      creatorAccount: author.account,
-      creatorDomain: author.domain,
-      seq,
-      updatedAt: now,
-    })
+    .values(
+      withMessageDigest({
+        contentType: 'IMAGE',
+        content: JSON.stringify({}),
+        threadId: thread.id,
+        creatorAccount: author.account,
+
+        seq,
+        updatedAt: now,
+      }),
+    )
     .returning({ id: message.id });
   await database
     .insert(messageAsset)

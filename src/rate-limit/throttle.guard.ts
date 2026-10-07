@@ -9,11 +9,11 @@ import {
 import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
 import { KvStoreService } from '../kv-store/kv-store.service.js';
-import { ClientIdentityService } from '../rate-limit/client-identity.service.js';
+import { ClientIdentityService } from './client-identity.service.js';
 import {
   FixedWindowPolicyService,
   type FixedWindowPolicyName,
-} from '../rate-limit/fixed-window-policy.service.js';
+} from './fixed-window-policy.service.js';
 
 export const THROTTLE_KEY = 'throttle';
 

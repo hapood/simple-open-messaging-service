@@ -33,7 +33,6 @@ describe('FederationPeerLifecycle recognition and reachability gates', () => {
     const { lifecycle } = subject({
       trustLevel: 'degraded',
       active: true,
-      recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: true,
     });
@@ -46,7 +45,6 @@ describe('FederationPeerLifecycle recognition and reachability gates', () => {
     const { lifecycle } = subject({
       trustLevel: 'establishing',
       active: true,
-      recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: false,
     });
@@ -59,7 +57,6 @@ describe('FederationPeerLifecycle recognition and reachability gates', () => {
     const { lifecycle, recognition } = subject({
       trustLevel: 'degraded',
       active: true,
-      recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: true,
     });
@@ -73,7 +70,6 @@ describe('FederationPeerLifecycle recognition and reachability gates', () => {
     const { lifecycle, recognition } = subject({
       trustLevel: 'establishing',
       active: true,
-      recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: false,
     });
@@ -90,7 +86,6 @@ describe('FederationPeerLifecycle recognition and reachability gates', () => {
     const { lifecycle, recognition } = subject({
       trustLevel: 'available',
       active: true,
-      recognizesPeer: true,
       localServiceAvailable: true,
       peerAcceptanceConfirmed: true,
     });

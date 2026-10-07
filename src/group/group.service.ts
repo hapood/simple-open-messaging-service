@@ -24,6 +24,7 @@ import {
   messageThread,
   profileTable,
 } from '../database/schema.js';
+import { localIdentityDomain } from '../common/local-identity.js';
 import { GroupRole, MessageThreadType } from '../database/enums.js';
 import {
   lockBusinessAccountsInTx,
@@ -342,7 +343,6 @@ export class GroupService {
       this.database.db,
       and(
         eq(groupStateFields.account, account),
-        eq(groupStateFields.domain, 'local'),
         eq(groupStateFields.namespaceId, 0),
         isNull(groupStateFields.dissolvedAt),
       ),
@@ -418,7 +418,7 @@ export class GroupService {
             .values({
               type: MessageThreadType.GROUP,
               groupAccount: account,
-              groupDomain: 'local',
+              groupDomain: await localIdentityDomain(tx),
               groupAccountId: ownerAccount.id,
               federationRoundsEnabled: true,
               authorityNamespaceId: 0,
@@ -447,7 +447,9 @@ export class GroupService {
           }> = [];
           // Entry-scope advisory for the freshly minted group: uncontended, but
           // taken here so the seeding writers keep the entry-lock contract.
-          await lockBusinessAccountsInTx(tx, [{ account, profileNamespaceId: 0 }]);
+          await lockBusinessAccountsInTx(tx, [
+            { account, profileNamespaceId: 0 },
+          ]);
           // Establish an explicit cleared announcement before any origin feed
           // can be served; subsequent membership/profile facts use later ids.
           await tx.insert(groupMeta).values({
@@ -469,14 +471,17 @@ export class GroupService {
           // new participant's read boundary initializes at this sequence.
           const owner = await tx.query.account.findFirst({
             where: eq(userAccount.id, params.owner),
-            columns: { account: true, defaultProfileRev: true },
+            columns: {
+              account: true,
+              defaultProfileRev: true,
+            },
           });
           if (!owner) throw new Error('group creator account is unavailable');
           await this.messages.writeSystemMessageInTx(tx, thread.id, {
             type: SystemMessageType.GROUP_CREATED,
             creator: {
               account: owner.account,
-              domain: 'local',
+              domain: await localIdentityDomain(tx),
               profileNamespaceId: 0,
               profileRev: owner.defaultProfileRev,
             },
@@ -549,9 +554,8 @@ export class GroupService {
         operatorUserId,
       );
       if (
-        state.domain !== 'local' ||
         state.namespaceId !== 0 ||
-        operator?.domain !== 'local' ||
+        operator?.namespaceId !== 0 ||
         operator.role !== GroupRole.OWNER ||
         !(await isThreadMutuallyAuthorized(tx, operatorUserId, threadId))
       )
@@ -637,9 +641,8 @@ export class GroupService {
         params.operatorUserId,
       );
       if (
-        state.groupDomain !== 'local' ||
         state.namespaceId !== 0 ||
-        operator?.domain !== 'local' ||
+        operator?.namespaceId !== 0 ||
         operator.role !== GroupRole.OWNER
       ) {
         throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'owner only');
@@ -759,12 +762,7 @@ export class GroupService {
         params.operatorUserId,
       );
       const current = await readGroupState(tx, eq(group.id, params.threadId));
-      if (
-        !current ||
-        current.domain !== 'local' ||
-        current.namespaceId !== 0 ||
-        current.dissolvedAt !== null
-      )
+      if (!current || current.namespaceId !== 0 || current.dissolvedAt !== null)
         throw new BusinessException(
           BusinessCode.GROUP_FORBIDDEN,
           'group announcement authority is unavailable',
@@ -831,11 +829,7 @@ export class GroupService {
           'group thread not found',
           HttpStatus.NOT_FOUND,
         );
-      if (
-        current.group.domain !== 'local' ||
-        current.group.namespaceId !== 0 ||
-        current.group.dissolvedAt !== null
-      )
+      if (current.group.namespaceId !== 0 || current.group.dissolvedAt !== null)
         throw new BusinessException(
           BusinessCode.GROUP_FORBIDDEN,
           'group profile authority is unavailable',
@@ -896,7 +890,7 @@ export class GroupService {
       : undefined;
     if (
       !manager ||
-      manager.domain !== 'local' ||
+      manager.namespaceId !== 0 ||
       (manager.role !== GroupRole.OWNER && manager.role !== GroupRole.ADMIN) ||
       !(await isThreadMutuallyAuthorized(tx, managerUserId, threadId))
     ) {

@@ -121,7 +121,6 @@ describe('P2P lookup and mutation key preparation', () => {
     await expect(
       new RelationshipIntentService().lockPairInTx(h.tx, 1, {
         account: 'ALICE',
-        domain: ' LOCAL ',
         namespaceId: 0,
       }),
     ).rejects.toThrow('relationship endpoints must be distinct');

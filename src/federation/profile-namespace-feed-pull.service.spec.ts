@@ -66,7 +66,7 @@ describe('ProfileNamespaceFeedPullService drain', () => {
           profileNamespaceId: item.namespaceId,
           triggerFeedId: BigInt(item.feedId),
           expiredLocalRows: false,
-          clientFeedUpdates: [],
+          clientChangeId: BigInt(item.feedId),
         };
       },
     });
@@ -102,7 +102,7 @@ describe('ProfileNamespaceFeedPullService drain', () => {
         profileNamespaceId: item.namespaceId,
         triggerFeedId: BigInt(item.feedId),
         expiredLocalRows: false,
-        clientFeedUpdates: [],
+        clientChangeId: BigInt(item.feedId),
       }),
     });
     expect(seen).toEqual(['0', '2']);
@@ -156,7 +156,7 @@ describe('ProfileNamespaceFeedPullService drain', () => {
         profileNamespaceId: item.namespaceId,
         triggerFeedId: BigInt(item.feedId),
         expiredLocalRows: false,
-        clientFeedUpdates: [],
+        clientChangeId: BigInt(item.feedId),
       }),
     });
     expect(epoch.profileNamespaceFeedPulledThrough).toBe(6n);

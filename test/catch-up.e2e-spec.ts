@@ -9,6 +9,8 @@ import {
   vi,
 } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { localIdentityDomain } from './support/local-domain.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import request from 'supertest';
 import { DatabaseService } from '../src/database/database.service';
 import { eq, sql } from 'drizzle-orm';
@@ -100,18 +102,20 @@ describe('client state feed + notification feed', () => {
       thread.id,
     );
     await database.db.insert(message).values(
-      Array.from({ length: 3 }, (_, index) => ({
-        threadId: thread.id,
-        seq: index + 1,
-        originSeq: index + 1,
-        contentType: ContentType.PURE_TEXT,
-        content: JSON.stringify({ text: `${opts.name}-${index}` }),
-        creatorAccount: opts.name.toLowerCase(),
-        creatorDomain: 'local',
-        profileRev: 1,
-        createdAt: new Date(base + index),
-        updatedAt: now,
-      })),
+      withMessageDigest(
+        Array.from({ length: 3 }, (_, index) => ({
+          threadId: thread.id,
+          seq: index + 1,
+          originSeq: index + 1,
+          contentType: ContentType.PURE_TEXT,
+          content: JSON.stringify({ text: `${opts.name}-${index}` }),
+          creatorAccount: opts.name.toLowerCase(),
+
+          profileRev: 1,
+          createdAt: new Date(base + index),
+          updatedAt: now,
+        })),
+      ),
     );
     await database.db.transaction(async (tx) => {
       await requireThreadContentLockInTx(tx, thread.id);
@@ -145,7 +149,7 @@ describe('client state feed + notification feed', () => {
         feed.writeInTx(tx, {
           userId: recipientId,
           account: 'recip',
-          domain: 'local',
+          domain: localIdentityDomain(),
           namespaceId: 0,
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount,
@@ -162,7 +166,7 @@ describe('client state feed + notification feed', () => {
       feed.writeInTx(tx, {
         userId: recipientId,
         account: '',
-        domain: 'local',
+        domain: localIdentityDomain(),
         namespaceId: 0,
         eventType: 'INCOMING_INVITE_HEAD',
         subjectAccount: '',

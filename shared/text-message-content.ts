@@ -2,6 +2,8 @@
 export interface TextMessageContent {
   text: string;
   quote?: {
+    /** Payload digest of the quoted message. */
+    digest?: string;
     /** Durable namespace-scoped sequence; read projection emits local seq (zero if unresolved). */
     seq: number;
     /** Durable coordinate namespace: zero is local seq, positive is that source's originSeq. */
@@ -63,6 +65,12 @@ export function parseTextMessageContent(
 
     const quote = record['quote'] as Record<string, unknown>;
     if (
+      quote['digest'] !== undefined &&
+      (typeof quote['digest'] !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(quote['digest']))
+    )
+      return null;
+    if (
       quote['namespaceId'] !== undefined &&
       (!Number.isSafeInteger(quote['namespaceId']) ||
         Number(quote['namespaceId']) < 0)
@@ -108,6 +116,9 @@ export function parseTextMessageContent(
       return null;
     result.quote = {
       seq: Number(quote['seq']),
+      ...(typeof quote['digest'] === 'string'
+        ? { digest: quote['digest'] }
+        : {}),
       ...(quote['namespaceId'] === undefined
         ? {}
         : { namespaceId: Number(quote['namespaceId']) }),

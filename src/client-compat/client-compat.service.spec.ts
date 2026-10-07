@@ -9,14 +9,18 @@ import type { SettingsService } from '../settings/settings.service.js';
  * ClientCompatService.compat reports the client API version, server version, login policy and canonical
  * client origins. Its output does not depend on any on-disk web bundle.
  *
- * Origin derivation (deriveOrigin in src/common/origin.ts) is driven by SOMS_TLS_MODE; these tests set the
- * env per-case because compat() reads process.env at call time (not module load).
+ * Origin derivation (deriveOrigin in src/common/origin.ts) is driven by SOMS_TLS_MODE and the injected,
+ * database-backed identity domain; tests set only the transport/display environment values per case.
  */
 describe('ClientCompatService.compat', () => {
   // SettingsService is @Global in the app; pass a stub whose getFirebaseConfig() returns null so the folded
   // firebaseConfig is {configured:false} without dragging in the real service + its database dep.
+  let identityDomain = 'soms.example.com';
   const svc = new ClientCompatService({
     getFirebaseConfig: () => null,
+    get somsDomain() {
+      return identityDomain;
+    },
   } as unknown as SettingsService);
   // SERVER_VERSION is read from <cwd>/package.json at module load; compare against the same source so
   // the test tracks the real version rather than hard-coding a literal that drifts on the next bump.
@@ -32,7 +36,10 @@ describe('ClientCompatService.compat', () => {
     'SOMS_TLS_MODE',
   ];
   const saved: Record<string, string | undefined> = {};
-  beforeEach(() => envKeys.forEach((k) => (saved[k] = process.env[k])));
+  beforeEach(() => {
+    identityDomain = 'soms.example.com';
+    envKeys.forEach((k) => (saved[k] = process.env[k]));
+  });
   afterEach(() =>
     envKeys.forEach((k) => {
       if (saved[k] === undefined) delete process.env[k];
@@ -80,7 +87,7 @@ describe('ClientCompatService.compat', () => {
   });
 
   it('uses SOMS_WEB_DOMAIN for primaryOrigin without changing the identity domain', () => {
-    process.env.SOMS_DOMAIN = 'example.com';
+    identityDomain = 'example.com';
     process.env.SOMS_WEB_DOMAIN = 'soms.example.com';
     process.env.SOMS_TLS_MODE = 'single-port';
     expect(svc.compat().primaryOrigin).toBe('https://soms.example.com:7667');
@@ -96,7 +103,7 @@ describe('ClientCompatService.compat', () => {
   });
 
   it('omits both origins when SOMS_DOMAIN is unset', () => {
-    delete process.env.SOMS_DOMAIN;
+    identityDomain = '';
     delete process.env.SOMS_LAN_DOMAIN;
     const r = svc.compat();
     expect(r).not.toHaveProperty('primaryOrigin');

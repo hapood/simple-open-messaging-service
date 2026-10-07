@@ -42,7 +42,7 @@ NOT infer an answer from a non-source server.
 
 The endpoint requires a recognized, authenticated peer. The request MUST be
 HTTP Message Signed and pass the same
-[S2S signature guard](./transport-security.md#3-http-message-signatures) as
+[HTTP Message Signature validation](./transport-security.md#35-validation-order-and-failure-boundaries) as
 other authenticated operations; an unauthenticated or unrecognized request
 MUST be rejected with `401 FEDERATION_RECOGNITION_REQUIRED` before any query
 is evaluated.
@@ -66,7 +66,7 @@ interface MessageProvenanceRequest {
 interface MessageProvenanceQuery {
   thread: ThreadAddress;
   seq: ThreadSequence;
-  contentDigest: Sha256Hex;
+  payloadDigest: Sha256Hex;
 }
 ```
 
@@ -79,8 +79,7 @@ interface MessageProvenanceQuery {
   message when it served it to the requester. It is the source-scoped
   coordinate from the direct-origin identity, not the requester's local copy
   coordinate and not the message's nullable `originSeq`.
-- `contentDigest` is `sha256` over the UTF-8 bytes of the JCS canonical form
-  of the parsed `content` value, as defined by
+- `payloadDigest` is `sha256` over the UTF-8 bytes of the JCS canonical payload object, as defined by
   [Core Protocol 6.1.1](./protocol.md#611-canonical-json-jcs-for-stringified-content-fields).
   It is computed as `sha256(JCS(JSON.parse(content)))` over the wire `content`
   string the requester retained, after the requester re-serialized that content
@@ -91,7 +90,7 @@ The `queries` array MUST contain at least one query and MUST NOT contain more
 than **64** entries in a single request. A request outside this range is
 malformed and MUST be rejected with `400 FEDERATION_MALFORMED`. Within the
 array, each `(thread, seq)` pair MUST appear at most once; a duplicate pair is
-malformed. `contentDigest` MAY differ for the same `(thread, seq)` pair only
+malformed. `payloadDigest` MAY differ for the same `(thread, seq)` pair only
 across separate requests, never within one.
 
 ## 4. Response
@@ -112,9 +111,9 @@ interface MessageProvenanceResult {
 ```
 
 - `yes`: the responder published a message at `(thread, seq)` whose canonical
-  `content` hashes to the supplied `contentDigest`.
+  `content` hashes to the supplied `payloadDigest`.
 - `no`: the responder did not publish such a message at `(thread, seq)` with
-  that `contentDigest`. This includes the case where a message exists at the
+  that `payloadDigest`. This includes the case where a message exists at the
   coordinate but its content hash differs, the case where no message exists at
   the coordinate, and the case where the message has been deleted and the
   responder no longer retains a content digest for it. The responder MUST NOT
@@ -162,7 +161,7 @@ does not constrain when a responder returns `yes`, `no`, or `declined` beyond
 the following normative rules:
 
 - The responder MUST return `yes` only when it has retained a content digest
-  for `(thread, seq)` that equals the supplied `contentDigest`.
+  for `(thread, seq)` that equals the supplied `payloadDigest`.
 - The responder MUST NOT return `yes` for a coordinate at which it never
   published, or for a content digest it never retained for that coordinate.
 - Beyond these two honesty rules, the choice among `yes`, `no`, and `declined`
@@ -188,9 +187,15 @@ recognition fact. It is not a substitute for
 the requester to receive the message, and a `no` does not revoke an existing
 authorization.
 
-The `contentDigest` value is defined by
-[Core Protocol 6.1.1](./protocol.md#611-canonical-json-jcs-for-stringified-content-fields)
-and is stable across re-publication of the same logical content. A re-publisher
-that re-serialized content to the canonical form before serving it produces the
-same `contentDigest` as the original publisher, so the same query validates the
-content at any hop that preserved the canonical form.
+The `payloadDigest` value is the SHA-256 digest of the canonical payload object:
+
+```text
+JCS({
+  content: JSON.parse(content),
+  assets: assets sorted by digest,
+  quoteDigest?: quoted message payloadDigest,
+})
+```
+
+It excludes coordinates, timestamps, author fields, namespace identifiers, and the hop-local
+`quoteTarget`. It is stable across re-publication when the logical payload is unchanged.

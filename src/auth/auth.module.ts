@@ -5,8 +5,6 @@ import { AuthService } from './auth.service.js';
 import { UserModule } from '../user/user.module.js';
 import { PassportModule } from '@nestjs/passport';
 import { LocalStrategy } from './local.strategy.js';
-import { UserService } from '../user/user.service.js';
-import { ThrottleGuard } from './throttle.guard.js';
 import { SessionAuthGuard } from './session-auth.guard.js';
 import { SessionCookieInterceptor } from './session-cookie.interceptor.js';
 import { SessionTokenService } from './session-token.service.js';
@@ -21,8 +19,6 @@ import { PasswordHasher } from './password-hasher.service.js';
   providers: [
     AuthService,
     LocalStrategy,
-    UserService,
-    ThrottleGuard,
     SessionTokenService,
     BearerAuthService,
     BruteForceService,

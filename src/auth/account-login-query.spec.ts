@@ -50,7 +50,7 @@ describe('Account login queries', () => {
       expect(statement.text).not.toMatch(/\bjoin\b/i);
       expect(params).toEqual([
         operation === 'issue OTP' ? 42 : 'admin',
-        'local',
+        0,
         1,
       ]);
     },

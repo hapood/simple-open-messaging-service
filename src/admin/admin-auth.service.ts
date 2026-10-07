@@ -166,7 +166,7 @@ export class AdminAuthService implements OnModuleInit {
     const [userRow] = await this.database.db
       .select({ id: user.id, hashPwd: user.hashPwd })
       .from(user)
-      .where(and(eq(user.account, acct), eq(user.domain, 'local')))
+      .where(and(eq(user.account, acct), eq(user.namespaceId, 0)))
       .limit(1);
     // Non-revealing: a missing / deleted / group identity, no admin profile, a disabled admin, a no-password
     // account, or a wrong password are all indistinguishable from the caller's view (INVALID_CREDENTIALS).

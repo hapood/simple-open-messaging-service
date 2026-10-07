@@ -38,12 +38,12 @@ export function groupDisbandMembershipRevocationLocatorSql(input: {
 }): SQL {
   return sql`
     SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
-      g.namespaceId AS "groupNamespaceId",
+      g."namespaceId" AS "groupNamespaceId",
       member_ns.domain AS "memberDomain",
       g."dissolvedAt" AS "dissolvedAt",
       pair.id::text AS "pairId",
       (SELECT a.id FROM "Account" a WHERE a.account = ${input.member.account}
-        AND a.domain = 'local' AND a."namespaceId" = 0 LIMIT 1) AS "localMemberId"
+        AND a."namespaceId" = 0 LIMIT 1) AS "localMemberId"
     FROM ${groupStateSql} g
     LEFT JOIN "IdentityNamespace" member_ns
       ON member_ns.id = ${input.member.namespaceId}
@@ -62,9 +62,7 @@ function groupToMemberKey(groupAccount: string, memberAccount: string): string {
     'RELATIONSHIP_INTENT',
     0,
     groupAccount,
-    'local',
     memberAccount,
-    'local',
   ]);
 }
 
@@ -75,9 +73,7 @@ function memberToGroupKey(memberAccount: string, groupAccount: string): string {
     'RELATIONSHIP_INTENT',
     0,
     memberAccount,
-    'local',
     groupAccount,
-    'local',
   ]);
 }
 
@@ -193,14 +189,14 @@ function localRecipients(input: GroupDisbandMembershipRevocationInput): SQL {
       FROM revocation v
     ), candidate_bodies AS MATERIALIZED (
       SELECT ${input.localMemberId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
-        b."compactionKey", ${input.groupAccount}::text AS account, 'local'::text AS domain,
+        b."compactionKey", ${input.groupAccount}::text AS account, (SELECT domain FROM "IdentityNamespace" WHERE id = 0)::text AS domain,
         ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", b.body
       FROM recipient_bodies b
       UNION ALL
       SELECT ${input.localMemberId}::integer, 0, 2,
         ${memberToGroupKey(input.memberAccount, input.groupAccount)}::text,
-        ${input.memberAccount}::text, 'local'::text,
-        ${input.groupAccount}::text, 'local'::text,
+        ${input.memberAccount}::text, (SELECT domain FROM "IdentityNamespace" WHERE id = 0)::text,
+        ${input.groupAccount}::text, 0::integer,
         jsonb_build_object('status', v.status, 'note', '',
           'requestedAt', NULL::bigint,
           'expiresAt', NULL::bigint,

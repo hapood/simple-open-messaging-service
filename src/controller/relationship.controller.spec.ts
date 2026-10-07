@@ -249,6 +249,7 @@ describe('RelationshipController.requestRelationship', () => {
       target: { account: '!local-group', domain: 'local' },
       decision: 'REQUESTED',
       note: 'hello',
+      snapshot: { displayName: undefined },
       admissionInTx: expect.any(Function),
     });
   });

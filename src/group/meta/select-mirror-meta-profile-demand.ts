@@ -23,7 +23,7 @@ export function selectMirrorMetaProfileDemand(
   if (
     item.operation !== 'MEMBER_UPSERT' ||
     item.profileRev < 1 ||
-    item.domain === 'local'
+    item.profileNamespaceId === 0
   )
     return null;
 

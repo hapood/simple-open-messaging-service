@@ -152,9 +152,7 @@ export class GroupRosterRoleService {
         groupAccount: string;
         groupDomain: string;
         groupNamespaceId: number;
-      }>(
-        groupRosterRoleLocatorSql({ threadId: params.threadId }),
-      )
+      }>(groupRosterRoleLocatorSql({ threadId: params.threadId }))
     ).rows[0];
     if (!located) return { outcome: notFound() };
     await lockBusinessAccountsInTx(tx, [
@@ -197,7 +195,7 @@ export class GroupRosterRoleService {
       )
     ).rows[0];
     if (!row) throw new Error('group roster state disappeared under the locks');
-    if (row.groupDomain !== 'local' || row.namespaceId !== 0)
+    if (row.namespaceId !== 0)
       return {
         outcome: forbidden('group role authority is unavailable'),
       };
@@ -223,7 +221,7 @@ export class GroupRosterRoleService {
       };
     const operator: RosterRoleChange = {
       account: row.operatorAccount,
-      domain: 'local',
+      domain: row.operatorDomain!,
       namespaceId: 0,
       previousRole: GroupRole.OWNER,
       role: GroupRole.ADMIN,
@@ -240,7 +238,7 @@ export class GroupRosterRoleService {
         return { outcome: targetNotMember() };
       // Ownership can't cross servers — the owner must stay on the origin
       // (the roster authority).
-      if (row.targetDomain !== 'local')
+      if (row.targetNamespaceId !== 0)
         return {
           outcome: forbidden(
             'cannot transfer ownership to a member on another server',
@@ -252,7 +250,7 @@ export class GroupRosterRoleService {
         throw new Error('local roster target is missing');
       const newOwner: RosterRoleChange = {
         account: row.targetAccount,
-        domain: row.targetDomain,
+        domain: row.targetDomain!,
         namespaceId: row.targetNamespaceId!,
         previousRole: row.targetRole!,
         role: GroupRole.OWNER,
@@ -271,7 +269,7 @@ export class GroupRosterRoleService {
           type: SystemMessageType.GROUP_OWNER_TRANSFERRED,
           previousOwner: {
             account: operator.account,
-            domain: 'local',
+            domain: operator.domain,
             profileNamespaceId: 0,
             profileRev: 0,
           },
@@ -291,7 +289,7 @@ export class GroupRosterRoleService {
     if (row.targetRole === GroupRole.OWNER)
       return { outcome: forbidden("cannot change the owner's role") };
     // Privileged roles must remain on the origin (the roster authority).
-    if (params.role === GroupRole.ADMIN && row.targetDomain !== 'local')
+    if (params.role === GroupRole.ADMIN && row.targetNamespaceId !== 0)
       return {
         outcome: forbidden(
           'cannot grant administrator role to a member on another server',
@@ -299,7 +297,7 @@ export class GroupRosterRoleService {
       };
     if (row.targetRole === params.role)
       return { outcome: { status: 'NO_OP', reason: 'ROLE_UNCHANGED' } };
-    if (row.targetDomain === 'local' && row.localTargetId === null)
+    if (row.targetNamespaceId === 0 && row.localTargetId === null)
       throw new Error('local roster target is missing');
     const change: RosterRoleChange = {
       account: row.targetAccount,

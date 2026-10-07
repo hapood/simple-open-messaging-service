@@ -21,7 +21,7 @@ import { UploadService } from './upload.service.js';
 
 export const RESUMABLE_CHUNK_SIZE = 4 * 1024 * 1024;
 
-interface UploadSessionView {
+export interface UploadSessionView {
   uploadId: string;
   clientMessageId: string;
   partId: string;

@@ -74,6 +74,10 @@ export async function resetE2EWorkerDatabase(
       }
       await client.query('DELETE FROM "IdentityNamespace" WHERE id <> 0');
       await client.query(
+        'INSERT INTO "IdentityNamespace" (id, domain) VALUES (0, $1) ON CONFLICT (id) DO NOTHING',
+        [process.env.SOMS_DOMAIN ?? 'e2e-local.test'],
+      );
+      await client.query(
         'INSERT INTO "Account" (account, kind, "disabledAt") VALUES (\'$system\', \'SYSTEM\', CURRENT_TIMESTAMP)',
       );
       await client.query(

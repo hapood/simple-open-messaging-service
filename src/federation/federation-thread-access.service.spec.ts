@@ -125,6 +125,7 @@ describe('FederationThreadAccessService', () => {
       namespaceId: 7,
       peerAssignedLocalNamespaceId: 11,
       rootKeyFingerprint: 'sha256:root',
+      rootPublicKey: 'root-public-key',
     };
 
     await expect(

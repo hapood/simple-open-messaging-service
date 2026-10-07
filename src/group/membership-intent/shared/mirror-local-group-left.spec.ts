@@ -23,6 +23,9 @@ describe('writeMirrorLocalGroupLeftInTx', () => {
         account: {
           findFirst: vi.fn().mockResolvedValue({ defaultProfileRev: 4 }),
         },
+        identityNamespace: {
+          findFirst: vi.fn().mockResolvedValue({ domain: 'local' }),
+        },
       },
     };
 

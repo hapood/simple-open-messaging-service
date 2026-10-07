@@ -22,6 +22,7 @@ import {
 import { FederationThreadContentHeadService } from '../../../federation/federation-thread-content-head.service.js';
 import type { ThreadContentLock } from '../../../common/locks/thread-content-lock.js';
 import { enqueueCurrentThreadFanoutsInTx } from '../../../message/thread-fanout-task.js';
+import { localIdentityDomain } from '../../../common/local-identity.js';
 
 export interface AuthoritativeGroupMembershipFinalization {
   audienceChanged: boolean;
@@ -66,7 +67,7 @@ export class AuthoritativeMembershipFinalizerService {
       )
       .limit(1);
     if (!state) throw new Error('group membership finalization target missing');
-    if (state.domain !== 'local' || state.namespaceId !== 0)
+    if (state.namespaceId !== 0)
       return { audienceChanged: false, threadFanoutAdmitted: false };
 
     const metaEndId = state.metaEndId ?? 0;
@@ -99,7 +100,7 @@ export class AuthoritativeMembershipFinalizerService {
       // audience insert is an idempotent no-op.
       const memberDomain =
         member.namespaceId === 0
-          ? 'local'
+          ? await localIdentityDomain(tx)
           : (
               await tx.execute<{ domain: string }>(sql`
                 SELECT domain FROM "IdentityNamespace"

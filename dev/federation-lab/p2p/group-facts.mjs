@@ -37,60 +37,86 @@ async function readNodeGroupRows(client) {
         LEFT JOIN "GroupAccount" account ON account."id" = thread."groupAccountId"
         LEFT JOIN "GroupMeta" meta ON meta."threadId" = thread."id"
         LEFT JOIN "Profile" profile ON profile."account" = thread."groupAccount"
-          AND profile."domain" = thread."groupDomain"
-          AND profile."namespaceId" = thread."authorityNamespaceId"
+          AND profile."publisherNamespaceId" = thread."authorityNamespaceId"
+          AND profile."profileNamespaceId" = thread."authorityNamespaceId"
           AND profile."profileRev" = COALESCE(account."defaultProfileRev", meta."profileRev", 0)
         WHERE thread."type" = 'GROUP'
         ORDER BY thread."id"
       `);
   const roster = await client.query(`
         SELECT fact."threadId", fact."memberAccount" AS "account",
-          fact."memberDomain" AS "domain",
-          group_meta_member_namespace(fact."threadId", fact."memberAccount",
-            fact."memberDomain") AS "namespaceId",
+          ns."domain" AS "domain",
+          fact."profileNamespaceId" AS "namespaceId",
           fact."body" ->> 'role' AS "role",
           (fact."body" ->> 'profileRev')::integer AS "profileRev"
         FROM "GroupMetaMemberFeed" fact
+        LEFT JOIN "IdentityNamespace" ns ON ns."id" = fact."profileNamespaceId"
         WHERE fact."operation" = 'MEMBER_UPSERT'
       `);
   const relationships = await client.query(`
         SELECT pair."id"::text, pair."active", pair."threadId",
-               pair."endpointAType", pair."endpointAAccount", pair."endpointADomain",
-               pair."endpointBType", pair."endpointBAccount", pair."endpointBDomain",
-               intent."authorSide", intent."status", intent."expiresAt"
+               pair."endpointAType", pair."endpointAAccount",
+               ns_a."domain" AS "endpointADomain",
+               pair."endpointBType", pair."endpointBAccount",
+               ns_b."domain" AS "endpointBDomain",
+               CASE WHEN intent."authorAccount" IS NULL THEN NULL
+                 WHEN pair."endpointAAccount" = intent."authorAccount"
+                   AND pair."endpointANamespaceId" = intent."authorNamespaceId"
+                 THEN 'A' ELSE 'B' END AS "authorSide",
+               intent."status", intent."expiresAt"
         FROM "RelationshipPair" pair
-        LEFT JOIN "RelationshipIntent" intent ON intent."pairId" = pair."id"
+        LEFT JOIN "IdentityNamespace" ns_a ON ns_a."id" = pair."endpointANamespaceId"
+        LEFT JOIN "IdentityNamespace" ns_b ON ns_b."id" = pair."endpointBNamespaceId"
+        LEFT JOIN "RelationshipIntent" intent
+          ON (pair."endpointAAccount" = intent."authorAccount"
+            AND pair."endpointANamespaceId" = intent."authorNamespaceId"
+            AND pair."endpointBAccount" = intent."receiverAccount"
+            AND pair."endpointBNamespaceId" = intent."receiverNamespaceId")
+          OR (pair."endpointBAccount" = intent."authorAccount"
+            AND pair."endpointBNamespaceId" = intent."authorNamespaceId"
+            AND pair."endpointAAccount" = intent."receiverAccount"
+            AND pair."endpointANamespaceId" = intent."receiverNamespaceId")
         WHERE pair."kind" = 'GROUP_MEMBER'
-        ORDER BY pair."id", intent."authorSide"
+        ORDER BY pair."id", "authorSide"
       `);
   const requests = await client.query(`
         SELECT projection."threadId", projection."direction", projection."feedId",
                projection."status", projection."expiresAt",
-               projection."memberAccount", projection."memberDomain"
+               projection."memberAccount", ns."domain" AS "memberDomain"
         FROM "GroupRequestProjection" projection
+        LEFT JOIN "IdentityNamespace" ns ON ns."id" = projection."profileNamespaceId"
         ORDER BY projection."threadId", projection."direction", projection."feedId"
       `);
   const users = await client.query(`
         SELECT local_account."id", identity."account", identity."domain"
         FROM (
-          SELECT "account", "domain" FROM "Account"
+          SELECT "account", ns0."domain" FROM "Account" "Account"
+          JOIN "IdentityNamespace" ns0 ON ns0."id" = 0
           UNION
-          SELECT "endpointAAccount", "endpointADomain" FROM "RelationshipPair"
-          WHERE "endpointAType" = 'USER'
+          SELECT pair."endpointAAccount", ns_a."domain"
+          FROM "RelationshipPair" pair
+          LEFT JOIN "IdentityNamespace" ns_a ON ns_a."id" = pair."endpointANamespaceId"
+          WHERE pair."endpointAType" = 'USER'
           UNION
-          SELECT "endpointBAccount", "endpointBDomain" FROM "RelationshipPair"
-          WHERE "endpointBType" = 'USER'
+          SELECT pair."endpointBAccount", ns_b."domain"
+          FROM "RelationshipPair" pair
+          LEFT JOIN "IdentityNamespace" ns_b ON ns_b."id" = pair."endpointBNamespaceId"
+          WHERE pair."endpointBType" = 'USER'
         ) identity
-        LEFT JOIN "Account" local_account ON identity."domain" = 'local'
+        LEFT JOIN "IdentityNamespace" home ON home."id" = 0
+        LEFT JOIN "Account" local_account ON identity."domain" = home."domain"
           AND local_account."account" = identity."account"
         ORDER BY identity."domain", identity."account"
       `);
   const messages = await client.query(`
         SELECT msg."id"::text, msg."threadId", msg."seq", msg."originSeq", msg."profileRev",
                msg."contentType", msg."content", msg."clientMessageId",
-               msg."creatorAccount", msg."creatorDomain", msg."creatorNamespaceId", msg."isDeleted", msg."localState"
+               msg."creatorAccount", creator_ns."domain" AS "creatorDomain",
+               msg."profileNamespaceId" AS "creatorNamespaceId", msg."profileNamespaceId",
+               msg."isDeleted", msg."localState"
         FROM "Message" msg
         INNER JOIN "MessageThread" thread ON thread."id" = msg."threadId"
+        LEFT JOIN "IdentityNamespace" creator_ns ON creator_ns."id" = msg."profileNamespaceId"
         WHERE thread."type" = 'GROUP'
         ORDER BY msg."threadId", msg."seq"
       `);
@@ -296,12 +322,13 @@ export function observeUserGroup(snapshot, user, plannedGroup) {
     pendingInvitations,
     kickCandidates: lowerMembers,
     // Administrator roles can only be granted to members on the group host.
+    // Namespace 0 is this node's own home namespace for local members.
     promoteCandidates: roster.filter(
-      ({ role, domain }) => role === 'MEMBER' && domain === 'local',
+      ({ role, namespaceId }) => role === 'MEMBER' && namespaceId === 0,
     ),
     demoteCandidates: roster.filter(({ role }) => role === 'ADMIN'),
     transferCandidates: roster.filter(
-      ({ role, domain }) => role !== 'OWNER' && domain === 'local',
+      ({ role, namespaceId }) => role !== 'OWNER' && namespaceId === 0,
     ),
     retractableMessages: (group?.messages ?? [])
       .filter(

@@ -46,7 +46,7 @@ export class ThreadPreviewService {
         accounts.map((a) => sql`${a.id}`),
         sql`, `,
       )})
-        AND a.domain = 'local' AND a."namespaceId" = 0 AND a.availability = 'AVAILABLE'
+        AND a."namespaceId" = 0 AND a.availability = 'AVAILABLE'
       ORDER BY a.id`);
     for (const owner of owners.rows) {
       await applyReadPositionInTx(tx, lock, owner.accountId, {

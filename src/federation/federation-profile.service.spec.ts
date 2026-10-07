@@ -64,6 +64,7 @@ function makeSubject() {
       upload as never,
       { get: vi.fn() } as never,
       {} as never,
+      {} as never,
     ),
     database,
     upload,

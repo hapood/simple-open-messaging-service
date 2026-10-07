@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AccountThreadStateModule } from '../account-thread-state/account-thread-state.module.js';
 import { MessageModule } from '../message/message.module.js';
+import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.module.js';
 import { RelationshipIntentService } from './relationship-intent.service.js';
 import { RelationshipService } from './relationship.service.js';
 
@@ -12,7 +13,7 @@ import { RelationshipService } from './relationship.service.js';
  * remaining relationship projections and query-denial cleanup.
  */
 @Module({
-  imports: [AccountThreadStateModule, MessageModule],
+  imports: [AccountThreadStateModule, MessageModule, ClientStateFeedModule],
   providers: [RelationshipService, RelationshipIntentService],
   exports: [RelationshipService, RelationshipIntentService],
 })

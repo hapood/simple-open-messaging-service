@@ -20,7 +20,8 @@ v1 does not define a universal maximum length. Publishers and consumers may impo
 
 Ordinary text omits the outer message `quoteTarget`. A quoted reply MUST satisfy all of the following:
 
-- The outer message contains `quoteTarget`.
+- The reply may use any federated message `contentType`; this document describes the
+  `PURE_TEXT` representation used by the current client UI.
 - `quoteTarget` identifies a target in the same thread using exactly
   one of `seq` (sender coordinate, or `0` for an explicitly absent target) or
   positive `originSeq` (receiver coordinate).
@@ -53,7 +54,7 @@ somfp-user     = "somfp://user/" namespace-id "/" user-account
 somfp-audience = "somfp://audience/all"
 ```
 
-`namespace-id` is a non-negative decimal integer (`0` for a subject local to the publishing server, a positive integer for a foreign subject's publisher-scoped namespace) and `user-account` strictly uses the `UserAccount` ASCII grammar defined by the [core protocol](../protocol.md#62-shared-federation-types). The `namespace-id` carries the same publisher-scoped meaning as the `namespaceId` field of a profile reference (see [Protocol, Section 6.2.1](../protocol.md#621-local-subject-marker-and-namespace-interpretation)): `0` denotes a subject hosted by the authenticated publisher, and a positive value is the namespace the publisher allocated for that subject's home-server identity. A sender MUST NOT place a transport `Domain` in a user entity; the entity's identity is `(namespaceId, account)`, never `account@domain`.
+`namespace-id` is a non-negative decimal integer (`0` for a subject local to the publishing server, a positive integer for a foreign subject's publisher-scoped namespace) and `user-account` strictly uses the `UserAccount` ASCII grammar defined by the [core protocol](../protocol.md#62-shared-federation-types). The `namespace-id` carries the same publisher-scoped meaning as the `namespaceId` field of a profile reference (see [Protocol, Section 6.2.1](../protocol.md#621-publisher-scoped-namespace-interpretation)): `0` denotes a subject hosted by the authenticated publisher, and a positive value is the namespace the publisher allocated for that subject's home-server identity. A sender MUST NOT place a transport `Domain` in a user entity; the entity's identity is `(namespaceId, account)`, never `account@domain`.
 
 Two v1 entity URIs are equal only when their complete ASCII byte sequences are equal. A consumer MUST NOT use general URL normalization, host case folding, default-port removal, or percent-decoding followed by re-encoding to create another equivalent form. After successful parsing, the semantic identity of a user entity is the decoded `(namespaceId, account)`; the semantic identity of an audience entity is fixed as `all`.
 

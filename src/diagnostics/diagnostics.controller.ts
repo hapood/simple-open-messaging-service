@@ -13,7 +13,7 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
-import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
+import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DiagnosticsService } from './diagnostics.service.js';

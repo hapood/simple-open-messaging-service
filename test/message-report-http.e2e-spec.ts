@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { withMessageDigest } from './support/message-fixture.js';
 import request from 'supertest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { and, eq } from 'drizzle-orm';
@@ -77,28 +78,30 @@ describe('message report HTTP workflow', () => {
       creator.id,
       thread.id,
     );
-    await database.db.insert(message).values([
-      {
-        seq: 1,
-        threadId: thread.id,
-        creatorAccount: creator.account,
-        creatorDomain: 'local',
-        originSeq: 1,
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'first' }),
-        updatedAt: now,
-      },
-      {
-        seq: 2,
-        threadId: thread.id,
-        creatorAccount: creator.account,
-        creatorDomain: 'local',
-        originSeq: 2,
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'second' }),
-        updatedAt: now,
-      },
-    ]);
+    await database.db.insert(message).values(
+      withMessageDigest([
+        {
+          seq: 1,
+          threadId: thread.id,
+          creatorAccount: creator.account,
+
+          originSeq: 1,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'first' }),
+          updatedAt: now,
+        },
+        {
+          seq: 2,
+          threadId: thread.id,
+          creatorAccount: creator.account,
+
+          originSeq: 2,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'second' }),
+          updatedAt: now,
+        },
+      ]),
+    );
     return { reporter, creator, reporterToken, threadId: thread.id };
   }
 

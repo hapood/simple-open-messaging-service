@@ -6,7 +6,7 @@ Normative scope: this entire document is normative.
 This document defines the per-thread message-content query
 `GET /s2s/v1/messages`. The compacted `thread + messageEndSeq +
 tombstoneEndSeq` discovery projection is a `THREAD_CONTENT_HEAD` item in
-[State Feed](./state-feed.md#5-thread_content_head). Authorization, message
+[State Feed](./state-feed.md#5-threadcontenthead). Authorization, message
 return, and content-retention policy are applied by the query operation. See
 [Message](./message.md) for message schemas and [Protocol](./protocol.md) for
 common rules.
@@ -262,8 +262,8 @@ Together they identify the exact immutable profile reference in the message
 publisher's namespace space. A positive `profileRev` is resolvable; `0` means
 no profile and MUST NOT trigger a profile request.
 
-The author `namespaceId` follows the local-subject marker rules of
-[Core Protocol Section 6.2.1](./protocol.md#local-subject-marker-and-namespace-interpretation):
+The author `namespaceId` follows the publisher-scoped rules of
+[Core Protocol Section 6.2.1](./protocol.md#621-publisher-scoped-namespace-interpretation):
 `0` marks an author hosted by the source, and a positive value is the source's
 namespace for the author's home identity. A consumer MUST NOT infer author
 locality from the author domain string. A P2P item with

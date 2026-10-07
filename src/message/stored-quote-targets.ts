@@ -1,10 +1,8 @@
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 import type { Database } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import {
-  parseTextMessageContent,
-  storedQuoteCoordinate,
-} from '../../shared/text-message-content.js';
+import { parseMessageContentQuote } from '../../shared/message-content-quote.js';
+import { storedQuoteCoordinate } from '../../shared/text-message-content.js';
 
 type Message = typeof tables.message.$inferSelect;
 type QuoteMessage = Pick<
@@ -18,10 +16,7 @@ export async function findStoredQuoteTargets(
   messages: QuoteMessage[],
 ): Promise<Map<bigint, Message>> {
   const refs = messages.flatMap((m) => {
-    const quote =
-      m.contentType === 'PURE_TEXT'
-        ? parseTextMessageContent(m.content)?.quote
-        : undefined;
+    const quote = parseMessageContentQuote(m.content);
     if (!quote) return [];
     const c = storedQuoteCoordinate(quote, m.publisherNamespaceId);
     return c.seq > 0 ? [{ m, c }] : [];
@@ -53,39 +48,6 @@ export async function findStoredQuoteTargets(
     );
     if (target) result.set(m.id, target);
   }
-  const missing = refs.filter(
-    ({ m, c }) => c.namespaceId > 0 && !result.has(m.id),
-  );
-  if (!missing.length) return result;
-  const receipts = await db.query.federationMessageReceipt.findMany({
-    where: or(
-      ...missing.map(({ m, c }) =>
-        and(
-          eq(tables.federationMessageReceipt.threadId, m.threadId),
-          eq(tables.federationMessageReceipt.namespaceId, c.namespaceId),
-          eq(tables.federationMessageReceipt.peerSeq, c.seq),
-        ),
-      ),
-    ),
-  });
-  if (!receipts.length) return result;
-  const originals = await db.query.message.findMany({
-    where: inArray(
-      tables.message.id,
-      receipts.map((r) => r.messageId),
-    ),
-  });
-  for (const { m, c } of missing) {
-    const receipt = receipts.find(
-      (r) =>
-        r.threadId === m.threadId &&
-        r.namespaceId === c.namespaceId &&
-        r.peerSeq === c.seq,
-    );
-    const target = originals.find(
-      (t) => t.id === receipt?.messageId && t.threadId === m.threadId,
-    );
-    if (target) result.set(m.id, target);
-  }
+  // Processing receipts update Message.originSeq directly; no separate alias table exists.
   return result;
 }

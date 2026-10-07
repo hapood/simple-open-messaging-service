@@ -8,7 +8,7 @@ export function eligiblePreviewOwnerSql(
   owner: SQLWrapper,
 ) {
   return sql`${state}.blocked = false
-    AND ${owner}.domain = 'local' AND ${owner}."namespaceId" = 0
+    AND ${owner}."namespaceId" = 0
     AND ${owner}.availability = 'AVAILABLE'
     AND EXISTS (
       SELECT 1 FROM "IdentityNamespace" ns

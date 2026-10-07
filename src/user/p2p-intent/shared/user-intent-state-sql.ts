@@ -53,7 +53,7 @@ export function userIntentCompactionKey(
     'RELATIONSHIP_INTENT',
     namespaceId,
     account.account,
-    account.domain,
+    account.namespaceId,
     subject.account,
     subject.domain,
   ]);
@@ -175,9 +175,9 @@ export async function resetUserIntentThreadStateInTx(
   await tx.execute(sql`
     INSERT INTO "AccountThreadState" ("accountId", "threadId")
     SELECT a.id, ${threadId} FROM "Account" a
-    WHERE a.domain = 'local' AND a."namespaceId" = 0
+    WHERE a."namespaceId" = 0
       AND ((a.account = ${actor.account})
-        OR (a.account = ${target.account} AND ${target.domain} = 'local'))
+        OR (a.account = ${target.account} AND ${target.namespaceId} = 0))
     ON CONFLICT ("accountId", "threadId") DO UPDATE SET
       "messageVisibleThroughSeq" = NULL,
       "lastReadSeq" = CASE WHEN ${options.activate}
@@ -207,9 +207,9 @@ export async function lockUserIntentThreadStateInTx(
   await tx.execute(sql`
     SELECT s."accountId" FROM "AccountThreadState" s
     JOIN "Account" a ON a.id = s."accountId"
-    WHERE s."threadId" = ${threadId} AND a.domain = 'local' AND a."namespaceId" = 0
+    WHERE s."threadId" = ${threadId} AND a."namespaceId" = 0
       AND ((a.account = ${actor.account})
-        OR (a.account = ${target.account} AND ${target.domain} = 'local'))
+        OR (a.account = ${target.account} AND ${target.namespaceId} = 0))
     ORDER BY s."accountId" FOR NO KEY UPDATE OF s
   `);
 }

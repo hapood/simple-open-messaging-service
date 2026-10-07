@@ -68,15 +68,16 @@ export function groupAuthoredInvitationLocatorSql(input: {
     FROM ${groupStateSql} g
     LEFT JOIN LATERAL (
       SELECT 0::integer AS "namespaceId"
-      WHERE ${input.targetDomain} = 'local' AND EXISTS (
-        SELECT 1 FROM "Account" local_target
-        WHERE local_target.account = ${input.targetAccount}
-          AND local_target.domain = 'local' AND local_target."namespaceId" = 0
-      )
+      WHERE ${input.targetDomain} = (SELECT domain FROM "IdentityNamespace" WHERE id = 0)
+        AND EXISTS (
+          SELECT 1 FROM "Account" local_target
+          WHERE local_target.account = ${input.targetAccount}
+            AND local_target."namespaceId" = 0
+        )
       UNION ALL
       SELECT ns.id
       FROM "IdentityNamespace" ns
-      WHERE ${input.targetDomain} <> 'local'
+      WHERE ${input.targetDomain} <> (SELECT domain FROM "IdentityNamespace" WHERE id = 0)
         AND ns.domain = ${input.targetDomain}
         AND ns.active = true
         AND ns."retiredAt" IS NULL
@@ -107,7 +108,7 @@ export function groupAuthoredMembershipAddressLocatorSql(input: {
     WHERE g.id = ${input.threadId}
       AND pair."endpointBAccount" = ${input.targetAccount}
       AND pair."endpointBNamespaceId" = CASE
-        WHEN ${input.targetDomain} = 'local' THEN 0
+        WHEN ${input.targetDomain} = (SELECT domain FROM "IdentityNamespace" WHERE id = 0) THEN 0
         ELSE (SELECT ns.id FROM "IdentityNamespace" ns
           WHERE ns.domain = ${input.targetDomain}
             AND ns.active = true
@@ -151,7 +152,7 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
     ), managers AS MATERIALIZED (
       SELECT a.id, r.body ->> 'role' AS role
       FROM roster r JOIN "Account" a ON a.account = r."memberAccount"
-        AND a.domain = 'local' AND a."namespaceId" = 0
+        AND a."namespaceId" = 0
       JOIN "AccountThreadState" p ON p."accountId" = a.id AND p."threadId" = ${input.threadId}
       WHERE r."profileNamespaceId" = 0
         AND r.operation = 'MEMBER_UPSERT' AND r.body->>'role' IN ('OWNER', 'ADMIN')
@@ -160,9 +161,7 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
       -- target names its own pair here, so the exemption keys on the address.
       SELECT COUNT(*)::integer AS "authorizedCount", COALESCE(BOOL_OR(
           pair."endpointBAccount" = ${input.targetAccount}
-          AND pair."endpointBNamespaceId" = CASE
-            WHEN ${input.targetDomain} = 'local' THEN 0
-            ELSE ${input.targetNamespaceId} END
+          AND pair."endpointBNamespaceId" = ${input.targetNamespaceId}
         ), false) AS "alreadyAuthorized"
       FROM ${groupStateSql} scope
       JOIN "RelationshipPair" pair ON pair.kind = 'GROUP_MEMBER'
@@ -223,7 +222,6 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
       AND member_last."profileNamespaceId" = ${input.targetNamespaceId}
     LEFT JOIN "IdentityNamespace" ns ON ns.id = ${input.targetNamespaceId}
     LEFT JOIN "Account" local_member ON local_member.account = ${input.targetAccount}
-      AND local_member.domain = ${input.targetDomain}
       AND local_member."namespaceId" = 0
       AND ${input.targetNamespaceId} = 0
     WHERE g.id = ${input.threadId}

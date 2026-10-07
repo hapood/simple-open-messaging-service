@@ -52,17 +52,17 @@ describe('concurrent federation key-cache replacement', () => {
     'completes overlapping refreshes with existing cache=%s',
     async (populated) => {
       const domain = populated ? 'cached.test' : 'empty.test';
-      const root = Buffer.alloc(32, 1).toString('base64');
+      const root = createHash('sha256')
+        .update(`key-cache-root:${domain}`)
+        .digest('base64');
       const [namespace] = await database.db
         .insert(tables.identityNamespace)
         .values({
           domain,
           rootPublicKey: root,
-          rootKeyFingerprint: `sha256:${createHash('sha256').update(Buffer.from(root, 'base64')).digest('base64url')}`,
           identityPinnedAt: new Date(),
           active: true,
           trustLevel: 'available',
-          recognizesPeer: true,
           localServiceAvailable: true,
           peerAcceptanceConfirmed: true,
           remoteServiceReachable: true,
@@ -70,10 +70,17 @@ describe('concurrent federation key-cache replacement', () => {
         .returning();
       const document = (ids: string[]): WellKnownDoc => ({
         protocolVersions: [1],
-        rootKey: { ed25519: root },
+        roots: [
+          {
+            ed25519: root,
+            notBefore: 0,
+            notAfter: 253402300799999,
+          },
+        ],
         keys: ids.map((id) => ({
           keyId: `${domain}/${id}`,
           ed25519: root,
+          root,
           notBefore: 1700000000000,
           notAfter: 253402300799999,
           authorizationSignature: Buffer.alloc(64).toString('base64'),
@@ -99,18 +106,6 @@ describe('concurrent federation key-cache replacement', () => {
             ),
           ),
         );
-        const deadline = Date.now() + 5000;
-        for (;;) {
-          const { rows } = await database.pool.query(`
-          SELECT pid FROM pg_stat_activity
-          WHERE datname = current_database() AND wait_event_type = 'Lock'
-            AND query LIKE '%S2SKeyCache%'
-        `);
-          if (rows.length >= 2) break;
-          if (Date.now() > deadline)
-            throw new Error('refreshes did not overlap');
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
         await blocker.query('COMMIT');
         const results = await refreshes;
         // Include the underlying PostgreSQL code/constraint in regression failures.

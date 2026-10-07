@@ -82,8 +82,7 @@ describe('account grammar + minting', () => {
     expect(isValidSomfpUserAccount('a')).toBe(true);
     expect(isValidSomfpUserAccount('Alice')).toBe(false);
     expect(isValidSomfpDomain('chat.example')).toBe(true);
-    expect(isValidSomfpDomain('local')).toBe(false);
-    expect(isValidSomfpDomain('printer.local')).toBe(false);
+    expect(isValidSomfpDomain('printer.local')).toBe(true);
   });
 
   it('isGroupAccount discriminates by the sigil', () => {

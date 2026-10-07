@@ -1,4 +1,5 @@
 import { UserService } from '../src/user/user.service.js';
+import { localIdentityDomain } from './support/local-domain.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, eq, or, sql } from 'drizzle-orm';
@@ -44,7 +45,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     expect(await users.findSelfProfile(owner.id)).toBeNull();
     await database.db.insert(tables.profileTable).values({
       account: owner.account,
-      domain: 'local',
+      namespaceId: 0,
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 9,
@@ -391,7 +392,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     });
     await database.db.insert(tables.profileTable).values({
       account: f.target,
-      domain: 'local',
+      namespaceId: 0,
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 8,

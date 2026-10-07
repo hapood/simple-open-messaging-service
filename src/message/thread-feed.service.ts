@@ -11,18 +11,22 @@ import { deriveMessagePreview } from '../../shared/message-preview.js';
 interface ThreadFeedPreview {
   seq: number;
   createdAt: string;
-  sender: { account: string; namespaceId: number; profileRev: number };
+  sender: {
+    account: string;
+    profileNamespaceId: number;
+    profileRev: number;
+  };
   status: 'LIVE' | 'USER_RETRACTION' | 'MODERATION_REMOVAL';
   text?: string;
 }
 
-interface ThreadFeedState {
+export interface ThreadFeedState {
   type: 'P2P' | 'GROUP';
-  authorityNamespaceId: number;
+  publisherNamespaceId: number;
   conversationState: 'ACTIVE' | 'READ_ONLY';
   blocked: boolean;
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
-  profile: { account: string; namespaceId: number; profileRev: number };
+  profileAccount: string;
   alias: string | null;
   threadId: number;
   threadFeedId: number;
@@ -32,8 +36,7 @@ interface ThreadFeedState {
   joinRequestEndFeedId: number;
   joinRequestReadFeedId: number;
   groupInviteEndFeedId: number;
-  threadProfileRev: number;
-  profileSourceId: number | null;
+  profileRev: number;
   lastReadSeq: number;
   announcementReadFeedId: number;
   unreadCount: number;
@@ -85,27 +88,22 @@ export class ThreadFeedService {
         }
         const take = request.take ?? 100;
         const resultRows = await tx.execute<
-          Omit<ThreadFeedState, 'groupMetaFeedEndId' | 'profile'> & {
+          Omit<ThreadFeedState, 'groupMetaFeedEndId' | 'profileAccount'> & {
             groupMetaFeedEndId: number | null;
             profileAccount: string;
-            profileNamespaceId: number;
             profileRev: number;
           }
         >(sql`
         SELECT s."threadId", s."threadFeedId", s.alias, s."messageEndSeq", s."tombstoneEndSeq",
                s."groupMetaFeedEndId", s."joinRequestEndFeedId",
                s."joinRequestReadFeedId", s."groupInviteEndFeedId",
-               s."threadProfileRev", s."profileSourceId", s."lastReadSeq", s."announcementReadFeedId",
-               s."unreadCount", s."lastMentionSeq", t.type, t."authorityNamespaceId",
+               s."threadProfileRev" AS "profileRev", s."lastReadSeq", s."announcementReadFeedId",
+               s."unreadCount", s."lastMentionSeq", t.type, t."authorityNamespaceId" AS "publisherNamespaceId",
                CASE WHEN pair.active THEN 'ACTIVE' ELSE 'READ_ONLY' END AS "conversationState",
                s.blocked, CASE WHEN pair.active THEN s.role ELSE NULL END AS role,
                CASE WHEN t.type = 'GROUP' THEN t."groupAccount"
                  WHEN pair."endpointAAccount" = self.account
-                   THEN pair."endpointBAccount" ELSE pair."endpointAAccount" END AS "profileAccount",
-               CASE WHEN t.type = 'GROUP' THEN t."authorityNamespaceId"
-                 WHEN pair."endpointAAccount" = self.account
-                   THEN pair."endpointBNamespaceId" ELSE pair."endpointANamespaceId" END AS "profileNamespaceId",
-               s."threadProfileRev" AS "profileRev"
+                   THEN pair."endpointBAccount" ELSE pair."endpointAAccount" END AS "profileAccount"
         FROM "AccountThreadState" s
         JOIN "Account" self ON self.id = s."accountId"
         JOIN "MessageThread" t ON t.id = s."threadId"
@@ -114,10 +112,6 @@ export class ThreadFeedService {
             AND pair."endpointANamespaceId" = 0)
             OR (pair."endpointBType" = 'USER' AND pair."endpointBAccount" = self.account
               AND pair."endpointBNamespaceId" = 0))
-        LEFT JOIN "IdentityNamespace" peer_ns
-          ON peer_ns.id = CASE WHEN t.type = 'GROUP' THEN t."authorityNamespaceId"
-            WHEN pair."endpointAAccount" = self.account
-              THEN pair."endpointBNamespaceId" ELSE pair."endpointANamespaceId" END
         WHERE s."accountId" = ${accountId}
           AND s."threadFeedId" > ${request.after} AND s."threadFeedId" <= ${through}
         ORDER BY s."threadFeedId" LIMIT ${take + 1}`);
@@ -125,13 +119,9 @@ export class ThreadFeedService {
         const items: ThreadFeedState[] = resultRows.rows
           .slice(0, take)
           .map(
-            ({ profileAccount, profileNamespaceId, profileRev, ...item }) => ({
+            ({ profileAccount, ...item }) => ({
               ...item,
-              profile: {
-                account: profileAccount,
-                namespaceId: profileNamespaceId,
-                profileRev,
-              },
+              profileAccount,
               groupMetaFeedEndId:
                 item.groupMetaFeedEndId === null
                   ? null
@@ -153,7 +143,7 @@ export class ThreadFeedService {
                 createdAt: new Date(preview.createdAt).toISOString(),
                 sender: {
                   account: preview.creatorAccount,
-                  namespaceId: preview.profileNamespaceId,
+                  profileNamespaceId: preview.profileNamespaceId,
                   profileRev: preview.profileRev,
                 },
                 status: preview.isDeleted ? preview.deletionType! : 'LIVE',

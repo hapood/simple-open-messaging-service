@@ -126,7 +126,11 @@
       "allOf": [
         {
           "if": { "required": ["quoteTarget"] },
-          "then": { "properties": { "contentType": { "const": "PURE_TEXT" } } }
+          "then": {
+            "properties": {
+              "contentType": { "not": { "const": "SYSTEM" } }
+            }
+          }
         }
       ],
       "additionalProperties": false

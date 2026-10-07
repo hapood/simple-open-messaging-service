@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq } from 'drizzle-orm';
 import { BusinessException } from '../src/common/business.exception.js';
@@ -62,17 +64,18 @@ describe('message report workflow', () => {
       .values([
         {
           account: 'reporter',
-          domain: 'local',
+          namespaceId: 0,
           updatedAt: now,
         },
         {
           account: 'creator',
-          domain: 'local',
+          namespaceId: 0,
           updatedAt: now,
         },
         {
           account: 'moderator',
-          domain: 'local',
+          domain: localIdentityDomain(),
+          namespaceId: 0,
           updatedAt: now,
         },
       ])
@@ -102,28 +105,30 @@ describe('message report workflow', () => {
       creatorId,
       threadId,
     );
-    await database.db.insert(message).values([
-      {
-        seq: 1,
-        threadId,
-        creatorAccount: 'creator',
-        creatorDomain: 'local',
-        originSeq: 1,
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'first' }),
-        updatedAt: now,
-      },
-      {
-        seq: 2,
-        threadId,
-        creatorAccount: 'creator',
-        creatorDomain: 'local',
-        originSeq: 2,
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'second' }),
-        updatedAt: now,
-      },
-    ]);
+    await database.db.insert(message).values(
+      withMessageDigest([
+        {
+          seq: 1,
+          threadId,
+          creatorAccount: 'creator',
+
+          originSeq: 1,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'first' }),
+          updatedAt: now,
+        },
+        {
+          seq: 2,
+          threadId,
+          creatorAccount: 'creator',
+
+          originSeq: 2,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'second' }),
+          updatedAt: now,
+        },
+      ]),
+    );
   });
 
   it('deduplicates concurrent reports without updating an active row or retaining a reporter', async () => {
@@ -171,7 +176,6 @@ describe('message report workflow', () => {
         .set({
           contentType,
           creatorAccount: contentType === 'SYSTEM' ? '$system' : 'creator',
-          creatorDomain: 'local',
         })
         .where(eq(message.threadId, threadId));
       await expect(

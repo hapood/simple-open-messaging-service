@@ -1,7 +1,7 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../common/public.decorator.js';
-import { Throttle, ThrottleGuard } from '../auth/throttle.guard.js';
+import { Throttle, ThrottleGuard } from '../rate-limit/throttle.guard.js';
 import { ClientCompatService } from './client-compat.service.js';
 import { ClientCompatDto } from './client-compat.dto.js';
 

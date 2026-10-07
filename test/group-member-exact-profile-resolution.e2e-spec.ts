@@ -7,6 +7,10 @@ import * as tables from '../src/database/schema.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
 import { ProfileResolutionCoordinatorService } from '../src/profile-resolution/profile-resolution-coordinator.service.js';
+import {
+  ProfileLookup,
+  type ProfileClientResolutionDemand,
+} from '../src/profile-resolution/profile-resolution-demand.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 
 describe('exact profile completion for a federated group member', () => {
@@ -20,7 +24,13 @@ describe('exact profile completion for a federated group member', () => {
   const domain = 'member-profile-origin.test';
   const account = 'exact-profile-member';
   const viewer = 'exact-profile-viewer';
-  const selector = { type: 'EXACT' as const, account, domain, rev: 2 };
+  const selector = () =>
+    ({
+      publisherNamespaceId: namespaceId,
+      lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
+      groupAccount: '!exact-profile-group',
+      target: { profileNamespaceId: namespaceId, account, rev: 2 },
+    }) satisfies ProfileClientResolutionDemand;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -52,7 +62,7 @@ describe('exact profile completion for a federated group member', () => {
       kind: 'GROUP_MEMBER',
       threadId,
       active: true,
-      endpointAType: 'GROUP',
+      endpointAType: 'USER',
       endpointAAccount: viewer,
       endpointANamespaceId: 0,
       endpointBType: 'GROUP',
@@ -63,19 +73,39 @@ describe('exact profile completion for a federated group member', () => {
       threadId,
       feedId: 1,
       memberAccount: account,
-      memberDomain: domain,
+      profileNamespaceId: namespaceId,
       operation: 'MEMBER_UPSERT',
-      body: { role: 'OWNER', profileRev: 2 },
+      body: { role: 'OWNER', profileNamespaceId: namespaceId, profileRev: 2 },
     });
     await database.db.insert(tables.profileTable).values(
       [1, 2].map((profileRev) => ({
         account,
-        domain,
-        namespaceId,
+        publisherNamespaceId: namespaceId,
+        profileNamespaceId: namespaceId,
         profileRev,
         displayName: profileRev === 2 ? 'Updated member' : 'Historical member',
       })),
     );
+    await database.db.insert(tables.accountThreadState).values({
+      accountId: viewerId,
+      threadId,
+      messageEndSeq: 1,
+      role: 'MEMBER',
+    });
+    await database.db.insert(tables.message).values({
+      threadId,
+      seq: 1,
+      originSeq: 1,
+      originServerTime: new Date(),
+      publisherNamespaceId: namespaceId,
+      creatorAccount: account,
+      profileNamespaceId: namespaceId,
+      profileRev: 2,
+      contentType: 'PURE_TEXT',
+      content: JSON.stringify({ text: 'member proof' }),
+      payloadDigest: 'profile-proof',
+      updatedAt: new Date(),
+    });
     subject = new ProfileResolutionCoordinatorService(
       database,
       new FederationProfileService(database, {} as never, {} as never),
@@ -88,28 +118,39 @@ describe('exact profile completion for a federated group member', () => {
 
   it('allows the event-driven exact read of a roster-authorized snapshot', async () => {
     await expect(
-      subject.start(viewerId, {
-        type: 'GROUP_META',
-        threadId,
-        profileRev: 2,
-        subject: { type: 'MEMBER', account, domain },
+      subject.start(viewerId, 0, {
+        publisherNamespaceId: namespaceId,
+        lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
+        groupAccount: '!exact-profile-group',
+        target: { profileNamespaceId: namespaceId, account, rev: 2 },
       }),
     ).resolves.toMatchObject({
       status: 'READY',
-      profile: { namespaceId, rev: 2 },
+      profile: { profileNamespaceId: namespaceId, rev: 2 },
     });
-    await expect(subject.start(viewerId, selector)).resolves.toMatchObject({
-      status: 'READY',
-      profile: { namespaceId, rev: 2, name: 'Updated member' },
-    });
+    await expect(subject.start(viewerId, 0, selector())).resolves.toMatchObject(
+      {
+        status: 'READY',
+        profile: {
+          profileNamespaceId: namespaceId,
+          rev: 2,
+          name: 'Updated member',
+        },
+      },
+    );
   });
 
   it('does not disclose a cached snapshot to an unrelated viewer or a revision absent from the roster', async () => {
-    await expect(subject.start(outsiderId, selector)).rejects.toMatchObject({
+    await expect(
+      subject.start(outsiderId, 0, selector()),
+    ).rejects.toMatchObject({
       bizCode: BusinessCode.NOT_FOUND,
     });
     await expect(
-      subject.start(viewerId, { ...selector, rev: 1 }),
+      subject.start(viewerId, 0, {
+        ...selector(),
+        target: { ...selector().target, rev: 1 },
+      }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
   });
 
@@ -119,7 +160,9 @@ describe('exact profile completion for a federated group member', () => {
       .set({ active: false })
       .where(eq(tables.relationshipPair.threadId, threadId));
     try {
-      await expect(subject.start(viewerId, selector)).rejects.toMatchObject({
+      await expect(
+        subject.start(viewerId, 0, selector()),
+      ).rejects.toMatchObject({
         bizCode: BusinessCode.NOT_FOUND,
       });
     } finally {
@@ -137,10 +180,15 @@ describe('exact profile completion for a federated group member', () => {
     );
     await database.db
       .update(tables.groupMetaMemberFeed)
-      .set({ operation: 'MEMBER_DEPART', body: {} })
+      .set({
+        operation: 'MEMBER_DEPART',
+        body: { role: 'OWNER', profileNamespaceId: namespaceId, profileRev: 2 },
+      })
       .where(member);
     try {
-      await expect(subject.start(viewerId, selector)).rejects.toMatchObject({
+      await expect(
+        subject.start(viewerId, 0, selector()),
+      ).rejects.toMatchObject({
         bizCode: BusinessCode.NOT_FOUND,
       });
     } finally {
@@ -148,7 +196,11 @@ describe('exact profile completion for a federated group member', () => {
         .update(tables.groupMetaMemberFeed)
         .set({
           operation: 'MEMBER_UPSERT',
-          body: { role: 'OWNER', profileRev: 2 },
+          body: {
+            role: 'OWNER',
+            profileNamespaceId: namespaceId,
+            profileRev: 2,
+          },
         })
         .where(member);
     }

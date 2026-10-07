@@ -321,7 +321,7 @@ describe('federation durable missed transport (two nodes)', () => {
           const received = await appB.database.query.message.findFirst({
             where: and(
               eq(message.creatorAccount, 'missedalice'),
-              eq(message.creatorDomain, FED_DOMAIN_A),
+              eq(message.profileNamespaceId, aliceAddressOnB.namespaceId),
               eq(message.contentType, 'IMAGE'),
             ),
             orderBy: (row, { desc }) => [desc(row.id)],
@@ -474,7 +474,7 @@ describe('federation durable missed transport (two nodes)', () => {
         const received = await appB.database.query.message.findFirst({
           where: and(
             eq(message.creatorAccount, 'missedalice'),
-            eq(message.creatorDomain, FED_DOMAIN_A),
+            eq(message.profileNamespaceId, aliceAddressOnB.namespaceId),
             eq(message.contentType, 'IMAGE'),
           ),
           orderBy: (row, { desc }) => [desc(row.id)],

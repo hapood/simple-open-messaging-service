@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { withMessageDigest } from './support/message-fixture.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
@@ -31,7 +32,6 @@ describe('per-peer state feed', () => {
       .insert(identityNamespace)
       .values({
         domain,
-        rootKeyFingerprint: `sha256:${domain}`,
         rootPublicKey: fakeRootPublicKey(domain),
         identityPinnedAt: new Date(),
         active: true,
@@ -116,14 +116,16 @@ describe('per-peer state feed', () => {
           },
         },
       ]);
-      await tx.insert(message).values({
-        threadId: thread.id,
-        seq: 1,
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: 'snapshot' }),
-        creatorAccount: 'snapshot-author',
-        updatedAt: new Date(),
-      });
+      await tx.insert(message).values(
+        withMessageDigest({
+          threadId: thread.id,
+          seq: 1,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'snapshot' }),
+          creatorAccount: 'snapshot-author',
+          updatedAt: new Date(),
+        }),
+      );
       await tx.insert(deletedMessage).values({
         threadId: thread.id,
         messageSeq: 1,

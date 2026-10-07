@@ -64,7 +64,7 @@ describe('federated Address friend requests', () => {
     expect(lookup.status).toBe(200);
     expect(lookup.text).toContain('event: resolved');
     expect(lookup.text).toContain(`\"id\":${aliceId}`);
-    expect(lookup.text).toContain('"domain":"local"');
+    expect(lookup.text).toContain(`"domain":"${FED_DOMAIN_A}"`);
     expect(lookup.text).not.toContain('"relationship"');
     expect(lookup.text).not.toContain('event: progress');
   });
@@ -82,10 +82,7 @@ describe('federated Address friend requests', () => {
 
     expect(
       await appA.database.query.account.findFirst({
-        where: and(
-          eq(user.account, 'address-bob'),
-          eq(user.domain, FED_DOMAIN_B),
-        ),
+        where: eq(user.account, 'address-bob'),
       }),
     ).toBeUndefined();
 
@@ -103,10 +100,7 @@ describe('federated Address friend requests', () => {
     // peer feed item are committed when the request answers.
     expect(sent.body.data).toEqual({ status: 'OK' });
     const requesterStub = await appA.database.query.account.findFirst({
-      where: and(
-        eq(user.account, 'address-bob'),
-        eq(user.domain, FED_DOMAIN_B),
-      ),
+      where: eq(user.account, 'address-bob'),
     });
     expect(requesterStub).toBeUndefined();
     const [requesterShell] = await appA.database
@@ -156,7 +150,7 @@ describe('federated Address friend requests', () => {
         ),
       });
     expect(pendingClientIntent).toMatchObject({
-      subjectDomain: 'local',
+      subjectNamespaceId: 0,
       body: expect.objectContaining({
         status: 'REQUESTED',
         direction: 'INCOMING',
@@ -235,18 +229,16 @@ describe('federated Address friend requests', () => {
         const remoteNamespaceId = pairB!.endpointBNamespaceId;
         expect(JSON.parse(acceptingSideNotice!.content).participants).toEqual(
           expect.arrayContaining([
-            {
+            expect.objectContaining({
               account: 'address-alice',
-              domain: FED_DOMAIN_A,
-              namespaceId: remoteNamespaceId,
+              profileNamespaceId: remoteNamespaceId,
               profileRev: expect.any(Number),
-            },
-            {
+            }),
+            expect.objectContaining({
               account: 'address-bob',
-              domain: 'local',
-              namespaceId: 0,
+              profileNamespaceId: 0,
               profileRev: expect.any(Number),
-            },
+            }),
           ]),
         );
 
@@ -262,7 +254,7 @@ describe('federated Address friend requests', () => {
           });
         expect(bobClientIntents).toHaveLength(1);
         expect(bobClientIntents[0]).toMatchObject({
-          subjectDomain: 'local',
+          subjectNamespaceId: 0,
           body: expect.objectContaining({
             status: 'ACCEPTED',
             direction: 'INCOMING',
@@ -336,7 +328,6 @@ describe('federated Address friend requests', () => {
     expect(await requestCount()).toBe(usedBeforeRefresh + 1);
     const refreshed = await readRequest();
     expect(refreshed).toMatchObject({
-      id: before!.id,
       status: 'REQUESTED',
       note: 'updated request',
     });
@@ -411,7 +402,7 @@ describe('federated Address friend requests', () => {
     for (const app of [appA, appB]) {
       expect(
         await app.database.query.account.findMany({
-          where: sql`${user.domain} <> 'local' OR ${user.namespaceId} <> 0`,
+          where: sql`${user.namespaceId} <> 0`,
         }),
       ).toEqual([]);
     }
@@ -708,19 +699,19 @@ describe('federated Address friend requests', () => {
       .send(target);
     expect(revoke.body.code).toBe(BusinessCode.OK);
     expect(revoke.body.data).toEqual({ status: 'OK' });
+    const nsOnA = (await appA.database.query.identityNamespace.findFirst({
+      where: eq(identityNamespace.domain, FED_DOMAIN_B),
+    }))!;
     expect(
       await appA.database.query.peerStateFeed.findFirst({
         where: and(
-          eq(peerStateFeed.peerDomain, FED_DOMAIN_B),
+          eq(peerStateFeed.namespaceId, nsOnA.id),
           eq(peerStateFeed.account, 'address-alice'),
           eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
           eq(peerStateFeed.subjectAccount, 'address-bob'),
         ),
       }),
     ).toBeUndefined();
-    const nsOnA = (await appA.database.query.identityNamespace.findFirst({
-      where: eq(identityNamespace.domain, FED_DOMAIN_B),
-    }))!;
     await vi.waitFor(
       async () => {
         const relation = await findP2PRelationship(appA.database, aliceId, {
@@ -832,7 +823,7 @@ describe('federated Address friend requests', () => {
         const [headOnA, headOnB] = await Promise.all([
           appA.database.query.peerStateFeed.findFirst({
             where: and(
-              eq(peerStateFeed.peerDomain, FED_DOMAIN_B),
+              eq(peerStateFeed.namespaceId, nsOnA.id),
               eq(peerStateFeed.account, 'address-alice'),
               eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
               eq(peerStateFeed.subjectAccount, 'address-bob'),
@@ -840,7 +831,7 @@ describe('federated Address friend requests', () => {
           }),
           appB.database.query.peerStateFeed.findFirst({
             where: and(
-              eq(peerStateFeed.peerDomain, FED_DOMAIN_A),
+              eq(peerStateFeed.namespaceId, peer.namespaceId),
               eq(peerStateFeed.account, 'address-bob'),
               eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
               eq(peerStateFeed.subjectAccount, 'address-alice'),

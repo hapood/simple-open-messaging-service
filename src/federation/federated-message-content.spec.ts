@@ -352,7 +352,7 @@ describe('federated message content projection', () => {
   });
 
   it('projects local FORWARD metadata to the unchanged wire reference', () => {
-    const bundleId = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const bundleId = 'a'.repeat(64);
     expect(
       toFederatedMessageContent(
         ContentType.FORWARD,
@@ -373,7 +373,7 @@ describe('federated message content projection', () => {
   });
 
   it('publishes an imported minimal FORWARD card idempotently', () => {
-    const imported = JSON.stringify({ bundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV' });
+    const imported = JSON.stringify({ bundleId: 'a'.repeat(64) });
 
     expect(toFederatedMessageContent(ContentType.FORWARD, imported)).toBe(
       imported,
@@ -382,7 +382,7 @@ describe('federated message content projection', () => {
       toFederatedMessageContent(
         ContentType.FORWARD,
         JSON.stringify({
-          bundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          bundleId: 'a'.repeat(64),
           unexpected: true,
         }),
       ),
@@ -401,7 +401,12 @@ describe('federated message content projection', () => {
   it('drops local quote media previews on publish and rejects them on wire input', () => {
     const local = JSON.stringify({
       text: 'hello [@Alice](somfp://user/0/alice)',
-      quote: { seq: 1, body: 'preview', image: cas(digestA) },
+      quote: {
+        seq: 1,
+        digest: 'd'.repeat(64),
+        body: 'preview',
+        image: cas(digestA),
+      },
     });
     const wire = toFederatedMessageContent(ContentType.PURE_TEXT, local);
     expect(JSON.parse(wire)).toEqual({

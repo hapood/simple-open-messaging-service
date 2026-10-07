@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import request from 'supertest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { and, eq } from 'drizzle-orm';
@@ -42,17 +44,19 @@ describe('message search pagination', () => {
     threadId = thread.id;
     await seedAcceptedRelationship(database.db, viewer.id, peer.id, threadId);
     await database.db.insert(message).values(
-      Array.from({ length: 55 }, (_, index) => ({
-        threadId,
-        seq: index + 1,
-        originSeq: index + 1,
-        contentType: ContentType.PURE_TEXT,
-        content: JSON.stringify({ text: `pagehit-${index + 1}` }),
-        creatorAccount: 'search-peer',
-        creatorDomain: 'local',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })),
+      withMessageDigest(
+        Array.from({ length: 55 }, (_, index) => ({
+          threadId,
+          seq: index + 1,
+          originSeq: index + 1,
+          contentType: ContentType.PURE_TEXT,
+          content: JSON.stringify({ text: `pagehit-${index + 1}` }),
+          creatorAccount: 'search-peer',
+
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })),
+      ),
     );
   });
 
@@ -90,85 +94,87 @@ describe('message search pagination', () => {
       .update(messageThread)
       .set({ curSeq: 60 })
       .where(eq(messageThread.id, threadId));
-    await database.db.insert(message).values([
-      {
-        threadId,
-        seq: 56,
-        originSeq: 56,
-        contentType: ContentType.PURE_TEXT,
-        content: JSON.stringify({ text: 'quote-origin-needle' }),
-        creatorAccount: 'search-peer',
-        creatorDomain: 'local',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      {
-        threadId,
-        seq: 57,
-        originSeq: 57,
-        contentType: ContentType.PURE_TEXT,
-        content: JSON.stringify({
-          text: 'reply-body',
-          quote: { seq: 56, namespaceId: 0 },
-        }),
-        creatorAccount: 'search-peer',
-        creatorDomain: 'local',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      {
-        threadId,
-        seq: 58,
-        originSeq: 58,
-        contentType: ContentType.IMAGE,
-        content: JSON.stringify({
-          url: '/uploads/msg-assets/aa/bb/' + 'a'.repeat(64),
-          w: 10,
-          h: 10,
-          size: 1,
-          name: 'image-needle.png',
-        }),
-        creatorAccount: 'search-peer',
-        creatorDomain: 'local',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      {
-        threadId,
-        seq: 59,
-        originSeq: 59,
-        contentType: ContentType.PURE_TEXT,
-        content: JSON.stringify({
-          text: '[@Mention Needle](somfp://user/search-peer%40local) hello',
-        }),
-        creatorAccount: 'search-peer',
-        creatorDomain: 'local',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-      {
-        threadId,
-        seq: 60,
-        originSeq: 60,
-        contentType: ContentType.GALLERY,
-        content: JSON.stringify({
-          items: [
-            {
-              kind: 'IMAGE',
-              url: '/uploads/msg-assets/aa/bb/' + 'a'.repeat(64),
-              size: 1,
-              w: 10,
-              h: 10,
-              name: 'gallery-needle.png',
-            },
-          ],
-        }),
-        creatorAccount: 'search-peer',
-        creatorDomain: 'local',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      },
-    ]);
+    await database.db.insert(message).values(
+      withMessageDigest([
+        {
+          threadId,
+          seq: 56,
+          originSeq: 56,
+          contentType: ContentType.PURE_TEXT,
+          content: JSON.stringify({ text: 'quote-origin-needle' }),
+          creatorAccount: 'search-peer',
+
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          threadId,
+          seq: 57,
+          originSeq: 57,
+          contentType: ContentType.PURE_TEXT,
+          content: JSON.stringify({
+            text: 'reply-body',
+            quote: { seq: 56, domain: localIdentityDomain(), namespaceId: 0 },
+          }),
+          creatorAccount: 'search-peer',
+
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          threadId,
+          seq: 58,
+          originSeq: 58,
+          contentType: ContentType.IMAGE,
+          content: JSON.stringify({
+            url: '/uploads/msg-assets/aa/bb/' + 'a'.repeat(64),
+            w: 10,
+            h: 10,
+            size: 1,
+            name: 'image-needle.png',
+          }),
+          creatorAccount: 'search-peer',
+
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          threadId,
+          seq: 59,
+          originSeq: 59,
+          contentType: ContentType.PURE_TEXT,
+          content: JSON.stringify({
+            text: '[@Mention Needle](somfp://user/search-peer%40local) hello',
+          }),
+          creatorAccount: 'search-peer',
+
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          threadId,
+          seq: 60,
+          originSeq: 60,
+          contentType: ContentType.GALLERY,
+          content: JSON.stringify({
+            items: [
+              {
+                kind: 'IMAGE',
+                url: '/uploads/msg-assets/aa/bb/' + 'a'.repeat(64),
+                size: 1,
+                w: 10,
+                h: 10,
+                name: 'gallery-needle.png',
+              },
+            ],
+          }),
+          creatorAccount: 'search-peer',
+
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]),
+    );
     const find = async (keyword: string) =>
       (
         await request(app.getHttpServer())

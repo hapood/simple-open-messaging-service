@@ -11,10 +11,8 @@ import { BusinessCode } from '../common/business-code.js';
 import { S2sResponseError } from '../federation/federation-errors.js';
 import { parseCallEndedContent } from '../../shared/call-ended-content.js';
 import type { CallOutcome } from '../../shared/call-ended-content.js';
-import type {
-  S2SCallFrame,
-  S2SAddress,
-} from '../federation/federation.service.js';
+import type { S2SCallFrame } from './federated-call-protocol.js';
+import type { S2SAddress } from '../federation/federation-address.js';
 
 vi.mock('../federation/federation.config.js', () => ({
   loadFederationConfig: () => ({ domain: 'local.test' }),
@@ -46,6 +44,9 @@ function mkMocks() {
                 avatar: 'a.webp',
               });
             }),
+          },
+          identityNamespace: {
+            findFirst: vi.fn().mockResolvedValue({ domain: 'local' }),
           },
         },
         delete: vi.fn(() => ({
@@ -80,7 +81,7 @@ function mkMocks() {
       observe: vi.fn().mockResolvedValue(undefined),
       finish: vi.fn().mockResolvedValue(undefined),
     },
-    federation: { sendCallFrame: vi.fn().mockResolvedValue(undefined) },
+    federation: { sendFrame: vi.fn().mockResolvedValue(undefined) },
     quota: {
       tick: vi.fn().mockResolvedValue(undefined),
       peek: vi.fn().mockResolvedValue(undefined),
@@ -836,7 +837,7 @@ describe('CallsService ringing timeout', () => {
   });
 });
 
-/** Build an inbound S2SCallFrame (the wire shape FederationService resolves + emits on
+/** Build an inbound S2SCallFrame (the wire shape the call bridge resolves + emits on
  *  'call.frame.inbound'). Defaults describe S_B's server ringing OUR local user (alice@aaa.local).
  *  Overrides are loose (payload as a free record, callType allowed on any op) because several tests
  *  construct frames that are intentionally malformed — the service must reject them at runtime. */
@@ -945,7 +946,7 @@ describe('CallsService federated initiate (outbound)', () => {
       callType: 'VIDEO',
     });
     expect(res).toEqual({ callSid: 'cs1', threadId: 10 });
-    expect(m.federation.sendCallFrame).toHaveBeenCalledWith(
+    expect(m.federation.sendFrame).toHaveBeenCalledWith(
       expect.objectContaining({
         op: 'incoming',
         fromLocalUserId: 1,
@@ -954,7 +955,7 @@ describe('CallsService federated initiate (outbound)', () => {
       'bbb.local',
     );
     expect(
-      (m.federation.sendCallFrame.mock.calls[0][0] as { to: S2SAddress }).to,
+      (m.federation.sendFrame.mock.calls[0][0] as { to: S2SAddress }).to,
     ).toEqual({ account: 'bob', domain: 'bbb.local' });
     // No local ring — the foreign callee is rung on its own server.
     expect(m.sse.onCallEvent).not.toHaveBeenCalled();
@@ -976,7 +977,7 @@ describe('CallsService federated initiate (outbound)', () => {
         avatar: '',
       },
     ]);
-    m.federation.sendCallFrame.mockRejectedValueOnce(
+    m.federation.sendFrame.mockRejectedValueOnce(
       new S2sResponseError('busy', 200, BusinessCode.CALL_BUSY),
     );
     await expect(
@@ -987,8 +988,8 @@ describe('CallsService federated initiate (outbound)', () => {
       }),
     ).rejects.toSatisfy((e: unknown) => bizCode(e) === BusinessCode.CALL_BUSY);
     expect(lastBubbleContent(m)?.outcome).toBe('unreachable');
-    expect(m.federation.sendCallFrame).toHaveBeenCalledOnce();
-    m.federation.sendCallFrame.mockResolvedValue(undefined);
+    expect(m.federation.sendFrame).toHaveBeenCalledOnce();
+    m.federation.sendFrame.mockResolvedValue(undefined);
     await expect(
       svc.initiate(1, { callSid: 'retry', threadId: 10, callType: 'AUDIO' }),
     ).resolves.toBeDefined();
@@ -1005,7 +1006,7 @@ describe('CallsService federated initiate (outbound)', () => {
         avatar: '',
       },
     ]);
-    m.federation.sendCallFrame.mockRejectedValue(new Error('network down'));
+    m.federation.sendFrame.mockRejectedValue(new Error('network down'));
     await expect(
       svc.initiate(1, { callSid: 'cs1', threadId: 10, callType: 'AUDIO' }),
     ).rejects.toSatisfy(
@@ -1019,7 +1020,7 @@ describe('CallsService federated initiate (outbound)', () => {
       profileRev: 0,
     });
     // Slots released → a fresh call can start.
-    m.federation.sendCallFrame.mockResolvedValue(undefined);
+    m.federation.sendFrame.mockResolvedValue(undefined);
     await expect(
       svc.initiate(1, { callSid: 'csX', threadId: 10, callType: 'AUDIO' }),
     ).resolves.toBeDefined();
@@ -1036,7 +1037,7 @@ describe('CallsService federated initiate (outbound)', () => {
         avatar: '',
       },
     ]);
-    m.federation.sendCallFrame.mockRejectedValue(
+    m.federation.sendFrame.mockRejectedValue(
       new Error('connect failed', { cause: { code: 'ECONNREFUSED' } }),
     );
     await expect(
@@ -1044,7 +1045,7 @@ describe('CallsService federated initiate (outbound)', () => {
     ).rejects.toSatisfy(
       (e: unknown) => bizCode(e) === BusinessCode.CALL_PEER_UNREACHABLE,
     );
-    expect(m.federation.sendCallFrame).toHaveBeenCalledOnce();
+    expect(m.federation.sendFrame).toHaveBeenCalledOnce();
     expect(lastBubbleContent(m)?.outcome).toBe('unreachable');
     expect(m.sse.onCallEvent).not.toHaveBeenCalled();
   });
@@ -1067,11 +1068,11 @@ describe('CallsService federated initiate (outbound)', () => {
         threadId: 10,
         callType: 'AUDIO',
       });
-      m.federation.sendCallFrame.mockClear();
+      m.federation.sendFrame.mockClear();
 
       await vi.advanceTimersByTimeAsync(60_000);
 
-      expect(m.federation.sendCallFrame).toHaveBeenCalledWith(
+      expect(m.federation.sendFrame).toHaveBeenCalledWith(
         expect.objectContaining({ op: 'cancelled', callSid: 'cs1' }),
         'bbb.local',
       );
@@ -1090,11 +1091,11 @@ describe('CallsService federated initiate (outbound)', () => {
         frame: mkFrame(),
       });
       await svc.accept(2, 'cs1');
-      m.federation.sendCallFrame.mockClear();
+      m.federation.sendFrame.mockClear();
 
       await vi.advanceTimersByTimeAsync(45_000);
 
-      expect(m.federation.sendCallFrame).toHaveBeenCalledWith(
+      expect(m.federation.sendFrame).toHaveBeenCalledWith(
         expect.objectContaining({
           op: 'ended',
           callSid: 'cs1',
@@ -1128,12 +1129,12 @@ describe('CallsService federated initiate (outbound)', () => {
       localUserId: 1,
       frame: mkFrame({ op: 'accepted' }),
     });
-    m.federation.sendCallFrame.mockClear();
+    m.federation.sendFrame.mockClear();
     m.sse.onCallEvent.mockClear();
 
     await svc.connected(1, 'cs1');
 
-    expect(m.federation.sendCallFrame).not.toHaveBeenCalled();
+    expect(m.federation.sendFrame).not.toHaveBeenCalled();
     expect(m.sse.onCallEvent).not.toHaveBeenCalled();
   });
 });
@@ -1658,7 +1659,7 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     await inbound(svc, { localUserId: 2, frame: mkFrame() });
     await svc.decline(2, 'cs1');
     const signatureExpiresAtSec = 1_700_000_300;
-    expect(m.federation.sendCallFrame).toHaveBeenCalledWith(
+    expect(m.federation.sendFrame).toHaveBeenCalledWith(
       expect.objectContaining({
         op: 'declined',
         signatureExpiresAtSec,

@@ -77,7 +77,6 @@ export class S2sSignatureGuard implements CanActivate {
         id: true,
         domain: true,
         trustLevel: true,
-        recognizesPeer: true,
         localServiceAvailable: true,
         haltCode: true,
       },
@@ -136,7 +135,7 @@ export class S2sSignatureGuard implements CanActivate {
         HttpStatus.CONFLICT,
       );
     }
-    if (!peer.recognizesPeer || !peer.localServiceAvailable) {
+    if (!peer.localServiceAvailable) {
       throw new BusinessException(
         BusinessCode.FEDERATION_RECOGNITION_REQUIRED,
         `${signerDomain} is not recognized`,

@@ -5,14 +5,17 @@ import { CallHistoryService } from './call-history.service.js';
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { PushModule } from '../push/push.module.js';
 import { AccountThreadStateModule } from '../account-thread-state/account-thread-state.module.js';
+import { FederationModule } from '../federation/federation.module.js';
+import { QuotaModule } from '../quota/quota.module.js';
 
 @Module({
   // GatewayModule → SseService, PushModule → PushService, AccountThreadStateModule →
   // AccountThreadStateService. CallHistoryService owns local terminal persistence.
   // EventEmitterModule is NOT global (only forRoot() lives in AppModule) — imported here so the
   // @OnEvent('call.frame.inbound') handler on CallsService is discovered (the inbound S2S bridge).
-  // FederationService + QuotaService + DatabaseService are all @Global — no
-  // import needed. CallsService is exported so CallsController — registered in AppModule per the
+  // FederationModule provides FederationCallBridgeService; QuotaModule provides QuotaService. Only
+  // DatabaseService remains global. CallsService is exported so CallsController — registered in
+  // AppModule per the
   // codebase convention (controllers live in AppModule.controllers[], not their feature module) —
   // can inject it.
   imports: [
@@ -20,6 +23,8 @@ import { AccountThreadStateModule } from '../account-thread-state/account-thread
     GatewayModule,
     PushModule,
     AccountThreadStateModule,
+    FederationModule,
+    QuotaModule,
   ],
   providers: [CallsService, CallHistoryService],
   exports: [CallsService],

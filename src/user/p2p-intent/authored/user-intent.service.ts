@@ -109,6 +109,7 @@ const validated = Symbol('validated user intent decision');
 
 interface LocatorRow extends Record<string, unknown> {
   actorAccount: string;
+  actorDomain: string;
   actorAvailability: string;
   actorDisabledAt: string | null;
   pairId: string | null;
@@ -253,7 +254,7 @@ export class UserIntentService {
     // active namespace, exactly as before.
     let effectiveDomain = targetDomain;
     let targetNamespaceId: number;
-    if (targetDomain === 'local') {
+    if (params.target.namespaceId === 0) {
       targetNamespaceId = 0;
     } else if (params.target.namespaceId !== undefined) {
       try {
@@ -306,14 +307,14 @@ export class UserIntentService {
         BusinessCode.UNAUTHENTICATED,
         'authenticated user does not exist',
       );
-    if (targetDomain === 'local' && targetAccount === located.actorAccount)
+    if (targetNamespaceId === 0 && targetAccount === located.actorAccount)
       return this.reject(
         'SELF_TARGET',
         BusinessCode.FRIEND_SELF,
         'can not request a relationship with yourself',
       );
     if (
-      targetDomain === 'local' &&
+      targetNamespaceId === 0 &&
       (located.localTargetId === null ||
         located.localTargetAvailability !== 'AVAILABLE' ||
         located.localTargetDisabledAt !== null)
@@ -336,7 +337,7 @@ export class UserIntentService {
 
     const actor: Endpoint = {
       account: located.actorAccount,
-      domain: 'local',
+      domain: located.actorDomain,
       namespaceId: 0,
     };
     const target: Endpoint = {
@@ -350,7 +351,7 @@ export class UserIntentService {
     // intent and relationship-derived projections are protected by the Pair.
     await lockBusinessAccountsInTx(tx, [
       { account: actor.account, profileNamespaceId: 0 },
-      ...(target.domain === 'local'
+      ...(target.namespaceId === 0
         ? [{ account: target.account, profileNamespaceId: 0 }]
         : []),
     ]);
@@ -358,8 +359,8 @@ export class UserIntentService {
       {
         kind: 'P2P',
         addresses: [
-          completeBusinessAddress(actor.account, 'local'),
-          completeBusinessAddress(target.account, target.domain),
+          completeBusinessAddress(actor.account, 0),
+          completeBusinessAddress(target.account, target.namespaceId),
         ],
       },
     ]);
@@ -383,7 +384,7 @@ export class UserIntentService {
             tx,
             pairId,
             located.pairThreadId,
-            targetDomain === 'local' ? 0 : targetNamespaceId,
+            targetNamespaceId,
           );
     const threadLock = await requireP2PThreadContentLockUnderPairInTx(
       tx,
@@ -423,7 +424,7 @@ export class UserIntentService {
       return { staleAuthorization: true };
     // Peer feed allocators precede every operation that may allocate from a
     // local Account state-feed counter, including AccountThreadState triggers.
-    if (target.domain !== 'local')
+    if (target.namespaceId !== 0)
       await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
         { namespaceId: targetNamespaceId },
       ]);
@@ -483,7 +484,7 @@ export class UserIntentService {
     row: UserIntentAuthorizationRow,
   ): ValidatedIntent | NoOpIntent | RejectedIntent {
     if (reverseEffective(row)) return this.validateAcceptanceInTx(base, row);
-    if (row.localTargetId === null && base.target.domain === 'local')
+    if (row.localTargetId === null && base.target.namespaceId === 0)
       return this.reject(
         'TARGET_NOT_FOUND',
         BusinessCode.NOT_FOUND,
@@ -528,7 +529,7 @@ export class UserIntentService {
           ? 'request has expired'
           : 'request not found',
       );
-    if (row.localTargetId === null && base.target.domain === 'local')
+    if (row.localTargetId === null && base.target.namespaceId === 0)
       return this.reject(
         'TARGET_NOT_FOUND',
         BusinessCode.NOT_FOUND,
@@ -646,7 +647,7 @@ export class UserIntentService {
     }>(userIntentAcceptanceSql(context.input));
     // The remote source activates from its retained authored snapshot, inside
     // this transaction and under the lock already held (gap recovery included).
-    if (context.target.domain !== 'local')
+    if (context.target.namespaceId !== 0)
       await initializeRelationshipThreadStateInTx(
         context.tx,
         context.threadId,
@@ -684,8 +685,8 @@ export class UserIntentService {
           decision: 'REVOKED',
           target: {
             account: context.actor.account,
-            domain: 'local',
-            namespaceId: 0,
+            domain: context.actor.domain,
+            namespaceId: context.actor.namespaceId,
           },
         },
         clientUpdates,
@@ -726,7 +727,7 @@ export class UserIntentService {
       ...(await captureThreadStateUpdatesInTx(context.tx, ids)),
     );
     const peers = new Map<number, bigint>();
-    if (context.target.domain !== 'local' && row.peerFeedId !== null)
+    if (context.target.namespaceId !== 0 && row.peerFeedId !== null)
       peers.set(context.target.namespaceId, BigInt(row.peerFeedId));
     return peers;
   }

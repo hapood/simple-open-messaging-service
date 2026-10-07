@@ -1,11 +1,12 @@
-import { isThreadStateSnapshot, type ThreadStateSnapshot } from './thread-state';
+import { isThreadStateSnapshot, type ThreadStateSnapshot } from './thread-state.js';
 
 /** One complete conversation snapshot. Its account-scoped ID orders visible thread-list items. */
 export interface ThreadFeedSnapshot extends ThreadStateSnapshot {
   threadFeedId: number;
+  threadId: number;
   /** Private label owned by this account. Null restores the canonical name. */
   alias: string | null;
-  threadProfileRev: number;
+  profileRev: number;
   messageEndSeq: number;
   tombstoneEndSeq: number;
   /** Canonical Group Meta coordinate; null for P2P threads. */
@@ -26,8 +27,7 @@ export interface ThreadFeedSnapshot extends ThreadStateSnapshot {
     createdAt: string;
     sender: {
       account: string;
-      domain: string;
-      namespaceId: number;
+      profileNamespaceId: number;
       profileRev: number;
     };
     status: 'LIVE' | 'USER_RETRACTION' | 'MODERATION_REMOVAL';
@@ -65,9 +65,7 @@ export function mergeThreadAttention(
     throw new Error('Invalid thread alias');
   coordinate(incoming.threadId, 'threadId', 1);
   coordinate(incoming.threadFeedId, 'feed ID', 1);
-  coordinate(incoming.threadProfileRev, 'profile revision');
-  if (incoming.profile.profileRev !== incoming.threadProfileRev)
-    throw new Error('Inconsistent thread profile revision');
+  coordinate(incoming.profileRev, 'profile revision');
   coordinate(incoming.messageEndSeq, 'message end');
   coordinate(incoming.tombstoneEndSeq, 'tombstone end');
   coordinate(incoming.joinRequestEndFeedId, 'join request end');

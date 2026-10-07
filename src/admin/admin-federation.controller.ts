@@ -26,11 +26,12 @@ import { BusinessException } from '../common/business.exception.js';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { identityNamespace } from '../database/schema.js';
-import { FederationService } from '../federation/federation.service.js';
+import { FederationPeerLifecycle } from '../federation/federation-peer-lifecycle.js';
 import { FederationSelfCheckService } from './federation-self-check.service.js';
 import { FederationResetService } from './federation-reset.service.js';
 import { FederationNamespaceAdminService } from './federation-namespace-admin.service.js';
 import { KeypairService } from '../federation/keypair.service.js';
+import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
 
 /**
  * Federation trust-lifecycle admin endpoints. Read-only observability of the peer trust state,
@@ -49,12 +50,13 @@ import { KeypairService } from '../federation/keypair.service.js';
 @Controller()
 export class AdminFederationController {
   constructor(
-    private readonly federationService: FederationService,
+    private readonly peerLifecycle: FederationPeerLifecycle,
     private readonly selfCheckService: FederationSelfCheckService,
     private readonly resetService: FederationResetService,
     private readonly namespaceAdmin: FederationNamespaceAdminService,
     private readonly database: DatabaseService,
     private readonly keypair: KeypairService,
+    private readonly recognition: FederationRecognitionService,
   ) {}
 
   @UseGuards(AdminAuthGuard)
@@ -65,7 +67,7 @@ export class AdminFederationController {
       'Federated-peer lifecycle list (trust state + audit cols), paginated + filterable',
   })
   async listPeers(@Body() dto: AdminListFederationPeersDto) {
-    return this.federationService.listPeers({
+    return this.peerLifecycle.list({
       skip: dto.skip ?? 0,
       take: dto.take ?? 20,
       search: dto.search,
@@ -80,9 +82,9 @@ export class AdminFederationController {
     summary: 'Single federated peer detail (current lifecycle state)',
   })
   async peerDetail(@Param('domain') domain: string) {
-    // Read directly from the database rather than FederationService — the service is the S2S runtime's
-    // concern; this is a trivial current-state read for the console, and keeps the admin surface
-    // independent of the federation module's WIP.
+    // Read directly from the database rather than going through a federation service — the S2S runtime is
+    // not this surface's concern; this is a trivial current-state read for the console, and keeps the
+    // admin surface independent of the federation module's WIP.
     const peer = await this.database.db.query.identityNamespace.findFirst({
       where: eq(identityNamespace.domain, domain),
     });
@@ -246,10 +248,25 @@ export class AdminFederationController {
     @Param('domain') domain: string,
     @Body() dto: AdminFederationIdentityRecoverDto,
   ) {
-    return this.federationService.manuallyRecoverPinnedIdentity(
+    return this.peerLifecycle.manuallyRecoverPinnedIdentity(
       domain,
       dto.confirmDomain,
     );
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.SUPER_ADMIN)
+  @Audit('federation.peer.recognize', {
+    targetType: 'peer',
+    targetParam: 'domain',
+  })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/peers/:domain/recognize')
+  @ApiOperation({
+    summary: 'Start or retry outbound recognition with a federated peer',
+  })
+  async recognizePeer(@Param('domain') domain: string) {
+    return this.recognition.recognize(domain);
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -264,7 +281,7 @@ export class AdminFederationController {
     @Param('domain') domain: string,
     @Body() dto: AdminFederationBlockDto,
   ): Promise<void> {
-    await this.federationService.markBlocked(domain, dto.note);
+    await this.peerLifecycle.markBlocked(domain, dto.note);
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -280,7 +297,7 @@ export class AdminFederationController {
       'Unblock a peer domain — moves to pending; the next contact re-handshakes',
   })
   async unblockPeer(@Param('domain') domain: string): Promise<void> {
-    await this.federationService.markUnblocked(domain);
+    await this.peerLifecycle.markUnblocked(domain);
   }
 
   @UseGuards(AdminAuthGuard)

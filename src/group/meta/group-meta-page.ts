@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { HttpStatus } from '@nestjs/common';
 import { BusinessCode } from '../../common/business-code.js';
 import { BusinessException } from '../../common/business.exception.js';
-import { toClientIdentity } from '../../common/client-identity.js';
+import { validateNamespacedAddress } from '../../common/client-identity.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 
 interface GroupMetaFeedItemBase {
@@ -171,7 +171,7 @@ export async function readGroupMetaPageInTx(
       const base = {
         feedId: row.feedId,
         ...(params.viewMode === 'client'
-          ? toClientIdentity(identity)
+          ? validateNamespacedAddress(identity)
           : { account: identity.account, domain: identity.domain }),
       };
       return {

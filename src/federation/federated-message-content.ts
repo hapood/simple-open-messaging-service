@@ -1,5 +1,5 @@
 import { ContentType } from '../database/enums.js';
-import { canonicalJson, contentDigest } from './canonical-json.js';
+import { canonicalJson, payloadDigest } from './canonical-json.js';
 import { isAbsoluteLinkTarget } from '../message/link-target.js';
 import { extractDigests, MAX_FILE_NAME_LEN } from '../upload/file-content.js';
 import {
@@ -81,14 +81,14 @@ function validateContactCard(value: JsonObject): void {
   assertKeys(
     value,
     ['account', 'domain', 'displayName', 'bio'],
-    ['avatar', 'avatarDigest'],
+    ['avatar', 'avatarDigest', 'quote'],
   );
   const account = value['account'];
   if (
     typeof account !== 'string' ||
     !isValidAccount(account) ||
     typeof value['domain'] !== 'string' ||
-    !(isValidSomfpDomain(value['domain']) || value['domain'] === 'local') ||
+    !isValidSomfpDomain(value['domain']) ||
     typeof value['displayName'] !== 'string' ||
     unicodeCodePointLength(value['displayName']) < 1 ||
     unicodeCodePointLength(value['displayName']) > 31 ||
@@ -127,13 +127,53 @@ function validateForwardCard(value: JsonObject): void {
   assertKeys(value, ['bundleId']);
   if (
     typeof value['bundleId'] !== 'string' ||
-    Buffer.byteLength(value['bundleId'], 'utf8') < 1 ||
-    Buffer.byteLength(value['bundleId'], 'utf8') > 26 ||
-    value['bundleId'].includes('/') ||
-    value['bundleId'].includes('\0')
+    !/^[a-f0-9]{64}$/.test(value['bundleId'])
   ) {
     throw new Error('invalid forward card');
   }
+}
+
+function parseQuote(value: JsonObject, strict = false): JsonObject | undefined {
+  if (value['quote'] === undefined) return undefined;
+  if (
+    !value['quote'] ||
+    typeof value['quote'] !== 'object' ||
+    Array.isArray(value['quote'])
+  ) {
+    throw new Error('invalid quote');
+  }
+  const quote = value['quote'] as JsonObject;
+  assertKeys(
+    quote,
+    strict ? ['seq', 'digest'] : ['seq'],
+    strict
+      ? []
+      : [
+          'digest',
+          'namespaceId',
+          'sourceSeq',
+          'status',
+          'author',
+          'body',
+          'contentType',
+          'image',
+          'imageLabel',
+          'imageIdentity',
+          'imageSize',
+          'imageShape',
+        ],
+  );
+  if (
+    !Number.isSafeInteger(quote['seq']) ||
+    Number(quote['seq']) < 0 ||
+    (quote['digest'] !== undefined &&
+      (typeof quote['digest'] !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(quote['digest'])))
+  ) {
+    throw new Error('invalid quote');
+  }
+  if (strict) return { seq: quote['seq'], digest: quote['digest'] };
+  return quote;
 }
 
 function projectTextContent(
@@ -146,32 +186,13 @@ function projectTextContent(
   for (const segment of parseMessageEntities(value['text'])) {
     if (segment.kind !== 'entity' || segment.entityType !== 'user') continue;
     if (!parseSomfpUserMentionEntity(segment.entityId)) {
-      throw new Error('federated user mention must use a valid namespace/account entity');
+      throw new Error(
+        'federated user mention must use a valid namespace/account entity',
+      );
     }
   }
   const text = value['text'];
-  if (value['quote'] === undefined) return { text };
-  if (
-    !value['quote'] ||
-    typeof value['quote'] !== 'object' ||
-    Array.isArray(value['quote'])
-  ) {
-    throw new Error('invalid quote');
-  }
-  const quote = value['quote'] as JsonObject;
-  const allowed = ['seq', 'author', 'body', 'contentType'];
-  if (
-    !('seq' in quote) ||
-    (strictQuote && Object.keys(quote).some((key) => !allowed.includes(key)))
-  ) {
-    throw new Error('invalid quote');
-  }
-  assertSafeInteger(quote['seq']);
-  for (const field of allowed.slice(1)) {
-    if (quote[field] !== undefined && typeof quote[field] !== 'string') {
-      throw new Error('invalid quote preview');
-    }
-  }
+  if (value['quote'] !== undefined) parseQuote(value, strictQuote);
   return { text };
 }
 
@@ -184,7 +205,8 @@ function projectSingleToWire(
   extra: string[],
   optional: string[] = [],
 ): JsonObject {
-  assertKeys(value, ['url', 'size', ...extra], optional);
+  assertKeys(value, ['url', 'size', ...extra], [...optional, 'quote']);
+  parseQuote(value);
   assertSafeInteger(value['size']);
   validateSingleFields(value, [
     ...extra,
@@ -195,6 +217,7 @@ function projectSingleToWire(
     digest: digestFromUrl(value['url']),
     url: undefined,
     size: undefined,
+    quote: undefined,
     ...(extra.includes('w') ? { width: value['w'], w: undefined } : {}),
     ...(extra.includes('h') ? { height: value['h'], h: undefined } : {}),
   };
@@ -216,9 +239,7 @@ export function toFederatedMessageContent(
   const value = parseObject(content);
   switch (contentType) {
     case ContentType.PURE_TEXT:
-      return canonicalJson(
-        projectTextContent(value, false),
-      );
+      return canonicalJson(projectTextContent(value, false));
     case ContentType.IMAGE:
       validateImageName(value);
       return canonicalJson(
@@ -247,7 +268,8 @@ export function toFederatedMessageContent(
         ),
       );
     case ContentType.GALLERY: {
-      assertKeys(value, ['items']);
+      assertKeys(value, ['items'], ['quote']);
+      parseQuote(value);
       if (!Array.isArray(value['items']) || value['items'].length === 0) {
         throw new Error('gallery items are missing');
       }
@@ -279,8 +301,9 @@ export function toFederatedMessageContent(
       assertKeys(
         value,
         ['url', 'title', 'description'],
-        ['siteName', 'image', 'favicon'],
+        ['siteName', 'image', 'favicon', 'quote'],
       );
+      parseQuote(value);
       if (
         !isAbsoluteLinkTarget(value['url']) ||
         typeof value['title'] !== 'string' ||
@@ -307,6 +330,7 @@ export function toFederatedMessageContent(
     }
     case ContentType.CONTACT_CARD:
       validateContactCard(value);
+      parseQuote(value);
       if (value['avatarDigest'] !== undefined) {
         throw new Error('local contact card must not contain avatarDigest');
       }
@@ -322,15 +346,18 @@ export function toFederatedMessageContent(
     case ContentType.FORWARD:
       // Imported cards use the URL-free wire shape. Local cards additionally carry the fields used
       // by the chat renderer; both forms publish to the same minimal wire reference.
-      if (Object.keys(value).length === 1) {
-        assertKeys(value, ['bundleId']);
+      if (
+        Object.keys(value).filter((key) => key !== 'quote').length === 1
+      ) {
+        assertKeys(value, ['bundleId'], ['quote']);
+        parseQuote(value);
       } else {
-        assertKeys(value, [
-          'bundleId',
-          'summaryLines',
-          'messageCount',
-          'depth',
-        ]);
+        assertKeys(
+          value,
+          ['bundleId', 'summaryLines', 'messageCount', 'depth'],
+          ['quote'],
+        );
+        parseQuote(value);
         if (
           !Array.isArray(value['summaryLines']) ||
           !value['summaryLines'].every((line) => typeof line === 'string') ||
@@ -389,9 +416,7 @@ export function fromFederatedMessageContent(
   };
   switch (contentType) {
     case ContentType.PURE_TEXT:
-      return canonicalJson(
-        projectTextContent(value, true),
-      );
+      return canonicalJson(projectTextContent(value, true));
     case ContentType.IMAGE:
       validateImageName(value);
       return single(['width', 'height', 'name']);
@@ -476,6 +501,7 @@ export function fromFederatedMessageContent(
       });
     case ContentType.CONTACT_CARD:
       validateContactCard(value);
+      parseQuote(value);
       if (value['avatar'] !== undefined) {
         throw new Error('federated contact card must not contain avatar');
       }
@@ -546,9 +572,15 @@ export function federatedContentDigests(
  * `toFederatedMessageContent` before hashing, so the digest is independent of the local storage
  * field names and matches what every peer computes over the wire.
  */
-export function wireContentDigest(
+export function wirePayloadDigest(
   contentType: ContentType,
   content: string,
+  assets: ReadonlyArray<{ digest: string; bytes: number }> = [],
+  quoteDigest?: string,
 ): string {
-  return contentDigest(toFederatedMessageContent(contentType, content));
+  return payloadDigest(
+    toFederatedMessageContent(contentType, content),
+    assets,
+    quoteDigest,
+  );
 }

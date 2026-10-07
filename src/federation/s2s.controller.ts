@@ -15,7 +15,10 @@ import type { FastifyRequest, FastifyReply } from 'fastify';
 import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
-import { FederationService, type S2SAddress } from './federation.service.js';
+import { FederationCallBridgeService } from './federation-call-bridge.service.js';
+import { FederationProfileService } from './federation-profile.service.js';
+import { FederationPeerResourceService } from './federation-peer-resource.service.js';
+import type { S2SAddress } from './federation-address.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
@@ -46,7 +49,7 @@ import {
  * S2S endpoints (signature-guarded, allow-list gated). The guard verifies the RFC 9421 signature +
  * Active namespace trust + request integrity + captures req.rawBody, then sets req.peer.
  *
- * - POST /s2s/v1/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationService.handleCallFrame.
+ * - POST /s2s/v1/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationCallBridgeService.handleFrame.
  * - GET  /s2s/v1/state-feed — compacted profile/relationship/group state for the signed peer.
  * - POST /s2s/v1/feed-heads — an ephemeral merged state-feed / profile-namespace-feed wake-up hint.
  * - GET  /s2s/v1/profile-namespace-feed — the shared compacted identity-binding change feed.
@@ -65,7 +68,9 @@ import {
 @UseGuards(S2sSignatureGuard)
 export class S2sController {
   constructor(
-    private readonly federation: FederationService,
+    private readonly callBridge: FederationCallBridgeService,
+    private readonly profiles: FederationProfileService,
+    private readonly peerResources: FederationPeerResourceService,
     private readonly messageFeed: FederationMessageFeedService,
     private readonly messageProvenance: FederationMessageProvenanceService,
     private readonly tombstoneFeed: FederationMessageTombstoneFeedService,
@@ -453,7 +458,7 @@ export class S2sController {
     // handleCallFrame is awaitable + emits the frame to CallsService via emitAsync before returning,
     // so the 200 serializes behind the callee-side mirror setup (the caller's first `offer` cannot
     // win the race against the mirror it addresses).
-    await this.federation.handleCallFrame(
+    await this.callBridge.handleFrame(
       req.body,
       this.signerDomain(req),
       req.peer!.namespaceId,
@@ -479,10 +484,13 @@ export class S2sController {
       parsed.query.challenge,
     );
     // The endpoint serves OUR users and groups only. The account is the sole path segment;
-    // profile identity uses the publisher-local subject marker.
-    const address: S2SAddress = { account, domain: 'local' };
+    // Profile identity uses the publisher's namespace-0 domain.
+    const address: S2SAddress = {
+      account,
+      domain: this.keypair.getIdentityDomain(),
+    };
     const profile = await this.resourceOperation(() =>
-      this.federation.getLocalAccountProfile(address),
+      this.profiles.getLocalAccountProfile(address),
     );
     if (!profile) {
       // HTTP 200 + code NOT_FOUND (a missing lookup target is a business outcome, not a protocol 404);
@@ -526,7 +534,7 @@ export class S2sController {
       );
     }
     const profile = await this.resourceOperation(() =>
-      this.federation.getAuthorizedIntentProfile(
+      this.profiles.getAuthorizedIntentProfile(
         account,
         peerAccount,
         profileNamespaceId,
@@ -562,7 +570,7 @@ export class S2sController {
         HttpStatus.BAD_REQUEST,
       );
     const profile = await this.resourceOperation(() =>
-      this.federation.getAuthorizedAccountProfile(
+      this.profiles.getAuthorizedAccountProfile(
         account,
         profileNamespaceId,
         rev,
@@ -610,7 +618,7 @@ export class S2sController {
       );
     }
     const profile = await this.resourceOperation(() =>
-      this.federation.getAuthorizedGroupMemberProfile(
+      this.profiles.getAuthorizedGroupMemberProfile(
         groupAccount,
         memberAccount,
         profileNamespaceId,
@@ -761,17 +769,17 @@ export class S2sController {
 
   /** Parse and validate the `queries` array of a `POST /s2s/v1/message-provenance` request. Each
    *  query is a closed object with a `thread` (P2P `{account, peerAccount}` or GROUP `{account}`),
-   *  a positive `seq`, and a 64-character lowercase hex `contentDigest`. */
+   *  a positive `seq`, and a 64-character lowercase hex `payloadDigest`. */
   private parseProvenanceQueries(raw: unknown[]): {
     thread: { account: string; peerAccount: string } | { account: string };
     seq: number;
-    contentDigest: string;
+    payloadDigest: string;
   }[] {
     const digestRe = /^[a-f0-9]{64}$/;
     const parsed: {
       thread: { account: string; peerAccount: string } | { account: string };
       seq: number;
-      contentDigest: string;
+      payloadDigest: string;
     }[] = [];
     for (let i = 0; i < raw.length; i++) {
       const entry = raw[i];
@@ -785,12 +793,8 @@ export class S2sController {
       const e = entry as Record<string, unknown>;
       const thread = e['thread'];
       const seq = e['seq'];
-      const contentDigest = e['contentDigest'];
-      if (
-        !thread ||
-        typeof thread !== 'object' ||
-        Array.isArray(thread)
-      ) {
+      const payloadDigest = e['payloadDigest'];
+      if (!thread || typeof thread !== 'object' || Array.isArray(thread)) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
           `provenance query ${i} has an invalid thread`,
@@ -841,17 +845,18 @@ export class S2sController {
           HttpStatus.BAD_REQUEST,
         );
       }
-      if (
-        typeof contentDigest !== 'string' ||
-        !digestRe.test(contentDigest)
-      ) {
+      if (typeof payloadDigest !== 'string' || !digestRe.test(payloadDigest)) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
-          `provenance query ${i} has an invalid contentDigest`,
+          `provenance query ${i} has an invalid payloadDigest`,
           HttpStatus.BAD_REQUEST,
         );
       }
-      parsed.push({ thread: normalizedThread, seq, contentDigest });
+      parsed.push({
+        thread: normalizedThread,
+        seq,
+        payloadDigest,
+      });
     }
     return parsed;
   }
@@ -899,7 +904,7 @@ export class S2sController {
     const seq = requireSafeDecimal(parsed.query.seq, 'seq');
     const signer = this.signerDomain(req);
     const { absPath, bytes } = await this.resourceOperation(() =>
-      this.federation.resolveMediaFile(
+      this.peerResources.resolveMediaFile(
         fromAccount,
         toAccount,
         fromDomain,
@@ -986,7 +991,7 @@ export class S2sController {
     });
     const bundleId = requireBundleId(parsed.pathValue);
     return this.resourceOperation(() =>
-      this.federation.serveForwardBundleClosure(
+      this.peerResources.serveForwardBundleClosure(
         bundleId,
         this.signerDomain(req),
         req.peer!.namespaceId,

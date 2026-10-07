@@ -4,14 +4,13 @@ import { BusinessCode } from '../common/business-code.js';
 import { S2sController } from './s2s.controller.js';
 
 function target() {
-  const federation = {
+  const peerResources = {
     resolveMediaFile: vi.fn().mockResolvedValue({
       absPath: '/unused',
       bytes: 16,
     }),
-    pullStateFromPeer: vi.fn().mockResolvedValue(0n),
-    pullTombstonesFromPeer: vi.fn().mockResolvedValue(undefined),
-    pullMissedFromPeer: vi.fn().mockResolvedValue(undefined),
+  };
+  const profiles = {
     getLocalAccountProfile: vi.fn().mockResolvedValue({
       namespaceId: 0,
       account: 'alice',
@@ -90,6 +89,7 @@ function target() {
     pullFromPeer: vi.fn().mockResolvedValue(0n),
   };
   const keypair = {
+    getIdentityDomain: vi.fn().mockReturnValue('local.example'),
     openCardChallenge: vi
       .fn()
       .mockReturnValue('{"account":"alice","domain":"local.example"}'),
@@ -98,7 +98,9 @@ function target() {
     query: vi.fn(),
   };
   const controller = new S2sController(
-    federation as never,
+    {} as never, // callBridge — no inbound call-frame coverage here
+    profiles as never,
+    peerResources as never,
     messageFeed as never,
     messageProvenance as never,
     tombstoneFeed as never,
@@ -112,7 +114,8 @@ function target() {
   );
   return {
     controller,
-    federation,
+    profiles,
+    peerResources,
     messageFeed,
     tombstoneFeed,
     peerStateFeed,
@@ -171,7 +174,7 @@ function replyTarget() {
 
 describe('S2sController public account profiles', () => {
   it('uses only the account path and omits the internal namespace from the response', async () => {
-    const { controller, federation } = target();
+    const { controller, profiles } = target();
     const req = mediaRequest('');
     setRequestUrl(
       req,
@@ -187,26 +190,26 @@ describe('S2sController public account profiles', () => {
       profileRev: 5,
       proof: '{"account":"alice","domain":"local.example"}',
     });
-    expect(federation.getLocalAccountProfile).toHaveBeenCalledWith({
+    expect(profiles.getLocalAccountProfile).toHaveBeenCalledWith({
       account: 'alice',
-      domain: 'local',
+      domain: 'local.example',
     });
   });
 
   it('rejects an old namespace-bearing path', async () => {
-    const { controller, federation } = target();
+    const { controller, profiles } = target();
     const req = mediaRequest('');
     setRequestUrl(req, '/s2s/v1/accounts/0/alice');
     await expect(controller.getAccountProfile(req)).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MALFORMED,
     });
-    expect(federation.getLocalAccountProfile).not.toHaveBeenCalled();
+    expect(profiles.getLocalAccountProfile).not.toHaveBeenCalled();
   });
 });
 
 describe('S2sController intent profiles', () => {
   it('passes only the authenticated signer and exact path identity to intent authorization', async () => {
-    const { controller, federation } = target();
+    const { controller, profiles } = target();
     const req = mediaRequest('');
     setRequestUrl(req, '/s2s/v1/intent-profiles/0/%21team/alice/7');
     expect(await controller.getIntentProfile(req)).toEqual({
@@ -215,7 +218,7 @@ describe('S2sController intent profiles', () => {
       bio: '',
       avatar: null,
     });
-    expect(federation.getAuthorizedIntentProfile).toHaveBeenCalledWith(
+    expect(profiles.getAuthorizedIntentProfile).toHaveBeenCalledWith(
       '!team',
       'alice',
       0,
@@ -226,7 +229,7 @@ describe('S2sController intent profiles', () => {
   });
 
   it('rejects zero and queries without consulting stored evidence', async () => {
-    const { controller, federation } = target();
+    const { controller, profiles } = target();
     const req = mediaRequest('');
     setRequestUrl(req, '/s2s/v1/intent-profiles/0/%21team/alice/0');
     await expect(controller.getIntentProfile(req)).rejects.toMatchObject({
@@ -236,20 +239,20 @@ describe('S2sController intent profiles', () => {
     await expect(controller.getIntentProfile(req)).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_MALFORMED,
     });
-    expect(federation.getAuthorizedIntentProfile).not.toHaveBeenCalled();
+    expect(profiles.getAuthorizedIntentProfile).not.toHaveBeenCalled();
   });
 });
 
 describe('S2sController account profiles', () => {
   it('passes only the exact account/revision and authenticated signer', async () => {
-    const { controller, federation } = target();
+    const { controller, profiles } = target();
     const req = mediaRequest('');
     setRequestUrl(req, '/s2s/v1/account-profiles/0/alice/4');
     expect(await controller.getExactAccountProfile(req)).toMatchObject({
       account: 'alice',
       displayName: 'Alice',
     });
-    expect(federation.getAuthorizedAccountProfile).toHaveBeenCalledWith(
+    expect(profiles.getAuthorizedAccountProfile).toHaveBeenCalledWith(
       'alice',
       0,
       4,
@@ -259,7 +262,7 @@ describe('S2sController account profiles', () => {
   });
 
   it('rejects non-canonical paths, query and zero rev', async () => {
-    const { controller, federation } = target();
+    const { controller, profiles } = target();
     const req = mediaRequest('');
     for (const url of [
       '/s2s/v1/account-profiles/0/alice/0',
@@ -274,13 +277,13 @@ describe('S2sController account profiles', () => {
         bizCode: BusinessCode.FEDERATION_MALFORMED,
       });
     }
-    expect(federation.getAuthorizedAccountProfile).not.toHaveBeenCalled();
+    expect(profiles.getAuthorizedAccountProfile).not.toHaveBeenCalled();
   });
 });
 
 describe('S2sController group member profiles', () => {
   it('passes canonical independent path variables and authenticated signer', async () => {
-    const { controller, federation } = target();
+    const { controller, profiles } = target();
     const req = mediaRequest('');
     setRequestUrl(req, '/s2s/v1/group-member-profiles/%21team/0/alice/4');
     expect(await controller.getGroupMemberProfile(req)).toEqual({
@@ -289,7 +292,7 @@ describe('S2sController group member profiles', () => {
       bio: '',
       avatar: null,
     });
-    expect(federation.getAuthorizedGroupMemberProfile).toHaveBeenCalledWith(
+    expect(profiles.getAuthorizedGroupMemberProfile).toHaveBeenCalledWith(
       '!team',
       'alice',
       0,
@@ -300,7 +303,7 @@ describe('S2sController group member profiles', () => {
   });
 
   it('rejects bad account, non-canonical encoding, zero revision and query', async () => {
-    const { controller, federation } = target();
+    const { controller, profiles } = target();
     const req = mediaRequest('');
     for (const url of [
       '/s2s/v1/group-member-profiles/alice/0/bob/4',
@@ -316,7 +319,7 @@ describe('S2sController group member profiles', () => {
         },
       );
     }
-    expect(federation.getAuthorizedGroupMemberProfile).not.toHaveBeenCalled();
+    expect(profiles.getAuthorizedGroupMemberProfile).not.toHaveBeenCalled();
   });
 });
 
@@ -350,8 +353,10 @@ describe('S2sController federation media errors', () => {
   });
 
   it('maps an indeterminate resource lookup failure to retryable 503 INTERNAL', async () => {
-    const { controller, federation } = target();
-    federation.resolveMediaFile.mockRejectedValueOnce(new Error('db offline'));
+    const { controller, peerResources } = target();
+    peerResources.resolveMediaFile.mockRejectedValueOnce(
+      new Error('db offline'),
+    );
 
     await expect(
       controller.getFile(mediaRequest('bytes=0-4'), replyTarget().reply),

@@ -10,7 +10,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { GroupRole } from '../database/enums.js';
-import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
+import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
 import {
   ApiEnvelope,
   ApiResultResponse,

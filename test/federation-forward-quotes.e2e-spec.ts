@@ -109,7 +109,7 @@ describe('federated history-forward reply references', () => {
     expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);
     const bundleId = JSON.parse(sent.body.data.content).bundleId;
     const local = await appA.database.query.forwardBundle.findFirst({
-      where: (row, { eq }) => eq(row.id, bundleId),
+      where: (row, { eq }) => eq(row.sourceBundleId, bundleId),
     });
     expect(local).toBeDefined();
     const imported = await vi.waitFor(
@@ -117,8 +117,8 @@ describe('federated history-forward reply references', () => {
         const row = await appB.database.query.message.findFirst({
           where: and(
             eq(message.threadId, threadB),
-            eq(message.creatorDomain, FED_DOMAIN_A),
             eq(message.originSeq, sent.body.data.seq),
+            eq(message.contentType, 'FORWARD'),
           ),
           with: { forwardMessages: { with: { forwardBundle: true } } },
         });
@@ -149,7 +149,10 @@ describe('federated history-forward reply references', () => {
     const text = `absent-${randomUUID()}`;
     await send(appB, tokenB, threadB, text, 0);
     const reply = await mirroredText(text);
-    expect(JSON.parse(reply.content).quote).toEqual({ seq: 0, namespaceId: 0 });
+    expect(JSON.parse(reply.content).quote).toEqual({
+      seq: 0,
+      namespaceId: 0,
+    });
     const bundle = await forwardAndCompare([reply.seq]);
     expect(bundle[0].quoteTargetId).toBe(0);
     expect(JSON.parse(bundle[0].content)).toEqual({ text });
@@ -202,7 +205,7 @@ describe('federated history-forward reply references', () => {
       .set({
         content: JSON.stringify({
           text,
-          quote: { seq: 900_000, namespaceId: reply.sourceNamespaceId },
+          quote: { seq: 900_000, namespaceId: reply.publisherNamespaceId },
         }),
       })
       .where(eq(message.id, reply.id));

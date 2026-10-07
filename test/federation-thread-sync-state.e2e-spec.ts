@@ -1,4 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
+import { localIdentityDomain } from './support/local-domain.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
   afterAll,
@@ -72,7 +74,6 @@ describe('federation thread synchronization state', () => {
           .insert(identityNamespace)
           .values({
             domain: peerDomain,
-            rootKeyFingerprint: 'sha256:thread-sync-test',
             rootPublicKey: Buffer.alloc(32, 2).toString('base64'),
             identityPinnedAt: new Date(),
             active: true,
@@ -428,19 +429,21 @@ describe('federation thread synchronization state', () => {
         throughSeq: 1,
         closesGap: false,
         applyDependencies: async () => {
-          await tx.insert(message).values({
-            threadId,
-            seq: 99,
-            originSeq: 99,
-            sourceNamespaceId: namespaceId,
-            creatorAccount: 'bob',
-            creatorDomain: peerDomain,
-            profileNamespaceId: namespaceId,
-            contentType: 'IMAGE',
-            content: JSON.stringify({ digest: 'a'.repeat(64) }),
-            localState: 'STUB',
-            updatedAt: new Date(),
-          });
+          await tx.insert(message).values(
+            withMessageDigest({
+              threadId,
+              seq: 99,
+              originSeq: 99,
+              sourceNamespaceId: namespaceId,
+              creatorAccount: 'bob',
+
+              profileNamespaceId: namespaceId,
+              contentType: 'IMAGE',
+              content: JSON.stringify({ digest: 'a'.repeat(64) }),
+              localState: 'STUB',
+              updatedAt: new Date(),
+            }),
+          );
           await applyDependencies();
         },
       }),
@@ -479,7 +482,7 @@ describe('federation thread synchronization state', () => {
     const change = (active: boolean, rollback = false) =>
       database.db.transaction(async (tx) => {
         await lockBusinessAccountsInTx(tx, [
-          { account: 'alice', domain: 'local' },
+          { account: 'alice', domain: localIdentityDomain(), namespaceId: 0 },
           { account: 'bob', domain: peerDomain },
         ]);
         await tx.execute(
@@ -595,7 +598,6 @@ describe('federation thread synchronization state', () => {
       .insert(identityNamespace)
       .values({
         domain: `other-${Date.now()}.test`,
-        rootKeyFingerprint: 'sha256:other-thread-sync-test',
         rootPublicKey: Buffer.alloc(32, 7).toString('base64'),
         identityPinnedAt: new Date(),
       })
@@ -660,9 +662,10 @@ describe('federation thread synchronization state', () => {
       const [other] = await database.db
         .insert(identityNamespace)
         .values({
-          domain: `gap-${Date.now()}.test`,
-          rootKeyFingerprint: 'sha256:gap-source',
-          rootPublicKey: Buffer.alloc(32, 8).toString('base64'),
+          domain: `gap-${Date.now()}-${mode}.test`,
+          rootPublicKey: Buffer.alloc(32, mode === 'commit' ? 8 : 9).toString(
+            'base64',
+          ),
           identityPinnedAt: new Date(),
         })
         .returning({ id: identityNamespace.id });

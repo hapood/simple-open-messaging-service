@@ -19,7 +19,7 @@ import { FederationPeerHttp } from './federation-peer-http.js';
 import type { S2SProfile } from './federation-profile.js';
 import { encodeFederationResourceComponent } from './federation-resource-request.js';
 import { sealBox } from './sealed-box.js';
-import { ProfileNamespaceInfoService } from './profile-namespace-info.service.js';
+import { ProfileNamespaceService } from './profile-namespace.service.js';
 import { ProfileNamespaceRefreshService } from './profile-namespace-refresh.service.js';
 
 /** Possession-proof key source for `fetchRemoteAccount` (see there). */
@@ -46,7 +46,7 @@ export class FederationProfileService {
     private readonly database: DatabaseService,
     private readonly upload: UploadService,
     private readonly peerHttp: FederationPeerHttp,
-    private readonly profileNamespaceInfo: ProfileNamespaceInfoService,
+    private readonly profileNamespace: ProfileNamespaceService,
     private readonly refresh: ProfileNamespaceRefreshService,
   ) {}
 
@@ -134,7 +134,15 @@ export class FederationProfileService {
   async getLocalAccountProfile(
     address: S2SAddress,
   ): Promise<S2SProfile | null> {
-    if (address.domain !== 'local') return null;
+    const localNamespace =
+      await this.database.db.query.identityNamespace.findFirst({
+        where: and(
+          eq(tables.identityNamespace.id, 0),
+          eq(tables.identityNamespace.domain, address.domain),
+        ),
+        columns: { id: true },
+      });
+    if (!localNamespace) return null;
     const profileNamespaceId = 0;
     const account = normalizeAccount(address.account);
     if (account.startsWith('!')) {
@@ -142,7 +150,6 @@ export class FederationProfileService {
         this.database.db,
         and(
           eq(groupStateFields.account, account),
-          eq(groupStateFields.domain, 'local'),
           eq(groupStateFields.namespaceId, 0),
         ),
       );
@@ -157,11 +164,10 @@ export class FederationProfileService {
     const user = await this.database.db.query.account.findFirst({
       where: and(
         eq(tables.account.account, account),
-        eq(tables.account.domain, 'local'),
         eq(tables.account.namespaceId, 0),
       ),
     });
-    if (!user || user.domain !== 'local' || user.defaultProfileRev === 0)
+    if (!user || user.namespaceId !== 0 || user.defaultProfileRev === 0)
       return null;
     return this.getStoredProfile(
       0,
@@ -208,12 +214,11 @@ export class FederationProfileService {
           AND profile."profileRev" = ${rev}
           AND (
             EXISTS (SELECT 1 FROM "Account" owner
-              WHERE owner.account = profile.account AND owner.domain = 'local'
+              WHERE owner.account = profile.account
                 AND owner."namespaceId" = 0 AND owner.kind = 'USER'
                 AND owner.availability = 'AVAILABLE')
             OR EXISTS (SELECT 1 FROM ${groupStateSql} group_state
               WHERE group_state.account = profile.account
-                AND group_state.domain = 'local'
                 AND group_state."namespaceId" = 0
                 AND group_state."dissolvedAt" IS NULL)
           )
@@ -263,6 +268,14 @@ export class FederationProfileService {
       rev < 1
     )
       return null;
+    const namespace = await this.database.db.query.identityNamespace.findFirst({
+      where: and(
+        eq(tables.identityNamespace.id, namespaceId),
+        eq(tables.identityNamespace.domain, peerDomain),
+      ),
+      columns: { id: true },
+    });
+    if (!namespace) return null;
     const owner = normalizeAccount(account);
     if (owner.startsWith('!')) {
       let row;
@@ -290,7 +303,6 @@ export class FederationProfileService {
             FROM "GroupAccount" group_account
             JOIN "MessageThread" thread ON thread.id = ${authorized.threadId}
               AND thread."groupAccountId" = group_account.id
-              AND thread."groupDomain" = 'local'
             JOIN "GroupMeta" meta ON meta."threadId" = thread.id
               AND meta."profileRev" = ${rev}
             JOIN "GroupMetaMemberFeed" fact ON fact."threadId" = meta."threadId"
@@ -343,7 +355,7 @@ export class FederationProfileService {
         profile.bio, profile."profileNamespaceId", profile."profileRev"
       FROM "Profile" profile
       JOIN "Account" owner ON owner.account = profile.account
-        AND owner.domain = 'local' AND owner."namespaceId" = 0
+        AND owner."namespaceId" = 0
         AND owner.kind = 'USER' AND owner.availability = 'AVAILABLE'
       WHERE profile.account = ${owner}
         AND profile."publisherNamespaceId" = 0
@@ -354,15 +366,7 @@ export class FederationProfileService {
           JOIN "MessageThread" thread ON thread.id = m."threadId"
           JOIN "RelationshipPair" pair ON pair."threadId" = thread.id
             AND pair.active
-          JOIN "RelationshipIntent" intent
-            ON intent."authorAccount" = CASE WHEN thread.type = 'P2P'
-              THEN pair."endpointAAccount" ELSE pair."endpointBAccount" END
-            AND intent."authorNamespaceId" = CASE WHEN thread.type = 'P2P'
-              THEN pair."endpointANamespaceId" ELSE pair."endpointBNamespaceId" END
-            AND intent."receiverAccount" = CASE WHEN thread.type = 'P2P'
-              THEN pair."endpointBAccount" ELSE pair."endpointAAccount" END
-            AND intent."receiverNamespaceId" = CASE WHEN thread.type = 'P2P'
-              THEN pair."endpointBNamespaceId" ELSE pair."endpointANamespaceId" END
+
           JOIN "PeerStateFeed" head ON head."namespaceId" = ${namespaceId}
             AND head."eventType" = 'THREAD_CONTENT_HEAD'
             AND head.account = CASE WHEN thread.type = 'P2P'
@@ -380,6 +384,7 @@ export class FederationProfileService {
             AND m."profileNamespaceId" = profile."profileNamespaceId"
             AND m."profileRev" = ${rev} AND m."publisherNamespaceId" = 0
             AND m."contentType" <> 'SYSTEM'
+            AND m."isDeleted" = false
             AND m."localState" = 'READY'
             AND m.seq > COALESCE(audience."messageAccessAfterSeq", 0)
             AND m.seq::numeric <= CASE
@@ -391,8 +396,24 @@ export class FederationProfileService {
                 AND pair."endpointAAccount" = profile.account
                 AND pair."endpointBType" = 'USER'
                 AND pair."endpointBNamespaceId" = ${namespaceId}
-                AND intent."authorAccount" = profile.account
-                AND intent."authorNamespaceId" = 0)
+                AND EXISTS (
+                  SELECT 1 FROM "RelationshipIntent" intent
+                  WHERE (
+                    (intent."authorAccount" = pair."endpointAAccount"
+                      AND intent."authorNamespaceId" = pair."endpointANamespaceId"
+                      AND intent."receiverAccount" = pair."endpointBAccount"
+                      AND intent."receiverNamespaceId" = pair."endpointBNamespaceId")
+                    OR
+                    (intent."authorAccount" = pair."endpointBAccount"
+                      AND intent."authorNamespaceId" = pair."endpointBNamespaceId"
+                      AND intent."receiverAccount" = pair."endpointAAccount"
+                      AND intent."receiverNamespaceId" = pair."endpointANamespaceId")
+                  )
+                  AND (intent.status = 'ACCEPTED'
+                    OR (intent.status = 'REQUESTED'
+                      AND intent."expiresAt" > CURRENT_TIMESTAMP))
+                )
+              )
               OR
               (thread.type = 'GROUP' AND pair.kind = 'GROUP_MEMBER'
                 AND thread."groupDomain" = ${peerDomain}
@@ -403,8 +424,16 @@ export class FederationProfileService {
                 AND pair."endpointAType" = 'USER'
                 AND pair."endpointAAccount" = profile.account
                 AND pair."endpointBNamespaceId" = ${namespaceId}
-                AND intent."authorAccount" = pair."endpointBAccount"
-                AND intent."authorNamespaceId" = pair."endpointBNamespaceId"
+                AND EXISTS (
+                  SELECT 1 FROM "RelationshipIntent" intent
+                  WHERE intent."authorAccount" = pair."endpointBAccount"
+                    AND intent."authorNamespaceId" = pair."endpointBNamespaceId"
+                    AND intent."receiverAccount" = pair."endpointAAccount"
+                    AND intent."receiverNamespaceId" = pair."endpointANamespaceId"
+                    AND (intent.status = 'ACCEPTED'
+                      OR (intent.status = 'REQUESTED'
+                        AND intent."expiresAt" > CURRENT_TIMESTAMP))
+                )
                 AND EXISTS (SELECT 1 FROM "AccountThreadState" state
                   WHERE state."threadId" = thread.id
                     AND state."accountId" = owner.id)
@@ -493,47 +522,51 @@ export class FederationProfileService {
           JOIN "MessageThread" thread ON thread.id = ${authorized.threadId}
           JOIN "GroupAccount" group_account ON group_account.id = thread."groupAccountId"
             AND group_account."dissolvedAt" IS NULL
-          WHERE thread.type = 'GROUP' AND thread."groupDomain" = 'local'
+          WHERE thread.type = 'GROUP'
+            AND thread."authorityNamespaceId" = 0
             AND thread."groupAccount" = ${normalizeAccount(groupAccount)}
             AND profile.account = ${normalizeAccount(memberAccount)}
             AND profile."publisherNamespaceId" = CASE WHEN ${profileNamespaceId} = 0 THEN 0 ELSE ${profileNamespaceId} END
             AND profile."profileNamespaceId" = ${profileNamespaceId}
             AND profile."profileRev" = ${rev}
-            AND EXISTS (
-              SELECT 1 FROM "GroupMetaMemberFeed" fact
-              WHERE fact."threadId" = thread.id
-                AND fact."memberAccount" = profile.account
-                AND (fact.body ->> 'profileNamespaceId')::integer = profile."profileNamespaceId"
-                AND fact.operation = 'MEMBER_UPSERT'
-                AND fact.feedId = (
-                  SELECT MAX(current_fact.feedId)
-                  FROM "GroupMetaMemberFeed" current_fact
-                  WHERE current_fact."threadId" = fact."threadId"
-                    AND current_fact."memberAccount" = fact."memberAccount"
-                    AND (current_fact.body ->> 'profileNamespaceId')::integer = (fact.body ->> 'profileNamespaceId')::integer
-                )
-                AND (fact.body ->> 'profileNamespaceId')::integer = ${profileNamespaceId}
-                AND (fact.body ->> 'profileRev')::integer = ${rev}
-                AND (profile."profileNamespaceId" = 0 OR EXISTS (
-                  SELECT 1 FROM "RelationshipPair" pair
-                  WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = thread.id
-                    AND pair.active
-                    AND pair."endpointBType" = 'USER'
-                    AND pair."endpointBAccount" = profile.account
-                    AND pair."endpointBNamespaceId" = ${profileNamespaceId}
-                ))
-            )
-            AND EXISTS (
-              SELECT 1 FROM "Message" message
-              WHERE message."threadId" = thread.id
-                AND message.seq > ${authorized.messageAccessAfterSeq}
-                AND message.seq <= ${messageEnd}
-                AND message."creatorAccount" = profile.account
-                AND message."profileNamespaceId" = profile."profileNamespaceId"
-                AND message."profileNamespaceId" = ${profileNamespaceId}
-                AND message."profileRev" = ${rev}
-                AND message."contentType" <> 'SYSTEM'
-                AND message."localState" = 'READY'
+            AND (
+              EXISTS (
+                SELECT 1 FROM "GroupMetaMemberFeed" fact
+                WHERE fact."threadId" = thread.id
+                  AND fact."memberAccount" = profile.account
+                  AND (fact.body ->> 'profileNamespaceId')::integer = profile."profileNamespaceId"
+                  AND fact.operation = 'MEMBER_UPSERT'
+                  AND fact."feedId" = (
+                    SELECT MAX(current_fact."feedId")
+                    FROM "GroupMetaMemberFeed" current_fact
+                    WHERE current_fact."threadId" = fact."threadId"
+                      AND current_fact."memberAccount" = fact."memberAccount"
+                      AND (current_fact.body ->> 'profileNamespaceId')::integer = (fact.body ->> 'profileNamespaceId')::integer
+                  )
+                  AND (fact.body ->> 'profileNamespaceId')::integer = ${profileNamespaceId}
+                  AND (fact.body ->> 'profileRev')::integer = ${rev}
+                  AND (profile."profileNamespaceId" = 0 OR EXISTS (
+                    SELECT 1 FROM "RelationshipPair" pair
+                    WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = thread.id
+                      AND pair.active
+                      AND pair."endpointBType" = 'USER'
+                      AND pair."endpointBAccount" = profile.account
+                      AND pair."endpointBNamespaceId" = ${profileNamespaceId}
+                  ))
+              )
+              OR EXISTS (
+                SELECT 1 FROM "Message" message
+                WHERE message."threadId" = thread.id
+                  AND message.seq > ${authorized.messageAccessAfterSeq}
+                  AND message.seq <= ${messageEnd}
+                  AND message."creatorAccount" = profile.account
+                  AND message."profileNamespaceId" = profile."profileNamespaceId"
+                  AND message."profileNamespaceId" = ${profileNamespaceId}
+                  AND message."profileRev" = ${rev}
+                  AND message."contentType" <> 'SYSTEM'
+                  AND message."isDeleted" = false
+                  AND message."localState" = 'READY'
+              )
             )
           LIMIT 1
         `);
@@ -678,16 +711,19 @@ export class FederationProfileService {
         );
       return row.rootPublicKey;
     }
-    const { entries, pendingRefreshes } =
-      await this.profileNamespaceInfo.resolveBatch([
+    const result = await this.profileNamespace.resolveOne({
+      publisherNamespaceId: possession.publisherNamespaceId,
+      profileNamespaceId: possession.profileNamespaceId,
+    });
+    if (result.status === 'PENDING')
+      this.refresh.scheduleRefresh(
         {
           publisherNamespaceId: possession.publisherNamespaceId,
           profileNamespaceId: possession.profileNamespaceId,
         },
-      ]);
-    for (const pending of pendingRefreshes)
-      this.refresh.scheduleRefresh(pending.pair, pending.triggerFeedId);
-    const entry = entries[0];
+        0n,
+      );
+    const entry = result.status === 'READY' ? result.entry : undefined;
     if (
       !entry ||
       entry.expired ||

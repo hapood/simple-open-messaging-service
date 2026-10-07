@@ -63,7 +63,7 @@ describe('RelationshipIntentService remote-group authorization epoch', () => {
         new RelationshipIntentService().setGroupPairActiveInTx(tx as never, {
           groupId: 31,
           threadId: 31,
-          memberUserId: { account: 'alice', domain: 'local', namespaceId: 0 },
+          memberUserId: { account: 'alice', namespaceId: 0 },
           active,
         }),
       ).resolves.toEqual({

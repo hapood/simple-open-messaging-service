@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { and, eq } from 'drizzle-orm';
@@ -142,7 +143,11 @@ describe('group join request projection', () => {
     const rejected = await request(app.getHttpServer())
       .post('/api/v1/group/join-request/reject')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId, account: applicant.account, domain: 'local' });
+      .send({
+        groupId: threadId,
+        account: applicant.account,
+        domain: localIdentityDomain(),
+      });
     expect(rejected.body.code).toBe(BusinessCode.OK);
 
     const history = await request(app.getHttpServer())
@@ -177,8 +182,7 @@ describe('group join request projection', () => {
     await database.db.insert(groupRequestProjection).values({
       threadId,
       memberAccount: applicant.account,
-      memberDomain: 'local',
-      memberNamespaceId: 0,
+      profileNamespaceId: 0,
       memberProfileRev: 1,
       direction: 'APPLICATION',
       feedId: history.body.data.data[0].feedId + 1,
@@ -214,7 +218,11 @@ describe('group join request projection', () => {
     const friendRequest = await request(app.getHttpServer())
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ account: member.account, domain: 'local' });
+      .send({
+        account: member.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(friendRequest.body.code).toBe(BusinessCode.OK);
     await waitForLocalRelationshipRequest(
       app.get(DatabaseService).db,
@@ -225,7 +233,11 @@ describe('group join request projection', () => {
     const accepted = await request(app.getHttpServer())
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${member.token}`)
-      .send({ account: owner.account, domain: 'local' });
+      .send({
+        account: owner.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(accepted.body.code).toBe(BusinessCode.OK);
     expect(accepted.body.data).toMatchObject({ status: 'OK' });
 
@@ -239,11 +251,14 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         groupId: threadId,
-        users: [{ account: member.account, domain: 'local' }],
+        users: [{ account: member.account, domain: localIdentityDomain() }],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
     expect(invited.body.data.invited).toEqual([
-      { account: member.account, domain: 'local' },
+      {
+        account: member.account,
+        domain: localIdentityDomain(),
+      },
     ]);
 
     const pending = await request(app.getHttpServer())
@@ -258,7 +273,8 @@ describe('group join request projection', () => {
     expect(requestedRows).toHaveLength(1);
     expect(requestedRows[0]).toMatchObject({
       account: member.account,
-      domain: 'local',
+      domain: localIdentityDomain(),
+      namespaceId: 0,
       status: 'REQUESTED',
     });
     const pendingRow = requestedRows[0] as {
@@ -269,7 +285,11 @@ describe('group join request projection', () => {
     const revoked = await request(app.getHttpServer())
       .post('/api/v1/group/invitation/revoke')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId, account: member.account, domain: 'local' });
+      .send({
+        groupId: threadId,
+        account: member.account,
+        domain: localIdentityDomain(),
+      });
     expect(revoked.body.code).toBe(BusinessCode.OK);
     const history = await request(app.getHttpServer())
       .post('/api/v1/group/invitations')
@@ -306,14 +326,19 @@ describe('group join request projection', () => {
       .send({ groupId: threadId });
     expect(pending.body.data.data[0]).toMatchObject({
       account: applicant.account,
-      domain: 'local',
+      domain: localIdentityDomain(),
+      namespaceId: 0,
       status: 'REQUESTED',
     });
 
     const accepted = await request(app.getHttpServer())
       .post('/api/v1/group/join-request/accept')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ groupId: threadId, account: applicant.account, domain: 'local' });
+      .send({
+        groupId: threadId,
+        account: applicant.account,
+        domain: localIdentityDomain(),
+      });
     expect(accepted.body.code).toBe(BusinessCode.OK);
 
     const projections = await database.db.query.groupRequestProjection.findMany(
@@ -321,8 +346,7 @@ describe('group join request projection', () => {
         where: and(
           eq(groupRequestProjection.threadId, threadId),
           eq(groupRequestProjection.memberAccount, applicant.account),
-          eq(groupRequestProjection.memberDomain, 'local'),
-          eq(groupRequestProjection.memberNamespaceId, 0),
+          eq(groupRequestProjection.profileNamespaceId, 0),
         ),
       },
     );
@@ -339,7 +363,11 @@ describe('group join request projection', () => {
     const friendRequest = await request(app.getHttpServer())
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${owner.token}`)
-      .send({ account: member.account, domain: 'local' });
+      .send({
+        account: member.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     await waitForLocalRelationshipRequest(
       app.get(DatabaseService).db,
       friendRequest.body,
@@ -349,7 +377,11 @@ describe('group join request projection', () => {
     const friendAccepted = await request(app.getHttpServer())
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${member.token}`)
-      .send({ account: owner.account, domain: 'local' });
+      .send({
+        account: owner.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(friendAccepted.body.data).toMatchObject({ status: 'OK' });
     const created = await request(app.getHttpServer())
       .post('/api/v1/group/create')
@@ -361,7 +393,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         groupId: threadId,
-        users: [{ account: member.account, domain: 'local' }],
+        users: [{ account: member.account, domain: localIdentityDomain() }],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
 
@@ -385,15 +417,16 @@ describe('group join request projection', () => {
     expect(candidates.body.data.data).toEqual([
       expect.objectContaining({
         account: member.account,
-        domain: 'local',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
         state: 'INVITED',
       }),
     ]);
 
     const accepted = await request(app.getHttpServer())
-      .post('/api/v1/relationship/accept')
+      .post('/api/v1/group/join-request')
       .set('Authorization', `Bearer ${member.token}`)
-      .send({ account: groupIdentity!.account, domain: 'local' });
+      .send({ groupId: threadId });
     expect(accepted.body.code).toBe(BusinessCode.OK);
 
     const acceptedCandidates = await request(app.getHttpServer())
@@ -403,7 +436,8 @@ describe('group join request projection', () => {
     expect(acceptedCandidates.body.data.data).toEqual([
       expect.objectContaining({
         account: member.account,
-        domain: 'local',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
         state: 'MEMBER',
       }),
     ]);
@@ -413,8 +447,7 @@ describe('group join request projection', () => {
         where: and(
           eq(groupRequestProjection.threadId, threadId),
           eq(groupRequestProjection.memberAccount, member.account),
-          eq(groupRequestProjection.memberDomain, 'local'),
-          eq(groupRequestProjection.memberNamespaceId, 0),
+          eq(groupRequestProjection.profileNamespaceId, 0),
         ),
       },
     );
@@ -449,8 +482,7 @@ describe('group join request projection', () => {
       app.get(ClientStateFeedService).writeGroupRequestInTx(tx, {
         threadId,
         memberAccount: member.account,
-        memberDomain: 'local',
-        memberNamespaceId: 0,
+        profileNamespaceId: 0,
         memberProfileRev: 1,
         direction: 'APPLICATION',
         status: 'ACCEPTED',
@@ -465,8 +497,7 @@ describe('group join request projection', () => {
         where: and(
           eq(groupRequestProjection.threadId, threadId),
           eq(groupRequestProjection.memberAccount, member.account),
-          eq(groupRequestProjection.memberDomain, 'local'),
-          eq(groupRequestProjection.memberNamespaceId, 0),
+          eq(groupRequestProjection.profileNamespaceId, 0),
         ),
       }),
     ).toEqual([]);
@@ -524,8 +555,7 @@ describe('group join request projection', () => {
         where: and(
           eq(groupRequestProjection.threadId, threadId),
           eq(groupRequestProjection.memberAccount, applicant.account),
-          eq(groupRequestProjection.memberDomain, 'local'),
-          eq(groupRequestProjection.memberNamespaceId, 0),
+          eq(groupRequestProjection.profileNamespaceId, 0),
         ),
       });
     const setRole = (token: string, role: 'ADMIN' | 'MEMBER') =>
@@ -535,7 +565,7 @@ describe('group join request projection', () => {
         .send({
           groupId: threadId,
           account: admin.account,
-          domain: 'local',
+          namespaceId: 0,
           role,
         });
     expect(await sharedProjections()).toHaveLength(1);

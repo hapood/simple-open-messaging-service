@@ -108,23 +108,33 @@ function semanticValid(schema: string, value: unknown): boolean {
   if (schema === 'urn:somfp:v1:discovery') {
     if (!validateStrictVersions(value)) return false;
     const doc = value as {
-      rootKey: { ed25519: string };
+      roots: Array<{ ed25519: string; notBefore: number; notAfter: number }>;
       keys: Array<{
         keyId: string;
         ed25519: string;
+        root: string;
         notBefore: number;
         notAfter: number;
         authorizationSignature: string;
       }>;
     };
-    const root = Buffer.from(doc.rootKey.ed25519, 'base64');
+    const roots = new Map(
+      doc.roots.map((root) => [root.ed25519, Buffer.from(root.ed25519, 'base64')]),
+    );
     const ids = new Set<string>();
     return doc.keys.every((key) => {
-      if (ids.has(key.keyId) || key.notBefore >= key.notAfter) return false;
+      const root = roots.get(key.root);
+      if (
+        !root ||
+        ids.has(key.keyId) ||
+        key.notBefore >= key.notAfter
+      )
+        return false;
       ids.add(key.keyId);
       const statement = JSON.stringify({
         keyId: key.keyId,
         ed25519: key.ed25519,
+        root: key.root,
         usage: 'somfp-http-message-signature',
         notBefore: key.notBefore,
         notAfter: key.notAfter,
@@ -324,11 +334,14 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     'GET /.well-known/somfp',
     'POST /s2s/v1/recognize',
     'GET /s2s/v1/health',
+    'POST /s2s/v1/verify',
     'POST /s2s/v1/feed-heads',
     'GET /s2s/v1/state-feed',
+    'GET /s2s/v1/profile-namespace-feed',
+    'GET /s2s/v1/profile-namespaces/:nsid',
     'GET /s2s/v1/group-meta',
     'GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev',
-    'GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:memberDomain/:profileRev',
+    'GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
     'GET /s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev',
     'GET /s2s/v1/messages',
     'GET /s2s/v1/message-tombstones',

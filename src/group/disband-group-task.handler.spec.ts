@@ -143,7 +143,7 @@ describe('group disband task handlers', () => {
       taskType: 'FORCE_REVOKE_GROUP_MEMBER',
       payload: {
         threadId: 12,
-        memberUserId: { account: 'member', domain: 'local', namespaceId: 0 },
+        memberUserId: { account: 'member', namespaceId: 0 },
       },
     } satisfies DurableTask;
 

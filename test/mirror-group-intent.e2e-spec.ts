@@ -1,4 +1,5 @@
 import { and, desc, eq, or, sql } from 'drizzle-orm';
+import { localIdentityDomain } from './support/local-domain.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
@@ -10,7 +11,7 @@ import { businessAccountScopeKey } from '../src/common/locks/account-business-lo
 import * as tables from '../src/database/schema.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
-import { FederationService } from '../src/federation/federation.service.js';
+import { FederationStateFeedPushService } from '../src/federation/federation-state-feed-push.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { GroupRelationshipMutationService } from '../src/group/membership-intent/shared/group-relationship-mutation.service.js';
 import { MemberAuthoredGroupMembershipIntentService } from '../src/group/membership-intent/authored/member-authored-group-membership-intent.service.js';
@@ -51,6 +52,7 @@ function invitationBody(
   const requestedAt = Date.now();
   return {
     status: 'REQUESTED' as const,
+    profileNamespaceId: 0,
     profileRev: 3,
     note: 'join us',
     requestedAt,
@@ -68,6 +70,7 @@ function acceptanceBody(
 ) {
   return {
     status: 'ACCEPTED' as const,
+    profileNamespaceId: 0,
     profileRev: 3,
     note: 'join us',
     requestedAt: Date.now(),
@@ -76,6 +79,13 @@ function acceptanceBody(
     tombstoneEndSeq: 1,
     ...overrides,
   };
+}
+
+function wireBody(
+  body: Parameters<MirrorGroupMembershipIntentService['execute']>[0]['body'],
+) {
+  const { profileNamespaceId, ...rest } = body;
+  return { ...rest, namespaceId: profileNamespaceId };
 }
 
 /** jsonb columns arrive parsed on this driver; accept both shapes anyway. */
@@ -88,6 +98,7 @@ function bodyOf(row: { body: unknown }): Record<string, any> {
 function revocationBody() {
   return {
     status: 'REVOKED' as const,
+    profileNamespaceId: 0,
     profileRev: 3,
     note: '',
     requestedAt: null,
@@ -110,7 +121,12 @@ describe('mirror group intent application', () => {
     return applier.execute({
       group,
       memberAccount: member.account,
-      body: item,
+      body: {
+        profileNamespaceId:
+          item.profileNamespaceId ??
+          (item.status === 'REQUESTED' ? group.namespaceId : 0),
+        ...item,
+      },
     });
   }
 
@@ -125,7 +141,7 @@ describe('mirror group intent application', () => {
       database: withBusinessLockCapture(database, businessLocks),
       clientFeed: app.get(ClientStateFeedService),
       peerFeed: app.get(PeerStateFeedService),
-      federation: app.get(FederationService),
+      federation: app.get(FederationStateFeedPushService),
       memberMutations: app.get(GroupRelationshipMutationService),
     };
     applier = new MirrorGroupMembershipIntentService(deps);
@@ -264,7 +280,7 @@ describe('mirror group intent application', () => {
       status: 'REQUESTED',
       note: 'join us',
       threadId: pair!.threadId!,
-      group: { account: group.account, domain: group.domain, isLocal: false },
+      group: { account: group.account },
     });
     // A mirror owns no projections and no meta facts.
     expect(
@@ -364,9 +380,9 @@ describe('mirror group intent application', () => {
     expect(ack).toBeDefined();
     expect(ack).toMatchObject({
       account: bob.account,
-      domain: ownDomain,
+      namespaceId: group.namespaceId,
       subjectAccount: group.account,
-      subjectDomain: group.domain,
+      subjectNamespaceId: group.namespaceId,
     });
     // Client surface: one incoming row for the group's acceptance.
     const feeds = await feedRows(bob.id);
@@ -632,7 +648,7 @@ describe('mirror group intent application', () => {
       threadId: pair!.threadId!,
       feedId: 1,
       memberAccount: bob.account,
-      memberDomain: 'local',
+      profileNamespaceId: 0,
       operation: 'MEMBER_UPSERT',
       body: { role: 'MEMBER', profileRev: 1 },
     });
@@ -676,7 +692,7 @@ describe('mirror group intent application', () => {
       threadId,
       feedId: 1,
       memberAccount: bob.account,
-      memberDomain: 'local',
+      profileNamespaceId: 0,
       operation: 'MEMBER_UPSERT',
       body: { role: 'MEMBER', profileRev: 1 },
     });
@@ -739,6 +755,7 @@ describe('mirror group intent application', () => {
       head.threadRoundWakes.some((wake) => wake.direction === 'forward'),
     ).toBe(false);
     expect((await findPair(bob.account)).pair?.active).toBe(false);
+    const accepted = acceptanceBody({ messageEndSeq: 7 });
     const result = await database.db.transaction((tx) =>
       consumer.applyPageInTx(tx, group.domain, group.namespaceId, {
         items: [
@@ -747,7 +764,7 @@ describe('mirror group intent application', () => {
             peerAccount: bob.account,
             eventType: 'RELATIONSHIP_INTENT',
             feedId: '2',
-            body: acceptanceBody({ messageEndSeq: 7 }),
+            body: wireBody(accepted),
           },
         ],
         scannedThrough: '2',
@@ -790,7 +807,7 @@ describe('mirror group intent application', () => {
         threadId,
         feedId: rosterFeedId++,
         memberAccount: m.account,
-        memberDomain: 'local',
+        profileNamespaceId: 0,
         operation: 'MEMBER_UPSERT',
         body: { role: 'MEMBER', profileRev: 1 },
       });
@@ -819,6 +836,7 @@ describe('mirror group intent application', () => {
         authorNamespaceId: group.namespaceId,
         receiverAccount: bob.account,
         receiverNamespaceId: 0,
+        profileNamespaceId: group.namespaceId,
         status: 'ACCEPTED',
         profileRev: 3,
         note: '',
@@ -832,6 +850,7 @@ describe('mirror group intent application', () => {
         authorNamespaceId: 0,
         receiverAccount: group.account,
         receiverNamespaceId: group.namespaceId,
+        profileNamespaceId: 0,
         status: 'ACCEPTED',
         profileRev: 1,
         note: '',
@@ -848,6 +867,7 @@ describe('mirror group intent application', () => {
       authorNamespaceId: 0,
       receiverAccount: group.account,
       receiverNamespaceId: group.namespaceId,
+      profileNamespaceId: 0,
       status: 'ACCEPTED' as const,
       profileRev: 1,
       note: '',
@@ -874,8 +894,8 @@ describe('mirror group intent application', () => {
     expect(aliceNotices).toHaveLength(1);
     expect(JSON.parse(aliceNotices[0]!.content as string).member).toEqual({
       account: alice.account,
-      domain: 'local',
-      namespaceId: 0,
+      domain: localIdentityDomain(),
+      profileNamespaceId: 0,
       profileRev: 1,
     });
 

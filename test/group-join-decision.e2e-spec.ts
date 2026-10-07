@@ -4,6 +4,7 @@ import {
   type PairAddressScope,
 } from '../src/common/locks/relationship-pair-business-lock.js';
 import { businessAccountScopeKey } from '../src/common/locks/account-business-lock.js';
+import { localIdentityDomain } from './support/local-domain.js';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
 import {
   admitGroupMembershipProjectionFanoutInTx,
@@ -11,6 +12,7 @@ import {
 } from '../src/group/membership-intent/shared/group-membership-projection-fanout.js';
 import { GroupMembershipProjectionFanoutService } from '../src/group/membership-intent/shared/group-membership-projection-fanout.service.js';
 import { mintGroupMemberPairInTx } from '../src/group/membership-intent/shared/group-member-pair-mint.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import { insertPendingTaskInTx } from '../src/durable-task/task-admission.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import {
@@ -44,7 +46,7 @@ import { GroupRosterRoleService } from '../src/group/roster-role/group-roster-ro
 import { withBusinessLockCapture } from './business-lock-capture.js';
 import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
-import { FederationService } from '../src/federation/federation.service.js';
+import { FederationStateFeedPushService } from '../src/federation/federation-state-feed-push.service.js';
 import { GroupRelationshipMutationService } from '../src/group/membership-intent/shared/group-relationship-mutation.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
@@ -65,14 +67,16 @@ function pairScope(
   pair: typeof tables.relationshipPair.$inferSelect,
 ): PairAddressScope {
   return {
-    // `kind` is a plain varchar column; the check constraint pins the union.
     kind: pair.kind as PairAddressScope['kind'],
-    // Lowercase the parts, not the assembled address: toLowerCase on the
-    // template erases the `${string}@${string}` literal type the scope wants.
-    // This suite hosts every pair endpoint locally; namespace zero is local.
     addresses: [
-      `${pair.endpointAAccount.toLowerCase()}@local`,
-      `${pair.endpointBAccount.toLowerCase()}@local`,
+      {
+        account: pair.endpointAAccount.toLowerCase(),
+        profileNamespaceId: pair.endpointANamespaceId,
+      },
+      {
+        account: pair.endpointBAccount.toLowerCase(),
+        profileNamespaceId: pair.endpointBNamespaceId,
+      },
     ],
   };
 }
@@ -161,7 +165,7 @@ describe('group join decision', () => {
       database: withBusinessLockCapture(database, businessLocks),
       clientFeed: app.get(ClientStateFeedService),
       peerFeed: app.get(PeerStateFeedService),
-      federation: app.get(FederationService),
+      federation: app.get(FederationStateFeedPushService),
       relationshipMutations: app.get(GroupRelationshipMutationService),
     };
     services = {
@@ -225,7 +229,11 @@ describe('group join decision', () => {
       params: {
         threadId: group.threadId,
         managerUserId: owner.id,
-        target: { account: applicant.account, domain: 'local' },
+        target: {
+          account: applicant.account,
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
         scope: 'APPLICATION' as const,
         decision: 'ACCEPTED' as const,
       },
@@ -305,7 +313,7 @@ describe('group join decision', () => {
       threadId: f.group.threadId,
       feedId: nextFeedId,
       memberAccount: f.applicant.account,
-      memberDomain: 'local',
+      profileNamespaceId: 0,
       operation: 'MEMBER_UPSERT',
       body: { role: 'MEMBER', profileRev: 1 },
     });
@@ -339,7 +347,7 @@ describe('group join decision', () => {
       threadId: f.group.threadId,
       feedId: nextFeedId,
       memberAccount: f.applicant.account,
-      memberDomain: 'local',
+      profileNamespaceId: 0,
       operation: 'MEMBER_UPSERT',
       body: { role: 'MEMBER', profileRev: 1 },
     });
@@ -392,17 +400,17 @@ describe('group join decision', () => {
           "endpointBNamespaceId", "threadId")
         SELECT 'GROUP_MEMBER', 'GROUP', ${groupAccount}, 0, 'USER', 'capacity-' || i, 0, ${threadId}
         FROM generate_series(1, ${count}) i
-        RETURNING id
+        RETURNING "endpointBAccount"
       )
       INSERT INTO "RelationshipIntent"
         ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId",
          status, "profileNamespaceId", "profileRev", note, "messageEndSeq", "tombstoneEndSeq", "requestedAt", "updatedAt")
-      SELECT ${groupAccount}, 0, 'capacity-' || i, 0, 'ACCEPTED', 0, 0, '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM inserted
+      SELECT ${groupAccount}, 0, "endpointBAccount", 0, 'ACCEPTED', 0, 0, '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM inserted
     `);
   }
 
   it('preserves acceptance and rejection effects', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     for (const decision of ['ACCEPTED', 'REVOKED'] as const) {
@@ -467,10 +475,10 @@ describe('group join decision', () => {
   ] as const)(
     'activates a federated applicant (history=$history, existingFloor=$existingFloor)',
     async ({ history, existingFloor }) => {
-      const notifications: Array<{ domains: string[] }> = [];
-      vi.spyOn(deps.federation, 'pushStateFeedDomains').mockImplementation(
-        async (domains) => {
-          notifications.push({ domains: [...domains] });
+      const notifications: Array<{ namespaceIds: number[] }> = [];
+      vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockImplementation(
+        async (namespaceIds) => {
+          notifications.push({ namespaceIds: [...namespaceIds] });
         },
       );
       const prefix = `join-remote-${++sequence}`;
@@ -517,7 +525,9 @@ describe('group join decision', () => {
         });
 
       await database.db.insert(tables.profileTable).values({
-        ...member,
+        account: member.account,
+        publisherNamespaceId: member.namespaceId,
+        profileNamespaceId: member.namespaceId,
         profileRev: 7,
         displayName: 'Remote member',
         avatar: '',
@@ -529,11 +539,12 @@ describe('group join decision', () => {
           groupAccount: group.account,
           groupNamespaceId: 0,
           memberAccount: member.account,
-          memberNamespaceId: namespaceId,
+          profileNamespaceId: namespaceId,
         });
         await tx.insert(tables.relationshipIntent).values({
           authorAccount: member.account,
           authorNamespaceId: namespaceId,
+          profileNamespaceId: namespaceId,
           receiverAccount: group.account,
           receiverNamespaceId: 0,
           status: 'REQUESTED',
@@ -575,7 +586,7 @@ describe('group join decision', () => {
         scope: 'APPLICATION',
         decision: 'ACCEPTED',
       });
-      expect(notifications).toEqual([{ domains: [domain] }]);
+      expect(notifications).toEqual([{ namespaceIds: [namespaceId] }]);
       expect(locks).toHaveBeenCalledTimes(0);
       const roster = await database.db.transaction((tx) =>
         readCurrentGroupMemberInTx(tx, group.threadId, member),
@@ -618,7 +629,7 @@ describe('group join decision', () => {
   );
 
   it('initializes a retained local read state without hiding history', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     for (const blocked of [false, true]) {
@@ -632,15 +643,16 @@ describe('group join decision', () => {
           .set({ curSeq: 3 })
           .where(eq(tables.messageThread.id, f.group.threadId));
         await tx.insert(tables.message).values(
-          [1, 2, 3].map((seq) => ({
-            threadId: f.group.threadId,
-            seq,
-            creatorAccount: f.owner.account,
-            creatorDomain: 'local',
-            contentType: 'PURE_TEXT' as const,
-            content: JSON.stringify({ text: `old message ${seq}` }),
-            updatedAt: new Date(),
-          })),
+          withMessageDigest(
+            [1, 2, 3].map((seq) => ({
+              threadId: f.group.threadId,
+              seq,
+              creatorAccount: f.owner.account,
+              contentType: 'PURE_TEXT' as const,
+              content: JSON.stringify({ text: `old message ${seq}` }),
+              updatedAt: new Date(),
+            })),
+          ),
         );
         await tx.insert(tables.accountThreadState).values({
           accountId: f.applicant.id,
@@ -680,9 +692,10 @@ describe('group join decision', () => {
         conversationState: 'ACTIVE',
         role: 'MEMBER',
         blocked,
-        profile: { account: f.group.account, domain: 'local', profileRev: 1 },
+        profileAccount: f.group.account,
+        profileRev: 1,
       });
-      expect(threadState?.profile.profileRev).toBe(
+      expect(threadState?.profileRev).toBe(
         result.intents.find(
           (intent) => intent.authorAccount === f.group.account,
         )?.profileRev,
@@ -697,7 +710,7 @@ describe('group join decision', () => {
   });
 
   it('advances manager projection and profile heads without losing read watermarks', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -717,8 +730,8 @@ describe('group join decision', () => {
         );
       await tx.insert(tables.profileTable).values({
         account: f.applicant.account,
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 2,
         displayName: 'Updated profile',
         avatar: '',
@@ -730,8 +743,8 @@ describe('group join decision', () => {
         .where(eq(tables.account.id, f.applicant.id));
       await tx.insert(tables.profileTable).values({
         account: f.group.account,
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 2,
         displayName: 'Updated group',
         avatar: '',
@@ -793,7 +806,7 @@ describe('group join decision', () => {
   });
 
   it('serializes two approvals without duplicating membership', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -854,7 +867,10 @@ describe('group join decision', () => {
     await authoredIntents.execute(f.params);
     const scope = pairScope(f.pair);
     expect(businessLocks).toEqual([
-      businessAccountScopeKey({ account: f.group.account, profileNamespaceId: 0 }),
+      businessAccountScopeKey({
+        account: f.group.account,
+        profileNamespaceId: 0,
+      }),
       relationshipPairBusinessKey(scope),
     ]);
     const [addressA, addressB] = scope.addresses;
@@ -960,7 +976,7 @@ describe('group join decision', () => {
 
   it('rejects a pending application without admitting any fan-out', async () => {
     const f = await fixture();
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const before = await database.db.query.durableTask.findMany();
@@ -972,7 +988,7 @@ describe('group join decision', () => {
 
   it('acceptance admits both thread fan-out channels', async () => {
     const f = await fixture();
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     await authoredIntents.execute(f.params);
@@ -1302,7 +1318,7 @@ describe('group join decision', () => {
     const tasksBefore = await database.db.query.durableTask.findMany();
     const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
     const push = vi
-      .spyOn(deps.federation, 'pushStateFeedDomains')
+      .spyOn(deps.federation, 'pushStateFeedNamespaces')
       .mockResolvedValue(undefined);
     const transaction = deps.database.db.transaction.bind(deps.database.db);
     const failure = vi
@@ -1406,7 +1422,7 @@ describe('group join decision', () => {
   );
 
   it('unified revocation kicks a rostered local member with the full membership effect set', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -1440,7 +1456,9 @@ describe('group join decision', () => {
     ).rows;
     expect(message.content).toMatchObject({
       type: 'GROUP_LEFT',
-      member: { account: f.applicant.account, domain: 'local' },
+      member: {
+        account: f.applicant.account,
+      },
     });
     const { rows: watermark } = await database.pool.query(
       `SELECT "messageVisibleThroughSeq" FROM "AccountThreadState"
@@ -1500,7 +1518,7 @@ describe('group join decision', () => {
   });
 
   it('unified revocation kicks a rostered remote member through the peer feed', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const prefix = `join-kick-remote-${++sequence}`;
@@ -1521,7 +1539,9 @@ describe('group join decision', () => {
     const namespaceId = await seedFederatedPeerNamespace(database.db, domain);
     const member = { account: `${prefix}-member`, domain, namespaceId };
     await database.db.insert(tables.profileTable).values({
-      ...member,
+      account: member.account,
+      publisherNamespaceId: member.namespaceId,
+      profileNamespaceId: member.namespaceId,
       profileRev: 5,
       displayName: 'Remote kicked',
       avatar: '',
@@ -1533,11 +1553,12 @@ describe('group join decision', () => {
         groupAccount: group.account,
         groupNamespaceId: 0,
         memberAccount: member.account,
-        memberNamespaceId: namespaceId,
+        profileNamespaceId: namespaceId,
       });
       await tx.insert(tables.relationshipIntent).values({
         authorAccount: member.account,
         authorNamespaceId: namespaceId,
+        profileNamespaceId: namespaceId,
         receiverAccount: group.account,
         receiverNamespaceId: 0,
         status: 'REQUESTED',
@@ -1623,7 +1644,7 @@ describe('group join decision', () => {
   });
 
   it('unified revocation only removes members strictly below the operator role', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -1636,7 +1657,11 @@ describe('group join decision', () => {
       threadId: f.group.threadId,
       operatorUserId: f.owner.id,
       kind: 'SET_ROLE',
-      target: { account: f.applicant.account, domain: 'local' },
+      target: {
+        account: f.applicant.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       role: GroupRole.ADMIN,
     });
     const junior = await seedUser(app, `join-${++sequence}-junior`);
@@ -1655,7 +1680,11 @@ describe('group join decision', () => {
     await authoredIntents.execute({
       threadId: f.group.threadId,
       managerUserId: admin.id,
-      target: { account: junior.account, domain: 'local' },
+      target: {
+        account: junior.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       scope: 'MEMBER',
       decision: 'REVOKED',
     });
@@ -1666,7 +1695,11 @@ describe('group join decision', () => {
         authoredIntents.execute({
           threadId: f.group.threadId,
           managerUserId: admin.id,
-          target: { account: target.account, domain: 'local' },
+          target: {
+            account: target.account,
+            domain: localIdentityDomain(),
+            namespaceId: 0,
+          },
           scope: 'MEMBER',
           decision: 'REVOKED',
         }),
@@ -1680,7 +1713,11 @@ describe('group join decision', () => {
     await authoredIntents.execute({
       threadId: f.group.threadId,
       managerUserId: f.owner.id,
-      target: { account: admin.account, domain: 'local' },
+      target: {
+        account: admin.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       scope: 'MEMBER',
       decision: 'REVOKED',
     });
@@ -1688,7 +1725,7 @@ describe('group join decision', () => {
   });
 
   it('unified revocation still rejects on a dissolved group but forbids removing members', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     // A rostered member is out of reach once the group is dissolved.
@@ -1733,7 +1770,7 @@ describe('group join decision', () => {
   });
 
   it('acceptance enforces the server capacity and keeps an invited slot', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     // The owner plus 998 accepted pairs reach the limit; a fresh applicant
@@ -1764,6 +1801,7 @@ describe('group join decision', () => {
     await database.db.insert(tables.relationshipIntent).values({
       authorAccount: invited.group.account,
       authorNamespaceId: 0,
+      profileNamespaceId: 0,
       receiverAccount: invited.applicant.account,
       receiverNamespaceId: 0,
       status: 'REQUESTED',
@@ -1793,7 +1831,7 @@ describe('group join decision', () => {
   });
 
   it('unified acceptance treats a withdrawn application as a silent no-op', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -1822,7 +1860,7 @@ describe('group join decision', () => {
   });
 
   it('unified acceptance completes an invitation whose invitee already acked', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -1847,6 +1885,7 @@ describe('group join decision', () => {
     await database.db.insert(tables.relationshipIntent).values({
       authorAccount: f.group.account,
       authorNamespaceId: 0,
+      profileNamespaceId: 0,
       receiverAccount: f.applicant.account,
       receiverNamespaceId: 0,
       status: 'REQUESTED',
@@ -1887,7 +1926,7 @@ describe('group join decision', () => {
   });
 
   it('unified request collapses a pending application into the acceptance path', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -1895,7 +1934,11 @@ describe('group join decision', () => {
       threadId: f.group.threadId,
       managerUserId: f.owner.id,
       decision: 'REQUESTED',
-      target: { account: f.applicant.account, domain: 'local' },
+      target: {
+        account: f.applicant.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       note: 'ignored',
     });
     const result = await state(f);
@@ -1924,7 +1967,7 @@ describe('group join decision', () => {
   });
 
   it('unified request completes an outstanding invitation (req + ack = ack)', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -1946,6 +1989,7 @@ describe('group join decision', () => {
     await database.db.insert(tables.relationshipIntent).values({
       authorAccount: f.group.account,
       authorNamespaceId: 0,
+      profileNamespaceId: 0,
       receiverAccount: f.applicant.account,
       receiverNamespaceId: 0,
       status: 'REQUESTED',
@@ -1961,7 +2005,11 @@ describe('group join decision', () => {
       threadId: f.group.threadId,
       managerUserId: f.owner.id,
       decision: 'REQUESTED',
-      target: { account: f.applicant.account, domain: 'local' },
+      target: {
+        account: f.applicant.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       note: 'ignored',
     });
     const result = await state(f);
@@ -1984,7 +2032,7 @@ describe('group join decision', () => {
   });
 
   it('unified request invites a fresh local member with projection-only effects', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const owner = await seedUser(app, `join-req-${++sequence}-owner`);
@@ -2012,15 +2060,25 @@ describe('group join decision', () => {
       threadId: group.threadId,
       managerUserId: owner.id,
       decision: 'REQUESTED',
-      target: { account: invitee.account, domain: 'local' },
+      target: {
+        account: invitee.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       note: 'join us',
     });
     // Account scope first, then pair scope, once each, like ACK and REVOKE.
     expect(businessLocks).toEqual([
-      businessAccountScopeKey({ account: group.account, profileNamespaceId: 0 }),
+      businessAccountScopeKey({
+        account: group.account,
+        profileNamespaceId: 0,
+      }),
       relationshipPairBusinessKey({
         kind: 'GROUP_MEMBER',
-        addresses: [`${group.account}@local`, `${invitee.account}@local`],
+        addresses: [
+          { account: group.account, profileNamespaceId: 0 },
+          { account: invitee.account, profileNamespaceId: 0 },
+        ],
       }),
     ]);
     const { pair } = await findGroupRelationship(
@@ -2064,7 +2122,7 @@ describe('group join decision', () => {
           eq(tables.groupRequestProjection.threadId, group.threadId),
           eq(tables.groupRequestProjection.direction, 'INVITATION'),
           eq(tables.groupRequestProjection.memberAccount, invitee.account),
-          eq(tables.groupRequestProjection.memberDomain, 'local'),
+          eq(tables.groupRequestProjection.profileNamespaceId, 0),
         ),
       },
     );
@@ -2107,10 +2165,10 @@ describe('group join decision', () => {
   });
 
   it('unified request invites a fresh remote member through the peer feed', async () => {
-    const notifications: string[][] = [];
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockImplementation(
-      async (domains) => {
-        notifications.push([...domains]);
+    const notifications: number[][] = [];
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockImplementation(
+      async (namespaceIds) => {
+        notifications.push([...namespaceIds]);
       },
     );
     const owner = await seedUser(app, `join-req-${++sequence}-owner`);
@@ -2129,7 +2187,9 @@ describe('group join decision', () => {
       namespaceId,
     };
     await database.db.insert(tables.profileTable).values({
-      ...member,
+      account: member.account,
+      publisherNamespaceId: member.namespaceId,
+      profileNamespaceId: member.namespaceId,
       profileRev: 7,
       displayName: 'Remote invitee',
       avatar: '',
@@ -2142,7 +2202,7 @@ describe('group join decision', () => {
       target: { account: member.account, domain },
       note: 'join us',
     });
-    expect(notifications).toEqual([[domain]]);
+    expect(notifications).toEqual([[namespaceId]]);
     const { pair } = await findGroupRelationship(
       database.db,
       created.threadId,
@@ -2185,7 +2245,7 @@ describe('group join decision', () => {
   });
 
   it('unified request re-invites a withdrawn applicant and no-ops for members, strangers, and dissolved groups', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const f = await fixture();
@@ -2204,7 +2264,11 @@ describe('group join decision', () => {
       threadId: f.group.threadId,
       managerUserId: f.owner.id,
       decision: 'REQUESTED',
-      target: { account: f.applicant.account, domain: 'local' },
+      target: {
+        account: f.applicant.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       note: 'again',
     });
     let result = await state(f);
@@ -2232,7 +2296,11 @@ describe('group join decision', () => {
       threadId: g.group.threadId,
       managerUserId: g.owner.id,
       decision: 'REQUESTED',
-      target: { account: g.applicant.account, domain: 'local' },
+      target: {
+        account: g.applicant.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
     });
     result = await state(g);
     expect(
@@ -2258,7 +2326,11 @@ describe('group join decision', () => {
         threadId: g.group.threadId,
         managerUserId: g.owner.id,
         decision: 'REQUESTED',
-        target: { account: ghost, domain: 'local' },
+        target: {
+          account: ghost,
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
       }),
     ).resolves.toMatchObject({
       status: 'REJECTED',
@@ -2279,7 +2351,8 @@ describe('group join decision', () => {
         decision: 'REQUESTED',
         target: {
           account: f.applicant.account,
-          domain: 'local',
+          domain: localIdentityDomain(),
+          namespaceId: 0,
         },
       }),
     ).resolves.toMatchObject({
@@ -2304,7 +2377,8 @@ describe('group join decision', () => {
         decision: 'REQUESTED',
         target: {
           account: g.applicant.account,
-          domain: 'local',
+          domain: localIdentityDomain(),
+          namespaceId: 0,
         },
       }),
     ).resolves.toMatchObject({
@@ -2492,7 +2566,11 @@ describe('group join decision', () => {
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
         decision: 'REQUESTED',
-        target: { account: f.member.account, domain: 'local' },
+        target: {
+          account: f.member.account,
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
         note: 'join us',
       });
       const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
@@ -2548,7 +2626,11 @@ describe('group join decision', () => {
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
         decision: 'REQUESTED',
-        target: { account: f.member.account, domain: 'local' },
+        target: {
+          account: f.member.account,
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
         note: 'join us',
       });
       await membership.execute({
@@ -2635,7 +2717,11 @@ describe('group join decision', () => {
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
         decision: 'REQUESTED',
-        target: { account: f.member.account, domain: 'local' },
+        target: {
+          account: f.member.account,
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
         note: 'join us',
       });
       await membership.execute({
@@ -2682,7 +2768,11 @@ describe('group join decision', () => {
       await authoredIntents.execute({
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
-        target: { account: f.member.account, domain: 'local' },
+        target: {
+          account: f.member.account,
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
         scope: 'APPLICATION',
         decision: 'ACCEPTED',
       });
@@ -2783,7 +2873,11 @@ describe('group join decision', () => {
         threadId: f.group.threadId,
         managerUserId: f.owner.id,
         decision: 'REQUESTED',
-        target: { account: f.member.account, domain: 'local' },
+        target: {
+          account: f.member.account,
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
       });
       await membership.execute({
         threadId: f.group.threadId,

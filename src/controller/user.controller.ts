@@ -37,12 +37,12 @@ import {
   QueryUsersDto,
   UpdateProfileDto,
 } from '../dto/user.dto.js';
-import {
-  FederationService,
-  S2sResponseError,
-  type S2SProfile,
-  type PossessionKey,
-} from '../federation/federation.service.js';
+import { S2sResponseError } from '../federation/federation-errors.js';
+import type { S2SProfile } from '../federation/federation-profile.js';
+import type { PossessionKey } from '../federation/federation-profile.service.js';
+import { FederationProfileService } from '../federation/federation-profile.service.js';
+import { FederationPeerLifecycle } from '../federation/federation-peer-lifecycle.js';
+import { KeypairService } from '../federation/keypair.service.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
 import { RelationshipService } from '../relationship/relationship.service.js';
 import { Raw } from '../common/raw.decorator.js';
@@ -84,7 +84,9 @@ export class UserController {
     private readonly uploadService: UploadService,
     private readonly sseService: SseService,
     private readonly messageService: MessageService,
-    private readonly federationService: FederationService,
+    private readonly keypairs: KeypairService,
+    private readonly peerLifecycle: FederationPeerLifecycle,
+    private readonly profiles: FederationProfileService,
     private readonly federationRecognition: FederationRecognitionService,
     private readonly clientStateFeed: ClientStateFeedService,
     private readonly clientGroupMetaFeed: ClientGroupMetaFeedService,
@@ -96,6 +98,7 @@ export class UserController {
   ) {}
 
   private async resolveLocalAccount(account: string) {
+    const domain = this.keypairs.localAddress(account).domain;
     if (account.startsWith('!')) {
       const group = await this.groups.findPublicLocalGroupByAccount(account);
       if (!group) return null;
@@ -106,7 +109,7 @@ export class UserController {
         avatar: group.avatar,
         bio: group.description,
         isGroup: true,
-        domain: 'local',
+        domain,
         namespaceId: 0,
         createdAt: group.createdAt,
         updatedAt: group.updatedAt,
@@ -115,7 +118,7 @@ export class UserController {
       };
     }
     return this.userService.findUniqueUser({
-      account_domain: { account, domain: 'local' },
+      account_domain: { account, domain },
       namespaceId: 0,
       availability: 'AVAILABLE',
     });
@@ -438,13 +441,14 @@ export class UserController {
   async resolveUser(@Body() dto: UserResolveDto) {
     const account = normalizeAccount(dto.account);
     const { domain } = dto;
-    if (domain && domain !== 'local') {
+    const localDomain = this.keypairs.localAddress(account).domain;
+    if (domain && domain.trim().toLowerCase() !== localDomain) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'federated lookup requires resolve-federated-stream',
       );
     }
-    // No domain or the publisher-local marker means a local account lookup.
+    // No domain or the publisher's current domain means a local account lookup.
     const user = await this.resolveLocalAccount(account);
     if (user !== null) {
       return user;
@@ -487,7 +491,7 @@ export class UserController {
             finish('failed', { reason: 'INVALID_ADDRESS' });
             return;
           }
-          if (domain === 'local') {
+          if (domain === this.keypairs.localAddress(account).domain) {
             const localUser = await this.resolveLocalAccount(account);
             finish(
               localUser ? 'resolved' : 'failed',
@@ -496,7 +500,7 @@ export class UserController {
             return;
           }
           const recognitionComplete =
-            await this.federationService.hasCompletePeerRecognition(domain);
+            await this.peerLifecycle.hasCompleteRecognition(domain);
           if (sink.closed) return;
           if (!recognitionComplete) {
             unsubscribeProgress = this.federationRecognition.subscribeProgress(
@@ -509,10 +513,9 @@ export class UserController {
           emit('progress', { stage: 'WAITING_FOR_PEER' });
           while (!sink.closed && Date.now() < deadlineAt) {
             try {
-              const status =
-                await this.federationService.checkPeerHealth(domain);
+              const status = await this.peerLifecycle.checkHealth(domain);
               if (status === 'available' || status === 'degraded') {
-                await this.federationService.checkPeerOutboundReady(domain);
+                await this.peerLifecycle.checkOutboundReady(domain);
                 break;
               }
             } catch (error) {
@@ -547,7 +550,7 @@ export class UserController {
                   profileNamespaceId: dto.profileNamespaceId,
                 }
               : { kind: 'PIN' };
-          const profile = await this.federationService.fetchRemoteAccount(
+          const profile = await this.profiles.fetchRemoteAccount(
             { account, domain },
             possession,
           );

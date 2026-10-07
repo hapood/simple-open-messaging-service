@@ -12,7 +12,12 @@ import {
   sql,
 } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
-import { account, sessionToken, account as user } from '../database/schema.js';
+import {
+  account,
+  identityNamespace,
+  sessionToken,
+  account as user,
+} from '../database/schema.js';
 import { AuthService } from '../auth/auth.service.js';
 import { UserService } from '../user/user.service.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -110,7 +115,6 @@ export class UserManageService {
    *  respective administration surfaces and must never receive local-account actions. Omits hashPwd. */
   async listUsers(opts: { skip?: number; take?: number; search?: string }) {
     const where = and(
-      eq(user.domain, 'local'),
       eq(user.namespaceId, 0),
       opts.search ? ilike(user.account, `%${opts.search}%`) : undefined,
     );
@@ -122,7 +126,7 @@ export class UserManageService {
           name: accountProfileFields(user).name,
           avatar: accountProfileFields(user).avatar,
           bio: accountProfileFields(user).bio,
-          domain: user.domain,
+          domain: identityNamespace.domain,
           createdAt: user.createdAt,
           updatedAt: user.updatedAt,
           isDeleted: sql<boolean>`${account.disabledAt} IS NOT NULL`,
@@ -131,6 +135,7 @@ export class UserManageService {
           mustChangePassword: account.mustChangePassword,
         })
         .from(user)
+        .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
         .where(where)
         .orderBy(desc(user.createdAt))
         .offset(opts.skip ?? 0)
@@ -138,6 +143,7 @@ export class UserManageService {
       this.database.db
         .select({ value: count() })
         .from(user)
+        .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
         .where(where)
         .then(([row]) => row.value),
     ]);
@@ -259,7 +265,7 @@ export class UserManageService {
       .select({ id: account.id })
       .from(account)
       .where(
-        and(eq(user.id, id), eq(user.domain, 'local'), eq(user.namespaceId, 0)),
+        and(eq(user.id, id), eq(user.namespaceId, 0)),
       )
       .limit(1);
     if (target.length === 0) {

@@ -5,6 +5,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
 import { MessageVisibilityService } from '../src/message/message-visibility.service.js';
 import { ForwardBundleService } from '../src/forward/forward-bundle.service.js';
+import { withMessageDigest } from './support/message-fixture.js';
 
 describe('message lookup with retained conversation history', () => {
   let mod: TestingModule;
@@ -50,38 +51,34 @@ describe('message lookup with retained conversation history', () => {
         seq: 1,
         contentType: 'SYSTEM',
         creatorAccount: '$system',
-        creatorDomain: 'local',
         content: '{}',
         updatedAt: new Date(),
       },
-      {
+      withMessageDigest({
         threadId: retainedThreadId,
         seq: 2,
         contentType: 'PURE_TEXT',
         content: '{"text":"deleted"}',
         isDeleted: true,
         creatorAccount: 'visibility-viewer',
-        creatorDomain: 'local',
         updatedAt: new Date(),
-      },
-      {
+      }),
+      withMessageDigest({
         threadId: retainedThreadId,
         seq: 3,
         contentType: 'PURE_TEXT',
         content: '{"text":"beyond boundary"}',
         creatorAccount: 'visibility-viewer',
-        creatorDomain: 'local',
         updatedAt: new Date(),
-      },
-      {
+      }),
+      withMessageDigest({
         threadId: targetThreadId,
         seq: 1,
         contentType: 'PURE_TEXT',
         content: '{"text":"intended source"}',
         creatorAccount: 'visibility-viewer',
-        creatorDomain: 'local',
         updatedAt: new Date(),
-      },
+      }),
     ]);
   });
   afterAll(async () => {

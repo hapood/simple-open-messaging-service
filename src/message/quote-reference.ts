@@ -3,10 +3,10 @@ import { findStoredQuoteTargets } from './stored-quote-targets.js';
 import type { Database } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import {
-  parseTextMessageContent,
-  storedQuoteCoordinate,
-  stringifyTextMessageContent,
-} from '../../shared/text-message-content.js';
+  parseMessageContentQuote,
+  withMessageContentQuote,
+} from '../../shared/message-content-quote.js';
+import { storedQuoteCoordinate } from '../../shared/text-message-content.js';
 
 type Message = typeof tables.message.$inferSelect;
 
@@ -16,17 +16,15 @@ export async function resolveStoredQuotes<T extends Message>(
   messages: T[],
 ): Promise<T[]> {
   const refs = messages.flatMap((m) => {
-    if (m.contentType !== 'PURE_TEXT') return [];
-    const content = parseTextMessageContent(m.content);
-    if (!content?.quote) return [];
+    const contentQuote = parseMessageContentQuote(m.content);
+    if (!contentQuote) return [];
     const coordinate = storedQuoteCoordinate(
-      content.quote,
+      contentQuote,
       m.publisherNamespaceId ?? 0,
     );
     return [
       {
         m: { ...m, publisherNamespaceId: coordinate.namespaceId },
-        content,
         quote:
           coordinate.namespaceId === 0
             ? { seq: coordinate.seq }
@@ -35,7 +33,7 @@ export async function resolveStoredQuotes<T extends Message>(
     ];
   });
   if (!refs.length) return messages;
-  const targets = await findStoredQuoteTargets(db, messages);
+  const targets = await findStoredQuoteTargets(db, refs.map(({ m }) => m));
   const threadIds = [...new Set(refs.map((r) => r.m.threadId))];
   const [gaps, states] = await Promise.all([
     db.query.federationThreadHistoryGap.findMany({
@@ -46,7 +44,7 @@ export async function resolveStoredQuotes<T extends Message>(
     }),
   ]);
   const replacements = new Map<bigint, string>();
-  for (const { m, content, quote } of refs) {
+  for (const { m, quote } of refs) {
     const target = targets.get(m.id);
     const gap = gaps.find(
       (g) =>
@@ -70,19 +68,19 @@ export async function resolveStoredQuotes<T extends Message>(
           (!state || quote.sourceSeq > state.messageProcessedThroughSeq);
     replacements.set(
       m.id,
-      stringifyTextMessageContent({
-        text: content.text,
-        quote: {
-          seq: target?.seq ?? (quote.sourceSeq === undefined ? quote.seq : 0),
-          ...(!target && quote.sourceSeq !== undefined
-            ? { sourceSeq: quote.sourceSeq }
+      withMessageContentQuote(m.content, {
+        seq: target?.seq ?? (quote.sourceSeq === undefined ? quote.seq : 0),
+        ...(parseMessageContentQuote(m.content)?.digest
+          ? { digest: parseMessageContentQuote(m.content)!.digest }
+          : {}),
+        ...(!target && quote.sourceSeq !== undefined
+          ? { sourceSeq: quote.sourceSeq }
+          : {}),
+        ...(pending
+          ? { status: 'PENDING' as const }
+          : !target || target.isDeleted
+            ? { status: 'NOT_FOUND' as const }
             : {}),
-          ...(pending
-            ? { status: 'PENDING' as const }
-            : !target || target.isDeleted
-              ? { status: 'NOT_FOUND' as const }
-              : {}),
-        },
       }),
     );
   }

@@ -29,7 +29,6 @@ import {
   buildIntentDirection,
   RelationshipIntentService,
 } from '../../../relationship/relationship-intent.service.js';
-import { loadFederationConfig } from '../../../federation/federation.config.js';
 import { FederationGroupRequestProjectionService } from '../../../federation/federation-group-request-projection.service.js';
 import { GroupRelationshipFoldService } from './group-relationship-fold.service.js';
 import { writeMirrorLocalGroupLeftInTx } from './mirror-local-group-left.js';
@@ -82,8 +81,6 @@ export interface GroupRelationshipMutationOptions {
  */
 @Injectable()
 export class GroupRelationshipMutationService {
-  private readonly config = loadFederationConfig();
-
   constructor(
     private readonly relationshipIntents: RelationshipIntentService,
     private readonly groupRequestProjection: FederationGroupRequestProjectionService,
@@ -98,7 +95,7 @@ export class GroupRelationshipMutationService {
     tx: DatabaseTransaction,
     group: { domain: string; namespaceId: number },
   ): Promise<void> {
-    if (group.domain === 'local') return;
+    if (group.namespaceId === 0) return;
     await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
       { namespaceId: group.namespaceId },
     ]);
@@ -193,7 +190,7 @@ export class GroupRelationshipMutationService {
         ...(validatedPairActive === undefined ? {} : { validatedPairActive }),
       });
     if (
-      group.domain !== 'local' &&
+      group.namespaceId !== 0 &&
       status === 'REVOKED' &&
       membership.pairChanged
     ) {
@@ -204,7 +201,7 @@ export class GroupRelationshipMutationService {
         threadLock: locked.threadLock,
       });
     }
-    if (allowDissolvedPositive && group.domain !== 'local')
+    if (allowDissolvedPositive && group.namespaceId !== 0)
       await tx
         .update(tables.messageThread)
         .set({
@@ -221,7 +218,7 @@ export class GroupRelationshipMutationService {
       clientFeedUpdates.push(
         ...(await captureThreadStateUpdatesInTx(tx, [memberUserId])),
       );
-    if (group.domain === 'local' && membership.changed)
+    if (group.namespaceId === 0 && membership.changed)
       await this.writeGroupRequestEffectsInTx(
         tx,
         threadId,
@@ -234,7 +231,7 @@ export class GroupRelationshipMutationService {
         membership.request.status === 'ACCEPTED' ? 'INVITATION' : 'APPLICATION',
         membership.request.status === 'REQUESTED',
       );
-    if (group.domain === 'local') {
+    if (group.namespaceId === 0) {
       if (clientFeedUpdates && membership.changed) {
         const endpoints = groupIntentEndpoints(
           group.account,
@@ -244,7 +241,7 @@ export class GroupRelationshipMutationService {
         const feedId = await this.clientStateFeed.writeInTx(tx, {
           userId: memberUserId,
           account: endpoints.account,
-          domain: 'local',
+          domain: group.domain,
           namespaceId: 0,
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: endpoints.subjectAccount,
@@ -303,7 +300,7 @@ export class GroupRelationshipMutationService {
       const feedId = await this.clientStateFeed.writeInTx(tx, {
         userId: memberUserId,
         account: endpoints.account,
-        domain: 'local',
+        domain: group.domain,
         namespaceId: group.namespaceId,
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: endpoints.subjectAccount,
@@ -449,7 +446,7 @@ export class GroupRelationshipMutationService {
       const feedId = await this.clientStateFeed.writeInTx(tx, {
         userId: localAccount.id,
         account: endpoints.account,
-        domain: 'local',
+        domain: state.groupDomain,
         namespaceId: 0,
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: endpoints.subjectAccount,

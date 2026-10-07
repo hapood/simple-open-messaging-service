@@ -12,7 +12,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { CallsService } from '../calls/calls.service.js';
-import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
+import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
 import { buildIceServers } from '../calls/turn-credentials.js';
 import {
   InitiateCallDto,

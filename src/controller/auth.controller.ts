@@ -16,7 +16,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { LocalAuthGuard } from '../auth/local-auth.guard.js';
 import { PasswordLoginEnabledGuard } from '../auth/password-login-enabled.guard.js';
-import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
+import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
 import { AuthService } from '../auth/auth.service.js';
 import {
   MEDIA_TOKEN_COOKIE,

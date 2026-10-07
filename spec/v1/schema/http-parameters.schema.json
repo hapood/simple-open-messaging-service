@@ -338,8 +338,7 @@
       "properties": {
         "bundleId": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 26
+          "pattern": "^[a-f0-9]{64}$"
         }
       },
       "additionalProperties": false

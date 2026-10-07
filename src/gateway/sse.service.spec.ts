@@ -125,7 +125,6 @@ describe('framework SSE streams', () => {
       publisherNamespaceId: 4,
       profileNamespaceId: 4,
       account: 'alice',
-      domain: 'remote.test',
       rev: 9,
     });
     expect(eventsOf(old, 'PROFILE_AVAILABLE')).toHaveLength(0);
@@ -140,7 +139,6 @@ describe('framework SSE streams', () => {
       publisherNamespaceId: 4,
       profileNamespaceId: 4,
       account: 'alice',
-      domain: 'remote.test',
       rev: 9,
       reason: 'NOT_FOUND',
     });

@@ -7,6 +7,7 @@ import { and, eq, inArray, isNotNull, or } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { fileSyncProgress, pendingMedia } from '../database/schema.js';
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
+import { KeypairService } from './keypair.service.js';
 
 /**
  * Rebuilds the volatile download queue from durable inbound state after all modules have initialized.
@@ -22,9 +23,11 @@ export class FederationDownloadRecoveryService
   constructor(
     private readonly database: DatabaseService,
     private readonly inboundMediaBatches: FederationInboundMediaBatchService,
+    private readonly keypair: KeypairService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
+    await this.keypair.waitUntilInitialized();
     try {
       const batches = await this.database.db
         .selectDistinct({ batchId: pendingMedia.batchId })

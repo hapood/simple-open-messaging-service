@@ -11,7 +11,7 @@ import { PasswordHasher } from '../auth/password-hasher.service.js';
 /**
  * Idempotent first-admin self-bootstrap. Runs once per application start via OnApplicationBootstrap
  * (which fires after DatabaseService.onModuleInit, so the DB is reachable). Ensures the
- * bootstrap admin (account=admin, domain=local) exists:
+ * bootstrap admin (account=admin, namespaceId=0) exists:
  *
  *   - present            → no-op (no ADMIN_BOOTSTRAP_PASSWORD needed) — every boot after the first;
  *   - absent + password  → create the Account + a linked SUPER_ADMIN role, password hashed via the shared
@@ -70,7 +70,12 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
     const userId = await this.database.db.transaction(async (tx) => {
       const [created] = await tx
         .insert(accountTable)
-        .values({ account: 'admin', hashPwd: hash, defaultProfileRev: 1 })
+        .values({
+          account: 'admin',
+          namespaceId: 0,
+          hashPwd: hash,
+          defaultProfileRev: 1,
+        })
         .onConflictDoNothing({ target: accountTable.account })
         .returning({ id: accountTable.id });
       const local =

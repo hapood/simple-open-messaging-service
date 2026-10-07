@@ -179,6 +179,13 @@ CREATE TYPE public."MessageLocalState" AS ENUM (
     'READY'
 );
 
+-- Verification of a federated payload is independent from local materialization state.
+CREATE TYPE public."FederationPayloadVerification" AS ENUM (
+    'UNVERIFIED',
+    'VERIFIED',
+    'CONFLICT'
+);
+
 
 --
 -- Name: MessageThreadType; Type: TYPE; Schema: public; Owner: -
@@ -365,6 +372,10 @@ CREATE TABLE public."Message" (
     "localState" public."MessageLocalState" DEFAULT 'READY'::public."MessageLocalState" NOT NULL,
     "profileRev" integer DEFAULT 0 NOT NULL,
     "profileNamespaceId" integer DEFAULT 0 NOT NULL,
+    "payloadDigest" character varying(64),
+    "federationPayloadVerification" public."FederationPayloadVerification" DEFAULT 'UNVERIFIED'::public."FederationPayloadVerification" NOT NULL,
+    "federationEnvelopeDigest" character varying(64),
+    CONSTRAINT "Message_payload_digest_check" CHECK (("contentType" = 'SYSTEM'::public."ContentType") OR ("payloadDigest" IS NOT NULL)),
     CONSTRAINT "Message_origin_seq_check" CHECK ((("publisherNamespaceId" = 0) OR (("originSeq" IS NOT NULL) AND ("originSeq" > 0)))),
     CONSTRAINT "Message_profileRev_check" CHECK (("profileRev" >= 0)),
     CONSTRAINT "Message_seq_check" CHECK ((seq > 0)),
@@ -584,7 +595,6 @@ CREATE TABLE public."Account" (
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     account character varying(31) NOT NULL,
-    domain character varying(63) DEFAULT 'local'::character varying NOT NULL,
     "namespaceId" integer DEFAULT 0 NOT NULL,
     "defaultProfileRev" integer DEFAULT 0 NOT NULL,
     availability character varying(16) DEFAULT 'AVAILABLE'::character varying NOT NULL,
@@ -593,8 +603,8 @@ CREATE TABLE public."Account" (
     CONSTRAINT "Account_availability_check" CHECK (((availability)::text = ANY (ARRAY[('AVAILABLE'::character varying)::text, ('REMOVED'::character varying)::text]))),
     CONSTRAINT "Account_clientStateFeedEndId_check" CHECK (("clientStateFeedEndId" >= 0)),
     CONSTRAINT "Account_defaultProfileRev_check" CHECK (("defaultProfileRev" >= 0)),
+    CONSTRAINT "Account_namespace_check" CHECK (("namespaceId" = 0)),
     CONSTRAINT "Account_kind_check" CHECK (((((kind)::text = 'USER'::text) AND ((account)::text <> '$system'::text)) OR (((kind)::text = 'SYSTEM'::text) AND ((account)::text = '$system'::text) AND ("hashPwd" IS NULL) AND ("disabledAt" IS NOT NULL) AND ("defaultProfileRev" = 0)))),
-    CONSTRAINT "Account_local_identity_check" CHECK ((((domain)::text = 'local'::text) AND ("namespaceId" = 0))),
     CONSTRAINT "Account_threadFeedEndId_check" CHECK (("threadFeedEndId" >= 0))
 );
 
@@ -1012,20 +1022,6 @@ ALTER SEQUENCE public."FederationIdentityReview_id_seq" OWNED BY public."Federat
 
 
 --
--- Name: FederationMessageReceipt; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public."FederationMessageReceipt" (
-    "namespaceId" integer NOT NULL,
-    "threadId" integer NOT NULL,
-    "peerSeq" integer NOT NULL,
-    "messageId" bigint NOT NULL,
-    "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "FederationMessageReceipt_peerSeq_check" CHECK (("peerSeq" > 0))
-);
-
-
---
 -- Name: FederationThreadHistoryGap; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1141,7 +1137,7 @@ CREATE TABLE public."ForwardBundle" (
     "totalBytes" bigint NOT NULL,
     "sourceDomain" character varying(63),
     "publisherNamespaceId" integer,
-    "sourceBundleId" character varying(26),
+    "sourceBundleId" character varying(64),
     "createdBy" integer,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     CONSTRAINT "ForwardBundle_asset_count_check" CHECK (("assetCount" >= 0)),
@@ -1309,7 +1305,6 @@ CREATE TABLE public."IdentityNamespace" (
     "haltedAt" timestamp(3) with time zone,
     "haltCode" integer,
     "haltReason" character varying(255),
-    "recognizesPeer" boolean DEFAULT false NOT NULL,
     "peerAcceptanceConfirmed" boolean DEFAULT false NOT NULL,
     "localServiceAvailable" boolean DEFAULT false NOT NULL,
     "remoteServiceReachable" boolean DEFAULT false NOT NULL,
@@ -1328,7 +1323,7 @@ CREATE TABLE public."IdentityNamespace" (
     CONSTRAINT "IdentityNamespace_profileNamespaceFeedEndId_check" CHECK ((("profileNamespaceFeedEndId" >= 0) AND ((id = 0) OR ("profileNamespaceFeedEndId" = 0)))),
     CONSTRAINT "IdentityNamespace_profileNamespaceFeedPulledThrough_check" CHECK (("profileNamespaceFeedPulledThrough" >= 0)),
     CONSTRAINT "IdentityNamespace_retiredAt_check" CHECK ((("retiredAt" IS NULL) OR ("retiredAt" >= "createdAt"))),
-    CONSTRAINT "IdentityNamespace_shape_check" CHECK ((((id = 0) AND ((domain)::text = 'local'::text) AND ("rootPublicKey" IS NULL) AND ("identityPinnedAt" IS NULL) AND ("peerAssignedLocalNamespaceId" IS NULL) AND ("retiredAt" IS NULL) AND (active = false) AND (("trustLevel")::text = 'unrecognized'::text) AND ("trustedAt" IS NULL) AND ("lastSuccessAt" IS NULL) AND ("degradedAt" IS NULL) AND ("degradationReason" IS NULL) AND ("degradationCount" = 0) AND ("haltedAt" IS NULL) AND ("haltCode" IS NULL) AND ("haltReason" IS NULL) AND ("recognizesPeer" = false) AND ("peerAcceptanceConfirmed" = false) AND ("localServiceAvailable" = false) AND ("remoteServiceReachable" = false) AND ("resetAt" IS NULL)) OR ((id > 0) AND ((domain)::text <> 'local'::text) AND ("rootPublicKey" IS NOT NULL) AND ("identityPinnedAt" IS NOT NULL) AND (("peerAssignedLocalNamespaceId" IS NULL) OR ("peerAssignedLocalNamespaceId" > 0))))),
+    CONSTRAINT "IdentityNamespace_shape_check" CHECK ((((id = 0) AND ("rootPublicKey" IS NULL) AND ("identityPinnedAt" IS NULL) AND ("peerAssignedLocalNamespaceId" IS NULL) AND ("retiredAt" IS NULL) AND (active = false) AND (("trustLevel")::text = 'unrecognized'::text) AND ("trustedAt" IS NULL) AND ("lastSuccessAt" IS NULL) AND ("degradedAt" IS NULL) AND ("degradationReason" IS NULL) AND ("degradationCount" = 0) AND ("haltedAt" IS NULL) AND ("haltCode" IS NULL) AND ("haltReason" IS NULL) AND ("peerAcceptanceConfirmed" = false) AND ("localServiceAvailable" = false) AND ("remoteServiceReachable" = false) AND ("resetAt" IS NULL)) OR ((id > 0) AND ("rootPublicKey" IS NOT NULL) AND ("identityPinnedAt" IS NOT NULL) AND (("peerAssignedLocalNamespaceId" IS NULL) OR ("peerAssignedLocalNamespaceId" > 0))))),
     CONSTRAINT "IdentityNamespace_stateFeedEndId_check" CHECK ((("stateFeedEndId" >= 0) AND ((id <> 0) OR ("stateFeedEndId" = 0)))),
     CONSTRAINT "IdentityNamespace_stateFeedPulledThrough_check" CHECK ((("stateFeedPulledThrough" IS NULL) OR ("stateFeedPulledThrough" >= 0))),
     CONSTRAINT "IdentityNamespace_trustLevel_check" CHECK ((("trustLevel")::text = ANY (ARRAY[('unrecognized'::character varying)::text, ('establishing'::character varying)::text, ('pending'::character varying)::text, ('available'::character varying)::text, ('degraded'::character varying)::text, ('halted'::character varying)::text])))
@@ -1525,7 +1520,7 @@ CREATE TABLE public."MessageThread" (
     CONSTRAINT "MessageThread_authorizationEpoch_check" CHECK (("authorizationEpoch" >= 0)),
     CONSTRAINT "MessageThread_clearedSeq_check" CHECK ((("clearedSeq" IS NULL) OR (("clearedSeq" >= 0) AND ("clearedSeq" <= "curSeq")))),
     CONSTRAINT "MessageThread_federationVersion_check" CHECK (("federationVersion" >= 0)),
-    CONSTRAINT "MessageThread_group_identity_check" CHECK (((type <> 'GROUP'::public."MessageThreadType") OR (((("groupDomain")::text = 'local'::text) = ("authorityNamespaceId" = 0)) AND ((("groupDomain")::text = 'local'::text) = ("groupAccountId" IS NOT NULL)) AND (("groupAccount")::text ~~ '!%'::text)))),
+    CONSTRAINT "MessageThread_group_identity_check" CHECK (((type <> 'GROUP'::public."MessageThreadType") OR ((("authorityNamespaceId" = 0) = ("groupAccountId" IS NOT NULL)) AND (("groupAccount")::text ~~ '!%'::text)))),
     CONSTRAINT "MessageThread_group_type_check" CHECK ((((type = 'GROUP'::public."MessageThreadType") AND ("groupAccount" IS NOT NULL) AND ("groupDomain" IS NOT NULL)) OR ((type = 'P2P'::public."MessageThreadType") AND ("groupAccount" IS NULL) AND ("groupDomain" IS NULL) AND ("groupAccountId" IS NULL) AND ("groupDissolvedAt" IS NULL)))),
     CONSTRAINT "MessageThread_tombstoneEndSeq_check" CHECK (("tombstoneEndSeq" >= 0))
 );
@@ -2449,14 +2444,6 @@ ALTER TABLE ONLY public."FederationIdentityReview"
 
 
 --
--- Name: FederationMessageReceipt FederationMessageReceipt_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageReceipt"
-    ADD CONSTRAINT "FederationMessageReceipt_pkey" PRIMARY KEY ("namespaceId", "threadId", "peerSeq");
-
-
---
 -- Name: FederationThreadHistoryGap FederationThreadHistoryGap_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3024,13 +3011,6 @@ CREATE UNIQUE INDEX "FederationIdentityReview_one_pending_per_namespace_key" ON 
 
 
 --
--- Name: FederationMessageReceipt_messageId_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "FederationMessageReceipt_messageId_idx" ON public."FederationMessageReceipt" USING btree ("messageId");
-
-
---
 -- Name: FederationThreadHistoryGap_interval_key; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3280,6 +3260,8 @@ CREATE INDEX "Message_threadId_id_idx" ON public."Message" USING btree ("threadI
 --
 
 CREATE INDEX "Message_threadId_ready_seq_idx" ON public."Message" USING btree ("threadId", seq) WHERE ("localState" = 'READY'::public."MessageLocalState");
+
+CREATE INDEX "Message_threadId_seq_payloadDigest_idx" ON public."Message" USING btree ("threadId", seq, "payloadDigest") WHERE ("payloadDigest" IS NOT NULL);
 
 
 --
@@ -3715,38 +3697,6 @@ ALTER TABLE ONLY public."FederatedMessageTombstone"
 
 ALTER TABLE ONLY public."FederationIdentityReview"
     ADD CONSTRAINT "FederationIdentityReview_matchedNamespace_fkey" FOREIGN KEY ("matchedNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE CASCADE;
-
-
---
--- Name: FederationMessageReceipt FederationMessageReceipt_messageId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageReceipt"
-    ADD CONSTRAINT "FederationMessageReceipt_messageId_fkey" FOREIGN KEY ("messageId") REFERENCES public."Message"(id) ON DELETE CASCADE;
-
-
---
--- Name: FederationMessageReceipt FederationMessageReceipt_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageReceipt"
-    ADD CONSTRAINT "FederationMessageReceipt_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
-
-
---
--- Name: FederationMessageReceipt FederationMessageReceipt_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationMessageReceipt"
-    ADD CONSTRAINT "FederationMessageReceipt_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES public."MessageThread"(id) ON DELETE CASCADE;
-
-
---
--- Name: FederationThreadHistoryGap FederationThreadHistoryGap_namespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."FederationThreadHistoryGap"
-    ADD CONSTRAINT "FederationThreadHistoryGap_namespaceId_fkey" FOREIGN KEY ("namespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --
@@ -4227,7 +4177,7 @@ ALTER TABLE ONLY public."WebAuthnCredential"
 
 
 -- Required local identities and feed head sentinels.
-INSERT INTO public."IdentityNamespace" (id, domain) VALUES (0, 'local');
-INSERT INTO public."Account" (account, kind, "disabledAt")
-VALUES ('$system', 'SYSTEM', CURRENT_TIMESTAMP);
+-- Namespace 0 is initialized with SOMS_DOMAIN by KeypairService on first boot.
+-- The system account is initialized with SOMS_DOMAIN by systemAccountIdInTx.
+
 INSERT INTO public."ProfileNamespaceChangeFeedHead" ("id", "endId") VALUES (0, 0);

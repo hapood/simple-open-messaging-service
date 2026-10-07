@@ -1,4 +1,6 @@
 import { UserService } from '../src/user/user.service.js';
+import { localIdentityDomain } from './support/local-domain.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { lockBusinessAccountsInTx } from '../src/common/locks/account-business-lock.js';
 import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
@@ -42,13 +44,11 @@ describe('current Group Meta roster', () => {
       .values([
         {
           account: `owner-${suffix}`,
-          domain: 'local',
           namespaceId: 0,
           updatedAt: new Date(),
         },
         {
           account: `departed-${suffix}`,
-          domain: 'local',
           namespaceId: 0,
           updatedAt: new Date(),
         },
@@ -81,8 +81,10 @@ describe('current Group Meta roster', () => {
         threadId: groupId,
         endpointAType: 'GROUP',
         endpointAAccount: `!roster-${suffix}`,
+        endpointANamespaceId: 0,
         endpointBType: 'USER',
         endpointBAccount: `owner-${suffix}`,
+        endpointBNamespaceId: 0,
         active: true,
         established: true,
       })
@@ -96,7 +98,7 @@ describe('current Group Meta roster', () => {
         threadId: groupId,
         feedId: 1,
         memberAccount: `owner-${suffix}`,
-        memberDomain: 'local',
+        profileNamespaceId: 0,
         operation: 'MEMBER_UPSERT',
         body: { role: GroupRole.OWNER, profileRev: 1 },
       },
@@ -104,9 +106,9 @@ describe('current Group Meta roster', () => {
         threadId: groupId,
         feedId: 3,
         memberAccount: `departed-${suffix}`,
-        memberDomain: 'local',
+        profileNamespaceId: 0,
         operation: 'MEMBER_DEPART',
-        body: {},
+        body: { profileRev: 1 },
         profileSourceSeq: 2,
       },
     ]);
@@ -137,7 +139,7 @@ describe('current Group Meta roster', () => {
     expect(roster).toEqual([
       expect.objectContaining({
         account: `owner-${suffix}`,
-        domain: 'local',
+        domain: localIdentityDomain(),
         namespaceId: 0,
         role: GroupRole.OWNER,
         profileRev: 1,
@@ -186,7 +188,7 @@ describe('current Group Meta roster', () => {
     const feedId = await database.db.transaction((tx) =>
       new GroupMetaFeedService().appendMemberTransitionInTx(tx, groupId, {
         account,
-        domain: 'local',
+        profileNamespaceId: 0,
         operation: 'MEMBER_UPSERT',
         body: { role: GroupRole.MEMBER, profileRev: 1 },
       }),
@@ -211,9 +213,9 @@ describe('current Group Meta roster', () => {
           threadId: groupId,
           feedId: 5,
           memberAccount: account,
-          memberDomain: 'local',
+          profileNamespaceId: 0,
           operation: 'MEMBER_DEPART',
-          body: {},
+          body: { profileRev: 1 },
         },
       ]);
       await tx
@@ -231,7 +233,7 @@ describe('current Group Meta roster', () => {
           threadId: groupId,
           feedId: 6,
           memberAccount: account,
-          memberDomain: 'local',
+          profileNamespaceId: 0,
           operation: 'MEMBER_UPSERT',
           body: { role: GroupRole.MEMBER, profileRev: 3 },
         },
@@ -253,15 +255,15 @@ describe('current Group Meta roster', () => {
     await database.db.insert(profileTable).values([
       {
         account: memberAccount,
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 7,
         displayName: 'Seven',
       },
       {
         account: memberAccount,
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 4,
         displayName: 'Four',
       },
@@ -272,27 +274,29 @@ describe('current Group Meta roster', () => {
       .where(eq(groupMeta.threadId, groupId));
     const firstId = initial.metaEndId + 1;
     const commitMessage = (seq: number, profileRev: number) =>
-      database.db.insert(message).values({
-        threadId: groupId,
-        seq,
-        creatorAccount: memberAccount,
-        creatorDomain: 'local',
-        profileNamespaceId: 0,
-        profileRev,
-        contentType: 'PURE_TEXT',
-        content: JSON.stringify({ text: `message ${seq}` }),
-        updatedAt: new Date(),
-      });
+      database.db.insert(message).values(
+        withMessageDigest({
+          threadId: groupId,
+          seq,
+          creatorAccount: memberAccount,
+
+          profileNamespaceId: 0,
+          profileRev,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: `message ${seq}` }),
+          updatedAt: new Date(),
+        }),
+      );
     const publish = (messageSeq: number, profileRev: number) =>
       database.db.transaction(async (tx) => {
         await lockBusinessAccountsInTx(tx, [
-          { account: `!roster-${suffix}`, domain: 'local' },
+          { account: `!roster-${suffix}`, profileNamespaceId: 0 },
         ]);
         const threadLock = await requireThreadContentLockInTx(tx, groupId);
         return publishMemberMessageProfileInTx(tx, {
           threadLock,
           account: memberAccount,
-          domain: 'local',
+          publisherNamespaceId: 0,
           namespaceId: 0,
           messageSeq,
           profileRev,
@@ -337,40 +341,41 @@ describe('current Group Meta roster', () => {
     // its source coordinate belongs to the previous membership interval.
     await database.db.transaction(async (tx) => {
       await lockBusinessAccountsInTx(tx, [
-        { account: `!roster-${suffix}`, domain: 'local' },
+        { account: `!roster-${suffix}`, profileNamespaceId: 0 },
       ]);
       await requireThreadContentLockInTx(tx, groupId);
       const meta = new GroupMetaFeedService();
       await meta.appendMemberTransitionInTx(tx, groupId, {
         account: memberAccount,
-        domain: 'local',
+        profileNamespaceId: 0,
         operation: 'MEMBER_DEPART',
-        body: {},
+        body: { profileRev: 1 },
       });
       await meta.appendMemberTransitionInTx(tx, groupId, {
         account: memberAccount,
-        domain: 'local',
+        profileNamespaceId: 0,
         operation: 'MEMBER_UPSERT',
         body: { role: GroupRole.OWNER, profileRev: 1 },
       });
-      await tx.insert(message).values({
-        threadId: groupId,
-        seq: 6,
-        contentType: 'SYSTEM',
-        creatorAccount: '$system',
-        creatorDomain: 'local',
-        profileRev: 0,
-        content: JSON.stringify({
-          type: 'GROUP_JOINED',
-          member: {
-            account: memberAccount,
-            domain: 'local',
-            namespaceId: 0,
-            profileRev: 1,
-          },
+      await tx.insert(message).values(
+        withMessageDigest({
+          threadId: groupId,
+          seq: 6,
+          contentType: 'SYSTEM',
+          creatorAccount: '$system',
+
+          profileRev: 0,
+          content: JSON.stringify({
+            type: 'GROUP_JOINED',
+            member: {
+              account: memberAccount,
+              profileNamespaceId: 0,
+              profileRev: 1,
+            },
+          }),
+          updatedAt: new Date(),
         }),
-        updatedAt: new Date(),
-      });
+      );
     });
     expect(await publish(5, 0)).toBe(false);
     expect(await selected()).toMatchObject({
@@ -398,6 +403,8 @@ describe('current Group Meta roster', () => {
         threadId: groupId,
         endpointAType: 'GROUP',
         endpointAAccount: `!roster-${suffix}`,
+        endpointANamespaceId: 0,
+        endpointBType: 'USER',
         endpointBAccount: account,
         endpointBNamespaceId: namespaceId,
         active: true,
@@ -408,32 +415,34 @@ describe('current Group Meta roster', () => {
     await database.db.transaction((tx) =>
       new GroupMetaFeedService().appendMemberTransitionInTx(tx, groupId, {
         account,
-        domain,
+        profileNamespaceId: namespaceId,
         operation: 'MEMBER_UPSERT',
         body: { role: GroupRole.MEMBER, profileRev: 2 },
       }),
     );
-    await database.db.insert(message).values({
-      threadId: groupId,
-      seq: 8,
-      creatorAccount: account,
-      creatorDomain: domain,
-      profileNamespaceId: namespaceId,
-      profileRev: 4,
-      contentType: 'PURE_TEXT',
-      content: JSON.stringify({ text: 'remote member' }),
-      updatedAt: new Date(),
-    });
+    await database.db.insert(message).values(
+      withMessageDigest({
+        threadId: groupId,
+        seq: 8,
+        creatorAccount: account,
+
+        profileNamespaceId: namespaceId,
+        profileRev: 4,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'remote member' }),
+        updatedAt: new Date(),
+      }),
+    );
     const publish = (messageSeq = 8) =>
       database.db.transaction(async (tx) => {
         await lockBusinessAccountsInTx(tx, [
-          { account: `!roster-${suffix}`, domain: 'local' },
+          { account: `!roster-${suffix}`, profileNamespaceId: 0 },
         ]);
         const threadLock = await requireThreadContentLockInTx(tx, groupId);
         return publishMemberMessageProfileInTx(tx, {
           threadLock,
           account,
-          domain,
+          publisherNamespaceId: namespaceId,
           namespaceId,
           messageSeq,
           profileRev: 4,
@@ -442,8 +451,8 @@ describe('current Group Meta roster', () => {
     expect(await publish()).toBe(false);
     await database.db.insert(profileTable).values({
       account,
-      domain,
-      namespaceId,
+      publisherNamespaceId: namespaceId,
+      profileNamespaceId: namespaceId,
       profileRev: 4,
       displayName: 'Remote member',
     });
@@ -456,36 +465,39 @@ describe('current Group Meta roster', () => {
       .update(relationshipPair)
       .set({ active: true })
       .where(eq(relationshipPair.id, remotePairId));
-    await database.db.insert(message).values({
-      threadId: groupId,
-      seq: 9,
-      contentType: 'SYSTEM',
-      creatorAccount: '$system',
-      creatorDomain: 'local',
-      profileRev: 0,
-      content: JSON.stringify({
-        type: 'GROUP_JOINED',
-        member: {
-          account,
-          domain,
-          namespaceId,
-          profileRev: 4,
-        },
+    await database.db.insert(message).values(
+      withMessageDigest({
+        threadId: groupId,
+        seq: 9,
+        contentType: 'SYSTEM',
+        creatorAccount: '$system',
+
+        profileRev: 0,
+        content: JSON.stringify({
+          type: 'GROUP_JOINED',
+          member: {
+            account,
+            profileNamespaceId: namespaceId,
+            profileRev: 4,
+          },
+        }),
+        updatedAt: new Date(),
       }),
-      updatedAt: new Date(),
-    });
+    );
     expect(await publish()).toBe(false); // Prior membership cannot leak forward.
-    await database.db.insert(message).values({
-      threadId: groupId,
-      seq: 10,
-      creatorAccount: account,
-      creatorDomain: domain,
-      profileNamespaceId: namespaceId,
-      profileRev: 4,
-      contentType: 'PURE_TEXT',
-      content: JSON.stringify({ text: 'new membership' }),
-      updatedAt: new Date(),
-    });
+    await database.db.insert(message).values(
+      withMessageDigest({
+        threadId: groupId,
+        seq: 10,
+        creatorAccount: account,
+
+        profileNamespaceId: namespaceId,
+        profileRev: 4,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'new membership' }),
+        updatedAt: new Date(),
+      }),
+    );
     expect(await publish(10)).toBe(true);
     const [fact] = await database.db
       .select({
@@ -497,7 +509,7 @@ describe('current Group Meta roster', () => {
         and(
           eq(groupMetaMemberFeed.threadId, groupId),
           eq(groupMetaMemberFeed.memberAccount, account),
-          eq(groupMetaMemberFeed.memberDomain, domain),
+          eq(groupMetaMemberFeed.profileNamespaceId, namespaceId),
         ),
       );
     expect(fact).toMatchObject({

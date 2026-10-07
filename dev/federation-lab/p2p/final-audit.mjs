@@ -68,11 +68,13 @@ export async function readNodeMessageAudit(
   const identityColumns =
     kind === 'GROUP'
       ? 'thread."groupAccount" AS "account", thread."groupDomain" AS "domain"'
-      : 'pair."endpointAAccount", pair."endpointADomain", pair."endpointBAccount", pair."endpointBDomain"';
+      : 'pair."endpointAAccount", COALESCE(ns_a."domain", \'local\') AS "endpointADomain", pair."endpointBAccount", COALESCE(ns_b."domain", \'local\') AS "endpointBDomain"';
   const identityJoin =
     kind === 'GROUP'
       ? ''
-      : 'INNER JOIN "RelationshipPair" pair ON pair."threadId" = thread."id" AND pair."kind" = \'P2P\'';
+      : 'INNER JOIN "RelationshipPair" pair ON pair."threadId" = thread."id" AND pair."kind" = \'P2P\' ' +
+        'LEFT JOIN "IdentityNamespace" ns_a ON ns_a."id" = pair."endpointANamespaceId" ' +
+        'LEFT JOIN "IdentityNamespace" ns_b ON ns_b."id" = pair."endpointBNamespaceId"';
   const threadFilter = `WHERE thread."type" = '${kind === 'GROUP' ? 'GROUP' : 'P2P'}'`;
   const threads = await client.query(`
       SELECT ${identityColumns}, thread."id" AS "threadId",
@@ -85,14 +87,15 @@ export async function readNodeMessageAudit(
       SELECT ${identityColumns}, msg."id"::text AS "id",
              msg."threadId", msg."seq", msg."originSeq", msg."profileRev",
              msg."contentType", msg."content", msg."clientMessageId", msg."isDeleted",
-             msg."localState", msg."creatorAccount", msg."creatorDomain",
-             msg."creatorNamespaceId", msg."sourceNamespaceId", namespace."domain" AS "sourceDomain",
+             msg."localState", msg."creatorAccount", creator_ns."domain" AS "creatorDomain",
+             msg."profileNamespaceId" AS "creatorNamespaceId", msg."publisherNamespaceId" AS "sourceNamespaceId", namespace."domain" AS "sourceDomain",
              quote_namespace."domain" AS "quoteSourceDomain",
              bundle."messages" AS "forwardMessages"
       FROM "Message" msg
       INNER JOIN "MessageThread" thread ON thread."id" = msg."threadId"
       ${identityJoin}
-      LEFT JOIN "IdentityNamespace" namespace ON namespace."id" = msg."sourceNamespaceId"
+      LEFT JOIN "IdentityNamespace" creator_ns ON creator_ns."id" = msg."profileNamespaceId"
+      LEFT JOIN "IdentityNamespace" namespace ON namespace."id" = msg."publisherNamespaceId"
       LEFT JOIN "IdentityNamespace" quote_namespace ON quote_namespace."id" =
         CASE WHEN msg."contentType" = 'PURE_TEXT'
           THEN (msg."content"::jsonb #>> '{quote,namespaceId}')::integer END
@@ -232,16 +235,32 @@ async function avatarDigest(node, avatar) {
 export async function readNodeProfileAudit(client, node) {
   const versions = await client.query(`
       SELECT version."profileRev", version."displayName", version."avatar", version."bio",
-             version."account", version."domain", version."namespaceId"
+             version."account", ns."domain" AS "domain", version."profileNamespaceId" AS "namespaceId"
       FROM "Profile" version
+      LEFT JOIN "IdentityNamespace" ns ON ns."id" = version."profileNamespaceId"
     `);
   const intents = await client.query(`
-      SELECT pair."endpointAAccount", pair."endpointADomain",
-             pair."endpointAType", pair."endpointBAccount", pair."endpointBDomain",
+      SELECT pair."endpointAAccount", ns_a."domain" AS "endpointADomain",
+             pair."endpointAType", pair."endpointBAccount", ns_b."domain" AS "endpointBDomain",
              pair."endpointBType", pair."endpointANamespaceId", pair."endpointBNamespaceId",
-             intent."authorSide", intent."status", intent."expiresAt", intent."profileRev"
+             CASE WHEN pair."endpointAAccount" = intent."authorAccount"
+            AND pair."endpointANamespaceId" = intent."authorNamespaceId"
+            THEN 'A' ELSE 'B' END AS "authorSide", intent."status", intent."expiresAt", intent."profileRev"
       FROM "RelationshipIntent" intent
-      INNER JOIN "RelationshipPair" pair ON pair."id" = intent."pairId"
+      INNER JOIN "RelationshipPair" pair
+      ON pair."kind" = 'P2P'
+        AND (
+          (pair."endpointAAccount" = intent."authorAccount"
+            AND pair."endpointANamespaceId" = intent."authorNamespaceId"
+            AND pair."endpointBAccount" = intent."receiverAccount"
+            AND pair."endpointBNamespaceId" = intent."receiverNamespaceId")
+          OR (pair."endpointBAccount" = intent."authorAccount"
+            AND pair."endpointBNamespaceId" = intent."authorNamespaceId"
+            AND pair."endpointAAccount" = intent."receiverAccount"
+            AND pair."endpointANamespaceId" = intent."receiverNamespaceId")
+        )
+      LEFT JOIN "IdentityNamespace" ns_a ON ns_a."id" = pair."endpointANamespaceId"
+      LEFT JOIN "IdentityNamespace" ns_b ON ns_b."id" = pair."endpointBNamespaceId"
       WHERE intent."profileRev" > 0
     `);
   const normalized = (account, domain) =>

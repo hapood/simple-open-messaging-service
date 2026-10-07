@@ -16,7 +16,8 @@ function service() {
 function groupMessage(authorNamespaceId = 0): FederationMessageFeedMessage {
   return {
     thread: { account: '!group' },
-    author: { account: 'alice', namespaceId: authorNamespaceId },
+    namespaceId: authorNamespaceId,
+    author: { account: 'alice', domain: 'peer.test' },
     seq: 7,
     profileRev: 1,
     originSeq: null,
@@ -94,17 +95,19 @@ describe('FederationInboundMessageRouteService', () => {
       expect.anything(),
       {
         thread: { account: '!group' },
-        author: { account: 'alice', namespaceId: 0 },
+        namespaceId: 0,
+        author: { account: 'alice', domain: 'peer.test' },
       },
       'peer.test',
       9,
       7,
     );
     const query = dialect.sqlToQuery(execute.mock.calls[1]![0] as SQL);
-    expect(query.sql).toContain('m."profileNamespaceId" = $5');
+    expect(query.sql).toContain('m."profileNamespaceId" IN (0, $5)');
     expect(query.sql).toContain('m."publisherNamespaceId" = $3');
     expect(query.sql).toContain('m."originSeq" = $4');
-    expect(query.params).toEqual(['GROUP', '!group', 9, 7, 9]);
+    expect(query.sql).toContain('m."originServerTime" IS NOT NULL');
+    expect(query.params).toEqual(['GROUP', '!group', 9, 7, 9, 7]);
   });
 
   it('rejects unknown or foreign-authored member retractions without inventing pending facts', async () => {
@@ -146,7 +149,7 @@ describe('FederationInboundMessageRouteService', () => {
     });
 
     const query = dialect.sqlToQuery(execute.mock.calls[1]![0] as SQL);
-    expect(query.sql).toContain("group_user.domain = 'local'");
+    expect(query.sql).toContain('group_user."namespaceId" = 0');
     expect(query.sql).toContain('FROM "RelationshipPair" pair');
     expect(query.sql).toContain("pair.kind = 'GROUP_MEMBER'");
     expect(query.sql).toContain('pair.active = true');
@@ -168,7 +171,7 @@ describe('FederationInboundMessageRouteService', () => {
       service().resolveMessage(tx, groupReceipt(), 'peer.test', 9, 12),
     ).resolves.toMatchObject({
       threadId: 11,
-      profileNamespaceId: 12,
+      profileNamespaceId: 0,
       authority: 'LOCAL',
     });
     const query = dialect.sqlToQuery(execute.mock.calls[1]![0] as SQL);
@@ -194,7 +197,7 @@ describe('FederationInboundMessageRouteService', () => {
           { execute } as unknown as DatabaseTransaction,
           {
             ...groupReceipt(),
-            author: { account: 'alice', namespaceId: authorNamespaceId },
+            namespaceId: authorNamespaceId,
           },
           'group.test',
           9,

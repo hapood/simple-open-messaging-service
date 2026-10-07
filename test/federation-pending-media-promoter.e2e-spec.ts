@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { withMessageDigest } from './support/message-fixture.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
@@ -34,7 +35,16 @@ describe('FederationPendingMediaPromoter', () => {
   beforeEach(async () => {
     await truncateTablesForTest(
       database.pool,
-      'TRUNCATE TABLE "MessageThread" RESTART IDENTITY CASCADE; DELETE FROM "IdentityNamespace" WHERE id <> 0',
+      'TRUNCATE TABLE "MessageThread" RESTART IDENTITY CASCADE; ' +
+        `DO $$ DECLARE dependent regclass; BEGIN
+          FOR dependent IN
+            SELECT conrelid::regclass FROM pg_constraint
+            WHERE confrelid = '"IdentityNamespace"'::regclass AND contype = 'f'
+          LOOP
+            EXECUTE format('DELETE FROM %s', dependent);
+          END LOOP;
+        END $$;
+        DELETE FROM "IdentityNamespace" WHERE id <> 0;`,
     );
   });
 
@@ -45,7 +55,6 @@ describe('FederationPendingMediaPromoter', () => {
       .insert(identityNamespace)
       .values({
         domain: 'peer.test',
-        rootKeyFingerprint: 'sha256:pending-media-promoter-test',
         rootPublicKey: Buffer.alloc(32, 4).toString('base64'),
         identityPinnedAt: now,
       })
@@ -62,21 +71,23 @@ describe('FederationPendingMediaPromoter', () => {
       .returning({ id: messageThread.id });
     const [stub] = await database.db
       .insert(message)
-      .values({
-        threadId: thread.id,
-        seq: 1,
-        originSeq: 7,
-        sourceNamespaceId: namespace.id,
-        creatorAccount: 'alice',
-        creatorDomain: 'peer.test',
-        profileNamespaceId: namespace.id,
-        contentType: 'IMAGE',
-        content: JSON.stringify({
-          url: `/uploads/msg-assets/aa/aa/${digest}`,
+      .values(
+        withMessageDigest({
+          threadId: thread.id,
+          seq: 1,
+          originSeq: 7,
+          sourceNamespaceId: namespace.id,
+          creatorAccount: 'alice',
+
+          profileNamespaceId: namespace.id,
+          contentType: 'IMAGE',
+          content: JSON.stringify({
+            url: `/uploads/msg-assets/aa/aa/${digest}`,
+          }),
+          localState: 'STUB',
+          updatedAt: now,
         }),
-        localState: 'STUB',
-        updatedAt: now,
-      })
+      )
       .returning({ id: message.id });
     const [pending] = await database.db
       .insert(pendingMedia)

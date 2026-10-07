@@ -1,4 +1,6 @@
 import { parseAccountThreadFanoutTarget } from '../src/message/account-thread-fanout-task.js';
+import { localIdentityDomain } from './support/local-domain.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import { MessageVisibilityService } from '../src/message/message-visibility.service.js';
 import {
   afterAll,
@@ -135,7 +137,7 @@ describe('transactional thread fanout queue', () => {
     defaultProfileRev: number;
   }) => ({
     account: user.account,
-    domain: 'local',
+    domain: localIdentityDomain(),
     profileNamespaceId: 0,
     profileRev: user.defaultProfileRev,
   });
@@ -144,13 +146,13 @@ describe('transactional thread fanout queue', () => {
     participants: [
       {
         account: 'direct-a',
-        domain: 'local',
+        domain: localIdentityDomain(),
         profileNamespaceId: 0,
         profileRev: 0,
       },
       {
         account: 'direct-b',
-        domain: 'local',
+        domain: localIdentityDomain(),
         profileNamespaceId: 0,
         profileRev: 0,
       },
@@ -542,7 +544,7 @@ describe('transactional thread fanout queue', () => {
         .insert(account)
         .values({
           account: `fanout-local-${active}`,
-          domain: 'local',
+          namespaceId: 0,
           updatedAt: new Date(),
         })
         .returning();
@@ -561,15 +563,17 @@ describe('transactional thread fanout queue', () => {
         targetDomain: domain,
         targetNamespaceId: namespaceId,
       });
-      await database.db.insert(message).values({
-        threadId,
-        seq: 1,
-        creatorAccount: local.account,
-        creatorDomain: 'local',
-        contentType: 'PURE_TEXT',
-        content: '{"text":"hello"}',
-        updatedAt: new Date(),
-      });
+      await database.db.insert(message).values(
+        withMessageDigest({
+          threadId,
+          seq: 1,
+          creatorAccount: local.account,
+
+          contentType: 'PURE_TEXT',
+          content: '{"text":"hello"}',
+          updatedAt: new Date(),
+        }),
+      );
       await database.db
         .update(messageThread)
         .set({ curSeq: 1 })

@@ -28,17 +28,32 @@ describe('group invitation address validation', () => {
 });
 
 describe('group name boundaries', () => {
-  for (const Dto of [CreateGroupDto, UpdateGroupDto]) {
+  for (const Dto of [CreateGroupDto, UpdateGroupDto] as const) {
     it.each([30, 31])(`${Dto.name} accepts %i characters`, async (length) => {
-      const body = plainToInstance(Dto, {
-        groupId: 1,
-        name: '界'.repeat(length),
-      });
+      const body =
+        Dto === CreateGroupDto
+          ? plainToInstance(CreateGroupDto, {
+              groupId: 1,
+              name: '界'.repeat(length),
+            })
+          : plainToInstance(UpdateGroupDto, {
+              groupId: 1,
+              name: '界'.repeat(length),
+            });
       expect(await validate(body)).toHaveLength(0);
     });
 
     it(`${Dto.name} rejects 32 characters with an actionable message`, async () => {
-      const body = plainToInstance(Dto, { groupId: 1, name: 'a'.repeat(32) });
+      const body =
+        Dto === CreateGroupDto
+          ? plainToInstance(CreateGroupDto, {
+              groupId: 1,
+              name: 'a'.repeat(32),
+            })
+          : plainToInstance(UpdateGroupDto, {
+              groupId: 1,
+              name: 'a'.repeat(32),
+            });
       expect(await validate(body)).toEqual([
         expect.objectContaining({
           property: 'name',

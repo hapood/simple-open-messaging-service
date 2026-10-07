@@ -34,6 +34,14 @@ function localRecipientQuery(rows: unknown[]) {
     fields?.threadFeedEndId
       ? {
           from: () => ({
+            innerJoin: () => ({
+              where: async () =>
+                rows.map((row) => ({
+                  userId: (row as { id: number }).id,
+                  feedId: 10,
+                  threadFeedEndId: 4,
+                })),
+            }),
             where: async () =>
               rows.map((row) => ({
                 userId: (row as { id: number }).id,
@@ -43,7 +51,12 @@ function localRecipientQuery(rows: unknown[]) {
           }),
         }
       : {
-          from: () => ({ where: () => ({ orderBy: async () => rows }) }),
+          from: () => ({
+            innerJoin: () => ({
+              where: () => ({ orderBy: async () => rows }),
+            }),
+            where: () => ({ orderBy: async () => rows }),
+          }),
         };
 }
 describe('relationship client profile references', () => {
@@ -115,7 +128,6 @@ describe('relationship client profile references', () => {
     const { service, tx, writeInTx } = setup(7);
     await service.writeRelationshipRequestClientStateInTx(tx as never, 1, {
       account: 'bob',
-      domain: 'remote.test',
       namespaceId: 4,
     });
     expect(writeInTx).toHaveBeenCalledTimes(2);
@@ -141,7 +153,6 @@ describe('relationship client profile references', () => {
     const { service, tx, writeInTx } = setup(7, false);
     await service.writeRelationshipRequestClientStateInTx(tx as never, 1, {
       account: 'bob',
-      domain: 'remote.test',
       namespaceId: 4,
     });
     expect(writeInTx.mock.calls[0][1].body.peer).toMatchObject({
@@ -156,7 +167,6 @@ describe('relationship client profile references', () => {
     const { service, tx, writeInTx } = setup();
     await service.writeRelationshipRequestClientStateInTx(tx as never, 1, {
       account: 'bob',
-      domain: 'remote.test',
       namespaceId: 4,
     });
     expect(writeInTx.mock.calls[0][1].body.peer).toMatchObject({
@@ -260,6 +270,9 @@ describe('RelationshipService local relationship client-state projection', () =>
     );
     const tx = {
       select: localRecipientQuery([alice, bob]),
+      execute: vi
+        .fn()
+        .mockResolvedValue({ rows: [{ domain: 'chat.example' }] }),
       query: {
         account: {
           findFirst: vi
@@ -286,7 +299,7 @@ describe('RelationshipService local relationship client-state projection', () =>
       expect.arrayContaining([
         expect.objectContaining({
           account: 'alice',
-          domain: 'local',
+          domain: 'chat.example',
           subjectAccount: 'bob',
           subjectNamespaceId: 0,
           body: expect.objectContaining({
@@ -297,7 +310,7 @@ describe('RelationshipService local relationship client-state projection', () =>
         }),
         expect.objectContaining({
           account: 'bob',
-          domain: 'local',
+          domain: 'chat.example',
           subjectAccount: 'alice',
           subjectNamespaceId: 0,
           body: expect.objectContaining({
@@ -319,9 +332,9 @@ describe('RelationshipService local relationship client-state projection', () =>
     expect(ownerOne.every((write) => write.body.localThreadId === 7)).toBe(
       true,
     );
-    expect(ownerOne.every((write) => write.body.peer.domain === 'local')).toBe(
-      true,
-    );
+    expect(
+      ownerOne.every((write) => write.body.peer.domain === 'chat.example'),
+    ).toBe(true);
   });
 
   it('allows a peer request projection to remain threadless before acceptance', async () => {
@@ -395,7 +408,6 @@ describe('RelationshipService local relationship client-state projection', () =>
 
     await service.writeRelationshipRequestClientStateInTx(tx as never, 1, {
       account: 'bob',
-      domain: 'peer.test',
       namespaceId: 4,
     });
 

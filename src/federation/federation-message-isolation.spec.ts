@@ -13,11 +13,9 @@ vi.mock('../common/locks/thread-content-lock.js', () => ({
 }));
 import { ThreadFeedHeadWriter } from '../message/thread-feed-head.writer.js';
 import { DeletedMessageService } from '../message/deleted-message.service.js';
-import {
-  FederationService,
-  FederationMessageContextError,
-} from './federation.service.js';
+import { FederationMessageContextError } from './federation-errors.js';
 import type { FederationMessageFeedMessage } from './federation-message-feed.service.js';
+import { FederationInboundMessageEffectsService } from './federation-inbound-message-effects.service.js';
 import { FederationInboundMessageStoreService } from './federation-inbound-message-store.service.js';
 import { FederationInboundMessagePageService } from './federation-inbound-message-page.service.js';
 import { FederationInboundMessageRouteService } from './federation-inbound-message-route.service.js';
@@ -35,6 +33,7 @@ const item = (
     peerAccount: 'bob',
   },
   authorRef: 'THREAD_PEER_ACCOUNT',
+  namespaceId: 12,
   seq: Number(sequence),
   profileRev: 3,
   originSeq: Number(sequence),
@@ -62,8 +61,25 @@ function createMessagePageService() {
     logger: { error: vi.fn(), warn: vi.fn() },
     threadAccess: { assertPeerResponseWritable: vi.fn() },
     validator: new FederationInboundMessageValidatorService(),
-    routes,
-    inboundMessageStore: { store: vi.fn() },
+    routes: Object.assign(routes, {
+      messageAuthor: vi.fn(
+        (
+          value: FederationMessageFeedMessage,
+          sourceDomain: string,
+          peerAssignedLocalNamespaceId?: number,
+        ) =>
+          FederationInboundMessageRouteService.prototype.messageAuthor.call(
+            routes,
+            value,
+            sourceDomain,
+            peerAssignedLocalNamespaceId ?? 12,
+          ),
+      ),
+    }),
+    inboundMessageStore: {
+      store: vi.fn(),
+      applyProcessingReceipt: vi.fn(),
+    },
     deletedMessages: { applyPendingReceiptInTx: vi.fn() },
   });
   return service;
@@ -120,6 +136,7 @@ describe('federation message context isolation', () => {
       const good = {
         ...item('70'),
         authorRef: 'THREAD_ACCOUNT' as const,
+        namespaceId: 0,
         originSeq: null,
         originCreatedAt: null,
       };
@@ -152,7 +169,7 @@ describe('federation message context isolation', () => {
           options,
         ),
       ).resolves.toEqual([]);
-      expect(resolve).toHaveBeenCalledTimes(contentType === 'SYSTEM' ? 1 : 2);
+      expect(resolve).toHaveBeenCalledTimes(1);
       expect(tx.query.message.findFirst).toHaveBeenCalledTimes(1);
     },
   );
@@ -257,6 +274,8 @@ describe('federation message context isolation', () => {
           ts: 1_700_000_000_000,
         },
         expectedFederationVersion: 4,
+        payloadDigest: 'a'.repeat(64),
+        federationEnvelopeDigest: 'b'.repeat(64),
         incomingText: null,
         originTime: new Date(1_700_000_000_000),
         sequencePolicy: reverse
@@ -288,20 +307,20 @@ describe('federation message context isolation', () => {
 
   it('does not publish realtime effects for a committed historical message', async () => {
     const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
-    const notifyFeedUpdates = vi.fn();
+      FederationInboundMessageEffectsService.prototype,
+    ) as FederationInboundMessageEffectsService & Record<string, unknown>;
+    const rebuildUntrustedCards = vi.fn();
+    const localizeForwardAssets = vi.fn();
+    const runFileSyncBatch = vi.fn();
     Object.assign(service, {
       config: { forwardedResourcePolicy: 'trust' },
-      clientStateFeed: {
-        readEndId: vi.fn(),
-        notifyFeedUpdates,
-      },
-      forwardBundles: { rebuildUntrustedCards: vi.fn() },
-      unblockedRecipients: vi.fn(),
+      forwardBundles: { rebuildUntrustedCards },
+      linkPreview: { buildCardContent: vi.fn() },
+      mediaLocalization: { localizeForwardAssets },
+      inboundMediaBatches: { runFileSyncBatch },
     });
 
-    await service.publishMessageQueryEffects('origin.test', [
+    await service.publish('origin.test', [
       {
         kind: 'message',
         historical: true,
@@ -320,13 +339,15 @@ describe('federation message context isolation', () => {
       },
     ] as never);
 
-    expect(notifyFeedUpdates).not.toHaveBeenCalled();
+    expect(rebuildUntrustedCards).not.toHaveBeenCalled();
+    expect(localizeForwardAssets).not.toHaveBeenCalled();
+    expect(runFileSyncBatch).not.toHaveBeenCalled();
   });
 
   it('executes profile fetch and evidence work carried by the committed message effect', async () => {
     const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
+      FederationInboundMessageEffectsService.prototype,
+    ) as FederationInboundMessageEffectsService & Record<string, unknown>;
     const resolveDemand = vi.fn().mockResolvedValue(undefined);
     const resolveEvidence = vi.fn().mockResolvedValue(undefined);
     const demand = {
@@ -357,7 +378,7 @@ describe('federation message context isolation', () => {
       forwardBundles: { rebuildUntrustedCards: vi.fn() },
     });
 
-    await service.publishMessageQueryEffects('origin.test', [
+    await service.publish('origin.test', [
       {
         kind: 'message',
         historical: true,
@@ -389,17 +410,16 @@ describe('federation message context isolation', () => {
     'applies the %s forwarded-resource policy after bundle import',
     async (policy, expectedCalls) => {
       const service = Object.create(
-        FederationService.prototype,
-      ) as FederationService & Record<string, unknown>;
+        FederationInboundMessageEffectsService.prototype,
+      ) as FederationInboundMessageEffectsService & Record<string, unknown>;
       const rebuildUntrustedCards = vi.fn().mockResolvedValue(undefined);
       Object.assign(service, {
         config: { forwardedResourcePolicy: policy },
-        clientStateFeed: { readEndId: vi.fn(), notifyFeedUpdates: vi.fn() },
         forwardBundles: { rebuildUntrustedCards },
         linkPreview: { buildCardContent: vi.fn() },
       });
 
-      await service.publishMessageQueryEffects('origin.test', [
+      await service.publish('origin.test', [
         {
           kind: 'message',
           historical: true,
@@ -426,21 +446,20 @@ describe('federation message context isolation', () => {
 
   it('leaves live-message device notifications to durable fanout', async () => {
     const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
-    const readEndId = vi
-      .fn()
-      .mockResolvedValueOnce(11)
-      .mockResolvedValueOnce(17);
-    const notifyFeedUpdates = vi.fn();
+      FederationInboundMessageEffectsService.prototype,
+    ) as FederationInboundMessageEffectsService & Record<string, unknown>;
+    const rebuildUntrustedCards = vi.fn();
+    const localizeForwardAssets = vi.fn();
+    const runFileSyncBatch = vi.fn();
     Object.assign(service, {
       config: { forwardedResourcePolicy: 'trust' },
-      clientStateFeed: { readEndId, notifyFeedUpdates },
-      forwardBundles: { rebuildUntrustedCards: vi.fn() },
+      forwardBundles: { rebuildUntrustedCards },
       linkPreview: { buildCardContent: vi.fn() },
+      mediaLocalization: { localizeForwardAssets },
+      inboundMediaBatches: { runFileSyncBatch },
     });
 
-    await service.publishMessageQueryEffects('origin.test', [
+    await service.publish('origin.test', [
       {
         kind: 'message',
         historical: false,
@@ -460,52 +479,20 @@ describe('federation message context isolation', () => {
       },
     ] as never);
 
-    expect(readEndId).not.toHaveBeenCalled();
-    expect(notifyFeedUpdates).not.toHaveBeenCalled();
-  });
-
-  it('publishes quote dependencies without duplicating durable fanout', async () => {
-    const service = Object.create(
-      FederationService.prototype,
-    ) as FederationService & Record<string, unknown>;
-    const readEndId = vi
-      .fn()
-      .mockResolvedValueOnce(23)
-      .mockResolvedValueOnce(29);
-    const notifyFeedUpdates = vi.fn();
-    const publishSatisfiedQuoteDependencies = vi
-      .fn()
-      .mockResolvedValue(undefined);
-    Object.assign(service, {
-      clientStateFeed: { readEndId, notifyFeedUpdates },
-      inboundMessageCommits: {
-        applyTombstonesInTransaction: vi.fn().mockResolvedValue({
-          quoteDependencies: [],
-        }),
-        publishSatisfiedQuoteDependencies,
-      },
-    });
-
-    const publication = await service.applyForwardTombstonePageInTransaction(
-      {} as never,
-      { response: { threadId: 9 } } as never,
-    );
-    expect(notifyFeedUpdates).not.toHaveBeenCalled();
-    await publication.publish();
-
-    expect(readEndId).not.toHaveBeenCalled();
-    expect(notifyFeedUpdates).not.toHaveBeenCalled();
-    expect(publishSatisfiedQuoteDependencies).toHaveBeenCalledWith([]);
+    expect(rebuildUntrustedCards).not.toHaveBeenCalled();
+    expect(localizeForwardAssets).not.toHaveBeenCalled();
+    expect(runFileSyncBatch).not.toHaveBeenCalled();
   });
 
   it('records a receipt against a deleted local-authority message without warning', async () => {
     const service = createMessagePageService();
     const update = vi.fn();
     const warn = vi.fn();
-    const receiptValues = vi.fn().mockResolvedValue(undefined);
+    const applyProcessingReceipt = vi.fn().mockResolvedValue(undefined);
     Object.assign(service, {
       config: { domain: 'local.test' },
       logger: { error: vi.fn(), warn },
+      inboundMessageStore: { applyProcessingReceipt, store: vi.fn() },
       assertPeerResponseWritable: vi.fn(),
       resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
         threadId: 9,
@@ -526,11 +513,8 @@ describe('federation message context isolation', () => {
             isDeleted: true,
           }),
         },
-        federationMessageReceipt: {
-          findFirst: vi.fn().mockResolvedValue(undefined),
-        },
       },
-      insert: vi.fn().mockReturnValue({ values: receiptValues }),
+      insert: vi.fn(),
       update,
     };
 
@@ -541,19 +525,27 @@ describe('federation message context isolation', () => {
     ).resolves.toEqual([]);
 
     expect(update).not.toHaveBeenCalled();
-    expect(receiptValues).toHaveBeenCalledWith({
-      namespaceId: 9,
-      threadId: 9,
-      peerSeq: 1,
-      messageId: 1n,
-    });
+    expect(applyProcessingReceipt).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        namespaceId: 9,
+        threadId: 9,
+        peerSeq: 1,
+        originSeq: 1,
+      }),
+    );
     expect(warn).not.toHaveBeenCalled();
   });
 
   it('warns and skips a local-authority receipt whose origin target is absent', async () => {
     const service = createMessagePageService();
     const warn = vi.fn();
-    const inboundStore = { store: vi.fn() };
+    const inboundStore = {
+      store: vi.fn(),
+      applyProcessingReceipt: vi.fn(async () => {
+        warn('LOCAL_SOURCE_MESSAGE_NOT_FOUND');
+      }),
+    };
     Object.assign(service, {
       logger: { error: vi.fn(), warn },
       inboundMessageStore: inboundStore,
@@ -619,10 +611,11 @@ describe('federation message context isolation', () => {
   it('records a reverse receipt without rewriting the local message source', async () => {
     const service = createMessagePageService();
     const update = vi.fn();
-    const receiptValues = vi.fn().mockResolvedValue(undefined);
+    const applyProcessingReceipt = vi.fn().mockResolvedValue(undefined);
     Object.assign(service, {
       config: { domain: 'local.test' },
       logger: { error: vi.fn() },
+      inboundMessageStore: { applyProcessingReceipt, store: vi.fn() },
       assertPeerResponseWritable: vi.fn(),
       resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
         threadId: 9,
@@ -649,11 +642,8 @@ describe('federation message context isolation', () => {
             createdAt: new Date(1_700_000_000_000),
           }),
         },
-        federationMessageReceipt: {
-          findFirst: vi.fn().mockResolvedValue(undefined),
-        },
       },
-      insert: vi.fn().mockReturnValue({ values: receiptValues }),
+      insert: vi.fn(),
       update,
     };
 
@@ -676,19 +666,38 @@ describe('federation message context isolation', () => {
     ).resolves.toEqual([]);
 
     expect(update).not.toHaveBeenCalled();
-    expect(receiptValues).toHaveBeenCalledWith({
-      namespaceId: 9,
-      threadId: 9,
-      peerSeq: 70,
-      messageId: 1n,
-    });
+    expect(applyProcessingReceipt).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({
+        namespaceId: 9,
+        threadId: 9,
+        peerSeq: 70,
+        originSeq: 70,
+        sequencePolicy: expect.objectContaining({ kind: 'MAP_ORIGIN' }),
+      }),
+    );
   });
 
-  it('deduplicates inbound messages by immutable publisher namespace', async () => {
+  it('deduplicates an exact immutable-envelope replay by publisher namespace', async () => {
     const service = createMessagePageService();
+    const incoming = item('70');
+    incoming.createdAt = 1_700_000_001_000;
+    incoming.authorRef = 'THREAD_ACCOUNT';
+    incoming.namespaceId = 0;
+    incoming.originSeq = null;
+    incoming.originCreatedAt = null;
     const findFirst = vi.fn().mockResolvedValue({
       id: 1n,
-      originServerTime: new Date(1_700_000_001_000),
+      creatorAccount: 'bob',
+      profileNamespaceId: 12,
+      profileRev: incoming.profileRev,
+      contentType: incoming.contentType,
+      originServerTime: new Date(incoming.createdAt),
+      payloadDigest: 'unused-for-fingerprinted-row',
+      federationEnvelopeDigest:
+        new FederationInboundMessageValidatorService().immutableEnvelopeDigest(
+          incoming,
+        ),
     });
     Object.assign(service, {
       resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
@@ -707,11 +716,6 @@ describe('federation message context isolation', () => {
       query: { message: { findFirst } },
     };
 
-    const incoming = item('70');
-    incoming.createdAt = 1_700_000_001_000;
-    incoming.authorRef = 'THREAD_ACCOUNT';
-    incoming.originSeq = null;
-    incoming.originCreatedAt = null;
     await expect(
       service.apply(tx as never, 'peer.test', [incoming], {
         namespaceId: 22,
@@ -721,6 +725,58 @@ describe('federation message context isolation', () => {
     const query = dialect.sqlToQuery(findFirst.mock.calls[0]![0].where as SQL);
     expect(query.sql).toContain('"Message"."publisherNamespaceId"');
     expect(query.params).toContain(22);
+  });
+
+  it('rejects conflicting immutable fields at an existing origin coordinate', async () => {
+    const service = createMessagePageService();
+    const warn = vi.fn();
+    const incoming = {
+      ...item('70'),
+      authorRef: 'THREAD_ACCOUNT' as const,
+      namespaceId: 0,
+      originSeq: null,
+      originCreatedAt: null,
+    };
+    Object.assign(service, {
+      logger: { error: vi.fn(), warn },
+      resolveMissedThreadInTransaction: vi.fn().mockResolvedValue({
+        threadId: 9,
+        creatorAccount: 'bob',
+        profileNamespaceId: 12,
+        authority: 'PEER',
+        federationVersion: 0,
+        recipients: [7],
+        toAccount: 'alice',
+      }),
+    });
+    const tx = {
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
+      query: {
+        message: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: 1n,
+            creatorAccount: 'bob',
+            profileNamespaceId: 12,
+            profileRev: incoming.profileRev,
+            contentType: incoming.contentType,
+            originServerTime: new Date(incoming.createdAt),
+            payloadDigest: 'retained',
+            federationEnvelopeDigest: 'different-envelope',
+          }),
+        },
+      },
+    };
+
+    await expect(
+      service.apply(tx as never, 'peer.test', [incoming], {
+        namespaceId: 22,
+      } as never),
+    ).resolves.toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'conflicting immutable federated message envelope',
+      ),
+    );
   });
 
   it('rejects a reverse page item below its persisted closure target before applying it', async () => {
@@ -888,7 +944,8 @@ describe('federation message context isolation', () => {
     const localAuthorItem = {
       ...item('1'),
       thread: { account: '!group' },
-      author: { account: 'alice', namespaceId: 0 },
+      namespaceId: 0,
+      author: { account: 'alice', domain: 'peer.test' },
     } as FederationMessageFeedMessage;
     delete (localAuthorItem as { authorRef?: unknown }).authorRef;
     const author = (
@@ -924,7 +981,7 @@ describe('federation message context isolation', () => {
       service.apply(tx as never, 'peer.test', [malformed], {} as never),
     ).resolves.toEqual([]);
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining('ignored invalid federated message'),
+      expect.stringContaining('filtered malformed inbound message'),
     );
     const logged = String(logger.warn.mock.calls[0]?.[0]);
     expect(logged).toContain('contentSha256');
@@ -960,7 +1017,7 @@ describe('federation message context isolation', () => {
         },
       ),
     ).resolves.toEqual([]);
-    expect(execute).toHaveBeenCalledTimes(3);
+    expect(execute).toHaveBeenCalledTimes(0);
   });
 
   it.each(['SYSTEM', 'STICKER'])(

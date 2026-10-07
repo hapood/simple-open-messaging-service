@@ -8,10 +8,13 @@ import {
 } from '../database/schema.js';
 import {
   FORWARD_MAX_WIRE_JSON_BYTES,
+  forwardBundleDigest,
   ForwardBundleService,
   type ForwardBundleMessage,
   localizeForwardMediaContent,
 } from './forward-bundle.service.js';
+
+const SHA256_HEX = 'a'.repeat(64);
 
 function sourceRow() {
   return {
@@ -295,7 +298,7 @@ describe('ForwardBundleService', () => {
     const linkDigest = 'a'.repeat(64);
     const contactDigest = 'b'.repeat(64);
     const retainedDigest = 'c'.repeat(64);
-    const rootId = '01BX5ZZKBKACTAV9WEVGEMMVRZ';
+    const rootId = 'a'.repeat(64);
     const messages = [
       {
         id: 1,
@@ -412,7 +415,7 @@ describe('ForwardBundleService', () => {
   it('builds a closure containing an imported minimal forward card', async () => {
     const database = databaseFake() as ReturnType<typeof databaseFake>;
     database.db.query.forwardBundle.findFirst.mockResolvedValueOnce({
-      id: '01BX5ZZKBKACTAV9WEVGEMMVRZ',
+      id: 'a'.repeat(64),
       messages: [
         {
           id: 1,
@@ -420,20 +423,20 @@ describe('ForwardBundleService', () => {
           profile: { displayName: 'A' },
           contentType: ContentType.FORWARD,
           content: JSON.stringify({
-            bundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+            bundleId: 'b'.repeat(64),
           }),
-          childBundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          childBundleId: 'b'.repeat(64),
           sentAt: 1,
         },
       ],
       forwardBundleDependencies_parentBundleId: [
-        { childBundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV' },
+        { childBundleId: 'b'.repeat(64) },
       ],
       forwardBundleAssets: [],
     });
     database.db.query.forwardBundle.findMany.mockResolvedValueOnce([
       {
-        id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        id: 'b'.repeat(64),
         messages: [
           {
             id: 1,
@@ -448,17 +451,10 @@ describe('ForwardBundleService', () => {
     ]);
     const service = forwardService(database);
 
-    await expect(
-      service.buildClosure('01BX5ZZKBKACTAV9WEVGEMMVRZ'),
-    ).resolves.toMatchObject({
-      messages: [
-        {
-          content: JSON.stringify({
-            bundleId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
-          }),
-        },
-      ],
-    });
+    const closure = await service.buildClosure('a'.repeat(64));
+    expect(closure.messages[0].content).toBe(
+      JSON.stringify({ bundleId: closure.children[0]!.id }),
+    );
   });
 
   it('directly forwards text as the caller without retaining its quote', async () => {
@@ -502,19 +498,11 @@ describe('ForwardBundleService', () => {
       } as never,
     );
 
-    await expect(
-      service.prepareDirectMessage(9, { threadId: 4, seq: 7 }),
-    ).resolves.toEqual({
-      content: JSON.stringify({
-        bundleId: '01childbundle0000000000000',
-        summaryLines: ['Alice：nested'],
-        messageCount: 3,
-        depth: 3,
-      }),
-      contentType: ContentType.FORWARD,
-      forwardBundleId: '01childbundle0000000000000',
+    const result = await service.prepareDirectMessage(9, {
+      threadId: 4,
+      seq: 7,
     });
-    expect(database.db.query.forwardBundle.findFirst).not.toHaveBeenCalled();
+    expect(JSON.parse(result.content).bundleId).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it.each([ContentType.SYSTEM])(
@@ -716,7 +704,7 @@ describe('ForwardBundleService', () => {
 
     expect(prepared.messages[0].author).toEqual({
       account: 'alice',
-      domain: process.env.SOMS_DOMAIN ?? 'local',
+      domain: 'peer.test',
     });
     expect(prepared.messages[0].profile).toEqual({ displayName: 'alice' });
   });
@@ -934,11 +922,11 @@ describe('ForwardBundleService', () => {
       service.importClosure(
         'peer.test',
         {
-          id: 'root',
-          messages: [message('a')],
+          id: 'a'.repeat(64),
+          messages: [message('a'.repeat(64))],
           children: [
-            { id: 'a', messages: [message('b')] },
-            { id: 'b', messages: [message('a')] },
+            { id: 'a'.repeat(64), messages: [message('b'.repeat(64))] },
+            { id: 'b'.repeat(64), messages: [message('a'.repeat(64))] },
           ],
           assets: [],
         },
@@ -988,12 +976,17 @@ describe('ForwardBundleService', () => {
       content: JSON.stringify({ text: 'hello' }),
       sentAt: 1,
     };
+    const leafId = forwardBundleDigest([text], [], []);
+    const middleMessage = card(leafId);
+    const middleId = forwardBundleDigest([middleMessage], [leafId], []);
+    const rootMessage = card(middleId);
+    const rootId = forwardBundleDigest([rootMessage], [middleId], []);
     const closure = {
-      id: 'root',
-      messages: [card('a')],
+      id: rootId,
+      messages: [rootMessage],
       children: [
-        { id: 'a', messages: [card('b')] },
-        { id: 'b', messages: [text] },
+        { id: middleId, messages: [middleMessage] },
+        { id: leafId, messages: [text] },
       ],
       assets: [],
     };
@@ -1006,11 +999,18 @@ describe('ForwardBundleService', () => {
     expect(imported.depth).toBe(3);
     expect(insertedBundles).toHaveLength(3);
     expect(dependencies).toHaveLength(2);
-    expect(
-      dependencies.every(
-        (edge) => edge.parentBundleId === imported.localRootBundleId,
-      ),
-    ).toBe(true);
+    expect(dependencies).toEqual([
+      {
+        parentBundleId: imported.localRootBundleId,
+        childBundleId: insertedBundles[1]!.id,
+        ordinal: 0,
+      },
+      {
+        parentBundleId: insertedBundles[1]!.id,
+        childBundleId: insertedBundles[2]!.id,
+        ordinal: 0,
+      },
+    ]);
     expect(insertedBundles[0].messages[0].childBundleId).toBe(
       insertedBundles[1].id,
     );
@@ -1050,14 +1050,19 @@ describe('ForwardBundleService', () => {
       sentAt: 1,
     };
     const children = [
-      { id: 'a', messages: [card('b')] },
-      { id: 'b', messages: [card('c')] },
-      { id: 'c', messages: [text] },
+      { id: 'a'.repeat(64), messages: [card('b'.repeat(64))] },
+      { id: 'b'.repeat(64), messages: [card('c'.repeat(64))] },
+      { id: 'c'.repeat(64), messages: [text] },
     ];
     await expect(
       forwardService({}).importClosure(
         'peer.test',
-        { id: 'root', messages: [card('a')], children, assets: [] },
+        {
+          id: SHA256_HEX,
+          messages: [card('a'.repeat(64))],
+          children,
+          assets: [],
+        },
         tx as never,
       ),
     ).rejects.toMatchObject({
@@ -1083,9 +1088,9 @@ describe('ForwardBundleService', () => {
       forwardService({}).importClosure(
         'peer.test',
         {
-          id: 'root',
+          id: SHA256_HEX,
           messages: [text],
-          children: [{ id: 'orphan', messages: [text] }],
+          children: [{ id: 'b'.repeat(64), messages: [text] }],
           assets: [],
         },
         tx as never,
@@ -1110,20 +1115,21 @@ describe('ForwardBundleService', () => {
     };
     const service = forwardService({});
 
+    const displayMessage = {
+      id: 1,
+      profile: { displayName: 'Alice' },
+      contentType: ContentType.PURE_TEXT,
+      content: JSON.stringify({ text: 'hello' }),
+      sentAt: 1,
+    } satisfies ForwardBundleMessage;
+    const displayBundleId = forwardBundleDigest([displayMessage], [], []);
+
     await expect(
       service.importClosure(
         'peer.test',
         {
-          id: 'root',
-          messages: [
-            {
-              id: 1,
-              profile: { displayName: 'Alice' },
-              contentType: ContentType.PURE_TEXT,
-              content: JSON.stringify({ text: 'hello' }),
-              sentAt: 1,
-            },
-          ],
+          id: displayBundleId,
+          messages: [displayMessage],
           children: [],
           assets: [],
         },
@@ -1258,7 +1264,7 @@ describe('ForwardBundleService', () => {
     const service = forwardService({});
     await expect(
       service.importClosure('peer.test', {
-        id: '01oversize00000000000000000',
+        id: SHA256_HEX,
         messages,
         children: [],
         assets: [],

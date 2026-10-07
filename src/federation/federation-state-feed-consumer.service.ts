@@ -227,7 +227,6 @@ export class FederationStateFeedConsumerService {
             .where(
               and(
                 eq(tables.account.account, normalizeAccount(item.peerAccount)),
-                eq(tables.account.domain, 'local'),
                 eq(tables.account.namespaceId, 0),
               ),
             )
@@ -377,7 +376,6 @@ export class FederationStateFeedConsumerService {
                       groupStateFields.account,
                       normalizeAccount(item.peerAccount),
                     ),
-                    eq(groupStateFields.domain, 'local'),
                     eq(groupStateFields.namespaceId, 0),
                   ),
                 )
@@ -586,8 +584,6 @@ export class FederationStateFeedConsumerService {
           AND pair.active = true
           AND message_thread."federationRoundsEnabled" = true
           AND pair."threadId" IS NOT NULL
-          AND (pair."endpointANamespaceId" = ${namespaceId}
-            OR pair."endpointBNamespaceId" = ${namespaceId})
           AND pair."endpointAType" = 'USER'
           AND pair."endpointAAccount" = ${normalizeAccount(thread.peerAccount)}
           AND pair."endpointANamespaceId" = 0
@@ -611,8 +607,7 @@ export class FederationStateFeedConsumerService {
         AND message_thread."federationRoundsEnabled" = true
         AND group_user.account = ${normalizeAccount(thread.account)}
         AND (
-          (group_user.domain = 'local'
-            AND group_user."namespaceId" = 0
+          (group_user."namespaceId" = 0
             AND EXISTS (
               SELECT 1
               FROM "ThreadAudience" audience

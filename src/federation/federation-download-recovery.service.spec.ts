@@ -16,6 +16,10 @@ function setup(batchIds: string[]) {
   const service = new FederationDownloadRecoveryService(
     { db: { selectDistinct } } as never,
     { recoverInboundBatch } as never,
+    {
+      initialize: vi.fn().mockResolvedValue(undefined),
+      waitUntilInitialized: vi.fn().mockResolvedValue(undefined),
+    } as never,
   );
   return { service, recoverInboundBatch };
 }

@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
 import { account, message, messageThread } from '../src/database/schema.js';
@@ -58,34 +60,35 @@ describe('system account attribution', () => {
       seq: 1,
       contentType: 'SYSTEM' as const,
       creatorAccount: '$system',
-      creatorDomain: 'local',
       content: JSON.stringify({
         type: 'GROUP_JOINED',
-        member: { account: 'alice', domain: 'local' },
+        member: {
+          account: 'alice',
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
       }),
       updatedAt: new Date(),
     };
     const [stored] = await database.db
       .insert(message)
-      .values(notification)
+      .values(withMessageDigest(notification))
       .returning();
     expect(stored).toMatchObject({
       creatorAccount: '$system',
-      creatorDomain: 'local',
       profileNamespaceId: 0,
       profileRev: 0,
-      sourceNamespaceId: 0,
     });
     for (const invalid of [
       { creatorAccount: 'alice' },
-      { creatorAccount: null, creatorDomain: null },
+      { creatorAccount: null },
       { profileRev: 1 },
       { contentType: 'PURE_TEXT' as const },
     ]) {
       await expect(
         database.db
           .insert(message)
-          .values({ ...notification, seq: 2, ...invalid }),
+          .values(withMessageDigest({ ...notification, seq: 2, ...invalid })),
       ).rejects.toThrow();
     }
   });

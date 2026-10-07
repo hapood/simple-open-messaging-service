@@ -1,8 +1,8 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../../common/account.js';
 import {
-  toClientIdentity,
-  toClientIdentityOrNull,
+  validateNamespacedAddress,
+  validateNamespacedAddressOrNull,
 } from '../../common/client-identity.js';
 import type { ThreadContentLock } from '../../common/locks/thread-content-lock.js';
 import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
@@ -63,7 +63,7 @@ export function normalizeMirrorMetaMemberAddress(
   domain: string,
   profileNamespaceId: number,
 ): { account: string; domain: string; profileNamespaceId: number } {
-  const identity = toClientIdentityOrNull({
+  const identity = validateNamespacedAddressOrNull({
     account,
     domain,
     namespaceId: profileNamespaceId,
@@ -111,7 +111,10 @@ export async function lockMirrorGroupInTx(
   group: MirrorGroupAddress,
 ): Promise<void> {
   await lockBusinessAccountsInTx(tx, [
-    { account: normalizeAccount(group.account), profileNamespaceId: group.publisherNamespaceId },
+    {
+      account: normalizeAccount(group.account),
+      profileNamespaceId: group.publisherNamespaceId,
+    },
   ]);
 }
 
@@ -190,7 +193,7 @@ export async function applyMirrorMetaFactInTx(
     return;
   }
   if (item.operation === 'MEMBER_DEPART') {
-    const subject = toClientIdentity({
+    const subject = validateNamespacedAddress({
       account: item.account,
       domain: item.domain,
       namespaceId: item.profileNamespaceId,
@@ -248,7 +251,7 @@ export function currentMirrorMetaFact(
           domain: group.domain,
           namespaceId: group.publisherNamespaceId,
         }
-      : toClientIdentity({
+      : validateNamespacedAddress({
           account: item.account,
           domain: item.domain,
           namespaceId: item.profileNamespaceId,

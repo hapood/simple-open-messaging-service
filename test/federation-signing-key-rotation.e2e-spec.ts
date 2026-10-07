@@ -247,7 +247,9 @@ describe('database-backed signing-key rotation', () => {
     );
     expect(keys.length).toBeGreaterThanOrEqual(1);
     const state = await currentState();
-    const predecessorRow = state.keyRows.find((row) => row.keyId === firstKeyId);
+    const predecessorRow = state.keyRows.find(
+      (row) => row.keyId === firstKeyId,
+    );
     expect(predecessorRow).toBeDefined();
     expect(predecessorRow!.notAfter.getTime()).toBeLessThanOrEqual(Date.now());
   }, 45_000);

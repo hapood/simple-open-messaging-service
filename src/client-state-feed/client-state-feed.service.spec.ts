@@ -136,11 +136,11 @@ describe('ClientStateFeedService', () => {
     await service.writeInTx(tx as never, {
       userId: 1,
       account: 'admin',
-      domain: 'local',
+      domain: 'chat.example',
       eventType: 'RELATIONSHIP_INTENT',
       namespaceId: 0,
       subjectAccount: '!group',
-      subjectNamespaceId: 'alpha.test',
+      subjectNamespaceId: 1,
       body: { status: 'REQUESTED', requestedAt },
     });
 

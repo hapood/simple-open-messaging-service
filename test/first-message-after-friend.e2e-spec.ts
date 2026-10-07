@@ -8,6 +8,7 @@ import {
   vi,
 } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
+import { localIdentityDomain } from './support/local-domain.js';
 import request from 'supertest';
 import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
@@ -82,7 +83,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
     const invite = await request(baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ account: 'bob', domain: 'local' })
+      .send({ account: 'bob', domain: localIdentityDomain(), namespaceId: 0 })
       .expect((res) => {
         expect(res.status).toBe(200);
         expect(res.body.code).toBe(0);
@@ -92,7 +93,11 @@ describe('First message after friend-add is delivered (single instance)', () => 
     const accept = await request(baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ account: 'alice', domain: 'local' });
+      .send({
+        account: 'alice',
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(accept.status).toBe(200);
     expect(accept.body.code).toBe(0);
     expect(accept.body.data).toMatchObject({ status: 'OK' });
@@ -110,7 +115,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
 
     const audiences = await database.db
       .select({
-        targetDomain: threadAudience.targetDomain,
+        targetNamespaceId: threadAudience.targetNamespaceId,
         localUserId: threadAudience.localUserId,
       })
       .from(threadAudience)
@@ -118,11 +123,11 @@ describe('First message after friend-add is delivered (single instance)', () => 
     expect(audiences).toEqual(
       expect.arrayContaining([
         {
-          targetDomain: 'local',
+          targetNamespaceId: 0,
           localUserId: alice.id,
         },
         {
-          targetDomain: 'local',
+          targetNamespaceId: 0,
           localUserId: bob.id,
         },
       ]),
@@ -228,7 +233,11 @@ describe('First message after friend-add is delivered (single instance)', () => 
       const removed = await request(baseUrl)
         .post('/api/v1/relationship/revoke')
         .set('Authorization', `Bearer ${alice.token}`)
-        .send({ account: 'bob', domain: 'local' });
+        .send({
+          account: 'bob',
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        });
       expect(removed.status).toBe(200);
       expect(removed.body.code).toBe(0);
       expect(removed.body.data).toEqual({ status: 'OK' });
@@ -288,7 +297,6 @@ describe('First message after friend-add is delivered (single instance)', () => 
       });
       expect(boundary).toMatchObject({
         creatorAccount: '$system',
-        creatorDomain: 'local',
       });
       const participants = await database.db.query.accountThreadState.findMany({
         where: eq(accountThreadState.threadId, threadId),
@@ -341,6 +349,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
           peer: foreignBob,
           body: {
             status: 'REQUESTED',
+            profileNamespaceId: foreignBob.namespaceId,
             profileRev: 0,
             note: '',
             requestedAt: Date.now(),
@@ -357,7 +366,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
     expect(friendship?.threadId).not.toBeNull();
     const audiences = await database.db
       .select({
-        targetDomain: threadAudience.targetDomain,
+        targetNamespaceId: threadAudience.targetNamespaceId,
         localUserId: threadAudience.localUserId,
       })
       .from(threadAudience)
@@ -366,11 +375,11 @@ describe('First message after friend-add is delivered (single instance)', () => 
     expect(audiences).toEqual(
       expect.arrayContaining([
         {
-          targetDomain: 'local',
+          targetNamespaceId: 0,
           localUserId: alice.id,
         },
         {
-          targetDomain: 'peer.test',
+          targetNamespaceId: foreignBob.namespaceId,
           localUserId: null,
         },
       ]),
@@ -415,6 +424,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
           peer: foreignBob,
           body: {
             status: 'REQUESTED',
+            profileNamespaceId: foreignBob.namespaceId,
             profileRev: 1,
             note: 'crossed request',
             requestedAt: Date.now(),
@@ -440,6 +450,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
           peer: foreignBob,
           body: {
             status: 'ACCEPTED',
+            profileNamespaceId: foreignBob.namespaceId,
             profileRev: 1,
             note: 'crossed request',
             requestedAt: Date.now(),

@@ -18,11 +18,9 @@ import {
   type SigningKeyCertificate,
   verifySigningCertificate,
 } from './federation-certificate.js';
-import { loadFederationConfig } from './federation.config.js';
+import { loadFederationRuntimeConfig } from './federation.config.js';
 import { parseKeyId } from './key-id.js';
-import {
-  continuousCoverageEnd,
-} from './peer-key-coverage.js';
+import { continuousCoverageEnd } from './peer-key-coverage.js';
 import { FederationTransportConfigService } from './federation-transport-config.service.js';
 import { KeypairService } from './keypair.service.js';
 import { selectFederationProtocolVersion } from './federation-protocol.js';
@@ -74,7 +72,7 @@ interface CachedRoute {
 @Injectable()
 export class DiscoveryService implements OnApplicationShutdown {
   private readonly logger = new Logger(DiscoveryService.name);
-  private readonly config = loadFederationConfig();
+  private readonly config = loadFederationRuntimeConfig();
   private readonly routes = new Map<string, CachedRoute>();
   /** Single-flight well-known refreshes keyed by `<domain>#<namespaceId>`. */
   private readonly refreshInFlight = new Map<string, Promise<void>>();
@@ -458,8 +456,7 @@ export class DiscoveryService implements OnApplicationShutdown {
       })),
       now,
     );
-    const refreshWindowMs =
-      this.transportConfig.get().keyCacheTtlSec * 1000;
+    const refreshWindowMs = this.transportConfig.get().keyCacheTtlSec * 1000;
     if (coverageEnd !== null && coverageEnd - now > refreshWindowMs)
       return false;
     void this.refreshPeerKeys(normalized, namespaceId).catch((error) =>

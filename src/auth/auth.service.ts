@@ -10,6 +10,7 @@ import {
 } from '../database/schema.js';
 import { normalizeAccount } from '../common/account.js';
 import { BusinessCode } from '../common/business-code.js';
+import { localIdentityDomain } from '../common/local-identity.js';
 import { BusinessException } from '../common/business.exception.js';
 import { SessionTokenService } from './session-token.service.js';
 import { PasswordHasher } from './password-hasher.service.js';
@@ -34,7 +35,10 @@ export class AuthService {
 
   async validateUser(account: string, password: string) {
     const user = await this.userService.findUniqueUserForAuth({
-      account_domain: { account: normalizeAccount(account), domain: 'local' },
+      account_domain: {
+        account: normalizeAccount(account),
+        domain: await localIdentityDomain(this.database.db),
+      },
       namespaceId: 0,
     });
     if (user === null || user.disabledAt !== null) {

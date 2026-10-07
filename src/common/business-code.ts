@@ -124,6 +124,8 @@ export enum BusinessCode {
   FEDERATION_ROOT_CHANGE_REJECTED = 50029, // administrator rejected a verified root rotation arrival; operation-level, the pin and lifecycle are retained
   FEDERATION_PUBLIC_KEY_UNRECOGNIZED = 50030, // the supplied public key is not part of this server's retained key history (sealed-challenge service)
   FEDERATION_PROVENANCE_DECLINED = 50031, // the responder declines the entire message-provenance batch; HTTP 200, no results; not a transport or peer-lifecycle event
+  FEDERATION_NAMESPACE_UNRECOVERABLE = 50032, // a namespace binding is permanently lost (extreme data loss); HTTP 200. Reserved — the current server does not emit it; the client writes a ProfileNamespaceTombstone row on receipt.
+  FEDERATION_PROFILE_UNRECOVERABLE = 50033, // a profile is permanently lost (extreme data loss); HTTP 200. Reserved — the current server does not emit it; the client writes a ProfileTombstone row on receipt.
 
   // 60xxx settings (admin-managed runtime config)
 

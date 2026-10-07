@@ -3,12 +3,28 @@ import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { DatabaseService } from '../database/database.service.js';
 import {
+  account,
+  identityNamespace,
   localFederationRoot,
   localFederationSigningKey,
   localFederationSigningState,
+  messageThread,
 } from '../database/schema.js';
-import { verifySigningCertificate } from './federation-certificate.js';
+import {
+  isValidRootKeyEntry,
+  verifySigningCertificate,
+} from './federation-certificate.js';
 import { KeypairService } from './keypair.service.js';
+
+// Injected collaborators for the (0, 0) announcement path: the change store
+// and the SSE wake are mocked at module level; tests that care about them
+// assert on the mocks directly.
+const changes = {
+  recordNamespaceChangeInTx: vi.fn(async () => 7n),
+  recordClientChangeInTx: vi.fn(async () => 11n),
+  readFeedEndId: vi.fn(async () => 7n),
+};
+const sse = { notifyProfileNamespaceChange: vi.fn() };
 
 interface FakeRootRow {
   id: number;
@@ -94,9 +110,14 @@ function fakeDatabase(options: { hasHistory?: boolean } = {}): FakeHandle {
   let roots: FakeRootRow[] = [];
   let keys: FakeSigningKeyRow[] = [];
   let state: FakeSigningStateRow | undefined;
+  let localNamespace: { id: number; domain: string } | undefined;
 
   const db = {
     query: {
+      identityNamespace: {
+        findFirst: async () =>
+          localNamespace ? { ...localNamespace } : undefined,
+      },
       localFederationRoot: {
         findMany: async () => roots.map((root) => ({ ...root })),
         findFirst: async () => (roots[0] ? { ...roots[0]! } : undefined),
@@ -135,6 +156,10 @@ function fakeDatabase(options: { hasHistory?: boolean } = {}): FakeHandle {
           state = values as FakeSigningStateRow;
           return Promise.resolve();
         }
+        if (table === identityNamespace) {
+          localNamespace = values as { id: number; domain: string };
+          return Promise.resolve();
+        }
         throw new Error('unexpected insert target');
       },
     }),
@@ -147,20 +172,23 @@ function fakeDatabase(options: { hasHistory?: boolean } = {}): FakeHandle {
             return;
           }
           if (table === localFederationRoot) {
-            // The only root update filters by id equality; apply the change to
-            // matching rows.
             const ids = fakeRootsById(condition);
-            if (ids.length === 0)
-              throw new Error(
-                'fake database cannot interpret root update without ids',
-              );
+            const updates = values as Partial<FakeRootRow>;
             roots = roots.map((root) =>
+              updates.domain !== undefined ||
+              ids.length === 0 ||
               ids.includes(root.id)
-                ? { ...root, ...(values as Partial<FakeRootRow>) }
+                ? { ...root, ...updates }
                 : root,
             );
             return;
           }
+          if (table === identityNamespace) {
+            if (!localNamespace) throw new Error('local namespace is missing');
+            localNamespace = { ...localNamespace, ...values };
+            return;
+          }
+          if (table === account || table === messageThread) return;
           throw new Error('unexpected update target');
         },
       }),
@@ -217,7 +245,11 @@ describe('KeypairService database-backed identity', () => {
 
   it('bootstraps a claimable root epoch, initial signing key, and selection state', async () => {
     const fake = fakeDatabase();
-    const service = new KeypairService(fake.database);
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
     await service.initialize();
 
     expect(service.getStatus()).toEqual({ available: true });
@@ -253,14 +285,40 @@ describe('KeypairService database-backed identity', () => {
     ).toBe(true);
   });
 
+  it('shares one initialization promise across concurrent callers', async () => {
+    const fake = fakeDatabase();
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
+    const calls = [
+      service.initialize(),
+      service.initialize(),
+      service.waitUntilInitialized(),
+    ];
+    await Promise.all(calls);
+    expect(fake.getRoots()).toHaveLength(1);
+    expect(fake.getKeys()).toHaveLength(1);
+    expect(service.getStatus()).toEqual({ available: true });
+  });
+
   it('keeps the same identity and current key across restarts', async () => {
     const fake = fakeDatabase();
-    const first = new KeypairService(fake.database);
+    const first = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
     await first.initialize();
     const keyId = first.getKeyId();
     const rootPublicKey = first.getRootPublicKeyB64();
 
-    const second = new KeypairService(fake.database);
+    const second = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
     await second.initialize();
     expect(second.getKeyId()).toBe(keyId);
     expect(second.getRootPublicKeyB64()).toBe(rootPublicKey);
@@ -270,7 +328,11 @@ describe('KeypairService database-backed identity', () => {
 
   it('never regenerates an identity when federation history exists', async () => {
     const fake = fakeDatabase({ hasHistory: true });
-    const service = new KeypairService(fake.database);
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
     await service.initialize();
 
     expect(service.getStatus()).toEqual({
@@ -283,19 +345,40 @@ describe('KeypairService database-backed identity', () => {
     expect(() => service.getKeyId()).toThrow(BusinessException);
   });
 
-  it('fails closed when SOMS_DOMAIN no longer matches the stored identity', async () => {
+  it('re-binds a changed SOMS_DOMAIN while preserving the root identity', async () => {
     const fake = fakeDatabase();
-    const service = new KeypairService(fake.database);
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
     await service.initialize();
+    const rootPublicKey = service.getRootPublicKeyB64();
+    const previousKeyId = service.getKeyId();
     process.env.SOMS_DOMAIN = 'node-b.example';
 
-    const changed = new KeypairService(fake.database);
+    const changed = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
     await changed.initialize();
-    expect(changed.getStatus()).toEqual({
-      available: false,
-      reason:
-        'SOMS_DOMAIN=node-b.example does not match the database identity domain=node-a.example',
-    });
+
+    expect(changed.getStatus()).toEqual({ available: true });
+    expect(changed.getIdentityDomain()).toBe('node-b.example');
+    expect(changed.getRootPublicKeyB64()).toBe(rootPublicKey);
+    expect(changed.getKeyId()).toMatch(/^node-b\.example\/k-/);
+    expect(changed.getKeyId()).not.toBe(previousKeyId);
+    expect(changed.getSigningKeyCertificates()).toHaveLength(1);
+    expect(changes.recordNamespaceChangeInTx).toHaveBeenCalledWith(
+      expect.anything(),
+      0,
+    );
+    expect(changes.recordClientChangeInTx).toHaveBeenCalledWith(
+      expect.anything(),
+      { publisherNamespaceId: 0, profileNamespaceId: 0 },
+    );
+    expect(sse.notifyProfileNamespaceChange).not.toHaveBeenCalled();
   });
 
   it('rotates signing keys through plan and switch while retaining the predecessor', async () => {
@@ -303,7 +386,11 @@ describe('KeypairService database-backed identity', () => {
     vi.setSystemTime(1_700_000_000_000);
     setRotationTimings();
     const fake = fakeDatabase();
-    const service = new KeypairService(fake.database);
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
     await service.initialize();
 
     const firstKey = fake.getKeys()[0]!;
@@ -312,7 +399,7 @@ describe('KeypairService database-backed identity', () => {
 
     // Entering the rotation window plans a successor without switching.
     vi.setSystemTime(1_700_000_000_420);
-    await service.initialize();
+    await service.maintain();
     const secondKey = fake
       .getKeys()
       .find((key) => key.keyId !== firstKey.keyId)!;
@@ -330,7 +417,7 @@ describe('KeypairService database-backed identity', () => {
     // After the planned switch the successor is the only new-request signer; the
     // predecessor remains published for verification.
     vi.setSystemTime(1_700_000_000_505);
-    await service.initialize();
+    await service.maintain();
     expect(service.getKeyId()).toBe(secondKey.keyId);
     expect(fake.getState()?.currentKeyId).toBe(secondKey.keyId);
     expect(fake.getState()?.plannedSuccessorKeyId).toBeNull();
@@ -346,7 +433,7 @@ describe('KeypairService database-backed identity', () => {
     // Past the predecessor's notAfter its row is retained forever — private
     // material included — while publication drops it.
     vi.setSystemTime(1_700_000_000_610);
-    await service.initialize();
+    await service.maintain();
     expect(fake.getKeys().map((key) => key.keyId)).toEqual(
       expect.arrayContaining([firstKey.keyId, secondKey.keyId]),
     );
@@ -358,7 +445,11 @@ describe('KeypairService database-backed identity', () => {
     vi.setSystemTime(1_700_000_000_000);
     setRotationTimings();
     const fake = fakeDatabase();
-    const service = new KeypairService(fake.database);
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
     await service.initialize();
     const rootPublicKey = service.getRootPublicKeyB64();
     const originalKeyId = service.getKeyId();
@@ -372,7 +463,7 @@ describe('KeypairService database-backed identity', () => {
         notAfter: new Date(1_700_000_000_600),
       })),
     );
-    await service.initialize();
+    await service.maintain();
 
     expect(service.getStatus()).toEqual({ available: true });
     expect(service.getRootPublicKeyB64()).toBe(rootPublicKey);
@@ -391,7 +482,11 @@ describe('KeypairService database-backed identity', () => {
     vi.setSystemTime(1_700_000_000_000);
     setRotationTimings();
     const fake = fakeDatabase();
-    const service = new KeypairService(fake.database);
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
     await service.initialize();
 
     // Move the wall clock past the current key's notAfter without running
@@ -413,7 +508,11 @@ describe('KeypairService database-backed identity', () => {
     vi.setSystemTime(1_700_000_000_000);
     setRotationTimings();
     const fake = fakeDatabase();
-    const service = new KeypairService(fake.database);
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
     await service.initialize();
     const previousRoot = fake.getRoots()[0]!;
     const previousRootKey = previousRoot.rootPublicKey;
@@ -478,7 +577,11 @@ describe('KeypairService database-backed identity', () => {
     vi.setSystemTime(1_700_000_000_000);
     setRotationTimings();
     const fake = fakeDatabase();
-    const service = new KeypairService(fake.database);
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
     await service.initialize();
     const claimableId = fake.getRoots()[0]!.id;
     await expect(service.unpublishRoot(claimableId)).rejects.toThrow(
@@ -497,5 +600,108 @@ describe('KeypairService database-backed identity', () => {
       service.unpublishRoot(rotation.previousRootId),
     ).rejects.toThrow(/still-valid/);
     expect(service.getRootGroup()).toHaveLength(2);
+  }, 20_000);
+
+  it('announces a replacement on both feeds in one transaction and wakes devices after commit', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    setRotationTimings();
+    const fake = fakeDatabase();
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
+    await service.initialize();
+    vi.clearAllMocks();
+
+    const rotation = await service.rotateRoot();
+
+    // The namespace-0 s2s feed item (peers re-pull /profile-namespaces/0 for
+    // the new root public key) and the (0, 0) client change (devices re-
+    // resolve the pair) both ran inside the replacement transaction.
+    expect(changes.recordNamespaceChangeInTx).toHaveBeenCalledTimes(1);
+    expect(changes.recordNamespaceChangeInTx).toHaveBeenCalledWith(
+      expect.anything(),
+      0,
+    );
+    expect(changes.recordClientChangeInTx).toHaveBeenCalledTimes(1);
+    expect(changes.recordClientChangeInTx).toHaveBeenCalledWith(
+      expect.anything(),
+      { publisherNamespaceId: 0, profileNamespaceId: 0 },
+    );
+    // The wake broadcasts the allocated client change id after commit, and
+    // the admin answer carries it as a decimal string.
+    expect(sse.notifyProfileNamespaceChange).toHaveBeenCalledTimes(1);
+    expect(sse.notifyProfileNamespaceChange).toHaveBeenCalledWith(11n);
+    expect(rotation.clientChangeId).toBe('11');
+  }, 20_000);
+
+  it('serves a federation-valid roots group after a rotation: intervals, uniqueness, and certificate enclosure', async () => {
+    // The well-known document is consumed by the discovery-side validators
+    // (federation-certificate.ts / discovery.service.ts); this test replays
+    // exactly those acceptance rules against our own published surface after
+    // an administrator-triggered replacement, using the real validators.
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    setRotationTimings();
+    const fake = fakeDatabase();
+    const service = new KeypairService(
+      fake.database,
+      changes as never,
+      sse as never,
+    );
+    await service.initialize();
+    vi.setSystemTime(1_700_000_000_430);
+    const rotation = await service.rotateRoot();
+    const now = Date.now();
+
+    const group = service.getRootGroup();
+    // Rotation never cleans up: the predecessor stays published alongside the
+    // successor, deterministically ordered by notBefore.
+    expect(group).toHaveLength(2);
+    expect(group.map((entry) => entry.ed25519)).toEqual([
+      expect.any(String),
+      rotation.newRootPublicKey,
+    ]);
+    for (let i = 1; i < group.length; i += 1)
+      expect(group[i]!.notBefore).toBeGreaterThanOrEqual(
+        group[i - 1]!.notBefore,
+      );
+
+    // Per-entry structural rules: canonical base64 key, safe-integer
+    // half-open validity interval, notBefore < notAfter.
+    for (const entry of group) expect(isValidRootKeyEntry(entry)).toBe(true);
+
+    // Document-level rules: unique keys, and at least one currently valid
+    // root. The predecessor is usually also still valid — that is exactly
+    // why it stays published for peers in the adoption window — but the
+    // claimable successor must always be among the currently valid roots.
+    expect(new Set(group.map((entry) => entry.ed25519)).size).toBe(
+      group.length,
+    );
+    const currentlyValid = group.filter(
+      (entry) => entry.notBefore <= now && now < entry.notAfter,
+    );
+    expect(currentlyValid.length).toBeGreaterThanOrEqual(1);
+    expect(currentlyValid.map((entry) => entry.ed25519)).toContain(
+      service.getRootPublicKeyB64(),
+    );
+
+    // Certificate rules: every published certificate must name a root from
+    // the group, verify under it, and keep its interval enclosed by that
+    // root's interval.
+    const byKey = new Map(group.map((entry) => [entry.ed25519, entry]));
+    for (const certificate of service.getSigningKeyCertificates()) {
+      const authorizing = byKey.get(certificate.root);
+      expect(authorizing).toBeDefined();
+      expect(certificate.notBefore).toBeGreaterThanOrEqual(
+        authorizing!.notBefore,
+      );
+      expect(certificate.notAfter).toBeLessThanOrEqual(authorizing!.notAfter);
+      expect(verifySigningCertificate(certificate, certificate.root)).toBe(
+        true,
+      );
+    }
   }, 20_000);
 });

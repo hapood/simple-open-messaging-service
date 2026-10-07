@@ -1,5 +1,5 @@
 /** Inline profile avatar transmitted over federation. */
-interface InlineProfileAvatar {
+export interface InlineProfileAvatar {
   mimeType: string;
   base64: string;
   width: number;

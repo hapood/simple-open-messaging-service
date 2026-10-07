@@ -48,10 +48,12 @@ function sqlText(statement: unknown): string {
 }
 
 function subject(rowsByCall: unknown[][]) {
-  const execute = vi.fn(async () => {
-    const rows = rowsByCall.shift() ?? [];
-    return { rows };
-  });
+  const execute = vi.fn<(statement: unknown) => Promise<{ rows: unknown[] }>>(
+    async () => {
+      const rows = rowsByCall.shift() ?? [];
+      return { rows };
+    },
+  );
   const database = {
     db: {
       execute,

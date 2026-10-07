@@ -70,8 +70,11 @@ export const messageLocalState = pgEnum('MessageLocalState', [
   'STUB',
   'FAILED',
   'READY',
-  'CONFIRMED',
 ]);
+export const federationPayloadVerification = pgEnum(
+  'FederationPayloadVerification',
+  ['UNVERIFIED', 'VERIFIED', 'CONFLICT'],
+);
 export const pushPlatform = pgEnum('PushPlatform', ['ANDROID', 'WEB', 'IOS']);
 export const uploadSessionStatus = pgEnum('UploadSessionStatus', [
   'UPLOADING',
@@ -168,7 +171,6 @@ export const identityNamespace = pgTable(
     haltedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' }),
     haltCode: integer(),
     haltReason: varchar({ length: 255 }),
-    recognizesPeer: boolean().default(false).notNull(),
     peerAcceptanceConfirmed: boolean().default(false).notNull(),
     localServiceAvailable: boolean().default(false).notNull(),
     remoteServiceReachable: boolean().default(false).notNull(),
@@ -220,7 +222,6 @@ export const identityNamespace = pgTable(
       'IdentityNamespace_shape_check',
       sql`(
         ${table.id} = 0
-        AND ${table.domain} = 'local'
         AND ${table.rootPublicKey} IS NULL
         AND ${table.identityPinnedAt} IS NULL
         AND ${table.peerAssignedLocalNamespaceId} IS NULL
@@ -235,14 +236,12 @@ export const identityNamespace = pgTable(
         AND ${table.haltedAt} IS NULL
         AND ${table.haltCode} IS NULL
         AND ${table.haltReason} IS NULL
-        AND ${table.recognizesPeer} = false
         AND ${table.peerAcceptanceConfirmed} = false
         AND ${table.localServiceAvailable} = false
         AND ${table.remoteServiceReachable} = false
         AND ${table.resetAt} IS NULL
       ) OR (
         ${table.id} > 0
-        AND ${table.domain} <> 'local'
         AND ${table.rootPublicKey} IS NOT NULL
         AND ${table.identityPinnedAt} IS NOT NULL
         AND (${table.peerAssignedLocalNamespaceId} IS NULL OR ${table.peerAssignedLocalNamespaceId} > 0)
@@ -368,7 +367,7 @@ export const forwardBundle = pgTable(
     totalBytes: bigint({ mode: 'bigint' }).notNull(),
     sourceDomain: varchar({ length: 63 }),
     publisherNamespaceId: integer(),
-    sourceBundleId: varchar({ length: 26 }),
+    sourceBundleId: varchar({ length: 64 }),
     createdBy: integer(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
@@ -409,7 +408,6 @@ export const account = pgTable(
     id: serial().primaryKey().notNull(),
     account: varchar({ length: 31 }).notNull(),
     kind: varchar({ length: 16 }).default('USER').notNull(),
-    domain: varchar({ length: 63 }).default('local').notNull(),
     namespaceId: integer().default(0).notNull(),
     defaultProfileRev: integer().default(0).notNull(),
     availability: varchar({ length: 16 }).default('AVAILABLE').notNull(),
@@ -427,8 +425,8 @@ export const account = pgTable(
   },
   (table) => [
     check(
-      'Account_local_identity_check',
-      sql`${table.domain} = 'local' AND ${table.namespaceId} = 0`,
+      'Account_namespace_check',
+      sql`${table.namespaceId} = 0`,
     ),
     check(
       'Account_kind_check',
@@ -797,7 +795,7 @@ export const messageThread = pgTable(
     ),
     check(
       'MessageThread_group_identity_check',
-      sql`${table.type} <> 'GROUP' OR ((${table.groupDomain} = 'local') = (${table.authorityNamespaceId} = 0) AND (${table.groupDomain} = 'local') = (${table.groupAccountId} IS NOT NULL) AND ${table.groupAccount} LIKE '!%')`,
+      sql`${table.type} <> 'GROUP' OR ((${table.authorityNamespaceId} = 0) = (${table.groupAccountId} IS NOT NULL) AND ${table.groupAccount} LIKE '!%')`,
     ),
     foreignKey({
       columns: [table.authorityNamespaceId],
@@ -989,15 +987,18 @@ export const message = pgTable(
     /** Immutable namespace of the stream from which the message was accepted. Zero denotes local creation. */
     publisherNamespaceId: integer().default(0).notNull(),
     /** Local materialization state. STUB and FAILED are client-visible placeholders; only READY
-     * participates in durable message-derived projections and federation publication. CONFIRMED is
-     * reached after the inbound processing-receipt's recomputed content digest matched the locally
-     * retained digest of the published content. */
+     * participates in durable message-derived projections and federation publication. */
     localState: messageLocalState().default('READY').notNull(),
-    /** Hop-independent content digest of the canonical (JCS, RFC 8785) form of `content`, as defined
-     * by Core Protocol §6.1.1. Computed as `sha256(JCS(JSON.parse(content)))` and retained so a
-     * later provenance query (`POST /s2s/v1/message-provenance`) can answer `yes` without keeping
-     * the wire bytes. NULL for messages that predate this column or are not covered by the digest. */
-    contentDigest: varchar({ length: 64 }),
+    /** Hop-independent digest of canonical wire content, sorted asset descriptors, and the optional
+     * quoted-message payload digest. */
+    payloadDigest: varchar({ length: 64 }),
+    /** Monotonic result of comparing processing receipts with the retained payload digest. */
+    federationPayloadVerification: federationPayloadVerification()
+      .default('UNVERIFIED')
+      .notNull(),
+    /** Digest of the canonical immutable federation envelope received at the direct-origin
+     * coordinate. NULL for local messages and rows accepted before envelope fingerprinting. */
+    federationEnvelopeDigest: varchar({ length: 64 }),
   },
   (table) => [
     check('Message_seq_check', sql`${table.seq} > 0`),
@@ -1007,8 +1008,8 @@ export const message = pgTable(
       sql`${table.creatorAccount} IS NOT NULL AND ((${table.contentType} = 'SYSTEM' AND ${table.creatorAccount} = '$system' AND ${table.profileNamespaceId} = 0 AND ${table.profileRev} = 0 AND ${table.publisherNamespaceId} = 0) OR (${table.contentType} <> 'SYSTEM' AND ${table.creatorAccount} <> '$system'))`,
     ),
     check(
-      'Message_origin_seq_check',
-      sql`${table.publisherNamespaceId} = 0 OR (${table.originSeq} IS NOT NULL AND ${table.originSeq} > 0)`,
+      'Message_payload_digest_check',
+      sql`${table.contentType} = 'SYSTEM' OR ${table.payloadDigest} IS NOT NULL`,
     ),
     foreignKey({
       columns: [table.profileNamespaceId],
@@ -1053,12 +1054,9 @@ export const message = pgTable(
     index('Message_threadId_ready_seq_idx')
       .on(table.threadId, table.seq)
       .where(sql`${table.localState} = 'READY'`),
-    /** Serves `POST /s2s/v1/message-provenance`: a query locates the retained digest for
-     * `(threadId, seq)` and compares it with the supplied `contentDigest`. Partial on
-     * `contentDigest IS NOT NULL` so pre-column rows and undigested messages are skipped. */
-    index('Message_threadId_seq_contentDigest_idx')
-      .on(table.threadId, table.seq, table.contentDigest)
-      .where(sql`${table.contentDigest} IS NOT NULL`),
+    index('Message_threadId_seq_payloadDigest_idx')
+      .on(table.threadId, table.seq, table.payloadDigest)
+      .where(sql`${table.payloadDigest} IS NOT NULL`),
     foreignKey({
       columns: [table.publisherNamespaceId],
       foreignColumns: [identityNamespace.id],
@@ -1071,44 +1069,6 @@ export const message = pgTable(
     })
       .onUpdate('cascade')
       .onDelete('restrict'),
-  ],
-);
-
-/** A peer's processing-receipt coordinate for one existing local message. Receipt copies are not
- * inserted into the timeline, but later quotes may address their peer-assigned sequence. */
-export const federationMessageReceipt = pgTable(
-  'FederationMessageReceipt',
-  {
-    namespaceId: integer().notNull(),
-    threadId: integer().notNull(),
-    peerSeq: integer().notNull(),
-    messageId: bigint({ mode: 'bigint' }).notNull(),
-    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
-      .default(sql`CURRENT_TIMESTAMP`)
-      .notNull(),
-  },
-  (table) => [
-    primaryKey({
-      columns: [table.namespaceId, table.threadId, table.peerSeq],
-      name: 'FederationMessageReceipt_pkey',
-    }),
-    check('FederationMessageReceipt_peerSeq_check', sql`${table.peerSeq} > 0`),
-    index('FederationMessageReceipt_messageId_idx').on(table.messageId),
-    foreignKey({
-      columns: [table.namespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'FederationMessageReceipt_namespaceId_fkey',
-    }).onDelete('restrict'),
-    foreignKey({
-      columns: [table.threadId],
-      foreignColumns: [messageThread.id],
-      name: 'FederationMessageReceipt_threadId_fkey',
-    }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.messageId],
-      foreignColumns: [message.id],
-      name: 'FederationMessageReceipt_messageId_fkey',
-    }).onDelete('cascade'),
   ],
 );
 
@@ -1756,7 +1716,8 @@ export const systemSetting = pgTable('SystemSetting', {
  *  claimable: the root that authorizes new signing certificates and claims
  *  S2S-Root-Key right now. A rotated-out predecessor keeps its row and stays in
  *  the published roots group until unpublishedAt is set by an operator, after
- *  every recognized peer adopted the rotation or the rotation was abandoned. */
+ *  every recognized peer adopted the rotation or the rotation was abandoned;
+ *  rotation itself never cleans up. */
 export const localFederationRoot = pgTable(
   'LocalFederationRoot',
   {
@@ -2177,8 +2138,8 @@ export const profileNamespaceChangeFeedHead = pgTable(
   ],
 );
 
-export const profileNamespaceInfo = pgTable(
-  'ProfileNamespaceInfo',
+export const profileNamespace = pgTable(
+  'ProfileNamespace',
   {
     publisherNamespaceId: integer().notNull(),
     profileNamespaceId: integer().notNull(),
@@ -2188,6 +2149,13 @@ export const profileNamespaceInfo = pgTable(
       .default(sql`0`)
       .notNull(),
     expired: boolean().default(true).notNull(),
+    /** Lifecycle status of the bound namespace: ACTIVE (in use) or ARCHIVED
+     *  (reset-retired, last bindings retained for historical rendering).
+     *  Orthogonal to `expired` (transient freshness while a refresh
+     *  converges). UNRECOVERABLE (permanent loss) is not stored here — it
+     *  is a federation error code that writes a row in
+     *  ProfileNamespaceTombstone instead. */
+    status: varchar({ length: 16 }).default('ACTIVE').notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
@@ -2198,21 +2166,89 @@ export const profileNamespaceInfo = pgTable(
   (table) => [
     primaryKey({
       columns: [table.publisherNamespaceId, table.profileNamespaceId],
-      name: 'ProfileNamespaceInfo_pkey',
+      name: 'ProfileNamespace_pkey',
     }),
     foreignKey({
       columns: [table.publisherNamespaceId],
       foreignColumns: [identityNamespace.id],
-      name: 'ProfileNamespaceInfo_publisher_fkey',
+      name: 'ProfileNamespace_publisher_fkey',
     }).onDelete('restrict'),
     check(
-      'ProfileNamespaceInfo_updateFeedId_check',
+      'ProfileNamespace_updateFeedId_check',
       sql`${table.updateFeedId} >= 0`,
     ),
     check(
-      'ProfileNamespaceInfo_bindings_check',
+      'ProfileNamespace_bindings_check',
       sql`(${table.domain} IS NULL AND ${table.rootPublicKey} IS NULL) OR (${table.domain} IS NOT NULL AND ${table.rootPublicKey} IS NOT NULL)`,
     ),
+    check(
+      'ProfileNamespace_status_check',
+      sql`${table.status} IN ('ACTIVE', 'ARCHIVED')`,
+    ),
+  ],
+);
+
+/** Federation-reported permanent loss of a namespace binding (the
+ *  `FEDERATION_NAMESPACE_UNRECOVERABLE` s2s error code). A row here is a
+ *  tomb: the coordinate pair is retained for rendering "gone" while the
+ *  binding content is empty. Distinct from ProfileNamespace.expired
+ *  (transient) and .status ARCHIVED (retired-but-retained). */
+export const profileNamespaceTombstone = pgTable(
+  'ProfileNamespaceTombstone',
+  {
+    publisherNamespaceId: integer().notNull(),
+    profileNamespaceId: integer().notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.publisherNamespaceId, table.profileNamespaceId],
+      name: 'ProfileNamespaceTombstone_pkey',
+    }),
+    foreignKey({
+      columns: [table.publisherNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'ProfileNamespaceTombstone_publisher_fkey',
+    }).onDelete('restrict'),
+  ],
+);
+
+/** Federation-reported permanent loss of a profile (the
+ *  `FEDERATION_PROFILE_UNRECOVERABLE` s2s error code). Tomb spans every rev
+ *  of the account in that namespace, so the key omits profileRev. Sparse by
+ *  design: only unrecoverable accounts have a row. */
+export const profileTombstone = pgTable(
+  'ProfileTombstone',
+  {
+    publisherNamespaceId: integer().notNull(),
+    profileNamespaceId: integer().notNull(),
+    account: varchar({ length: 31 }).notNull(),
+    createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+    updatedAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
+      .default(sql`CURRENT_TIMESTAMP`)
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.publisherNamespaceId,
+        table.profileNamespaceId,
+        table.account,
+      ],
+      name: 'ProfileTombstone_pkey',
+    }),
+    foreignKey({
+      columns: [table.publisherNamespaceId],
+      foreignColumns: [identityNamespace.id],
+      name: 'ProfileTombstone_publisher_fkey',
+    }).onDelete('restrict'),
   ],
 );
 

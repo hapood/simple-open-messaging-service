@@ -102,7 +102,7 @@ export function userIntentClientBodiesSql(
       SELECT ${input.targetAccount}, ${input.targetDomain}, ${input.targetNamespaceId},
         ${input.actorAccount}, ${input.actorDomain}, ${input.actorNamespaceId}, 2
     ), directions AS MATERIALIZED (
-      SELECT s."authorAccount", s."authorDomain", s."peerAccount", s."peerDomain",
+      SELECT s."authorAccount", s."authorDomain", s."authorNamespaceId", s."peerAccount", s."peerDomain",
         s."peerNamespaceId", s.ordinal, ${reverseState},
         p."threadId" AS "localThreadId", ${established} AS established
       FROM sides s
@@ -113,7 +113,7 @@ export function userIntentClientBodiesSql(
       ${reverseJoin}
       WHERE s."authorAccount" <> ${input.actorAccount}
       UNION ALL
-      SELECT s."authorAccount", s."authorDomain", s."peerAccount", s."peerDomain",
+      SELECT s."authorAccount", s."authorDomain", s."authorNamespaceId", s."peerAccount", s."peerDomain",
         s."peerNamespaceId", s.ordinal, v.status, v.note, v."profileRev",
         floor(extract(epoch FROM v."requestedAt") * 1000)::bigint AS "requestedAt",
         CASE WHEN v."expiresAt" IS NULL THEN NULL
@@ -134,10 +134,10 @@ export function userIntentClientBodiesSql(
       JOIN (VALUES (${input.actorAccount}::text, ${input.actorKey}::text),
                    (${input.targetAccount}::text, ${input.targetKey}::text))
         k("authorAccount", "compactionKey") ON k."authorAccount" = d."authorAccount"
-      JOIN "Account" o ON o.domain = 'local' AND o."namespaceId" = 0
+      JOIN "Account" o ON o."namespaceId" = 0
         AND o.availability = 'AVAILABLE'
-        AND ((o.account = d."authorAccount" AND d."authorDomain" = 'local')
-          OR (o.account = d."peerAccount" AND d."peerDomain" = 'local'))
+        AND ((o.account = d."authorAccount" AND d."authorNamespaceId" = 0)
+          OR (o.account = d."peerAccount" AND d."peerNamespaceId" = 0))
     ), client_peers AS MATERIALIZED (
       SELECT rd.*, COALESCE(peer_intent."profileRev", 0) AS "clientPeerProfileRev"
       FROM recipient_directions rd
@@ -198,10 +198,12 @@ export function userIntentPeerWriteSql(
           WHERE d."threadId" = ${input.threadId} AND d."publisherNamespaceId" = 0), 0))`;
   return sql`
     intent_source AS MATERIALIZED (
-      SELECT v.status, v.note, v."profileRev", v."requestedAt", v."expiresAt"
+      SELECT v.status, v.note, v."profileNamespaceId", v."profileRev", v."requestedAt", v."expiresAt"
       FROM ${sql.raw(input.ownState)} v
     ), peer_write AS MATERIALIZED (
-      SELECT jsonb_build_object('status', v.status, 'profileRev', v."profileRev", 'note', v.note,
+      SELECT jsonb_build_object('status', v.status,
+          'namespaceId', v."profileNamespaceId",
+          'profileRev', v."profileRev", 'note', v.note,
           'requestedAt', floor(extract(epoch FROM v."requestedAt") * 1000)::bigint,
           'expiresAt', CASE WHEN v."expiresAt" IS NULL THEN NULL
             ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END) || ${heads} AS body

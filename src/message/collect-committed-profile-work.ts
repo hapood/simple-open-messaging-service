@@ -91,7 +91,7 @@ export function collectCommittedProfileWork(
         if (
           address.profileRev === 0 ||
           address.account === '$system' ||
-          address.domain === 'local'
+          address.profileNamespaceId === 0
         )
           continue;
         // A local publisher already owns the profile snapshot. Remote
@@ -136,7 +136,7 @@ export function collectCommittedProfileWork(
                 lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
                 target,
                 peerAccount: eventParticipants(event, item.threadType).find(
-                  (participant) => participant.domain === 'local',
+                  (participant) => participant.profileNamespaceId === 0,
                 )!.account,
               },
               eventSeq: item.seq,

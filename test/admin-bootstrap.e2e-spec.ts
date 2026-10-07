@@ -57,16 +57,14 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
       const rows = await database.db
         .select({
           account: user.account,
-          domain: user.domain,
           role: admin.role,
           enabled: admin.enabled,
         })
         .from(user)
         .innerJoin(admin, eq(admin.userId, user.id))
-        .where(and(eq(user.account, 'admin'), eq(user.domain, 'local')));
+        .where(and(eq(user.account, 'admin'), eq(user.namespaceId, 0)));
       expect(rows).toHaveLength(1);
       expect(rows[0].account).toBe('admin');
-      expect(rows[0].domain).toBe('local');
       expect(rows[0].role).toBe(AdminRole.SUPER_ADMIN);
       expect(rows[0].enabled).toBe(true);
 
@@ -93,7 +91,7 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
       const [bootstrapUser] = await database.db
         .select({ id: user.id })
         .from(user)
-        .where(and(eq(user.account, 'admin'), eq(user.domain, 'local')))
+        .where(and(eq(user.account, 'admin'), eq(user.namespaceId, 0)))
         .limit(1);
       expect(bootstrapUser).toBeUndefined();
 
@@ -113,7 +111,7 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
     const [firstCount] = await first.database.db
       .select({ count: sql<number>`count(*)::int` })
       .from(user)
-      .where(and(eq(user.account, 'admin'), eq(user.domain, 'local')));
+      .where(and(eq(user.account, 'admin'), eq(user.namespaceId, 0)));
     await first.app.close();
     expect(firstCount.count).toBe(1);
 
@@ -123,7 +121,7 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
       const [userCount] = await second.database.db
         .select({ count: sql<number>`count(*)::int` })
         .from(user)
-        .where(and(eq(user.account, 'admin'), eq(user.domain, 'local')));
+        .where(and(eq(user.account, 'admin'), eq(user.namespaceId, 0)));
       const [adminCount] = await second.database.db
         .select({ count: sql<number>`count(*)::int` })
         .from(admin);

@@ -119,7 +119,7 @@ store has allocated for the caller's identity epoch. The responder uses
 exactly this value as the wire `namespaceId` whenever it serializes the
 caller's own subjects, and the caller retains it per recipient: it identifies
 the caller's local identities as mirrored in the responder's store
-([protocol.md Section 6.2.1](./protocol.md#local-subject-marker-and-namespace-interpretation))
+([protocol.md Section 6.2.1](./protocol.md#621-publisher-scoped-namespace-interpretation))
 and selects receipt and self-subject processing there. The value changes only
 when the responder's recognition of the caller is re-established after the
 previous identity epoch is retired.
@@ -689,10 +689,10 @@ A has committed local recognition and is `establishing` if B's acceptance is not
 | HTTP `409` + `FEDERATION_IDENTITY_MISMATCH`                           | `halted`; retain old pin                                                              | Fail closed and stop automatic communication                                    |
 | HTTP `409` + `FEDERATION_DOMAIN_CONFLICT`                             | Retain pins and the current binding                                                   | Stop re-binding attempts for that domain; local administration decides          |
 | HTTP `409` + `FEDERATION_DOMAIN_CHANGE_REJECTED`                      | `halted`; retain the rejection reason                                                 | Stop automatic communication                                                    |
-| HTTP `409` + `FEDERATION_ROOT_CHANGE_REJECTED`                        | `halted`; retain the rejection reason                                                 | Stop automatic communication                                                    |
+| HTTP `409` + `FEDERATION_ROOT_CHANGE_REJECTED`                        | Retain the current pin and lifecycle; retain the rejection reason                    | Do not automatically initiate or repeat the administrator-triggered root rotation; any retry requires local administration |
 | A directly verifies that B's root differs from its pin                | `halted`; retain independent security evidence                                        | Do not treat the contradiction as a network error                               |
 
-An authenticated HTTP error response does not always trigger `halted`; it MUST be classified by stable code. `FEDERATION_MALFORMED`, `FEDERATION_BAD_SIGNATURE`, `FEDERATION_BINDING_VIOLATION`, `RATE_LIMITED`, and generic `INTERNAL` reject or delay only the current request and do not independently halt the peer. Only the fatal HTTP `409` and code combinations above, plus a pinned-root conflict directly verified by A, trigger `halted`; `FEDERATION_DOMAIN_CONFLICT` retains the current binding instead. An unparseable proxy body, TLS or connection failure, timeout, or HTTP `503` MUST NOT trigger `halted`. For an unknown HTTP status or a status/code conflict, A MUST follow the classification rules in the [Stable Error Registry](./errors.md#http-layer), but MUST NOT replace or delete a root pin without an identity contradiction.
+An authenticated HTTP error response does not always trigger `halted`; it MUST be classified by stable code. `FEDERATION_MALFORMED`, `FEDERATION_BAD_SIGNATURE`, `FEDERATION_BINDING_VIOLATION`, `RATE_LIMITED`, and generic `INTERNAL` reject or delay only the current request and do not independently halt the peer. Only HTTP `409` with `FEDERATION_IDENTITY_MISMATCH` or `FEDERATION_DOMAIN_CHANGE_REJECTED`, plus a pinned-root conflict directly verified by A, triggers `halted`; `FEDERATION_DOMAIN_CONFLICT` retains the current binding, and `FEDERATION_ROOT_CHANGE_REJECTED` retains the current pin and lifecycle instead. A root rotation is administrator-triggered; v1 defines no automatic retry or initiation policy for it. An unparseable proxy body, TLS or connection failure, timeout, or HTTP `503` MUST NOT trigger `halted`. For an unknown HTTP status or a status/code conflict, A MUST follow the classification rules in the [Stable Error Registry](./errors.md#http-layer), but MUST NOT replace or delete a root pin without an identity contradiction.
 
 ### 8.3 Lost responses and recognition convergence
 

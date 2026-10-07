@@ -37,7 +37,8 @@ function harness(kind: 'GROUP' | 'P2P' = 'GROUP') {
     {} as never,
     rounds,
     {} as never,
-    {} as never,
+    { applyReverseInTransaction: vi.fn() } as never,
+    { publish: vi.fn() } as never,
     { resolve: vi.fn().mockResolvedValue(source) } as never,
   );
   const batch = {
@@ -70,10 +71,11 @@ describe('FederationThreadReverseRoundExecutorService', () => {
       const publish = vi.fn(async () => {
         events.push('publish');
       });
+      const effects: unknown[] = [];
       const apply = vi.fn(async (actualTx) => {
         expect(actualTx).toBe(tx);
         events.push('facts');
-        return { publish };
+        return effects;
       });
       const finalize = vi.fn(async (actualTx) => {
         expect(actualTx).toBe(tx);
@@ -101,10 +103,11 @@ describe('FederationThreadReverseRoundExecutorService', () => {
             },
           },
         },
-        federation: {
-          applyReverseMessagePageInTransaction: apply,
-          finalizeReverseMessageWindowInTransaction: finalize,
+        inboundMessageCommits: {
+          applyReverseInTransaction: apply,
+          finalizeReverseWindowInTransaction: finalize,
         },
+        messageEffects: { publish },
       });
       try {
         const result = executor.commit(

@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const { sendNotification } = vi.hoisted(() => ({ sendNotification: vi.fn() }));
 vi.mock('web-push', () => ({ default: { sendNotification } }));
 
+import type { SQL } from 'drizzle-orm';
 import { PushService } from './push.service.js';
 
 /**
@@ -18,7 +19,8 @@ import { PushService } from './push.service.js';
  */
 describe('PushService — identity-only payloads', () => {
   let svc: PushService;
-  let registrations: ReturnType<typeof vi.fn>;
+  let registrations: ReturnType<typeof vi.fn> &
+    ((where?: SQL) => Promise<any[]>);
   let settings: {
     isWebPushConfigured: boolean;
     getVapid: ReturnType<typeof vi.fn>;
@@ -150,9 +152,8 @@ describe('PushService — identity-only payloads', () => {
     };
     registrations.mockResolvedValue(
       [10, 20].map((sessionId) => ({
-        userId: 1,
-        sessionId,
         ...session,
+        sessionId,
         token: `https://push/${sessionId}`,
         platform: 'WEB',
         webP256dh: 'p256',

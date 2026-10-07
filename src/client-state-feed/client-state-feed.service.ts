@@ -6,6 +6,7 @@ import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
 import {
   account,
   clientStateFeed,
+  identityNamespace,
   groupMeta,
   groupRequestProjection,
 } from '../database/schema.js';
@@ -181,7 +182,6 @@ export class ClientStateFeedService implements OnModuleDestroy {
       write.eventType,
       write.namespaceId,
       write.account,
-      write.domain,
       write.subjectAccount,
       write.subjectNamespaceId,
     ]);
@@ -294,8 +294,12 @@ export class ClientStateFeedService implements OnModuleDestroy {
     let pending: PendingClientStateFeedUpdate | undefined;
     const readThroughFeedId = await this.database.db.transaction(async (tx) => {
       const [owner] = await tx
-        .select({ allocatedThrough: account.clientStateFeedEndId })
+        .select({
+          allocatedThrough: account.clientStateFeedEndId,
+          domain: identityNamespace.domain,
+        })
         .from(account)
+        .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
         .where(eq(account.id, userId))
         .for('no key update')
         .limit(1);
@@ -314,7 +318,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
           and(
             eq(clientStateFeed.userId, userId),
             eq(clientStateFeed.account, ''),
-            eq(clientStateFeed.domain, 'local'),
+            eq(clientStateFeed.domain, owner.domain),
             eq(clientStateFeed.eventType, 'INCOMING_INVITE_HEAD'),
             eq(clientStateFeed.subjectAccount, ''),
             eq(clientStateFeed.subjectNamespaceId, 0),
@@ -332,7 +336,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
       const feedId = await this.writeInTx(tx, {
         userId,
         account: '',
-        domain: 'local',
+        domain: owner.domain,
         namespaceId: 0,
         eventType: 'INCOMING_INVITE_HEAD',
         subjectAccount: '',

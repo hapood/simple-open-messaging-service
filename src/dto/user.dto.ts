@@ -147,7 +147,7 @@ export class UserAddressDto {
   @MaxLength(31)
   account!: string;
 
-  @ApiProperty({ example: 'local' })
+  @ApiProperty({ example: 'example.com' })
   @IsString()
   @IsNotEmpty()
   @MaxLength(63)
@@ -158,7 +158,7 @@ export class QueryUsersDto {
   @ApiProperty({
     type: UserAddressDto,
     isArray: true,
-    example: [{ account: 'alice', domain: 'local' }],
+    example: [{ account: 'alice', domain: 'example.com' }],
     description: 'List of user addresses (≤100 per query)',
   })
   @IsArray()

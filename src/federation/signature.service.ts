@@ -89,17 +89,30 @@ function parseProfile(headers: OutboundSignatureHeaders): ParsedProfile | null {
       return null;
     }
 
-    const [, params] = input;
+    const [components, params] = input;
+    if (
+      components.length !== SIGNED_COMPONENTS.length ||
+      components.some(
+        ([component, componentParams], index) =>
+          component !== SIGNED_COMPONENTS[index] || componentParams.size !== 0,
+      ) ||
+      params.size !== SIGNATURE_PARAMS.length ||
+      SIGNATURE_PARAMS.some((name) => !params.has(name))
+    ) {
+      return null;
+    }
     const created = params.get('created');
     const expires = params.get('expires');
     const keyId = params.get('keyid');
+    const algorithm = params.get('alg');
     if (
       typeof created !== 'number' ||
       !Number.isSafeInteger(created) ||
       typeof expires !== 'number' ||
       !Number.isSafeInteger(expires) ||
       typeof keyId !== 'string' ||
-      !parseKeyId(keyId)
+      !parseKeyId(keyId) ||
+      algorithm !== 'ed25519'
     ) {
       return null;
     }
@@ -251,9 +264,7 @@ export class SignatureService {
     if (now > expires) return false;
 
     const dateSeconds = Date.parse(headers.date) / 1000;
-    return (
-      Number.isInteger(dateSeconds) && Math.abs(dateSeconds - created) <= 1
-    );
+    return Number.isInteger(dateSeconds) && dateSeconds === created;
   }
 
   /** Return parsed profile metadata after Structured Fields validation. */

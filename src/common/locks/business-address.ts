@@ -1,10 +1,13 @@
 /** Canonical address representation used only for relationship-pair advisory
- * lock keys. Persisted endpoint identity remains account/domain columns. */
-export type PairEndpointAddress = `${string}@${string}`;
+ * lock keys. Persisted endpoint identity remains account/namespace columns. */
+export interface PairEndpointAddress {
+  readonly profileNamespaceId: number;
+  readonly account: string;
+}
 
 export function completeBusinessAddress(
   account: string,
-  domain: string,
+  profileNamespaceId: number,
 ): PairEndpointAddress {
-  return `${account}@${domain}`.toLowerCase() as PairEndpointAddress;
+  return { account: account.toLowerCase(), profileNamespaceId };
 }

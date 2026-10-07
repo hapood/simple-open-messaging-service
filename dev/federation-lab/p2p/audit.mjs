@@ -66,18 +66,20 @@ export function normalizeNodePairRows(node, rows, users) {
 async function readNodeRows(client) {
   const result = await client.query(`
     SELECT
-      "id"::text AS id,
+      "RelationshipPair"."id"::text AS id,
       "endpointAType" AS endpointatype,
       "endpointAAccount" AS endpointaaccount,
-      "endpointADomain" AS endpointadomain,
+      ns_a."domain" AS endpointadomain,
       "endpointBType" AS endpointbtype,
       "endpointBAccount" AS endpointbaccount,
-      "endpointBDomain" AS endpointbdomain,
-      "active" AS active
+      ns_b."domain" AS endpointbdomain,
+      "RelationshipPair"."active" AS active
       , "threadId" AS threadid
     FROM "RelationshipPair"
+    LEFT JOIN "IdentityNamespace" ns_a ON ns_a."id" = "RelationshipPair"."endpointANamespaceId"
+    LEFT JOIN "IdentityNamespace" ns_b ON ns_b."id" = "RelationshipPair"."endpointBNamespaceId"
     WHERE "kind" = 'P2P'
-    ORDER BY "id"
+    ORDER BY "RelationshipPair"."id"
   `);
   return result.rows;
 }
@@ -85,20 +87,37 @@ async function readNodeRows(client) {
 async function readNodeIntentRows(client) {
   const result = await client.query(`
     SELECT
-      intent."id"::text AS id,
-      intent."authorSide" AS authorside,
+      concat(intent."authorAccount", '/', intent."authorNamespaceId", '->',
+              intent."receiverAccount", '/', intent."receiverNamespaceId") AS id,
+      CASE WHEN pair."endpointAAccount" = intent."authorAccount"
+        AND pair."endpointANamespaceId" = intent."authorNamespaceId"
+        THEN 'A' ELSE 'B' END AS authorside,
       intent."status" AS status,
       intent."expiresAt" AS expiresat,
       pair."endpointAType" AS endpointatype,
       pair."endpointAAccount" AS endpointaaccount,
-      pair."endpointADomain" AS endpointadomain,
+      ns_a."domain" AS endpointadomain,
       pair."endpointBType" AS endpointbtype,
       pair."endpointBAccount" AS endpointbaccount,
-      pair."endpointBDomain" AS endpointbdomain
+      ns_b."domain" AS endpointbdomain
     FROM "RelationshipIntent" intent
-    INNER JOIN "RelationshipPair" pair ON pair."id" = intent."pairId"
+    INNER JOIN "RelationshipPair" pair
+        ON pair."kind" = 'P2P'
+        AND (
+          (pair."endpointAAccount" = intent."authorAccount"
+            AND pair."endpointANamespaceId" = intent."authorNamespaceId"
+            AND pair."endpointBAccount" = intent."receiverAccount"
+            AND pair."endpointBNamespaceId" = intent."receiverNamespaceId")
+          OR (pair."endpointBAccount" = intent."authorAccount"
+            AND pair."endpointBNamespaceId" = intent."authorNamespaceId"
+            AND pair."endpointAAccount" = intent."receiverAccount"
+            AND pair."endpointANamespaceId" = intent."receiverNamespaceId")
+        )
+    LEFT JOIN "IdentityNamespace" ns_a ON ns_a."id" = pair."endpointANamespaceId"
+    LEFT JOIN "IdentityNamespace" ns_b ON ns_b."id" = pair."endpointBNamespaceId"
     WHERE pair."kind" = 'P2P'
-    ORDER BY intent."id"
+    ORDER BY intent."authorAccount", intent."authorNamespaceId",
+        intent."receiverAccount", intent."receiverNamespaceId"
   `);
   return result.rows;
 }

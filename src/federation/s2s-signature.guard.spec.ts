@@ -4,7 +4,7 @@ import { S2sSignatureGuard } from './s2s-signature.guard.js';
 
 function subject(overrides?: {
   trustLevel?: string;
-  recognizesPeer?: boolean;
+  localServiceAvailable?: boolean;
 }) {
   const peer = {
     trustLevel: overrides?.trustLevel ?? 'available',
@@ -12,8 +12,7 @@ function subject(overrides?: {
     id: 9,
     domain: 'peer.example',
     rootPublicKey: Buffer.alloc(32, 2).toString('base64'),
-    recognizesPeer: overrides?.recognizesPeer ?? true,
-    localServiceAvailable: true,
+    localServiceAvailable: overrides?.localServiceAvailable ?? true,
     haltCode: null,
     haltReason: null,
   };
@@ -86,7 +85,7 @@ describe('S2sSignatureGuard recognition and reachability ordering', () => {
 
   it('rejects missing local recognition before key fetch', async () => {
     const { guard, context, verify, recognition } = subject({
-      recognizesPeer: false,
+      localServiceAvailable: false,
     });
 
     await expect(guard.canActivate(context as never)).rejects.toMatchObject({

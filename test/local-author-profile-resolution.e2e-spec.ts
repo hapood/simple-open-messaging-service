@@ -8,6 +8,11 @@ import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
 import { ProfileResolutionCoordinatorService } from '../src/profile-resolution/profile-resolution-coordinator.service.js';
 import { BusinessCode } from '../src/common/business-code.js';
+import {
+  ProfileLookup,
+  type ProfileClientResolutionDemand,
+} from '../src/profile-resolution/profile-resolution-demand.js';
+import { withMessageDigest } from './support/message-fixture.js';
 
 describe('local-author profiles referenced by a foreign authoritative group', () => {
   let mod: TestingModule;
@@ -17,6 +22,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
   let profiles: FederationProfileService;
   const domain = loadFederationConfig().domain;
   const account = 'local-profile-viewer';
+  const groupAccount = '!local-profile-mirror';
   const sse = { onProfileResolved: vi.fn(), onProfileFailed: vi.fn() };
   const coordinator = () =>
     new ProfileResolutionCoordinatorService(database, profiles, sse as never);
@@ -45,28 +51,28 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
     await database.db.insert(tables.profileTable).values([
       {
         account,
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 1,
         displayName: 'Local historical',
       },
       {
         account,
-        domain: 'local',
-        namespaceId: 0,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         profileRev: 2,
         displayName: 'Local current',
       },
       {
         account,
-        domain,
-        namespaceId: ns,
+        publisherNamespaceId: ns,
+        profileNamespaceId: ns,
         profileRev: 1,
         displayName: 'Wrong foreign copy',
       },
     ]);
     const group = {
-      account: '!local-profile-mirror',
+      account: groupAccount,
       domain: 'local-profile-origin.test',
     };
     const [thread] = await database.db
@@ -85,7 +91,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
       kind: 'GROUP_MEMBER',
       threadId,
       active: true,
-      endpointAType: 'GROUP',
+      endpointAType: 'USER',
       endpointAAccount: account,
       endpointANamespaceId: 0,
       endpointBType: 'GROUP',
@@ -95,25 +101,32 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
     await database.db.insert(tables.groupMetaMemberFeed).values({
       threadId,
       memberAccount: account,
-      memberDomain: 'local',
+      profileNamespaceId: 0,
       operation: 'MEMBER_UPSERT',
       feedId: 1,
-      body: { role: 'MEMBER', profileRev: 1 },
+      body: { role: 'MEMBER', profileNamespaceId: 0, profileRev: 1 },
+    });
+    await database.db.insert(tables.accountThreadState).values({
+      accountId: viewerId,
+      threadId,
+      messageEndSeq: 3,
+      role: 'MEMBER',
     });
     await database.db.insert(tables.message).values(
-      [1, 2, 3].map((seq) => ({
-        threadId,
-        seq,
-        originSeq: seq,
-        sourceNamespaceId: ns,
-        creatorAccount: account,
-        creatorDomain: 'local',
-        profileNamespaceId: 0,
-        profileRev: seq === 3 ? 3 : 1,
-        contentType: 'PURE_TEXT' as const,
-        content: JSON.stringify({ text: 'local author' }),
-        updatedAt: new Date(),
-      })),
+      withMessageDigest(
+        [1, 2, 3].map((seq) => ({
+          threadId,
+          seq,
+          originSeq: seq,
+          sourceNamespaceId: ns,
+          creatorAccount: account,
+          profileNamespaceId: 0,
+          profileRev: seq === 3 ? 3 : 1,
+          contentType: 'PURE_TEXT' as const,
+          content: JSON.stringify({ text: 'local author' }),
+          updatedAt: new Date(),
+        })),
+      ),
     );
   });
   afterAll(async () => {
@@ -124,16 +137,15 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
     'resolves a mirror roster %s domain from the local exact version',
     async (form) => {
       await expect(
-        coordinator().start(viewerId, {
-          type: 'GROUP_META',
-          threadId,
-          profileRev: 1,
-          subject: {
-            type: 'MEMBER',
+        coordinator().start(viewerId, 0, {
+          publisherNamespaceId: 0,
+          lookup: ProfileLookup.ACCOUNT_PROFILE,
+          target: {
+            profileNamespaceId: 0,
             account,
-            domain: form === 'local' ? 'local' : domain,
+            rev: 1,
           },
-        }),
+        } satisfies ProfileClientResolutionDemand),
       ).resolves.toMatchObject({
         status: 'READY',
         profile: { rev: 1, name: 'Local historical' },
@@ -145,12 +157,15 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
     'resolves message %i locally even with a foreign source namespace',
     async (messageSeq) => {
       await expect(
-        coordinator().start(viewerId, {
-          type: 'MESSAGE_AUTHOR',
-          threadId,
-          messageSeq,
-          rev: 1,
-        }),
+        coordinator().start(viewerId, 0, {
+          publisherNamespaceId: 0,
+          lookup: ProfileLookup.ACCOUNT_PROFILE,
+          target: {
+            profileNamespaceId: 0,
+            account,
+            rev: 1,
+          },
+        } satisfies ProfileClientResolutionDemand),
       ).resolves.toMatchObject({
         status: 'READY',
         profile: { rev: 1, name: 'Local historical' },
@@ -160,12 +175,15 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
 
   it('does not fall back to S2S or the latest local version for a missing exact revision', async () => {
     await expect(
-      coordinator().start(viewerId, {
-        type: 'MESSAGE_AUTHOR',
-        threadId,
-        messageSeq: 3,
-        rev: 3,
-      }),
+      coordinator().start(viewerId, 0, {
+        publisherNamespaceId: 0,
+        lookup: ProfileLookup.ACCOUNT_PROFILE,
+        target: {
+          profileNamespaceId: 0,
+          account,
+          rev: 3,
+        },
+      } satisfies ProfileClientResolutionDemand),
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
     expect(sse.onProfileFailed).not.toHaveBeenCalled();
   });
@@ -176,12 +194,15 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
       .values({ account: 'profile-outsider', updatedAt: new Date() })
       .returning();
     await expect(
-      coordinator().start(outsider.id, {
-        type: 'MESSAGE_AUTHOR',
-        threadId,
-        messageSeq: 1,
-        rev: 1,
-      }),
-    ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
+      coordinator().start(outsider.id, 0, {
+        publisherNamespaceId: 0,
+        lookup: ProfileLookup.ACCOUNT_PROFILE,
+        target: {
+          profileNamespaceId: 0,
+          account,
+          rev: 1,
+        },
+      } satisfies ProfileClientResolutionDemand),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
   });
 });

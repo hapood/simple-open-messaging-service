@@ -3,6 +3,7 @@ import {
   type PairAddressScope,
 } from '../src/common/locks/relationship-pair-business-lock.js';
 import { businessAccountScopeKey } from '../src/common/locks/account-business-lock.js';
+import { localIdentityDomain } from './support/local-domain.js';
 import {
   findP2PRelationship,
   seedAcceptedRelationship,
@@ -28,7 +29,7 @@ import { withBusinessLockCapture } from './business-lock-capture.js';
 import * as tables from '../src/database/schema.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
-import { FederationService } from '../src/federation/federation.service.js';
+import { FederationStateFeedPushService } from '../src/federation/federation-state-feed-push.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import {
@@ -57,12 +58,15 @@ function pairScope(
   return {
     // `kind` is a plain varchar column; the check constraint pins the union.
     kind: pair.kind as PairAddressScope['kind'],
-    // Lowercase the parts, not the assembled address: toLowerCase on the
-    // template erases the `${string}@${string}` literal type the scope wants.
-    // This suite keeps both endpoints local; namespace zero is local.
     addresses: [
-      `${pair.endpointAAccount.toLowerCase()}@local`,
-      `${pair.endpointBAccount.toLowerCase()}@local`,
+      {
+        account: pair.endpointAAccount.toLowerCase(),
+        profileNamespaceId: pair.endpointANamespaceId,
+      },
+      {
+        account: pair.endpointBAccount.toLowerCase(),
+        profileNamespaceId: pair.endpointBNamespaceId,
+      },
     ],
   };
 }
@@ -103,7 +107,7 @@ describe('user intent decision', () => {
       database: withBusinessLockCapture(database, businessLocks),
       clientFeed: app.get(ClientStateFeedService),
       peerFeed: app.get(PeerStateFeedService),
-      federation: app.get(FederationService),
+      federation: app.get(FederationStateFeedPushService),
       namespaces: app.get(FederationNamespaceService),
     };
     service = new UserIntentService(deps);
@@ -130,13 +134,17 @@ describe('user intent decision', () => {
   ) {
     const target = await database.db.query.account.findFirst({
       where: eq(tables.account.id, toUserId),
-      columns: { account: true, domain: true },
+      columns: { account: true },
     });
     if (!target) throw new Error('seedPending target is missing');
     await service.execute({
       userId: fromUserId,
       decision: 'REQUESTED',
-      target: { account: target.account, domain: target.domain },
+      target: {
+        account: target.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       note,
     });
   }
@@ -301,7 +309,7 @@ describe('user intent decision', () => {
       account: endpoint.account,
       // Local endpoints resolve through the namespace-zero identity; remote
       // domains are irrelevant to participant facts in this local suite.
-      domain: endpoint.namespaceId === 0 ? 'local' : 'remote',
+      domain: endpoint.namespaceId === 0 ? localIdentityDomain() : 'remote',
       profileNamespaceId: endpoint.namespaceId,
       profileRev:
         after.intents.find(
@@ -313,14 +321,18 @@ describe('user intent decision', () => {
   }
 
   it('requests a fresh local friendship with shell-only effects', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const { alice, bob } = await twoUsers('req-local');
     await runIntent({
       userId: alice.id,
       targetUserId: bob.id,
-      target: { account: bob.account, domain: 'local' },
+      target: {
+        account: bob.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       decision: 'REQUESTED',
       note: 'let us chat',
     });
@@ -362,7 +374,7 @@ describe('user intent decision', () => {
   });
 
   it('accepts an application with the full activation effects', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const { alice, bob } = await twoUsers('ack-local');
@@ -370,7 +382,11 @@ describe('user intent decision', () => {
     await runIntent({
       userId: bob.id,
       targetUserId: alice.id,
-      target: { account: alice.account, domain: 'local' },
+      target: {
+        account: alice.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       decision: 'ACCEPTED',
     });
     const after = await state(alice, bob);
@@ -408,7 +424,7 @@ describe('user intent decision', () => {
   });
 
   it('collapses a crossed request into the acceptance path', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const { alice, bob } = await twoUsers('req-cross');
@@ -416,7 +432,11 @@ describe('user intent decision', () => {
     await runIntent({
       userId: alice.id,
       targetUserId: bob.id,
-      target: { account: bob.account, domain: 'local' },
+      target: {
+        account: bob.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       decision: 'REQUESTED',
       note: 'from alice',
     });
@@ -438,7 +458,7 @@ describe('user intent decision', () => {
   });
 
   it('no-ops an already-active acceptance and rejects a stale one', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const { alice, bob } = await twoUsers('ack-noop');
@@ -450,7 +470,11 @@ describe('user intent decision', () => {
       service.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
-        target: { account: alice.account, domain: 'local' },
+        target: {
+          account: alice.account,
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
       }),
     ).resolves.toEqual({
       status: 'NO_OP',
@@ -466,7 +490,11 @@ describe('user intent decision', () => {
       service.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
-        target: { account: carol.account, domain: 'local' },
+        target: {
+          account: carol.account,
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
       }),
     ).resolves.toMatchObject({
       status: 'REJECTED',
@@ -475,7 +503,7 @@ describe('user intent decision', () => {
   });
 
   it('revokes a pending request without any departure effect', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const { alice, bob } = await twoUsers('revoke-pending');
@@ -483,7 +511,11 @@ describe('user intent decision', () => {
     await runIntent({
       userId: alice.id,
       targetUserId: bob.id,
-      target: { account: bob.account, domain: 'local' },
+      target: {
+        account: bob.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       decision: 'REVOKED',
     });
     const after = await state(alice, bob);
@@ -508,7 +540,7 @@ describe('user intent decision', () => {
   });
 
   it('rejects an incoming request through the same revocation', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const { alice, bob } = await twoUsers('revoke-reject');
@@ -516,7 +548,11 @@ describe('user intent decision', () => {
     await runIntent({
       userId: bob.id,
       targetUserId: alice.id,
-      target: { account: alice.account, domain: 'local' },
+      target: {
+        account: alice.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       decision: 'REVOKED',
     });
     const after = await state(alice, bob);
@@ -538,7 +574,7 @@ describe('user intent decision', () => {
   });
 
   it('ends a friendship with the full departure effect set', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const { alice, bob } = await twoUsers('revoke-friend');
@@ -546,7 +582,11 @@ describe('user intent decision', () => {
     await runIntent({
       userId: alice.id,
       targetUserId: bob.id,
-      target: { account: bob.account, domain: 'local' },
+      target: {
+        account: bob.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       decision: 'REVOKED',
     });
     const after = await state(alice, bob);
@@ -599,7 +639,7 @@ describe('user intent decision', () => {
   });
 
   it('re-friends after a withdrawal only through a fresh live direction', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const { alice, bob } = await twoUsers('req-refriend');
@@ -607,7 +647,11 @@ describe('user intent decision', () => {
     await runIntent({
       userId: alice.id,
       targetUserId: bob.id,
-      target: { account: bob.account, domain: 'local' },
+      target: {
+        account: bob.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       decision: 'REVOKED',
     });
     const ended = await state(alice, bob);
@@ -623,7 +667,11 @@ describe('user intent decision', () => {
     await runIntent({
       userId: alice.id,
       targetUserId: bob.id,
-      target: { account: bob.account, domain: 'local' },
+      target: {
+        account: bob.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       decision: 'REQUESTED',
     });
     const requested = await state(alice, bob);
@@ -631,7 +679,11 @@ describe('user intent decision', () => {
     await runIntent({
       userId: bob.id,
       targetUserId: alice.id,
-      target: { account: alice.account, domain: 'local' },
+      target: {
+        account: alice.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       decision: 'ACCEPTED',
     });
     const after = await state(alice, bob);
@@ -643,7 +695,7 @@ describe('user intent decision', () => {
   });
 
   it('requests a remote peer through the peer feed', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const prefix = `req-remote-${++sequence}`;
@@ -687,9 +739,8 @@ describe('user intent decision', () => {
     expect(peerIntent).toBeTruthy();
     expect(peerIntent).toMatchObject({
       account: alice.account,
-      domain: loadFederationConfig().domain,
       subjectAccount: `${prefix}-peer`,
-      subjectDomain: domain,
+      subjectNamespaceId: namespaceId,
     });
     expect(body(peerIntent!.body)).toMatchObject({
       status: 'REQUESTED',
@@ -703,7 +754,7 @@ describe('user intent decision', () => {
   });
 
   it('acquires the actor scope then the pair scope once', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const { alice, bob } = await twoUsers('locks');
@@ -712,7 +763,11 @@ describe('user intent decision', () => {
     await runIntent({
       userId: bob.id,
       targetUserId: alice.id,
-      target: { account: alice.account, domain: 'local' },
+      target: {
+        account: alice.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       decision: 'ACCEPTED',
     });
     const { pair } = await findP2PRelationship(database.db, alice.id, bob.id);
@@ -721,15 +776,21 @@ describe('user intent decision', () => {
     // which protects intent and relationship-derived projections.
     expect(businessLocks).toEqual([
       ...[
-        businessAccountScopeKey({ account: alice.account, profileNamespaceId: 0 }),
-        businessAccountScopeKey({ account: bob.account, profileNamespaceId: 0 }),
+        businessAccountScopeKey({
+          account: alice.account,
+          profileNamespaceId: 0,
+        }),
+        businessAccountScopeKey({
+          account: bob.account,
+          profileNamespaceId: 0,
+        }),
       ].sort(),
       relationshipPairBusinessKey(pairScope(pair!)),
     ]);
   });
 
   it('rolls back relationship, feeds and tasks on a late failure and permits retry', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const { alice, bob } = await twoUsers('rollback');
@@ -737,7 +798,7 @@ describe('user intent decision', () => {
     const before = await state(alice, bob);
     const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
     const push = vi
-      .spyOn(deps.federation, 'pushStateFeedDomains')
+      .spyOn(deps.federation, 'pushStateFeedNamespaces')
       .mockResolvedValue(undefined);
     const transaction = deps.database.db.transaction.bind(deps.database.db);
     const failure = vi
@@ -752,7 +813,11 @@ describe('user intent decision', () => {
       service.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
-        target: { account: alice.account, domain: 'local' },
+        target: {
+          account: alice.account,
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
       }),
     ).rejects.toThrow('late failure');
     const failed = await state(alice, bob);
@@ -765,20 +830,28 @@ describe('user intent decision', () => {
     await service.execute({
       userId: bob.id,
       decision: 'ACCEPTED',
-      target: { account: alice.account, domain: 'local' },
+      target: {
+        account: alice.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
     });
     expect((await state(alice, bob)).pair?.active).toBe(true);
   });
 
   it('activates exactly once under concurrent duplicate acceptance', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const { alice, bob } = await twoUsers('ack-race');
     await service.execute({
       userId: alice.id,
       decision: 'REQUESTED',
-      target: { account: bob.account, domain: 'local' },
+      target: {
+        account: bob.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
     });
     // Two racing acceptances serialize on the endpoint/pair scopes: the loser
     // observes the active pair and must not double-write the system history.
@@ -786,12 +859,20 @@ describe('user intent decision', () => {
       service.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
-        target: { account: alice.account, domain: 'local' },
+        target: {
+          account: alice.account,
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
       }),
       service.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
-        target: { account: alice.account, domain: 'local' },
+        target: {
+          account: alice.account,
+          domain: localIdentityDomain(),
+          namespaceId: 0,
+        },
       }),
     ]);
     const after = await state(alice, bob);
@@ -810,14 +891,18 @@ describe('user intent decision', () => {
   });
 
   it('resolves the direct-namespace pair over a mirrored same-account decoy', async () => {
-    vi.spyOn(deps.federation, 'pushStateFeedDomains').mockResolvedValue(
+    vi.spyOn(deps.federation, 'pushStateFeedNamespaces').mockResolvedValue(
       undefined,
     );
     const { alice, bob } = await twoUsers('decoy');
     await service.execute({
       userId: alice.id,
       decision: 'REQUESTED',
-      target: { account: bob.account, domain: 'local' },
+      target: {
+        account: bob.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
     });
     // A group-mirror pair in a foreign namespace carries bob's account too;
     // the P2P locator must never capture it.
@@ -858,7 +943,11 @@ describe('user intent decision', () => {
     const revoked = await service.execute({
       userId: bob.id,
       decision: 'REVOKED',
-      target: { account: alice.account, domain: 'local' },
+      target: {
+        account: alice.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
     });
     expect(revoked).toEqual({ status: 'APPLIED' });
     const after = await state(bob, alice);

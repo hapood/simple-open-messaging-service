@@ -12,24 +12,34 @@ export function userIntentLocatorSql(params: {
 }): SQL {
   return sql`
     WITH actor AS MATERIALIZED (
-      SELECT id, account, availability, "disabledAt" FROM "Account"
-      WHERE id = ${params.actorUserId} AND domain = 'local' AND "namespaceId" = 0
+      SELECT id, account, availability, "disabledAt"
+      FROM "Account"
+      WHERE id = ${params.actorUserId} AND "namespaceId" = 0
+    ), actor_domain AS MATERIALIZED (
+      SELECT domain FROM "IdentityNamespace" WHERE id = 0
     ), target_account AS MATERIALIZED (
       SELECT id, availability, "disabledAt" FROM "Account"
-      WHERE account = ${params.targetAccount} AND domain = ${params.targetDomain}
+      WHERE account = ${params.targetAccount}
         AND "namespaceId" = 0
-        AND ${params.targetDomain === 'local' ? sql`true` : sql`false`}
+        AND ${params.targetNamespaceId} = 0
+        AND (SELECT domain FROM actor_domain) = ${params.targetDomain}
     ), pair AS MATERIALIZED (
       SELECT p.id, p."threadId"
       FROM "RelationshipPair" p CROSS JOIN actor a
       WHERE p.kind = 'P2P'
         AND p."endpointAType" = 'USER' AND p."endpointBType" = 'USER'
-        AND p."endpointAAccount" = a.account AND p."endpointANamespaceId" = 0
-        AND p."endpointBAccount" = ${params.targetAccount}
-        AND p."endpointBNamespaceId" = CASE WHEN ${params.targetDomain} = 'local'
-          THEN 0 ELSE ${params.targetNamespaceId} END
+        -- Canonical order (compareEndpoints): the local endpoint sits on A; a
+        -- local actor and local target order by account string. Accounts are
+        -- stored lowercase over [a-z0-9._-], where string comparison here
+        -- matches localeCompare, so LEAST/GREATEST reproduce the mint order.
+        AND p."endpointANamespaceId" = 0
+        AND p."endpointBNamespaceId" = ${params.targetNamespaceId}
+        AND p."endpointAAccount" = (CASE WHEN ${params.targetNamespaceId} = 0
+          THEN LEAST(a.account, ${params.targetAccount}) ELSE a.account END)
+        AND p."endpointBAccount" = (CASE WHEN ${params.targetNamespaceId} = 0
+          THEN GREATEST(a.account, ${params.targetAccount}) ELSE ${params.targetAccount} END)
     )
-    SELECT a.account AS "actorAccount",
+    SELECT a.account AS "actorAccount", (SELECT domain FROM actor_domain) AS "actorDomain",
       a.availability AS "actorAvailability", a."disabledAt"::text AS "actorDisabledAt",
       pair.id::text AS "pairId", pair."threadId",
       t.id::integer AS "localTargetId",
@@ -102,7 +112,9 @@ export function userIntentAuthorizationSql(params: {
       AND rev."receiverAccount" = ${actorAccount} AND rev."receiverNamespaceId" = ${actorNamespaceId}
     CROSS JOIN "Account" a
     LEFT JOIN "Account" tgt ON tgt.account = ${params.targetAccount}
-      AND tgt.domain = ${params.targetDomain} AND tgt."namespaceId" = 0
+      AND tgt."namespaceId" = 0
+      AND ${params.targetNamespaceId} = 0
+      AND (SELECT domain FROM "IdentityNamespace" WHERE id = 0) = ${params.targetDomain}
     WHERE p.id = ${params.pairId} AND a.id = ${params.actorUserId}
   `;
 }

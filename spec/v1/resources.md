@@ -211,14 +211,13 @@ GET /s2s/v1/forward-bundles/:bundleId
 
 | Property       | Requirement                                                           |
 | -------------- | --------------------------------------------------------------------- |
-| Path variable  | Bounded opaque `bundleId`                                             |
+| Path variable | Lowercase SHA-256 bundle digest |
 | Query          | None                                                                  |
 | Success        | HTTP `200` success envelope containing a complete `ForwardWireBundle` |
 | Business error | HTTP `200 NOT_FOUND`                                                  |
 
-`bundleId` MUST be a non-empty, case-sensitive opaque string of at most 26
-characters and at most 26 UTF-8 bytes after path decoding. It MUST NOT contain
-NUL or `/`.
+`bundleId` MUST be a lowercase 64-character hexadecimal SHA-256 digest. It is
+computed from the canonical bundle body and MUST NOT contain any other encoding.
 
 The publisher MUST prove that the bundle is bound to at least one undeleted
 FORWARD message currently serviceable to the signer under the publisher's
@@ -230,8 +229,7 @@ reference, or current recognition is insufficient.
 Success `data` is the closed `ForwardWireBundle` defined by
 [FORWARD Message and Bundle, Section 3](./message/forward.md#3-bundle-schema), with these additional invariants:
 
-- `id` equals the path `bundleId`. A `children[].id` is not an independent query
-  target.
+- `id` equals the path `bundleId` and is the digest of the canonical body. A `children[].id` is not an independent query target.
 - `children` is the flat set of all nested child bundles and has unique IDs in
   this response. Internal references may form cycles; no recursive-depth test
   is applied.
@@ -304,7 +302,7 @@ partial graph.
 ### 4.5 Minimal example
 
 ```http
-GET /s2s/v1/forward-bundles/01hzy3m8x7v6t5r4q2p1n0k9jc HTTP/1.1
+GET /s2s/v1/forward-bundles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HTTP/1.1
 Host: b.example
 Date: Tue, 14 Nov 2023 22:13:20 GMT
 Content-Digest: sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:

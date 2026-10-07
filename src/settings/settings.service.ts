@@ -13,7 +13,7 @@ import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import { configDirectory } from '../common/data-directory.js';
 import { systemSetting } from '../database/schema.js';
-import { loadFederationConfig } from '../federation/federation.config.js';
+import { KeypairService } from '../federation/keypair.service.js';
 import { federationDownloadSettingKeys } from '../federation/federation-download-scheduler.js';
 import { federationHttpSettingKeys } from '../federation/federation-http-scheduler.js';
 import {
@@ -60,6 +60,7 @@ export class SettingsService implements OnModuleInit {
 
   constructor(
     private readonly database: DatabaseService,
+    private readonly keypair: KeypairService,
     @Optional() private readonly vapidPathOverride?: string,
     @Optional() private readonly firebaseClientPathOverride?: string,
   ) {}
@@ -69,6 +70,11 @@ export class SettingsService implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
+    // The persisted federation identity must be loaded before any init-phase read of the
+    // local domain: Nest runs every module's onModuleInit concurrently, and VAPID generation
+    // (fresh data roots generate on first boot) builds its subject from the identity domain.
+    // waitUntilInitialized joins the singleton startup lifecycle KeypairService itself started.
+    await this.keypair.waitUntilInitialized();
     this.vapid = this.loadOrCreateVapid();
     // Eager-load the Firebase client config from disk at boot (not lazily on first request) so the one
     // (tiny) sync read happens here, at startup — the admin status + public serve paths then never touch
@@ -84,10 +90,10 @@ export class SettingsService implements OnModuleInit {
     return true;
   }
 
-  /** This server's public domain — read-only (from SOMS_DOMAIN env, the federation identity). Surfaced on
-   *  the admin Settings page for visibility; not editable (it's a deploy-time identity). */
+  /** This server's public domain — read-only from the persisted federation identity snapshot. Surfaced on
+   *  the admin Settings page for visibility; not editable (it is a deploy-time identity). */
   get somsDomain(): string {
-    return loadFederationConfig().domain;
+    return this.keypair.getIdentityDomain();
   }
 
   /** The admin-configured one-time-code validity window, in minutes (default 10, clamped). Read fresh on

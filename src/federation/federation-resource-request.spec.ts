@@ -68,7 +68,7 @@ describe('Federation resource raw request validation', () => {
     const digest = 'a'.repeat(64);
     const parsed = parseFederationResourceRequest(
       request(
-        `/s2s/v1/media/${digest}?fromAccount=alice&fromDomain=a.example&toAccount=bob&seq=42&bundleId=root`,
+        `/s2s/v1/media/${digest}?fromAccount=alice&fromDomain=a.example&toAccount=bob&seq=42&bundleId=${digest}`,
       ),
       mediaSpec,
     );
@@ -79,7 +79,7 @@ describe('Federation resource raw request validation', () => {
         fromDomain: 'a.example',
         toAccount: 'bob',
         seq: '42',
-        bundleId: 'root',
+        bundleId: digest,
       },
     });
   });
@@ -150,7 +150,7 @@ describe('Federation resource raw request validation', () => {
 
   it('rejects values outside the safe seq and bundle ID bounds', () => {
     expectMalformed(() => requireSafeDecimal('9007199254740992', 'seq'));
-    expectMalformed(() => requireBundleId('x'.repeat(27)));
+    expectMalformed(() => requireBundleId('a'.repeat(63)));
   });
 });
 

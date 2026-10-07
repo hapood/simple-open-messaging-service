@@ -52,9 +52,9 @@ export function memberAuthoredMembershipRequestSql(
         })
       }
     ), request_state AS MATERIALIZED (
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT id, status, "profileRev", note, "requestedAt", "expiresAt"
+      SELECT status, "profileRev", note, "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.memberAccount} AND "authorNamespaceId" = ${input.profileNamespaceId}
         AND "receiverAccount" = ${input.groupAccount} AND "receiverNamespaceId" = 0
@@ -97,7 +97,7 @@ export function memberAuthoredMembershipRequestSql(
     ), candidate_bodies AS MATERIALIZED (
       SELECT ${input.localMemberId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
         ${memberFeedCompactionKey(input.groupAccount, input.memberAccount)}::text AS "compactionKey",
-        ${input.groupAccount}::text AS account, 'local'::text AS domain,
+        ${input.groupAccount}::text AS account, (SELECT domain FROM "IdentityNamespace" WHERE id = 0)::text AS domain,
         ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId",
         b.body
       FROM recipient_body b
@@ -122,8 +122,6 @@ function memberFeedCompactionKey(
     'RELATIONSHIP_INTENT',
     0,
     groupAccount,
-    'local',
     memberAccount,
-    'local',
   ]);
 }

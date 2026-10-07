@@ -26,7 +26,13 @@ function createSubject(options?: {
       execute: vi.fn().mockResolvedValue({ rows: [{ allowed: 1 }] }),
     },
   };
-  const profiles = {
+  const profiles: {
+    fetchExactAccountProfile: ReturnType<typeof vi.fn>;
+    fetchExactIntentProfile: ReturnType<typeof vi.fn>;
+    fetchExactGroupMemberProfile: ReturnType<typeof vi.fn>;
+    materializeExactForeignProfile: ReturnType<typeof vi.fn>;
+    getStoredProfile: ReturnType<typeof vi.fn>;
+  } = {
     fetchExactAccountProfile: vi.fn(),
     fetchExactIntentProfile: vi.fn(),
     fetchExactGroupMemberProfile: vi.fn(),
@@ -243,8 +249,8 @@ describe('ProfileResolutionCoordinatorService', () => {
 
   it('registers only the invoking session and deduplicates it per exact key', async () => {
     const { subject } = createSubject();
-    vi.spyOn(subject as never, 'authorizeDemand').mockResolvedValue(undefined);
-    vi.spyOn(subject as never, 'drain').mockImplementation(() => undefined);
+    vi.spyOn(subject as any, 'authorizeDemand').mockResolvedValue(undefined);
+    vi.spyOn(subject as any, 'drain').mockImplementation(() => undefined);
 
     await subject.start(3, 41, accountDemand);
     await subject.start(3, 41, accountDemand);
@@ -256,8 +262,8 @@ describe('ProfileResolutionCoordinatorService', () => {
 
   it('keeps different sessions of one user as independent listeners', async () => {
     const { subject } = createSubject();
-    vi.spyOn(subject as never, 'authorizeDemand').mockResolvedValue(undefined);
-    vi.spyOn(subject as never, 'drain').mockImplementation(() => undefined);
+    vi.spyOn(subject as any, 'authorizeDemand').mockResolvedValue(undefined);
+    vi.spyOn(subject as any, 'drain').mockImplementation(() => undefined);
 
     await subject.start(3, 41, accountDemand);
     await subject.start(3, 42, accountDemand);
@@ -271,7 +277,7 @@ describe('ProfileResolutionCoordinatorService', () => {
     const warn = vi
       .spyOn(subject['logger'], 'warn')
       .mockImplementation(() => undefined);
-    vi.spyOn(subject as never, 'authorizeDemand').mockResolvedValue(undefined);
+    vi.spyOn(subject as any, 'authorizeDemand').mockResolvedValue(undefined);
     vi.spyOn(subject['pending'], 'size', 'get').mockReturnValue(1000);
 
     await expect(subject.start(3, 41, accountDemand)).rejects.toMatchObject({
@@ -282,7 +288,7 @@ describe('ProfileResolutionCoordinatorService', () => {
 
   it('queues internal prefetch without a session listener or SSE delivery', async () => {
     const { subject, sse } = createSubject();
-    vi.spyOn(subject as never, 'drain').mockImplementation(() => undefined);
+    vi.spyOn(subject as any, 'drain').mockImplementation(() => undefined);
 
     await subject.resolveDemand(accountDemand);
 
@@ -295,7 +301,7 @@ describe('ProfileResolutionCoordinatorService', () => {
 
   it('does not enqueue namespace-zero work', async () => {
     const { subject } = createSubject();
-    const drain = vi.spyOn(subject as never, 'drain');
+    const drain = vi.spyOn(subject as any, 'drain');
 
     await subject.resolveDemand({
       ...accountDemand,
@@ -331,7 +337,7 @@ describe('ProfileResolutionCoordinatorService', () => {
     sse.onProfileAvailable.mockImplementation(() => {
       order.push('sse');
     });
-    vi.spyOn(subject as never, 'authorizeDemand').mockResolvedValue(undefined);
+    vi.spyOn(subject as any, 'authorizeDemand').mockResolvedValue(undefined);
 
     await subject.start(3, 41, accountDemand);
     await subject.start(3, 42, accountDemand);

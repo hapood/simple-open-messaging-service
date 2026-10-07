@@ -46,7 +46,7 @@ third-party profile verification and friend-add identity continuity.
    directly. Both stay on namespace id `0` at the namespace layer, so when
    the feature lands each change publishes one feed item with
    `namespaceId` `0`, and consumers expire the cached publisher row
-   (`ProfileNamespaceInfo` row with `profileNamespaceId = 0`).
+   (`ProfileNamespace` row with `profileNamespaceId = 0`).
 4. Feed entries are publisher-scoped nsids, like every `namespaceId` on the
    wire ([`spec/v1/protocol.md`](../../spec/v1/protocol.md) Section 6.2.1).
    Because ids are stable, no per-caller translation exists or is needed.
@@ -154,10 +154,12 @@ feedEndId, hasMore }` with decimal-string feed ids.
   `account-profiles/:namespaceId/...` — query parameters are reserved for
   cursors and pagination;
 - `nsid = 0` returns the responder's own current bindings
-  `{ domain, rootPublicKey, profileNamespaceFeedEndId }`;
+  `{ domain, rootPublicKey, status, profileNamespaceFeedEndId }` with
+  `status = ACTIVE`;
 - a positive nsid returns the identity currently bound there; a
-  reset-retired id keeps answering with its last retained bindings so
-  historical references stay renderable, and only an id that never completed
+  reset-retired id keeps answering with its last retained bindings
+  disclosed as `status = ARCHIVED` so historical references stay renderable
+  and the puller caches the lifecycle, and only an id that never completed
   a handshake is a miss;
 - one request per nsid matches the per-`(publisher, nsid)` refresh scheduler
   granularity, so no batch form exists;
@@ -168,7 +170,7 @@ feedEndId, hasMore }` with decimal-string feed ids.
 
 ### 5.1 Cache table
 
-`ProfileNamespaceInfo`:
+`ProfileNamespace`:
 
 | Column                    | Meaning                                                                                               |
 | ------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -177,6 +179,16 @@ feedEndId, hasMore }` with decimal-string feed ids.
 | `domain`, `rootPublicKey` | the _subject identity's_ current bindings — for `profileNamespaceId = 0` these describe the publisher |
 | `updateFeedId`            | the publisher's feed counter at fetch time; expiry compares against it                                |
 | `expired`                 | `true` after a matched feed entry until re-resolution commits                                         |
+| `status`                  | lifecycle: `ACTIVE` (in use) or `ARCHIVED` (reset-retired, last bindings retained for rendering)      |
+
+`status` is orthogonal to `expired`: `expired` is a transient freshness
+flag while a refresh converges, `status` is the permanent lifecycle of the
+bound namespace. A reset-retired nsid keeps `status = ARCHIVED` and its last
+bindings so historical references stay renderable; `UNRECOVERABLE` (permanent
+loss) is not a `status` value — it is a federation error code that writes a
+row in the sparse `ProfileNamespaceTombstone` table instead. The companion
+`ProfileTombstone` table records the analogous permanent loss of a profile
+(keyed without `profileRev`, so one tomb spans every revision).
 
 A row always describes the identity referenced by `profileNamespaceId` in
 `publisherNamespaceId`'s space. This covers both shapes clients need:
@@ -187,14 +199,23 @@ A row always describes the identity referenced by `profileNamespaceId` in
 
 1. **Handshake seed.** The recognition commit that activates a peer epoch also
    inserts `(newId, 0)` with the domain we hostname-verified during discovery,
-   the verified root, `updateFeedId = 0`, and `expired = false`; the first
-   feed pull refreshes the counter. Timestamps reuse `createdAt` /
-   `updatedAt` — no additional clock columns exist in any new table.
-2. **Demand fill.** A client resolution request for an unknown pair inserts
-   a tomb row (`expired = true`, null bindings) and schedules a
-   `profile-namespaces/:nsid` pull against the publisher
-   (`profileNamespaceId = 0` rows answer from our own authoritative
-   `IdentityNamespace` row without a remote call).
+   the verified root, `updateFeedId = 0`, `expired = false`, and
+   `status = ACTIVE`; the first feed pull refreshes the counter. Timestamps
+   reuse `createdAt` / `updatedAt` — no additional clock columns exist in any
+   new table.
+2. **Demand fill.** A client resolution request routes on the publisher:
+   `publisherNamespaceId = 0` is this server's own namespace space and
+   always answers synchronously — `(0, 0)` from the keypair snapshot (the
+   real domain and current claimable root, never the `'local'` sentinel), a
+   positive nsid from our authoritative `IdentityNamespace` registry — so
+   these pairs can never be PENDING and never trigger a remote call. Any
+   other publisher answers the ProfileNamespace cache; an unknown pair
+   inserts a tomb row (`expired = true`, null bindings) and schedules a
+   `profile-namespaces/:nsid` pull against that publisher. A
+   `profileNamespaceId = 0` pull converges from our own registry row (the
+   peer epoch we hostname-verified) without a remote call, and a
+   reset-retired publisher converges its self-row to `status = ARCHIVED`
+   with the retained bindings.
 3. **Expiry refresh.** See 5.4.
 
 The refresh scheduler is avatar-request-shaped: per `(publisher, nsid)`
@@ -217,7 +238,7 @@ coalescing, in-flight deduplication, retry classification, no business locks.
 
 For each pulled entry `(namespaceId, feedId)`:
 
-1. select `ProfileNamespaceInfo` rows where
+1. select `ProfileNamespace` rows where
    `publisherNamespaceId = our-id-for-the-publisher` and
    `profileNamespaceId = namespaceId` and `updateFeedId < feedId`;
 2. mark them `expired` — an expired row is its own tomb while the refresh is
@@ -241,7 +262,7 @@ scheduled it already expired client copies.
 #### The client change feed
 
 The s2s Profile Namespace Feed is publisher-scoped: it carries OUR namespace
-binding changes for peers. Peer-learned changes update `ProfileNamespaceInfo`
+binding changes for peers. Peer-learned changes update `ProfileNamespace`
 only, so devices need a separate merged changelog spanning both sources.
 `ProfileNamespaceChangeFeed` is that changelog: one compacted row per pair
 (primarily keyed, `changeId` globally unique) plus the single-row
@@ -258,17 +279,25 @@ keeps `DecimalString`.
 
 ### 5.5 Client resolution endpoint
 
-`POST /profile-namespaces/resolve` (authenticated client route): a batch
-of `(publisherNamespaceId, profileNamespaceId)` pairs resolves to
-`{ domain, rootPublicKey, feedId, expired }`. The client route stays batched
-because message lists demand many pairs at once. `publisherNamespaceId`
-selects the federation peer against which a pass-through
-`profile-namespaces/:nsid` pull is scheduled — without it the server cannot
-know which publisher's namespace space to query. Direct rows
-(`profileNamespaceId = 0`) always answer synchronously from
-`IdentityNamespace`. Third-party rows answer the cached value and schedule a
-background refresh when missing or expired; v1 has no PENDING/wake channel —
-convergence is event-driven.
+`POST /profile-namespaces/resolve` (authenticated client route): a single
+`(publisherNamespaceId, profileNamespaceId)` pair resolves to either
+`{ status: 'READY', entry: { domain, rootPublicKey, updateFeedId, expired,
+status } }` or `{ status: 'PENDING' }`. One request per pair mirrors
+profile resolution and the per-`(publisher, nsid)` refresh scheduler
+granularity. `publisherNamespaceId` selects the federation peer against
+which a pass-through `profile-namespaces/:nsid` pull is scheduled — without
+it the server cannot know which publisher's namespace space to query. Direct
+rows (`profileNamespaceId = 0`) always answer READY synchronously from
+`IdentityNamespace`. Third-party rows answer READY with the cached value
+(including an expired placeholder) when present, and answer PENDING when
+absent — a tomb is planted and a background refresh scheduled; the client
+waits for an SSE wake with a 30-second re-request timeout. A federated peer
+reporting permanent loss of a resource answers with the
+`FEDERATION_NAMESPACE_UNRECOVERABLE` (or `FEDERATION_PROFILE_UNRECOVERABLE`)
+business code (HTTP 200); the client writes a row in the matching
+`ProfileNamespaceTombstone` / `ProfileTombstone` store so the UI renders
+"gone". These error codes are reserved for extreme data-loss scenarios and
+are not triggered by the current server implementation.
 
 ### 5.6 Friend-add root continuity
 
@@ -294,10 +323,16 @@ never a silently weaker fetch.
 
 - IDB store `profileNamespaces`, key `[publisherNamespaceId,
 profileNamespaceId]`, value `{ domain, rootPublicKey, updateFeedId,
-changeSeq, expired, refreshedAt }`. `updateFeedId` is the publisher's feed
+changeSeq, expired, status, refreshedAt }`. `updateFeedId` is the publisher's feed
 position from a resolve answer; `changeSeq` is the local change-feed
-coordinate last applied to the row. A null `domain` is a tomb: the feed was
+coordinate last applied to the row. `status` mirrors the server's
+`ACTIVE` / `ARCHIVED` lifecycle. A null `domain` is a tomb: the feed was
 pulled but the cache for that pair was not.
+- IDB stores `profileNamespaceTombs` (key `[publisherNamespaceId,
+profileNamespaceId]`) and `profileTombs` (key `[publisherNamespaceId,
+profileNamespaceId, account]`) record federation-reported permanent loss
+(the `FEDERATION_*_UNRECOVERABLE` codes). A row's presence is the tomb;
+the binding content is empty. Sparse by design.
 - Settings key `profileNamespaceChangeEndId` is the durable change-feed
   cursor.
 
@@ -371,5 +406,6 @@ Each batch ends at a review gate; no later batch starts before approval.
 - Confirm the `ClientStateFeed` row conventions for the new event
   (`namespaceId` carries the publisher id for the FK; body carries the pair)
   against the final table shape during batch 1.
-- Decide whether the demand endpoint later gains the PENDING/wake channel of
-  profile resolution if synchronous answers prove laggy in practice.
+- The demand endpoint now carries the PENDING/wake channel of profile
+  resolution: a miss answers PENDING (tomb planted, refresh scheduled) and
+  the client waits for an SSE wake with a 30-second re-request timeout.

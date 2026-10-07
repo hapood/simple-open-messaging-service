@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { localIdentityDomain } from './support/local-domain.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { desc, eq, sql } from 'drizzle-orm';
@@ -79,7 +80,7 @@ describe('LINK message send (single instance)', () => {
     const invite = await request(baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ account: 'bob', domain: 'local' });
+      .send({ account: 'bob', domain: localIdentityDomain(), namespaceId: 0 });
     expect(invite.body.code).toBe(0);
     await waitForLocalRelationshipRequest(
       database.db,
@@ -90,7 +91,11 @@ describe('LINK message send (single instance)', () => {
     const accept = await request(baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ account: alice.account, domain: 'local' });
+      .send({
+        account: alice.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(accept.body.data).toMatchObject({ status: 'OK' });
     const threadId = (await findP2PRelationship(database.db, alice.id, bob.id))
       .pair?.threadId;
@@ -136,7 +141,7 @@ describe('LINK message send (single instance)', () => {
     const invite = await request(baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ account: 'bob2', domain: 'local' })
+      .send({ account: 'bob2', domain: localIdentityDomain(), namespaceId: 0 })
       .expect((res) => expect(res.body.code).toBe(0));
     await waitForLocalRelationshipRequest(
       database.db,
@@ -147,7 +152,11 @@ describe('LINK message send (single instance)', () => {
     const accept = await request(baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bob.token}`)
-      .send({ account: alice.account, domain: 'local' });
+      .send({
+        account: alice.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      });
     expect(accept.body.data).toMatchObject({ status: 'OK' });
     const threadId = (await findP2PRelationship(database.db, alice.id, bob.id))
       .pair?.threadId;

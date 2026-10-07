@@ -79,8 +79,7 @@ interface GroupMetaFeedPage {
 interface GroupMetaMemberItemBase {
   feedId: PositiveSafeInteger;
   account: UserAccount;
-  // 'local' is the publisher-scoped subject marker of Core Protocol 6.2.1.
-  domain: Domain | 'local';
+  domain: Domain;
 }
 
 interface GroupMetaUpsertItem extends GroupMetaMemberItemBase {
@@ -133,13 +132,13 @@ audience's delta visibility floor instead.
 
 Member items have stable key `(member account, member domain)`. Their required,
 non-null `namespaceId` identifies the member profile namespace in the group
-origin's namespace space and follows the local-subject marker rules of
-[Core Protocol Section 6.2.1](./protocol.md#local-subject-marker-and-namespace-interpretation):
-the origin serializes its own members with `domain: 'local'` and
-`namespaceId: 0`; a foreign member carries the domain as retained by the
-origin together with the origin's positive namespace for that member's home
-identity. A mirror MUST NOT infer member locality from the member domain
-string; it recognizes its own local member when the `namespaceId` equals the
+origin's namespace space and follows the publisher-scoped rules of
+[Core Protocol Section 6.2.1](./protocol.md#621-publisher-scoped-namespace-interpretation):
+the origin serializes its own members with its real domain and `namespaceId: 0`;
+a foreign member carries the real domain as retained by the origin together
+with the origin's positive namespace for that member's home identity. A mirror
+MUST NOT infer member locality from the member domain string; it recognizes its
+own local member when the `namespaceId` equals the
 peer-assigned namespace disclosed by the origin. Their required, non-null `profileRev` selects an
 immutable complete profile snapshot retained by the group origin when positive.
 The value `0` means that the projection has no profile; the consumer MUST NOT

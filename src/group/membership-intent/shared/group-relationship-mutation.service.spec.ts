@@ -386,7 +386,7 @@ describe('GroupRelationshipMutationService', () => {
       service.writeGroupRelationshipIntentInTx(
         tx,
         4,
-        { account: 'remote', domain: 'peer.test', namespaceId: 5 },
+        { account: 'remote', namespaceId: 5 },
         '',
         'REVOKED',
         [],

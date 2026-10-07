@@ -38,8 +38,10 @@ describe('ProfileNamespaceFeedConsumerService', () => {
       expiredLocalRows: true,
       clientChangeId: 9n,
     });
-    const text = execute.mock.calls.map((call) => sqlText(call[0])).join('\n');
-    expect(text).toContain('UPDATE "ProfileNamespaceInfo"');
+    const text = execute.mock.calls
+      .map((call: unknown[]) => sqlText(call[0]))
+      .join('\n');
+    expect(text).toContain('UPDATE "ProfileNamespace"');
     expect(text).toContain('SET expired = true');
     expect(text).toContain('"updateFeedId" <');
     expect(recordClientChangeInTx).toHaveBeenCalledWith(tx, {

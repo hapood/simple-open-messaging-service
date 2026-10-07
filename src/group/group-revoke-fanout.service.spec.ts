@@ -19,7 +19,10 @@ const parent = {
   id: 10n,
   kind: 'MUTATION',
   scopeType: 'GROUP',
-  scopeKey: businessAccountScopeKey({ account: '!group', profileNamespaceId: 0 }),
+  scopeKey: businessAccountScopeKey({
+    account: '!group',
+    profileNamespaceId: 0,
+  }),
   taskType: 'DISBAND_GROUP',
   actorUserId: 7,
   payload: { threadId: 12 },
@@ -115,7 +118,10 @@ describe('GroupRevokeFanoutService', () => {
     await expect(service.insertNextMember(parent, 12)).resolves.toBe(true);
 
     expect(childValues).toHaveBeenCalledWith(tx, {
-      scope: { type: 'GROUP', address: { account: '!group', profileNamespaceId: 0 } },
+      scope: {
+        type: 'GROUP',
+        address: { account: '!group', profileNamespaceId: 0 },
+      },
       taskType: 'FORCE_REVOKE_GROUP_MEMBER',
       actorUserId: 7,
       payload: {

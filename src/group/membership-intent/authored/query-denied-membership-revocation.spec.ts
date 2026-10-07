@@ -32,10 +32,9 @@ describe('query-denied authored membership revocation', () => {
     await expect(
       service.executeQueryDeniedRevocation({
         threadId: 12,
-        group: { account: '!group', domain: 'local', namespaceId: 0 },
+        group: { account: '!group', domain: 'chat.example', namespaceId: 0 },
         member: {
           account: 'remote',
-          domain: 'peer.test',
           namespaceId: 5,
         },
         expectedAuthorizationEpoch: 8,
@@ -45,7 +44,7 @@ describe('query-denied authored membership revocation', () => {
     expect(writeGroupRelationshipIntentInTx).toHaveBeenCalledWith(
       target.tx,
       12,
-      { account: 'remote', domain: 'peer.test', namespaceId: 5 },
+      { account: 'remote', namespaceId: 5 },
       '',
       'REVOKED',
       [],
@@ -53,7 +52,7 @@ describe('query-denied authored membership revocation', () => {
       {
         expectedAuthorization: {
           epoch: 8,
-          group: { account: '!group', domain: 'local', namespaceId: 0 },
+          group: { account: '!group', domain: 'chat.example', namespaceId: 0 },
         },
       },
     );

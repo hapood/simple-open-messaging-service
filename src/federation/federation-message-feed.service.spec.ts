@@ -3,7 +3,6 @@ import type { DatabaseTransaction } from '../database/database.service.js';
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
 
 interface MessageFeedInternals {
-  localDomain: string;
   serializeMessagesInTx(
     tx: DatabaseTransaction,
     rows: Array<Record<string, unknown>>,
@@ -14,17 +13,31 @@ interface MessageFeedInternals {
 }
 
 function service(): MessageFeedInternals {
-  const value = Object.create(
+  const instance = Object.create(
     FederationMessageFeedService.prototype,
-  ) as MessageFeedInternals;
-  value.localDomain = 'member.test';
-  return value;
+  ) as MessageFeedInternals & {
+    logger: { warn: (...args: unknown[]) => void };
+    database: unknown;
+  };
+  instance.logger = { warn: vi.fn() };
+  return instance;
 }
 
 function transaction(targets: unknown[] = []): DatabaseTransaction & {
   select: ReturnType<typeof vi.fn>;
 } {
-  const results: unknown[][] = [[]];
+  const results: unknown[][] = [
+    [],
+    [
+      { id: 0, domain: 'member.test' },
+      { id: 8, domain: 'old-origin.test' },
+      { id: 9, domain: 'origin.test' },
+      { id: 11, domain: 'alpha.test' },
+      { id: 12, domain: 'member.test' },
+      { id: 13, domain: 'other-member.test' },
+      { id: 19, domain: 'bravo.test' },
+    ],
+  ];
   const select = vi.fn(() => {
     const rows = results.shift() ?? [];
     const query = {
@@ -38,8 +51,8 @@ function transaction(targets: unknown[] = []): DatabaseTransaction & {
     select,
     query: {
       message: { findMany: vi.fn().mockResolvedValue(targets) },
-      federationMessageReceipt: { findMany: vi.fn().mockResolvedValue([]) },
     },
+    logger: { warn: vi.fn() },
   } as unknown as DatabaseTransaction & {
     select: ReturnType<typeof vi.fn>;
   };
@@ -56,6 +69,9 @@ function groupRow(overrides: Record<string, unknown> = {}) {
     publisherNamespaceId: 0,
     contentType: 'PURE_TEXT',
     content: JSON.stringify({ text: 'hello' }),
+    payloadDigest: 'a'.repeat(64),
+    federationEnvelopeDigest: null,
+    forwardBundleSourceId: null,
     createdAt: new Date('2026-09-04T00:00:00.000Z'),
     clientMessageId: null,
     threadType: 'GROUP',
@@ -93,7 +109,6 @@ describe('FederationMessageFeedService group origin coordinates', () => {
   });
   it('returns submission coordinates only to the author home of an accepted group message', async () => {
     const publisher = service();
-    publisher.localDomain = 'origin.test';
     const originTime = new Date('2026-09-03T00:00:00.000Z');
     const row = groupRow({
       seq: 42,
@@ -171,7 +186,7 @@ describe('FederationMessageFeedService group origin coordinates', () => {
           groupRow({
             content: JSON.stringify({
               text: 'reply',
-              quote: { seq: 8, namespaceId: 0 },
+              quote: { seq: 8, namespaceId: 0, digest: 'd'.repeat(64) },
             }),
           }),
         ],
@@ -211,7 +226,7 @@ describe('FederationMessageFeedService group origin coordinates', () => {
           publisherNamespaceId: 12,
           content: JSON.stringify({
             text: 'reply',
-            quote: { seq: 8, namespaceId: 12 },
+            quote: { seq: 8, namespaceId: 12, digest: 'd'.repeat(64) },
           }),
         }),
       ],
@@ -230,7 +245,7 @@ describe('FederationMessageFeedService group origin coordinates', () => {
           authorityNamespaceId: 0,
           content: JSON.stringify({
             text: 'reply',
-            quote: { seq: 42, namespaceId: 0 },
+            quote: { seq: 42, namespaceId: 0, digest: 'd'.repeat(64) },
           }),
         }),
       ],
@@ -251,7 +266,7 @@ describe('FederationMessageFeedService group origin coordinates', () => {
             publisherNamespaceId: 12,
             content: JSON.stringify({
               text: 'reply',
-              quote: { seq: 8, namespaceId: 12 },
+              quote: { seq: 8, namespaceId: 12, digest: 'd'.repeat(64) },
             }),
           }),
         ],
@@ -273,7 +288,8 @@ describe('FederationMessageFeedService group origin coordinates', () => {
 
     expect(messages).toMatchObject([
       {
-        author: { account: 'member', namespaceId: 0 },
+        namespaceId: 0,
+        author: { account: 'member', domain: 'member.test' },
         originSeq: null,
         originCreatedAt: null,
       },
@@ -300,7 +316,8 @@ describe('FederationMessageFeedService group origin coordinates', () => {
 
     expect(messages).toMatchObject([
       {
-        author: { account: 'owner', namespaceId: 0 },
+        namespaceId: 9,
+        author: { account: 'owner', domain: 'origin.test' },
         originSeq: 1,
         originCreatedAt: originTime.getTime(),
       },

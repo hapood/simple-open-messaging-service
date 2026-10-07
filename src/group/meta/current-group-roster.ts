@@ -127,7 +127,7 @@ export async function readCurrentLocalGroupManagersInTx(
     SELECT owner.id AS "userId" FROM "GroupMetaMemberFeed" fact
     JOIN "Account" owner ON fact."profileNamespaceId" = 0
       AND owner.account = fact."memberAccount"
-      AND owner.domain = 'local' AND owner."namespaceId" = 0
+      AND owner."namespaceId" = 0
     JOIN "AccountThreadState" participant ON participant."accountId" = owner.id AND participant."threadId" = ${params.threadId}
     WHERE fact."threadId" = ${params.groupId}
       AND fact.operation = 'MEMBER_UPSERT' AND fact.body ->> 'role' IN ('OWNER', 'ADMIN')

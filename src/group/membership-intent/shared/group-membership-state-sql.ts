@@ -68,7 +68,7 @@ export function groupMembershipStateSql(input: {
     ), managers AS MATERIALIZED (
       SELECT a.id, r.body ->> 'role' AS role
       FROM roster r JOIN "Account" a ON a.account = r."memberAccount"
-        AND a.domain = 'local' AND a."namespaceId" = 0
+        AND a."namespaceId" = 0
       JOIN "AccountThreadState" p ON p."accountId" = a.id AND p."threadId" = ${input.threadId}
       WHERE r."profileNamespaceId" = 0
         AND r.operation = 'MEMBER_UPSERT' AND r.body->>'role' IN ('OWNER', 'ADMIN')
@@ -129,7 +129,7 @@ export function groupMembershipStateSql(input: {
     LEFT JOIN side_b ON true
     LEFT JOIN side_a ON true
     LEFT JOIN "Account" local_member ON local_member.account = ${input.memberAccount}
-      AND local_member.domain = 'local'
+      AND local_member."namespaceId" = 0
       AND local_member."namespaceId" = 0
       AND ${input.profileNamespaceId} = 0
     WHERE g.id = ${input.threadId}

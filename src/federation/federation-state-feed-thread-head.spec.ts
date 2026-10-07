@@ -44,6 +44,7 @@ describe('State Feed content heads respect relationship initialization', () => {
         ],
         scannedThrough: '1',
         stateFeedEndId: '1',
+        profileNamespaceFeedEndId: '0',
         hasMore: false,
       });
       if (initialized) {

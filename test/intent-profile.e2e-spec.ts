@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { localIdentityDomain } from './support/local-domain.js';
+import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   account,
@@ -40,7 +41,7 @@ describe('exact directed intent profile disclosure', () => {
     await database.db.insert(profileTable).values([
       {
         account: localUser,
-        domain: 'local',
+        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 1,
@@ -48,7 +49,7 @@ describe('exact directed intent profile disclosure', () => {
       },
       {
         account: localUser,
-        domain: 'local',
+        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 2,
@@ -66,7 +67,7 @@ describe('exact directed intent profile disclosure', () => {
     groupId = group.id;
     await database.db.insert(profileTable).values({
       account: groupName,
-      domain: 'local',
+      namespaceId: 0,
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 3,
@@ -109,6 +110,7 @@ describe('exact directed intent profile disclosure', () => {
       {
         authorAccount: localUser,
         authorNamespaceId: 0,
+        profileNamespaceId: 0,
         receiverAccount: remoteUser,
         receiverNamespaceId: namespaceId,
         status: 'REQUESTED',
@@ -122,6 +124,7 @@ describe('exact directed intent profile disclosure', () => {
       {
         authorAccount: groupName,
         authorNamespaceId: 0,
+        profileNamespaceId: 0,
         receiverAccount: remoteUser,
         receiverNamespaceId: namespaceId,
         status: 'ACCEPTED',
@@ -167,6 +170,7 @@ describe('exact directed intent profile disclosure', () => {
       await profiles.getAuthorizedIntentProfile(
         localUser,
         remoteUser,
+        0,
         1,
         remoteDomain,
         namespaceId,
@@ -180,6 +184,7 @@ describe('exact directed intent profile disclosure', () => {
       await profiles.getAuthorizedIntentProfile(
         localUser,
         remoteUser,
+        0,
         2,
         remoteDomain,
         namespaceId,
@@ -189,6 +194,7 @@ describe('exact directed intent profile disclosure', () => {
       await profiles.getAuthorizedIntentProfile(
         localUser,
         'someone-else',
+        0,
         1,
         remoteDomain,
         namespaceId,
@@ -198,6 +204,7 @@ describe('exact directed intent profile disclosure', () => {
       await profiles.getAuthorizedIntentProfile(
         localUser,
         remoteUser,
+        0,
         1,
         remoteDomain,
         0,
@@ -218,6 +225,7 @@ describe('exact directed intent profile disclosure', () => {
       await profiles.getAuthorizedIntentProfile(
         localUser,
         remoteUser,
+        0,
         1,
         remoteDomain,
         namespaceId,
@@ -230,6 +238,7 @@ describe('exact directed intent profile disclosure', () => {
       await profiles.getAuthorizedIntentProfile(
         groupName,
         remoteUser,
+        0,
         3,
         remoteDomain,
         namespaceId,

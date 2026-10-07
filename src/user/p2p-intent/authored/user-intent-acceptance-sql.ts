@@ -26,7 +26,7 @@ export interface UserIntentAcceptanceInput extends UserIntentFeedInput {
  * existing relationship initializer inside the same transaction. Every intent
  * row is addressed by the actor/target coordinates the caller holds. */
 export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
-  const remote = input.targetDomain !== 'local';
+  const remote = input.targetNamespaceId !== 0;
   const authoredSql =
     input.authoredSql ??
     authoredIntentWriteSql({
@@ -52,9 +52,9 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
     ), authored AS (
       ${authoredSql}
     ), accepted AS MATERIALIZED (
-      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt" FROM authored
       UNION ALL
-      SELECT "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt"
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.actorAccount} AND "authorNamespaceId" = ${input.actorNamespaceId}
         AND "receiverAccount" = ${input.targetAccount} AND "receiverNamespaceId" = ${input.targetNamespaceId}
@@ -66,7 +66,7 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
         AND "receiverAccount" = ${input.actorAccount} AND "receiverNamespaceId" = ${input.actorNamespaceId}
         AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
         AND ${remote ? sql`false` : sql`true`} AND EXISTS (SELECT 1 FROM authored)
-      RETURNING "authorAccount", "authorNamespaceId", status, "profileRev", note, "requestedAt", "expiresAt"
+      RETURNING "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
     ), pair_change AS (
       UPDATE "RelationshipPair" SET active = true, established = true,
         "updatedAt" = CURRENT_TIMESTAMP
@@ -86,7 +86,7 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
       INSERT INTO "ThreadAudience" ("threadId", "targetNamespaceId", "localUserId")
       SELECT ${input.threadId}, 0, a.id
       FROM "RelationshipPair" p, "Account" a
-      WHERE p.id = ${input.pairId} AND a.domain = 'local' AND a."namespaceId" = 0
+      WHERE p.id = ${input.pairId} AND a."namespaceId" = 0
         AND ((p."endpointAAccount" = a.account AND p."endpointANamespaceId" = 0)
           OR (p."endpointBAccount" = a.account AND p."endpointBNamespaceId" = 0))
         AND EXISTS (SELECT 1 FROM pair_change)

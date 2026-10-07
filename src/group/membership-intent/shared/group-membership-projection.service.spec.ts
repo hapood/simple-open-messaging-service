@@ -5,7 +5,7 @@ import { GroupMembershipProjectionService } from './group-membership-projection.
 
 function queryResult<T>(value: T) {
   const query: Record<string, unknown> = {};
-  for (const method of ['from', 'where', 'limit', 'orderBy'])
+  for (const method of ['from', 'innerJoin', 'where', 'limit', 'orderBy'])
     query[method] = vi.fn(() => query);
   query.then = (
     resolve: (result: T) => unknown,
@@ -165,7 +165,6 @@ describe('GroupMembershipProjectionService', () => {
       groupId: 5,
       memberUserId: {
         account: 'remote-member',
-        domain: 'member.example',
         namespaceId: 23,
       },
       active: true,

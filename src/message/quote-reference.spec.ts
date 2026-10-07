@@ -17,11 +17,8 @@ describe('stored quote resolution', () => {
     return {
       query: {
         message: {
-          findMany: vi
-            .fn()
-            .mockResolvedValue(options.target ? [options.target] : []),
+          findMany: vi.fn().mockResolvedValue(options.target ? [options.target] : []),
         },
-        federationMessageReceipt: { findMany: vi.fn().mockResolvedValue([]) },
         federationThreadHistoryGap: {
           findMany: vi.fn().mockResolvedValue(options.gap ? [options.gap] : []),
         },

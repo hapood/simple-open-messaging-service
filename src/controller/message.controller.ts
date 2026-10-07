@@ -19,7 +19,7 @@ import { MessageService } from '../message/message.service.js';
 import { ContactCardProfileService } from '../message/contact-card/contact-card-profile.service.js';
 import { assertContactCardTargetVisible } from '../message/contact-card/contact-card-target.js';
 import { ContentType, GroupRole } from '../database/enums.js';
-import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
+import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
 import {
   ApiResultResponse,
   businessEnvelope,
@@ -43,7 +43,10 @@ import { ThreadAccessGuard } from '../account-thread-state/thread-access.guard.j
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { Raw } from '../common/raw.decorator.js';
 import { parseLinkContent } from '../upload/file-content.js';
-import { FederationService } from '../federation/federation.service.js';
+import { FederationThreadAccessService } from '../federation/federation-thread-access.service.js';
+import { FederationNamespaceService } from '../federation/federation-namespace.service.js';
+import { KeypairService } from '../federation/keypair.service.js';
+import { FederationMediaLocalizationService } from '../federation/federation-media-localization.service.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import {
   SendMessageDto,
@@ -97,7 +100,10 @@ export class MessageController {
     private readonly messageService: MessageService,
     private readonly attention: ThreadFeedService,
     private readonly participantService: AccountThreadStateService,
-    private readonly federation: FederationService,
+    private readonly threadAccess: FederationThreadAccessService,
+    private readonly federationNamespaces: FederationNamespaceService,
+    private readonly keypairs: KeypairService,
+    private readonly mediaLocalization: FederationMediaLocalizationService,
     private readonly linkPreview: LinkPreviewService,
     private readonly forwardBundles: ForwardBundleService,
     private readonly userQuota: UserQuotaService,
@@ -227,9 +233,9 @@ export class MessageController {
       );
     }
     if (req.threadAccess.threadType === 'GROUP') {
-      await this.federation.assertGroupWritable(dto.threadId);
+      await this.threadAccess.assertGroupWritable(dto.threadId);
     } else {
-      await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
+      await this.threadAccess.assertP2PWritable(dto.threadId, req.user.userId);
     }
     // A successful LINK send deletes its short-lived generation immediately. Resolve an HTTP retry by
     // clientMessageId before looking up that generation, so a lost 200 response remains idempotent.
@@ -290,7 +296,16 @@ export class MessageController {
       }
       dto.content = stringifyTextMessageContent({
         text: await this.canonicalizeMentions(req, textContent.text),
-        ...(textContent.quote ? { quote: { seq: textContent.quote.seq } } : {}),
+        ...(textContent.quote
+          ? {
+              quote: {
+                seq: textContent.quote.seq,
+                ...(textContent.quote.digest
+                  ? { digest: textContent.quote.digest }
+                  : {}),
+              },
+            }
+          : {}),
       });
     } else if (!dto.content?.trim()) {
       throw new BusinessException(BusinessCode.MESSAGE_EMPTY, 'no content');
@@ -326,8 +341,9 @@ export class MessageController {
       }>;
     } = { clearedThroughSeq: req.threadAccess.clearedSeq };
     const hasQuote =
-      contentType === ContentType.PURE_TEXT &&
-      parseTextMessageContent(dto.content)?.quote !== undefined;
+      dto.quoteTargetSeq !== undefined ||
+      (contentType === ContentType.PURE_TEXT &&
+        parseTextMessageContent(dto.content)?.quote !== undefined);
     if (
       hasQuote &&
       req.threadAccess.threadType === 'P2P' &&
@@ -356,6 +372,7 @@ export class MessageController {
         await this.userQuota.tickLax(req.user.userId, 'messages', tx);
       },
       quoteVisibility,
+      dto.quoteTargetSeq,
     );
     if (generationId && !dto.retainLinkGeneration) {
       this.linkPreview.finishGeneration(req.user.userId, generationId);
@@ -414,9 +431,9 @@ export class MessageController {
       );
     }
     if (req.threadAccess.threadType === 'GROUP') {
-      await this.federation.assertGroupWritable(dto.threadId);
+      await this.threadAccess.assertGroupWritable(dto.threadId);
     } else {
-      await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
+      await this.threadAccess.assertP2PWritable(dto.threadId, req.user.userId);
     }
     const reference = dto.target;
     await assertContactCardTargetVisible(req.user.userId, reference, {
@@ -429,12 +446,16 @@ export class MessageController {
       ? await this.forwardBundles.snapshotAvatarForMessage(profile.avatar)
       : null;
     // The wire domain is the truth recorded in IdentityNamespace for the
-    // target's namespace: 'local' for namespace 0, the peer's domain for a
-    // positive namespace. The client supplies only namespaceId, never domain.
+    // target's namespace: the local identity domain for namespace 0, the peer's
+    // domain for a positive namespace. The client supplies only namespaceId,
+    // never domain.
     const domain =
-      (await this.federation.activePeerDomainForNamespace(
+      (await this.federationNamespaces.activePeerDomainForNamespace(
         reference.namespaceId,
-      )) ?? (reference.namespaceId === 0 ? 'local' : null);
+      )) ??
+      (reference.namespaceId === 0
+        ? this.keypairs.localAddress(reference.account).domain
+        : null);
     if (domain === null) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
@@ -463,6 +484,8 @@ export class MessageController {
         await this.userQuota.tickLax(req.user.userId, 'messages', tx);
         if (avatar) await this.userQuota.tickLax(req.user.userId, 'files', tx);
       },
+      undefined,
+      dto.quoteTargetSeq,
     );
     return data;
   }
@@ -500,9 +523,9 @@ export class MessageController {
       );
     }
     if (req.threadAccess.threadType === 'GROUP') {
-      await this.federation.assertGroupWritable(dto.threadId);
+      await this.threadAccess.assertGroupWritable(dto.threadId);
     } else {
-      await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
+      await this.threadAccess.assertP2PWritable(dto.threadId, req.user.userId);
     }
     const prior = await this.messageService.findByClientMessageId(
       dto.clientMessageId,
@@ -530,6 +553,8 @@ export class MessageController {
         async (tx) => {
           await this.userQuota.tickLax(req.user.userId, 'messages', tx);
         },
+        undefined,
+        dto.quoteTargetSeq,
       );
       return data;
     }
@@ -700,9 +725,9 @@ export class MessageController {
       );
     }
     if (req.threadAccess.threadType === 'GROUP') {
-      await this.federation.assertGroupWritable(dto.threadId);
+      await this.threadAccess.assertGroupWritable(dto.threadId);
     } else {
-      await this.federation.assertP2PWritable(dto.threadId, req.user.userId);
+      await this.threadAccess.assertP2PWritable(dto.threadId, req.user.userId);
     }
     // Phase 7: stage only message-level intent + fileCnt. Per-file display metadata (w/h/duration)
     // rides with each upload part; the daily file cnt + byte quota is charged at upload admission
@@ -715,6 +740,7 @@ export class MessageController {
       dto.clientMessageId,
       dto.fileCnt ?? 1,
       dto.retry === true,
+      dto.quoteTargetSeq,
     );
     return { clientMessageId: dto.clientMessageId };
   }
@@ -971,7 +997,7 @@ export class MessageController {
   ) {
     // The user supplies only the carrier message. Its server-authored MediaMessage/ForwardMessage
     // bindings determine every remote digest fetched; arbitrary CAS URLs/digests are never accepted.
-    const status = await this.federation.localizeMediaForMessage(
+    const status = await this.mediaLocalization.localizeMediaForMessage(
       req.user.userId,
       req.threadAccess.threadId,
       dto.seq,

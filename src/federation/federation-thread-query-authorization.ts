@@ -69,7 +69,6 @@ export async function resolveAuthorizedFederationThreadInTx(
        AND audience."localUserId" IS NULL
       WHERE thread.type = 'GROUP'
         AND group_state.account = ${selector.account}
-        AND group_state.domain = 'local'
         AND group_state."namespaceId" = 0
         AND (
           intent.status = 'ACCEPTED'
@@ -100,7 +99,6 @@ export async function resolveAuthorizedFederationThreadInTx(
         ON local_state."threadId" = thread.id
       JOIN "Account" local_identity
         ON local_identity.id = local_state."accountId"
-       AND local_identity.domain = 'local'
        AND local_identity."namespaceId" = 0
       JOIN "RelationshipPair" pair
         ON pair."threadId" = thread.id
@@ -149,10 +147,20 @@ export async function resolveAuthorizedFederationThreadInTx(
           FROM "RelationshipPair" pair
           JOIN "MessageThread" thread ON thread.id = pair."threadId"
           JOIN "RelationshipIntent" intent
-            ON intent."authorAccount" = pair."endpointAAccount"
-           AND intent."authorNamespaceId" = pair."endpointANamespaceId"
-           AND intent."receiverAccount" = pair."endpointBAccount"
-           AND intent."receiverNamespaceId" = pair."endpointBNamespaceId"
+            ON (
+              (
+                intent."authorAccount" = pair."endpointAAccount"
+                AND intent."authorNamespaceId" = pair."endpointANamespaceId"
+                AND intent."receiverAccount" = pair."endpointBAccount"
+                AND intent."receiverNamespaceId" = pair."endpointBNamespaceId"
+              )
+              OR (
+                intent."authorAccount" = pair."endpointBAccount"
+                AND intent."authorNamespaceId" = pair."endpointBNamespaceId"
+                AND intent."receiverAccount" = pair."endpointAAccount"
+                AND intent."receiverNamespaceId" = pair."endpointANamespaceId"
+              )
+            )
           LEFT JOIN "ThreadAudience" audience
             ON audience."threadId" = thread.id
            AND audience."targetNamespaceId" = ${namespaceId}
@@ -161,6 +169,10 @@ export async function resolveAuthorizedFederationThreadInTx(
           WHERE pair.kind = 'P2P'
             AND pair.active = true
             AND thread.type = 'P2P'
+            AND pair."endpointANamespaceId" = 0
+        AND pair."endpointBType" = 'USER'
+        AND pair."endpointBAccount" = ${selector.peerAccount}
+        AND pair."endpointBNamespaceId" = ${namespaceId}
             AND (
               intent.status = 'ACCEPTED'
               OR (

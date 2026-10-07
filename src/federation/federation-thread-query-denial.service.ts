@@ -41,8 +41,7 @@ export class FederationThreadQueryDenialService {
           pair."endpointBAccount" AS "remoteAccount"
         FROM "RelationshipPair" pair
         JOIN "Account" local_identity
-          ON local_identity.domain = 'local'
-         AND local_identity."namespaceId" = 0
+          ON local_identity."namespaceId" = 0
          AND pair."endpointAType" = 'USER'
          AND pair."endpointAAccount" = local_identity.account
         WHERE pair.kind = 'P2P'
@@ -60,7 +59,7 @@ export class FederationThreadQueryDenialService {
         }>(sql`
           SELECT group_profile.account AS "groupAccount",
             group_profile.domain AS "groupDomain",
-            group_profile.namespaceId AS "groupNamespaceId"
+            group_profile."namespaceId" AS "groupNamespaceId"
           FROM "MessageThread" thread
           JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
           WHERE thread.id = ${threadId}
@@ -81,7 +80,7 @@ export class FederationThreadQueryDenialService {
         // A mirror denial is not authoritative membership state. Stop this
         // round and wait for a later state-feed push instead of converting a
         // transient or stale denial into local group dissolution.
-        if (groupLocation.groupDomain !== 'local')
+        if (groupLocation.groupNamespaceId !== 0)
           return 'MIRROR_WAITING_FOR_PUSH' as const;
 
         await this.relationshipIntents.lockGroupBusinessScopeInTx(tx, {
@@ -131,15 +130,14 @@ export class FederationThreadQueryDenialService {
           ) member(kind, account, "namespaceId")
           JOIN "IdentityNamespace" member_ns ON member_ns.id = member."namespaceId"
           LEFT JOIN "Account" member_identity
-            ON member_ns.domain = 'local' AND member_identity.account = member.account
+            ON member_ns.id = 0 AND member_identity.account = member.account
           WHERE member.kind = 'USER' AND thread.id = ${threadId}
             AND thread.type = 'GROUP'
             AND ((group_profile.domain = ${peerDomain}
                   AND group_profile."namespaceId" = ${namespaceId}
-                  AND member_ns.domain = 'local'
+                  AND member_ns.id = 0
                   AND member_identity.id IS NOT NULL)
-              OR (group_profile.domain = 'local'
-                  AND group_profile."namespaceId" = 0
+              OR (group_profile."namespaceId" = 0
                   AND member_ns.domain = ${peerDomain}))
             AND member."namespaceId" IN (0, ${namespaceId})
           ORDER BY member_ns.domain, member.account

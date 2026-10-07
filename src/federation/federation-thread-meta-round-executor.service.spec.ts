@@ -52,7 +52,7 @@ describe('federation Group Meta round profile behavior', () => {
     }
   });
 
-  it('rejects a local group-meta member with a positive namespace', async () => {
+  it('rejects a malformed group-meta member namespace', async () => {
     const execute = vi.fn().mockResolvedValue({
       rows: [
         {
@@ -64,7 +64,9 @@ describe('federation Group Meta round profile behavior', () => {
         },
       ],
     });
-    const transaction = vi.fn();
+    const transaction = vi.fn((callback: (tx: unknown) => unknown) =>
+      callback({ execute }),
+    );
     const fetchPage = vi.fn().mockResolvedValue({
       account: '!group',
       mode: 'delta',
@@ -76,7 +78,7 @@ describe('federation Group Meta round profile behavior', () => {
           operation: 'MEMBER_UPSERT',
           body: {
             role: GroupRole.MEMBER,
-            namespaceId: 7,
+            namespaceId: -1,
             profileRev: 1,
           },
         },
@@ -85,12 +87,15 @@ describe('federation Group Meta round profile behavior', () => {
       groupMetaFeedEndId: 2,
       hasMore: false,
     });
+    const client = { fetchPage };
+    const profileResolutions = { resolveDemand: vi.fn() };
+    const events = { emit: vi.fn() };
     const round = new FederationThreadMetaRoundExecutorService(
       { db: { execute, transaction } } as never,
-      { fetchPage } as never,
+      client as never,
       {} as never,
-      {} as never,
-      {} as never,
+      { resolveDemand: vi.fn(), profileDemand: vi.fn() } as never,
+      events as never,
     );
 
     await expect(round.run(7, 'origin.example', 9)).rejects.toThrow(

@@ -9,7 +9,8 @@ import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import { DiscoveryService } from './discovery.service.js';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
-import { loadFederationConfig } from './federation.config.js';
+import { KeypairService } from './keypair.service.js';
+import { loadFederationRuntimeConfig } from './federation.config.js';
 
 const MAX_CONCURRENCY = 4;
 const MAX_PENDING = 32;
@@ -31,7 +32,7 @@ export class FederationHealthSchedulerService
   implements OnApplicationBootstrap, OnApplicationShutdown
 {
   private readonly logger = new Logger(FederationHealthSchedulerService.name);
-  private readonly config = loadFederationConfig();
+  private readonly config = loadFederationRuntimeConfig();
   private readonly pending: PeerTask[] = [];
   private readonly inFlight = new Set<string>();
   private roundActive = false;
@@ -44,9 +45,33 @@ export class FederationHealthSchedulerService
     private readonly database: DatabaseService,
     private readonly peerLifecycle: FederationPeerLifecycle,
     private readonly discovery: DiscoveryService,
+    private readonly keypair: KeypairService,
   ) {}
 
-  onApplicationBootstrap(): void {
+  async onApplicationBootstrap(): Promise<void> {
+    // Nest does not guarantee ordering between providers' bootstrap hooks. Await the
+    // identity lifecycle explicitly so the first Health round can never observe a
+    // pre-rebinding local domain or start before namespace 0 is ready.
+    await this.keypair.waitUntilInitialized();
+
+    // Reachability is process-ephemeral. Never admit ordinary S2S work from a
+    // persisted pre-restart `available` observation: the first successful
+    // Health round restores each peer and emits the normal availability wake.
+    await this.database.db
+      .update(tables.identityNamespace)
+      .set({
+        trustLevel: 'degraded',
+        remoteServiceReachable: false,
+        degradedAt: new Date(),
+        degradationReason: 'awaiting Health after process startup',
+      })
+      .where(
+        and(
+          gt(tables.identityNamespace.id, 0),
+          eq(tables.identityNamespace.active, true),
+          eq(tables.identityNamespace.trustLevel, 'available'),
+        ),
+      );
     this.startRound();
     this.scheduleNext();
   }

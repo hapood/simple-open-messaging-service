@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { loadFederationConfig } from './federation.config.js';
+import {
+  loadFederationConfig,
+  loadFederationRuntimeConfig,
+} from './federation.config.js';
 
 const saved = {
   nodeEnv: process.env.NODE_ENV,
@@ -27,6 +30,19 @@ afterEach(() => {
 });
 
 describe('development federation routes', () => {
+  it('loads runtime configuration without requiring SOMS_DOMAIN', () => {
+    const savedDomain = process.env.SOMS_DOMAIN;
+    delete process.env.SOMS_DOMAIN;
+    delete process.env.SOMS_ALLOW_INSECURE_HTTP;
+    delete process.env.SOMS_DEV_FEDERATION_ROUTES;
+    try {
+      expect(loadFederationRuntimeConfig().allowInsecureHttp).toBe(false);
+    } finally {
+      if (savedDomain === undefined) delete process.env.SOMS_DOMAIN;
+      else process.env.SOMS_DOMAIN = savedDomain;
+    }
+  });
+
   it('trusts forwarded resource snapshots by default and supports explicit rebuild', () => {
     process.env.SOMS_DOMAIN = 'aaa.test';
     delete process.env.SOMS_FEDERATION_FORWARDED_RESOURCE_POLICY;
@@ -97,12 +113,12 @@ describe('development federation routes', () => {
     expect(() => loadFederationConfig()).toThrow();
   });
 
-  it.each(['local', 'node.local'])('rejects RFC 6762 domain %s', (domain) => {
+  it('accepts a .local domain as a normal canonical domain', () => {
     process.env.NODE_ENV = 'test';
-    process.env.SOMS_DOMAIN = domain;
+    process.env.SOMS_DOMAIN = 'node.local';
     delete process.env.SOMS_ALLOW_INSECURE_HTTP;
     delete process.env.SOMS_DEV_FEDERATION_ROUTES;
 
-    expect(() => loadFederationConfig()).toThrow('RFC 6762 .local');
+    expect(loadFederationConfig().domain).toBe('node.local');
   });
 });

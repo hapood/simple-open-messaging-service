@@ -12,7 +12,9 @@ import {
   requireBundleId,
 } from './federation-resource-request.js';
 import type { FederationReverseThreadSource } from './federation-reverse-thread-source.js';
-import { FederationService, S2sResponseError } from './federation.service.js';
+import { S2sResponseError } from './federation-errors.js';
+import { FederationInboundMessageCommitService } from './federation-inbound-message-commit.service.js';
+import { FederationInboundMessageEffectsService } from './federation-inbound-message-effects.service.js';
 import {
   FederationThreadResourceClient,
   type FederationThreadResourceResponse,
@@ -45,7 +47,8 @@ export class FederationThreadReverseRoundExecutorService {
     private readonly database: DatabaseService,
     private readonly rounds: FederationThreadReverseRoundService,
     private readonly threadResources: FederationThreadResourceClient,
-    private readonly federation: FederationService,
+    private readonly inboundMessageCommits: FederationInboundMessageCommitService,
+    private readonly messageEffects: FederationInboundMessageEffectsService,
     private readonly sources: FederationThreadSourceService,
   ) {}
 
@@ -304,20 +307,24 @@ export class FederationThreadReverseRoundExecutorService {
             threadLock,
             source,
           );
-          const applied =
-            await this.federation.applyReverseMessagePageInTransaction(tx, {
+          const effects =
+            await this.inboundMessageCommits.applyReverseInTransaction(tx, {
               ...batch,
               threadLock,
               messageSeqOffset: context.messageSeqOffset,
             });
-          publish = applied.publish;
-          await this.federation.finalizeReverseMessageWindowInTransaction(tx, {
-            threadLock,
-            threadId: source.threadId,
-            namespaceId: source.namespaceId,
-            beforeSeq: batch.before,
-            throughSeq: context.nextBeforeSeq,
-          });
+          publish = () =>
+            this.messageEffects.publish(batch.response.peerDomain, effects);
+          await this.inboundMessageCommits.finalizeReverseWindowInTransaction(
+            tx,
+            {
+              threadLock,
+              threadId: source.threadId,
+              namespaceId: source.namespaceId,
+              beforeSeq: batch.before,
+              throughSeq: context.nextBeforeSeq,
+            },
+          );
         },
       });
     });

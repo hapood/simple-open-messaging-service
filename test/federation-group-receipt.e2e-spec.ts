@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
+import { ContentType } from '../src/database/enums.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
@@ -11,6 +12,7 @@ import { FederationInboundMessageRouteService } from '../src/federation/federati
 import { FederationInboundMessageValidatorService } from '../src/federation/federation-inbound-message-validator.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { FederationThreadAccessService } from '../src/federation/federation-thread-access.service.js';
+import { wirePayloadDigest } from '../src/federation/federated-message-content.js';
 import type { FederationMessageFeedMessage } from '../src/federation/federation-message-feed.service.js';
 import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
 import { seedFederatedPeerNamespace } from './seed.js';
@@ -36,7 +38,10 @@ describe('third-party group message processing receipts', () => {
     }).compile();
     database = module.get(DatabaseService);
     namespaces = new FederationNamespaceService(database);
-    const threadAccess = new FederationThreadAccessService(database, namespaces);
+    const threadAccess = new FederationThreadAccessService(
+      database,
+      namespaces,
+    );
     pages = new FederationInboundMessagePageService(
       threadAccess,
       new FederationInboundMessageValidatorService(),
@@ -104,11 +109,14 @@ describe('third-party group message processing receipts', () => {
         originServerTime: new Date(createdAt.getTime() - 1000),
         sourceNamespaceId: authorNamespace,
         creatorAccount: 'alice',
-        creatorDomain: authorDomain,
         profileNamespaceId: authorNamespace,
         profileRev: 3,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'from Alice' }),
+        payloadDigest: wirePayloadDigest(
+          ContentType.PURE_TEXT,
+          JSON.stringify({ text: 'from Alice' }),
+        ),
         createdAt,
         updatedAt: createdAt,
       })
@@ -119,7 +127,8 @@ describe('third-party group message processing receipts', () => {
   function receipt(): FederationMessageFeedMessage {
     return {
       thread: { account: groupAccount },
-      author: { account: 'alice', namespaceId: authorNamespace },
+      namespaceId: authorNamespace,
+      author: { account: 'alice', domain: authorDomain },
       seq: 99,
       originSeq: 42,
       originCreatedAt: createdAt.getTime(),
@@ -181,10 +190,11 @@ describe('third-party group message processing receipts', () => {
       expect(await apply(receipt(), reverse)).toEqual([]);
       expect(await apply(receipt(), reverse)).toEqual([]);
       expect(
-        await database.db.query.federationMessageReceipt.findMany(),
-      ).toMatchObject([
-        { namespaceId: mirrorNamespace, threadId, peerSeq: 99, messageId },
-      ]);
+        await database.db.query.message.findMany({
+          where: eq(tables.message.id, messageId),
+          columns: { federationPayloadVerification: true },
+        }),
+      ).toMatchObject([{ federationPayloadVerification: 'VERIFIED' }]);
       await expectOriginalUnchanged();
     },
   );
@@ -214,8 +224,11 @@ describe('third-party group message processing receipts', () => {
           .where(eq(tables.relationshipPair.threadId, threadId));
       expect(await apply(item)).toEqual([]);
       expect(
-        await database.db.query.federationMessageReceipt.findMany(),
-      ).toEqual([]);
+        await database.db.query.message.findMany({
+          where: eq(tables.message.id, messageId),
+          columns: { federationPayloadVerification: true },
+        }),
+      ).toEqual([{ federationPayloadVerification: 'UNVERIFIED' }]);
       await expectOriginalUnchanged();
     },
   );

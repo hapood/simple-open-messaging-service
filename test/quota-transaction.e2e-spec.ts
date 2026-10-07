@@ -23,8 +23,8 @@ describe('quota operations reuse the source transaction', () => {
       await expect(
         database.db.transaction(async (tx) => {
           const { rows } = await tx.execute<{ id: number }>(sql`
-            INSERT INTO "Account" (account, domain, "updatedAt")
-            VALUES ('quota-transaction-user', 'local', NOW()) RETURNING id
+            INSERT INTO "Account" (account, "updatedAt")
+            VALUES ('quota-transaction-user', NOW()) RETURNING id
           `);
           const userId = rows[0].id;
           await tx.execute(sql`
@@ -70,8 +70,8 @@ describe('quota operations reuse the source transaction', () => {
         database.db.transaction(async (tx) => {
           const namespace = await tx.execute<{ id: number }>(sql`
             INSERT INTO "IdentityNamespace"
-              (domain, "rootKeyFingerprint", "rootPublicKey", "identityPinnedAt", "dailyMsgLimit", "dailyFileLimit", "dailyFileBytesLimit", "dailyRequestLimit")
-            VALUES (${domain}, 'sha256:quota-transaction', ${Buffer.alloc(32, 1).toString('base64')}, NOW(), 2, 2, 10, 2) RETURNING id
+              (domain, "rootPublicKey", "identityPinnedAt", "dailyMsgLimit", "dailyFileLimit", "dailyFileBytesLimit", "dailyRequestLimit")
+            VALUES (${domain}, ${Buffer.alloc(32, 1).toString('base64')}, NOW(), 2, 2, 10, 2) RETURNING id
           `);
           const namespaceId = namespace.rows[0].id;
           await tx.execute(sql`

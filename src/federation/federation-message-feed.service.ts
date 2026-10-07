@@ -20,16 +20,20 @@ import { ContentType } from '../database/enums.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import {
+  identityNamespace,
   mediaAsset,
   message,
   messageAsset,
   messageThread,
   peerStateFeed,
+  forwardMessage,
+  forwardBundle,
 } from '../database/schema.js';
 import {
   parseTextMessageContent,
   storedQuoteCoordinate,
 } from '../../shared/text-message-content.js';
+import { parseMessageContentQuote } from '../../shared/message-content-quote.js';
 import { findStoredQuoteTargets } from '../message/stored-quote-targets.js';
 import {
   publishFederationQuote,
@@ -65,12 +69,14 @@ type FederationMessageFeedAsset = FederationByteDescriptor;
 
 interface FederationMessageFeedMessageBase
   extends FederatedMessagePayload<string> {
+  namespaceId: number;
   seq: number;
   profileRev: number;
   originSeq: number | null;
   originCreatedAt: number | null;
   createdAt: number;
   quoteTarget?: FederationQuoteTarget;
+  quoteDigest?: string;
   assets: FederationMessageFeedAsset[];
 }
 
@@ -236,6 +242,7 @@ export class FederationMessageFeedService {
                 publisherNamespaceId: message.publisherNamespaceId,
                 contentType: message.contentType,
                 content: message.content,
+                payloadDigest: message.payloadDigest,
                 createdAt: message.createdAt,
                 clientMessageId: message.clientMessageId,
                 threadType: messageThread.type,
@@ -243,9 +250,18 @@ export class FederationMessageFeedService {
                 authorityNamespaceId: messageThread.authorityNamespaceId,
                 authorAccount: sql<string>`${message.creatorAccount}`,
                 profileNamespaceId: message.profileNamespaceId,
+                forwardBundleSourceId: forwardBundle.sourceBundleId,
               })
               .from(message)
               .innerJoin(messageThread, eq(messageThread.id, message.threadId))
+              .leftJoin(
+                forwardMessage,
+                eq(forwardMessage.messageId, message.id),
+              )
+              .leftJoin(
+                forwardBundle,
+                eq(forwardBundle.id, forwardMessage.bundleId),
+              )
               .where(
                 and(
                   eq(message.threadId, threadId),
@@ -345,6 +361,7 @@ export class FederationMessageFeedService {
       publisherNamespaceId: number;
       contentType: ContentType;
       content: string;
+      payloadDigest: string | null;
       createdAt: Date;
       clientMessageId: string | null;
       threadType: 'P2P' | 'GROUP';
@@ -352,6 +369,7 @@ export class FederationMessageFeedService {
       authorityNamespaceId: number;
       authorAccount: string;
       profileNamespaceId: number;
+      forwardBundleSourceId: string | null;
     }>,
     peerDomain: string,
     peerNamespaceId: number,
@@ -382,25 +400,75 @@ export class FederationMessageFeedService {
       tx,
       rows.map((row) => ({ ...row, id: row.messageId })),
     );
+    const profileNamespaceIds = [
+      ...new Set(
+        rows.map((row) =>
+          row.publisherNamespaceId === peerNamespaceId &&
+          row.profileNamespaceId === 0
+            ? peerNamespaceId
+            : row.profileNamespaceId,
+        ),
+      ),
+    ];
+    const namespaceRows =
+      profileNamespaceIds.length === 0
+        ? []
+        : await tx
+            .select({
+              id: identityNamespace.id,
+              domain: identityNamespace.domain,
+            })
+            .from(identityNamespace)
+            .where(inArray(identityNamespace.id, profileNamespaceIds));
+    const namespaceDomains = new Map(
+      namespaceRows.map((namespace) => [namespace.id, namespace.domain]),
+    );
 
     const result: FederationMessageFeedMessage[] = [];
     for (const row of rows) {
       const thread = threadAddress;
+      const authorNamespaceId =
+        row.publisherNamespaceId === peerNamespaceId &&
+        row.profileNamespaceId === 0
+          ? peerNamespaceId
+          : row.profileNamespaceId;
+      const authorDomain = namespaceDomains.get(authorNamespaceId);
+      if (authorDomain === undefined) {
+        throw new Error(
+          `message author namespace ${authorNamespaceId} has no retained domain`,
+        );
+      }
       const author = {
         account: row.authorAccount,
-        namespaceId: row.profileNamespaceId,
+        domain: authorDomain,
       };
-      const quote =
-        row.contentType === ContentType.PURE_TEXT
-          ? parseTextMessageContent(row.content)?.quote
-          : undefined;
+      const quote = parseMessageContentQuote(row.content);
       const target = quoteTargets.get(row.messageId);
       const coordinate =
         quote && storedQuoteCoordinate(quote, row.publisherNamespaceId);
+      // Absent targets (seq 0, or an unresolved PENDING/NOT_FOUND status) carry
+      // no payload to attest, so they legitimately have no quote digest.
+      const absentQuote =
+        quote !== undefined &&
+        (quote.seq === 0 ||
+          target === undefined ||
+          quote.status === 'PENDING' ||
+          quote.status === 'NOT_FOUND');
+      if (quote && !quote.digest && !absentQuote) {
+        throw new Error(
+          `message ${row.messageId.toString()} has a quote without quote digest`,
+        );
+      }
       const groupAuthority =
         row.threadType === 'GROUP' && row.authorityNamespaceId === 0;
       // A group authority republishes every author's target in its own timeline.
       // A mirror (or P2P sender) uses originSeq only for a target owned by its receiver.
+      const quoteDigest = quote?.digest;
+      if (quoteDigest !== undefined && !/^[a-f0-9]{64}$/.test(quoteDigest)) {
+        throw new Error(
+          `message ${row.messageId.toString()} has an invalid quote digest`,
+        );
+      }
       const quoteTarget = coordinate
         ? publishFederationQuote(
             coordinate,
@@ -409,13 +477,27 @@ export class FederationMessageFeedService {
             peerNamespaceId,
           )
         : undefined;
-      let content: string;
-      let contentDigests: Set<string>;
-      try {
-        content = toFederatedMessageContent(row.contentType, row.content);
-        contentDigests = new Set(
-          federatedContentDigests(row.contentType, content),
+      if (quote && quoteTarget === undefined) {
+        throw new Error(
+          `message ${row.messageId.toString()} quote cannot be represented for peer`,
         );
+      }
+      let content: string;
+      let payloadDigests: Set<string>;
+      try {
+        if (row.contentType === ContentType.FORWARD) {
+          const wireBundleId = row.forwardBundleSourceId;
+          if (!wireBundleId || !/^[a-f0-9]{64}$/.test(wireBundleId)) {
+            throw new Error('missing wire bundle digest');
+          }
+          content = JSON.stringify({ bundleId: wireBundleId });
+          payloadDigests = new Set();
+        } else {
+          content = toFederatedMessageContent(row.contentType, row.content);
+          payloadDigests = new Set(
+            federatedContentDigests(row.contentType, content),
+          );
+        }
       } catch (error) {
         // One malformed stored row must not poison the peer's entire page. The page cursor is
         // based on scanned source seqs rather than returned item count, so omitting this row advances
@@ -426,18 +508,27 @@ export class FederationMessageFeedService {
         continue;
       }
       const candidateAssets = assets.get(row.messageId) ?? [];
+      if (
+        row.contentType !== ContentType.SYSTEM &&
+        row.payloadDigest === null
+      ) {
+        throw new Error(
+          `message ${row.messageId.toString()} has no payload digest`,
+        );
+      }
       // A FORWARD card references its closure by bundleId; the closure manifest, rather than the
       // card itself, owns the referenced digests. Other message types must not leak receiver-local
       // presentation assets (notably LINK artwork) into the wire projection.
       const projectedAssets =
         row.contentType === ContentType.FORWARD
           ? candidateAssets
-          : candidateAssets.filter((asset) => contentDigests.has(asset.digest));
+          : candidateAssets.filter((asset) => payloadDigests.has(asset.digest));
       const isProcessingReceipt =
         row.originSeq !== null &&
         row.originServerTime !== null &&
         row.publisherNamespaceId === peerNamespaceId;
       const envelope = {
+        namespaceId: authorNamespaceId,
         seq: row.seq,
         profileRev: row.profileRev,
         originSeq: isProcessingReceipt ? row.originSeq : null,
@@ -448,17 +539,15 @@ export class FederationMessageFeedService {
         content,
         createdAt: row.createdAt.getTime(),
         ...(quoteTarget !== undefined ? { quoteTarget } : {}),
+        ...(quoteDigest !== undefined ? { quoteDigest } : {}),
         // MessageAsset also authorizes receiver-local presentation assets, notably LINK artwork.
         // Only descriptors referenced by the URL-free wire content belong in the federation payload.
         assets: projectedAssets,
       };
       let item: FederationMessageFeedMessage;
       if ('peerAccount' in thread) {
-        const sourceAuthored =
-          author.namespaceId === 0 && author.account === thread.account;
-        const peerAuthored =
-          author.namespaceId === peerNamespaceId &&
-          author.account === thread.peerAccount;
+        const sourceAuthored = author.account === thread.account;
+        const peerAuthored = author.account === thread.peerAccount;
         if (!sourceAuthored && !peerAuthored) {
           throw new Error(
             `P2P message author is not one of the addressed participants (thread ${row.threadId}, seq ${row.seq})`,

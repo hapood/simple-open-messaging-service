@@ -23,13 +23,8 @@ describe('Federated peer QuotaService (DB-backed)', () => {
     quota = mod.get(QuotaService);
     database = mod.get(DatabaseService);
     const created = await database.pool.query<{ id: number }>(
-      'INSERT INTO "IdentityNamespace" (domain, "rootKeyFingerprint", "rootPublicKey", "identityPinnedAt", active, "trustLevel") VALUES ($1, $2, $3, NOW(), true, $4) RETURNING id',
-      [
-        PEER,
-        'sha256:quota-test',
-        Buffer.alloc(32, 1).toString('base64'),
-        'available',
-      ],
+      'INSERT INTO "IdentityNamespace" (domain, "rootPublicKey", "identityPinnedAt", active, "trustLevel") VALUES ($1, $2, NOW(), true, $3) RETURNING id',
+      [PEER, Buffer.alloc(32, 1).toString('base64'), 'available'],
     );
     namespaceId = created.rows[0].id;
   });
@@ -155,8 +150,8 @@ describe('Local-account UserQuotaService (DB-backed)', () => {
     quota = mod.get(UserQuotaService);
     database = mod.get(DatabaseService);
     const local = await database.pool.query<{ id: number }>(
-      'INSERT INTO "Account" (account, domain, "updatedAt") VALUES ($1, $2, NOW()) RETURNING id',
-      ['quota-local', 'local'],
+      'INSERT INTO "Account" (account, "updatedAt") VALUES ($1, NOW()) RETURNING id',
+      ['quota-local'],
     );
     localUserId = local.rows[0].id;
   });

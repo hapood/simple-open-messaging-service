@@ -35,9 +35,8 @@ describe('thread feed database previews', () => {
                 conversationState: 'ACTIVE',
                 blocked: false,
                 role: null,
+                publisherNamespaceId: 0,
                 profileAccount: 'peer',
-                profileDomain: 'local',
-                profileNamespaceId: 0,
                 profileRev: 3,
                 threadProfileRev: 3,
                 profileSourceId: 12,
@@ -71,7 +70,9 @@ describe('thread feed database previews', () => {
       type: 'P2P',
       blocked: false,
       profileSourceId: 12,
-      profile: { account: 'peer', namespaceId: 0, profileRev: 3 },
+      profileAccount: 'peer',
+      publisherNamespaceId: 0,
+      profileRev: 3,
     });
     expect(read).not.toHaveBeenCalled();
   });
@@ -86,20 +87,20 @@ describe('thread feed database previews', () => {
       {
         seq: 1,
         createdAt: '2026-09-08T00:00:00.000Z',
-        sender: { account: 'peer', namespaceId: 0, profileRev: 1 },
+        sender: { account: 'peer', profileNamespaceId: 0, profileRev: 1 },
         status: 'LIVE',
         text: 'hello',
       },
       {
         seq: 2,
         createdAt: '2026-09-08T00:00:01.000Z',
-        sender: { account: 'peer', namespaceId: 0, profileRev: 2 },
+        sender: { account: 'peer', profileNamespaceId: 0, profileRev: 2 },
         status: 'USER_RETRACTION',
       },
       {
         seq: 3,
         createdAt: '2026-09-08T00:00:02.000Z',
-        sender: { account: 'peer', namespaceId: 0, profileRev: 3 },
+        sender: { account: 'peer', profileNamespaceId: 0, profileRev: 3 },
         status: 'MODERATION_REMOVAL',
       },
     ]);

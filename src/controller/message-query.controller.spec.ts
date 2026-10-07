@@ -37,14 +37,19 @@ function setup(rows: Array<{ seq: number }> = []) {
   });
   const controller = new MessageController(
     { queryClientMessagePage } as never,
-    {} as never,
     { blockedByMe: vi.fn().mockResolvedValue(new Set<number>()) } as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
     {} as never,
     { queryThread: queryTombstones } as never,
     { queryThread: vi.fn().mockResolvedValue([]) } as never,
+    {} as never,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -181,7 +186,12 @@ describe('MessageController group mention resolution', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
       { resolveActiveMember } as never,
+      {} as never,
+      {} as never,
       {} as never,
     );
     const req = {
@@ -249,8 +259,13 @@ describe('MessageController.withdrawMessage quota', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
       { assertCanSend, tickLax } as never,
       { withdraw } as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -291,7 +306,12 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
         } as never,
         {} as never,
         {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
         { assertCanSend, tick } as never,
+        {} as never,
+        {} as never,
         {} as never,
         {} as never,
         {} as never,
@@ -323,10 +343,61 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
         '00000000-0000-4000-8000-000000000001',
         1,
         false,
+        undefined,
       );
       expect(tick).not.toHaveBeenCalled();
     },
   );
+
+  it('forwards a staged quote target into stageMedia', async () => {
+    const stageMedia = vi.fn().mockResolvedValue({ clientMessageId: 'cid' });
+    const controller = new MessageController(
+      { stageMedia } as never,
+      {} as never,
+      {} as never,
+      {
+        assertP2PWritable: vi.fn().mockResolvedValue(undefined),
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { assertCanSend: vi.fn(), tick: vi.fn() } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const req = {
+      user: { userId: 7 },
+      threadAccess: {
+        threadType: 'P2P',
+        membershipActive: true,
+        groupDissolved: false,
+      },
+    } as unknown as FastifyRequest;
+
+    await controller.sendMedia(req, {
+      threadId: 42,
+      contentType: ContentType.IMAGE,
+      clientMessageId: '00000000-0000-4000-8000-000000000003',
+      quoteTargetSeq: 4,
+    });
+
+    expect(stageMedia).toHaveBeenCalledWith(
+      7,
+      42,
+      ContentType.IMAGE,
+      '00000000-0000-4000-8000-000000000003',
+      1,
+      false,
+      4,
+    );
+  });
 
   it('forwards fileCnt for a GALLERY batch', async () => {
     const stageMedia = vi.fn().mockResolvedValue({ clientMessageId: 'cid' });
@@ -339,7 +410,12 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
       } as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
       { assertCanSend: vi.fn().mockResolvedValue(undefined) } as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -369,6 +445,7 @@ describe('MessageController.sendMedia staging (Phase 7)', () => {
       '00000000-0000-4000-8000-000000000002',
       4,
       false,
+      undefined,
     );
   });
 });
@@ -378,6 +455,11 @@ describe('MessageController.abandonMediaStage', () => {
     const abandonMediaStage = vi.fn().mockResolvedValue({ abandoned: true });
     const controller = new MessageController(
       { abandonMediaStage } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,

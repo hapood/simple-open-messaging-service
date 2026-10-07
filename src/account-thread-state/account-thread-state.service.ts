@@ -15,6 +15,7 @@ import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   accountThreadState,
+  identityNamespace,
   messageThread,
   account as user,
 } from '../database/schema.js';
@@ -72,10 +73,11 @@ export class AccountThreadStateService {
         muted: accountThreadState.muted,
         blocked: accountThreadState.blocked,
         account: user.account,
-        domain: user.domain,
+        domain: identityNamespace.domain,
       })
       .from(accountThreadState)
       .innerJoin(user, eq(user.id, accountThreadState.accountId))
+      .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
       .where(eq(accountThreadState.threadId, threadId));
     const authorized = await Promise.all(
       rows.map((row) => this.isMutuallyAuthorized(row.userId, threadId)),

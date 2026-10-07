@@ -1,4 +1,5 @@
 import { and, eq } from 'drizzle-orm';
+import { localIdentityDomain } from './support/local-domain.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { DatabaseModule } from '../src/database/database.module.js';
@@ -797,7 +798,8 @@ describe('mirror Group Meta rounds', () => {
           feedId: 1,
           operation: 'MEMBER_UPSERT',
           account: localMemberAccount,
-          domain: 'local',
+          domain: localIdentityDomain(),
+          namespaceId: 0,
           role: 'MEMBER',
           profileNamespaceId: 0,
           profileRev: 1,
@@ -814,7 +816,11 @@ describe('mirror Group Meta rounds', () => {
     expect(joined).toHaveLength(1);
     expect(JSON.parse(joined[0]!.content as string)).toMatchObject({
       type: 'GROUP_JOINED',
-      member: { account: localMemberAccount, domain: 'local' },
+      member: {
+        account: localMemberAccount,
+        domain: localIdentityDomain(),
+        profileNamespaceId: 0,
+      },
     });
     for (const [feedId, operation] of [
       [2, 'MEMBER_UPSERT'],
@@ -827,7 +833,8 @@ describe('mirror Group Meta rounds', () => {
             feedId,
             operation,
             account: localMemberAccount,
-            domain: 'local',
+            domain: localIdentityDomain(),
+            namespaceId: 0,
             profileNamespaceId: 0,
             ...(operation === 'MEMBER_UPSERT'
               ? { role: 'MEMBER' as const, profileRev: 1 }
@@ -875,7 +882,8 @@ describe('mirror Group Meta rounds', () => {
           feedId: 4,
           operation: 'MEMBER_UPSERT',
           account: localMemberAccount,
-          domain: 'local',
+          domain: localIdentityDomain(),
+          namespaceId: 0,
           role: 'MEMBER',
           profileNamespaceId: 0,
           profileRev: 2,
@@ -902,7 +910,8 @@ describe('mirror Group Meta rounds', () => {
           feedId: 5,
           operation: 'MEMBER_DEPART',
           account: localMemberAccount,
-          domain: 'local',
+          domain: localIdentityDomain(),
+          namespaceId: 0,
           role: 'MEMBER',
           profileNamespaceId: 0,
           profileRev: 1,

@@ -10,7 +10,7 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { dataDirectory } from '../common/data-directory.js';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -30,6 +30,7 @@ import {
 } from '../database/schema.js';
 import { ContentType } from '../database/enums.js';
 import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
+import { canonicalJson } from '../federation/canonical-json.js';
 import {
   federatedContentDigests,
   fromFederatedMessageContent,
@@ -41,10 +42,11 @@ import {
   type LinkContent,
 } from '../upload/file-content.js';
 import { toDisplayText } from '../common/message-entity.js';
+import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import {
-  parseTextMessageContent,
-  stringifyTextMessageContent,
-} from '../../shared/text-message-content.js';
+  parseMessageContentQuote,
+  withoutMessageContentQuote,
+} from '../../shared/message-content-quote.js';
 import { deriveMessagePreview } from '../../shared/message-preview.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageVisibilityService } from '../message/message-visibility.service.js';
@@ -56,10 +58,26 @@ import type {
 const FORWARD_MAX_MESSAGES = 500;
 const FORWARD_MAX_DEPTH = 3;
 const FORWARD_MAX_ASSETS = 500;
+const FORWARD_MAX_CLOSURE_BUNDLES = 500;
 const FORWARD_SUMMARY_LINES = 2;
 const FORWARD_SUMMARY_CHARS = 100;
 export const FORWARD_MAX_WIRE_JSON_BYTES = 2 * 1024 * 1024;
-const FORWARD_MAX_CLOSURE_BUNDLES = 500;
+export function forwardBundleDigest(
+  messages: readonly ForwardBundleMessage[],
+  childIds: readonly string[],
+  assets: readonly FederationByteDescriptor[] = [],
+): string {
+  const body = {
+    messages,
+    children: [...childIds].sort(),
+    assets: [...assets]
+      .map(({ digest, bytes }) => ({ digest, bytes }))
+      .sort((a, b) => a.digest.localeCompare(b.digest)),
+  };
+  return createHash('sha256').update(canonicalJson(body), 'utf8').digest('hex');
+}
+
+const SHA256_HEX_RE = /^[a-f0-9]{64}$/;
 
 export interface ForwardSourceMessage {
   threadId: number;
@@ -129,7 +147,10 @@ export interface ForwardBundleView extends ForwardWireBundle {
 }
 
 export interface PreparedForwardBundle {
+  /** Local database identity. */
   bundleId: string;
+  /** Content-addressed wire identity used in the FORWARD card. */
+  wireBundleId: string;
   content: string;
   messages: ForwardBundleMessage[];
   assets: FederationByteDescriptor[];
@@ -188,13 +209,7 @@ export class ForwardBundleService {
       );
     }
 
-    const parsedText =
-      visible.contentType === ContentType.PURE_TEXT
-        ? parseTextMessageContent(visible.content)
-        : null;
-    const content = parsedText
-      ? stringifyTextMessageContent({ text: parsedText.text })
-      : visible.content;
+    const content = withoutMessageContentQuote(visible.content);
 
     const isAttachedMedia =
       visible.contentType === ContentType.IMAGE ||
@@ -244,8 +259,9 @@ export class ForwardBundleService {
         'forward source binding not found',
       );
     }
+    const wireBundle = await this.buildClosure(binding.bundleId);
     return {
-      content,
+      content: rewriteForwardCardBundleId(content, wireBundle.id),
       contentType: visible.contentType,
       forwardBundleId: binding.bundleId,
     };
@@ -420,7 +436,11 @@ export class ForwardBundleService {
           'forward source card is invalid',
         );
       }
-      if (child.bundleId !== row!.forwardMessage.bundleId) {
+      const boundBundleIds = new Set([
+        row!.forwardMessage.bundleId,
+        row!.forwardMessage.bundle.sourceBundleId,
+      ]);
+      if (!boundBundleIds.has(child.bundleId)) {
         throw new BusinessException(
           BusinessCode.FORWARD_INVALID_BUNDLE,
           'forward source card does not match its binding',
@@ -486,17 +506,16 @@ export class ForwardBundleService {
         message.contentType === ContentType.PURE_TEXT
           ? parseTextMessageContent(message.content)
           : null;
-      const resolvedQuote = parseTextMessageContent(
+      const resolvedQuote = parseMessageContentQuote(
         enrichedRows[index].content,
-      )?.quote;
+      );
       const selectedTarget =
         resolvedQuote && resolvedQuote.seq > 0
           ? selectedIndex.get(`${message.threadId}:${resolvedQuote.seq}`)
           : undefined;
-      const authorDomain =
-        message.profileNamespaceId === 0
-          ? (process.env.SOMS_DOMAIN ?? 'local')
-          : await this.domainForNamespace(message.publisherNamespaceId);
+      const authorDomain = await this.domainForNamespace(
+        message.profileNamespaceId,
+      );
       const publicRootKey = await this.publicRootKeyForNamespace(
         message.publisherNamespaceId,
       );
@@ -511,16 +530,14 @@ export class ForwardBundleService {
         contentType: message.contentType,
         content: localizeForwardMediaContent(
           message.contentType,
-          text
-            ? stringifyTextMessageContent({ text: text.text })
-            : message.content,
+          withoutMessageContentQuote(message.content),
           mediaAssets,
         ),
         sentAt: message.createdAt.getTime(),
         ...(message.forwardMessage
           ? { childBundleId: message.forwardMessage.bundleId }
           : {}),
-        ...(text?.quote
+        ...(resolvedQuote
           ? {
               quoteTargetId:
                 selectedTarget === undefined ? 0 : selectedTarget + 1,
@@ -528,14 +545,16 @@ export class ForwardBundleService {
           : {}),
       });
     }
-    const children = [
+    const wireChildBundleIds = [
       ...new Set(
         messages.flatMap((m) => (m.childBundleId ? [m.childBundleId] : [])),
       ),
     ];
     const descendantBundles = new Map<string, ForwardWireChild>();
-    for (const childBundleId of children) {
+    const childWireIds = new Map<string, string>();
+    for (const childBundleId of wireChildBundleIds) {
       const closure = await this.buildClosure(childBundleId);
+      childWireIds.set(childBundleId, closure.id);
       descendantBundles.set(closure.id, {
         id: closure.id,
         messages: closure.messages,
@@ -546,9 +565,43 @@ export class ForwardBundleService {
         assets.set(this.assetKey(asset), asset);
     }
     const assetList = [...assets.values()];
+    const wireMessages = messages.map((message) => {
+      if (!message.childBundleId) return message;
+      const childWireId = childWireIds.get(message.childBundleId);
+      if (!childWireId) throw new Error('forward child digest is missing');
+      return {
+        ...message,
+        childBundleId: childWireId,
+        content: rewriteForwardCardBundleId(message.content, childWireId),
+      };
+    });
+    // The wire digest is the bundle's federation identity: it must equal
+    // buildClosure()'s recomputation, so every message is digested in exactly
+    // the canonical wire form the closure serves — FORWARD cards reduced to
+    // their minimal wire reference and federated content projected through
+    // toFederatedMessageContent. The localized display form stays in
+    // `wireMessages` for the card summary.
+    const digestMessages = wireMessages.map((message) => ({
+      ...message,
+      content:
+        message.contentType === ContentType.FORWARD
+          ? JSON.stringify({
+              bundleId:
+                message.childBundleId ??
+                parseForwardCard(message.content).bundleId,
+            })
+          : projectForwardContentToWire(message.contentType, message.content),
+    }));
+    const wireBundleId = forwardBundleDigest(
+      digestMessages,
+      digestMessages.flatMap((message) =>
+        message.childBundleId ? [message.childBundleId] : [],
+      ),
+      assetList,
+    );
     const content = JSON.stringify({
-      bundleId,
-      summaryLines: messages
+      bundleId: wireBundleId,
+      summaryLines: wireMessages
         .slice(0, FORWARD_SUMMARY_LINES)
         .map((message) => this.summaryLine(message)),
       messageCount,
@@ -556,10 +609,11 @@ export class ForwardBundleService {
     });
     return {
       bundleId,
+      wireBundleId,
       content,
       messages,
       assets: assetList,
-      childBundleIds: [...descendantBundles.keys()],
+      childBundleIds: wireChildBundleIds,
       messageCount,
       createdBy: userId,
     };
@@ -578,6 +632,7 @@ export class ForwardBundleService {
         (sum, asset) => sum + BigInt(asset.bytes),
         0n,
       ),
+      sourceBundleId: prepared.wireBundleId,
       createdBy: prepared.createdBy,
     });
     if (prepared.childBundleIds.length > 0) {
@@ -601,10 +656,36 @@ export class ForwardBundleService {
     }
   }
 
+  /** Wire cards carry the bundle's content digest. Resolve it to the local
+   *  ULID through the persisted source identity; a locally-created bundle wins
+   *  over an imported mirror with identical content. Legacy cards created
+   *  before the digest migration still pass their local ULID directly. */
+  async resolveWireBundleId(bundleId: string): Promise<string> {
+    if (!SHA256_HEX_RE.test(bundleId)) return bundleId;
+    const local = await this.database.db.query.forwardBundle.findFirst({
+      where: and(
+        eq(forwardBundle.sourceBundleId, bundleId),
+        isNull(forwardBundle.sourceDomain),
+      ),
+      columns: { id: true },
+    });
+    if (local) return local.id;
+    const imported = await this.database.db.query.forwardBundle.findFirst({
+      where: eq(forwardBundle.sourceBundleId, bundleId),
+      columns: { id: true },
+    });
+    if (imported) return imported.id;
+    throw new BusinessException(
+      BusinessCode.NOT_FOUND,
+      'forward bundle not found',
+    );
+  }
+
   async getClosureForUser(
     userId: number,
     rootBundleId: string,
   ): Promise<ForwardBundleView> {
+    const localBundleId = await this.resolveWireBundleId(rootBundleId);
     const carriers = await this.database.db
       .select({ threadId: message.threadId, seq: message.seq })
       .from(forwardMessage)
@@ -618,7 +699,7 @@ export class ForwardBundleService {
       )
       .where(
         and(
-          eq(forwardMessage.bundleId, rootBundleId),
+          eq(forwardMessage.bundleId, localBundleId),
           eq(message.isDeleted, false),
         ),
       );
@@ -642,9 +723,36 @@ export class ForwardBundleService {
       );
     }
     return {
-      ...(await this.buildClosure(rootBundleId)),
+      ...(await this.buildClosure(localBundleId)),
       accessContext: carrier,
     };
+  }
+
+  private async loadBundleRows(
+    root: typeof forwardBundle.$inferSelect,
+    directChildIds: readonly string[],
+  ): Promise<Map<string, typeof root>> {
+    const byId = new Map<string, typeof root>([[root.id, root]]);
+    let pending = [...new Set(directChildIds)];
+    while (pending.length > 0) {
+      const rows = await this.database.db.query.forwardBundle.findMany({
+        where: inArray(forwardBundle.id, pending),
+      });
+      if (rows.length === 0) break;
+      const next: string[] = [];
+      for (const row of rows) {
+        if (byId.has(row.id)) continue;
+        byId.set(row.id, row as typeof root);
+        const messages = row.messages as ForwardBundleMessage[];
+        for (const message of messages) {
+          if (message.childBundleId && !byId.has(message.childBundleId)) {
+            next.push(message.childBundleId);
+          }
+        }
+      }
+      pending = [...new Set(next)];
+    }
+    return byId;
   }
 
   async buildClosure(rootBundleId: string): Promise<ForwardWireBundle> {
@@ -666,29 +774,93 @@ export class ForwardBundleService {
         `forward bundle cannot exceed ${FORWARD_MAX_CLOSURE_BUNDLES} children`,
       );
     }
-    const rows = await this.database.db.query.forwardBundle.findMany({
-      where: inArray(forwardBundle.id, childIds),
-    });
-    const byId = new Map(rows.map((row) => [row.id, row]));
-    const projectMessages = (row: typeof root) => {
-      const storedMessages = row.messages as ForwardBundleMessage[];
-      return storedMessages.map((message) => ({
+    const byId = await this.loadBundleRows(root, childIds);
+    const stored = (row: { messages: unknown }): ForwardBundleMessage[] =>
+      (row.messages as ForwardBundleMessage[]).map((message) => ({
         ...message,
-        content: projectForwardContentToWire(
-          message.contentType,
-          message.content,
-        ),
+        // Local database bundles use local ULIDs in FORWARD cards. The card is
+        // rewritten to a content digest while recursively computing the wire
+        // closure; validating it as a wire card before that rewrite would reject
+        // every locally-created bundle.
+        content:
+          message.contentType === ContentType.FORWARD
+            ? JSON.stringify({
+                bundleId: parseForwardCard(message.content).bundleId,
+              })
+            : projectForwardContentToWire(message.contentType, message.content),
       }));
+    const directChildren = (row: { messages: unknown }): string[] =>
+      stored(row).flatMap((message) =>
+        message.childBundleId ? [message.childBundleId] : [],
+      );
+    const digestByLocalId = new Map<string, string>();
+    const states = new Map<string, 'visiting' | 'visited'>();
+    const digestFor = (localId: string): string => {
+      const existing = digestByLocalId.get(localId);
+      if (existing) return existing;
+      if (states.get(localId) === 'visiting')
+        throw this.invalidWire('forward bundle dependency cycle detected');
+      const row = byId.get(localId);
+      if (!row) throw this.invalidWire('forward child bundle is missing');
+      states.set(localId, 'visiting');
+      const messages = stored(row).map((message) =>
+        message.childBundleId
+          ? {
+              ...message,
+              childBundleId: digestFor(message.childBundleId),
+              content: rewriteForwardCardBundleId(
+                message.content,
+                digestFor(message.childBundleId),
+              ),
+            }
+          : message,
+      );
+      const childDigests = directChildren(row).map((id) => digestFor(id));
+      const digest = forwardBundleDigest(
+        messages,
+        childDigests,
+        localId === root.id
+          ? (root.forwardBundleAssets ?? []).map((asset) =>
+              this.assetDocument(asset),
+            )
+          : [],
+      );
+      states.set(localId, 'visited');
+      digestByLocalId.set(localId, digest);
+      return digest;
     };
-    const messages = projectMessages(root);
-    const children = childIds.map((id) => {
+    const rootDigest = digestFor(root.id);
+    const project = (row: { messages: unknown }): ForwardBundleMessage[] =>
+      stored(row).map((message) =>
+        message.childBundleId
+          ? {
+              ...message,
+              childBundleId: digestByLocalId.get(message.childBundleId)!,
+              content: rewriteForwardCardBundleId(
+                message.content,
+                digestByLocalId.get(message.childBundleId)!,
+              ),
+            }
+          : message,
+      );
+    const reachableChildIds: string[] = [];
+    const collectChildren = (localId: string): void => {
+      const row = byId.get(localId);
+      if (!row) throw this.invalidWire('forward child bundle is missing');
+      for (const childId of directChildren(row)) {
+        reachableChildIds.push(childId);
+        collectChildren(childId);
+      }
+    };
+    collectChildren(root.id);
+    const children = reachableChildIds.map((id) => {
       const row = byId.get(id);
       if (!row) throw this.invalidWire('forward child bundle is missing');
-      return { id, messages: projectMessages(row as typeof root) };
+      return { id: digestByLocalId.get(id)!, messages: project(row) };
     });
     return {
-      id: rootBundleId,
-      messages,
+      id: rootDigest,
+      messages: project(root),
       children,
       assets: (root.forwardBundleAssets ?? []).map((asset) =>
         this.assetDocument(asset),
@@ -972,15 +1144,15 @@ export class ForwardBundleService {
       throw this.invalidWire('flat forward counts or assets do not match');
     }
 
-    const depth = this.validateClosureGraph(
-      closure as ForwardWireBundle,
-      (reason) => this.invalidWire(reason),
-    );
-
     // Every runtime check above passed: the wire bundle now satisfies ForwardWireBundle.
     // This is the single untrusted→trusted crossing; everything below rests on the
     // validation, not on the parameter type.
     const wire = closure as ForwardWireBundle;
+    this.validateWireBundleDigests(wire, (reason) => this.invalidWire(reason));
+
+    const depth = this.validateClosureGraph(wire, (reason) =>
+      this.invalidWire(reason),
+    );
 
     const actualMessageCount =
       wire.messages.length +
@@ -1048,14 +1220,25 @@ export class ForwardBundleService {
           sourceBundleId: item.root ? wire.id : null,
         });
       }
-      if (wire.children.length > 0) {
-        await tx.insert(forwardBundleDependency).values(
-          wire.children.map((child, ordinal) => ({
-            parentBundleId: localRootId,
-            childBundleId: idMap.get(child.id)!,
-            ordinal,
-          })),
+      const edges: Array<{
+        parentBundleId: string;
+        childBundleId: string;
+        ordinal: number;
+      }> = [];
+      for (const item of flat) {
+        const parentBundleId = idMap.get(item.remoteId)!;
+        const childIds = item.messages.flatMap((message) =>
+          message.childBundleId ? [message.childBundleId] : [],
         );
+        childIds.forEach((childId, ordinal) => {
+          const localChildId = idMap.get(childId);
+          if (!localChildId)
+            throw this.invalidWire('forward child bundle is missing');
+          edges.push({ parentBundleId, childBundleId: localChildId, ordinal });
+        });
+      }
+      if (edges.length > 0) {
+        await tx.insert(forwardBundleDependency).values(edges);
       }
       if (wire.assets.length > 0) {
         await tx.insert(forwardBundleAsset).values(
@@ -1073,7 +1256,46 @@ export class ForwardBundleService {
     return { localRootBundleId: localRootId, depth };
   }
 
-  /** The flat closure is an index of bundles; message references define its actual tree. */
+  private validateWireBundleDigests(
+    closure: ForwardWireBundle,
+    invalid: (reason: string) => BusinessException,
+  ): void {
+    const bundles = new Map<string, ForwardBundleMessage[]>([
+      [closure.id, closure.messages],
+      ...closure.children.map((child) => [child.id, child.messages] as const),
+    ]);
+    const states = new Map<string, 'visiting' | 'visited'>();
+    const digests = new Map<string, string>();
+    const calculate = (
+      id: string,
+      assets: FederationByteDescriptor[],
+    ): string => {
+      const known = digests.get(id);
+      if (known) return known;
+      if (states.get(id) === 'visiting')
+        throw invalid('forward bundle dependency cycle detected');
+      const messages = bundles.get(id);
+      if (!messages) throw invalid('forward child bundle is missing');
+      states.set(id, 'visiting');
+      const childIds = messages.flatMap((message) =>
+        message.childBundleId ? [message.childBundleId] : [],
+      );
+      for (const childId of childIds) calculate(childId, []);
+      const digest = forwardBundleDigest(messages, childIds, assets);
+      if (!SHA256_HEX_RE.test(id) || digest !== id)
+        throw invalid(
+          'forward bundle digest does not match its canonical body',
+        );
+      states.set(id, 'visited');
+      digests.set(id, digest);
+      return digest;
+    };
+    calculate(closure.id, closure.assets);
+    if (states.size !== bundles.size)
+      throw invalid('forward closure contains unreachable children');
+  }
+
+  /** Flat closure graph validation also enforces the message/depth limits. */
   private validateClosureGraph(
     closure: Pick<ForwardWireBundle, 'id' | 'messages' | 'children'>,
     invalid: (reason: string) => BusinessException,
@@ -1219,7 +1441,6 @@ export class ForwardBundleService {
   }
 
   private async domainForNamespace(namespaceId: number): Promise<string> {
-    if (namespaceId === 0) return process.env.SOMS_DOMAIN ?? 'local';
     const row = await this.database.db.query.identityNamespace.findFirst({
       where: eq(identityNamespace.id, namespaceId),
       columns: { domain: true },
@@ -1368,7 +1589,7 @@ function isFederatedContentType(value: string): value is ContentType {
   );
 }
 
-function isForwardBundleId(value: unknown): value is string {
+function isLocalForwardBundleId(value: unknown): value is string {
   return (
     typeof value === 'string' &&
     value.length > 0 &&
@@ -1376,6 +1597,10 @@ function isForwardBundleId(value: unknown): value is string {
     !value.includes('\0') &&
     !value.includes('/')
   );
+}
+
+function isForwardBundleId(value: unknown): value is string {
+  return typeof value === 'string' && SHA256_HEX_RE.test(value);
 }
 
 function parseForwardCard(content: string): { bundleId: string } {
@@ -1399,7 +1624,10 @@ function parseLocalForwardCard(content: string): {
   if (
     value === null ||
     typeof value !== 'object' ||
-    !isForwardBundleId(value['bundleId']) ||
+    !(
+      isLocalForwardBundleId(value['bundleId']) ||
+      SHA256_HEX_RE.test(value['bundleId'] as string)
+    ) ||
     !Number.isSafeInteger(value['depth']) ||
     (value['depth'] as number) < 1 ||
     (value['depth'] as number) > FORWARD_MAX_DEPTH ||

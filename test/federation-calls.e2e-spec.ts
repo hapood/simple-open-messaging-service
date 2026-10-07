@@ -62,10 +62,10 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       local: appA,
       remote: appB,
       localUserId: (await appA.database.query.account.findFirst({
-        where: and(eq(user.account, 'erin'), eq(user.domain, 'local')),
+        where: and(eq(user.account, 'erin'), eq(user.namespaceId, 0)),
       }))!.id,
       remoteUserId: (await appB.database.query.account.findFirst({
-        where: and(eq(user.account, 'frank'), eq(user.domain, 'local')),
+        where: and(eq(user.account, 'frank'), eq(user.namespaceId, 0)),
       }))!.id,
       localToken: tokenErin,
       remoteToken: tokenFrank,
@@ -383,13 +383,13 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         caller: {
           account: 'erin',
           domain: DOM_A,
-          namespaceId: expect.any(Number),
+          profileNamespaceId: expect.any(Number),
           profileRev: 0,
         },
         callee: {
           account: 'frank',
-          domain: 'local',
-          namespaceId: 0,
+          domain: DOM_B,
+          profileNamespaceId: 0,
           profileRev: 0,
         },
       });

@@ -19,6 +19,7 @@ function target() {
       {} as never,
       { get } as never,
       {} as never,
+      {} as never,
     ),
   };
 }

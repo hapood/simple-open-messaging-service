@@ -3,7 +3,6 @@ import { Raw } from '../common/raw.decorator.js';
 import { Controller, Get } from '@nestjs/common';
 import { SERVER_VERSION } from '../common/version.js';
 import { KeypairService } from './keypair.service.js';
-import { loadFederationConfig } from './federation.config.js';
 import { FEDERATION_PROTOCOL_VERSIONS } from './federation-protocol.js';
 
 /**
@@ -22,8 +21,6 @@ import { FEDERATION_PROTOCOL_VERSIONS } from './federation-protocol.js';
 @Raw()
 @Controller('.well-known')
 export class WellKnownController {
-  private readonly config = loadFederationConfig();
-
   constructor(private readonly keypair: KeypairService) {}
 
   @Get('somfp')

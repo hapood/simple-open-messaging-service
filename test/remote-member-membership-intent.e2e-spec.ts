@@ -8,7 +8,7 @@ import { DatabaseService } from '../src/database/database.service.js';
 import { withBusinessLockCapture } from './business-lock-capture.js';
 import * as tables from '../src/database/schema.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
-import { FederationService } from '../src/federation/federation.service.js';
+import { FederationStateFeedPushService } from '../src/federation/federation-state-feed-push.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
 import { GroupRelationshipMutationService } from '../src/group/membership-intent/shared/group-relationship-mutation.service.js';
 import {
@@ -41,6 +41,7 @@ describe('remote member membership intents on the authoritative group', () => {
   ) {
     return {
       status: 'ACCEPTED' as const,
+      profileNamespaceId: namespaceId,
       profileRev: 3,
       note: 'op-apply',
       requestedAt: Date.now() - 10_000,
@@ -62,7 +63,7 @@ describe('remote member membership intents on the authoritative group', () => {
       database: withBusinessLockCapture(database, businessLocks),
       clientFeed: app.get(ClientStateFeedService),
       peerFeed: app.get(PeerStateFeedService),
-      federation: app.get(FederationService),
+      federation: app.get(FederationStateFeedPushService),
       relationshipMutations: app.get(GroupRelationshipMutationService),
     };
     applier = new RemoteMemberMembershipIntentService(deps);
@@ -123,6 +124,7 @@ describe('remote member membership intents on the authoritative group', () => {
         {
           authorAccount: group!.account,
           authorNamespaceId: 0,
+          profileNamespaceId: 0,
           receiverAccount: memberAccount,
           receiverNamespaceId: namespaceId,
           status: 'ACCEPTED',
@@ -136,6 +138,7 @@ describe('remote member membership intents on the authoritative group', () => {
         {
           authorAccount: memberAccount,
           authorNamespaceId: namespaceId,
+          profileNamespaceId: namespaceId,
           receiverAccount: group!.account,
           receiverNamespaceId: 0,
           status: 'ACCEPTED',
@@ -152,9 +155,13 @@ describe('remote member membership intents on the authoritative group', () => {
         threadId: thread!.id,
         feedId: 1,
         memberAccount,
-        memberDomain: PEER_DOMAIN,
+        profileNamespaceId: namespaceId,
         operation: 'MEMBER_UPSERT',
-        body: { role: 'MEMBER', profileRev: 3 },
+        body: {
+          role: 'MEMBER',
+          profileNamespaceId: namespaceId,
+          profileRev: 3,
+        },
       });
     await database.db.insert(tables.accountThreadState).values({
       accountId: owner.id,
@@ -334,6 +341,7 @@ describe('remote member membership intents on the authoritative group', () => {
     await database.db.insert(tables.relationshipIntent).values({
       authorAccount: fixture.groupAccount,
       authorNamespaceId: 0,
+      profileNamespaceId: 0,
       receiverAccount: fixture.member.account,
       receiverNamespaceId: fixture.member.namespaceId,
       status: 'REQUESTED',

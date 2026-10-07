@@ -281,7 +281,7 @@ function validateItem(
   if (
     !isValidSomfpUserAccount(item.account) ||
     item.account !== normalizeAccount(item.account) ||
-    (item.domain !== 'local' && !isValidSomfpDomain(item.domain))
+    !isValidSomfpDomain(item.domain)
   )
     throw new Error('invalid group-meta member address');
   if (item.operation === 'MEMBER_DEPART') {
@@ -292,8 +292,7 @@ function validateItem(
     if (
       !Object.values(GroupRole).includes(item.body.role as GroupRole) ||
       !isProfileRev(item.body.profileRev) ||
-      !isProfileNamespaceId(item.body.namespaceId) ||
-      (item.domain === 'local' && item.body.namespaceId !== 0)
+      !isProfileNamespaceId(item.body.namespaceId)
     )
       throw new Error('invalid group-meta member body');
     return {
@@ -311,8 +310,7 @@ function validateItem(
   if (
     !Object.values(GroupRole).includes(item.body.role as GroupRole) ||
     !isProfileRev(item.body.profileRev) ||
-    !isProfileNamespaceId(item.body.namespaceId) ||
-    (item.domain === 'local' && item.body.namespaceId !== 0)
+    !isProfileNamespaceId(item.body.namespaceId)
   )
     throw new Error('invalid group-meta member body');
   return {

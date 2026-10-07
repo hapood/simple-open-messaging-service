@@ -89,9 +89,8 @@ async function namespaceDomainReaderInTx(
   tx: DatabaseTransaction,
   namespaceIds: readonly number[],
 ): Promise<(namespaceId: number) => string> {
-  const foreign = [...new Set(namespaceIds)].filter((id) => id !== 0);
-  const domains = new Map<number, string>([[0, 'local']]);
-  for (const id of foreign) {
+  const domains = new Map<number, string>();
+  for (const id of [...new Set(namespaceIds)]) {
     const ns = (
       await tx.execute<{ domain: string }>(
         sql`SELECT domain FROM "IdentityNamespace" WHERE id = ${id} LIMIT 1`,

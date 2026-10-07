@@ -119,9 +119,7 @@ export function mirrorIntentCompactionKey(input: {
     'RELATIONSHIP_INTENT',
     input.groupNamespaceId,
     input.groupAccount,
-    input.groupDomain,
     input.memberAccount,
-    'local',
   ]);
 }
 

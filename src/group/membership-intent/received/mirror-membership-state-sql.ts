@@ -59,7 +59,7 @@ export function mirrorMembershipStateSql(input: {
       (SELECT note FROM intents WHERE "authorAccount" = ${input.memberAccount}) AS "memberNote",
       (SELECT "profileRev" FROM intents WHERE "authorAccount" = ${input.memberAccount}) AS "memberProfileRev",
       (SELECT id FROM "Account"
-        WHERE account = ${input.memberAccount} AND domain = 'local' AND "namespaceId" = 0
+        WHERE account = ${input.memberAccount} AND "namespaceId" = 0
         LIMIT 1) AS "localMemberId"
     FROM "MessageThread" t
     WHERE t.id = ${input.threadId}

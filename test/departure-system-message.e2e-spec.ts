@@ -1,4 +1,5 @@
 import { ReceivedUserIntentService } from '../src/user/p2p-intent/received/received-user-intent.service.js';
+import { localIdentityDomain } from './support/local-domain.js';
 import { UserIntentService } from '../src/user/p2p-intent/authored/user-intent.service.js';
 import { FederationThreadQueryDenialService } from '../src/federation/federation-thread-query-denial.service.js';
 import { FederationThreadSourceInactiveError } from '../src/federation/federation-errors.js';
@@ -19,6 +20,7 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { eq, and, asc, sql } from 'drizzle-orm';
 import { AppModule } from '../src/app.module.js';
+import { GroupRole } from '../src/database/enums.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   groupMeta,
@@ -200,8 +202,16 @@ describe('departure system message paths', () => {
     };
     const sourceMembers = [
       { account: `remote-owner-${++serial}`, domain: peerDomain, namespaceId },
-      { account: member.account, domain: 'local', namespaceId: 0 },
-      { account: observer.account, domain: 'local', namespaceId: 0 },
+      {
+        account: member.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
+      {
+        account: observer.account,
+        domain: localIdentityDomain(),
+        namespaceId: 0,
+      },
       { account: `remote-member-${++serial}`, domain: peerDomain, namespaceId },
     ];
     await database.db.insert(groupMetaMemberFeed).values(
@@ -209,9 +219,13 @@ describe('departure system message paths', () => {
         threadId: parent.id,
         feedId: index + 2,
         memberAccount: row.account,
-        memberDomain: row.domain,
+        profileNamespaceId: row.namespaceId,
         operation: 'MEMBER_UPSERT' as const,
-        body: { role: index === 0 ? 'OWNER' : 'MEMBER', profileRev: 1 },
+        body: {
+          role: index === 0 ? 'OWNER' : 'MEMBER',
+          profileNamespaceId: row.namespaceId,
+          profileRev: 1,
+        },
       })),
     );
     await database.db.insert(groupMeta).values({
@@ -252,6 +266,7 @@ describe('departure system message paths', () => {
             feedId: '20',
             body: {
               status: 'REVOKED',
+              namespaceId: 0,
               note: '',
               profileRev: 0,
               requestedAt: null,
@@ -278,7 +293,11 @@ describe('departure system message paths', () => {
               managerUserId: h.owner.id,
               decision: 'REVOKED',
               scope: 'MEMBER',
-              target: { account: h.member.account, domain: 'local' },
+              target: {
+                account: h.member.account,
+                domain: localIdentityDomain(),
+                namespaceId: 0,
+              },
             })
           : memberIntents.execute({
               threadId: h.threadId,
@@ -316,7 +335,7 @@ describe('departure system message paths', () => {
           type: 'GROUP',
           address: {
             account: thread!.groupAccount!,
-            domain: thread!.groupDomain!,
+            profileNamespaceId: 0,
           },
         },
         taskType: DurableTaskType.DISBAND_GROUP,
@@ -480,11 +499,7 @@ describe('departure system message paths', () => {
       // allocator lock is part of that transaction.
       expect(
         peerLocks.mock.calls.some(([, targets]) =>
-          targets.some(
-            (target) =>
-              target.peerDomain === h.peerDomain &&
-              target.namespaceId === h.namespaceId,
-          ),
+          targets.some((target) => target.namespaceId === h.namespaceId),
         ),
       ).toBe(true);
     } finally {
@@ -521,13 +536,16 @@ describe('departure system message paths', () => {
           group: {
             account: h.parent.account,
             domain: h.peerDomain,
-            namespaceId: h.namespaceId,
+            publisherNamespaceId: h.namespaceId,
           },
           item: {
             feedId: 6,
             operation: 'MEMBER_DEPART',
             account: h.member.account,
-            domain: 'local',
+            domain: localIdentityDomain(),
+            role: GroupRole.MEMBER,
+            profileNamespaceId: 0,
+            profileRev: 1,
           },
           through: 6,
           reachedBoundary: false,
@@ -600,7 +618,11 @@ describe('departure system message paths', () => {
       const userIntents = app.get(UserIntentService);
       const peerIsLocal = path === 'local';
       const localToPeerTarget = peerIsLocal
-        ? { account: (peer as { account: string }).account, domain: 'local' }
+        ? {
+            account: (peer as { account: string }).account,
+            domain: localIdentityDomain(),
+            namespaceId: 0,
+          }
         : {
             account: (peer as { account: string }).account,
             domain: peerDomain,
@@ -622,7 +644,11 @@ describe('departure system message paths', () => {
             {
               userId: peerTarget as number,
               decision: 'ACCEPTED',
-              target: { account: local.account, domain: 'local' },
+              target: {
+                account: local.account,
+                domain: localIdentityDomain(),
+                namespaceId: 0,
+              },
             },
             [],
           );
@@ -638,6 +664,8 @@ describe('departure system message paths', () => {
               },
               body: {
                 status: 'ACCEPTED',
+                profileNamespaceId: (peer as { namespaceId: number })
+                  .namespaceId,
                 profileRev: 0,
                 note: '',
                 requestedAt: Date.now(),
@@ -686,6 +714,8 @@ describe('departure system message paths', () => {
               },
               body: {
                 status: 'REVOKED',
+                profileNamespaceId: (peer as { namespaceId: number })
+                  .namespaceId,
                 profileRev: 0,
                 note: '',
                 requestedAt: null,
@@ -699,7 +729,6 @@ describe('departure system message paths', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         creatorAccount: '$system',
-        creatorDomain: 'local',
         profileNamespaceId: 0,
         profileRev: 0,
       });
@@ -710,14 +739,12 @@ describe('departure system message paths', () => {
           path === 'local' || path === 'denied'
             ? {
                 account: local.account,
-                domain: 'local',
-                namespaceId: 0,
+                domain: localIdentityDomain(),
                 profileRev: expect.any(Number),
               }
             : {
                 account: peer.account,
                 domain: peerDomain,
-                namespaceId: 'namespaceId' in peer ? peer.namespaceId : 0,
                 profileRev: 0,
               },
       });
@@ -725,13 +752,11 @@ describe('departure system message paths', () => {
         expect.arrayContaining([
           expect.objectContaining({
             account: local.account,
-            domain: 'local',
-            namespaceId: 0,
+            domain: localIdentityDomain(),
           }),
           expect.objectContaining({
             account: peer.account,
-            domain: peerIsLocal ? 'local' : peerDomain,
-            namespaceId: 'namespaceId' in peer ? peer.namespaceId : 0,
+            domain: peerIsLocal ? localIdentityDomain() : peerDomain,
           }),
         ]),
       );

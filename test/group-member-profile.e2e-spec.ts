@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { withMessageDigest } from './support/message-fixture.js';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
@@ -36,8 +37,8 @@ describe('exact group-member profile disclosure', () => {
   const lookup = (rev: number, domain = signerDomain, namespace = signerNs) =>
     service.getAuthorizedGroupMemberProfile(
       groupName,
-      memberDomain,
       memberAccount,
+      memberNs,
       rev,
       domain,
       namespace,
@@ -72,9 +73,13 @@ describe('exact group-member profile disclosure', () => {
       threadId,
       feedId: 1,
       memberAccount,
-      memberDomain,
+      profileNamespaceId: memberNs,
       operation: 'MEMBER_UPSERT',
-      body: { role: 'MEMBER', profileRev: 4 },
+      body: {
+        role: 'MEMBER',
+        profileNamespaceId: memberNs,
+        profileRev: 4,
+      },
       updatedAt: new Date(),
     });
     await database.db.insert(profileTable).values([
@@ -128,6 +133,7 @@ describe('exact group-member profile disclosure', () => {
     await database.db.insert(relationshipIntent).values({
       authorAccount: groupName,
       authorNamespaceId: 0,
+      profileNamespaceId: 0,
       receiverAccount: signerAccount,
       receiverNamespaceId: signerNs,
       status: 'ACCEPTED',
@@ -183,7 +189,7 @@ describe('exact group-member profile disclosure', () => {
       .where(
         and(
           eq(profileTable.account, memberAccount),
-          eq(profileTable.domain, memberDomain),
+          eq(profileTable.profileNamespaceId, memberNs),
         ),
       );
     await database.onApplicationShutdown();
@@ -192,7 +198,7 @@ describe('exact group-member profile disclosure', () => {
   it('serves exactly the current member reference to a current group audience', async () => {
     expect(await lookup(4)).toMatchObject({
       account: memberAccount,
-      domain: memberDomain,
+      namespaceId: memberNs,
       profileRev: 4,
       displayName: 'Old snapshot',
     });
@@ -202,17 +208,19 @@ describe('exact group-member profile disclosure', () => {
   });
 
   it('serves a distinct message revision only inside the published interval', async () => {
-    await database.db.insert(message).values({
-      threadId,
-      seq: 1,
-      profileRev: 7,
-      creatorAccount: memberAccount,
-      creatorDomain: memberDomain,
-      profileNamespaceId: memberNs,
-      contentType: 'PURE_TEXT',
-      content: JSON.stringify({ text: 'hello' }),
-      updatedAt: new Date(),
-    });
+    await database.db.insert(message).values(
+      withMessageDigest({
+        threadId,
+        seq: 1,
+        profileRev: 7,
+        creatorAccount: memberAccount,
+
+        profileNamespaceId: memberNs,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'hello' }),
+        updatedAt: new Date(),
+      }),
+    );
     expect(await lookup(7)).toBeNull();
     await database.db
       .update(peerStateFeed)
@@ -254,7 +262,11 @@ describe('exact group-member profile disclosure', () => {
       .set({
         feedId: 2,
         operation: 'MEMBER_DEPART',
-        body: {},
+        body: {
+          role: 'MEMBER',
+          namespaceId: memberNs,
+          profileRev: 4,
+        },
       })
       .where(eq(groupMetaMemberFeed.threadId, threadId));
     await database.db

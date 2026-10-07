@@ -67,7 +67,6 @@ describe('readCurrentGroupMemberInTx', () => {
     await expect(
       readCurrentGroupMemberInTx({ execute } as never, 8, {
         account: 'alice',
-        domain: 'local',
         namespaceId: 0,
       }),
     ).resolves.toBe(row);
@@ -80,7 +79,6 @@ describe('readCurrentGroupMemberInTx', () => {
     await expect(
       readCurrentGroupMemberInTx({ execute } as never, 8, {
         account: 'alice',
-        domain: 'local',
         namespaceId: 0,
       }),
     ).resolves.toBeUndefined();
@@ -103,7 +101,7 @@ describe('readCurrentGroupMemberByAddressInTx', () => {
     await expect(
       readCurrentGroupMemberByAddressInTx({ execute } as never, 8, {
         account: 'member',
-        domain: 'peer.example',
+        namespaceId: 7,
       }),
     ).resolves.toBe(row);
   });

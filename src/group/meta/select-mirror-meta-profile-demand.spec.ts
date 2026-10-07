@@ -41,37 +41,33 @@ describe('selectMirrorMetaProfileDemand', () => {
     { operation: 'MEMBER_DEPART' as const, profileRev: 3 },
     { operation: 'MEMBER_UPSERT' as const, profileRev: 0 },
     { operation: 'GROUP_PROFILE' as const, profileRev: 3 },
-  ])(
-    'does not create work for $operation',
-    ({ operation, profileRev, domain }) => {
-      const item =
-        operation === 'MEMBER_DEPART'
+  ])('does not create work for $operation', ({ operation, profileRev }) => {
+    const item =
+      operation === 'MEMBER_DEPART'
+        ? {
+            feedId: 43,
+            operation,
+            account: member.account,
+            domain: member.domain,
+            role: member.role,
+            profileNamespaceId: member.profileNamespaceId,
+            profileRev: profileRev!,
+          }
+        : operation === 'GROUP_PROFILE'
           ? {
               feedId: 43,
               operation,
-              account: member.account,
-              domain: member.domain,
-              role: member.role,
-              profileNamespaceId: member.profileNamespaceId,
+              profileNamespaceId: 0,
               profileRev: profileRev!,
             }
-          : operation === 'GROUP_PROFILE'
-            ? {
-                feedId: 43,
-                operation,
-                profileNamespaceId: 0,
-                profileRev: profileRev!,
-              }
-            : {
-                ...member,
-                feedId: 43,
-                operation,
-                profileRev: profileRev!,
-                ...(domain ? { domain } : {}),
-              };
-      expect(selectMirrorMetaProfileDemand(group, item)).toBeNull();
-    },
-  );
+          : {
+              ...member,
+              feedId: 43,
+              operation,
+              profileRev: profileRev!,
+            };
+    expect(selectMirrorMetaProfileDemand(group, item)).toBeNull();
+  });
 
   it('preserves a foreign domain and namespace coordinate', () => {
     const canonical = normalizeMirrorMetaReplicatedItem(group, {

@@ -4,8 +4,8 @@ type FederatedContentType = Exclude<ContentType, 'SYSTEM'>;
 
 export interface FederationAuthorAddress {
   account: string;
-  /** Profile-subject namespace in the authenticated publisher's namespace space. */
-  namespaceId: number;
+  /** The configured domain for a publisher-hosted subject; otherwise the retained home domain. */
+  domain: string;
 }
 
 export interface FederationByteDescriptor {
@@ -19,4 +19,6 @@ export interface FederatedMessagePayload<
 > {
   contentType: TContentType;
   content: string;
+  /** Payload digest of the quoted message, stable across federation hops. */
+  quoteDigest?: string;
 }

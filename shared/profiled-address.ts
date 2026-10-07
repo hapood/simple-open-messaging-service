@@ -25,9 +25,8 @@ export function isProfiledAddress(value: unknown): value is ProfiledAddress {
     (candidate['profileNamespaceId'] as number) >= 0 &&
     Number.isSafeInteger(candidate['profileRev']) &&
     (candidate['profileRev'] as number) >= 0 &&
-    (candidate['domain'] !== 'local' || candidate['profileNamespaceId'] === 0) &&
     (candidate['account'] !== '$system' ||
-      (candidate['domain'] === 'local' && candidate['profileRev'] === 0))
+      (candidate['profileNamespaceId'] === 0 && candidate['profileRev'] === 0))
   );
 }
 

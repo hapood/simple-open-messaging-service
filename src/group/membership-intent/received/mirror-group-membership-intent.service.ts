@@ -168,7 +168,6 @@ export class MirrorGroupMembershipIntentService {
       .where(
         and(
           eq(tables.account.account, memberAccount),
-          eq(tables.account.domain, 'local'),
           eq(tables.account.namespaceId, 0),
           eq(tables.account.availability, 'AVAILABLE'),
         ),
@@ -210,8 +209,8 @@ export class MirrorGroupMembershipIntentService {
       {
         kind: 'GROUP_MEMBER',
         addresses: [
-          completeBusinessAddress(group.account, group.domain),
-          completeBusinessAddress(memberAccount, 'local'),
+          completeBusinessAddress(group.account, group.namespaceId),
+          completeBusinessAddress(memberAccount, 0),
         ],
       },
     ]);

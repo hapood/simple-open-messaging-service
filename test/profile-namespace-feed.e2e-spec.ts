@@ -1,11 +1,9 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
-import {
-  identityNamespace,
-  profileNamespaceInfo,
-} from '../src/database/schema.js';
+import { identityNamespace, profileNamespace } from '../src/database/schema.js';
 import { ProfileNamespaceFeedService } from '../src/federation/profile-namespace-feed.service.js';
+import { ProfileNamespaceChangeStore } from '../src/federation/profile-namespace-change-store.service.js';
 import { ProfileNamespaceFeedConsumerService } from '../src/federation/profile-namespace-feed-consumer.service.js';
 
 /**
@@ -31,21 +29,23 @@ describe('profile namespace feed convergence', () => {
 
   beforeAll(async () => {
     database = new DatabaseService();
-    feed = new ProfileNamespaceFeedService(database, {
-      getRootPublicKeyB64: () => Buffer.alloc(32, 1).toString('base64'),
-    } as never);
+    feed = new ProfileNamespaceFeedService(
+      database,
+      {
+        getRootPublicKeyB64: () => Buffer.alloc(32, 1).toString('base64'),
+      } as never,
+      new ProfileNamespaceChangeStore(database),
+    );
     consumer = new ProfileNamespaceFeedConsumerService(feed);
 
     const [publisher] = await database.db
       .insert(identityNamespace)
       .values({
         domain: PUBLISHER_DOMAIN,
-        rootKeyFingerprint: `sha256:${PUBLISHER_DOMAIN}`,
         rootPublicKey: Buffer.alloc(32, 9).toString('base64'),
         identityPinnedAt: new Date(),
         active: true,
         trustLevel: 'available',
-        recognizesPeer: true,
         localServiceAvailable: true,
         peerAcceptanceConfirmed: true,
         remoteServiceReachable: true,
@@ -55,7 +55,7 @@ describe('profile namespace feed convergence', () => {
 
     // Seed a cached third-party binding that is current (not expired) so the
     // consumer can expire it.
-    await database.db.insert(profileNamespaceInfo).values({
+    await database.db.insert(profileNamespace).values({
       publisherNamespaceId: publisherId,
       profileNamespaceId: 5,
       domain: 'third-party.test',
@@ -80,8 +80,8 @@ describe('profile namespace feed convergence', () => {
 
       const [cacheRow] = await database.db
         .select()
-        .from(profileNamespaceInfo)
-        .where(eq(profileNamespaceInfo.profileNamespaceId, 5));
+        .from(profileNamespace)
+        .where(eq(profileNamespace.profileNamespaceId, 5));
       expect(cacheRow.expired).toBe(true);
       // The consumer does not touch updateFeedId; it only flips expired. The
       // refresh step (out of scope here) would advance updateFeedId later.

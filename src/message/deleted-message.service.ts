@@ -1,5 +1,16 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { and, asc, desc, eq, gt, gte, lt, lte, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  isNotNull,
+  lt,
+  lte,
+  sql,
+} from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
@@ -8,7 +19,6 @@ import { ContentType, MessageDeleteType } from '../database/enums.js';
 import {
   deletedMessage,
   federatedMessageTombstone,
-  federationMessageReceipt,
   fileSyncProgress,
   message,
   messageThread,
@@ -371,6 +381,7 @@ export class DeletedMessageService {
       authority: 'P2P_HOME' | 'GROUP_ORIGIN';
       expectedFederationVersion: number;
       threadLock?: ThreadContentLock;
+      resolvedMessage?: typeof message.$inferSelect;
     },
   ): Promise<void> {
     const threadLock = await DeletedMessageService.lockFederatedIdentity(
@@ -416,6 +427,7 @@ export class DeletedMessageService {
       authority: params.authority,
       expectedFederationVersion: params.expectedFederationVersion,
       threadLock,
+      resolvedMessage: params.resolvedMessage,
     });
   }
 
@@ -432,6 +444,7 @@ export class DeletedMessageService {
       authority: 'P2P_HOME' | 'GROUP_ORIGIN' | 'GROUP_MEMBER';
       expectedFederationVersion: number;
       threadLock?: ThreadContentLock;
+      resolvedMessage?: typeof message.$inferSelect;
     },
   ) {
     await this.assertFederatedResponseWritable(
@@ -454,31 +467,50 @@ export class DeletedMessageService {
       eq(message.publisherNamespaceId, params.publisherNamespaceId),
       eq(message.originSeq, params.messageSeq),
     );
-    let target = await tx.query.message.findFirst({
-      where: peerCoordinate,
-      columns: {
-        seq: true,
-        creatorAccount: true,
-        profileNamespaceId: true,
-        publisherNamespaceId: true,
-        contentType: true,
-        isDeleted: true,
-        localState: true,
-      },
-    });
-    // The group origin can also address a locally authored submission by its
-    // accepted sequence. A receipt is the durable mapping when the local row
-    // has not yet been updated with the origin's coordinates.
+    let target = params.resolvedMessage
+      ? {
+          seq: params.resolvedMessage.seq,
+          creatorAccount: params.resolvedMessage.creatorAccount,
+          profileNamespaceId: params.resolvedMessage.profileNamespaceId,
+          publisherNamespaceId: params.resolvedMessage.publisherNamespaceId,
+          contentType: params.resolvedMessage.contentType,
+          isDeleted: params.resolvedMessage.isDeleted,
+          localState: params.resolvedMessage.localState,
+        }
+      : await tx.query.message.findFirst({
+          where: peerCoordinate,
+          columns: {
+            seq: true,
+            creatorAccount: true,
+            profileNamespaceId: true,
+            publisherNamespaceId: true,
+            contentType: true,
+            isDeleted: true,
+            localState: true,
+          },
+        });
     if (!target && params.authority !== 'GROUP_MEMBER') {
-      const receipt = await tx.query.federationMessageReceipt.findFirst({
+      // A locally authored submission carries the peer-assigned coordinate directly on its
+      // row once the peer's processing receipt confirmed it. Only a confirmed row (with the
+      // acceptance time) matches; an unconfirmed local row merely mirrors its own seq.
+      const confirmedLocal = await tx.query.message.findFirst({
         where: and(
-          eq(federationMessageReceipt.threadId, params.threadId),
-          eq(federationMessageReceipt.namespaceId, params.publisherNamespaceId),
-          eq(federationMessageReceipt.peerSeq, params.messageSeq),
+          eq(message.threadId, params.threadId),
+          eq(message.publisherNamespaceId, 0),
+          eq(message.originSeq, params.messageSeq),
+          isNotNull(message.originServerTime),
         ),
-        columns: { messageId: true },
+        columns: {
+          seq: true,
+          creatorAccount: true,
+          profileNamespaceId: true,
+          publisherNamespaceId: true,
+          contentType: true,
+          isDeleted: true,
+          localState: true,
+        },
       });
-      if (receipt && params.authority === 'P2P_HOME') {
+      if (confirmedLocal && params.authority === 'P2P_HOME') {
         // A peer-assigned P2P sequence for our own submission is not a
         // deletion authority, even when the matching peer copy is absent.
         await tx
@@ -495,23 +527,7 @@ export class DeletedMessageService {
           );
         return null;
       }
-      if (receipt) {
-        target = await tx.query.message.findFirst({
-          where: and(
-            eq(message.id, receipt.messageId),
-            eq(message.threadId, params.threadId),
-          ),
-          columns: {
-            seq: true,
-            creatorAccount: true,
-            profileNamespaceId: true,
-            publisherNamespaceId: true,
-            contentType: true,
-            isDeleted: true,
-            localState: true,
-          },
-        });
-      }
+      target = confirmedLocal;
     }
     if (
       target &&
@@ -526,7 +542,7 @@ export class DeletedMessageService {
     if (
       target &&
       params.authority === 'GROUP_MEMBER' &&
-      target.profileNamespaceId !== params.publisherNamespaceId
+      target.publisherNamespaceId !== params.publisherNamespaceId
     )
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
@@ -550,7 +566,7 @@ export class DeletedMessageService {
     // An earlier pending fact wins over later, differently typed tombstones.
     const effectiveType = pending?.type ?? params.type;
     const ignored =
-      target?.profileNamespaceId === 0 &&
+      target?.publisherNamespaceId === 0 &&
       params.authority === 'GROUP_ORIGIN' &&
       effectiveType === MessageDeleteType.USER_RETRACTION;
 

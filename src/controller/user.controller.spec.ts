@@ -23,6 +23,8 @@ function setup() {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
+    {} as never,
     clientStateFeed as never,
     {} as never,
     profileNamespaceFeed as never,
@@ -49,12 +51,20 @@ describe('UserController.resolveUser', () => {
         updatedAt: new Date(),
       }),
     };
+    const keypairs = {
+      localAddress: vi.fn((account: string) => ({
+        account,
+        domain: 'local.example',
+      })),
+    };
     const controller = new UserController(
       {} as never,
       {} as never,
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
+      keypairs as never,
       {} as never,
       {} as never,
       {} as never,
@@ -74,7 +84,7 @@ describe('UserController.resolveUser', () => {
       name: 'Group',
       bio: 'Hello',
       isGroup: true,
-      domain: 'local',
+      domain: 'local.example',
     });
     expect(groups.findPublicLocalGroupByAccount).toHaveBeenCalledWith('!group');
   });
@@ -138,10 +148,18 @@ describe('UserController.queryStateFeed', () => {
 
 describe('UserController.resolveFederatedUserStream', () => {
   it('returns a transient federated group card from the peer account profile', async () => {
-    const federationService = {
-      hasCompletePeerRecognition: vi.fn().mockResolvedValue(true),
-      checkPeerHealth: vi.fn().mockResolvedValue('available'),
-      checkPeerOutboundReady: vi.fn().mockResolvedValue(undefined),
+    const keypairs = {
+      localAddress: vi.fn((account: string) => ({
+        account,
+        domain: 'local.example',
+      })),
+    };
+    const peerLifecycle = {
+      hasCompleteRecognition: vi.fn().mockResolvedValue(true),
+      checkHealth: vi.fn().mockResolvedValue('available'),
+      checkOutboundReady: vi.fn().mockResolvedValue(undefined),
+    };
+    const profiles = {
       fetchRemoteAccount: vi.fn().mockResolvedValue({
         account: '!group',
         domain: 'peer.example',
@@ -158,7 +176,10 @@ describe('UserController.resolveFederatedUserStream', () => {
       {} as never,
       {} as never,
       {} as never,
-      federationService as never,
+      keypairs as never,
+      peerLifecycle as never,
+      profiles as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -175,7 +196,7 @@ describe('UserController.resolveFederatedUserStream', () => {
         })
         .pipe(toArray()),
     );
-    expect(federationService.fetchRemoteAccount).toHaveBeenCalledWith(
+    expect(profiles.fetchRemoteAccount).toHaveBeenCalledWith(
       {
         account: '!group',
         domain: 'peer.example',
@@ -191,15 +212,23 @@ describe('UserController.resolveFederatedUserStream', () => {
 
   it('completes explicit recognition and Health before fetching a profile', async () => {
     const calls: string[] = [];
-    const federationService = {
-      hasCompletePeerRecognition: vi.fn().mockResolvedValue(false),
-      checkPeerOutboundReady: vi.fn(async () => {
+    const keypairs = {
+      localAddress: vi.fn((account: string) => ({
+        account,
+        domain: 'local.example',
+      })),
+    };
+    const peerLifecycle = {
+      hasCompleteRecognition: vi.fn().mockResolvedValue(false),
+      checkOutboundReady: vi.fn(async () => {
         calls.push('directions');
       }),
-      checkPeerHealth: vi.fn(async () => {
+      checkHealth: vi.fn(async () => {
         calls.push('health');
         return 'degraded';
       }),
+    };
+    const profiles = {
       fetchRemoteAccount: vi.fn(async () => {
         calls.push('profile');
         return {
@@ -230,8 +259,11 @@ describe('UserController.resolveFederatedUserStream', () => {
       {} as never,
       {} as never,
       {} as never,
-      federationService as never,
+      keypairs as never,
+      peerLifecycle as never,
+      profiles as never,
       federationRecognition as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -279,8 +311,14 @@ describe('UserController.resolveFederatedUserStream', () => {
           }),
       ),
     };
-    const federationService = {
-      hasCompletePeerRecognition: vi.fn().mockResolvedValue(false),
+    const keypairs = {
+      localAddress: vi.fn((account: string) => ({
+        account,
+        domain: 'local.example',
+      })),
+    };
+    const peerLifecycle = {
+      hasCompleteRecognition: vi.fn().mockResolvedValue(false),
     };
     const controller = new UserController(
       {} as never,
@@ -289,8 +327,11 @@ describe('UserController.resolveFederatedUserStream', () => {
       {} as never,
       {} as never,
       {} as never,
-      federationService as never,
+      keypairs as never,
+      peerLifecycle as never,
+      {} as never,
       federationRecognition as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -314,10 +355,18 @@ describe('UserController.resolveFederatedUserStream', () => {
   });
 
   it('uses a VOUCH possession challenge when namespace coordinates are provided', async () => {
-    const federationService = {
-      hasCompletePeerRecognition: vi.fn().mockResolvedValue(true),
-      checkPeerHealth: vi.fn().mockResolvedValue('available'),
-      checkPeerOutboundReady: vi.fn().mockResolvedValue(undefined),
+    const keypairs = {
+      localAddress: vi.fn((account: string) => ({
+        account,
+        domain: 'local.example',
+      })),
+    };
+    const peerLifecycle = {
+      hasCompleteRecognition: vi.fn().mockResolvedValue(true),
+      checkHealth: vi.fn().mockResolvedValue('available'),
+      checkOutboundReady: vi.fn().mockResolvedValue(undefined),
+    };
+    const profiles = {
       fetchRemoteAccount: vi.fn().mockResolvedValue({
         account: 'alice',
         domain: 'peer.example',
@@ -334,7 +383,10 @@ describe('UserController.resolveFederatedUserStream', () => {
       {} as never,
       {} as never,
       {} as never,
-      federationService as never,
+      keypairs as never,
+      peerLifecycle as never,
+      profiles as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -353,7 +405,7 @@ describe('UserController.resolveFederatedUserStream', () => {
         })
         .pipe(toArray()),
     );
-    expect(federationService.fetchRemoteAccount).toHaveBeenCalledWith(
+    expect(profiles.fetchRemoteAccount).toHaveBeenCalledWith(
       { account: 'alice', domain: 'peer.example' },
       { kind: 'VOUCH', publisherNamespaceId: 12, profileNamespaceId: 5 },
     );
@@ -363,10 +415,18 @@ describe('UserController.resolveFederatedUserStream', () => {
   });
 
   it('falls back to PIN when only one namespace coordinate is provided', async () => {
-    const federationService = {
-      hasCompletePeerRecognition: vi.fn().mockResolvedValue(true),
-      checkPeerHealth: vi.fn().mockResolvedValue('available'),
-      checkPeerOutboundReady: vi.fn().mockResolvedValue(undefined),
+    const keypairs = {
+      localAddress: vi.fn((account: string) => ({
+        account,
+        domain: 'local.example',
+      })),
+    };
+    const peerLifecycle = {
+      hasCompleteRecognition: vi.fn().mockResolvedValue(true),
+      checkHealth: vi.fn().mockResolvedValue('available'),
+      checkOutboundReady: vi.fn().mockResolvedValue(undefined),
+    };
+    const profiles = {
       fetchRemoteAccount: vi.fn().mockResolvedValue({
         account: 'alice',
         domain: 'peer.example',
@@ -383,7 +443,10 @@ describe('UserController.resolveFederatedUserStream', () => {
       {} as never,
       {} as never,
       {} as never,
-      federationService as never,
+      keypairs as never,
+      peerLifecycle as never,
+      profiles as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -401,17 +464,25 @@ describe('UserController.resolveFederatedUserStream', () => {
         })
         .pipe(toArray()),
     );
-    expect(federationService.fetchRemoteAccount).toHaveBeenCalledWith(
+    expect(profiles.fetchRemoteAccount).toHaveBeenCalledWith(
       { account: 'alice', domain: 'peer.example' },
       { kind: 'PIN' },
     );
   });
 
   it('reports IDENTITY_LOST when a VOUCH challenge is uncertifiable', async () => {
-    const federationService = {
-      hasCompletePeerRecognition: vi.fn().mockResolvedValue(true),
-      checkPeerHealth: vi.fn().mockResolvedValue('available'),
-      checkPeerOutboundReady: vi.fn().mockResolvedValue(undefined),
+    const keypairs = {
+      localAddress: vi.fn((account: string) => ({
+        account,
+        domain: 'local.example',
+      })),
+    };
+    const peerLifecycle = {
+      hasCompleteRecognition: vi.fn().mockResolvedValue(true),
+      checkHealth: vi.fn().mockResolvedValue('available'),
+      checkOutboundReady: vi.fn().mockResolvedValue(undefined),
+    };
+    const profiles = {
       fetchRemoteAccount: vi
         .fn()
         .mockRejectedValue(
@@ -428,7 +499,10 @@ describe('UserController.resolveFederatedUserStream', () => {
       {} as never,
       {} as never,
       {} as never,
-      federationService as never,
+      keypairs as never,
+      peerLifecycle as never,
+      profiles as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -447,7 +521,7 @@ describe('UserController.resolveFederatedUserStream', () => {
         })
         .pipe(toArray()),
     );
-    expect(federationService.fetchRemoteAccount).toHaveBeenCalledWith(
+    expect(profiles.fetchRemoteAccount).toHaveBeenCalledWith(
       { account: 'alice', domain: 'peer.example' },
       { kind: 'VOUCH', publisherNamespaceId: 12, profileNamespaceId: 5 },
     );

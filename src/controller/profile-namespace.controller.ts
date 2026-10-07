@@ -3,22 +3,25 @@ import { ApiBody, ApiOkResponse } from '@nestjs/swagger';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import {
-  ProfileNamespaceInfoService,
+  ProfileNamespaceService,
   type ProfileNamespacePair,
-} from '../federation/profile-namespace-info.service.js';
+} from '../federation/profile-namespace.service.js';
 import { ProfileNamespaceRefreshService } from '../federation/profile-namespace-refresh.service.js';
 
 interface ProfileNamespaceResolveDto {
-  pairs?: unknown;
+  publisherNamespaceId?: unknown;
+  profileNamespaceId?: unknown;
 }
 
-/** Client-side namespace-bindings resolution. Batched POST: message lists
- *  demand many (publisher, nsid) pairs at once, and the server needs the
- *  publisher id to know whose namespace space each nsid lives in. */
+/** Client-side namespace-bindings resolution. Single-pair POST: the client
+ *  demands one (publisher, nsid) pair at a time, mirroring profile
+ *  resolution. The server answers READY (with the binding, possibly expired)
+ *  or PENDING (a tomb was planted; the client waits for a wake with a 30s
+ *  re-request timeout). */
 @Controller('profile-namespaces')
 export class ProfileNamespaceController {
   constructor(
-    private readonly namespaceInfo: ProfileNamespaceInfoService,
+    private readonly namespaceInfo: ProfileNamespaceService,
     private readonly refresh: ProfileNamespaceRefreshService,
   ) {}
 
@@ -27,58 +30,48 @@ export class ProfileNamespaceController {
   @ApiBody({
     schema: {
       type: 'object',
-      required: ['pairs'],
+      required: ['publisherNamespaceId', 'profileNamespaceId'],
       properties: {
-        pairs: {
-          type: 'array',
-          minItems: 1,
-          maxItems: 100,
-          items: {
-            type: 'object',
-            required: ['publisherNamespaceId', 'profileNamespaceId'],
-            properties: {
-              publisherNamespaceId: { type: 'integer', minimum: 0 },
-              profileNamespaceId: { type: 'integer', minimum: 0 },
-            },
-            additionalProperties: false,
-          },
-        },
+        publisherNamespaceId: { type: 'integer', minimum: 0 },
+        profileNamespaceId: { type: 'integer', minimum: 0 },
       },
       additionalProperties: false,
     },
   })
   @ApiOkResponse({
     description:
-      'Bindings per pair. Direct rows answer synchronously; third-party rows may answer expired placeholders while a background refresh converges.',
+      'READY carries the binding (possibly an expired placeholder); PENDING means no local row exists — a tomb was planted and a background refresh was scheduled.',
   })
-  async resolve(@Body() dto: ProfileNamespaceResolveDto) {
-    const raw = dto?.pairs;
+  async resolve(@Body() dto: unknown) {
+    const pair = dto as {
+      publisherNamespaceId?: unknown;
+      profileNamespaceId?: unknown;
+    };
     if (
-      !Array.isArray(raw) ||
-      raw.length < 1 ||
-      raw.length > 100 ||
-      raw.some(
-        (pair) =>
-          !pair ||
-          typeof pair !== 'object' ||
-          Array.isArray(pair) ||
-          Object.keys(pair).length !== 2 ||
-          typeof (pair as ProfileNamespacePair).publisherNamespaceId !==
-            'number' ||
-          typeof (pair as ProfileNamespacePair).profileNamespaceId !== 'number',
-      )
-    ) {
+      !pair ||
+      typeof pair !== 'object' ||
+      Array.isArray(pair) ||
+      typeof pair.publisherNamespaceId !== 'number' ||
+      typeof pair.profileNamespaceId !== 'number' ||
+      Object.keys(pair).length !== 2
+    )
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
-        'pairs must be 1 to 100 closed namespace pairs',
+        'body must be a single namespace pair',
         HttpStatus.BAD_REQUEST,
       );
-    }
-    const { entries, pendingRefreshes } = await this.namespaceInfo.resolveBatch(
-      raw as ProfileNamespacePair[],
-    );
-    for (const pending of pendingRefreshes)
-      this.refresh.scheduleRefresh(pending.pair, pending.triggerFeedId);
-    return { entries };
+    const result = await this.namespaceInfo.resolveOne({
+      publisherNamespaceId: pair.publisherNamespaceId,
+      profileNamespaceId: pair.profileNamespaceId,
+    });
+    if (result.status === 'PENDING')
+      this.refresh.scheduleRefresh(
+        {
+          publisherNamespaceId: pair.publisherNamespaceId,
+          profileNamespaceId: pair.profileNamespaceId,
+        },
+        0n,
+      );
+    return result;
   }
 }

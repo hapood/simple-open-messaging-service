@@ -29,7 +29,7 @@ describe('sealed-box primitive', () => {
   it('opens real libsodium crypto_box_seal output', () => {
     // System libsodium sealed these plaintexts under the public test key with
     // random ephemeral keys; our construction must open them exactly.
-    const vectors: Array<[string, string]> = [
+    const vectors: Array<[string, string | null]> = [
       [
         'TZR17XSDeQKRL42YBNMzjR/6ocbatcIQjok9OMaQWnDFMMgvoHwdBWAm86FWCiXc5BqRebqicMfDTaCzRNNXFS3gUTYujHgYhD8tjbXfpQySC9OLwjuZxQ==',
         '{"account":"alice","domain":"a.example"}',

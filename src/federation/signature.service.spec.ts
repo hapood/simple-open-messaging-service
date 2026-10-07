@@ -144,4 +144,43 @@ describe('SignatureService (RFC 9421 + Ed25519)', () => {
     };
     await expect(svc.verifyWithKey(req, malformed, pub)).resolves.toBe(false);
   });
+
+  it.each([
+    [
+      'wrong algorithm',
+      (value: string) => value.replace('alg="ed25519"', 'alg="rsa-pss-sha512"'),
+    ],
+    ['extra parameter', (value: string) => `${value};nonce="unexpected"`],
+    [
+      'wrong component order',
+      (value: string) =>
+        value.replace('"@method" "@path"', '"@path" "@method"'),
+    ],
+    [
+      'extra component',
+      (value: string) =>
+        value.replace('"content-digest")', '"content-digest" "x-extra")'),
+    ],
+  ])('rejects a Signature-Input with %s', async (_name, mutate) => {
+    const { svc } = makeService();
+    const headers = await svc.signOutbound(req);
+    expect(
+      svc.hasValidMetadata(
+        { ...headers, 'signature-input': mutate(headers['signature-input']) },
+        Math.floor(Date.now() / 1000),
+      ),
+    ).toBe(false);
+  });
+
+  it('requires Date to equal created exactly', async () => {
+    const { svc } = makeService();
+    const headers = await svc.signOutbound(req);
+    const created = svc.parseMetadata(headers)!.created;
+    expect(
+      svc.hasValidMetadata(
+        { ...headers, date: new Date((created + 1) * 1000).toUTCString() },
+        created,
+      ),
+    ).toBe(false);
+  });
 });

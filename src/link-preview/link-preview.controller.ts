@@ -23,7 +23,7 @@ import {
   MaxLength,
 } from 'class-validator';
 import type { FastifyRequest } from 'fastify';
-import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
+import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
 import { ApiResultResponse } from '../common/api-result.js';
 import { LinkPreviewService } from './link-preview.service.js';
 import { BusinessCode } from '../common/business-code.js';

@@ -26,6 +26,7 @@ import {
 import { FederationInboundMediaBatchService } from './federation-inbound-media-batch.service.js';
 import { FederationMediaRangeClient } from './federation-media-range-client.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
+import { localIdentityDomain } from '../common/local-identity.js';
 
 export interface FederationForwardAssetAuthorization {
   fromAccount: string;
@@ -119,7 +120,7 @@ export class FederationMediaLocalizationService {
         msg.threadId,
         msg.creatorAccount,
         msg.profileNamespaceId,
-        sourcePeerDomain ?? 'local',
+        await localIdentityDomain(this.database.db),
       );
     const peerDomain = sourcePeerDomain ?? threadPeerDomain;
     if (msg.localState === 'FAILED') {
@@ -186,7 +187,7 @@ export class FederationMediaLocalizationService {
       msg.threadId,
       msg.creatorAccount,
       msg.profileNamespaceId,
-      sourcePeerDomain ?? 'local',
+      await localIdentityDomain(this.database.db),
     );
     return {
       fromAccount: msg.creatorAccount,

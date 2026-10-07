@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { withMessageDigest } from './support/message-fixture.js';
 import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
 import { DurableTaskSchedulerService } from '../src/durable-task/durable-task-scheduler.service.js';
 import request from 'supertest';
@@ -69,26 +70,28 @@ describe('POST /thread/mark-read authoritative state', () => {
       throw new Error('viewer thread participant is missing');
     viewerParticipantId = viewerParticipant.id;
     await database.db.insert(message).values(
-      Array.from({ length: 1005 }, (_, index) => {
-        const seq = index + 1;
-        return {
-          threadId,
-          seq,
-          contentType: ContentType.PURE_TEXT,
-          content: JSON.stringify({
-            text:
-              seq === 2
-                ? '[@所有人](somfp://audience/all)'
-                : seq === 3
-                  ? '[@Reader](somfp://user/reader)'
-                  : `message-${seq}`,
-          }),
-          // The viewer's own seq=1 message must never contribute to unreadCount.
-          creatorAccount: seq === 1 ? 'reader' : 'peer',
-          creatorDomain: 'local',
-          updatedAt: now,
-        };
-      }),
+      withMessageDigest(
+        Array.from({ length: 1005 }, (_, index) => {
+          const seq = index + 1;
+          return {
+            threadId,
+            seq,
+            contentType: ContentType.PURE_TEXT,
+            content: JSON.stringify({
+              text:
+                seq === 2
+                  ? '[@所有人](somfp://audience/all)'
+                  : seq === 3
+                    ? '[@Reader](somfp://user/reader)'
+                    : `message-${seq}`,
+            }),
+            // The viewer's own seq=1 message must never contribute to unreadCount.
+            creatorAccount: seq === 1 ? 'reader' : 'peer',
+
+            updatedAt: now,
+          };
+        }),
+      ),
     );
   });
 

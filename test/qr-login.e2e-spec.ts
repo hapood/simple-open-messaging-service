@@ -37,10 +37,26 @@ describe('QR login e2e', () => {
       ...policy,
       mode: 'disabled' as const,
     }));
+    const disabledRateLimits = {
+      monitoringConfig: () => disabledConfiguration,
+      forPolicy: (name: string) => {
+        const policy = disabledConfiguration.find(
+          (item) => item.policy === name,
+        );
+        if (!policy)
+          throw new Error(`unknown authentication rate-limit policy: ${name}`);
+        return {
+          mode: policy.mode,
+          ...Object.fromEntries(
+            policy.buckets.map(({ name, ...bucket }) => [name, bucket]),
+          ),
+        };
+      },
+    };
     ({ app, database } = await createTestApp((builder) => {
       builder
         .overrideProvider(RateLimitModeService)
-        .useValue(new RateLimitModeService(undefined, disabledConfiguration));
+        .useValue(disabledRateLimits);
     }));
     sessionTokens = app.get(SessionTokenService);
   });
@@ -64,7 +80,7 @@ describe('QR login e2e', () => {
       .insert(user)
       .values({
         account,
-        domain: 'local',
+        namespaceId: 0,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });

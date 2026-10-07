@@ -81,7 +81,6 @@ export class FederationGroupMetaFeedService {
           .where(
             and(
               eq(groupStateFields.account, account),
-              eq(groupStateFields.domain, 'local'),
               eq(groupStateFields.namespaceId, 0),
             ),
           )

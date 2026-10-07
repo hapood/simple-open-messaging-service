@@ -243,7 +243,7 @@ describe('Session management + login-policy e2e', () => {
     const [exists] = await database.db
       .select({ id: user.id })
       .from(user)
-      .where(and(eq(user.account, 'shouldnotexist'), eq(user.domain, 'local')))
+      .where(and(eq(user.account, 'shouldnotexist'), eq(user.namespaceId, 0)))
       .limit(1);
     expect(exists).toBeUndefined();
   });

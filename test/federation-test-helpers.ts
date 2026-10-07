@@ -125,7 +125,6 @@ export async function registerAndLogin(
       .insert(user)
       .values({
         account,
-        domain: 'local',
         defaultProfileRev: 1,
         updatedAt: new Date(),
       })
@@ -225,17 +224,17 @@ export async function establishFederatedFriendship(params: {
       SELECT 1
       FROM "RelationshipPair" pair
       JOIN "RelationshipIntent" intent
-        ON intent."authorAccount" = pair."endpointAAccount"
-       AND intent."authorNamespaceId" = pair."endpointANamespaceId"
-       AND intent."receiverAccount" = pair."endpointBAccount"
-       AND intent."receiverNamespaceId" = pair."endpointBNamespaceId"
+        ON intent."authorAccount" = pair."endpointBAccount"
+       AND intent."authorNamespaceId" = pair."endpointBNamespaceId"
+       AND intent."receiverAccount" = pair."endpointAAccount"
+       AND intent."receiverNamespaceId" = pair."endpointANamespaceId"
       WHERE pair.kind = 'P2P'
         AND intent.status = 'REQUESTED'
         AND intent."expiresAt" > CURRENT_TIMESTAMP
         AND pair."endpointAAccount" = ${params.remoteAccount}
         AND pair."endpointBAccount" = ${params.localAccount}
-        AND pair."endpointANamespaceId" <> 0
-        AND pair."endpointBNamespaceId" = 0
+        AND pair."endpointANamespaceId" = 0
+        AND pair."endpointBNamespaceId" <> 0
       LIMIT 1
     `);
     incomingFound = incoming.rows.length > 0;
@@ -258,13 +257,14 @@ export async function establishFederatedFriendship(params: {
   // multi-worker run.
   const convergenceDeadline = Date.now() + 30_000;
   while (Date.now() < convergenceDeadline) {
-    // The local endpoint is always side A, so each server's own account
-    // names the A side of the same canonical pair.
+    // In the canonical P2P order the server-local endpoint is side A on each
+    // database; the remote endpoint is side B.
     const [localPair, remotePair] = await Promise.all([
       params.local.database.query.relationshipPair.findFirst({
         where: and(
           eq(relationshipPair.endpointAType, 'USER'),
           eq(relationshipPair.endpointAAccount, params.localAccount),
+          eq(relationshipPair.endpointANamespaceId, 0),
           eq(relationshipPair.endpointBType, 'USER'),
           eq(relationshipPair.endpointBAccount, params.remoteAccount),
           eq(relationshipPair.active, true),
@@ -274,6 +274,7 @@ export async function establishFederatedFriendship(params: {
         where: and(
           eq(relationshipPair.endpointAType, 'USER'),
           eq(relationshipPair.endpointAAccount, params.remoteAccount),
+          eq(relationshipPair.endpointANamespaceId, 0),
           eq(relationshipPair.endpointBType, 'USER'),
           eq(relationshipPair.endpointBAccount, params.localAccount),
           eq(relationshipPair.active, true),
@@ -306,13 +307,7 @@ export async function getAdminCookie(
     const [existing] = await tx
       .select({ id: user.id })
       .from(user)
-      .where(
-        and(
-          eq(user.account, account),
-          eq(user.domain, 'local'),
-          eq(user.namespaceId, 0),
-        ),
-      )
+      .where(and(eq(user.account, account), eq(user.namespaceId, 0)))
       .limit(1);
     const created =
       existing ??
@@ -321,7 +316,6 @@ export async function getAdminCookie(
           .insert(user)
           .values({
             account,
-            domain: 'local',
             namespaceId: 0,
             defaultProfileRev: 1,
             updatedAt: new Date(),

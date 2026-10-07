@@ -23,7 +23,7 @@ import type {
   ClientStateFeedService,
   PendingClientStateFeedUpdate,
 } from '../../client-state-feed/client-state-feed.service.js';
-import type { FederationService } from '../../federation/federation.service.js';
+import type { FederationStateFeedPusher } from '../../federation/federation-state-feed.events.js';
 import type { PeerStateFeedService } from '../../federation/peer-state-feed.service.js';
 import {
   groupMembershipStateSql,
@@ -53,7 +53,7 @@ export interface GroupDisbandMembershipRevocationDependencies {
   database: DatabaseService;
   clientFeed: ClientStateFeedService;
   peerFeed: PeerStateFeedService;
-  federation: FederationService;
+  federation: FederationStateFeedPusher;
 }
 
 export type GroupDisbandMembershipRevocationResult =
@@ -153,15 +153,14 @@ export class GroupDisbandMembershipRevocationService {
         profileNamespaceId: located.groupNamespaceId,
       },
     ]);
+    if (located.memberDomain === null)
+      throw new Error('member namespace has no persisted domain');
     await lockRelationshipPairsInTx(tx, [
       {
         kind: 'GROUP_MEMBER',
         addresses: [
-          completeBusinessAddress(located.groupAccount, located.groupDomain),
-          completeBusinessAddress(
-            member.account,
-            located.memberDomain ?? 'local',
-          ),
+          completeBusinessAddress(located.groupAccount, located.groupNamespaceId),
+          completeBusinessAddress(member.account, member.namespaceId),
         ],
       },
     ]);
@@ -254,7 +253,7 @@ export class GroupDisbandMembershipRevocationService {
         }),
       )
     ).rows[0];
-    if (!row || row.domain !== 'local' || row.namespaceId !== 0)
+    if (!row || row.namespaceId !== 0)
       throw new Error('disband revocation requires an authoritative group');
     // A side B intent already at REVOKED is the idempotent no-op; a missing
     // intent row still departs.

@@ -12,6 +12,7 @@ export type GroupRosterRoleAuthorizationRow = {
   dissolvedAt: string | null;
   /** Local account address of the acting user (the command's operator). */
   operatorAccount: string | null;
+  operatorDomain: string | null;
   /** The operator's canonical roster role, or null when not rostered. */
   operatorRole: GroupRole | null;
   operatorProfileRev: number | null;
@@ -51,8 +52,10 @@ export function groupRosterRoleAuthorizationSql(input: {
   targetNamespaceId: number;
 }) {
   return sql`
-      SELECT id, account FROM "Account"
-      WHERE id = ${input.operatorUserId} AND domain = 'local' AND "namespaceId" = 0
+    WITH operator_account AS MATERIALIZED (
+      SELECT id, account, availability, "disabledAt"
+      FROM "Account"
+      WHERE id = ${input.operatorUserId} AND "namespaceId" = 0
     ), operator_roster AS MATERIALIZED (
       SELECT latest.body ->> 'role' AS role,
         (latest.body ->> 'profileRev')::integer AS "profileRev"
@@ -78,6 +81,7 @@ export function groupRosterRoleAuthorizationSql(input: {
     SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
       g."namespaceId", g."dissolvedAt",
       operator.account AS "operatorAccount",
+      (SELECT domain FROM "IdentityNamespace" WHERE id = 0) AS "operatorDomain",
       operator_roster.role AS "operatorRole",
       operator_roster."profileRev" AS "operatorProfileRev",
       EXISTS (
@@ -112,7 +116,7 @@ export function groupRosterRoleAuthorizationSql(input: {
       ON target_namespace.id = target_roster."namespaceId"
     LEFT JOIN "Account" local_target ON target_roster."namespaceId" = 0
       AND local_target.account = target_roster.account
-      AND local_target.domain = 'local' AND local_target."namespaceId" = 0
+      AND local_target."namespaceId" = 0
     WHERE g.id = ${input.threadId}
   `;
 }

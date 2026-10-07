@@ -38,9 +38,9 @@ describe('parseKeyId', () => {
     expect(parseKeyId('a.example/key%31')).toBeNull();
   });
 
-  it('rejects non-canonical or reserved domains', () => {
-    expect(parseKeyId('local/key-1')).toBeNull();
-    expect(parseKeyId('a.local/key-1')).toBeNull();
+  it('accepts canonical domains, including local names', () => {
+    expect(parseKeyId('local/key-1')).not.toBeNull();
+    expect(parseKeyId('a.local/key-1')).not.toBeNull();
     expect(parseKeyId('a..example/key-1')).toBeNull();
     expect(parseKeyId('-a.example/key-1')).toBeNull();
     expect(parseKeyId('a.example./key-1')).toBeNull();
