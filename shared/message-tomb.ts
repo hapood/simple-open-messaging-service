@@ -3,7 +3,7 @@ export type MessageDeletionType = 'USER_RETRACTION' | 'MODERATION_REMOVAL';
 export interface MessageSlotIdentity {
   threadId: number;
   seq: number;
-  creator: { account: string; domain: string; namespaceId: number } | null;
+  creator: { account: string; namespaceId: number } | null;
   profileRev: number;
   createdAt: number;
   updatedAt: number;

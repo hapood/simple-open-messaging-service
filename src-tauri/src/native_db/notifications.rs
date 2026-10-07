@@ -238,7 +238,6 @@ mod tests {
         }
         let owner = MessageCountOwner {
             account: "me".into(),
-            domain: "local".into(),
             namespace_id: 0,
         };
         assert_eq!(
@@ -414,7 +413,6 @@ fn assemble(
         .and_then(|value| value["account"].as_str())
         .map(|account| MessageCountOwner {
             account: account.into(),
-            domain: "local".into(),
             namespace_id: 0,
         });
     let mut notifications = Vec::new();

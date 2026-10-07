@@ -38,15 +38,21 @@ export type ContactCardSendTarget = Pick<
   ContactCardTarget,
   'account' | 'namespaceId' | 'profileRev'
 >;
+export interface MessageCreator {
+  account: string;
+  namespaceId: number;
+}
 export type Message = Omit<
   S['MessageResponseDto'],
-  'contentType' | 'mediaStatus'
+  'contentType' | 'mediaStatus' | 'creator'
 > & {
   contentType: S['MessageResponseDto']['contentType'];
   /** Namespace that published this message copy (zero is the local authority). */
   namespaceId: number;
   /** Immutable author profile selected when this message was committed. */
   profileRev: number;
+  /** Sender identity selected by this message. Domain is presentation metadata and may be absent on history rows. */
+  creator: MessageCreator | null;
   /** Local-only corrections to participant revisions in a SYSTEM row, keyed by [account, domain].
    * The server content remains immutable; cache merges preserve corrections for the same content. */
   localSystemProfileRevs?: Record<string, number>;
@@ -54,7 +60,6 @@ export type Message = Omit<
    * service reconciles mount, reconnect and media-status updates. */
   mediaStatus?: MediaStatus;
 };
-export type MessageCreator = NonNullable<Message['creator']>;
 export type MessageQueryRow = Message | MessageTomb;
 
 /** A tomb can enter the cache before its message identity. Only identified tombs are timeline rows. */
@@ -81,11 +86,7 @@ export function messageCreatorKey(
 ): string | null {
   return creator === null
     ? null
-    : JSON.stringify([
-        localSubjectIdentity(creator).namespaceId,
-        localSubjectIdentity(creator).domain,
-        creator.account,
-      ]);
+    : JSON.stringify([creator.namespaceId, creator.account]);
 }
 
 /** Stable key for a thread-feed preview sender. The feed carries the account and profile namespace; the
@@ -97,26 +98,24 @@ export function messagePreviewSenderKey(sender: {
   return JSON.stringify([sender.profileNamespaceId, sender.account]);
 }
 
+/** Message sender keys identify the immutable subject selected by a message row.
+ * Domains are presentation metadata resolved separately from profile namespace bindings. */
 export function parseUserIdentityKey(key: string): {
   account: string;
-  domain: string;
   namespaceId: number;
 } | null {
   try {
     const value: unknown = JSON.parse(key);
-    if (!Array.isArray(value) || value.length !== 3) return null;
-    const [namespaceId, domain, account] = value;
+    if (!Array.isArray(value) || value.length !== 2) return null;
+    const [namespaceId, account] = value;
     return Number.isSafeInteger(namespaceId) &&
       (namespaceId as number) >= 0 &&
-      typeof domain === 'string' &&
-      domain.length > 0 &&
       typeof account === 'string' &&
       account.length > 0
-      ? localSubjectIdentity({
+      ? {
           account,
-          domain,
           namespaceId: namespaceId as number,
-        })
+        }
       : null;
   } catch {
     return null;

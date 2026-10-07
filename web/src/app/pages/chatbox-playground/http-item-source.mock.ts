@@ -29,7 +29,7 @@ import {
 } from '../../services/model';
 
 const mockCreatorKey = (id: number): string =>
-  JSON.stringify([0, 'mock.local', `user-${id}`]);
+  JSON.stringify([0, `user-${id}`]);
 const mockCreatorId = (key: string): number => {
   const account = parseUserIdentityKey(key)?.account;
   const match = account ? /^user-(\d+)$/.exec(account) : null;

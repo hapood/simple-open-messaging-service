@@ -114,7 +114,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     {
       name: string;
       account: string;
-      domain: string;
       isSelf: boolean;
       avatarIdentityId?: string;
     }
@@ -137,7 +136,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     {
       name: string;
       account: string;
-      domain: string;
       isSelf: boolean;
       avatarIdentityId: string;
     }
@@ -459,7 +457,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         this.mediaStageToFailedItem(stage, {
           account: profile.account,
           name: profile.name,
-          domain: profile.domain,
           namespaceId: profile.namespaceId,
         }),
       );
@@ -475,7 +472,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     author: {
       account: string;
       name: string;
-      domain: string;
       namespaceId: number;
     },
   ): CbItem<ChatMsgData> {
@@ -920,7 +916,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         ? {}
         : { avatarIdentityId: p.avatarIdentityId }),
       avatarAccount: p.account,
-      avatarDomain: p.domain,
       ...(m.creator && m.profileRev > 0
         ? {
             profileEvidence: {
@@ -1037,7 +1032,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
             'profile',
             message.profileRev,
           ]),
-          domain: identity.domain,
           isSelf: this.isSelfAddress(identity.account, identity.namespaceId),
         };
         if (cached) this.profilesBySeq.set(message.seq, presentation);

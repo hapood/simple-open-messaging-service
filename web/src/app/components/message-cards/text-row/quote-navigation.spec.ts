@@ -41,7 +41,7 @@ function message(quote: ChatMsgData['quote']): ChatMsgData {
   return {
     type: 'msg',
     msgId: 2,
-    creator: JSON.stringify([0, 'local', 'me']),
+    creator: JSON.stringify([0, 'me']),
     isSelf: false,
     name: 'Bob',
     text: 'reply',

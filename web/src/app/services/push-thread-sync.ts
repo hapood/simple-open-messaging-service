@@ -83,7 +83,6 @@ export async function syncPushThreads(
         range.throughSeq,
         {
           account: owner.account,
-          domain: owner.domain,
           namespaceId: owner.namespaceId,
         },
       );

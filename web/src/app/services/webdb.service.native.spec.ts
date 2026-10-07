@@ -175,7 +175,7 @@ describe('WebdbService native SQLite routing', () => {
     expect(
       await service.queryGroupMembers({
         threadId: 9,
-        afterIdentity: JSON.stringify([12, 'home.example', 'aaron']),
+        afterIdentity: JSON.stringify([12, 'aaron']),
         take: 20,
         search: 'ali',
       }),
@@ -186,7 +186,7 @@ describe('WebdbService native SQLite routing', () => {
         args: {
           userId: 42,
           threadId: 9,
-          afterIdentity: JSON.stringify([12, 'home.example', 'aaron']),
+          afterIdentity: JSON.stringify([12, 'aaron']),
           take: 20,
           search: 'ali',
         },
@@ -213,7 +213,7 @@ describe('WebdbService native SQLite routing', () => {
       seq: 3,
       createdAt: 100,
       updatedAt: 100,
-      creator: { account: 'alice', domain: 'local', namespaceId: 0 },
+      creator: { account: 'alice', namespaceId: 0 },
       profileRev: 2,
       localState: 'READY',
       isDeleted: false,

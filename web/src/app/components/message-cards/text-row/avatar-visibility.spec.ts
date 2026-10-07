@@ -55,7 +55,7 @@ function buildMsg(
   return {
     type: 'msg',
     msgId: 1,
-    creator: JSON.stringify([0, 'local', 'me']),
+    creator: JSON.stringify([0, 'me']),
     isSelf: false,
     name: 'Alice',
     text: 'hi',
@@ -156,7 +156,7 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
   it('keeps the OTHER party avatar visible regardless of the preference (the reported bug guard)', () => {
     const other = buildMsg({
       isSelf: false,
-      creator: JSON.stringify([1, 'peer.test', 'alice']),
+      creator: JSON.stringify([1, 'alice']),
       name: 'Alice',
     });
     // Turning "show my avatar" OFF must hide only SELF avatars — never the other party's.
@@ -169,7 +169,7 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
   it('hides the SELF avatar when the preference is off and shows it when on', () => {
     const self = buildMsg({
       isSelf: true,
-      creator: JSON.stringify([0, 'local', 'me']),
+      creator: JSON.stringify([0, 'me']),
       name: 'Me',
     });
     expect(avatarDisplayFor(self, 'false')).toBe('none');

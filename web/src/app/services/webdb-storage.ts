@@ -3481,10 +3481,6 @@ export class WebdbStorage {
   }
 
   async putCachedMessages(messages: MessageQueryRow[]): Promise<void> {
-    messages = messages.map((message) => ({
-      ...message,
-      creator: message.creator && localSubjectIdentity(message.creator),
-    }));
     if (messages.length === 0) return;
     return this.runMessageOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
@@ -3523,13 +3519,12 @@ export class WebdbStorage {
       throughSeq < afterSeq ||
       throughSeq > 2_147_483_647 ||
       !self.account ||
-      !self.domain ||
       !Number.isInteger(self.namespaceId) ||
       self.namespaceId < 0 ||
       self.namespaceId > 2_147_483_647
     )
       throw new Error('Invalid unread message count range or identity');
-    const owner = localSubjectIdentity(self);
+    const owner = self;
     return this.runMessageOperation(async () => {
       if (isTauri() && this.currentUserId != null)
         return tauriInvoke<number>('native_db_count_unread_message_slots', {
@@ -3557,7 +3552,6 @@ export class WebdbStorage {
           if (
             !creator ||
             creator.account !== owner.account ||
-            creator.domain !== owner.domain ||
             creator.namespaceId !== owner.namespaceId
           )
             count++;
@@ -3713,11 +3707,7 @@ export class WebdbStorage {
     });
     const messageStore = tx.objectStore('messages');
     const committedMessages: MessageQueryRow[] = [];
-    for (const entry of input.messages) {
-      const message = {
-        ...entry,
-        creator: entry.creator && localSubjectIdentity(entry.creator),
-      };
+    for (const message of input.messages) {
       const existing = await messageStore.get([input.threadId, message.seq]);
       const merged = mergeCachedMessage(existing, message);
       await messageStore.put(merged);
@@ -3952,12 +3942,8 @@ export class WebdbStorage {
 }
 
 function compareMemberIdentity(
-  left: Pick<MemberRecord, 'namespaceId' | 'domain' | 'account'>,
-  right: Pick<MemberRecord, 'namespaceId' | 'domain' | 'account'>,
+  left: Pick<MemberRecord, 'namespaceId' | 'account'>,
+  right: Pick<MemberRecord, 'namespaceId' | 'account'>,
 ): number {
-  return (
-    left.namespaceId - right.namespaceId ||
-    left.domain.localeCompare(right.domain) ||
-    left.account.localeCompare(right.account)
-  );
+  return left.namespaceId - right.namespaceId || left.account.localeCompare(right.account);
 }

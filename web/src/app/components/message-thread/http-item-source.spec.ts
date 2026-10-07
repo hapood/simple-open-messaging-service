@@ -70,8 +70,8 @@ function row(seq: number, creator: number, clientMessageId?: string): Message {
     threadId: 42,
     creator:
       creator === 1
-        ? { account: 'me', domain: 'local', namespaceId: 0 }
-        : { account: 'alice', domain: 'local', namespaceId: 0 },
+        ? { account: 'me', namespaceId: 0 }
+        : { account: 'alice', namespaceId: 0 },
     createdAt: 1700000000000,
     updatedAt: 1700000000000,
     profileRev: 3,
@@ -87,7 +87,7 @@ function pendingItem(cid: string, id = -1) {
     data: {
       type: 'msg',
       msgId: id,
-      creator: JSON.stringify([0, 'local', 'me']),
+      creator: JSON.stringify([0, 'me']),
       isSelf: true,
       name: 'Me',
       text: 'hi',
@@ -426,7 +426,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       ...row(10, 2),
       contentType: 'SYSTEM' as const,
       profileRev: 0,
-      creator: { account: '$system', domain: 'local', namespaceId: 0 },
+      creator: { account: '$system', namespaceId: 0 },
       content: JSON.stringify({
         type: 'FRIEND_REMOVED',
         initiator: {
@@ -463,7 +463,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       const tomb: MessageQueryRow = {
         threadId: 42,
         seq: 10,
-        creator: { account: 'alice', domain: 'local', namespaceId: 0 },
+        creator: { account: 'alice', namespaceId: 0 },
         profileRev: 1,
         createdAt: 1700000000000,
         updatedAt: 1700000000100,
@@ -966,7 +966,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       data: {
         type: 'msg',
         msgId: -1,
-        creator: { account: 'me', domain: 'local' },
+        creator: JSON.stringify([0, 'me']),
         isSelf: true,
         name: 'Me',
         text: 'hi',

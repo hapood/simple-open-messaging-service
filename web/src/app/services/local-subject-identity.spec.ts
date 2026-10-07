@@ -41,13 +41,11 @@ describe('client subject coordinates', () => {
   it('keeps exact coordinates in message and roster lookup keys', () => {
     const key = messageCreatorKey({
       account: 'me',
-      domain: 'own.test',
       namespaceId: 7,
     });
-    expect(key).toBe('[7,"own.test","me"]');
-    expect(parseUserIdentityKey('[7,"own.test","me"]')).toEqual({
+    expect(key).toBe('[7,"me"]');
+    expect(parseUserIdentityKey('[7,"me"]')).toEqual({
       account: 'me',
-      domain: 'own.test',
       namespaceId: 7,
     });
   });

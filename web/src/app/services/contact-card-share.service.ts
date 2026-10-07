@@ -27,7 +27,6 @@ export class ContactCardShareService {
     const bio = isGroup ? chat.group.description : chat.peerUser.bio;
     const content = JSON.stringify({
       account: target.account,
-      domain: target.domain,
       displayName: target.name,
       bio: bio ?? '',
       ...(target.avatar ? { avatar: target.avatar } : {}),
@@ -37,7 +36,6 @@ export class ContactCardShareService {
       msgId: -1,
       creator: messageCreatorKey({
         account: self.account,
-        domain: self.domain,
         namespaceId: self.namespaceId,
       }),
       isSelf: true,

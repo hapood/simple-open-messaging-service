@@ -320,7 +320,6 @@ mod tomb_tests {
         let mut conn = database();
         let owner = MessageCountOwner {
             account: "me".into(),
-            domain: "example.test".into(),
             namespace_id: 0,
         };
         let tx = conn.transaction().unwrap();
@@ -396,7 +395,6 @@ mod tomb_tests {
         }
         let owner = MessageCountOwner {
             account: "me".into(),
-            domain: "local".into(),
             namespace_id: 0,
         };
         assert_eq!(
@@ -410,7 +408,6 @@ mod tomb_tests {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct MessageCountOwner {
     pub(super) account: String,
-    pub(super) domain: String,
     pub(super) namespace_id: i32,
 }
 
@@ -428,28 +425,24 @@ pub(super) fn count_unread_message_slots(
         || after_seq < 0
         || through_seq < after_seq
         || owner.account.is_empty()
-        || owner.domain.is_empty()
         || owner.namespace_id < 0
     {
         return Err("invalid unread message count range or identity".into());
     }
     let namespace = owner.namespace_id;
-    let domain = &owner.domain;
     conn.query_row(
         "SELECT COUNT(*) FROM messages
          WHERE user_id=?1 AND thread_id=?2 AND seq>?3 AND seq<=?4
            AND json_type(payload_json, '$.creator') IN ('object', 'null')
            AND NOT COALESCE(
              json_extract(payload_json, '$.creator.account')=?5
-             AND json_extract(payload_json, '$.creator.domain')=?6
-             AND json_extract(payload_json, '$.creator.namespaceId')=?7, 0)",
+             AND json_extract(payload_json, '$.creator.namespaceId')=?6, 0)",
         params![
             user_id,
             thread_id,
             after_seq,
             through_seq,
             owner.account,
-            domain,
             namespace
         ],
         |row| row.get(0),

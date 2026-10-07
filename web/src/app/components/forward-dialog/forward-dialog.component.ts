@@ -175,7 +175,6 @@ export class ForwardDialogComponent {
       ...original,
       creator: messageCreatorKey({
         account: self.account,
-        domain: self.domain,
         namespaceId: self.namespaceId,
       }),
       isSelf: true,
@@ -183,7 +182,6 @@ export class ForwardDialogComponent {
       avatar: self?.avatar || undefined,
       avatarIdentityId: messageCreatorKey({
         account: self.account,
-        domain: self.domain,
         namespaceId: self.namespaceId,
       }),
       avatarAccount: self?.account,
@@ -308,7 +306,6 @@ export class ForwardDialogComponent {
     if (!self) throw new Error('session profile is required to forward');
     return messageCreatorKey({
       account: self.account,
-      domain: self.domain,
       namespaceId: self.namespaceId,
     });
   }

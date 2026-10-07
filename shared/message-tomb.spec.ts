@@ -8,7 +8,7 @@ import {
 const message = {
   threadId: 42,
   seq: 4,
-  creator: { account: 'alice', domain: 'example.test', namespaceId: 1 },
+  creator: { account: 'alice', namespaceId: 1 },
   profileRev: 3,
   createdAt: 100,
   updatedAt: 101,

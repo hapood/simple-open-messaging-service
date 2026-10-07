@@ -248,7 +248,7 @@ describe('Push thread-feed synchronization', () => {
       threadId: 7,
       namespaceId: 0,
       seq: 1,
-      creator: { account: 'peer', domain: 'test', namespaceId: 1 },
+      creator: { account: 'peer', namespaceId: 1 },
       profileRev: 1,
       createdAt: 0,
       updatedAt: 0,
@@ -262,7 +262,7 @@ describe('Push thread-feed synchronization', () => {
       {
         ...message,
         seq: 2,
-        creator: { account: 'me', domain: 'chat.example.test', namespaceId: 0 },
+        creator: { account: 'me', namespaceId: 0 },
       },
     ]);
     await storage.applyDeletedMessages(

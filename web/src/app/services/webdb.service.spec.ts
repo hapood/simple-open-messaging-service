@@ -601,7 +601,7 @@ describe('WebdbService', () => {
           threadId: 42,
           namespaceId: 0,
           seq: 4,
-          creator: { account: 'alice', domain: 'example.test', namespaceId: 1 },
+          creator: { account: 'alice', namespaceId: 1 },
           profileRev: 3,
           createdAt: 100,
           updatedAt: 101,
@@ -644,7 +644,7 @@ describe('WebdbService', () => {
         threadId: 42,
         namespaceId: 0,
         seq: 4,
-        creator: { account: 'alice', domain: 'example.test', namespaceId: 1 },
+        creator: { account: 'alice', namespaceId: 1 },
         profileRev: 3,
         createdAt: 100,
         updatedAt: 101,
@@ -694,12 +694,12 @@ describe('WebdbService', () => {
 
     it('counts known unread slots including tombs but not own messages, unknown markers, or gaps', async () => {
       await webdb.openForUser('1');
-      const owner = { account: 'me', domain: 'example.test', namespaceId: 0 };
+      const owner = { account: 'me', namespaceId: 0 };
       const base: Message = {
         threadId: 42,
         namespaceId: 0,
         seq: 1,
-        creator: { account: 'other', domain: 'peer.test', namespaceId: 2 },
+        creator: { account: 'other', namespaceId: 2 },
         profileRev: 1,
         createdAt: 100,
         updatedAt: 100,
@@ -716,7 +716,7 @@ describe('WebdbService', () => {
         {
           ...base,
           seq: 6,
-          creator: { account: '$system', domain: 'local', namespaceId: 0 },
+          creator: { account: '$system', namespaceId: 0 },
           profileRev: 0,
           contentType: 'SYSTEM',
         },
@@ -799,7 +799,7 @@ describe('WebdbService', () => {
         threadId: 42,
         namespaceId: 0,
         seq: 1,
-        creator: { account: '$system', domain: 'local', namespaceId: 0 },
+        creator: { account: '$system', namespaceId: 0 },
         profileRev: 0,
         createdAt: 100,
         updatedAt: 100,
@@ -839,7 +839,7 @@ describe('WebdbService', () => {
             threadId: 42,
             namespaceId: 0,
             seq: i + 1,
-            creator: { account: '$system', domain: 'local', namespaceId: 0 },
+            creator: { account: '$system', namespaceId: 0 },
             profileRev: 0,
             createdAt: 100,
             updatedAt: 100,
@@ -853,7 +853,6 @@ describe('WebdbService', () => {
       expect(
         await webdb.countUnreadMessageSlots(42, 0, 120, {
           account: 'me',
-          domain: 'local',
           namespaceId: 0,
         }),
       ).toBe(120);

@@ -437,7 +437,7 @@ export class ThreadRepository {
     if (threadId === undefined) {
       // Stop signal: the worker finishes the current page and commits it,
       // then the guard prevents the next page.
-      await this.webdb.drainThreadMisc(null, null, null);
+      await this.persistOpenThreadState(null, null, null);
       return;
     }
     const snapshot = attentionSnapshot(this.threadStates.get(threadId));
@@ -446,11 +446,38 @@ export class ThreadRepository {
     // Open the thread and fire both drains concurrently in one worker
     // message. The worker reports committed tombstone pages via
     // tombstoneCommitted$ → deletedSignal$ / slotsChanged.
-    await this.webdb.drainThreadMisc(
+    await this.persistOpenThreadState(
       threadId,
       groupMetaEndId,
       tombstoneEndSeq,
     );
+  }
+
+  /** Persisting the open-thread UI state is best-effort: callers fire it and
+   *  forget, and account cache teardown (login switch, logout, invalidation)
+   *  rejects every queued account operation with 'account cache lifetime
+   *  expired'. The stale UI write is meaningless once the cache is going
+   *  away, so only that expected rejection is swallowed; real storage errors
+   *  still propagate. */
+  private async persistOpenThreadState(
+    threadId: number | null,
+    groupMetaEndId: string | null,
+    tombstoneEndSeq: number | null,
+  ): Promise<void> {
+    try {
+      await this.webdb.drainThreadMisc(
+        threadId,
+        groupMetaEndId,
+        tombstoneEndSeq,
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === 'account cache lifetime expired'
+      )
+        return;
+      throw error;
+    }
   }
 
   /** Resolve the ConversationItem for a thread the caller knows exists, waiting for a reload if it is not
@@ -999,7 +1026,6 @@ export class ThreadRepository {
     const count = await this.webdb
       .countUnreadMessageSlots(threadId, range.afterSeq, range.throughSeq, {
         account: me.account,
-        domain: me.domain,
         namespaceId: me.namespaceId,
       })
       .catch((error) => {

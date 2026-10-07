@@ -1581,7 +1581,7 @@ export class MessageThreadComponent implements OnDestroy {
     if (conversation?.type === 'P2P') {
       if (
         conversation.peerUser.account !== identity.account ||
-        (conversation.peerUser.domain || 'local') !== identity.domain
+        conversation.peerUser.namespaceId !== identity.namespaceId
       )
         return;
       this.dismissContextMenu();

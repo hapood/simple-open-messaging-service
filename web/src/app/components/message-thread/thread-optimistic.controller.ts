@@ -75,7 +75,6 @@ export class ThreadOptimisticController {
         msgId: placeholderId,
         creator: messageCreatorKey({
           account: author.account,
-          domain: author.domain,
           namespaceId: author.namespaceId,
         }),
         isSelf: true,

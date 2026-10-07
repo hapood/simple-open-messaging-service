@@ -16,7 +16,7 @@ function msg(threadId: number, seq: number, content = `m${seq}`): Message {
     contentType: 'PURE_TEXT',
     content,
     threadId,
-    creator: { account: 'me', domain: 'local', namespaceId: 0 },
+    creator: { account: 'me', namespaceId: 0 },
     profileRev: 1,
     createdAt: seq * 1000,
     updatedAt: seq * 1000,
@@ -130,6 +130,46 @@ describe('MessageRepository', () => {
       before: 11,
       through: 5,
       take: 10,
+    });
+  });
+
+  it('bootstraps the first browser page when the local cache is empty', async () => {
+    queryMessageHistoryPageSpy
+      .mockReturnValueOnce(
+        of({
+          code: 30006,
+          message: 'cursor required',
+          data: { resumeAfter: 0, resumeBefore: 3 },
+        }),
+      )
+      .mockReturnValueOnce(
+        of({
+          code: 0,
+          message: 'ok',
+          data: {
+            messages: [msg(42, 2), msg(42, 1, 'friend added')],
+            gaps: [],
+            scannedThrough: 1,
+            hasMore: false,
+          },
+        }),
+      );
+
+    const result = await repo.queryBrowserMessageHistory(42, {
+      kind: 'latest',
+      count: 20,
+    });
+
+    expect(result.failed).toBe(false);
+    expect(result.items).toEqual([
+      { kind: 'message', message: msg(42, 1, 'friend added') },
+      { kind: 'message', message: msg(42, 2) },
+    ]);
+    expect(queryMessageHistoryPageSpy).toHaveBeenNthCalledWith(2, {
+      threadId: 42,
+      before: 3,
+      through: 0,
+      take: 20,
     });
   });
 

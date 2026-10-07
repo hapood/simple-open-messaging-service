@@ -53,7 +53,6 @@ export class MemberProfileRepository {
     const resolved = members.map((member) => ({
       identityKey: messageCreatorKey({
         account: member.account,
-        domain: member.domain,
         namespaceId: member.namespaceId,
       }),
       account: member.account,
@@ -84,11 +83,10 @@ export class MemberProfileRepository {
     this.queriedThreads.add(threadId);
     const identity = parseUserIdentityKey(identityKey);
     if (!identity) return undefined;
-    const member = await this.webdb.getGroupMember(
-      threadId,
-      identity.account,
-      identity.domain,
-      identity.namespaceId,
+    const member = (await this.webdb.queryGroupMembers({ threadId, take: 1000 })).find(
+      (candidate) =>
+        candidate.account === identity.account &&
+        candidate.namespaceId === identity.namespaceId,
     );
     if (!member) return undefined;
     const resolved: ResolvedMemberProfile = {
@@ -118,16 +116,21 @@ export class MemberProfileRepository {
     threadId: number,
     identity: {
       account: string;
-      domain: string;
       namespaceId: number;
     },
     profileRev: number,
     messageSeq: number,
   ): Promise<void> {
+    const member = (await this.webdb.queryGroupMembers({ threadId, take: 1000 })).find(
+      (candidate) =>
+        candidate.account === identity.account &&
+        candidate.namespaceId === identity.namespaceId,
+    );
+    if (!member) return;
     if (
       await this.webdb.recordGroupMemberMessageProfile(
         threadId,
-        identity,
+        member,
         profileRev,
         messageSeq,
       )
