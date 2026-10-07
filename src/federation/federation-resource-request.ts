@@ -200,7 +200,7 @@ export function requireDomain(value: string, name: string): string {
 export function requireSubjectDomain(
   value: string,
   name: string,
-  profileNamespaceId: number,
+  _profileNamespaceId: number,
 ): string {
   return requireDomain(value, name);
 }

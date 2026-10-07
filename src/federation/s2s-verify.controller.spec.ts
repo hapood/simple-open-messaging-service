@@ -3,7 +3,6 @@ import { HttpStatus } from '@nestjs/common';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { S2sVerifyController } from './s2s-verify.controller.js';
 import { BusinessCode } from '../common/business-code.js';
-import { BusinessException } from '../common/business.exception.js';
 import { sealBox } from './sealed-box.js';
 
 /** A valid 32-byte Ed25519 keypair as base64 strings. */

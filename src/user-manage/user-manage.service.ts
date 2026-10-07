@@ -127,6 +127,7 @@ export class UserManageService {
           avatar: accountProfileFields(user).avatar,
           bio: accountProfileFields(user).bio,
           domain: identityNamespace.domain,
+          namespaceId: user.namespaceId,
           createdAt: user.createdAt,
           updatedAt: user.updatedAt,
           isDeleted: sql<boolean>`${account.disabledAt} IS NOT NULL`,
@@ -264,9 +265,7 @@ export class UserManageService {
     const target = await this.database.db
       .select({ id: account.id })
       .from(account)
-      .where(
-        and(eq(user.id, id), eq(user.namespaceId, 0)),
-      )
+      .where(and(eq(user.id, id), eq(user.namespaceId, 0)))
       .limit(1);
     if (target.length === 0) {
       throw new BusinessException(

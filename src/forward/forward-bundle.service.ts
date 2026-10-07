@@ -415,7 +415,7 @@ export class ForwardBundleService {
         'one or more source messages are inaccessible',
       );
     }
-    const childBundleIds = [
+    const _childBundleIds = [
       ...new Set(
         sourceRows.flatMap((row) =>
           row!.forwardMessage ? [row!.forwardMessage.bundleId] : [],
@@ -502,7 +502,7 @@ export class ForwardBundleService {
         message.content,
       );
       for (const asset of mediaAssets) assets.set(this.assetKey(asset), asset);
-      const text =
+      const _text =
         message.contentType === ContentType.PURE_TEXT
           ? parseTextMessageContent(message.content)
           : null;

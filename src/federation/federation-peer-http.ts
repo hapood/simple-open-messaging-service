@@ -38,6 +38,73 @@ export class FederationPeerHttp {
     await this.postUrl(new URL(`${base}${path}`), body, peerDomain, options);
   }
 
+  async postJson<T>(
+    path: string,
+    body: string,
+    peerDomain: string,
+    _options: FederationPostOptions = {},
+  ): Promise<T> {
+    const base = await this.discovery.resolveBase(peerDomain);
+    const url = new URL(`${base}${path}`);
+    const release = await this.discovery.acquireRequestSlot(peerDomain);
+    try {
+      const operationStartedAt = new Date();
+      const headers = await this.signature.signOutbound({
+        method: 'POST',
+        url,
+        body,
+      });
+      let response: Response;
+      try {
+        response = await this.discovery.request(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...headers },
+          body,
+          signal: AbortSignal.timeout(
+            this.transportConfig.get().callTimeoutSec * 1000,
+          ),
+        });
+      } catch (error) {
+        await this.recognition.markTransportDegraded(
+          peerDomain,
+          `POST network/timeout: ${(error as Error).message}`,
+          operationStartedAt,
+        );
+        throw new FederationTransportError(
+          `S2S POST to ${peerDomain} failed (network/timeout): ${(error as Error).message}`,
+          { cause: error },
+        );
+      }
+      if (response.status >= 200 && response.status < 300) {
+        await this.lifecycle.markContactSuccess(peerDomain);
+        if (response.status === HttpStatus.NO_CONTENT) return undefined as T;
+        const envelope = (await response.json().catch(() => undefined)) as
+          | { code?: unknown; data?: unknown }
+          | undefined;
+        if (envelope?.code !== BusinessCode.OK) {
+          throw new S2sResponseError(
+            `S2S POST to ${peerDomain} returned business code ${String(envelope?.code)}`,
+            response.status,
+            typeof envelope?.code === 'number'
+              ? envelope.code
+              : BusinessCode.FEDERATION_MALFORMED,
+            envelope?.data,
+          );
+        }
+        return envelope.data as T;
+      }
+      await this.throwRejectedResponse(
+        `POST to ${peerDomain}`,
+        peerDomain,
+        response.status,
+        response,
+        operationStartedAt,
+      );
+      throw new Error('unreachable');
+    } finally {
+      release();
+    }
+  }
   async postUrl(
     url: URL,
     body: string,
@@ -149,7 +216,7 @@ export class FederationPeerHttp {
 
       if (!response.ok) {
         await this.throwRejectedResponse(
-          `GET ${path} from ${peerDomain}`,
+          `GET from ${peerDomain} ${path}`,
           peerDomain,
           response.status,
           response,

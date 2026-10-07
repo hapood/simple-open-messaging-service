@@ -46,7 +46,8 @@ export class UserResponseDto {
 
   @ApiProperty({
     example: 'example.com',
-    description: 'Canonical identity domain; local users use this server\'s configured identity domain',
+    description:
+      "Canonical identity domain; local users use this server's configured identity domain",
   })
   domain!: string;
 

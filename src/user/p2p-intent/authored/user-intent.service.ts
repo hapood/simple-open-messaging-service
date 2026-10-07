@@ -25,7 +25,6 @@ import {
 import { initializeRelationshipThreadStateInTx } from '../../../federation/federation-relationship-thread-state.js';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
 import {
-  compareEndpoints,
   ensureThreadShellInTx,
   lockOrMintUserPairInTx,
   lockUserIntentAccountsInTx,
@@ -273,17 +272,25 @@ export class UserIntentService {
         );
       }
     } else {
-      try {
-        targetNamespaceId = (
-          await this.deps.namespaces.captureActiveInTx(tx, targetDomain)
-        ).namespaceId;
-      } catch (error) {
-        if (!(error instanceof BusinessException)) throw error;
-        return this.reject(
-          'PEER_UNAVAILABLE',
-          BusinessCode.FEDERATION_DELIVERY_FAILED,
-          `federation peer ${targetDomain} is unavailable`,
-        );
+      // First contact by domain: the node's own identity domain is namespace 0
+      // by definition and its row is intentionally inactive, so resolve it
+      // before the active federation-peer lookup.
+      const localDomain = await this.deps.namespaces.localDomainInTx(tx);
+      if (targetDomain === localDomain) {
+        targetNamespaceId = 0;
+      } else {
+        try {
+          targetNamespaceId = (
+            await this.deps.namespaces.captureActiveInTx(tx, targetDomain)
+          ).namespaceId;
+        } catch (error) {
+          if (!(error instanceof BusinessException)) throw error;
+          return this.reject(
+            'PEER_UNAVAILABLE',
+            BusinessCode.FEDERATION_DELIVERY_FAILED,
+            `federation peer ${targetDomain} is unavailable`,
+          );
+        }
       }
     }
     const located = await this.locateInTx(tx, {

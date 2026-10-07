@@ -83,12 +83,24 @@ function harness(
   const consumer = {
     applyItemInTx: vi.fn().mockResolvedValue(consumerEffect),
   };
+  const observed = { profileNamespaceFeedEndId: 0n };
   const limit = vi
     .fn()
     .mockResolvedValue([{ pulledThrough: opts.pulledThrough ?? 1n }]);
   const database = {
     db: {
       select: () => ({ from: () => ({ where: () => ({ limit }) }) }),
+      update: vi.fn(() => ({
+        set: (values: { profileNamespaceFeedEndId: unknown }) => ({
+          where: () => ({
+            returning: vi.fn(async () => {
+              observed.profileNamespaceFeedEndId =
+                values.profileNamespaceFeedEndId as bigint;
+              return [{ pulledThrough: opts.pulledThrough ?? 1n }];
+            }),
+          }),
+        }),
+      })),
     },
   };
   const service = new FederationProfileNamespacePullService(

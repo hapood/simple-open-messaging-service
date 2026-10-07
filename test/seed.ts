@@ -212,7 +212,7 @@ export async function seedAcceptedRelationship(
         return row?.defaultProfileRev ?? 0;
       }),
     );
-    const [pair] = await tx
+    const [_pair] = await tx
       .insert(relationshipPair)
       .values({
         kind: 'P2P',

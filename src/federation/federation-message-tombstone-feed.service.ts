@@ -40,7 +40,7 @@ export class FederationMessageTombstoneFeedService {
   ): Promise<never> {
     const currentEnd = await this.database.db.transaction(
       async (tx) => {
-        const authorized = await resolveAuthorizedFederationThreadInTx(
+        const _authorized = await resolveAuthorizedFederationThreadInTx(
           tx,
           peerDomain,
           namespaceId,

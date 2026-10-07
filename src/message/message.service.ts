@@ -68,10 +68,7 @@ import {
   toDisplayText,
 } from '../common/message-entity.js';
 import { parseSomfpUserMentionEntity } from '../common/account.js';
-import {
-  parseTextMessageContent,
-  stringifyTextMessageContent,
-} from '../../shared/text-message-content.js';
+import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import { deriveMessagePreview } from '../../shared/message-preview.js';
 import {
   parseMessageContentQuote,
@@ -289,10 +286,7 @@ export class MessageService {
     namespaceId: number;
   }> {
     const author = await this.database.db.query.account.findFirst({
-      where: and(
-        eq(user.id, userId),
-        eq(user.namespaceId, 0),
-      ),
+      where: and(eq(user.id, userId), eq(user.namespaceId, 0)),
       columns: { account: true, namespaceId: true },
     });
     if (!author) throw new Error('message author does not exist');
@@ -446,8 +440,15 @@ export class MessageService {
                     eq(message.seq, resolvedQuoteSeq),
                   ),
                 });
-          if (resolvedQuoteSeq !== undefined && resolvedQuoteSeq > 0 && !quoteTarget) {
-            throw new BusinessException(BusinessCode.NOT_FOUND, 'quoted message not found');
+          if (
+            resolvedQuoteSeq !== undefined &&
+            resolvedQuoteSeq > 0 &&
+            !quoteTarget
+          ) {
+            throw new BusinessException(
+              BusinessCode.NOT_FOUND,
+              'quoted message not found',
+            );
           }
           if (quoteTarget?.payloadDigest === null) {
             throw new Error('quoted message has no payload digest');
@@ -460,7 +461,10 @@ export class MessageService {
                 quoteVisibility?.clearedThroughSeq !== undefined &&
                 quoteTarget.seq <= quoteVisibility.clearedThroughSeq))
           ) {
-            throw new BusinessException(BusinessCode.NOT_FOUND, 'quoted message not found');
+            throw new BusinessException(
+              BusinessCode.NOT_FOUND,
+              'quoted message not found',
+            );
           }
           const quoteDigest = quoteTarget?.payloadDigest;
           let storedContent = content;
@@ -724,7 +728,9 @@ export class MessageService {
             publisherNamespaceId: author.namespaceId,
             contentType,
             content: JSON.stringify(
-              quoteTargetSeq === undefined ? {} : { _quoteTargetSeq: quoteTargetSeq },
+              quoteTargetSeq === undefined
+                ? {}
+                : { _quoteTargetSeq: quoteTargetSeq },
             ),
             fileCnt,
             updatedAt: new Date(),
@@ -773,7 +779,9 @@ export class MessageService {
           failReason: null,
           digest: null,
           content: JSON.stringify(
-            quoteTargetSeq === undefined ? {} : { _quoteTargetSeq: quoteTargetSeq },
+            quoteTargetSeq === undefined
+              ? {}
+              : { _quoteTargetSeq: quoteTargetSeq },
           ),
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -1124,7 +1132,10 @@ export class MessageService {
           let content = unboundContent;
           let quoteDigest: string | undefined;
           if (stagedQuoteSeq !== undefined) {
-            if (!Number.isSafeInteger(stagedQuoteSeq) || Number(stagedQuoteSeq) < 1) {
+            if (
+              !Number.isSafeInteger(stagedQuoteSeq) ||
+              Number(stagedQuoteSeq) < 1
+            ) {
               throw new BusinessException(
                 BusinessCode.VALIDATION_FAILED,
                 'invalid quoted message sequence',
@@ -1162,7 +1173,9 @@ export class MessageService {
           }
           const stagedAssets = succeeded.map((file) => ({
             digest: file.digest,
-            bytes: Number((file.payload as unknown as OutboundFilePayload).size),
+            bytes: Number(
+              (file.payload as unknown as OutboundFilePayload).size,
+            ),
           }));
           const [msg] = await tx
             .insert(message)
@@ -1596,8 +1609,7 @@ export class MessageService {
     if (
       msgs.some(
         (m) =>
-          m.publisherNamespaceId > 0 &&
-          parseMessageContentQuote(m.content),
+          m.publisherNamespaceId > 0 && parseMessageContentQuote(m.content),
       )
     ) {
       msgs = await this.database.db.transaction(
@@ -1735,10 +1747,10 @@ export class MessageService {
       const viewerFilters =
         filters instanceof Map ? filters.get(message.threadId) : filters;
       const outsideVisibility =
-        ((viewerFilters?.clearedThroughSeq != null &&
+        (viewerFilters?.clearedThroughSeq != null &&
           quote.seq <= viewerFilters.clearedThroughSeq) ||
-          (viewerFilters?.visibleThroughSeq != null &&
-            quote.seq > viewerFilters.visibleThroughSeq));
+        (viewerFilters?.visibleThroughSeq != null &&
+          quote.seq > viewerFilters.visibleThroughSeq);
       return {
         ...message,
         content: JSON.stringify({

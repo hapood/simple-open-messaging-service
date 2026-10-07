@@ -118,16 +118,14 @@ export class ThreadFeedService {
         const hasMore = resultRows.rows.length > take;
         const items: ThreadFeedState[] = resultRows.rows
           .slice(0, take)
-          .map(
-            ({ profileAccount, ...item }) => ({
-              ...item,
-              profileAccount,
-              groupMetaFeedEndId:
-                item.groupMetaFeedEndId === null
-                  ? null
-                  : String(item.groupMetaFeedEndId),
-            }),
-          );
+          .map(({ profileAccount, ...item }) => ({
+            ...item,
+            profileAccount,
+            groupMetaFeedEndId:
+              item.groupMetaFeedEndId === null
+                ? null
+                : String(item.groupMetaFeedEndId),
+          }));
         if (previewCount > 0) {
           for (const item of items) {
             item.previews = (

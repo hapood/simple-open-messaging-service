@@ -1,5 +1,4 @@
 import { UserService } from '../src/user/user.service.js';
-import { localIdentityDomain } from './support/local-domain.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, eq, or, sql } from 'drizzle-orm';
@@ -161,6 +160,25 @@ describe('account-owned THREAD_STATE and default profiles', () => {
           .update(tables.relationshipPair)
           .set({ active: true, established: true })
           .where(eq(tables.relationshipPair.id, pair.id));
+        const [profile] = await tx
+          .select({ rev: tables.relationshipIntent.profileRev })
+          .from(tables.relationshipIntent)
+          .where(
+            and(
+              eq(tables.relationshipIntent.authorAccount, target),
+              eq(tables.relationshipIntent.authorNamespaceId, namespaceId),
+              eq(tables.relationshipIntent.receiverAccount, owner.account),
+              eq(tables.relationshipIntent.receiverNamespaceId, 0),
+            ),
+          )
+          .limit(1);
+        await tx
+          .update(tables.accountThreadState)
+          .set({
+            threadProfileRev: profile?.rev ?? 0,
+            profileSourceId: profile?.rev ? 1 : null,
+          })
+          .where(eq(tables.accountThreadState.threadId, thread.id));
       });
     const snapshot = async () =>
       (await feed().queryThreadFeedDelta(owner.id, { after: 0 })).items.find(
@@ -224,8 +242,10 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         if (change === 'revocation') {
           await revocation.query(
             `UPDATE "RelationshipIntent" SET status = 'REVOKED'
-          WHERE "authorAccount" = $1 AND "authorNamespaceId" = 0
-            AND "receiverAccount" = $2 AND "receiverNamespaceId" = $3`,
+          WHERE ("authorAccount" = $1 AND "authorNamespaceId" = 0
+            AND "receiverAccount" = $2 AND "receiverNamespaceId" = $3)
+             OR ("authorAccount" = $2 AND "authorNamespaceId" = $3
+            AND "receiverAccount" = $1 AND "receiverNamespaceId" = 0)`,
             [f.owner.account, f.target, f.namespaceId],
           );
         } else {
@@ -310,7 +330,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     await f.activate();
     expect(await f.snapshot()).toMatchObject({
       conversationState: 'ACTIVE',
-      profile: { profileRev: 7 },
+      profileRev: 7,
     });
   });
 
@@ -322,19 +342,24 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       const coordinator = resolver();
       const selector = {
         publisherNamespaceId: f.namespaceId,
-        lookup: ProfileLookup.ACCOUNT_PROFILE,
+        lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
         target: {
           profileNamespaceId: f.namespaceId,
           account: f.target,
           domain: f.domain,
           rev: 7,
         },
+        peerAccount: f.owner.account,
       };
       await expect(
         coordinator.start(f.owner.id, 1, selector),
       ).resolves.toMatchObject({
         status: 'READY',
-        profile: { rev: 7, namespaceId: f.namespaceId },
+        profile: {
+          rev: 7,
+          publisherNamespaceId: f.namespaceId,
+          profileNamespaceId: f.namespaceId,
+        },
       });
       await expect(
         coordinator.start(f.owner.id + 100000, 1, selector),
@@ -364,14 +389,11 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         );
       expect(await f.snapshot()).toMatchObject({
         conversationState: 'READ_ONLY',
-        profile: { profileRev: 7 },
+        profileRev: 7,
       });
       await expect(
         resolver().start(f.owner.id, 1, selector),
-      ).resolves.toMatchObject({
-        status: 'READY',
-        profile: { rev: 7, name: 'Disclosed profile' },
-      });
+      ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
     },
   );
 
@@ -405,7 +427,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       .set({ defaultProfileRev: 8 })
       .where(eq(tables.account.account, f.target));
     expect(await f.snapshot()).toMatchObject({
-      profile: { profileRev: 7 },
+      profileRev: 7,
     });
     await database.db
       .update(tables.accountThreadState)
@@ -430,13 +452,14 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     const coordinator = resolver();
     const exact = {
       publisherNamespaceId: f.namespaceId,
-      lookup: ProfileLookup.ACCOUNT_PROFILE,
+      lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
       target: {
         profileNamespaceId: f.namespaceId,
         account: f.target,
         domain: f.domain,
         rev: 7,
       },
+      peerAccount: f.owner.account,
     };
     await coordinator.start(f.owner.id, 1, exact);
     await database.db
@@ -448,10 +471,10 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       .set({ status: 'REVOKED', profileRev: 8 })
       .where(
         and(
-          eq(tables.relationshipIntent.authorAccount, f.owner.account),
-          eq(tables.relationshipIntent.authorNamespaceId, 0),
-          eq(tables.relationshipIntent.receiverAccount, f.target),
-          eq(tables.relationshipIntent.receiverNamespaceId, f.namespaceId),
+          eq(tables.relationshipIntent.authorAccount, f.target),
+          eq(tables.relationshipIntent.authorNamespaceId, f.namespaceId),
+          eq(tables.relationshipIntent.receiverAccount, f.owner.account),
+          eq(tables.relationshipIntent.receiverNamespaceId, 0),
         ),
       );
     await database.db.insert(tables.profileTable).values({
@@ -470,7 +493,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
     await f.activate();
     const second = await f.snapshot();
-    expect(second?.profile.profileRev).toBe(8);
+    expect(second?.profileRev).toBe(8);
     expect(second!.threadFeedId).toBeGreaterThan(first!.threadFeedId);
     await expect(coordinator.start(f.owner.id, 1, exact)).rejects.toMatchObject(
       {
@@ -489,7 +512,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     const f = await fixture();
     await f.activate();
     const first = await f.snapshot();
-    expect(first?.profile.profileRev).toBe(7);
+    expect(first?.profileRev).toBe(7);
 
     await database.db
       .update(tables.relationshipPair)
@@ -511,7 +534,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     const reestablished = await f.snapshot();
     expect(reestablished).toMatchObject({
       conversationState: 'ACTIVE',
-      profile: { profileRev: 5 },
+      profileRev: 5,
     });
     expect(reestablished!.threadFeedId).toBeGreaterThan(first!.threadFeedId);
   });

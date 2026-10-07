@@ -54,8 +54,7 @@ export function groupMemberPairEndpoints(input: {
   }
   if (!groupLocal)
     throw new Error('a relationship pair has at most one remote endpoint');
-  const groupFirst =
-    input.groupAccount.localeCompare(input.memberAccount) < 0;
+  const groupFirst = input.groupAccount.localeCompare(input.memberAccount) < 0;
   const first: GroupMemberPairEndpoint = groupFirst
     ? { type: 'GROUP', account: input.groupAccount, namespaceId: 0 }
     : { type: 'USER', account: input.memberAccount, namespaceId: 0 };

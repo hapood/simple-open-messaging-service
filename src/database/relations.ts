@@ -8,7 +8,6 @@ import {
   message,
   messageThread,
   accountThreadState,
-  account as user,
   userPreference,
   messageAsset,
   adminActionLog,
@@ -26,8 +25,6 @@ import {
   forwardBundleAsset,
   federationIdentityReview,
   identityNamespace,
-  peerStateFeed,
-  relationshipPair,
   federationThreadHistoryGap,
   federationThreadSyncState,
 } from './schema.js';
@@ -125,7 +122,7 @@ export const messageThreadRelations = relations(
   }),
 );
 
-export const accountRelations = relations(account, ({ one, many }) => ({
+export const accountRelations = relations(account, ({ many }) => ({
   admins: many(admin),
   loginCodes: many(loginCode),
   sessionTokens: many(sessionToken),

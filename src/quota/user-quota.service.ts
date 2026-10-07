@@ -7,7 +7,6 @@ import {
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import {
-  account,
   account as user,
   userQuotaDailyAllowance,
   userQuotaDailyUsage,

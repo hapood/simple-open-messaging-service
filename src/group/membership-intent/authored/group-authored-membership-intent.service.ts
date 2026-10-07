@@ -300,10 +300,7 @@ export class GroupAuthoredMembershipIntentService {
       {
         kind: 'GROUP_MEMBER',
         addresses: [
-          completeBusinessAddress(
-            candidate.groupAccount,
-            0,
-          ),
+          completeBusinessAddress(candidate.groupAccount, 0),
           completeBusinessAddress(member.account, member.namespaceId),
         ],
       },

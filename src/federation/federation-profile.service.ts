@@ -1,5 +1,4 @@
 import {
-  groupState as groupStateTable,
   groupStateSql,
   readGroupState,
   groupStateFields,

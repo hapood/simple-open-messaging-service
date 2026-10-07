@@ -22,7 +22,7 @@ import {
 import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { seedFederatedPeerNamespace, seedUser } from './seed.js';
 
-const ownDomain = loadFederationConfig().domain;
+const _ownDomain = loadFederationConfig().domain;
 
 const ORIGIN_DOMAIN = `mirror-origin-${process.pid}.example`;
 const GROUP_ACCOUNT = '!mirror-group';
@@ -399,7 +399,7 @@ describe('mirror group intent application', () => {
     await freshGroup();
     const bob = await member('collapse');
     await run(bob, invitationBody());
-    const { pair } = await findPair(bob.account);
+    const { _pair } = await findPair(bob.account);
     // The member applied first; the invitation crossed it in flight.
     await database.db.insert(tables.relationshipIntent).values({
       authorAccount: bob.account,
@@ -466,7 +466,7 @@ describe('mirror group intent application', () => {
     await freshGroup();
     const bob = await member('mismatch');
     await run(bob, invitationBody());
-    const { pair } = await findPair(bob.account);
+    const { _pair } = await findPair(bob.account);
     // The member withdrew before the origin's acceptance landed.
     await database.db.insert(tables.relationshipIntent).values({
       authorAccount: bob.account,

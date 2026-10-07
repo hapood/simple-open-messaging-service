@@ -3,11 +3,7 @@ import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import {
-  account as accountTable,
-  sessionToken,
-  account as user,
-} from '../src/database/schema';
+import { sessionToken, account as user } from '../src/database/schema';
 import { SessionTokenService } from '../src/auth/session-token.service';
 import { BusinessCode } from '../src/common/business-code';
 import { RateLimitModeService } from '../src/rate-limit/rate-limit-mode.service';

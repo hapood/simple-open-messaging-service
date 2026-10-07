@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../message/message.service.js';
-import type { FederationThreadAddress } from './federation-message-feed.service.js';
 import {
   selectInboundMessageProfileDemand,
   selectInboundMessageProfileEvidenceProjection,

@@ -192,7 +192,7 @@ export class FederationThreadMetaRoundExecutorService {
   private async runFullWindow(
     group: MirrorGroupAddress,
     through: number,
-    plan: MetaRoundPlan,
+    _plan: MetaRoundPlan,
   ): Promise<void> {
     let after = 0;
     const snapshot: MirrorMetaReplicatedItem[] = [];

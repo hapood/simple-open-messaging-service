@@ -3,7 +3,7 @@ import {
   groupStateFields,
 } from '../group/shared/group-state.js';
 import { Injectable } from '@nestjs/common';
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import type { MediaStatus } from '../common/media-status.js';

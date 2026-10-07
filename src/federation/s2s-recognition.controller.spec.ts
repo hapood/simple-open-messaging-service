@@ -830,7 +830,7 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
       rootEpoch: [],
     });
     // The fetched group must still contain the pinned predecessor root.
-    target.verify;
+    expect(target.verify).toBeDefined();
     const discoveryDoc = {
       protocolVersions: [1],
       roots: [

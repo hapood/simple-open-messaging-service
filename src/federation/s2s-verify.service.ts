@@ -2,7 +2,6 @@ import { Injectable, HttpStatus } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import {
   SignatureService,
-  parseRootKeyHeader,
   type SignedRequest,
   type OutboundSignatureHeaders,
 } from './signature.service.js';

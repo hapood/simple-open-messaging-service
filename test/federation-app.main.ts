@@ -12,9 +12,6 @@
 // graceful app.close() (the degradation test stops appB this way to force a real ECONNREFUSED on appA).
 import 'dotenv/config';
 import { readFileSync } from 'node:fs';
-import { Body, Controller, Get, Module, Post, Query } from '@nestjs/common';
-import { Public } from '../src/common/public.decorator.js';
-import { Raw } from '../src/common/raw.decorator.js';
 import { Test } from '@nestjs/testing';
 import {
   FastifyAdapter,
@@ -22,135 +19,15 @@ import {
 } from '@nestjs/platform-fastify';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from '../src/app.module.js';
-import { FederationModule } from '../src/federation/federation.module.js';
 import { configureApp } from '../src/bootstrap.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { identityNamespace } from '../src/database/schema.js';
 import { KeypairService } from '../src/federation/keypair.service.js';
-import { SignatureService } from '../src/federation/signature.service.js';
 import { DiscoveryService } from '../src/federation/discovery.service.js';
-import { FederationStatePullService } from '../src/federation/federation-state-pull.service.js';
-import { FederationThreadRoundSchedulerService } from '../src/federation/federation-thread-round-scheduler.service.js';
 import {
   TestDiscoveryService,
   makeInMemoryKeypair,
 } from './federation-harness.js';
-
-const feedDrainDiagnostics = {
-  pullsStarted: 0,
-  pullsCompleted: 0,
-  pullErrors: 0,
-  retriesScheduled: 0,
-  maxHeadToPullStartMs: 0,
-  maxPullDurationMs: 0,
-};
-const latestFeedHeadAt = new Map<string, number>();
-
-/**
- * Test-only probe (NOT in prod — this is the test subprocess entry): drive a signed S2S GET as THIS app
- * using its OWN SignatureService + DiscoveryService (the framework's real signing machinery — no
- * reinvented signing, no key exposure). Lets the e2e exercise SERVE-only endpoints SOMS has no internal
- * caller for a backward-only legacy route (SOMS is forward-only). The e2e hits
- * /api/v1/test/signed-s2s-get?peerDomain=...&path=... and this app signs + fetches + relays the upstream
- * {status, body}. Registered as a proper Nest controller (NOT a raw Fastify route — the raw form raced
- * Nest's listen-time route finalization + caused intermittent boot failures). See design-review B3.
- */
-@Public() // opts out of the global JwtAuthGuard — this is a test-only probe (no JWT; it signs the upstream S2S call itself).
-@Raw() // returns a non-envelope {status, body} (mirrors the upstream S2S response) — must bypass envelope wrapping.
-@Controller('test')
-class TestS2sHookController {
-  constructor(
-    private readonly sig: SignatureService,
-    private readonly discovery: DiscoveryService,
-  ) {}
-
-  @Get('signed-s2s-get')
-  async signedGet(
-    @Query('peerDomain') peerDomain: string,
-    @Query('path') path: string,
-  ): Promise<{ status: number; body: unknown }> {
-    const base = await this.discovery.resolveBase(peerDomain);
-    const url = new URL(`${base}${path}`);
-    const headers = await this.sig.signOutbound({
-      method: 'GET',
-      url,
-      body: '', // GET — content-digest covers sha256("")
-    });
-    const upstream = await fetch(url, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(5000),
-    });
-    const text = await upstream.text();
-    let body: unknown = text;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      /* keep raw text */
-    }
-    return { status: upstream.status, body };
-  }
-
-  @Post('signed-s2s-post')
-  async signedPost(
-    @Body() bodyParam: unknown,
-    @Query('peerDomain') peerDomain: string,
-    @Query('path') path: string,
-  ): Promise<{ status: number; body: unknown }> {
-    const base = await this.discovery.resolveBase(peerDomain);
-    const url = new URL(`${base}${path}`);
-    const payload =
-      typeof bodyParam === 'string'
-        ? bodyParam
-        : JSON.stringify(bodyParam ?? {});
-    const headers = await this.sig.signOutbound({
-      method: 'POST',
-      url,
-      body: payload,
-    });
-    const upstream = await fetch(url, {
-      method: 'POST',
-      // undici would default a string body to text/plain, which the receiver's JSON
-      // body parser leaves as a raw string — mirror runRecognize's explicit JSON typing.
-      // content-type is not an RFC 9421 signed component, so adding it cannot break the signature.
-      headers: { 'content-type': 'application/json', ...headers },
-      body: payload,
-      signal: AbortSignal.timeout(5000),
-    });
-    const text = await upstream.text();
-    let body: unknown = text;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      /* keep raw text */
-    }
-    return { status: upstream.status, body };
-  }
-  @Get('feed-drain-diagnostics')
-  feedDrainDiagnosticSnapshot(): typeof feedDrainDiagnostics {
-    return { ...feedDrainDiagnostics };
-  }
-
-  @Post('feed-drain-diagnostics/reset')
-  resetFeedDrainDiagnostics(): typeof feedDrainDiagnostics {
-    for (const key of Object.keys(feedDrainDiagnostics) as Array<
-      keyof typeof feedDrainDiagnostics
-    >)
-      feedDrainDiagnostics[key] = 0;
-    latestFeedHeadAt.clear();
-    return { ...feedDrainDiagnostics };
-  }
-}
-
-/** The probe's own module: FederationModule is no longer @Global, so the controller's
- *  SignatureService/DiscoveryService injections need the explicit import (same pattern as
- *  AdminModule's federation controllers). Overriding DiscoveryService at the testing-builder
- *  level still replaces the provider this module resolves. */
-@Module({
-  imports: [FederationModule],
-  controllers: [TestS2sHookController],
-})
-class TestS2sHookModule {}
 
 async function main(): Promise<void> {
   const domain = process.env.SOMS_DOMAIN;
@@ -218,7 +95,7 @@ async function main(): Promise<void> {
 
   const moduleRef = await overrides(
     Test.createTestingModule({
-      imports: [AppModule, TestS2sHookModule], // test-only signed-S2S probe (see the class doc)
+      imports: [AppModule],
     }),
   ).compile();
   // The in-memory keypair bypasses the real KeypairService bootstrap, which is now the
@@ -254,69 +131,6 @@ async function main(): Promise<void> {
       : new FastifyAdapter();
   const app = moduleRef.createNestApplication<NestFastifyApplication>(adapter);
   app.useLogger(moduleRef.get(Logger, { strict: false }));
-  const statePull = moduleRef.get(FederationStatePullService, {
-    strict: false,
-  });
-  const scheduler = moduleRef.get(FederationThreadRoundSchedulerService, {
-    strict: false,
-  }) as unknown as {
-    scheduleStateFeedDrainRetry: (peerDomain: string) => void;
-  };
-  const originalPull = statePull.pullStateFromPeer.bind(statePull);
-  statePull.pullStateFromPeer = async (
-    peerDomain: string,
-    requiredRevision?: bigint,
-  ): Promise<bigint> => {
-    const startedAt = Date.now();
-    feedDrainDiagnostics.pullsStarted += 1;
-    const headAt = latestFeedHeadAt.get(peerDomain);
-    if (headAt !== undefined)
-      feedDrainDiagnostics.maxHeadToPullStartMs = Math.max(
-        feedDrainDiagnostics.maxHeadToPullStartMs,
-        startedAt - headAt,
-      );
-    if (process.env.FED_E2E_DEBUG === '1')
-      console.log(
-        `FED_STATE_PULL_START ${domain} ${peerDomain} required=${requiredRevision?.toString() ?? 'none'} at=${startedAt}`,
-      );
-    try {
-      const revision = await originalPull(peerDomain, requiredRevision);
-      feedDrainDiagnostics.pullsCompleted += 1;
-      feedDrainDiagnostics.maxPullDurationMs = Math.max(
-        feedDrainDiagnostics.maxPullDurationMs,
-        Date.now() - startedAt,
-      );
-      if (process.env.FED_E2E_DEBUG === '1')
-        console.log(
-          `FED_STATE_PULL_DONE ${domain} ${peerDomain} revision=${revision.toString()} elapsed=${Date.now() - startedAt}`,
-        );
-      return revision;
-    } catch (error) {
-      feedDrainDiagnostics.pullErrors += 1;
-      if (process.env.FED_E2E_DEBUG === '1')
-        console.error(
-          `FED_STATE_PULL_ERROR ${domain} ${peerDomain} elapsed=${Date.now() - startedAt} error=${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
-        );
-      throw error;
-    }
-  };
-  const originalScheduleRetry =
-    scheduler.scheduleStateFeedDrainRetry.bind(scheduler);
-  scheduler.scheduleStateFeedDrainRetry = (peerDomain: string): void => {
-    feedDrainDiagnostics.retriesScheduled += 1;
-    originalScheduleRetry(peerDomain);
-  };
-  adapter.getInstance().addHook('preHandler', (request, _reply, done) => {
-    if (request.url === '/s2s/v1/feed-heads') {
-      const origin = (request.body as { origin?: unknown } | undefined)?.origin;
-      if (typeof origin === 'string') latestFeedHeadAt.set(origin, Date.now());
-      if (process.env.FED_E2E_DEBUG === '1')
-        console.log(
-          `FED_FEED_HEAD ${domain} at=${Date.now()} body=${JSON.stringify(request.body)}`,
-        );
-    }
-    done();
-  });
   await configureApp(app, adapter);
   await app.listen(port, '0.0.0.0');
   // Signal readiness to the harness (which awaits this exact line on stdout).

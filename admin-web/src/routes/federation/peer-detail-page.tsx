@@ -42,6 +42,71 @@ function Meta({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+function FeedProgressCard({
+  title,
+  pulled,
+  end,
+  endLabel,
+  showLag = false,
+}: {
+  title: string;
+  pulled: string | null;
+  end: string;
+  endLabel: string;
+  showLag?: boolean;
+}) {
+  const { t } = useTranslation();
+  const status = showLag ? feedProgressStatus(pulled, end) : null;
+  const text =
+    status === null
+      ? null
+      : status.key === 'federation.feed.behind'
+        ? t(status.key, { count: status.lag.toString() })
+        : t(status.key);
+  const variant = status !== null && status.lag > 0n ? 'outline' : 'secondary';
+  return (
+    <div className="rounded-md border p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="font-medium">{title}</span>
+        {text ? <Badge variant={variant}>{text}</Badge> : null}
+      </div>
+      <div className="grid grid-cols-2 gap-3 font-mono text-xs text-muted-foreground">
+        <div>
+          <div>{t('federation.feed.pulled')}</div>
+          <div>{pulled ?? '-'}</div>
+        </div>
+        <div>
+          <div>{endLabel}</div>
+          <div>{end}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type FeedProgressStatusKey =
+  | 'federation.feed.notStarted'
+  | 'federation.feed.caughtUp'
+  | 'federation.feed.behind';
+
+function feedProgressStatus(
+  pulled: string | null,
+  end: string,
+): { key: FeedProgressStatusKey; lag: bigint } {
+  if (pulled === null)
+    return { key: 'federation.feed.notStarted', lag: 1n };
+  const lag = nonNegativeDiff(end, pulled);
+  return {
+    key: lag === 0n ? 'federation.feed.caughtUp' : 'federation.feed.behind',
+    lag,
+  };
+}
+
+function nonNegativeDiff(end: string, pulled: string): bigint {
+  const diff = BigInt(end) - BigInt(pulled);
+  return diff > 0n ? diff : 0n;
+}
+
 /** Routed peer detail (deep-linkable by domain). Replaces the old PeerDetailDialog so a peer view is
  *  shareable/bookmarkable and respects browser back. */
 export function PeerDetailPage() {
@@ -233,6 +298,29 @@ export function PeerDetailPage() {
                       </Meta>
                     </div>
                   ) : null}
+                </CardContent>
+              </Card>
+
+              <Card className="mt-4">
+                <CardHeader>
+                  <CardTitle>{t('federation.feed.title')}</CardTitle>
+                </CardHeader>
+                <CardContent className="grid gap-4 text-sm md:grid-cols-2">
+                  <FeedProgressCard
+                    title={t('federation.feed.state')}
+                    pulled={peer.feedProgress.inboundStateFeedPulledThrough}
+                    end={peer.feedProgress.outboundStateFeedEndId}
+                    endLabel={t('federation.feed.localOutboundEnd')}
+                  />
+                  <FeedProgressCard
+                    title={t('federation.feed.profileNamespace')}
+                    pulled={
+                      peer.feedProgress.inboundProfileNamespaceFeedPulledThrough
+                    }
+                    end={peer.feedProgress.remoteProfileNamespaceFeedEndId}
+                    endLabel={t('federation.feed.observedEnd')}
+                    showLag
+                  />
                 </CardContent>
               </Card>
             </TabsContent>

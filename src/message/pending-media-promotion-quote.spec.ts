@@ -7,7 +7,6 @@ import {
   fileSyncProgress,
   message,
   messageAsset,
-  messageThread,
   pendingMedia,
 } from '../database/schema.js';
 
@@ -134,7 +133,8 @@ function harness(options: {
         set: () => builder,
         where: () => builder,
         returning: () => thenable([{ curSeq: 5 }]),
-        then: (resolve: unknown) => Promise.resolve(undefined).then(resolve as never),
+        then: (resolve: unknown) =>
+          Promise.resolve(undefined).then(resolve as never),
       };
       return builder;
     }),
@@ -185,7 +185,9 @@ function harness(options: {
         query: {
           message: { findFirst: vi.fn().mockResolvedValue(null) },
           pendingMedia: {
-            findFirst: vi.fn().mockResolvedValue(stageRow(options.stageContent)),
+            findFirst: vi
+              .fn()
+              .mockResolvedValue(stageRow(options.stageContent)),
           },
           fileSyncProgress: {
             findMany: vi.fn().mockResolvedValue([
@@ -255,7 +257,10 @@ describe('MessageService.promoteOutboundBatchIfReady staged quote', () => {
   it.each([
     ['a deleted target', quoteTargetRow({ isDeleted: true })],
     ['a SYSTEM target', quoteTargetRow({ contentType: 'SYSTEM' })],
-    ['a target without payload digest', quoteTargetRow({ payloadDigest: null })],
+    [
+      'a target without payload digest',
+      quoteTargetRow({ payloadDigest: null }),
+    ],
     ['a missing target', null],
   ])('rejects promotion quoting %s', async (_label, target) => {
     const { svc } = harness({

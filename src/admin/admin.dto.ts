@@ -22,7 +22,28 @@ import { AdminRole } from '../database/enums.js';
 import { USER_ACCOUNT_RE, normalizeAccount } from '../common/account.js';
 import { IsDisplayName } from '../common/validators.js';
 
-/** Admin login input. */
+export class AdminFederationHealthProbeDto {
+  @ApiProperty({ example: 1 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  namespaceId!: number;
+}
+
+export class AdminFederationMessageProvenanceDto {
+  @ApiProperty({ example: 123 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId!: number;
+
+  @ApiProperty({ example: 42 })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  seq!: number;
+}
+
 export class AdminLoginDto {
   @ApiProperty({ example: 'admin', description: 'Admin account' })
   @IsString()
@@ -346,6 +367,17 @@ export class AdminListFederationPeersDto {
   @IsOptional()
   @IsString()
   status?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 1,
+    description: 'Filter by local identity namespace id (optional)',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  namespaceId?: number;
 }
 
 /** Optional note attached to an admin block. */

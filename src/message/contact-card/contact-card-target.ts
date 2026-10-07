@@ -44,9 +44,8 @@ export async function assertContactCardTargetVisible(
       );
     }
   } else if (reference.namespaceId === 0) {
-    const user = await services.users.findUniqueUserByNamespaceAddress(
-      reference,
-    );
+    const user =
+      await services.users.findUniqueUserByNamespaceAddress(reference);
     if (!user) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,

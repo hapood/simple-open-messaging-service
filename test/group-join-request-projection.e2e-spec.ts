@@ -6,7 +6,6 @@ import { and, eq } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
-  clientStateFeed,
   groupRequestProjection,
   messageThread,
   accountThreadState,
@@ -18,7 +17,6 @@ import { ClientStateFeedService } from '../src/client-state-feed/client-state-fe
 import { GroupRelationshipMutationService } from '../src/group/membership-intent/shared/group-relationship-mutation.service.js';
 import { admitGroupMembershipProjectionFanoutInTx } from '../src/group/membership-intent/shared/group-membership-projection-fanout.js';
 import { lockBusinessAccountsInTx } from '../src/common/locks/account-business-lock.js';
-import type { DatabaseTransaction } from '../src/database/database.service.js';
 import { readCurrentGroupMemberInTx } from '../src/group/meta/current-group-roster.js';
 import { seedUserWithSession } from './seed.js';
 import { waitForLocalRelationshipRequest } from './durable-task-helpers.js';
@@ -277,7 +275,7 @@ describe('group join request projection', () => {
       namespaceId: 0,
       status: 'REQUESTED',
     });
-    const pendingRow = requestedRows[0] as {
+    const _pendingRow = requestedRows[0] as {
       id: string;
       feedId: number;
     };

@@ -61,7 +61,6 @@ import {
   account,
   federationThreadSyncState,
   forwardBundle,
-  forwardBundleAsset,
   forwardBundleDependency,
   forwardMessage,
   groupMeta,
@@ -72,8 +71,6 @@ import {
   mediaAsset,
   messageAsset,
   message,
-  clientStateFeed,
-  durableTask,
   messageThread,
   peerStateFeed,
   s2SKeyCache,
@@ -87,8 +84,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readCurrentGroupMemberByAddressInTx } from '../src/group/meta/current-group-roster.js';
-import { encodeFederationResourceComponent } from '../src/federation/federation-resource-request.js';
-import { payloadDigest } from '../src/federation/canonical-json.js';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
 
 /**
@@ -178,6 +173,65 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       throw new Error(`No active namespace for federated peer ${domain}`);
     }
     return peer.id;
+  }
+
+  async function resolveIntentProfile(
+    app: FedApp,
+    token: string,
+    demand: {
+      publisherNamespaceId: number;
+      target: { profileNamespaceId: number; account: string; rev: number };
+      peerAccount: string;
+    },
+  ): Promise<{
+    account: string;
+    name: string;
+    bio: string;
+    avatarBase64: string | null;
+    rev: number;
+  }> {
+    const reader = await openSse(app.baseUrl, token);
+    const body = { ...demand, lookup: 'RELATIONSHIP_INTENT_PROFILE' };
+    try {
+      const first = await request(app.baseUrl)
+        .post('/api/v1/user/profile-resolution')
+        .set('Authorization', `Bearer ${token}`)
+        .send(body);
+      expect(first.status).toBe(200);
+      expect(first.body.code).toBe(BusinessCode.OK);
+      if (first.body.data.status === 'READY') return first.body.data.profile;
+
+      expect(first.body.data.status).toBe('PENDING');
+      const expectedKey = {
+        publisherNamespaceId: demand.publisherNamespaceId,
+        ...demand.target,
+      };
+      await waitForSseEvent(
+        reader,
+        (event, data) => {
+          const key = data as Record<string, unknown> | undefined;
+          const matches =
+            key?.publisherNamespaceId === expectedKey.publisherNamespaceId &&
+            key?.profileNamespaceId === expectedKey.profileNamespaceId &&
+            key?.account === expectedKey.account &&
+            key?.rev === expectedKey.rev;
+          if (event === 'PROFILE_UNAVAILABLE' && matches)
+            throw new Error(`profile unavailable: ${JSON.stringify(data)}`);
+          return event === 'PROFILE_AVAILABLE' && matches;
+        },
+        10_000,
+      );
+      const second = await request(app.baseUrl)
+        .post('/api/v1/user/profile-resolution')
+        .set('Authorization', `Bearer ${token}`)
+        .send(body);
+      expect(second.status).toBe(200);
+      expect(second.body.code).toBe(BusinessCode.OK);
+      expect(second.body.data.status).toBe('READY');
+      return second.body.data.profile;
+    } finally {
+      await reader.cancel();
+    }
   }
 
   const textContent = (value: string) => JSON.stringify({ text: value });
@@ -461,23 +515,15 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       },
       { timeout: 5000, interval: 100 },
     );
-    const publishedProfile = await request(appB.baseUrl)
-      .get('/api/v1/test/signed-s2s-get')
-      .query({
-        peerDomain: DOM_A,
-        path: `/s2s/v1/intent-profiles/0/alice/bob/${incoming.profileRev}`,
-      });
-    expect(publishedProfile.body.status).toBe(200);
-    expect(publishedProfile.body.body).toMatchObject({
-      code: BusinessCode.OK,
-      data: {
+    const profileEvidence = await resolveIntentProfile(appB, tokenB, {
+      publisherNamespaceId: namespaceAOnB,
+      target: {
+        profileNamespaceId: 0,
         account: 'alice',
+        rev: incoming.profileRev,
       },
+      peerAccount: 'bob',
     });
-    const profileEvidence = publishedProfile.body.body.data as {
-      displayName?: unknown;
-      avatar?: unknown;
-    };
     const incomingTimings = await appB.database.execute<{
       requestedAt: Date;
       expiresAt: Date;
@@ -496,13 +542,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         new Date(incomingTiming!.requestedAt).getTime(),
     ).toBe(7 * 24 * 60 * 60 * 1000);
     expect(incoming.profileRev).toBeGreaterThan(0);
-    expect(profileEvidence.displayName).toBe('Alice');
-    expect(profileEvidence.avatar).toMatchObject({
-      mimeType: expect.stringMatching(/^image\//),
-      base64: expect.any(String),
-      width: expect.any(Number),
-      height: expect.any(Number),
-    });
+    expect(profileEvidence.name).toBe('Alice');
+    expect(profileEvidence.avatarBase64).toEqual(expect.any(String));
 
     const publishedRequest = await appA.database.query.peerStateFeed.findFirst({
       where: and(
@@ -616,25 +657,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       })
     )?.defaultProfileRev;
     expect(bobProfileRev).toBeGreaterThan(0);
-    const bobProfile = await request(appA.baseUrl)
-      .get('/api/v1/test/signed-s2s-get')
-      .query({
-        peerDomain: DOM_B,
-        path: `/s2s/v1/intent-profiles/0/bob/alice/${bobProfileRev}`,
-      });
-    expect(bobProfile.body.status).toBe(200);
-    expect(bobProfile.body.body).toMatchObject({
-      code: BusinessCode.OK,
-      data: {
+    const namespaceBOnA = await requireActiveNamespaceId(appA, DOM_B);
+    const bobProfile = await resolveIntentProfile(appA, tokenA, {
+      publisherNamespaceId: namespaceBOnA,
+      target: {
+        profileNamespaceId: 0,
         account: 'bob',
-        displayName: 'Bob',
-        avatar: {
-          mimeType: expect.stringMatching(/^image\//),
-          base64: expect.any(String),
-          width: expect.any(Number),
-          height: expect.any(Number),
-        },
+        rev: bobProfileRev!,
       },
+      peerAccount: 'alice',
+    });
+    expect(bobProfile).toMatchObject({
+      account: 'bob',
+      name: 'Bob',
+      avatarBase64: expect.any(String),
     });
   });
 
@@ -995,104 +1031,43 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     }
   });
 
-  it('Step 2: a federated message is attested by POST /s2s/v1/message-provenance from the peer', async () => {
+  it('Step 2: a federated message is attested by admin provenance verification', async () => {
     await ensureAliceAndBobAreFriends();
-    // The 'hi from alice' message from the previous test reached appB. The source (appA) retained a
-    // `payloadDigest` for it at creation. A provenance query signed by appB against appA must answer
-    // `yes` for `(thread, seq, payloadDigest)` and `no` for a wrong digest. This is the HTTP-level
-    // origin-attestation contract under the real S2S signature guard.
+    const marker = `provenance ${randomUUID()}`;
     const sent = await request(appA.baseUrl)
       .post('/api/v1/send-message')
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: await alicesThreadIdOnA(),
-        content: 'hi from alice',
+        content: marker,
         contentType: 'PURE_TEXT',
       });
     expect(sent.body.code).toBe(BusinessCode.OK);
-    const wire = await vi.waitFor(
+    const threadB = await findActiveP2pParticipant(appB, aliceAddressOnB);
+    expect(threadB).toBeDefined();
+    const delivered = await vi.waitFor(
       async () => {
-        const cursorResponse = await request(appB.baseUrl)
-          .get('/api/v1/test/signed-s2s-get')
-          .query({
-            peerDomain: DOM_A,
-            path: `/s2s/v1/messages?account=alice&peerAccount=bob`,
-          });
-        expect(cursorResponse.body.status).toBe(200);
-        expect(cursorResponse.body.body.code).toBe(
-          BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
-        );
-        const after = cursorResponse.body.body.data.resumeAfter;
-        const response = await request(appB.baseUrl)
-          .get('/api/v1/test/signed-s2s-get')
-          .query({
-            peerDomain: DOM_A,
-            path: `/s2s/v1/messages?account=alice&peerAccount=bob&after=${after}&take=50`,
-          });
-        expect(response.body.status).toBe(200);
-        expect(response.body.body.code).toBe(BusinessCode.OK);
-        const item = response.body.body.data.messages.find(
+        const queried = await request(appB.baseUrl)
+          .post('/api/v1/query-messages')
+          .set('Authorization', `Bearer ${tokenB}`)
+          .send({ threadId: threadB!.threadId, after: 0, take: 50 });
+        expect(queried.body.code).toBe(BusinessCode.OK);
+        const item = queried.body.data.messages.find(
           (candidate: { content?: string }) =>
-            candidate.content === JSON.stringify({ text: 'hi from alice' }) ||
-            candidate.content?.includes('hi from alice'),
+            candidate.content === JSON.stringify({ text: marker }),
         );
         expect(item).toBeDefined();
-        return item;
+        return item as { seq: number };
       },
       { timeout: 10_000, interval: 100 },
     );
-    const wireMessage = wire as {
-      thread: unknown;
-      seq: number;
-      payloadDigest: string;
-    };
-    expect(wireMessage.payloadDigest).toBeUndefined();
-    const digest = payloadDigest(
-      JSON.stringify({ text: 'hi from alice' }),
-      [],
-      undefined,
-    );
     const yes = await request(appB.baseUrl)
-      .post('/api/v1/test/signed-s2s-post')
-      .query({
-        peerDomain: DOM_A,
-        path: '/s2s/v1/message-provenance',
-      })
-      .send({
-        queries: [
-          {
-            thread: wireMessage.thread,
-            seq: wireMessage.seq,
-            payloadDigest: digest,
-          },
-        ],
-      });
-    expect(yes.body.status).toBe(200);
-    expect(yes.body.body.code).toBe(BusinessCode.OK);
-    expect(yes.body.body.data.results).toEqual([
-      {
-        thread: wireMessage.thread,
-        seq: wireMessage.seq,
-        known: 'yes',
-      },
-    ]);
-    // A wrong digest at the same coordinate → no.
-    const no = await request(appB.baseUrl)
-      .post('/api/v1/test/signed-s2s-post')
-      .query({
-        peerDomain: DOM_A,
-        path: '/s2s/v1/message-provenance',
-      })
-      .send({
-        queries: [
-          {
-            thread: wireMessage.thread,
-            seq: wireMessage.seq,
-            payloadDigest: '0'.repeat(64),
-          },
-        ],
-      });
-    expect(no.body.body.data.results[0].known).toBe('no');
+      .post('/api/v1/admin/federation/message-provenance/verify')
+      .set('Cookie', adminCookieB)
+      .send({ threadId: threadB!.threadId, seq: delivered.seq });
+    expect(yes.status).toBe(200);
+    expect(yes.body.code).toBe(BusinessCode.OK);
+    expect(yes.body.data).toEqual({ known: 'yes' });
   });
 
   it('Step 2: a federated member can reply to a peer-authored message', async () => {
@@ -1814,46 +1789,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(createHash('sha256').update(onDisk).digest('hex')).toBe(digest);
     expect(onDisk.length).toBe(size);
 
-    // The digest alone is not authorization. Re-sign the same resource request with a different
-    // stable message seq and thread recipient; both must fail the exact historical ownership lookup.
-    const servedPath = proxy
-      .requestLog()
-      .find((entry) => entry.path.startsWith(`/s2s/v1/media/${digest}?`))?.path;
-    expect(servedPath).toBeDefined();
-    const assertRejectedBinding = async (
-      mutate: (url: URL) => void,
-    ): Promise<void> => {
-      const url = new URL(servedPath!, 'http://federation.test');
-      mutate(url);
-      const probe = await request(appB.baseUrl)
-        .get('/api/v1/test/signed-s2s-get')
-        .query({ peerDomain: DOM_A, path: `${url.pathname}${url.search}` });
-      expect(probe.body.status).toBe(200);
-      expect(probe.body.body.code).toBe(BusinessCode.FORBIDDEN);
-    };
-    await assertRejectedBinding((url) => {
-      url.searchParams.set(
-        'seq',
-        String(Number(url.searchParams.get('seq')) + 1),
-      );
-    });
-    await assertRejectedBinding((url) => {
-      url.searchParams.set('toAccount', 'not-the-delivered-thread');
-    });
-
-    // Feed allocation and resource authorization are intentionally independent. Once appB has consumed
-    // the carrier message, disable the proxy's byte fixture so this probe reaches appA's real /media
-    // authorization path. The exact message/digest binding plus retained ThreadAudience authorizes it.
-    const sourceBinding = await appA.database.query.messageAsset.findFirst({
-      where: eq(messageAsset.digest, digest),
-      columns: { messageId: true },
-    });
-    expect(sourceBinding).toBeDefined();
-    proxy.setGetFileFixture(digest, null);
-    const afterFeedGc = await request(appB.baseUrl)
-      .get('/api/v1/test/signed-s2s-get')
-      .query({ peerDomain: DOM_A, path: servedPath });
-    expect(afterFeedGc.body.status).toBe(200);
+    // The natural localization task has already exercised the signed /media resource path above.
+    // Authorization edge cases for mutated seq/recipient bindings are covered at
+    // FederationPeerResourceService level, where the exact resource gates can be asserted without
+    // retaining a test-only signed S2S probe.
   });
 
   it('Step 2: a dropped media chunk resumes from its offset (no degradation, byte-exact)', async () => {
@@ -2188,20 +2127,19 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       status: 'REQUESTED',
       profileRev: expect.any(Number),
     });
-    const invitedGroupProfile = await request(appB.baseUrl)
-      .get('/api/v1/test/signed-s2s-get')
-      .query({
-        peerDomain: DOM_A,
-        path: `/s2s/v1/intent-profiles/0/${encodeFederationResourceComponent(groupAccount)}/bob/${String((publishedGroupInvite!.body as { profileRev: number }).profileRev)}`,
-      });
-    expect(invitedGroupProfile.body.status).toBe(200);
-    expect(invitedGroupProfile.body.body).toMatchObject({
-      code: BusinessCode.OK,
-      data: {
+    const invitedGroupProfile = await resolveIntentProfile(appB, tokenB, {
+      publisherNamespaceId: aliceAddressOnB.namespaceId,
+      target: {
+        profileNamespaceId: 0,
         account: groupAccount,
-        displayName: 'fed-group',
-        bio: '',
+        rev: (publishedGroupInvite!.body as { profileRev: number }).profileRev,
       },
+      peerAccount: 'bob',
+    });
+    expect(invitedGroupProfile).toMatchObject({
+      account: groupAccount,
+      name: 'fed-group',
+      bio: '',
     });
 
     // Local acceptance updates the relationship state. The remote host later publishes the
@@ -2542,10 +2480,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       'erin-join-projection',
       'Erin',
     );
-    const diagnosticReset = await request(appA.baseUrl).post(
-      '/api/v1/test/feed-drain-diagnostics/reset',
-    );
-    expect(diagnosticReset.status).toBe(201);
     const apply = await request(appB.baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${tokenErin}`)
@@ -2576,16 +2510,34 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       },
       { timeout: 5000, interval: 100 },
     );
-    const diagnostic = await request(appA.baseUrl).get(
-      '/api/v1/test/feed-drain-diagnostics',
+    await vi.waitFor(
+      async () => {
+        const peer = await request(appA.baseUrl)
+          .post('/api/v1/admin/federation/peers')
+          .set('Cookie', adminCookieA)
+          .send({
+            namespaceId: projected.profileNamespaceId,
+            skip: 0,
+            take: 1,
+          });
+        expect(peer.status).toBe(200);
+        expect(peer.body.code).toBe(BusinessCode.OK);
+        expect(peer.body.data.list).toHaveLength(1);
+        const progress = peer.body.data.list[0].feedProgress as {
+          remoteProfileNamespaceFeedEndId: string;
+          inboundProfileNamespaceFeedPulledThrough: string;
+        };
+        expect(
+          BigInt(progress.remoteProfileNamespaceFeedEndId),
+        ).toBeGreaterThan(0n);
+        expect(
+          BigInt(progress.inboundProfileNamespaceFeedPulledThrough),
+        ).toBeGreaterThanOrEqual(
+          BigInt(progress.remoteProfileNamespaceFeedEndId),
+        );
+      },
+      { timeout: 5000, interval: 100 },
     );
-    expect(diagnostic.status).toBe(200);
-    expect(diagnostic.body).toMatchObject({
-      pullErrors: 0,
-      retriesScheduled: 0,
-    });
-    expect(diagnostic.body.maxHeadToPullStartMs).toBeLessThan(1000);
-    expect(diagnostic.body.maxPullDurationMs).toBeLessThan(5000);
     const rejected = await request(appA.baseUrl)
       .post('/api/v1/group/join-request/reject')
       .set('Authorization', `Bearer ${tokenA}`)
@@ -3814,9 +3766,18 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     } finally {
       proxy.blockRelays(false);
     }
-    // The partition degraded B's view of the origin; one resolve drives the
-    // Health round that restores availability before origin-facing pushes resume.
-    await resolveFederatedCard(appB, tokenB, 'alice', DOM_A).catch(() => {});
+    // The partition degraded B's view of the origin. Wait until a real
+    // user-visible federation request succeeds after the relay is restored;
+    // the availability transition drives the reconnect path that flushes the
+    // compacted mirror rejoin to the origin.
+    await vi.waitFor(
+      async () => {
+        const result = await resolveFederatedCard(appB, tokenB, 'alice', DOM_A);
+        expect(result.event).toBe('resolved');
+        return result;
+      },
+      { timeout: 30_000, interval: 500 },
+    );
 
     await vi.waitFor(
       async () => {

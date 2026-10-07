@@ -143,7 +143,7 @@ describe('User intent HTTP contract e2e', () => {
   it('rejects a self-directed acceptance with the stable invite code', async () => {
     const http = app.getHttpServer();
     const inviter = await seedUserWithSession(app, 'inviter', { name: 'A' });
-    const invitee = await seedUserWithSession(app, 'invitee', { name: 'B' });
+    const _invitee = await seedUserWithSession(app, 'invitee', { name: 'B' });
     await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
@@ -248,7 +248,7 @@ describe('User intent HTTP contract e2e', () => {
 
   it('returns FRIEND_NOT_FOUND for a stranger revocation', async () => {
     const http = app.getHttpServer();
-    const inviter = await seedUserWithSession(app, 'inviter', { name: 'A' });
+    const _inviter = await seedUserWithSession(app, 'inviter', { name: 'A' });
     const stranger = await seedUserWithSession(app, 'stranger', { name: 'C' });
 
     const revoked = await request(http)
@@ -265,7 +265,7 @@ describe('User intent HTTP contract e2e', () => {
   it('withdrawing a pending request revokes the authored intent without departure and renews on re-request', async () => {
     const http = app.getHttpServer();
     const inviter = await seedUserWithSession(app, 'inviter', { name: 'A' });
-    const invitee = await seedUserWithSession(app, 'invitee', { name: 'B' });
+    const _invitee = await seedUserWithSession(app, 'invitee', { name: 'B' });
     await request(http)
       .post('/api/v1/relationship/request')
       .set(auth(inviter.token))
@@ -374,7 +374,7 @@ describe('User intent HTTP contract e2e', () => {
       });
 
     // Expire the pending direction behind the command's back.
-    const { pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
+    const { _pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
       database.db,
       inviter.id,
       {
@@ -477,7 +477,7 @@ describe('User intent HTTP contract e2e', () => {
         domain: localIdentityDomain(),
         namespaceId: 0,
       });
-    const { pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
+    const { _pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
       database.db,
       inviter.id,
       {

@@ -35,7 +35,12 @@ export default tseslint.config(
         'error',
         // ignoreRestSiblings enables the idiomatic field-omit pattern `const { id, ...rest } = obj`
         // (used to strip the internal Message.id — a throughput side-channel — from responses).
-        { caughtErrors: 'none', ignoreRestSiblings: true },
+        {
+          caughtErrors: 'none',
+          ignoreRestSiblings: true,
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+        },
       ],
       // Note: @typescript-eslint/interface-name-prefix was removed in v8, so the former 'off' is no longer needed.
     },

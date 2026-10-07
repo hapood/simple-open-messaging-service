@@ -1,10 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { normalizeAccount } from '../common/account.js';
-import {
-  DatabaseService,
-  type DatabaseTransaction,
-} from '../database/database.service.js';
+import { DatabaseService } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import type { S2SAddress } from './federation-address.js';
 /** Resolves local and foreign federation identities without owning profile materialization. */

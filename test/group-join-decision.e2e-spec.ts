@@ -217,7 +217,7 @@ describe('group join decision', () => {
       group.threadId,
       applicant.id,
     );
-    const intent = await database.db.query.relationshipIntent.findFirst({
+    const _intent = await database.db.query.relationshipIntent.findFirst({
       where: memberDirection(group.account, applicant.account),
     });
     return {
@@ -566,12 +566,12 @@ describe('group join decision', () => {
           true,
         );
       });
-      const { pair } = await findGroupRelationship(
+      const { _pair } = await findGroupRelationship(
         database.db,
         group.threadId,
         member,
       );
-      const request = await database.db.query.relationshipIntent.findFirst({
+      const _request = await database.db.query.relationshipIntent.findFirst({
         where: memberDirection(group.account, member.account, namespaceId),
       });
       const locks = vi.spyOn(
@@ -1580,12 +1580,12 @@ describe('group join decision', () => {
         true,
       );
     });
-    const { pair } = await findGroupRelationship(
+    const { _pair } = await findGroupRelationship(
       database.db,
       group.threadId,
       member,
     );
-    const request = await database.db.query.relationshipIntent.findFirst({
+    const _request = await database.db.query.relationshipIntent.findFirst({
       where: memberDirection(group.account, member.account, namespaceId),
     });
     const params = {
@@ -1788,7 +1788,7 @@ describe('group join decision', () => {
     // The invitee's own outstanding invitation already occupies a slot, so
     // completing it succeeds at the limit (idempotent retries stay safe).
     const invited = await fixture();
-    const { pair } = await findGroupRelationship(
+    const { _pair } = await findGroupRelationship(
       database.db,
       invited.group.threadId,
       invited.applicant.id,
@@ -1867,7 +1867,7 @@ describe('group join decision', () => {
     // Seed the entry state directly: the group authored an outstanding
     // invitation (side A REQUESTED) and the invitee has already acked (side B
     // ACCEPTED) without any legacy activation having run.
-    const { pair } = await findGroupRelationship(
+    const { _pair } = await findGroupRelationship(
       database.db,
       f.group.threadId,
       f.applicant.id,
@@ -1971,7 +1971,7 @@ describe('group join decision', () => {
       undefined,
     );
     const f = await fixture();
-    const { pair } = await findGroupRelationship(
+    const { _pair } = await findGroupRelationship(
       database.db,
       f.group.threadId,
       f.applicant.id,
@@ -2678,7 +2678,7 @@ describe('group join decision', () => {
         memberUserId: f.member.id,
         decision: 'REVOKED',
       });
-      const { pair } = await findGroupRelationship(
+      const { _pair } = await findGroupRelationship(
         database.db,
         f.group.threadId,
         f.member.id,
@@ -2729,7 +2729,7 @@ describe('group join decision', () => {
         memberUserId: f.member.id,
         decision: 'REVOKED',
       });
-      const { pair } = await findGroupRelationship(
+      const { _pair } = await findGroupRelationship(
         database.db,
         f.group.threadId,
         f.member.id,
@@ -2757,12 +2757,12 @@ describe('group join decision', () => {
         memberUserId: f.member.id,
         decision: 'REQUESTED',
       });
-      const applied = await findGroupRelationship(
+      const _applied = await findGroupRelationship(
         database.db,
         f.group.threadId,
         f.member.id,
       );
-      const sideB = await database.db.query.relationshipIntent.findFirst({
+      const _sideB = await database.db.query.relationshipIntent.findFirst({
         where: memberDirection(f.group.account, f.member.account),
       });
       await authoredIntents.execute({

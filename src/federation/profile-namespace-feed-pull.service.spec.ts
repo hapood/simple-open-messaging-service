@@ -11,17 +11,26 @@ function page(
   return { items, scannedThrough, feedEndId, hasMore };
 }
 
-function harness(pulledThrough = 0n) {
-  const epoch = { profileNamespaceFeedPulledThrough: pulledThrough };
+function harness(pulledThrough = 0n, observedEndId = 0n) {
+  const epoch = {
+    profileNamespaceFeedPulledThrough: pulledThrough,
+    profileNamespaceFeedEndId: observedEndId,
+  };
   const limit = vi.fn(async () => [
-    { pulledThrough: epoch.profileNamespaceFeedPulledThrough },
+    {
+      pulledThrough: epoch.profileNamespaceFeedPulledThrough,
+      observedEndId: epoch.profileNamespaceFeedEndId,
+    },
   ]);
   const selectChain = () => ({ from: () => ({ where: () => ({ limit }) }) });
   const tx = {
     execute: vi.fn().mockResolvedValue({ rows: [{ locked: true }] }),
     select: vi.fn(selectChain),
     update: vi.fn(() => ({
-      set: (values: { profileNamespaceFeedPulledThrough: bigint }) => ({
+      set: (values: {
+        profileNamespaceFeedPulledThrough?: bigint;
+        profileNamespaceFeedEndId?: bigint;
+      }) => ({
         where: async () => {
           Object.assign(epoch, values);
           return undefined;
@@ -72,6 +81,7 @@ describe('ProfileNamespaceFeedPullService drain', () => {
     });
     expect(applied).toEqual(['1', '2']);
     expect(epoch.profileNamespaceFeedPulledThrough).toBe(2n);
+    expect(epoch.profileNamespaceFeedEndId).toBe(2n);
   });
 
   it('advances the cursor through empty pages and gaps without applying', async () => {
@@ -83,6 +93,7 @@ describe('ProfileNamespaceFeedPullService drain', () => {
     });
     expect(apply).not.toHaveBeenCalled();
     expect(epoch.profileNamespaceFeedPulledThrough).toBe(9n);
+    expect(epoch.profileNamespaceFeedEndId).toBe(9n);
   });
 
   it('drains multiple pages until the fixed source end', async () => {
@@ -107,6 +118,7 @@ describe('ProfileNamespaceFeedPullService drain', () => {
     });
     expect(seen).toEqual(['0', '2']);
     expect(epoch.profileNamespaceFeedPulledThrough).toBe(5n);
+    expect(epoch.profileNamespaceFeedEndId).toBe(5n);
   });
 
   it('rejects a page whose boundary math is inconsistent', async () => {
@@ -160,5 +172,22 @@ describe('ProfileNamespaceFeedPullService drain', () => {
       }),
     });
     expect(epoch.profileNamespaceFeedPulledThrough).toBe(6n);
+    expect(epoch.profileNamespaceFeedEndId).toBe(6n);
+  });
+
+  it('retains a newer observed feed head while applying an older page', async () => {
+    const { service, epoch } = harness(0n, 10n);
+    await service.run('peer.test', 12, {
+      fetch: async () => page([{ namespaceId: 1, feedId: '1' }], '6'),
+      apply: async (_tx, item) => ({
+        publisherNamespaceId: 12,
+        profileNamespaceId: item.namespaceId,
+        triggerFeedId: BigInt(item.feedId),
+        expiredLocalRows: false,
+        clientChangeId: BigInt(item.feedId),
+      }),
+    });
+    expect(epoch.profileNamespaceFeedPulledThrough).toBe(6n);
+    expect(epoch.profileNamespaceFeedEndId).toBe(10n);
   });
 });

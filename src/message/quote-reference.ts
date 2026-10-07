@@ -33,7 +33,10 @@ export async function resolveStoredQuotes<T extends Message>(
     ];
   });
   if (!refs.length) return messages;
-  const targets = await findStoredQuoteTargets(db, refs.map(({ m }) => m));
+  const targets = await findStoredQuoteTargets(
+    db,
+    refs.map(({ m }) => m),
+  );
   const threadIds = [...new Set(refs.map((r) => r.m.threadId))];
   const [gaps, states] = await Promise.all([
     db.query.federationThreadHistoryGap.findMany({

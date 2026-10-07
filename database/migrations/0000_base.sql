@@ -1320,7 +1320,7 @@ CREATE TABLE public."IdentityNamespace" (
     "profileNamespaceFeedEndId" bigint DEFAULT 0 NOT NULL,
     "profileNamespaceFeedPulledThrough" bigint DEFAULT 0 NOT NULL,
     CONSTRAINT "IdentityNamespace_active_check" CHECK (((active = false) OR ((id > 0) AND ("retiredAt" IS NULL)))),
-    CONSTRAINT "IdentityNamespace_profileNamespaceFeedEndId_check" CHECK ((("profileNamespaceFeedEndId" >= 0) AND ((id = 0) OR ("profileNamespaceFeedEndId" = 0)))),
+    CONSTRAINT "IdentityNamespace_profileNamespaceFeedEndId_check" CHECK (("profileNamespaceFeedEndId" >= 0)),
     CONSTRAINT "IdentityNamespace_profileNamespaceFeedPulledThrough_check" CHECK (("profileNamespaceFeedPulledThrough" >= 0)),
     CONSTRAINT "IdentityNamespace_retiredAt_check" CHECK ((("retiredAt" IS NULL) OR ("retiredAt" >= "createdAt"))),
     CONSTRAINT "IdentityNamespace_shape_check" CHECK ((((id = 0) AND ("rootPublicKey" IS NULL) AND ("identityPinnedAt" IS NULL) AND ("peerAssignedLocalNamespaceId" IS NULL) AND ("retiredAt" IS NULL) AND (active = false) AND (("trustLevel")::text = 'unrecognized'::text) AND ("trustedAt" IS NULL) AND ("lastSuccessAt" IS NULL) AND ("degradedAt" IS NULL) AND ("degradationReason" IS NULL) AND ("degradationCount" = 0) AND ("haltedAt" IS NULL) AND ("haltCode" IS NULL) AND ("haltReason" IS NULL) AND ("peerAcceptanceConfirmed" = false) AND ("localServiceAvailable" = false) AND ("remoteServiceReachable" = false) AND ("resetAt" IS NULL)) OR ((id > 0) AND ("rootPublicKey" IS NOT NULL) AND ("identityPinnedAt" IS NOT NULL) AND (("peerAssignedLocalNamespaceId" IS NULL) OR ("peerAssignedLocalNamespaceId" > 0))))),

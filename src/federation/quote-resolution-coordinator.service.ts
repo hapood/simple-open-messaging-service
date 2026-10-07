@@ -92,7 +92,6 @@ export class QuoteResolutionCoordinatorService implements OnModuleDestroy {
     let checking = false;
     let dirty = false;
     let finished = false;
-    let timer: ReturnType<typeof setTimeout>;
     let unsubscribe = () => {};
     const cancel = () => {
       finished = true;
@@ -136,7 +135,7 @@ export class QuoteResolutionCoordinatorService implements OnModuleDestroy {
     unsubscribe = this.scheduler.observeCompletions((threadId) => {
       if (threadId === selector.threadId) void check();
     });
-    timer = setTimeout(fail, 20_000);
+    const timer = setTimeout(fail, 20_000);
     this.flights.set(key, { requestId, cancel });
     void (async () => {
       const [source] = await this.database.db

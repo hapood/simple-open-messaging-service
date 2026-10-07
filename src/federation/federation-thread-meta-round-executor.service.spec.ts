@@ -88,7 +88,7 @@ describe('federation Group Meta round profile behavior', () => {
       hasMore: false,
     });
     const client = { fetchPage };
-    const profileResolutions = { resolveDemand: vi.fn() };
+    const _profileResolutions = { resolveDemand: vi.fn() };
     const events = { emit: vi.fn() };
     const round = new FederationThreadMetaRoundExecutorService(
       { db: { execute, transaction } } as never,

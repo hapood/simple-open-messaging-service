@@ -262,6 +262,7 @@ export class FederationPeerLifecycle {
     take: number;
     search?: string;
     status?: string;
+    namespaceId?: number;
   }) {
     const where = and(
       ...(opts.search
@@ -269,6 +270,9 @@ export class FederationPeerLifecycle {
         : []),
       ...(opts.status
         ? [eq(tables.identityNamespace.trustLevel, opts.status)]
+        : []),
+      ...(opts.namespaceId !== undefined
+        ? [eq(tables.identityNamespace.id, opts.namespaceId)]
         : []),
     );
     const [list, total] = await Promise.all([
@@ -284,7 +288,35 @@ export class FederationPeerLifecycle {
         .where(where)
         .then(([row]) => row.value),
     ]);
-    return { list, total };
+    return {
+      list: list.map((peer) => this.withFeedProgress(peer)),
+      total,
+    };
+  }
+
+  async detail(domain: string) {
+    const peer = await this.database.db.query.identityNamespace.findFirst({
+      where: eq(tables.identityNamespace.domain, domain),
+    });
+    if (!peer)
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'peer not found');
+    return this.withFeedProgress(peer);
+  }
+
+  private withFeedProgress<
+    T extends typeof tables.identityNamespace.$inferSelect,
+  >(peer: T) {
+    return {
+      ...peer,
+      feedProgress: {
+        namespaceId: peer.id,
+        outboundStateFeedEndId: peer.stateFeedEndId,
+        inboundStateFeedPulledThrough: peer.stateFeedPulledThrough ?? null,
+        remoteProfileNamespaceFeedEndId: peer.profileNamespaceFeedEndId,
+        inboundProfileNamespaceFeedPulledThrough:
+          peer.profileNamespaceFeedPulledThrough ?? 0n,
+      },
+    };
   }
 
   async manuallyRecoverPinnedIdentity(

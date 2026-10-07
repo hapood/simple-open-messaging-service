@@ -65,7 +65,7 @@ const APP_MAIN = join(
 /** Compile the subprocess entry + its deps to .e2e-build/ via tsc, IF missing or stale. Staleness is
  *  gated (any relevant source newer than the build → recompile) so the ~10s compile runs only when needed. */
 export function ensureCompiledEntry(): void {
-  const sources =
+  const _sources =
     'src test/federation-app.main.ts test/federation-harness.ts test/federation-proxy.ts test/federation-test-helpers.ts tsconfig.json tsconfig.e2e.json';
   const fresh =
     'test -f "${APP_MAIN}" && test -z "$(find ${sources} -newer "${APP_MAIN}" 2>/dev/null)"';
@@ -596,6 +596,86 @@ const FEDERATION_NAMESPACE_RESET_SQL = `
   END $$;
   DELETE FROM "IdentityNamespace" WHERE id <> 0;`;
 
+function resetLocalNamespaceSentinelSql(domain: string) {
+  return sql`
+    INSERT INTO "IdentityNamespace" (
+      id,
+      domain,
+      "rootPublicKey",
+      "identityPinnedAt",
+      "peerAssignedLocalNamespaceId",
+      active,
+      "trustLevel",
+      "trustedAt",
+      "lastSuccessAt",
+      "degradedAt",
+      "degradationReason",
+      "degradationCount",
+      "haltedAt",
+      "haltCode",
+      "haltReason",
+      "peerAcceptanceConfirmed",
+      "localServiceAvailable",
+      "remoteServiceReachable",
+      "resetAt",
+      "stateFeedEndId",
+      "stateFeedPulledThrough",
+      "profileNamespaceFeedEndId",
+      "profileNamespaceFeedPulledThrough",
+      "retiredAt"
+    ) VALUES (
+      0,
+      ${domain},
+      NULL,
+      NULL,
+      NULL,
+      false,
+      'unrecognized',
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+      0,
+      NULL,
+      NULL,
+      NULL,
+      false,
+      false,
+      false,
+      NULL,
+      0,
+      NULL,
+      0,
+      0,
+      NULL
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      domain = EXCLUDED.domain,
+      "rootPublicKey" = NULL,
+      "identityPinnedAt" = NULL,
+      "peerAssignedLocalNamespaceId" = NULL,
+      active = false,
+      "trustLevel" = 'unrecognized',
+      "trustedAt" = NULL,
+      "lastSuccessAt" = NULL,
+      "degradedAt" = NULL,
+      "degradationReason" = NULL,
+      "degradationCount" = 0,
+      "haltedAt" = NULL,
+      "haltCode" = NULL,
+      "haltReason" = NULL,
+      "peerAcceptanceConfirmed" = false,
+      "localServiceAvailable" = false,
+      "remoteServiceReachable" = false,
+      "resetAt" = NULL,
+      "stateFeedEndId" = 0,
+      "stateFeedPulledThrough" = NULL,
+      "profileNamespaceFeedEndId" = 0,
+      "profileNamespaceFeedPulledThrough" = 0,
+      "retiredAt" = NULL
+  `;
+}
+
 /** Truncate BOTH apps' databases between tests (in parallel — a test cannot forget one side). */
 export async function truncateFederationDbs(
   appA: FedApp,
@@ -607,12 +687,14 @@ export async function truncateFederationDbs(
       await tx.execute(sql`DELETE FROM "SystemSetting"
         WHERE key = ${FEDERATION_HISTORY_ACCESS_SETTING_KEY}`);
       await tx.execute(sql.raw(FEDERATION_NAMESPACE_RESET_SQL));
+      await tx.execute(resetLocalNamespaceSentinelSql(FED_DOMAIN_A));
     }),
     appB.database.transaction(async (tx) => {
       await tx.execute(sql.raw(FEDERATION_TRUNCATE_SQL));
       await tx.execute(sql`DELETE FROM "SystemSetting"
         WHERE key = ${FEDERATION_HISTORY_ACCESS_SETTING_KEY}`);
       await tx.execute(sql.raw(FEDERATION_NAMESPACE_RESET_SQL));
+      await tx.execute(resetLocalNamespaceSentinelSql(FED_DOMAIN_B));
     }),
   ]);
 }

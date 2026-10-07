@@ -122,11 +122,18 @@ describe('DurableTaskQueueService', () => {
       insertedTaskId: 9n,
     });
     await harness.service.enqueueTask({
-      scope: { type: 'GROUP', address: { account: '!group', profileNamespaceId: 0 } },
+      scope: {
+        type: 'GROUP',
+        address: { account: '!group', profileNamespaceId: 0 },
+      },
       taskType: 'FORCE_REVOKE_GROUP_MEMBER',
       payload: {
         threadId: 10,
-        memberUserId: { account: 'alice', profileNamespaceId: 0, namespaceId: 0 },
+        memberUserId: {
+          account: 'alice',
+          profileNamespaceId: 0,
+          namespaceId: 0,
+        },
       },
     });
     expect(harness.values).toHaveBeenCalledWith(
@@ -208,12 +215,7 @@ describe('DurableTaskQueueService', () => {
       expect.objectContaining({
         kind: 'MUTATION',
         scopeType: 'GROUP',
-        scopeKey: JSON.stringify([
-          'business-scope',
-          'ACCOUNT',
-          3,
-          'group-1',
-        ]),
+        scopeKey: JSON.stringify(['business-scope', 'ACCOUNT', 3, 'group-1']),
         actorUserId: null,
       }),
     );

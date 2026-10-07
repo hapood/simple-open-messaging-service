@@ -28,6 +28,8 @@ import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
 import { FederationMessageFeedService } from './federation-message-feed.service.js';
 import { FederationMessageProvenanceService } from './federation-message-provenance.service.js';
+import { FederationAdminMessageProvenanceService } from './federation-admin-message-provenance.service.js';
+import { FederationAdminHealthProbeService } from './federation-admin-health-probe.service.js';
 import { FederationDownloadScheduler } from './federation-download-scheduler.js';
 import { FederationDownloadRecoveryService } from './federation-download-recovery.service.js';
 import { PeerStateFeedService } from './peer-state-feed.service.js';
@@ -286,6 +288,8 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
     FederationRecognitionService,
     FederationMessageFeedService,
     FederationMessageProvenanceService,
+    FederationAdminMessageProvenanceService,
+    FederationAdminHealthProbeService,
     FederationMessageTombstoneFeedService,
     FederationDownloadScheduler,
     FederationHttpScheduler,
@@ -335,6 +339,8 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
     FederationRecognitionService,
     FederationMessageFeedService,
     FederationMessageProvenanceService,
+    FederationAdminMessageProvenanceService,
+    FederationAdminHealthProbeService,
     FederationMessageTombstoneFeedService,
     FederationDownloadScheduler,
     FederationHttpScheduler,

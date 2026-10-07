@@ -20,18 +20,19 @@ import {
   AdminFederationSelfCheckDto,
   AdminFederationResetDto,
   AdminFederationIdentityRecoverDto,
+  AdminFederationMessageProvenanceDto,
+  AdminFederationHealthProbeDto,
 } from './admin.dto.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { eq } from 'drizzle-orm';
-import { DatabaseService } from '../database/database.service.js';
-import { identityNamespace } from '../database/schema.js';
 import { FederationPeerLifecycle } from '../federation/federation-peer-lifecycle.js';
 import { FederationSelfCheckService } from './federation-self-check.service.js';
 import { FederationResetService } from './federation-reset.service.js';
 import { FederationNamespaceAdminService } from './federation-namespace-admin.service.js';
 import { KeypairService } from '../federation/keypair.service.js';
 import { FederationRecognitionService } from '../federation/federation-recognition.service.js';
+import { FederationAdminMessageProvenanceService } from '../federation/federation-admin-message-provenance.service.js';
+import { FederationAdminHealthProbeService } from '../federation/federation-admin-health-probe.service.js';
 
 /**
  * Federation trust-lifecycle admin endpoints. Read-only observability of the peer trust state,
@@ -54,9 +55,10 @@ export class AdminFederationController {
     private readonly selfCheckService: FederationSelfCheckService,
     private readonly resetService: FederationResetService,
     private readonly namespaceAdmin: FederationNamespaceAdminService,
-    private readonly database: DatabaseService,
     private readonly keypair: KeypairService,
     private readonly recognition: FederationRecognitionService,
+    private readonly messageProvenance: FederationAdminMessageProvenanceService,
+    private readonly healthProbe: FederationAdminHealthProbeService,
   ) {}
 
   @UseGuards(AdminAuthGuard)
@@ -72,6 +74,7 @@ export class AdminFederationController {
       take: dto.take ?? 20,
       search: dto.search,
       status: dto.status,
+      namespaceId: dto.namespaceId,
     });
   }
 
@@ -82,15 +85,7 @@ export class AdminFederationController {
     summary: 'Single federated peer detail (current lifecycle state)',
   })
   async peerDetail(@Param('domain') domain: string) {
-    // Read directly from the database rather than going through a federation service — the S2S runtime is
-    // not this surface's concern; this is a trivial current-state read for the console, and keeps the
-    // admin surface independent of the federation module's WIP.
-    const peer = await this.database.db.query.identityNamespace.findFirst({
-      where: eq(identityNamespace.domain, domain),
-    });
-    if (!peer)
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'peer not found');
-    return peer;
+    return this.peerLifecycle.detail(domain);
   }
 
   @UseGuards(AdminAuthGuard)
@@ -267,6 +262,31 @@ export class AdminFederationController {
   })
   async recognizePeer(@Param('domain') domain: string) {
     return this.recognition.recognize(domain);
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/health/probe')
+  @ApiOperation({
+    summary:
+      'Probe one federated namespace through the signed S2S health endpoint',
+  })
+  async probeFederationHealth(@Body() dto: AdminFederationHealthProbeDto) {
+    return this.healthProbe.probe(dto.namespaceId);
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/federation/message-provenance/verify')
+  @ApiOperation({
+    summary: 'Verify one federated message with its authoritative peer',
+  })
+  async verifyMessageProvenance(
+    @Body() dto: AdminFederationMessageProvenanceDto,
+  ) {
+    return this.messageProvenance.verify(dto.threadId, dto.seq);
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)

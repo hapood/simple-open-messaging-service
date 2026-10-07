@@ -101,7 +101,7 @@ describe('remote member membership intents on the authoritative group', () => {
       .insert(tables.groupMeta)
       .values({ threadId: thread!.id, metaEndId: 1 });
     const memberAccount = `remote-member-${sequence}`;
-    const [pair] = await database.db
+    const [_pair] = await database.db
       .insert(tables.relationshipPair)
       .values({
         kind: 'GROUP_MEMBER',
@@ -328,7 +328,7 @@ describe('remote member membership intents on the authoritative group', () => {
 
   it('concludes a still-effective group invitation when the remote member declines', async () => {
     const fixture = await seedMembershipFixture(false);
-    const [pair] = await database.db
+    const [_pair] = await database.db
       .select({ id: tables.relationshipPair.id })
       .from(tables.relationshipPair)
       .where(

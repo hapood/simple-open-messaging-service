@@ -8,10 +8,7 @@ import { messageAsset, message } from '../src/database/schema';
 import { LinkPreviewService } from '../src/link-preview/link-preview.service.js';
 import { registerAndLogin } from './federation-test-helpers';
 import { createTestApp } from './support/app';
-import {
-  waitForAcceptedDurableTask,
-  waitForLocalRelationshipRequest,
-} from './durable-task-helpers.js';
+import { waitForLocalRelationshipRequest } from './durable-task-helpers.js';
 import { findP2PRelationship } from './seed.js';
 import { truncateTablesForTest } from './support/truncate';
 

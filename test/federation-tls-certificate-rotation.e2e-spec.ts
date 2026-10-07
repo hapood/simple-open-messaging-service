@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   copyFileSync,
   mkdtempSync,
@@ -11,7 +12,7 @@ import { join } from 'node:path';
 import https from 'node:https';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { identityNamespace } from '../src/database/schema.js';
+import { adminSession, identityNamespace } from '../src/database/schema.js';
 import {
   bootFederationPair,
   FED_DOMAIN_A,
@@ -19,6 +20,7 @@ import {
   type FedApp,
   type S2sProxy,
 } from './federation-harness.js';
+import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session.js';
 import { registerAndLogin } from './federation-test-helpers.js';
 
 /**
@@ -187,6 +189,20 @@ async function resolveCardTls(
   };
 }
 
+async function seedAdminCookie(app: FedApp): Promise<string> {
+  const adminRow = await app.database.query.admin.findFirst({
+    columns: { id: true },
+  });
+  if (!adminRow) throw new Error('bootstrap admin is unavailable');
+  const token = randomBytes(32).toString('base64url');
+  await app.database.insert(adminSession).values({
+    adminId: adminRow.id,
+    tokenHash: createHash('sha256').update(token).digest('hex'),
+    expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+  });
+  return `${ADMIN_SESSION_COOKIE}=${token}`;
+}
+
 async function resolveResolved(app: FedApp, token: string): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     const card = await resolveCardTls(app, token, 'tls-bob', FED_DOMAIN_B);
@@ -215,6 +231,7 @@ let appA: FedApp;
 let appB: FedApp;
 let proxy: S2sProxy;
 let aliceToken: string;
+let adminCookieB: string;
 
 describe('federation survives a TLS certificate replacement', () => {
   beforeAll(async () => {
@@ -239,6 +256,7 @@ describe('federation survives a TLS certificate replacement', () => {
       'TLS Alice',
     ));
     await registerAndLogin(appB, 'tls-bob', 'TLS Bob');
+    adminCookieB = await seedAdminCookie(appB);
 
     // 1. The handshake completes over verified TLS.
     await resolveResolved(appA, aliceToken);
@@ -266,20 +284,34 @@ describe('federation survives a TLS certificate replacement', () => {
     // appA → appB over the new certificate (card resolution re-fetches the profile).
     await resolveResolved(appA, aliceToken);
 
+    const namespaceOnB = await appB.database.query.identityNamespace.findFirst({
+      where: and(
+        eq(identityNamespace.domain, FED_DOMAIN_A),
+        eq(identityNamespace.active, true),
+      ),
+      columns: { id: true },
+    });
+    expect(namespaceOnB).toBeDefined();
+
     // appB → appA still works after appB's restart (its own outbound TLS to appA,
-    // plus a fully signed + verified S2S round trip through the health surface).
+    // plus a fully signed + verified S2S round trip through the admin health surface).
     const probe = await tlsRequest(
       appB.port,
-      'GET',
-      `/api/v1/test/signed-s2s-get?peerDomain=${FED_DOMAIN_A}&path=${encodeURIComponent('/s2s/v1/health')}`,
+      'POST',
+      '/api/v1/admin/federation/health/probe',
+      {
+        headers: {
+          cookie: adminCookieB,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ namespaceId: namespaceOnB!.id }),
+      },
     );
     expect(probe.status).toBe(200);
     const relayed = JSON.parse(probe.text) as {
-      status: number;
-      body: { status: string };
+      data: { status: string };
     };
-    expect(relayed.status).toBe(200);
-    expect(relayed.body.status).toBe('available');
+    expect(relayed.data.status).toBe('available');
 
     // The S2S identity is untouched by the transport change.
     expect(await peerRowOnA()).toMatchObject({
@@ -320,16 +352,34 @@ describe('federation survives a TLS certificate replacement', () => {
       remoteServiceReachable: false,
     });
 
+    const namespaceOnB = await appB.database.query.identityNamespace.findFirst({
+      where: and(
+        eq(identityNamespace.domain, FED_DOMAIN_A),
+        eq(identityNamespace.active, true),
+      ),
+      columns: { id: true },
+    });
+    expect(namespaceOnB).toBeDefined();
+
     // The reverse leg (appB → appA) is unaffected by appB's own listener certificate.
     // The probe call itself must skip the test client's verification: appB deliberately
     // serves the untrusted certificate now (the B→A S2S leg inside appB stays strict).
     const probe = await tlsRequest(
       appB.port,
-      'GET',
-      `/api/v1/test/signed-s2s-get?peerDomain=${FED_DOMAIN_A}&path=${encodeURIComponent('/s2s/v1/health')}`,
-      { insecure: true },
+      'POST',
+      '/api/v1/admin/federation/health/probe',
+      {
+        insecure: true,
+        headers: {
+          cookie: adminCookieB,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ namespaceId: namespaceOnB!.id }),
+      },
     );
-    expect(probe.status).toBe(200);
-    expect((JSON.parse(probe.text) as { status: number }).status).toBe(200);
+    expect(probe.status, probe.text).toBe(200);
+    expect(
+      (JSON.parse(probe.text) as { data: { status: string } }).data.status,
+    ).toBe('degraded');
   }, 120_000);
 });

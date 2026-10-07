@@ -18,6 +18,7 @@ export interface FederationPeersQuery {
   take?: number;
   search?: string;
   status?: string; // Federation v1 recognition lifecycle filter
+  namespaceId?: number;
 }
 
 export function localFederationRootEpochs(): Promise<

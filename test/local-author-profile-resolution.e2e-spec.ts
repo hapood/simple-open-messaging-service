@@ -20,7 +20,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
   let threadId: number;
   let viewerId: number;
   let profiles: FederationProfileService;
-  const domain = loadFederationConfig().domain;
+  const _domain = loadFederationConfig().domain;
   const account = 'local-profile-viewer';
   const groupAccount = '!local-profile-mirror';
   const sse = { onProfileResolved: vi.fn(), onProfileFailed: vi.fn() };
@@ -135,7 +135,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
 
   it.each(['local', 'canonical'])(
     'resolves a mirror roster %s domain from the local exact version',
-    async (form) => {
+    async (_form) => {
       await expect(
         coordinator().start(viewerId, 0, {
           publisherNamespaceId: 0,
@@ -155,7 +155,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
 
   it.each([1, 2])(
     'resolves message %i locally even with a foreign source namespace',
-    async (messageSeq) => {
+    async (_messageSeq) => {
       await expect(
         coordinator().start(viewerId, 0, {
           publisherNamespaceId: 0,

@@ -1028,6 +1028,7 @@ describe('FederationPeerResourceService media authorization gates', () => {
   function target(options: {
     currentAudience: boolean;
     historicalPair: boolean;
+    assetBound?: boolean;
   }) {
     const candidateWhere = vi.fn().mockResolvedValue(
       options.currentAudience
@@ -1064,7 +1065,14 @@ describe('FederationPeerResourceService media authorization gates', () => {
         select,
         query: {
           messageAsset: {
-            findFirst: vi.fn().mockResolvedValue({ messageId: 17n }),
+            findFirst: vi
+              .fn()
+              .mockResolvedValue(
+                options.assetBound === false ? null : { messageId: 17n },
+              ),
+          },
+          forwardMessage: {
+            findFirst: vi.fn().mockResolvedValue(null),
           },
         },
       },
@@ -1118,6 +1126,26 @@ describe('FederationPeerResourceService media authorization gates', () => {
       ),
     ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
     expect(select).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a digest that is not bound to the authorized source message', async () => {
+    const { service } = target({
+      currentAudience: true,
+      historicalPair: true,
+      assetBound: false,
+    });
+
+    await expect(
+      service.resolveMediaFile(
+        'sender',
+        'recipient',
+        'local',
+        'peer.example',
+        4,
+        'f'.repeat(64),
+        9,
+      ),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
   });
 
   it('serves a message-bound asset after both authorization gates pass', async () => {

@@ -11,7 +11,7 @@ import {
 } from '../../../user/account-address.js';
 import { Injectable } from '@nestjs/common';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
-import { and, eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import {
   ClientStateFeedService,
   type PendingClientStateFeedUpdate,

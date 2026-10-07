@@ -170,7 +170,7 @@ describe('member-home tombstone authority', () => {
           groupAccountId: null,
         })
         .where(eq(tables.messageThread.id, threadId));
-      const [local] = await database.db
+      const [_local] = await database.db
         .update(tables.message)
         .set({
           publisherNamespaceId: 0,
@@ -213,7 +213,7 @@ describe('member-home tombstone authority', () => {
         tombstoneEndSeq: 1,
       })
       .where(eq(tables.messageThread.id, threadId));
-    const [local] = await database.db
+    const [_local] = await database.db
       .update(tables.message)
       .set({
         publisherNamespaceId: 0,

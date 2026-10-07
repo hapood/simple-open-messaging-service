@@ -75,7 +75,7 @@ describe('message entity codec', () => {
     const escaped = String.raw`\[@Fake](somfp://user/3/fake)`;
     const content = `${escaped} ${mention}`;
     expect(
-      transformMessageEntities(content, (entity) =>
+      transformMessageEntities(content, (_entity) =>
         serializeUserMention('张三（规范）', 12, 'zhangsan'),
       ),
     ).toBe(`${escaped} [@张三（规范）](somfp://user/12/zhangsan)`);

@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { MoreHorizontal, Search } from 'lucide-react';
@@ -10,7 +10,7 @@ import {
 import { useListParams } from '@/hooks/use-list-params';
 import { useIsSuperAdmin } from '@/hooks/use-me';
 import { useQuotaNodes } from '@/hooks/use-quotas';
-import type { FederationTrustLevel } from '@/types/api';
+import type { FederationPeerState, FederationTrustLevel } from '@/types/api';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -62,6 +62,11 @@ export function FederationPage() {
     skip,
     take,
   } = useListParams({ pageSize: PAGE_SIZE, filterParam: 'status' });
+  const [params, setParams] = useSearchParams();
+  const namespaceIdParam = params.get('nsid') ?? '';
+  const namespaceId = /^[1-9]\d*$/.test(namespaceIdParam)
+    ? Number(namespaceIdParam)
+    : undefined;
   const status = (filter || undefined) as FederationTrustLevel | undefined;
 
   const { data, isLoading, isFetching, error } = useFederationPeers({
@@ -69,6 +74,7 @@ export function FederationPage() {
     take,
     search: search || undefined,
     status,
+    namespaceId,
   });
   const block = useBlockFederationPeer();
   const unblock = useUnblockFederationPeer();
@@ -94,6 +100,20 @@ export function FederationPage() {
 
   const total = data?.total ?? 0;
 
+  const setNamespaceId = (value: string) => {
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        const normalized = value.trim();
+        if (/^[1-9]\d*$/.test(normalized)) next.set('nsid', normalized);
+        else next.delete('nsid');
+        next.delete('p');
+        return next;
+      },
+      { replace: true },
+    );
+  };
+
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-muted-foreground">{t('federation.desc')}</p>
@@ -111,13 +131,23 @@ export function FederationPage() {
             </Button>
           ))}
         </div>
-        <div className="relative w-72">
-          <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative w-72">
+            <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
+            <Input
+              placeholder={t('federation.searchPlaceholder')}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              className="pl-8"
+            />
+          </div>
           <Input
-            placeholder={t('federation.searchPlaceholder')}
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            className="pl-8"
+            className="w-32"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            placeholder={t('federation.namespaceFilterPlaceholder')}
+            value={namespaceIdParam}
+            onChange={(e) => setNamespaceId(e.target.value)}
           />
         </div>
       </div>
@@ -137,6 +167,9 @@ export function FederationPage() {
               <TableHead className="w-20">
                 {t('federation.col.degradations')}
               </TableHead>
+              <TableHead className="w-40">
+                {t('federation.col.feedProgress')}
+              </TableHead>
               <TableHead>{t('federation.col.created')}</TableHead>
               <TableHead className="w-10" />
             </TableRow>
@@ -146,7 +179,7 @@ export function FederationPage() {
               loading={isLoading}
               error={error}
               empty={(data?.list.length ?? 0) === 0}
-              colSpan={7}
+              colSpan={8}
               emptyMessage={t('federation.empty')}
             >
               {data?.list.map((p) => (
@@ -173,6 +206,9 @@ export function FederationPage() {
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
                     {p.degradationCount}
+                  </TableCell>
+                  <TableCell>
+                    <FeedProgressSummary peer={p} />
                   </TableCell>
                   <TableCell>
                     <Timestamp value={p.createdAt} />
@@ -249,4 +285,40 @@ function QuotaHealth({ risk }: { risk: number | undefined }) {
   const variant =
     risk >= 1 ? 'destructive' : risk >= 0.8 ? 'outline' : 'secondary';
   return <Badge variant={variant}>{t(`quota.health.${label}`)}</Badge>;
+}
+
+function FeedProgressSummary({ peer }: { peer: FederationPeerState }) {
+  const { t } = useTranslation();
+  const state = progressLabel(
+    peer.feedProgress.inboundStateFeedPulledThrough,
+    peer.feedProgress.outboundStateFeedEndId,
+  );
+  const profileLag = nonNegativeDiff(
+    peer.feedProgress.remoteProfileNamespaceFeedEndId,
+    peer.feedProgress.inboundProfileNamespaceFeedPulledThrough,
+  );
+  const profile =
+    profileLag === 0n
+      ? t('federation.feed.caughtUp')
+      : t('federation.feed.behind', { count: profileLag.toString() });
+  return (
+    <div className="flex flex-col gap-1 font-mono text-xs text-muted-foreground">
+      <span title={t('federation.feed.state')}>
+        S {state}
+      </span>
+      <span title={t('federation.feed.profileNamespace')}>
+        P {profile}
+      </span>
+    </div>
+  );
+}
+
+function progressLabel(pulled: string | null, end: string) {
+  if (pulled === null) return `-/${end}`;
+  return `${pulled}/${end}`;
+}
+
+function nonNegativeDiff(end: string, pulled: string): bigint {
+  const diff = BigInt(end) - BigInt(pulled);
+  return diff > 0n ? diff : 0n;
 }

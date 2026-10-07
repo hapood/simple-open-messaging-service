@@ -64,7 +64,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
   let tokenB: string;
   let bobLocalIdB: number;
   let bobAddressOnA: NamespacedAddress;
-  let carolLocalIdA: number;
   let tokenCarol: string;
 
   beforeAll(async () => {
@@ -97,7 +96,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
     };
     const carol = await registerAndLogin(appA, 'reversecarol', 'Reverse Carol');
     tokenCarol = carol.token;
-    carolLocalIdA = carol.id;
     await uploadAvatar(appA, tokenCarol, await makePng(109));
     const localFriendRequest = await request(appA.baseUrl)
       .post('/api/v1/relationship/request')
@@ -264,39 +262,40 @@ describe('federation reverse thread rounds (two nodes)', () => {
   }
 
   it('retains a quote when its source was withdrawn before a remote member joined', async () => {
-    const { originThreadId, mirrorThreadId } = await createJoinedFederatedGroup(
-      'late-join-withdrawn-quote',
-      async (threadId) => {
-        const source = await request(appA.baseUrl)
-          .post('/api/v1/send-message')
-          .set('Authorization', `Bearer ${tokenA}`)
-          .send({
-            threadId,
-            content: 'withdraw-before-join',
-            contentType: ContentType.PURE_TEXT,
-            clientMessageId: randomUUID(),
-          });
-        expect(source.body.code).toBe(BusinessCode.OK);
-        const reply = await request(appA.baseUrl)
-          .post('/api/v1/send-message')
-          .set('Authorization', `Bearer ${tokenA}`)
-          .send({
-            threadId,
-            content: JSON.stringify({
-              text: 'late-join-quote',
-              quote: { seq: source.body.data.seq },
-            }),
-            contentType: ContentType.PURE_TEXT,
-            clientMessageId: randomUUID(),
-          });
-        expect(reply.body.code).toBe(BusinessCode.OK);
-        const withdrawn = await request(appA.baseUrl)
-          .post('/api/v1/withdraw-message')
-          .set('Authorization', `Bearer ${tokenA}`)
-          .send({ threadId, seq: source.body.data.seq });
-        expect(withdrawn.body.code).toBe(BusinessCode.OK);
-      },
-    );
+    const { _originThreadId, mirrorThreadId } =
+      await createJoinedFederatedGroup(
+        'late-join-withdrawn-quote',
+        async (threadId) => {
+          const source = await request(appA.baseUrl)
+            .post('/api/v1/send-message')
+            .set('Authorization', `Bearer ${tokenA}`)
+            .send({
+              threadId,
+              content: 'withdraw-before-join',
+              contentType: ContentType.PURE_TEXT,
+              clientMessageId: randomUUID(),
+            });
+          expect(source.body.code).toBe(BusinessCode.OK);
+          const reply = await request(appA.baseUrl)
+            .post('/api/v1/send-message')
+            .set('Authorization', `Bearer ${tokenA}`)
+            .send({
+              threadId,
+              content: JSON.stringify({
+                text: 'late-join-quote',
+                quote: { seq: source.body.data.seq },
+              }),
+              contentType: ContentType.PURE_TEXT,
+              clientMessageId: randomUUID(),
+            });
+          expect(reply.body.code).toBe(BusinessCode.OK);
+          const withdrawn = await request(appA.baseUrl)
+            .post('/api/v1/withdraw-message')
+            .set('Authorization', `Bearer ${tokenA}`)
+            .send({ threadId, seq: source.body.data.seq });
+          expect(withdrawn.body.code).toBe(BusinessCode.OK);
+        },
+      );
     const mirror = await vi.waitFor(
       async () => {
         const rows = await appB.database.query.message.findMany({

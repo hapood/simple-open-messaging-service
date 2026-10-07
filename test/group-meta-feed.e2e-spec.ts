@@ -12,7 +12,6 @@ import {
   identityNamespace,
   messageThread,
   message,
-  peerStateFeed,
   profileTable,
   relationshipIntent,
   relationshipPair,
@@ -142,7 +141,7 @@ describe('canonical Group Meta feed', () => {
     namespaceId: number,
     remoteAccount: string,
   ): Promise<void> {
-    const [pair] = await database.db
+    const [_pair] = await database.db
       .insert(relationshipPair)
       .values({
         kind: 'GROUP_MEMBER',

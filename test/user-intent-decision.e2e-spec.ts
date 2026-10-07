@@ -36,7 +36,6 @@ import {
   UserIntentService,
   type UserIntentDependencies,
 } from '../src/user/p2p-intent/authored/user-intent.service.js';
-import { loadFederationConfig } from '../src/federation/federation.config.js';
 
 interface UserRef {
   id: number;
@@ -910,7 +909,7 @@ describe('user intent decision', () => {
       database.db,
       `decoy-${++sequence}.test`,
     );
-    const [mirror] = await database.db
+    const [_mirror] = await database.db
       .insert(tables.relationshipPair)
       .values({
         kind: 'GROUP_MEMBER',

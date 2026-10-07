@@ -3,19 +3,15 @@ import {
   groupState as group,
   groupStateFields,
 } from '../group/shared/group-state.js';
-import {
-  accountAddressInTx,
-  type AccountTarget,
-} from '../user/account-address.js';
+import { type AccountTarget } from '../user/account-address.js';
 import { Injectable } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import {
   DatabaseService,
   type DatabaseTransaction,
 } from '../database/database.service.js';
 import {
-  relationshipIntent,
   messageThread,
   accountThreadState,
   account as user,

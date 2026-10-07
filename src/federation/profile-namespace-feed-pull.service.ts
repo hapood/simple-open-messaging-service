@@ -172,6 +172,7 @@ export class ProfileNamespaceFeedPullService {
         const [current] = await tx
           .select({
             pulledThrough: identityNamespace.profileNamespaceFeedPulledThrough,
+            observedEndId: identityNamespace.profileNamespaceFeedEndId,
           })
           .from(identityNamespace)
           .where(eq(identityNamespace.id, namespaceId))
@@ -184,6 +185,10 @@ export class ProfileNamespaceFeedPullService {
         await tx
           .update(identityNamespace)
           .set({
+            profileNamespaceFeedEndId:
+              sourceEndId > current.observedEndId
+                ? sourceEndId
+                : current.observedEndId,
             profileNamespaceFeedPulledThrough: this.parseRev(
               item.feedId,
               'item.feedId',
@@ -205,6 +210,7 @@ export class ProfileNamespaceFeedPullService {
       const [current] = await tx
         .select({
           pulledThrough: identityNamespace.profileNamespaceFeedPulledThrough,
+          observedEndId: identityNamespace.profileNamespaceFeedEndId,
         })
         .from(identityNamespace)
         .where(eq(identityNamespace.id, namespaceId))
@@ -213,10 +219,21 @@ export class ProfileNamespaceFeedPullService {
         throw new Error('profile namespace pull namespace row disappeared');
       if (current.pulledThrough < appliedThrough)
         throw new Error('profile namespace item cursor did not commit');
-      if (current.pulledThrough >= scannedThrough) return;
+      if (current.pulledThrough >= scannedThrough) {
+        if (current.observedEndId >= sourceEndId) return;
+        await tx
+          .update(identityNamespace)
+          .set({ profileNamespaceFeedEndId: sourceEndId })
+          .where(eq(identityNamespace.id, namespaceId));
+        return;
+      }
       await tx
         .update(identityNamespace)
         .set({
+          profileNamespaceFeedEndId:
+            sourceEndId > current.observedEndId
+              ? sourceEndId
+              : current.observedEndId,
           profileNamespaceFeedPulledThrough: scannedThrough,
         })
         .where(eq(identityNamespace.id, namespaceId));

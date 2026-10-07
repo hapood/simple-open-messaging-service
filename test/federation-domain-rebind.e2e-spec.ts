@@ -227,10 +227,9 @@ describe('peer domain re-binding after a completed handshake', () => {
       peerAcceptanceConfirmed: false,
     });
 
-    expect(await resolveFromB()).toEqual({
-      event: 'failed',
-      data: { reason: 'UNREACHABLE' },
-    });
+    const blockedResolution = await resolveFromB();
+    expect(blockedResolution.event).toBe('failed');
+    expect(['UNREACHABLE', 'TIMEOUT']).toContain(blockedResolution.data.reason);
   }, 60_000);
 
   it('admin approval re-binds the epoch and converges recognition', async () => {

@@ -187,8 +187,9 @@ export const identityNamespace = pgTable(
     /** Inbound State Feed drain progress for this peer. NULL means the feed
      * was never bootstrapped; the first fetch omits `after`. */
     stateFeedPulledThrough: bigint({ mode: 'bigint' }),
-    /** Global Profile Namespace Feed allocator. Only namespace 0 allocates;
-     * positive rows never advance it. */
+    /** Profile Namespace Feed coordinate. Row 0 is the local publisher allocator;
+     * positive peer rows store the latest remote publisher head observed while
+     * draining that peer. */
     profileNamespaceFeedEndId: bigint({ mode: 'bigint' })
       .default(sql`0`)
       .notNull(),
@@ -269,7 +270,7 @@ export const identityNamespace = pgTable(
     ),
     check(
       'IdentityNamespace_profileNamespaceFeedEndId_check',
-      sql`${table.profileNamespaceFeedEndId} >= 0 AND (${table.id} = 0 OR ${table.profileNamespaceFeedEndId} = 0)`,
+      sql`${table.profileNamespaceFeedEndId} >= 0`,
     ),
     check(
       'IdentityNamespace_profileNamespaceFeedPulledThrough_check',
@@ -424,10 +425,7 @@ export const account = pgTable(
       .notNull(),
   },
   (table) => [
-    check(
-      'Account_namespace_check',
-      sql`${table.namespaceId} = 0`,
-    ),
+    check('Account_namespace_check', sql`${table.namespaceId} = 0`),
     check(
       'Account_kind_check',
       sql`(${table.kind} = 'USER' AND ${table.account} <> '$system') OR (${table.kind} = 'SYSTEM' AND ${table.account} = '$system' AND ${table.hashPwd} IS NULL AND ${table.disabledAt} IS NOT NULL AND ${table.defaultProfileRev} = 0)`,

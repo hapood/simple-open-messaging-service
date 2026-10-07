@@ -5,7 +5,6 @@ import { extractDigests, MAX_FILE_NAME_LEN } from '../upload/file-content.js';
 import {
   isValidAccount,
   isValidSomfpDomain,
-  isValidSomfpUserAccount,
   parseSomfpUserMentionEntity,
 } from '../common/account.js';
 import { parseMessageEntities } from '../common/message-entity.js';
@@ -346,9 +345,7 @@ export function toFederatedMessageContent(
     case ContentType.FORWARD:
       // Imported cards use the URL-free wire shape. Local cards additionally carry the fields used
       // by the chat renderer; both forms publish to the same minimal wire reference.
-      if (
-        Object.keys(value).filter((key) => key !== 'quote').length === 1
-      ) {
+      if (Object.keys(value).filter((key) => key !== 'quote').length === 1) {
         assertKeys(value, ['bundleId'], ['quote']);
         parseQuote(value);
       } else {

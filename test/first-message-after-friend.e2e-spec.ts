@@ -80,7 +80,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
     // 1. Alice sends a relationship request to Bob; Bob accepts and both sides get the P2P thread.
     // The intent family answers synchronously — the committed pair state is
     // visible the moment the request answers.
-    const invite = await request(baseUrl)
+    const _invite = await request(baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
       .send({ account: 'bob', domain: localIdentityDomain(), namespaceId: 0 })

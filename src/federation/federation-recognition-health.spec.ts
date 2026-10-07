@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FederationRecognitionService } from './federation-recognition.service.js';
+import { FEDERATION_PEER_AVAILABLE } from './federation-peer.events.js';
 
 process.env.SOMS_DOMAIN = 'local.example';
 
@@ -72,16 +73,18 @@ function availablePeer() {
 }
 
 function service(
-  peer: Record<string, unknown>,
+  peer: Record<string, unknown> | undefined,
   status: number,
 ): {
   recognition: FederationRecognitionService;
   patches: PeerPatch[];
   events: Array<Record<string, unknown>>;
   request: ReturnType<typeof vi.fn>;
+  emitted: ReturnType<typeof vi.fn>;
 } {
   const { database, patches, events } = fakeDatabase(peer);
   const request = vi.fn().mockResolvedValue({ status });
+  const emitter = { emit: vi.fn() };
   const recognition = new FederationRecognitionService(
     database,
     {
@@ -92,9 +95,9 @@ function service(
     { signOutbound: () => Promise.resolve({}) } as never,
     { get: () => ({ callTimeoutSec: 5 }) } as never,
     {} as never,
-    { emit: vi.fn() } as never,
+    emitter as never,
   );
-  return { recognition, patches, events, request };
+  return { recognition, patches, events, request, emitted: emitter.emit };
 }
 
 describe('FederationRecognitionService outbound Health failure mapping', () => {
@@ -140,5 +143,39 @@ describe('FederationRecognitionService outbound Health failure mapping', () => {
     });
     // No re-degradation audit event: the peer was already degraded, not transitioned.
     expect(events).toHaveLength(0);
+  });
+});
+
+describe('FederationRecognitionService contact recovery availability event', () => {
+  it('emits FEDERATION_PEER_AVAILABLE once a user-visible contact restores a degraded peer', async () => {
+    const peer = {
+      ...availablePeer(),
+      trustLevel: 'degraded',
+      remoteServiceReachable: false,
+      degradedAt: new Date(),
+    };
+    const { recognition, patches, emitted } = service(peer, 200);
+
+    await recognition.markReachable('peer.example');
+
+    expect(patches[0]).toMatchObject({
+      trustLevel: 'available',
+      remoteServiceReachable: true,
+      degradedAt: null,
+    });
+    expect(emitted).toHaveBeenCalledExactlyOnceWith(FEDERATION_PEER_AVAILABLE, {
+      peerDomain: 'peer.example',
+    });
+  });
+
+  it('does not emit for an already-available or unknown peer', async () => {
+    const healthy = service(availablePeer(), 200);
+    await healthy.recognition.markReachable('peer.example');
+    expect(healthy.emitted).not.toHaveBeenCalled();
+
+    const unknown = service(undefined, 200);
+    await unknown.recognition.markReachable('peer.example');
+    expect(unknown.emitted).not.toHaveBeenCalled();
+    expect(unknown.patches).toHaveLength(0);
   });
 });

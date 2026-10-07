@@ -78,6 +78,8 @@ export interface WebAuthnLoginBegin {
 export interface User {
   id: number;
   account: string;
+  /** Namespace 0 is the local namespace; other values are federated guests. */
+  namespaceId: number;
   domain: string | null;
   createdAt: number;
   updatedAt: number;
@@ -225,6 +227,14 @@ export type FederationTrustLevel =
   | 'degraded'
   | 'halted';
 
+export interface FederationFeedProgress {
+  namespaceId: number;
+  outboundStateFeedEndId: string;
+  inboundStateFeedPulledThrough: string | null;
+  remoteProfileNamespaceFeedEndId: string;
+  inboundProfileNamespaceFeedPulledThrough: string;
+}
+
 export interface FederationPeerState {
   domain: string;
   trustLevel: FederationTrustLevel;
@@ -243,6 +253,7 @@ export interface FederationPeerState {
   peerAcceptanceConfirmed: boolean;
   localServiceAvailable: boolean;
   remoteServiceReachable: boolean;
+  feedProgress: FederationFeedProgress;
 }
 
 export interface FederationPeerStateListResult {
@@ -532,7 +543,8 @@ interface UserDetailUser {
   avatar: string;
   bio: string;
   domain: string | null;
-  isGroup: boolean;
+  /** Namespace 0 is the local namespace; the detail surface serves local persons. */
+  namespaceId: number;
   isDeleted: boolean;
   createdAt: number;
   updatedAt: number;

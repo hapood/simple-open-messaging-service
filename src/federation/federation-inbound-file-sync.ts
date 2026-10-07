@@ -152,7 +152,7 @@ export class FederationInboundFileSync {
         quotaCounted: true,
       },
     });
-    const originDomain = row?.originDomain;
+    const _originDomain = row?.originDomain;
     const declaredBytes = row?.bytesTotal ?? 0n;
     try {
       const have = await this.database.db.query.mediaAsset.findFirst({

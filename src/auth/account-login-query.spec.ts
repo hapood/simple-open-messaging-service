@@ -48,11 +48,7 @@ describe('Account login queries', () => {
       ];
       expect(statement.text).toContain('from "Account"');
       expect(statement.text).not.toMatch(/\bjoin\b/i);
-      expect(params).toEqual([
-        operation === 'issue OTP' ? 42 : 'admin',
-        0,
-        1,
-      ]);
+      expect(params).toEqual([operation === 'issue OTP' ? 42 : 'admin', 0, 1]);
     },
   );
 });

@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { HttpStatus } from '@nestjs/common';
 import { ProfileNamespaceController } from './profile-namespace.controller.js';
 import { BusinessCode } from '../common/business-code.js';
-import { BusinessException } from '../common/business.exception.js';
 
 function harness(resolution: unknown = { status: 'READY', entry: {} }) {
   const namespaceInfo = {

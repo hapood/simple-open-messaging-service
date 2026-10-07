@@ -5,7 +5,6 @@ import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
 import { GroupController } from '../src/controller/group.controller.js';
 import { seedFederatedPeerNamespace } from './seed.js';
-import { eq } from 'drizzle-orm';
 
 describe('group invitations by public address', () => {
   let mod: TestingModule;

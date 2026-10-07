@@ -424,6 +424,7 @@
     "title": "联邦",
     "desc": "对端服务器及其 Federation v1 双向认可生命周期。点开节点可查看认可事实、可达性与完整时间线。",
     "searchPlaceholder": "搜索域名",
+    "namespaceFilterPlaceholder": "命名空间 ID",
     "tabs": {
       "peers": "节点",
       "selfCheck": "自检"
@@ -443,7 +444,19 @@
       "quota": "额度状态",
       "lastSuccess": "最近成功",
       "degradations": "降级次数",
+      "feedProgress": "Feed 进度",
       "created": "发现时间"
+    },
+    "feed": {
+      "title": "Feed 进度",
+      "state": "状态 Feed",
+      "profileNamespace": "Profile Namespace Feed",
+      "notStarted": "尚未开始",
+      "caughtUp": "已追平",
+      "behind": "落后 {{count}} 条",
+      "pulled": "已处理到",
+      "localOutboundEnd": "本地出站末尾",
+      "observedEnd": "已观测末尾"
     },
     "action": {
       "viewDetail": "查看详情",

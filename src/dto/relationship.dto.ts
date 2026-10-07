@@ -24,7 +24,8 @@ export class RequestRelationshipDto {
 
   @ApiProperty({
     example: 'example.com',
-    description: 'Target home domain. For a local account, use the configured local identity domain.',
+    description:
+      'Target home domain. For a local account, use the configured local identity domain.',
   })
   @IsString()
   @IsNotEmpty()
@@ -84,7 +85,8 @@ export class RevokeRelationshipDto {
 
   @ApiProperty({
     example: 'example.com',
-    description: 'Peer home domain. For a local account, use the configured local identity domain.',
+    description:
+      'Peer home domain. For a local account, use the configured local identity domain.',
   })
   @IsString()
   @IsNotEmpty()

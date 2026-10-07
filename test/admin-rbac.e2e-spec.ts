@@ -3,12 +3,7 @@ import request from 'supertest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
-import {
-  account as accountTable,
-  admin,
-  adminActionLog,
-  account as user,
-} from '../src/database/schema';
+import { admin, adminActionLog, account as user } from '../src/database/schema';
 import { AdminAuthService } from '../src/admin/admin-auth.service';
 import { ADMIN_SESSION_COOKIE } from '../src/admin/admin-session';
 import { BusinessCode } from '../src/common/business-code';

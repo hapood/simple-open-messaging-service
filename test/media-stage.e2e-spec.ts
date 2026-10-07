@@ -5,7 +5,6 @@ import { randomUUID } from 'crypto';
 import { and, count, eq, inArray, or } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service';
 import {
-  account as accountTable,
   messageAsset,
   message,
   messageThread,

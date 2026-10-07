@@ -424,6 +424,7 @@
     "title": "Federation",
     "desc": "Peer servers and their Federation v1 bidirectional recognition lifecycle. Open a peer for recognition facts, reachability, and namespace state.",
     "searchPlaceholder": "Search domain",
+    "namespaceFilterPlaceholder": "Namespace ID",
     "tabs": {
       "peers": "Peers",
       "selfCheck": "Self-check"
@@ -442,7 +443,19 @@
       "status": "Status",
       "lastSuccess": "Last Success",
       "degradations": "Degradations",
+      "feedProgress": "Feed progress",
       "created": "Discovered"
+    },
+    "feed": {
+      "title": "Feed progress",
+      "state": "State feed",
+      "profileNamespace": "Profile namespace feed",
+      "notStarted": "Not started",
+      "caughtUp": "Caught up",
+      "behind": "{{count}} behind",
+      "pulled": "Pulled through",
+      "localOutboundEnd": "Local outbound end",
+      "observedEnd": "Observed end"
     },
     "action": {
       "viewDetail": "View detail",

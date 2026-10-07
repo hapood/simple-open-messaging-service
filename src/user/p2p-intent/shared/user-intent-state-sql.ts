@@ -1,6 +1,5 @@
 import { sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../../../database/database.service.js';
-import type { ThreadContentLock } from '../../../common/locks/thread-content-lock.js';
 import type { UserIntentAuthorizationRow } from '../authored/user-intent-authorization-sql.js';
 
 /** One P2P endpoint identity. The domain is carried for feed keys and

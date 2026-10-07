@@ -2,16 +2,8 @@ import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import { ApiBody, ApiOkResponse } from '@nestjs/swagger';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import {
-  ProfileNamespaceService,
-  type ProfileNamespacePair,
-} from '../federation/profile-namespace.service.js';
+import { ProfileNamespaceService } from '../federation/profile-namespace.service.js';
 import { ProfileNamespaceRefreshService } from '../federation/profile-namespace-refresh.service.js';
-
-interface ProfileNamespaceResolveDto {
-  publisherNamespaceId?: unknown;
-  profileNamespaceId?: unknown;
-}
 
 /** Client-side namespace-bindings resolution. Single-pair POST: the client
  *  demands one (publisher, nsid) pair at a time, mirroring profile

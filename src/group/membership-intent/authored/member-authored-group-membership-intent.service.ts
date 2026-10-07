@@ -10,7 +10,10 @@ import {
   type GroupMembershipAcceptanceInput,
 } from '../shared/group-membership-acceptance-sql.js';
 import { memberAuthoredMembershipLocatorSql } from './member-authored-membership-locator-sql.js';
-import { mintGroupMemberPairInTx, groupMemberPairEndpoints } from '../shared/group-member-pair-mint.js';
+import {
+  mintGroupMemberPairInTx,
+  groupMemberPairEndpoints,
+} from '../shared/group-member-pair-mint.js';
 import { lockGroupMemberIntentRowsInTx } from '../shared/group-member-intent-lock.js';
 import {
   groupMembershipStateSql,

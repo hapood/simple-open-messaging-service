@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { localIdentityDomain } from './support/local-domain.js';
 import { withMessageDigest } from './support/message-fixture.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq, isNull } from 'drizzle-orm';
@@ -26,7 +25,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
   let database: DatabaseService;
   let service: FederationMessageTombstoneFeedService;
   const peerDomain = 'tombstone-feed-peer.test';
-  const localDomain = loadFederationConfig().domain;
+  const _localDomain = loadFederationConfig().domain;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -146,7 +145,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
   }
 
   it('queries deletion facts through the advertised State Feed head', async () => {
-    const { deletion, namespaceId, thread } = await seedDeletion();
+    const { deletion, namespaceId } = await seedDeletion();
 
     const page = await service.query(
       peerDomain,

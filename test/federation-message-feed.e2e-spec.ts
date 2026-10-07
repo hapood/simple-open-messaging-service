@@ -31,7 +31,7 @@ describe('FederationMessageFeedService thread query', () => {
   let database: DatabaseService;
   let service: FederationMessageFeedService;
   const peerDomain = 'message-feed-peer.test';
-  const localDomain = loadFederationConfig().domain;
+  const _localDomain = loadFederationConfig().domain;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({

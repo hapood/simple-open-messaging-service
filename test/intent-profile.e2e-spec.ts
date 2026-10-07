@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { localIdentityDomain } from './support/local-domain.js';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
 import {

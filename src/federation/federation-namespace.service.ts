@@ -108,6 +108,19 @@ export class FederationNamespaceService {
     };
   }
 
+  /** The node's own identity domain (namespace 0), read inside the caller's
+   *  transaction. The local namespace row is intentionally inactive (the
+   *  active flag only marks federation peers), so first-contact by domain
+   *  must resolve it here instead of through captureActiveInTx. */
+  async localDomainInTx(tx: DatabaseTransaction): Promise<string> {
+    const [row] = await tx
+      .select({ domain: identityNamespace.domain })
+      .from(identityNamespace)
+      .where(eq(identityNamespace.id, 0));
+    if (!row) throw new Error('local identity namespace row is missing');
+    return row.domain.trim().toLowerCase();
+  }
+
   async captureVerifiedInTx(
     tx: DatabaseTransaction,
     domain: string,

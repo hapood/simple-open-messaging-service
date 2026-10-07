@@ -11,7 +11,6 @@ import * as tables from '../database/schema.js';
 import {
   currentCertifyingRoots,
   DiscoveryService,
-  type WellKnownDoc,
 } from './discovery.service.js';
 import { parsePeerErrorBody } from './federation-errors.js';
 import {
@@ -855,8 +854,10 @@ export class FederationRecognitionService {
           ),
         );
     });
-    if (restored)
+    if (restored) {
       this.logger.log(`Contact ${normalized}: degraded → available`);
+      this.emitPeerAvailable(normalized);
+    }
   }
 
   async markTransportDegraded(

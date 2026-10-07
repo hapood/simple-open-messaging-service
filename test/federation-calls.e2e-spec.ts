@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { ReadableStreamDefaultReader } from 'node:stream/web';
 import request from 'supertest';
@@ -18,7 +18,6 @@ import {
 } from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { message, account as user } from '../src/database/schema.js';
-import { findP2PRelationship } from './seed.js';
 
 /**
  * Federated 1:1 call e2e — a SELF-CONTAINED two-server suite (own bootFederationPair + own DBs + a
@@ -40,18 +39,13 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
   let proxy: S2sProxy;
   let tokenErin: string;
   let tokenFrank: string;
-  let erinId: number;
   let frankId: number;
   let erinThreadId: number;
   let frankThreadId: number;
 
   beforeAll(async () => {
     ({ appA, appB, proxy } = await bootFederationPair());
-    ({ id: erinId, token: tokenErin } = await registerAndLogin(
-      appA,
-      'erin',
-      'Erin',
-    ));
+    ({ token: tokenErin } = await registerAndLogin(appA, 'erin', 'Erin'));
     ({ id: frankId, token: tokenFrank } = await registerAndLogin(
       appB,
       'frank',

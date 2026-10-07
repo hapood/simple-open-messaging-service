@@ -20,7 +20,6 @@ import {
 } from '../src/database/schema.js';
 import { RelationshipService } from '../src/relationship/relationship.service.js';
 import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
-import { MessageService } from '../src/message/message.service.js';
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { ReceivedUserIntentService } from '../src/user/p2p-intent/received/received-user-intent.service.js';
@@ -298,7 +297,7 @@ describe('federation directed-state boundaries', () => {
 
   it('rejects NULL snapshots in the database and preserves the existing zero grant', async () => {
     const { local, peer } = await createPair('nonnull-head');
-    const relationship = await seedIntents(local.id, peer, [
+    const _relationship = await seedIntents(local.id, peer, [
       {
         author: 'peer',
         status: 'REQUESTED',
@@ -427,7 +426,7 @@ describe('federation directed-state boundaries', () => {
       `${Date.now().toString(36)}-expired`,
     );
     const expiredAt = new Date(Date.now() - 60_000);
-    const relationship = await seedIntents(local.id, peer, [
+    const _relationship = await seedIntents(local.id, peer, [
       {
         author: 'local',
         status: 'REQUESTED',
@@ -482,7 +481,7 @@ describe('federation directed-state boundaries', () => {
 
   it('recreates an expired group invitation even when its note is unchanged', async () => {
     const suffix = `${Date.now().toString(36)}-group`;
-    const { local: owner, peer: target } = await createPair(suffix);
+    const { local: _owner, peer: target } = await createPair(suffix);
     const [groupState] = await database.db
       .insert(group)
       .values({

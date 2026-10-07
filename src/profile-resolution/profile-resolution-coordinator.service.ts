@@ -274,12 +274,21 @@ export class ProfileResolutionCoordinatorService {
             WHERE pair.kind = 'P2P'
               AND pair.established = true
               AND pair.active = true
-              AND pair."endpointAType" = 'USER'
-              AND pair."endpointAAccount" = self.account
-              AND pair."endpointANamespaceId" = 0
-              AND pair."endpointBType" = 'USER'
-              AND pair."endpointBAccount" = ${account}
-              AND pair."endpointBNamespaceId" = ${demand.publisherNamespaceId}
+              AND (
+                (pair."endpointAType" = 'USER'
+                  AND pair."endpointAAccount" = self.account
+                  AND pair."endpointANamespaceId" = 0
+                  AND pair."endpointBType" = 'USER'
+                  AND pair."endpointBAccount" = ${account}
+                  AND pair."endpointBNamespaceId" = ${demand.publisherNamespaceId})
+                OR
+                (pair."endpointBType" = 'USER'
+                  AND pair."endpointBAccount" = self.account
+                  AND pair."endpointBNamespaceId" = 0
+                  AND pair."endpointAType" = 'USER'
+                  AND pair."endpointAAccount" = ${account}
+                  AND pair."endpointANamespaceId" = ${demand.publisherNamespaceId})
+              )
           )
           OR EXISTS (
             SELECT 1

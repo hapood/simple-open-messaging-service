@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { validateNamespacedAddress, validateNamespacedAddressOrNull } from './client-identity.js';
+import {
+  validateNamespacedAddress,
+  validateNamespacedAddressOrNull,
+} from './client-identity.js';
 
 describe('validateNamespacedAddress', () => {
   it('does not infer locality from the configured domain', () => {

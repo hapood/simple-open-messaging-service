@@ -119,8 +119,14 @@ export async function lockThreadContentInTx(
     const pair = pairs.rows[0];
     if (pair) {
       await lockBusinessAccountsInTx(tx, [
-        { account: pair.endpointAAccount, profileNamespaceId: pair.endpointANamespaceId },
-        { account: pair.endpointBAccount, profileNamespaceId: pair.endpointBNamespaceId },
+        {
+          account: pair.endpointAAccount,
+          profileNamespaceId: pair.endpointANamespaceId,
+        },
+        {
+          account: pair.endpointBAccount,
+          profileNamespaceId: pair.endpointBNamespaceId,
+        },
       ]);
       await tx.execute(
         sql`SELECT id FROM "RelationshipPair" WHERE id = ${pair.id} AND "threadId" = ${threadId} FOR NO KEY UPDATE`,

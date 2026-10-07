@@ -159,7 +159,10 @@ export class GroupDisbandMembershipRevocationService {
       {
         kind: 'GROUP_MEMBER',
         addresses: [
-          completeBusinessAddress(located.groupAccount, located.groupNamespaceId),
+          completeBusinessAddress(
+            located.groupAccount,
+            located.groupNamespaceId,
+          ),
           completeBusinessAddress(member.account, member.namespaceId),
         ],
       },
