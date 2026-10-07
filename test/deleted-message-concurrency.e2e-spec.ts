@@ -318,9 +318,17 @@ describe('federated message deletion transaction ordering', () => {
 
   it('rejects a member-home submission when the matching copy has a local author', async () => {
     await insertIncoming();
+    // A member home may retract only messages it published itself. A confirmed
+    // local submission keeps the peer coordinate on a locally published row
+    // (publisher 0 with the peer-confirmed originSeq), which the member-home
+    // coordinate lookup must not address.
     await database.db
       .update(message)
-      .set({ profileNamespaceId: 0 })
+      .set({
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
+        originServerTime: new Date('2026-09-03T00:00:00.000Z'),
+      })
       .where(eq(message.threadId, threadId));
     await expect(
       deletions.applyFederated({
@@ -334,7 +342,7 @@ describe('federated message deletion transaction ordering', () => {
         authority: 'GROUP_MEMBER',
       }),
     ).rejects.toThrow(
-      'group member tombstone is not from the message author home',
+      'group origin cannot accept a deletion for an unknown message',
     );
     expect((await database.db.query.message.findFirst())?.isDeleted).toBe(
       false,

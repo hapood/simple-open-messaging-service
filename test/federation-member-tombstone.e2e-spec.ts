@@ -316,9 +316,16 @@ describe('member-home tombstone authority', () => {
   ])(
     'rejects %s for a foreign author even at a known source coordinate',
     async (type) => {
+      // The member home's envelope marks its own authors with profile
+      // namespace 0 (source-hosted) and foreign authors with a positive
+      // namespace allocated for that author's home server.
+      const foreignNamespaceId = await seedFederatedPeerNamespace(
+        database.db,
+        'foreign-author.test',
+      );
       await database.db
         .update(tables.message)
-        .set({ profileNamespaceId: 0 })
+        .set({ profileNamespaceId: foreignNamespaceId })
         .where(eq(tables.message.threadId, threadId));
       await expect(apply(type)).rejects.toThrow(
         'tombstone has no retained local group thread',
