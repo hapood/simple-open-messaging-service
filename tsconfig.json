@@ -42,6 +42,6 @@
     "test",
     "web",
     "admin-web",
-    "src-tauri"
-  ]
+    "src-tauri",
+    "tools/pi-web-testing"  ]
 }
