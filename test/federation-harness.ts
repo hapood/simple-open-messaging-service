@@ -67,16 +67,22 @@ const APP_MAIN = join(
 export function ensureCompiledEntry(): void {
   const sources =
     'src test/federation-app.main.ts test/federation-harness.ts test/federation-proxy.ts test/federation-test-helpers.ts tsconfig.json tsconfig.e2e.json';
+  const fresh =
+    'test -f "${APP_MAIN}" && test -z "$(find ${sources} -newer "${APP_MAIN}" 2>/dev/null)"';
   try {
-    execSync(
-      `test -f "${APP_MAIN}" && test -z "$(find ${sources} -newer "${APP_MAIN}" 2>/dev/null)"`,
-      { stdio: 'ignore' },
-    );
+    execSync(fresh, { stdio: 'ignore' });
     return; // up-to-date — skip the compile
   } catch {
     // missing or stale → (re)compile below
   }
-  execSync('npx tsc -p tsconfig.e2e.json', { stdio: 'inherit' });
+  // Workers can both observe staleness at once (e.g. sources edited mid-run)
+  // and would then race two tsc processes over the same .e2e-build outputs,
+  // failing each other. Serialize on a lock file and re-check freshness under
+  // the lock so a worker queued behind the winner skips its own compile.
+  execSync(
+    `mkdir -p .e2e-build && flock -w 600 .e2e-build/.compile.lock sh -c '${fresh} || npx tsc -p tsconfig.e2e.json'`,
+    { stdio: 'inherit' },
+  );
 }
 
 /** A duck-typed KeypairService held entirely in memory — no file I/O, distinct keys per app. */
@@ -573,9 +579,12 @@ export async function assertSeparateDatabases(
   }
 }
 
-/** Reset isolated federation fixtures, including profiles and media without account foreign keys. */
+/** Reset isolated federation fixtures, including profiles and media without account foreign keys.
+ *  The LocalFederation identity tables are included: a previous REAL-keypair spec leaves its
+ *  compressed-lifetime identity behind, and the next one would load it instead of bootstrapping
+ *  with its own env (silently stalling rotation, or failing the skew-budget check at boot). */
 const FEDERATION_TRUNCATE_SQL =
-  'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "Message", "MessageAsset", "MediaAsset", "S2SKeyCache", "PeerStateFeed", "ProfileNamespaceFeed", "ProfileNamespace", "FileSyncProgress", "ForwardBundle" RESTART IDENTITY CASCADE';
+  'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "Message", "MessageAsset", "MediaAsset", "S2SKeyCache", "PeerStateFeed", "ProfileNamespaceFeed", "ProfileNamespace", "FileSyncProgress", "ForwardBundle", "LocalFederationRoot", "LocalFederationSigningKey", "LocalFederationSigningState" RESTART IDENTITY CASCADE';
 const FEDERATION_NAMESPACE_RESET_SQL = `
   DO $$ DECLARE dependent regclass; BEGIN
     FOR dependent IN

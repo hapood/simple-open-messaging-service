@@ -73,8 +73,12 @@ export async function resetE2EWorkerDatabase(
         );
       }
       await client.query('DELETE FROM "IdentityNamespace" WHERE id <> 0');
+      // The retained sentinel row carries the Profile Namespace Feed allocator;
+      // a previous spec may have advanced it. Reset it so specs can assert
+      // absolute feed positions from 1.
       await client.query(
-        'INSERT INTO "IdentityNamespace" (id, domain) VALUES (0, $1) ON CONFLICT (id) DO NOTHING',
+        'INSERT INTO "IdentityNamespace" (id, domain, "profileNamespaceFeedEndId") VALUES (0, $1, 0) ' +
+          'ON CONFLICT (id) DO UPDATE SET "profileNamespaceFeedEndId" = 0',
         [process.env.SOMS_DOMAIN ?? 'e2e-local.test'],
       );
       await client.query(
