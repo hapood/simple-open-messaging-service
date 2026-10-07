@@ -175,13 +175,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     return peer.id;
   }
 
-  async function resolveIntentProfile(
+  async function resolveAccountProfile(
     app: FedApp,
     token: string,
     demand: {
       publisherNamespaceId: number;
       target: { profileNamespaceId: number; account: string; rev: number };
-      peerAccount: string;
     },
   ): Promise<{
     account: string;
@@ -191,7 +190,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     rev: number;
   }> {
     const reader = await openSse(app.baseUrl, token);
-    const body = { ...demand, lookup: 'RELATIONSHIP_INTENT_PROFILE' };
+    const body = { ...demand, lookup: 'ACCOUNT_PROFILE' };
     try {
       const first = await request(app.baseUrl)
         .post('/api/v1/user/profile-resolution')
@@ -515,14 +514,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       },
       { timeout: 5000, interval: 100 },
     );
-    const profileEvidence = await resolveIntentProfile(appB, tokenB, {
+    const profileEvidence = await resolveAccountProfile(appB, tokenB, {
       publisherNamespaceId: namespaceAOnB,
       target: {
         profileNamespaceId: 0,
         account: 'alice',
         rev: incoming.profileRev,
       },
-      peerAccount: 'bob',
     });
     const incomingTimings = await appB.database.execute<{
       requestedAt: Date;
@@ -658,14 +656,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     )?.defaultProfileRev;
     expect(bobProfileRev).toBeGreaterThan(0);
     const namespaceBOnA = await requireActiveNamespaceId(appA, DOM_B);
-    const bobProfile = await resolveIntentProfile(appA, tokenA, {
+    const bobProfile = await resolveAccountProfile(appA, tokenA, {
       publisherNamespaceId: namespaceBOnA,
       target: {
         profileNamespaceId: 0,
         account: 'bob',
         rev: bobProfileRev!,
       },
-      peerAccount: 'alice',
     });
     expect(bobProfile).toMatchObject({
       account: 'bob',
@@ -2127,14 +2124,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       status: 'REQUESTED',
       profileRev: expect.any(Number),
     });
-    const invitedGroupProfile = await resolveIntentProfile(appB, tokenB, {
+    const invitedGroupProfile = await resolveAccountProfile(appB, tokenB, {
       publisherNamespaceId: aliceAddressOnB.namespaceId,
       target: {
         profileNamespaceId: 0,
         account: groupAccount,
         rev: (publishedGroupInvite!.body as { profileRev: number }).profileRev,
       },
-      peerAccount: 'bob',
     });
     expect(invitedGroupProfile).toMatchObject({
       account: groupAccount,

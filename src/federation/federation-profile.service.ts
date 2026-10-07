@@ -176,83 +176,9 @@ export class FederationProfileService {
     );
   }
 
-  /** Exact directed-intent disclosure; an unrelated message or current Meta
-   * reference cannot authorize this operation. The proof and snapshot are read
-   * from one read-only repeatable-read database snapshot. */
-  async getAuthorizedIntentProfile(
-    account: string,
-    peerAccount: string,
-    profileNamespaceId: number,
-    rev: number,
-    peerDomain: string,
-    namespaceId: number,
-  ): Promise<S2SProfile | null> {
-    if (
-      !Number.isSafeInteger(profileNamespaceId) ||
-      profileNamespaceId < 0 ||
-      !Number.isSafeInteger(rev) ||
-      rev < 1
-    )
-      return null;
-    const result = await this.database.db.transaction(
-      (tx) =>
-        tx.execute<{
-          account: string;
-          displayName: string;
-          avatar: string;
-          bio: string;
-          profileNamespaceId: number;
-          profileRev: number;
-        }>(sql`
-        SELECT profile.account, profile."displayName", profile.avatar,
-          profile.bio, profile."profileNamespaceId", profile."profileRev"
-        FROM "Profile" profile
-        WHERE profile.account = ${normalizeAccount(account)}
-          AND profile."publisherNamespaceId" = 0
-          AND profile."profileNamespaceId" = ${profileNamespaceId}
-          AND profile."profileRev" = ${rev}
-          AND (
-            EXISTS (SELECT 1 FROM "Account" owner
-              WHERE owner.account = profile.account
-                AND owner."namespaceId" = 0 AND owner.kind = 'USER'
-                AND owner.availability = 'AVAILABLE')
-            OR EXISTS (SELECT 1 FROM ${groupStateSql} group_state
-              WHERE group_state.account = profile.account
-                AND group_state."namespaceId" = 0
-                AND group_state."dissolvedAt" IS NULL)
-          )
-          AND EXISTS (
-            SELECT 1 FROM "RelationshipIntent" intent
-            WHERE intent."profileNamespaceId" = ${profileNamespaceId}
-              AND intent."profileRev" = ${rev}
-              AND (intent.status = 'ACCEPTED'
-                OR (intent.status = 'REQUESTED'
-                  AND intent."expiresAt" > CURRENT_TIMESTAMP))
-              AND intent."authorAccount" = profile.account
-                AND intent."authorNamespaceId" = 0
-                AND intent."receiverAccount" = ${normalizeAccount(peerAccount)}
-                AND intent."receiverNamespaceId" = ${namespaceId}
-          )
-        LIMIT 1
-      `),
-      { isolationLevel: 'repeatable read', accessMode: 'read only' },
-    );
-    const row = result.rows[0];
-    return row
-      ? this.toS2SProfile({
-          profileNamespaceId: row.profileNamespaceId,
-          account: row.account,
-          name: row.displayName,
-          avatar: row.avatar,
-          bio: row.bio,
-          profileRev: row.profileRev,
-        })
-      : null;
-  }
-
-  /** Account evidence is distinct from directed-intent and group-member
-   * evidence. Authorization, published bounds, and the exact snapshot share
-   * one read-only repeatable-read snapshot. */
+  /** Account evidence is distinct from group-member evidence. Authorization,
+   * published bounds, and the exact snapshot share one read-only repeatable-read
+   * snapshot. */
   async getAuthorizedAccountProfile(
     account: string,
     profileNamespaceId: number,
@@ -360,7 +286,19 @@ export class FederationProfileService {
         AND profile."publisherNamespaceId" = 0
         AND profile."profileNamespaceId" = ${profileNamespaceId}
         AND profile."profileRev" = ${rev}
-        AND EXISTS (
+        AND (
+          EXISTS (
+            SELECT 1 FROM "RelationshipIntent" intent
+            WHERE intent."authorAccount" = profile.account
+              AND intent."authorNamespaceId" = 0
+              AND intent."receiverNamespaceId" = ${namespaceId}
+              AND intent."profileNamespaceId" = ${profileNamespaceId}
+              AND intent."profileRev" = ${rev}
+              AND (intent.status = 'ACCEPTED'
+                OR (intent.status = 'REQUESTED'
+                  AND intent."expiresAt" > CURRENT_TIMESTAMP))
+          )
+          OR EXISTS (
           SELECT 1 FROM "Message" m
           JOIN "MessageThread" thread ON thread.id = m."threadId"
           JOIN "RelationshipPair" pair ON pair."threadId" = thread.id
@@ -438,6 +376,7 @@ export class FederationProfileService {
                     AND state."accountId" = owner.id)
               )
             )
+        )
         )
       LIMIT 1
     `),
@@ -735,26 +674,6 @@ export class FederationProfileService {
         `vouched root key for namespace ${possession.profileNamespaceId} is uncertifiable`,
       );
     return entry.rootPublicKey;
-  }
-
-  /** Fetch an exact signed profile. The path names its namespace and revision;
-   * the closed evidence response carries only profile content and subject address. */
-  async fetchExactIntentProfile(
-    account: string,
-    peerAccount: string,
-    rev: number,
-    publisherDomain: string,
-    expectedProfileNamespaceId = 0,
-  ): Promise<S2SProfile | null> {
-    return this.fetchExactProfile(
-      `/s2s/v1/intent-profiles/${expectedProfileNamespaceId}` +
-        `/${encodeFederationResourceComponent(account)}` +
-        `/${encodeFederationResourceComponent(peerAccount)}/${rev}`,
-      account,
-      rev,
-      publisherDomain,
-      expectedProfileNamespaceId,
-    );
   }
 
   async fetchExactAccountProfile(

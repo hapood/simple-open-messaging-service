@@ -58,7 +58,6 @@ describe('Federation v1 surface', () => {
         'GET /s2s/v1/messages',
         'GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev',
         'GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
-        'GET /s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev',
         'GET /s2s/v1/message-tombstones',
         'GET /s2s/v1/state-feed',
         'GET /s2s/v1/profile-namespace-feed',

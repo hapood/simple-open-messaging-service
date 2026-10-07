@@ -40,7 +40,7 @@ Files:
 Tasks:
 
 - Validate `publisherNamespaceId`, `lookup`, and exact `target.profileNamespaceId`.
-- Require `peerAccount` only for `RELATIONSHIP_INTENT_PROFILE`.
+- Require `account` only for `ACCOUNT_PROFILE`.
 - Require `groupAccount` only for `GROUP_MEMBER_PROFILE`.
 - Reject unrelated fields through the global `ValidationPipe`.
 - Ensure the DTO cannot accept `projection`.
@@ -99,7 +99,7 @@ namespace. Authorization must be specific to the lookup:
   - authorize the exact account/revision through local self, visible P2P
     thread, selected group profile, or another already-supported exact route;
   - never substitute another revision.
-- `RELATIONSHIP_INTENT_PROFILE`:
+- `ACCOUNT_PROFILE`:
   - validate ordered author/peer endpoints;
   - validate the exact intent revision and effective status;
   - validate the namespace and peer account.
@@ -172,7 +172,7 @@ Tasks:
 - Construct the correct namespace from the committed source record.
 - Use `ACCOUNT_PROFILE` for P2P message-author and selected group profile.
 - Use `GROUP_MEMBER_PROFILE` for every Group Meta member profile.
-- Use `RELATIONSHIP_INTENT_PROFILE` for intent-selected thread profiles.
+- Use `ACCOUNT_PROFILE` for intent-selected thread profiles.
 - Do not use `publisherNamespaceId: 0` for remote work.
 - Do not perform network resolution inside message or Meta transactions.
 
@@ -276,7 +276,7 @@ Tasks:
 - Include both `publisherNamespaceId` and `target.profileNamespaceId`.
 - Do not send evidence, thread coordinates, or projection.
 - Group Meta members always use `GROUP_MEMBER_PROFILE`.
-- Thread intent-selected profiles use `RELATIONSHIP_INTENT_PROFILE`.
+- Thread intent-selected profiles use `ACCOUNT_PROFILE`.
 - Message-selected P2P and Group profiles use the appropriate
   `ACCOUNT_PROFILE`/`GROUP_MEMBER_PROFILE` route.
 - Read the source/revision facts from Thread Feed and Group Meta.

@@ -177,7 +177,7 @@ when it has none.
 
 While `REQUESTED` remains unexpired or the direction is `ACCEPTED`, the source
 MUST allow the receiver to resolve that positive exact reference through
-[Intent Profile](./profiles.md#6-intent-profile). This grant applies equally
+[Account Profile](./profiles.md#4-account-profile-by-account-evidence). This grant applies equally
 when the receiver-hosted endpoint is a user or a group and ends when the
 direction expires or becomes `REVOKED`.
 

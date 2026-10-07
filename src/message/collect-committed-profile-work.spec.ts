@@ -168,7 +168,7 @@ describe('collectCommittedProfileWork', () => {
     });
   });
 
-  it('uses intent prefetch for a remote friend-add participant', () => {
+  it('uses account prefetch for a remote friend-add participant', () => {
     const participants = [
       { ...aliceParticipant, profileRev: 3 },
       { ...bobParticipant, profileRev: 7 },
@@ -198,15 +198,13 @@ describe('collectCommittedProfileWork', () => {
       demands: [
         {
           publisherNamespaceId: 3,
-          lookup: 'RELATIONSHIP_INTENT_PROFILE',
+          lookup: 'ACCOUNT_PROFILE',
           target: { profileNamespaceId: 3, account: 'bob', rev: 7 },
-          peerAccount: 'alice',
         },
         {
           publisherNamespaceId: 3,
-          lookup: 'RELATIONSHIP_INTENT_PROFILE',
+          lookup: 'ACCOUNT_PROFILE',
           target: { profileNamespaceId: 3, account: 'bob', rev: 2 },
-          peerAccount: 'alice',
         },
       ],
       evidenceProjections: [],

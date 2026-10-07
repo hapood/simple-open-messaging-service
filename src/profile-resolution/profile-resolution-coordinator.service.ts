@@ -137,10 +137,6 @@ export class ProfileResolutionCoordinatorService {
       await this.authorizeGroupMemberDemand(userId, demand, namespace.domain);
       return;
     }
-    if (demand.lookup === ProfileLookup.RELATIONSHIP_INTENT_PROFILE) {
-      await this.authorizeIntentDemand(userId, demand);
-      return;
-    }
     await this.authorizeAccountDemand(userId, demand);
   }
 
@@ -212,48 +208,6 @@ export class ProfileResolutionCoordinatorService {
       );
   }
 
-  private async authorizeIntentDemand(
-    userId: number,
-    demand: Extract<
-      ProfileResolutionDemand,
-      { lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE }
-    >,
-  ): Promise<void> {
-    const rows = await this.database.db.execute(sql`
-      SELECT 1
-      FROM "Account" self
-      JOIN "RelationshipIntent" intent
-        ON intent."authorAccount" = ${normalizeAccount(demand.target.account)}
-        AND intent."authorNamespaceId" = ${demand.publisherNamespaceId}
-        AND intent."receiverAccount" = ${normalizeAccount(demand.peerAccount)}
-      JOIN "RelationshipPair" pair
-        ON (pair."endpointAAccount" = intent."authorAccount"
-          AND pair."endpointANamespaceId" = intent."authorNamespaceId"
-          AND pair."endpointBAccount" = intent."receiverAccount"
-          AND pair."endpointBNamespaceId" = intent."receiverNamespaceId")
-          OR (pair."endpointBAccount" = intent."authorAccount"
-          AND pair."endpointBNamespaceId" = intent."authorNamespaceId"
-          AND pair."endpointAAccount" = intent."receiverAccount"
-          AND pair."endpointANamespaceId" = intent."receiverNamespaceId")
-      WHERE self.id = ${userId}
-        AND intent."profileNamespaceId" = ${demand.target.profileNamespaceId}
-        AND intent."profileRev" = ${demand.target.rev}
-        AND (intent.status = 'ACCEPTED' OR
-          (intent.status = 'REQUESTED' AND intent."expiresAt" > CURRENT_TIMESTAMP))
-        AND (pair."endpointAType" = 'USER' OR pair."endpointBType" = 'USER')
-        AND (pair."endpointAAccount" = self.account
-          AND pair."endpointANamespaceId" = 0
-          OR pair."endpointBAccount" = self.account
-          AND pair."endpointBNamespaceId" = 0)
-      LIMIT 1
-    `);
-    if (rows.rows.length === 0)
-      throw new BusinessException(
-        BusinessCode.NOT_FOUND,
-        'relationship intent profile is not available',
-      );
-  }
-
   private async authorizeAccountDemand(
     userId: number,
     demand: Extract<
@@ -274,21 +228,24 @@ export class ProfileResolutionCoordinatorService {
             WHERE pair.kind = 'P2P'
               AND pair.established = true
               AND pair.active = true
-              AND (
-                (pair."endpointAType" = 'USER'
-                  AND pair."endpointAAccount" = self.account
-                  AND pair."endpointANamespaceId" = 0
-                  AND pair."endpointBType" = 'USER'
-                  AND pair."endpointBAccount" = ${account}
-                  AND pair."endpointBNamespaceId" = ${demand.publisherNamespaceId})
-                OR
-                (pair."endpointBType" = 'USER'
-                  AND pair."endpointBAccount" = self.account
-                  AND pair."endpointBNamespaceId" = 0
-                  AND pair."endpointAType" = 'USER'
-                  AND pair."endpointAAccount" = ${account}
-                  AND pair."endpointANamespaceId" = ${demand.publisherNamespaceId})
-              )
+              AND pair."endpointAType" = 'USER'
+              AND pair."endpointAAccount" = self.account
+              AND pair."endpointANamespaceId" = 0
+              AND pair."endpointBType" = 'USER'
+              AND pair."endpointBAccount" = ${account}
+              AND pair."endpointBNamespaceId" = ${demand.publisherNamespaceId}
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM "RelationshipIntent" intent
+            WHERE intent."authorAccount" = ${account}
+              AND intent."authorNamespaceId" = ${demand.publisherNamespaceId}
+              AND intent."receiverAccount" = self.account
+              AND intent."receiverNamespaceId" = 0
+              AND intent."profileNamespaceId" = ${demand.target.profileNamespaceId}
+              AND intent."profileRev" = ${demand.target.rev}
+              AND (intent.status = 'ACCEPTED' OR
+                (intent.status = 'REQUESTED' AND intent."expiresAt" > CURRENT_TIMESTAMP))
           )
           OR EXISTS (
             SELECT 1
@@ -521,16 +478,10 @@ export class ProfileResolutionCoordinatorService {
         ),
         sourceDomain: publisherDomain,
       };
-    return {
-      profile: await this.profiles.fetchExactIntentProfile(
-        demand.target.account,
-        demand.peerAccount,
-        demand.target.rev,
-        publisherDomain,
-        expected.profileNamespaceId,
-      ),
-      sourceDomain: publisherDomain,
-    };
+    throw new BusinessException(
+      BusinessCode.NOT_FOUND,
+      'profile lookup is unavailable',
+    );
   }
 
   private capacityExceeded(): never {

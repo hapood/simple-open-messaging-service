@@ -1,7 +1,4 @@
-export type ProfileLookup =
-  | 'ACCOUNT_PROFILE'
-  | 'RELATIONSHIP_INTENT_PROFILE'
-  | 'GROUP_MEMBER_PROFILE';
+export type ProfileLookup = 'ACCOUNT_PROFILE' | 'GROUP_MEMBER_PROFILE';
 
 /** Client-to-server profile-resolution demand. Federation endpoints retain their own wire contracts. */
 export type ProfileDemand =
@@ -9,12 +6,6 @@ export type ProfileDemand =
       publisherNamespaceId: number;
       lookup: 'ACCOUNT_PROFILE';
       target: ProfileTarget;
-    }
-  | {
-      publisherNamespaceId: number;
-      lookup: 'RELATIONSHIP_INTENT_PROFILE';
-      target: ProfileTarget;
-      peerAccount: string;
     }
   | {
       publisherNamespaceId: number;
@@ -57,21 +48,6 @@ export function parseProfileDemand(value: unknown): ProfileDemand {
     case 'ACCOUNT_PROFILE':
       assertOnlyKeys(demand, 'publisherNamespaceId', 'lookup', 'target');
       return { publisherNamespaceId, lookup: 'ACCOUNT_PROFILE', target };
-    case 'RELATIONSHIP_INTENT_PROFILE': {
-      assertOnlyKeys(
-        demand,
-        'publisherNamespaceId',
-        'lookup',
-        'target',
-        'peerAccount',
-      );
-      return {
-        publisherNamespaceId,
-        lookup: 'RELATIONSHIP_INTENT_PROFILE',
-        target,
-        peerAccount: nonEmptyString(demand['peerAccount'], 'peerAccount'),
-      };
-    }
     case 'GROUP_MEMBER_PROFILE': {
       assertOnlyKeys(
         demand,

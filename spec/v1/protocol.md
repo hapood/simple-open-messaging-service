@@ -60,7 +60,7 @@ The v1 wire surface and every v1 object are closed. Unknown fields and unknown e
 
 ## 3. Federation v1 HTTP surface
 
-The following table is the complete v1 surface. Its synchronization surface contains three GET feeds, one GET namespace-bindings query, two GET thread queries, three exact profile queries, and one POST feed-head hint. `recognize` additionally serves as the arrival operation for a server presenting a new domain under an already pinned root identity. The authentication context determines how signature validation obtains a key and which peer states MAY invoke an operation; it does not change the Section 6 signature wire format.
+The following table is the complete v1 surface. Its synchronization surface contains three GET feeds, one GET namespace-bindings query, two GET thread queries, two exact profile queries, and one POST feed-head hint. `recognize` additionally serves as the arrival operation for a server presenting a new domain under an already pinned root identity. The authentication context determines how signature validation obtains a key and which peer states MAY invoke an operation; it does not change the Section 6 signature wire format.
 
 | Method | Absolute path                                                                         | Authentication context | Request                                         | Success     | Response                 |
 | ------ | ------------------------------------------------------------------------------------- | ---------------------- | ----------------------------------------------- | ----------- | ------------------------ |
@@ -73,7 +73,6 @@ The following table is the complete v1 surface. Its synchronization surface cont
 | `GET`  | `/s2s/v1/group-meta`                                                                  | recognized signed      | group/meta mode query                           | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/account-profiles/:namespaceId/:account/:profileRev`                          | recognized signed      | path profile evidence                           | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev` | recognized signed      | path member evidence                            | `200`       | success data envelope    |
-| `GET`  | `/s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev`              | recognized signed      | path intent evidence                            | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/messages`                                                                    | recognized signed      | thread data query                               | `200`       | success data envelope    |
 | `GET`  | `/s2s/v1/message-tombstones`                                                          | recognized signed      | thread data query                               | `200`       | success data envelope    |
 | `POST` | `/s2s/v1/call`                                                                        | recognized signed      | JSON call frame                                 | `200`       | success data envelope    |
@@ -348,9 +347,8 @@ The required closure is:
 | `state-feed`                                                                   | Publishes relationship facts with exact profile references and thread-content heads carrying Group Meta coordinates; it publishes no profile display data. |
 | `group-meta`                                                                   | Publishes the origin-authoritative current roster and compacted group-profile reference; it does not provide a historical roster.                          |
 | `/accounts/:account`                                                           | Returns the current public profile for an exact local account on the responding server.                                                                    |
-| `/account-profiles/:namespaceId/:account/:profileRev`                          | Returns an exact account profile revision authorized by current readable user-message evidence or the current group-profile reference.                     |
+| `/account-profiles/:namespaceId/:account/:profileRev`                          | Returns an exact account profile revision authorized by current readable user-message evidence, the current group-profile reference, or an exact current directed Relationship Intent grant. |
 | `/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev` | Returns an exact member profile revision authorized by the current Group Meta member reference or a serviceable member-authored group message.             |
-| `/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev`              | Returns an exact account profile revision selected by one current directed Relationship Intent.                                                            |
 | `/messages` and `/message-tombstones`                                          | Recompute the operation's relationship and authority rules and apply local history policy on every request; a stale head grants no authority.              |
 | Media and forward bundles                                                      | Recompute the exact authorized message/thread binding independently of every feed cursor or hint.                                                          |
 

@@ -654,24 +654,6 @@
       ]
     },
     {
-      "name": "intent profile parameters",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/intentProfileParameters",
-      "values": [
-        {
-          "account": "alice",
-          "peerAccount": "bob",
-          "namespaceId": "0",
-          "profileRev": "3"
-        },
-        {
-          "account": "!group",
-          "peerAccount": "alice",
-          "namespaceId": "0",
-          "profileRev": "4"
-        }
-      ]
-    },
-    {
       "name": "profile response",
       "schema": "urn:somfp:v1:profile",
       "value": {

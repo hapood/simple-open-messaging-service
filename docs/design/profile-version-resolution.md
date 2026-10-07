@@ -67,9 +67,9 @@ thread's existing `MessageThread.type` / thread-feed `type` to interpret it:
 
 | Thread                                                | Source coordinate                                                     | Profile lookup on a cache miss                                        |
 | ----------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| P2P, initial establishment                            | null; revision from the peer-authored effective Relationship Intent   | Intent Profile at the peer's origin                                   |
+| P2P, initial establishment                            | null; revision from the peer-authored effective Relationship Intent   | Account Profile at the peer's origin                                   |
 | P2P, updated by a peer-authored message               | that selected message's committed seq; revision from the same message | Account Profile at the peer's origin                                  |
-| GROUP, newly activated from the group-authored intent | null; revision from that intent                                       | Intent Profile at the group origin                                    |
+| GROUP, newly activated from the group-authored intent | null; revision from that intent                                       | Account Profile at the group origin                                    |
 | GROUP, selected by Meta                               | the selected `GROUP_PROFILE` item's feed ID; revision from that item  | Account Profile at the group origin, authorized by current Group Meta |
 
 A group's selected `GROUP_PROFILE.feedId` is **not** `GroupMeta.metaEndId` or
@@ -296,9 +296,9 @@ type ClientProfileResolutionDemand =
     }
   | {
       publisherNamespaceId: number;
-      lookup: 'RELATIONSHIP_INTENT_PROFILE';
+      lookup: 'ACCOUNT_PROFILE';
       target: ProfileTarget;
-      peerAccount: string;
+      account: string;
     }
   | {
       publisherNamespaceId: number;
@@ -319,7 +319,7 @@ The lookup value maps directly to the S2S operation:
 ```text
 ACCOUNT_PROFILE              → account-profiles
 GROUP_MEMBER_PROFILE         → group-member-profiles
-RELATIONSHIP_INTENT_PROFILE  → intent-profiles
+ACCOUNT_PROFILE  → account-profiles
 ```
 
 The client request contains no `evidence`, `threadId`, `messageSeq`, Meta
@@ -333,8 +333,8 @@ commit projection evidence.
 `ACCOUNT_PROFILE` is used for an exact account snapshot, including a P2P
 message-selected author or a group profile. `GROUP_MEMBER_PROFILE` is used
 for a member snapshot through the group origin and includes `groupAccount`.
-`RELATIONSHIP_INTENT_PROFILE` is used for an exact relationship-intent
-snapshot and includes `peerAccount`. No generic thread-profile operation and
+`ACCOUNT_PROFILE` is used for an exact relationship-intent
+snapshot and includes `account`. No generic thread-profile operation and
 no legacy `EXACT`, `MESSAGE_AUTHOR`, or `GROUP_META` client selector remains.
 
 All three demand variants carry an exact positive revision. A cache miss may
@@ -349,7 +349,7 @@ The signed federation profile reads are:
 GET /s2s/v1/accounts/:account
 GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev
 GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev
-GET /s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev
+GET /s2s/v1/account-profiles/:namespaceId/:account/:account/:profileRev
 ```
 
 These are the only profile-read operations on the federation surface. Respect
@@ -402,9 +402,9 @@ type ProfilePrefetchDemand =
     }
   | {
       publisherNamespaceId: number;
-      lookup: 'RELATIONSHIP_INTENT_PROFILE';
+      lookup: 'ACCOUNT_PROFILE';
       target: ProfileTarget;
-      peerAccount: string;
+      account: string;
     }
   | {
       publisherNamespaceId: number;
@@ -431,7 +431,7 @@ type ProfileEvidenceProjection =
 
 `ACCOUNT_PROFILE` always calls `account-profiles`,
 `GROUP_MEMBER_PROFILE` always calls `group-member-profiles`, and
-`RELATIONSHIP_INTENT_PROFILE` always calls `intent-profiles`. The common
+`ACCOUNT_PROFILE` always calls `account-profiles`. The common
 `target` carries the exact publisher-scoped profile subject identity and
 revision. `publisherNamespaceId` completes the cache/pending/wake key and
 identifies the request publisher namespace. A resolution demand only fetches
@@ -554,7 +554,7 @@ system-event evidence selector and not a message-seq lookup:
 
 | Participant in event                                                             | Lookup on a cache miss                                                                                                                  |
 | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Remote participant in friendship add                                             | `RELATIONSHIP_INTENT_PROFILE` for the event's frozen revision when the directed intent remains effective                                |
+| Remote participant in friendship add                                             | `ACCOUNT_PROFILE` for the event's frozen revision when the directed intent remains effective                                |
 | Remote member joining a mirrored group (or appearing in role/owner changes)      | `GROUP_MEMBER_PROFILE` using the containing group conversation's ordinary group selector and the event's frozen member address/revision |
 | Friendship removal or group departure                                            | Cache-only `PROFILE_KEY`; never request a profile for the departing participant                                                         |
 | Mirror's own local group member, local group creator, or other local participant | Local five-tuple only; no federation read                                                                                               |

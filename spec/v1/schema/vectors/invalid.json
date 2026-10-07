@@ -839,15 +839,6 @@
       }
     },
     {
-      "name": "intent profile parameters reject no-profile sentinel",
-      "schema": "urn:somfp:v1:http-parameters#/$defs/intentProfileParameters",
-      "value": {
-        "account": "alice",
-        "peerAccount": "bob",
-        "profileRev": "0"
-      }
-    },
-    {
       "name": "thread address rejects legacy type and domain fields",
       "schema": "urn:somfp:v1:common#/$defs/threadAddress",
       "value": {

@@ -1,6 +1,5 @@
 export enum ProfileLookup {
   ACCOUNT_PROFILE = 'ACCOUNT_PROFILE',
-  RELATIONSHIP_INTENT_PROFILE = 'RELATIONSHIP_INTENT_PROFILE',
   GROUP_MEMBER_PROFILE = 'GROUP_MEMBER_PROFILE',
 }
 
@@ -30,12 +29,6 @@ export type ProfilePrefetchDemand =
       publisherNamespaceId: number;
       lookup: ProfileLookup.ACCOUNT_PROFILE;
       target: ProfileTarget;
-    }
-  | {
-      publisherNamespaceId: number;
-      lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE;
-      target: ProfileTarget;
-      peerAccount: string;
     }
   | {
       publisherNamespaceId: number;

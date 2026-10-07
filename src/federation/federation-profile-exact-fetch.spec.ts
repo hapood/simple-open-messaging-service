@@ -27,23 +27,6 @@ function target() {
 describe('exact signed profile operations', () => {
   beforeAll(() => vi.stubEnv('SOMS_DOMAIN', 'local.example'));
   afterAll(() => vi.unstubAllEnvs());
-  it('uses independent canonical segments for intent and attaches only the requested revision', async () => {
-    const { get, profiles } = target();
-    expect(
-      await profiles.fetchExactIntentProfile(
-        'alice',
-        '!group',
-        7,
-        'member.example',
-      ),
-    ).toEqual({ ...evidence, namespaceId: 0, profileRev: 7 });
-    expect(get).toHaveBeenCalledWith(
-      '/s2s/v1/intent-profiles/0/alice/%21group/7',
-      'member.example',
-      expect.any(Number),
-    );
-  });
-
   it('uses the account home for account evidence', async () => {
     const { get, profiles } = target();
     await profiles.fetchExactAccountProfile('alice', 4, 'member.example');

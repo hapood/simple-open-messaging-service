@@ -342,14 +342,13 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       const coordinator = resolver();
       const selector = {
         publisherNamespaceId: f.namespaceId,
-        lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
+        lookup: ProfileLookup.ACCOUNT_PROFILE,
         target: {
           profileNamespaceId: f.namespaceId,
           account: f.target,
           domain: f.domain,
           rev: 7,
         },
-        peerAccount: f.owner.account,
       };
       await expect(
         coordinator.start(f.owner.id, 1, selector),
@@ -452,14 +451,13 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     const coordinator = resolver();
     const exact = {
       publisherNamespaceId: f.namespaceId,
-      lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
+      lookup: ProfileLookup.ACCOUNT_PROFILE,
       target: {
         profileNamespaceId: f.namespaceId,
         account: f.target,
         domain: f.domain,
         rev: 7,
       },
-      peerAccount: f.owner.account,
     };
     await coordinator.start(f.owner.id, 1, exact);
     await database.db

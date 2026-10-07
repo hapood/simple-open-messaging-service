@@ -98,10 +98,6 @@ export const GLOBAL_PREFIX_EXCLUSIONS = [
     method: RequestMethod.GET,
   },
   {
-    path: `${FEDERATION_API_PREFIX}/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev`,
-    method: RequestMethod.GET,
-  },
-  {
     path: `${FEDERATION_API_PREFIX}/media/:digest`,
     method: RequestMethod.GET,
   },

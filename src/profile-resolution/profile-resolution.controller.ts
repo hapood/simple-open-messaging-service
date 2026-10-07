@@ -52,29 +52,6 @@ export class ProfileResolutionController {
         },
         {
           type: 'object',
-          required: ['publisherNamespaceId', 'lookup', 'target', 'peerAccount'],
-          properties: {
-            publisherNamespaceId: { type: 'integer', minimum: 0 },
-            lookup: {
-              type: 'string',
-              enum: ['RELATIONSHIP_INTENT_PROFILE'],
-            },
-            target: {
-              type: 'object',
-              required: ['profileNamespaceId', 'account', 'rev'],
-              properties: {
-                profileNamespaceId: { type: 'integer', minimum: 0 },
-                account: { type: 'string' },
-                rev: { type: 'integer', minimum: 1 },
-              },
-              additionalProperties: false,
-            },
-            peerAccount: { type: 'string' },
-          },
-          additionalProperties: false,
-        },
-        {
-          type: 'object',
           required: [
             'publisherNamespaceId',
             'lookup',
@@ -188,13 +165,6 @@ function toProfileClientResolutionDemand(
         publisherNamespaceId: demand.publisherNamespaceId,
         lookup: ProfileLookup.ACCOUNT_PROFILE,
         target: demand.target,
-      };
-    case 'RELATIONSHIP_INTENT_PROFILE':
-      return {
-        publisherNamespaceId: demand.publisherNamespaceId,
-        lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
-        target: demand.target,
-        peerAccount: demand.peerAccount,
       };
     case 'GROUP_MEMBER_PROFILE':
       return {

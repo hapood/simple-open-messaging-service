@@ -118,16 +118,6 @@
       "responseEnvelope": true
     },
     {
-      "id": "intentProfile",
-      "method": "GET",
-      "path": "/s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev",
-      "authentication": "recognized-http-message-signature",
-      "successStatus": [200],
-      "parameterSchema": "urn:somfp:v1:http-parameters#/$defs/intentProfileParameters",
-      "responseSchema": "urn:somfp:v1:evidence-profile",
-      "responseEnvelope": true
-    },
-    {
       "id": "messageQuery",
       "method": "GET",
       "path": "/s2s/v1/messages",

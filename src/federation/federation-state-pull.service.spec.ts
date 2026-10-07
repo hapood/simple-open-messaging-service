@@ -19,10 +19,9 @@ describe('FederationStatePullService drain window', () => {
         : new Error('database unavailable');
       const resolveDemand = vi.fn().mockRejectedValue(failure);
       const demand = {
-        namespaceId: 7,
-        lookup: 'RELATIONSHIP_INTENT_PROFILE' as const,
-        target: { account: 'alice', domain: 'peer.test', rev: 2 },
-        peerAccount: 'bob',
+        publisherNamespaceId: 7,
+        lookup: 'ACCOUNT_PROFILE' as const,
+        target: { profileNamespaceId: 7, account: 'alice', rev: 2 },
       };
       const effect = {
         clientFeedUpdates: [],

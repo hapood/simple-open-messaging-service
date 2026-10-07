@@ -28,13 +28,11 @@ function createSubject(options?: {
   };
   const profiles: {
     fetchExactAccountProfile: ReturnType<typeof vi.fn>;
-    fetchExactIntentProfile: ReturnType<typeof vi.fn>;
     fetchExactGroupMemberProfile: ReturnType<typeof vi.fn>;
     materializeExactForeignProfile: ReturnType<typeof vi.fn>;
     getStoredProfile: ReturnType<typeof vi.fn>;
   } = {
     fetchExactAccountProfile: vi.fn(),
-    fetchExactIntentProfile: vi.fn(),
     fetchExactGroupMemberProfile: vi.fn(),
     materializeExactForeignProfile: vi.fn().mockResolvedValue(undefined),
     getStoredProfile: vi.fn().mockResolvedValue(options?.storedProfile ?? null),
@@ -118,36 +116,6 @@ describe('ProfileResolutionCoordinatorService', () => {
     );
   });
 
-  it('dispatches RELATIONSHIP_INTENT_PROFILE with its peer account', async () => {
-    const { subject, profiles } = createSubject();
-    profiles.fetchExactIntentProfile.mockResolvedValue(wireProfile);
-    profiles.getStoredProfile.mockResolvedValue(wireProfile);
-    const demand = {
-      publisherNamespaceId: 7,
-      lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
-      target: accountDemand.target,
-      peerAccount: 'bob',
-    } as const;
-
-    await subject['fetch'](
-      {
-        publisherNamespaceId: 7,
-        profileNamespaceId: 12,
-        account: 'alice',
-        rev: 4,
-      },
-      demand,
-    );
-
-    expect(profiles.fetchExactIntentProfile).toHaveBeenCalledWith(
-      'alice',
-      'bob',
-      4,
-      'publisher.test',
-      12,
-    );
-  });
-
   it('dispatches GROUP_MEMBER_PROFILE through the group publisher namespace', async () => {
     const { subject, profiles } = createSubject({
       namespaceDomain: 'group-origin.test',
@@ -220,20 +188,6 @@ describe('ProfileResolutionCoordinatorService', () => {
     expect(query).toContain("latest.body ->> 'profileRev'");
     expect(query).toContain('message."localState" = \'READY\'');
     expect(query).not.toContain('message."isDeleted"');
-
-    await subject['authorizeIntentDemand'](3, {
-      publisherNamespaceId: 7,
-      lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
-      target: accountDemand.target,
-      peerAccount: 'bob',
-    });
-    query = new PgDialect().sqlToQuery(
-      database.db.execute.mock.calls.at(-1)![0] as SQL,
-    ).sql;
-    expect(query).toContain('intent."profileNamespaceId"');
-    expect(query).toContain('intent."profileRev"');
-    expect(query).toContain('pair."endpointAAccount" = self.account');
-    expect(query).toContain('pair."endpointANamespaceId" = 0');
 
     await subject['authorizeAccountDemand'](3, {
       ...accountDemand,

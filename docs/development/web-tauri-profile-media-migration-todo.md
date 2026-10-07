@@ -15,7 +15,7 @@ Client profile resolution accepts only these lookup values:
 ```ts
 'ACCOUNT_PROFILE'
 'GROUP_MEMBER_PROFILE'
-'RELATIONSHIP_INTENT_PROFILE'
+'ACCOUNT_PROFILE'
 ```
 
 Shared demand shape:
@@ -39,8 +39,8 @@ namespace stored in the profile cache.
 Additional fields:
 
 ```ts
-// RELATIONSHIP_INTENT_PROFILE only
-peerAccount: string;
+// ACCOUNT_PROFILE only
+account: string;
 
 // GROUP_MEMBER_PROFILE only
 groupAccount: string;
@@ -64,7 +64,7 @@ infer either namespace from `domain` for remote identities.
 - Replace old selector kinds such as `EXACT`, `MESSAGE_AUTHOR`, and `GROUP_META` with exact demands.
 - Use `ACCOUNT_PROFILE` for account snapshots, including P2P message author/counterpart and group account profile snapshots.
 - Use `GROUP_MEMBER_PROFILE` for Group Meta member snapshots. Always include `groupAccount`.
-- Use `RELATIONSHIP_INTENT_PROFILE` for intent-selected snapshots. Always include `peerAccount`.
+- Use `ACCOUNT_PROFILE` for intent-selected snapshots. Always include `account`.
 - Ensure frontend profile cache and wake handling are keyed by `(publisherNamespaceId, profileNamespaceId, account, domain, rev)`.
 - Treat `PROFILE_AVAILABLE` / `PROFILE_UNAVAILABLE` as exact-key wakes only. Do not reconstruct old selectors from SSE payloads.
 - Remove selector/evidence conversion helpers once all callers are migrated.
@@ -170,7 +170,7 @@ Manual scenarios to cover:
 
 - P2P message author profile resolves from an exact `ACCOUNT_PROFILE` demand.
 - Group member profile resolves from an exact `GROUP_MEMBER_PROFILE` demand.
-- Intent/friend request profile resolves from an exact `RELATIONSHIP_INTENT_PROFILE` demand.
+- Intent/friend request profile resolves from an exact `ACCOUNT_PROFILE` demand.
 - `PROFILE_AVAILABLE` wakes only the matching exact profile key.
 - Single-file media download shows byte progress and clears on terminal state.
 - Gallery/bundle media shows message-level aggregate progress and per-file progress for the active file.

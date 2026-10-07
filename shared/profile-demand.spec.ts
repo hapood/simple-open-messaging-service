@@ -12,12 +12,6 @@ describe('profile demand parser', () => {
       target: { profileNamespaceId: 0, account: 'alice', rev: 1 },
     },
     {
-      publisherNamespaceId: 7,
-      lookup: 'RELATIONSHIP_INTENT_PROFILE',
-      target: { profileNamespaceId: 7, account: 'alice', rev: 2 },
-      peerAccount: 'bob',
-    },
-    {
       publisherNamespaceId: 8,
       lookup: 'GROUP_MEMBER_PROFILE',
       target: { profileNamespaceId: 8, account: 'alice', rev: 3 },
@@ -40,6 +34,7 @@ describe('profile demand parser', () => {
       publisherNamespaceId: 1,
       lookup: 'RELATIONSHIP_INTENT_PROFILE',
       target: { profileNamespaceId: 1, account: 'alice', rev: 1 },
+      peerAccount: 'bob',
     },
     {
       publisherNamespaceId: 1,

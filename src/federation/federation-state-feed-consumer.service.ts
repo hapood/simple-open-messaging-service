@@ -261,13 +261,12 @@ export class FederationStateFeedConsumerService {
           if (body.status !== 'REVOKED' && Number(body.profileRev) > 0) {
             profileDemands.push({
               publisherNamespaceId: namespaceId,
-              lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
+              lookup: ProfileLookup.ACCOUNT_PROFILE,
               target: {
                 profileNamespaceId: Number(body.namespaceId),
                 account: normalizeAccount(item.account),
                 rev: Number(body.profileRev),
               },
-              peerAccount: localUser.account,
             });
           }
           if (effect.threadId !== undefined) {
@@ -401,13 +400,12 @@ export class FederationStateFeedConsumerService {
               if (body.status !== 'REVOKED' && Number(body.profileRev) > 0) {
                 profileDemands.push({
                   publisherNamespaceId: namespaceId,
-                  lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
+                  lookup: ProfileLookup.ACCOUNT_PROFILE,
                   target: {
                     profileNamespaceId: Number(body.namespaceId),
                     account: normalizeAccount(item.account),
                     rev: Number(body.profileRev),
                   },
-                  peerAccount: normalizeAccount(item.peerAccount),
                 });
               }
             }
@@ -420,13 +418,12 @@ export class FederationStateFeedConsumerService {
           if (inviteDirection && Number(body.profileRev) > 0) {
             profileDemands.push({
               publisherNamespaceId: namespaceId,
-              lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
+              lookup: ProfileLookup.ACCOUNT_PROFILE,
               target: {
                 profileNamespaceId: Number(body.namespaceId),
                 account: normalizeAccount(item.account),
                 rev: Number(body.profileRev),
               },
-              peerAccount: normalizeAccount(item.peerAccount),
             });
           }
           if (effect.threadId !== undefined) {

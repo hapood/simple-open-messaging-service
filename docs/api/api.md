@@ -158,7 +158,6 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 The request is a projection-free exact profile demand:
 
 - `ACCOUNT_PROFILE`: `{ publisherNamespaceId, lookup: 'ACCOUNT_PROFILE', target: { profileNamespaceId, account, domain, rev } }`
-- `RELATIONSHIP_INTENT_PROFILE`: `{ publisherNamespaceId, lookup: 'RELATIONSHIP_INTENT_PROFILE', target: { profileNamespaceId, account, domain, rev }, peerAccount }`
 - `GROUP_MEMBER_PROFILE`: `{ publisherNamespaceId, lookup: 'GROUP_MEMBER_PROFILE', target: { profileNamespaceId, account, domain, rev }, groupAccount }`
 
 The request carries no `threadId`, `messageSeq`, Meta feed coordinate, selector, or separate evidence
@@ -171,8 +170,7 @@ tuple and clients then reread their local profile store.
 These are client/backend implementation field names. For federation profile
 requests, `publisherNamespaceId` selects the locally recognized peer and is not
 sent as a profile field; `target.profileNamespaceId` becomes the S2S path's
-`:namespaceId`. Account Profile, Relationship Intent Profile, and Group Member
-Profile map directly to their corresponding S2S operations.
+`:namespaceId`. Account Profile and Group Member Profile map directly to their corresponding S2S operations. Exact relationship-intent profile disclosures are authorized through Account Profile with the requested exact revision.
 
 ### POST `/user/query` · `/user/resolve` · `/user/search`
 

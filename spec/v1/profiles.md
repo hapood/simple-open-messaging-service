@@ -2,34 +2,31 @@
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
-This document is entirely normative. It defines the four Federation v1 profile
+This document is entirely normative. It defines the three Federation v1 profile
 read operations:
 
 ```http
 GET /s2s/v1/accounts/:account
 GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev
 GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev
-GET /s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev
 ```
 
-All four operations use `recognized signed` authentication and have no
-request body. Resource identity is carried by path variables. The three
-exact profile-validation operations accept no query parameters; the public
+All three operations use `recognized signed` authentication and have no
+request body. Resource identity is carried by path variables. The two exact
+profile-validation operations accept no query parameters; the public
 current-profile lookup accepts exactly two required query parameters,
 `publicKey` and `challenge` (Section 3).
 
 The public current-profile lookup has no `namespaceId` path variable because it
 resolves only the responding server's authoritative current profile for the
-local account. The three exact profile-validation operations carry the profile
+local account. The two exact profile-validation operations carry the profile
 subject namespace as a required `namespaceId` path variable. That value is
 scoped by the responding publisher and identifies the requested profile subject
 inside that publisher's namespace space. A `namespaceId` of `0` requests the
 responding server's own local subject and is served from its local profile
 store; a positive value selects the namespace that publisher holds for a
-foreign identity. When a profile request includes a subject-domain path
-variable for the requested subject, `namespaceId: 0` requires that path segment
-to be `local`, even if the requester stores the responding server's public
-domain for that subject. response `domain` values remain profile content only; request identity uses the profile namespace.
+foreign identity. Response `domain` values remain profile content only; request
+identity uses the profile namespace.
 
 Feed cursors, scan windows, modes, and byte ranges use query parameters in
 their own operations; profile reads have none.
@@ -48,8 +45,7 @@ path-segment representation is `%21`. For example, the decoded group account
 ```http
 GET /s2s/v1/accounts/%21team
 GET /s2s/v1/account-profiles/0/%21team/7
-GET /s2s/v1/group-member-profiles/%21team/0/alice/local/7
-GET /s2s/v1/intent-profiles/0/%21team/alice/7
+GET /s2s/v1/group-member-profiles/%21team/0/alice/7
 ```
 
 A literal `!team` path segment is non-canonical and returns
@@ -113,7 +109,7 @@ the stateless possession-proof discipline is defined in
 
 ### 2.2 Exact evidence profiles
 
-The other three operations name both `namespaceId` and `profileRev` in the path.
+The other two operations name both `namespaceId` and `profileRev` in the path.
 Their success `data` is a closed object with exactly these fields:
 
 ```ts
@@ -126,7 +122,7 @@ interface EvidenceProfile {
 }
 ```
 
-The three exact profile-validation operations return only the profile content
+The two exact profile-validation operations return only the profile content
 and subject address. Their request path already supplies `namespaceId` and
 `profileRev`; the caller combines those request values with the returned
 content to reconstruct the complete profile reference. These coordinates are
@@ -168,7 +164,7 @@ An account that is not an existing local user or live group, or whose current
 public profile is unavailable to the signer, returns HTTP `200 NOT_FOUND` with
 `data: null`.
 
-## 4. Account Profile by Current Account Evidence
+## 4. Account Profile by Account Evidence
 
 ```http
 GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev
@@ -177,12 +173,20 @@ GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev
 `account` MAY be a `UserAccount` or a `GroupAccount` owned by the responding
 domain.
 
-For a user `Account`, the publisher MUST authorize the request by current
-serviceable message evidence for an authenticated signer hosting the user's
-relationship counterpart. The publisher MUST find at least one non-system
-message authored by the requested `account` at the responding domain, carrying
-the requested `namespaceId` and `profileRev`, and lying within the signer's
-current serviceable message interval in either of these relationships:
+For a user `Account`, the publisher MUST authorize the request by at least one
+of these proofs for the exact requested `namespaceId` and `profileRev`:
+
+- current serviceable message evidence for an authenticated signer hosting the
+  user's relationship counterpart; or
+- a current directed Relationship Intent authored by the requested account and
+  addressed to the authenticated signer's account, with matching
+  `profileNamespaceId` and `profileRev`, whose status is `ACCEPTED` or an
+  unexpired `REQUESTED`.
+
+For message evidence, the publisher MUST find at least one non-system message
+authored by the requested `account` at the responding domain, carrying the
+requested `namespaceId` and `profileRev`, and lying within the signer's current
+serviceable message interval in either of these relationships:
 
 - a currently readable P2P thread whose peer endpoint is hosted by the signer
   domain; or
@@ -196,18 +200,20 @@ the signer's current relationship authorization and the published read range.
 The message `seq` MUST be greater than the lower boundary and no greater than
 the upper boundary; the requester does not supply either boundary. When the
 exact namespace and revision match, the publisher SHOULD return its immutable
-snapshot.
-Recognition, membership in another group, knowledge of the account or revision,
-a stale thread-content head, or a message outside the current readable
+snapshot. Recognition, membership in another group, knowledge of the account or
+revision, a reciprocal intent, an expired `REQUESTED` intent, a `REVOKED`
+intent, a stale thread-content head, or a message outside the current readable
 interval is not authorization proof.
 
 For a `GroupAccount`, the responding server MUST be the group origin. The origin
 MUST verify that the signer currently has an authorized Group Meta audience for
-that group. The group Profile evidence is the current Group Meta group-profile
-reference, not a group message. Its `namespaceId` and `profileRev` MUST equal
-the requested values; when they match, the origin SHOULD return the exact
-snapshot. A mirror MUST NOT serve this operation for a remote group and MUST NOT
-redirect another peer to a mirror.
+that group, or that a current directed Relationship Intent authored by the
+group and addressed to the authenticated signer grants the requested exact
+revision. The group Profile evidence is otherwise the current Group Meta
+group-profile reference, not a group message. Its `namespaceId` and
+`profileRev` MUST equal the requested values; when they match, the origin
+SHOULD return the exact snapshot. A mirror MUST NOT serve this operation for a
+remote group and MUST NOT redirect another peer to a mirror.
 
 ## 5. Group Member Profile
 
@@ -255,59 +261,23 @@ interval, or an earlier successful response is not authorization. A mirror
 MUST NOT serve this endpoint for a remote group and MUST NOT redirect another
 peer to the member's home server.
 
-## 6. Intent Profile
-
-```http
-GET /s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev
-```
-
-Path variables are:
-
-| Variable      | Requirement                                         |
-| ------------- | --------------------------------------------------- |
-| `namespaceId` | Profile namespace in the responding namespace space |
-| `account`     | `Account` owned by the responding domain            |
-| `peerAccount` | `Account` owned by the authenticated signer         |
-| `profileRev`  | Positive canonical decimal profile revision         |
-
-The URL identifies the intent by its two endpoint accounts. The responding
-server's domain supplies `account`'s domain, and the authenticated signer domain
-supplies `peerAccount`'s domain. No additional intent identifier appears on the
-wire.
-
-For every request the publisher MUST:
-
-1. resolve the directed Relationship Intent whose author endpoint is
-   `(account, responding domain)` and whose other endpoint is
-   `(peerAccount, signer domain)`;
-2. verify that the intent is currently effective as `REQUESTED` or `ACCEPTED`;
-3. verify that the intent's profile namespace and `profileRev` equal the
-   requested `namespaceId` and `profileRev`; and
-4. SHOULD return the exact immutable snapshot for that revision.
-
-Recognition, knowledge of either account, knowledge of the revision, a reciprocal
-intent, an expired `REQUESTED` intent, a `REVOKED` intent, or an earlier
-successful response is not authorization. No intent authorizes a different
-account, opposite direction, peer account, peer domain, or revision.
-
-## 7. Business no-data result
+## 6. Business no-data result
 
 For any exact evidence profile operation, if its required account, group,
 member, authorization, exact namespace and revision, or retained snapshot is
-unavailable, or none of that operation's applicable intent, current Meta
-reference, or
-serviceable message proofs matches, the publisher returns HTTP `200 NOT_FOUND`
-with `data: null`. The publisher MUST NOT
-reveal which condition caused the no-data result, MUST NOT return generic
-`FORBIDDEN`, and MUST NOT mutate relationship, membership, Group Meta, peer
-lifecycle, or cursor state.
+unavailable, or none of that operation's applicable current intent, current
+Meta reference, or serviceable message proofs matches, the publisher returns
+HTTP `200 NOT_FOUND` with `data: null`. The publisher MUST NOT reveal which
+condition caused the no-data result, MUST NOT return generic `FORBIDDEN`, and
+MUST NOT mutate relationship, membership, Group Meta, peer lifecycle, or cursor
+state.
 
-## 8. Retention and degradation
+## 7. Retention and degradation
 
 The publisher SHOULD retain historical profile revisions referenced by
 serviceable messages, current Relationship Intents, or current Group Meta
 profile references so those objects remain visually complete during storage
-degradation. If a referenced revision is nevertheless unavailable, the publisher
-MUST NOT substitute another revision. The profile read returns `NOT_FOUND`; the
-message, thread, stable address, role, intent, and other retained content remain
-valid.
+degradation. If a referenced revision is nevertheless unavailable, the
+publisher MUST NOT substitute another revision. The profile read returns
+`NOT_FOUND`; the message, thread, stable address, role, intent, and other
+retained content remain valid.

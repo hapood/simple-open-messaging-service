@@ -12,7 +12,7 @@ import {
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 
-describe('exact directed intent profile disclosure', () => {
+describe('exact directed intent account-profile disclosure', () => {
   const suffix = Date.now().toString(36);
   const localUser = `intent-local-${suffix}`;
   const remoteDomain = `intent-peer-${suffix}.test`;
@@ -27,7 +27,13 @@ describe('exact directed intent profile disclosure', () => {
 
   beforeAll(async () => {
     database = new DatabaseService();
-    profiles = new FederationProfileService(database, {} as never, {} as never);
+    profiles = new FederationProfileService(
+      database,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
     namespaceId = await seedFederatedPeerNamespace(database.db, remoteDomain);
     const [user] = await database.db
       .insert(account)
@@ -164,11 +170,10 @@ describe('exact directed intent profile disclosure', () => {
     await database.onApplicationShutdown();
   });
 
-  it('serves only the authored exact user intent, not another retained revision', async () => {
+  it('serves only the authored exact user intent through account profile lookup', async () => {
     expect(
-      await profiles.getAuthorizedIntentProfile(
+      await profiles.getAuthorizedAccountProfile(
         localUser,
-        remoteUser,
         0,
         1,
         remoteDomain,
@@ -180,9 +185,8 @@ describe('exact directed intent profile disclosure', () => {
       displayName: 'First',
     });
     expect(
-      await profiles.getAuthorizedIntentProfile(
+      await profiles.getAuthorizedAccountProfile(
         localUser,
-        remoteUser,
         0,
         2,
         remoteDomain,
@@ -190,19 +194,8 @@ describe('exact directed intent profile disclosure', () => {
       ),
     ).toBeNull();
     expect(
-      await profiles.getAuthorizedIntentProfile(
+      await profiles.getAuthorizedAccountProfile(
         localUser,
-        'someone-else',
-        0,
-        1,
-        remoteDomain,
-        namespaceId,
-      ),
-    ).toBeNull();
-    expect(
-      await profiles.getAuthorizedIntentProfile(
-        localUser,
-        remoteUser,
         0,
         1,
         remoteDomain,
@@ -221,9 +214,8 @@ describe('exact directed intent profile disclosure', () => {
         ),
       );
     expect(
-      await profiles.getAuthorizedIntentProfile(
+      await profiles.getAuthorizedAccountProfile(
         localUser,
-        remoteUser,
         0,
         1,
         remoteDomain,
@@ -234,9 +226,8 @@ describe('exact directed intent profile disclosure', () => {
 
   it('also serves a group-authored intent to its exact member counterpart', async () => {
     expect(
-      await profiles.getAuthorizedIntentProfile(
+      await profiles.getAuthorizedAccountProfile(
         groupName,
-        remoteUser,
         0,
         3,
         remoteDomain,

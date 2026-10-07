@@ -288,27 +288,6 @@
       },
       "additionalProperties": false
     },
-    "intentProfileParameters": {
-      "type": "object",
-      "required": ["account", "peerAccount", "namespaceId", "profileRev"],
-      "properties": {
-        "account": {
-          "$ref": "urn:somfp:v1:common#/$defs/account"
-        },
-        "peerAccount": {
-          "$ref": "urn:somfp:v1:common#/$defs/account"
-        },
-        "namespaceId": {
-          "type": "string",
-          "pattern": "^(0|[1-9][0-9]{0,15})$"
-        },
-        "profileRev": {
-          "type": "string",
-          "pattern": "^[1-9][0-9]{0,15}$"
-        }
-      },
-      "additionalProperties": false
-    },
     "mediaParameters": {
       "type": "object",
       "required": ["digest", "fromAccount", "fromDomain", "toAccount", "seq"],

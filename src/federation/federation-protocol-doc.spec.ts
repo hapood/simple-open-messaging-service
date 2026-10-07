@@ -182,7 +182,6 @@ describe('Federation v1 protocol documentation', () => {
       'GET /s2s/v1/group-meta',
       'GET /s2s/v1/account-profiles/:namespaceId/:account/:profileRev',
       'GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
-      'GET /s2s/v1/intent-profiles/:namespaceId/:account/:peerAccount/:profileRev',
       'GET /s2s/v1/messages',
       'GET /s2s/v1/message-tombstones',
       'POST /s2s/v1/call',

@@ -40,22 +40,11 @@ export class ProfileResolutionDto {
   publisherNamespaceId!: number;
 
   @ApiProperty({
-    enum: [
-      'ACCOUNT_PROFILE',
-      'RELATIONSHIP_INTENT_PROFILE',
-      'GROUP_MEMBER_PROFILE',
-    ],
+    enum: ['ACCOUNT_PROFILE', 'GROUP_MEMBER_PROFILE'],
   })
   @IsDefined()
-  @IsIn([
-    'ACCOUNT_PROFILE',
-    'RELATIONSHIP_INTENT_PROFILE',
-    'GROUP_MEMBER_PROFILE',
-  ])
-  lookup!:
-    | 'ACCOUNT_PROFILE'
-    | 'RELATIONSHIP_INTENT_PROFILE'
-    | 'GROUP_MEMBER_PROFILE';
+  @IsIn(['ACCOUNT_PROFILE', 'GROUP_MEMBER_PROFILE'])
+  lookup!: 'ACCOUNT_PROFILE' | 'GROUP_MEMBER_PROFILE';
 
   @ApiProperty({ type: ProfileResolutionTargetDto })
   @IsDefined()
@@ -63,15 +52,6 @@ export class ProfileResolutionDto {
   @Type(() => ProfileResolutionTargetDto)
   target!: ProfileResolutionTargetDto;
 
-  @ApiPropertyOptional()
-  @ValidateIf(
-    (value: ProfileResolutionDto) =>
-      value.lookup === 'RELATIONSHIP_INTENT_PROFILE',
-  )
-  @IsDefined()
-  @IsString()
-  @IsNotEmpty()
-  peerAccount?: string;
 
   @ApiPropertyOptional()
   @ValidateIf(

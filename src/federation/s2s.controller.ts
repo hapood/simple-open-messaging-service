@@ -511,45 +511,6 @@ export class S2sController {
     };
   }
 
-  @Get('intent-profiles/:namespaceId/:account/:peerAccount/:profileRev')
-  async getIntentProfile(@Req() req: FastifyRequest) {
-    const path = parseFederationResourcePath(req, '/s2s/v1/intent-profiles/', [
-      'namespaceId',
-      'account',
-      'peerAccount',
-      'profileRev',
-    ]);
-    const profileNamespaceId = requireSafeDecimal(
-      path.namespaceId,
-      'namespaceId',
-    );
-    const account = requireAccount(path.account, 'account');
-    const peerAccount = requireAccount(path.peerAccount, 'peerAccount');
-    const rev = requireSafeDecimal(path.profileRev, 'profileRev');
-    if (rev < 1) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'profileRev must be positive',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    const profile = await this.resourceOperation(() =>
-      this.profiles.getAuthorizedIntentProfile(
-        account,
-        peerAccount,
-        profileNamespaceId,
-        rev,
-        this.signerDomain(req),
-        req.peer!.namespaceId,
-      ),
-    );
-    if (!profile) {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'profile not found');
-    }
-    const { account: owner, displayName, bio, avatar } = profile;
-    return { account: owner, displayName, bio, avatar };
-  }
-
   @Get('account-profiles/:namespaceId/:account/:profileRev')
   async getExactAccountProfile(@Req() req: FastifyRequest) {
     const path = parseFederationResourcePath(req, '/s2s/v1/account-profiles/', [

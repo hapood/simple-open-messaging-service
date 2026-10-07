@@ -33,13 +33,6 @@ function target() {
       bio: '',
       avatar: null,
     }),
-    getAuthorizedIntentProfile: vi.fn().mockResolvedValue({
-      account: '!team',
-      profileRev: 7,
-      displayName: 'Team',
-      bio: '',
-      avatar: null,
-    }),
   };
   const messageFeedPull = { advertise: vi.fn() };
   const tombstonePull = { advertise: vi.fn() };
@@ -204,42 +197,6 @@ describe('S2sController public account profiles', () => {
       bizCode: BusinessCode.FEDERATION_MALFORMED,
     });
     expect(profiles.getLocalAccountProfile).not.toHaveBeenCalled();
-  });
-});
-
-describe('S2sController intent profiles', () => {
-  it('passes only the authenticated signer and exact path identity to intent authorization', async () => {
-    const { controller, profiles } = target();
-    const req = mediaRequest('');
-    setRequestUrl(req, '/s2s/v1/intent-profiles/0/%21team/alice/7');
-    expect(await controller.getIntentProfile(req)).toEqual({
-      account: '!team',
-      displayName: 'Team',
-      bio: '',
-      avatar: null,
-    });
-    expect(profiles.getAuthorizedIntentProfile).toHaveBeenCalledWith(
-      '!team',
-      'alice',
-      0,
-      7,
-      'a.example',
-      7,
-    );
-  });
-
-  it('rejects zero and queries without consulting stored evidence', async () => {
-    const { controller, profiles } = target();
-    const req = mediaRequest('');
-    setRequestUrl(req, '/s2s/v1/intent-profiles/0/%21team/alice/0');
-    await expect(controller.getIntentProfile(req)).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_MALFORMED,
-    });
-    setRequestUrl(req, '/s2s/v1/intent-profiles/0/%21team/alice/7?rev=7');
-    await expect(controller.getIntentProfile(req)).rejects.toMatchObject({
-      bizCode: BusinessCode.FEDERATION_MALFORMED,
-    });
-    expect(profiles.getAuthorizedIntentProfile).not.toHaveBeenCalled();
   });
 });
 

@@ -35,12 +35,6 @@ export type ProfileResolutionDemand =
     }
   | {
       publisherNamespaceId: number;
-      lookup: 'RELATIONSHIP_INTENT_PROFILE';
-      target: ProfileTarget;
-      peerAccount: string;
-    }
-  | {
-      publisherNamespaceId: number;
       lookup: 'GROUP_MEMBER_PROFILE';
       target: ProfileTarget;
       groupAccount: string;
@@ -81,15 +75,11 @@ rendering. They do not construct a separate evidence selector.
 
 ### P2P message author
 
-A P2P message author uses `ACCOUNT_PROFILE` when the thread feed has a
-message-selected profile source. If the thread still uses its intent-selected
-profile, it uses `RELATIONSHIP_INTENT_PROFILE` instead.
+A P2P message author uses `ACCOUNT_PROFILE`. This also covers the exact revision selected by an effective relationship intent; authorization checks that grant without using a separate lookup.
 
 ### Group profile
 
-A group profile uses `RELATIONSHIP_INTENT_PROFILE` while the thread has no
-Group Meta profile source. Once Group Meta has selected the group profile, it
-uses `ACCOUNT_PROFILE` with the exact group revision.
+A group profile uses `ACCOUNT_PROFILE` with the exact group revision.
 
 ### Group Meta member
 
@@ -117,8 +107,7 @@ revision come from the member record being rendered.
 
 ### Relationship intent
 
-A profile selected directly from an intent uses `RELATIONSHIP_INTENT_PROFILE`
-and includes the exact `peerAccount` required by that operation.
+A profile selected directly from an intent uses `ACCOUNT_PROFILE` for the exact intent-selected revision. The server authorizes the request only when the directed intent grants that exact revision to the viewer.
 
 ## Component API
 

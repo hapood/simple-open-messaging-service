@@ -236,9 +236,8 @@ describe('MessageService committed profile work', () => {
     expect(event.demands).toEqual([
       {
         publisherNamespaceId: 7,
-        lookup: 'RELATIONSHIP_INTENT_PROFILE',
+        lookup: 'ACCOUNT_PROFILE',
         target: { profileNamespaceId: 7, account: 'alice', rev: 3 },
-        peerAccount: 'bob',
       },
     ]);
     expect(event.evidenceProjections).toEqual([]);

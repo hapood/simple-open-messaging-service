@@ -133,11 +133,8 @@ export function collectCommittedProfileWork(
             thread.set(key, {
               demand: {
                 publisherNamespaceId,
-                lookup: ProfileLookup.RELATIONSHIP_INTENT_PROFILE,
+                lookup: ProfileLookup.ACCOUNT_PROFILE,
                 target,
-                peerAccount: eventParticipants(event, item.threadType).find(
-                  (participant) => participant.profileNamespaceId === 0,
-                )!.account,
               },
               eventSeq: item.seq,
             });
