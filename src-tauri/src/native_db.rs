@@ -2,32 +2,33 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde_json::Value;
 use std::path::PathBuf;
 
-pub(crate) mod profile_avatars;
+pub(crate) mod attention;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod call_peer;
-pub(crate) mod attention;
 pub(crate) mod client_state;
-pub(crate) mod state_feed_sync;
 pub(crate) mod contacts;
-pub(crate) mod messages;
-pub(crate) mod preferences;
-mod relationship_projection;
-mod request_store;
-mod thread_store;
-mod lifetime;
 #[cfg(desktop)]
 pub(crate) mod desktop_notifications;
+mod lifetime;
 pub(crate) mod location;
+pub(crate) mod messages;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod notifications;
+pub(crate) mod preferences;
+pub(crate) mod profile_avatars;
+pub(crate) mod profile_namespaces;
+mod relationship_projection;
+mod request_store;
+pub(crate) mod state_feed_sync;
+mod thread_store;
 pub(crate) use client_state::chrono_millis;
 #[cfg(test)]
 use messages::{
-    history_gap_is_owned, reduce_message_ranges, validate_message_ranges,
-    HistoryDirection, MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
+    history_gap_is_owned, reduce_message_ranges, validate_message_ranges, HistoryDirection,
+    MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 
-const CACHE_SCHEMA_VERSION: i64 = 38;
+const CACHE_SCHEMA_VERSION: i64 = 39;
 
 pub(crate) fn invalidate_account_work() -> Result<(), String> {
     drop(lifetime::CACHE_LIFETIME.invalidate()?);
@@ -131,7 +132,9 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         ));
     }
     for object in [
-        "namespaces",
+        "profile_namespaces",
+        "profile_namespace_tombs",
+        "profile_tombs",
         "threads",
         "thread_previews",
         "profiles",
@@ -155,7 +158,6 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         }
     }
     for index in [
-        "namespaces_domain_status",
         "relationship_requests_direction_status",
         "profiles_address_revision",
         "members_thread",
@@ -180,32 +182,47 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
 fn create_cache_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "
-        CREATE TABLE IF NOT EXISTS namespaces (
+        CREATE TABLE IF NOT EXISTS profile_namespaces (
           user_id INTEGER NOT NULL,
-          namespace_id INTEGER NOT NULL,
-          domain TEXT NOT NULL,
+          publisher_namespace_id INTEGER NOT NULL,
+          profile_namespace_id INTEGER NOT NULL,
+          domain TEXT,
+          root_public_key TEXT,
+          update_feed_id INTEGER NOT NULL,
+          change_seq INTEGER NOT NULL,
+          expired INTEGER NOT NULL CHECK(expired IN (0, 1)),
           status TEXT NOT NULL CHECK(status IN ('ACTIVE', 'ARCHIVED')),
-          PRIMARY KEY (user_id, namespace_id),
-          UNIQUE (user_id, domain, namespace_id)
+          refreshed_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, publisher_namespace_id, profile_namespace_id)
         );
-        CREATE UNIQUE INDEX IF NOT EXISTS namespaces_domain_status
-          ON namespaces(user_id, domain) WHERE status='ACTIVE';
+        CREATE TABLE IF NOT EXISTS profile_namespace_tombs (
+          user_id INTEGER NOT NULL,
+          publisher_namespace_id INTEGER NOT NULL,
+          profile_namespace_id INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, publisher_namespace_id, profile_namespace_id)
+        );
+        CREATE TABLE IF NOT EXISTS profile_tombs (
+          user_id INTEGER NOT NULL,
+          publisher_namespace_id INTEGER NOT NULL,
+          profile_namespace_id INTEGER NOT NULL,
+          account TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (user_id, publisher_namespace_id, profile_namespace_id, account)
+        );
         CREATE TABLE IF NOT EXISTS profiles (
           user_id INTEGER NOT NULL,
           publisher_namespace_id INTEGER NOT NULL,
           profile_namespace_id INTEGER NOT NULL,
           account TEXT NOT NULL,
-          domain TEXT NOT NULL,
           profile_rev INTEGER NOT NULL CHECK(profile_rev > 0),
           name TEXT NOT NULL,
           avatar_digest TEXT,
           bio TEXT NOT NULL,
-          PRIMARY KEY (user_id, publisher_namespace_id, profile_namespace_id, account, domain, profile_rev),
-          FOREIGN KEY (user_id, publisher_namespace_id) REFERENCES namespaces(user_id, namespace_id),
-          FOREIGN KEY (user_id, profile_namespace_id) REFERENCES namespaces(user_id, namespace_id)
+          PRIMARY KEY (user_id, publisher_namespace_id, profile_namespace_id, account, profile_rev)
         );
         CREATE INDEX IF NOT EXISTS profiles_address_revision
-          ON profiles(user_id, publisher_namespace_id, profile_namespace_id, account, domain, profile_rev);
+          ON profiles(user_id, publisher_namespace_id, profile_namespace_id, account, profile_rev);
         CREATE TABLE IF NOT EXISTS members (
           user_id INTEGER NOT NULL,
           thread_id INTEGER NOT NULL,
@@ -216,14 +233,12 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           left_state INTEGER NOT NULL DEFAULT 0,
           profile_rev INTEGER NOT NULL DEFAULT 0,
           profile_message_seq INTEGER,
-          PRIMARY KEY (user_id, thread_id, member_account, member_domain, namespace_id),
-          FOREIGN KEY (user_id, namespace_id)
-            REFERENCES namespaces(user_id, namespace_id)
+          PRIMARY KEY (user_id, thread_id, member_account, member_domain, namespace_id)
         );
         CREATE INDEX IF NOT EXISTS members_thread
-          ON members(user_id, thread_id, left_state, namespace_id, member_domain, member_account);
+          ON members(user_id, thread_id, left_state, namespace_id, member_account);
         CREATE INDEX IF NOT EXISTS members_search
-          ON members(user_id, thread_id, member_account, member_domain, namespace_id);
+          ON members(user_id, thread_id, member_account, namespace_id);
         CREATE TABLE IF NOT EXISTS relationship_requests (
           user_id INTEGER NOT NULL,
           stable_key TEXT NOT NULL,
@@ -324,11 +339,13 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
          DROP TABLE IF EXISTS attention_states;
          DROP TABLE IF EXISTS threads;
          DROP TABLE IF EXISTS profiles;
+         DROP TABLE IF EXISTS profile_tombs;
+         DROP TABLE IF EXISTS profile_namespace_tombs;
+         DROP TABLE IF EXISTS profile_namespaces;
          DROP TABLE IF EXISTS thread_participants;
          DROP TABLE IF EXISTS users;
          DROP TABLE IF EXISTS groups;
          DROP TABLE IF EXISTS members;
-         DROP TABLE IF EXISTS namespaces;
          DROP TABLE IF EXISTS friend_intents;
          DROP TABLE IF EXISTS friend_requests;
          DROP TABLE IF EXISTS relationship_requests;
@@ -369,8 +386,8 @@ pub(crate) async fn native_db_recreate_cache() -> Result<(), String> {
 #[tauri::command]
 pub(crate) async fn native_db_validate_cache() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || open_cache().map(drop))
-    .await
-    .map_err(|e| format!("join native cache validation: {e}"))?
+        .await
+        .map_err(|e| format!("join native cache validation: {e}"))?
 }
 
 /// Rebuild only chat messages and their derived coverage state. SQLite DDL runs in one exclusive
@@ -428,9 +445,7 @@ pub(crate) async fn native_db_recreate_messages() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_count_messages(
-    user_id: i64,
-) -> Result<i64, String> {
+pub(crate) async fn native_db_count_messages(user_id: i64) -> Result<i64, String> {
     lifetime::spawn(move || {
         open_cache()?
             .query_row(
@@ -453,10 +468,7 @@ fn parse_json(value: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_get_meta(
-    user_id: i64,
-    key: String,
-) -> Result<Option<Value>, String> {
+pub(crate) async fn native_db_get_meta(user_id: i64, key: String) -> Result<Option<Value>, String> {
     lifetime::spawn(move || {
         let value = open()?
             .query_row(
@@ -493,9 +505,7 @@ pub(crate) async fn native_db_put_meta(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_clear_user(
-    user_id: i64,
-) -> Result<(), String> {
+pub(crate) async fn native_db_clear_user(user_id: i64) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
         let mut conn = open()?;
@@ -505,6 +515,9 @@ pub(crate) async fn native_db_clear_user(
         for table in [
             "thread_previews",
             "threads",
+            "profile_tombs",
+            "profile_namespace_tombs",
+            "profile_namespaces",
             "profiles",
             "members",
             "relationship_requests",

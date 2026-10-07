@@ -568,7 +568,10 @@ pub(crate) fn retry_native_voice(
 
 #[cfg(not(desktop))]
 #[tauri::command]
-pub(crate) fn discard_native_voice(proxy: tauri::State<'_, ServerSessionState>, client_message_id: String) {
+pub(crate) fn discard_native_voice(
+    proxy: tauri::State<'_, ServerSessionState>,
+    client_message_id: String,
+) {
     if let Some(token) = proxy
         .upload_cancels
         .lock()
@@ -736,7 +739,10 @@ fn spawn_native_voice_upload(
 /// Cancel one shell streaming upload. Idempotent: a task that already completed or has not reached the
 /// streaming phase simply has no token. Browser cancellation remains owned by HttpClient unsubscribe.
 #[tauri::command]
-pub(crate) fn cancel_upload(proxy: tauri::State<'_, ServerSessionState>, client_message_id: String) {
+pub(crate) fn cancel_upload(
+    proxy: tauri::State<'_, ServerSessionState>,
+    client_message_id: String,
+) {
     if let Some(token) = proxy
         .upload_cancels
         .lock()

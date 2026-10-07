@@ -9,10 +9,7 @@ use crate::{perform_api_request, ServerSessionState};
 
 pub(super) fn normalize_message_creator(message: &mut Value) {
     if let Some(creator) = message.get_mut("creator").and_then(Value::as_object_mut) {
-        if creator.get("domain").and_then(Value::as_str) == Some("local")
-            || creator.get("namespaceId").and_then(Value::as_i64) == Some(0)
-        {
-            creator.insert("domain".into(), Value::String("local".into()));
+        if creator.get("namespaceId").and_then(Value::as_i64) == Some(0) {
             creator.insert("namespaceId".into(), Value::from(0));
         }
     }
@@ -260,7 +257,7 @@ mod tomb_tests {
     }
 
     #[test]
-    fn query_tombs_preserve_null_creator_and_normalize_local_identity() {
+    fn query_tombs_preserve_null_creator_and_real_local_domain() {
         let mut conn = database();
         let tx = conn.transaction().unwrap();
         let mut source = message();
@@ -278,7 +275,7 @@ mod tomb_tests {
             MessageSlotWrite::Message(message_tomb(&source, "MODERATION_REMOVAL").unwrap()),
         )
         .unwrap();
-        assert_eq!(merged["creator"]["domain"], "local");
+        assert_eq!(merged["creator"]["domain"], "example.test");
     }
 
     #[test]
@@ -436,9 +433,8 @@ pub(super) fn count_unread_message_slots(
     {
         return Err("invalid unread message count range or identity".into());
     }
-    let local = owner.namespace_id == 0 || owner.domain == "local";
-    let domain = if local { "local" } else { &owner.domain };
-    let namespace = if local { 0 } else { owner.namespace_id };
+    let namespace = owner.namespace_id;
+    let domain = &owner.domain;
     conn.query_row(
         "SELECT COUNT(*) FROM messages
          WHERE user_id=?1 AND thread_id=?2 AND seq>?3 AND seq<=?4
@@ -470,14 +466,7 @@ pub(crate) async fn native_db_count_unread_message_slots(
     owner: MessageCountOwner,
 ) -> Result<i64, String> {
     super::lifetime::spawn(move || {
-        count_unread_message_slots(
-            &open()?,
-            user_id,
-            thread_id,
-            after_seq,
-            through_seq,
-            &owner,
-        )
+        count_unread_message_slots(&open()?, user_id, thread_id, after_seq, through_seq, &owner)
     })
     .await
     .map_err(|e| format!("join unread message count: {e}"))?
@@ -981,10 +970,7 @@ async fn read_native_message_ranges(
     .map_err(|error| format!("join native message range read: {error}"))?
 }
 
-async fn read_native_message_head(
-    user_id: i64,
-    thread_id: i64,
-) -> Result<Option<i64>, String> {
+async fn read_native_message_head(user_id: i64, thread_id: i64) -> Result<Option<i64>, String> {
     super::lifetime::spawn(move || {
         let head: Option<i64> = open()?
             .query_row(
@@ -1585,11 +1571,10 @@ pub(crate) async fn native_message_history_get(
                 return Err("native newer demand has an invalid cursor".to_string());
             }
             let count = validate_count(count)?;
-            let (server_lower, upper) =
-                match read_native_message_head(user_id, thread_id).await? {
-                    Some(upper) => (lower, upper),
-                    None => bootstrap_message_bounds(&app, &proxy, thread_id).await?,
-                };
+            let (server_lower, upper) = match read_native_message_head(user_id, thread_id).await? {
+                Some(upper) => (lower, upper),
+                None => bootstrap_message_bounds(&app, &proxy, thread_id).await?,
+            };
             let lower = lower.max(server_lower);
             let page = walk_native_history(
                 &app,
@@ -1660,10 +1645,7 @@ pub(crate) async fn native_db_put_message_head(
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_get_deleted_hwm(
-    user_id: i64,
-    thread_id: i64,
-) -> Result<i64, String> {
+pub(crate) async fn native_db_get_deleted_hwm(user_id: i64, thread_id: i64) -> Result<i64, String> {
     super::lifetime::spawn(move || {
         let hwm: Option<i64> = open()?
             .query_row(
@@ -1801,11 +1783,9 @@ pub(crate) async fn native_db_get_deleted_message_seqs(
     thread_id: i64,
     seqs: Vec<i64>,
 ) -> Result<Vec<i64>, String> {
-    super::lifetime::spawn(move || {
-        load_deleted_message_seqs(&open()?, user_id, thread_id, seqs)
-    })
-    .await
-    .map_err(|e| format!("join tombstone read: {e}"))?
+    super::lifetime::spawn(move || load_deleted_message_seqs(&open()?, user_id, thread_id, seqs))
+        .await
+        .map_err(|e| format!("join tombstone read: {e}"))?
 }
 
 #[tauri::command]

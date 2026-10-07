@@ -37,16 +37,29 @@ fn read_call_peer_from_connection(
     if thread["type"] != "P2P" || peer["account"] != account || peer["domain"] != domain {
         return Ok(None);
     }
-    let namespace_id = peer["namespaceId"].as_i64().ok_or("call peer namespace missing")?;
-    let profile_rev: i64 = conn.query_row(
-        "SELECT thread_profile_rev FROM threads
+    let namespace_id = peer["namespaceId"]
+        .as_i64()
+        .ok_or("call peer namespace missing")?;
+    let profile_rev: i64 = conn
+        .query_row(
+            "SELECT thread_profile_rev FROM threads
          WHERE user_id=?1 AND thread_id=?2 AND kind='P2P'
            AND subject_account=?3 AND subject_domain=?4 AND subject_namespace_id=?5",
-        params![user_id, thread_id, account, domain, namespace_id], |row| row.get(0),
-    ).optional().map_err(|e| format!("read call peer revision: {e}"))?
+            params![user_id, thread_id, account, domain, namespace_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("read call peer revision: {e}"))?
         .ok_or("call peer thread state missing")?;
     let profile = if profile_rev > 0 {
-        contacts::read_profile(&conn, user_id, account, domain, namespace_id, namespace_id, profile_rev)?
+        contacts::read_profile(
+            &conn,
+            user_id,
+            namespace_id,
+            namespace_id,
+            account,
+            profile_rev,
+        )?
     } else {
         None
     };
@@ -92,20 +105,29 @@ mod tests {
     #[test]
     fn call_peer_is_scoped_to_thread_owner_and_exact_address() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE namespaces(user_id INTEGER,namespace_id INTEGER,domain TEXT,
+        conn.execute_batch(
+            "CREATE TABLE namespaces(user_id INTEGER,namespace_id INTEGER,domain TEXT,
           status TEXT,PRIMARY KEY(user_id,namespace_id),UNIQUE(user_id,domain,namespace_id));
-          ")
-          .unwrap();
-        conn.execute_batch(super::super::thread_store::SCHEMA).unwrap();
-        super::super::thread_store::write(&conn, 41, 7, &json!({
-            "threadId":7,"type":"P2P","authorityNamespaceId":1,
-            "peerUser":{"account":"bob","domain":"remote.test","namespaceId":1,"name":"Bob"},
-            "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
-            "threadProfileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
-            "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":0,
-            "groupInviteEndFeedId":0,"serverLastReadSeq":0,"announcementReadFeedId":0,
-            "serverUnreadCount":0,"lastMentionSeq":null,"localReadSeq":0
-        })).unwrap();
+          ",
+        )
+        .unwrap();
+        conn.execute_batch(super::super::thread_store::SCHEMA)
+            .unwrap();
+        super::super::thread_store::write(
+            &conn,
+            41,
+            7,
+            &json!({
+                "threadId":7,"type":"P2P","authorityNamespaceId":1,
+                "peerUser":{"account":"bob","domain":"remote.test","namespaceId":1,"name":"Bob"},
+                "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
+                "threadProfileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
+                "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":0,
+                "groupInviteEndFeedId":0,"serverLastReadSeq":0,"announcementReadFeedId":0,
+                "serverUnreadCount":0,"lastMentionSeq":null,"localReadSeq":0
+            }),
+        )
+        .unwrap();
         assert_eq!(
             read_call_peer_from_connection(&conn, 41, 7, "bob", "remote.test")
                 .unwrap()

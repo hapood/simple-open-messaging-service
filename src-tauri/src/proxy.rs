@@ -243,7 +243,10 @@ pub(crate) fn is_network_failure(e: &reqwest::Error) -> bool {
 /// not just HTTP 200: a reverse proxy welcome page must not win the origin race.
 pub(crate) fn is_compat_probe_body(body: &serde_json::Value) -> bool {
     body.get("code").and_then(|v| v.as_i64()) == Some(0)
-        && body.pointer("/data/apiVersion").and_then(|v| v.as_u64()).is_some()
+        && body
+            .pointer("/data/apiVersion")
+            .and_then(|v| v.as_u64())
+            .is_some()
 }
 
 async fn probe_client_compat(origin: &str) -> bool {
@@ -406,7 +409,8 @@ pub(crate) async fn perform_api_request(
     body: Option<Vec<u8>>,
     replay_safe: bool,
 ) -> Result<ApiRequestResult, String> {
-    perform_api_request_with_events(Some(app), proxy, method, path, headers, body, replay_safe).await
+    perform_api_request_with_events(Some(app), proxy, method, path, headers, body, replay_safe)
+        .await
 }
 
 /// Background consumers use the same HTTP policy without a shell event sink.

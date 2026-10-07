@@ -60,7 +60,10 @@ pub(crate) async fn create_native_video_stream(
     })
 }
 
-async fn start_hub(app: tauri::AppHandle, proxy: ServerSessionState) -> Result<Arc<VideoHub>, String> {
+async fn start_hub(
+    app: tauri::AppHandle,
+    proxy: ServerSessionState,
+) -> Result<Arc<VideoHub>, String> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .map_err(|error| format!("bind video loopback: {error}"))?;

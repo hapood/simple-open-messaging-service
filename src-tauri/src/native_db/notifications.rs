@@ -75,7 +75,9 @@ fn sender_profile(
     } else {
         conn.query_row(
             "SELECT m.namespace_id,m.profile_rev FROM members m
-             JOIN namespaces n ON n.user_id=m.user_id AND n.namespace_id=m.namespace_id
+             JOIN profile_namespaces n ON n.user_id=m.user_id
+               AND n.publisher_namespace_id=m.namespace_id
+               AND n.profile_namespace_id=m.namespace_id
              WHERE m.user_id=?1 AND m.thread_id=?2 AND m.member_account=?3 AND m.member_domain=?4
                AND n.status='ACTIVE' ORDER BY m.namespace_id DESC LIMIT 1",
             params![user_id, thread_id, account, domain],
@@ -86,7 +88,7 @@ fn sender_profile(
     };
     match reference {
         Some((namespace, revision)) => {
-            super::contacts::read_profile(conn, user_id, account, domain, namespace, namespace, revision)
+            super::contacts::read_profile(conn, user_id, namespace, namespace, account, revision)
         }
         None => Ok(None),
     }
@@ -148,14 +150,20 @@ mod tests {
         conn
     }
 
-    fn preview(seq: i32, rev: i32, status: &str, text: Option<&str>) -> super::super::attention::ThreadPreview {
+    fn preview(
+        seq: i32,
+        rev: i32,
+        status: &str,
+        text: Option<&str>,
+    ) -> super::super::attention::ThreadPreview {
         serde_json::from_value(serde_json::json!({
             "seq": seq,
             "createdAt": "2026-01-01T00:00:00Z",
             "sender": {"account":"peer","domain":"local","namespaceId":0,"profileRev":rev},
             "status": status,
             "text": text,
-        })).unwrap()
+        }))
+        .unwrap()
     }
 
     fn state(local: i32) -> LocalThreadAttention {
@@ -199,7 +207,8 @@ mod tests {
 
     fn save(conn: &Connection, state: &LocalThreadAttention) {
         if super::super::thread_store::read(conn, 1, state.thread_id as i64)
-            .unwrap().is_none()
+            .unwrap()
+            .is_none()
         {
             let server = state.server.as_ref().unwrap();
             let mut base = serde_json::to_value(server).unwrap();
@@ -262,7 +271,7 @@ mod tests {
         .unwrap()
         .unwrap();
         conn.execute(
-            "INSERT INTO profiles(user_id,publisher_namespace_id,profile_namespace_id,account,domain,profile_rev,name,avatar_digest,bio) VALUES(1,0,0,'peer','local',1,'Peer',?1,'')",
+            "INSERT INTO profiles(user_id,publisher_namespace_id,profile_namespace_id,account,profile_rev,name,avatar_digest,bio) VALUES(1,0,0,'peer',1,'Peer',?1,'')",
             [digest.clone()],
         )
         .unwrap();
@@ -290,9 +299,7 @@ mod tests {
     fn preview_sender_revision_wins_over_stale_thread_peer_avatar() {
         let mut conn = db();
         let mut delivered = state(2);
-        delivered.server.as_mut().unwrap().previews = vec![
-            preview(6, 2, "LIVE", Some("new")),
-        ];
+        delivered.server.as_mut().unwrap().previews = vec![preview(6, 2, "LIVE", Some("new"))];
         save(&conn, &delivered);
         avatar_store();
         let bytes = vec![10_u8, 20, 30];
@@ -303,12 +310,12 @@ mod tests {
         .unwrap()
         .unwrap();
         conn.execute(
-            "INSERT INTO profiles(user_id,publisher_namespace_id,profile_namespace_id,account,domain,profile_rev,name,avatar_digest,bio) VALUES(1,0,0,'peer','local',1,'Old peer',NULL,'')",
+            "INSERT INTO profiles(user_id,publisher_namespace_id,profile_namespace_id,account,profile_rev,name,avatar_digest,bio) VALUES(1,0,0,'peer',1,'Old peer',NULL,'')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO profiles(user_id,publisher_namespace_id,profile_namespace_id,account,domain,profile_rev,name,avatar_digest,bio) VALUES(1,0,0,'peer','local',2,'New peer',?1,'')",
+            "INSERT INTO profiles(user_id,publisher_namespace_id,profile_namespace_id,account,profile_rev,name,avatar_digest,bio) VALUES(1,0,0,'peer',2,'New peer',?1,'')",
             [digest.clone()],
         )
         .unwrap();
@@ -333,7 +340,9 @@ mod tests {
         server.profile.account = "!group".into();
         delivered.server.as_mut().unwrap().alias = Some("Private name".into());
         save(&conn, &delivered);
-        let mut presentation = super::super::thread_store::read(&conn, 1, 7).unwrap().unwrap();
+        let mut presentation = super::super::thread_store::read(&conn, 1, 7)
+            .unwrap()
+            .unwrap();
         presentation["group"]["name"] = "Profile name".into();
         super::super::thread_store::write(&conn, 1, 7, &presentation).unwrap();
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
@@ -354,7 +363,12 @@ mod tests {
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
         assert_eq!(metadata["threads"][0]["title"], "Resolved group");
-        assert_eq!(super::super::thread_store::read(&conn, 1, 7).unwrap().unwrap()["group"]["name"], "Profile name");
+        assert_eq!(
+            super::super::thread_store::read(&conn, 1, 7)
+                .unwrap()
+                .unwrap()["group"]["name"],
+            "Profile name"
+        );
         delivered.notification_changed = false;
         let batch = assemble(&mut conn, 1, vec![delivered], None).unwrap();
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
@@ -428,7 +442,10 @@ fn assemble(
             .unwrap_or(Value::Null);
         if !thread.is_null() {
             super::thread_store::apply_selected_profile(
-                &tx, user_id, i64::from(current.thread_id), &mut thread,
+                &tx,
+                user_id,
+                i64::from(current.thread_id),
+                &mut thread,
             )?;
         }
         let mut previews = Vec::new();

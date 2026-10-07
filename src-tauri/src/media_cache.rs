@@ -350,7 +350,11 @@ pub(crate) async fn get_cached_chat_thumbnail(
 
 /** Best-effort post-original warm-up. The URI response must not wait for this: a later thumbnail request
  * either hits the completed file or joins the same per-thumbnail lock in ensure_chat_thumbnail. */
-pub(crate) fn warm_chat_thumbnail(app: tauri::AppHandle, proxy: ServerSessionState, source_path: String) {
+pub(crate) fn warm_chat_thumbnail(
+    app: tauri::AppHandle,
+    proxy: ServerSessionState,
+    source_path: String,
+) {
     tauri::async_runtime::spawn(async move {
         match get_or_create_chat_thumbnail(&app, &proxy, &source_path).await {
             Ok(_) => {
@@ -1581,7 +1585,10 @@ pub(crate) async fn download_media(
 }
 
 #[tauri::command]
-pub(crate) fn cancel_media_download(proxy: tauri::State<'_, ServerSessionState>, task_id: String) -> bool {
+pub(crate) fn cancel_media_download(
+    proxy: tauri::State<'_, ServerSessionState>,
+    task_id: String,
+) -> bool {
     let token = proxy
         .media_download_cancels
         .lock()

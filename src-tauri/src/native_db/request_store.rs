@@ -2,12 +2,16 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 fn text<'a>(value: &'a Value, field: &str) -> Result<&'a str, String> {
-    value.get(field).and_then(Value::as_str)
+    value
+        .get(field)
+        .and_then(Value::as_str)
         .ok_or_else(|| format!("request projection has no {field}"))
 }
 
 fn number(value: &Value, field: &str) -> Result<i64, String> {
-    value.get(field).and_then(Value::as_i64)
+    value
+        .get(field)
+        .and_then(Value::as_i64)
         .ok_or_else(|| format!("request projection has no {field}"))
 }
 
@@ -25,32 +29,58 @@ pub(super) fn save(
     if !matches!(kind, "FRIEND" | "GROUP") {
         return Err("invalid request projection kind".into());
     }
-    let subject = projection.get(if kind == "FRIEND" { "peer" } else { "group" })
+    let subject = projection
+        .get(if kind == "FRIEND" { "peer" } else { "group" })
         .filter(|value| !value.is_null());
     let account = subject.map(|value| text(value, "account")).transpose()?;
     let domain = subject.map(|value| text(value, "domain")).transpose()?;
-    let namespace = subject.map(|value| number(value, "namespaceId")).transpose()?;
+    let namespace = subject
+        .map(|value| number(value, "namespaceId"))
+        .transpose()?;
     let name = subject.map(|value| text(value, "name")).transpose()?;
     let avatar = subject.map(|value| text(value, "avatar")).transpose()?;
     let bio = if kind == "FRIEND" {
         subject.map(|value| text(value, "bio")).transpose()?
-    } else { None };
-    let description = if kind == "GROUP" {
-        subject.map(|value| text(value, "description")).transpose()?
-    } else { None };
-    let is_local = if kind == "GROUP" {
-        subject.map(|value| value.get("isLocal").and_then(Value::as_bool)
-            .ok_or("request group has no isLocal".to_string())).transpose()?
-    } else { None };
-    let profile_rev = if kind == "GROUP" {
-        subject.map(|value| number(value, "profileRev")).transpose()?
     } else {
-        subject.and_then(|value| value.get("profileRev")).and_then(Value::as_i64)
+        None
+    };
+    let description = if kind == "GROUP" {
+        subject
+            .map(|value| text(value, "description"))
+            .transpose()?
+    } else {
+        None
+    };
+    let is_local = if kind == "GROUP" {
+        subject
+            .map(|value| {
+                value
+                    .get("isLocal")
+                    .and_then(Value::as_bool)
+                    .ok_or("request group has no isLocal".to_string())
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let profile_rev = if kind == "GROUP" {
+        subject
+            .map(|value| number(value, "profileRev"))
+            .transpose()?
+    } else {
+        subject
+            .and_then(|value| value.get("profileRev"))
+            .and_then(Value::as_i64)
     };
     let subject_id = if kind == "FRIEND" {
-        subject.and_then(|value| value.get("id")).and_then(Value::as_i64)
-    } else { None };
-    let local_thread_id = projection.get("localThreadId")
+        subject
+            .and_then(|value| value.get("id"))
+            .and_then(Value::as_i64)
+    } else {
+        None
+    };
+    let local_thread_id = projection
+        .get("localThreadId")
         .filter(|value| !value.is_null())
         .map(|value| value.as_i64().ok_or("invalid localThreadId".to_string()))
         .transpose()?;
@@ -95,8 +125,9 @@ pub(super) fn save(
 /// Rebuild the wire/IPC view from scalar columns. The JSON expression is evaluated only on read;
 /// the database never stores an opaque object or the original state-feed body.
 pub(super) fn read(conn: &Connection, user_id: i64, key: &str) -> Result<Option<Value>, String> {
-    let payload: Option<String> = conn.query_row(
-        "SELECT json_object(
+    let payload: Option<String> = conn
+        .query_row(
+            "SELECT json_object(
            'key', stable_key, 'namespaceId', namespace_id, 'kind', kind,
            'bucket', bucket, 'direction', direction, 'status', status,
            'expiresAt', expires_at, 'localThreadId', local_thread_id,
@@ -116,22 +147,31 @@ pub(super) fn read(conn: &Connection, user_id: i64, key: &str) -> Result<Option<
                'profileRev', subject_profile_rev)
              ELSE 'null' END)
          ) FROM relationship_requests WHERE user_id=?1 AND stable_key=?2",
-        params![user_id, key], |row| row.get(0),
-    ).optional().map_err(|e| format!("read request projection: {e}"))?;
-    payload.map(|payload| {
-        let mut value: Value = serde_json::from_str(&payload)
-            .map_err(|e| format!("decode request projection: {e}"))?;
-        let object = value.as_object_mut().ok_or("invalid request projection")?;
-        if object.get("kind").and_then(Value::as_str) == Some("FRIEND") {
-            object.remove("group");
-            object.remove("sourceLabel");
-            if let Some(peer) = object.get_mut("peer").and_then(Value::as_object_mut) {
-                if peer.get("id") == Some(&Value::Null) { peer.remove("id"); }
-                if peer.get("profileRev") == Some(&Value::Null) { peer.remove("profileRev"); }
+            params![user_id, key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("read request projection: {e}"))?;
+    payload
+        .map(|payload| {
+            let mut value: Value = serde_json::from_str(&payload)
+                .map_err(|e| format!("decode request projection: {e}"))?;
+            let object = value.as_object_mut().ok_or("invalid request projection")?;
+            if object.get("kind").and_then(Value::as_str) == Some("FRIEND") {
+                object.remove("group");
+                object.remove("sourceLabel");
+                if let Some(peer) = object.get_mut("peer").and_then(Value::as_object_mut) {
+                    if peer.get("id") == Some(&Value::Null) {
+                        peer.remove("id");
+                    }
+                    if peer.get("profileRev") == Some(&Value::Null) {
+                        peer.remove("profileRev");
+                    }
+                }
+            } else {
+                object.remove("peer");
             }
-        } else {
-            object.remove("peer");
-        }
-        Ok(value)
-    }).transpose()
+            Ok(value)
+        })
+        .transpose()
 }

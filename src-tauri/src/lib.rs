@@ -14,9 +14,10 @@
 // with the current access token in an `Authorization: Bearer` header (a bare `<img src>` can't set
 // headers, and the backend's httpOnly `media_token` cookie is SameSite=Strict so it can't cross origins).
 
-mod diagnostics;
 #[cfg(target_os = "android")]
 mod android_runtime;
+mod client_compat;
+mod diagnostics;
 mod media_cache;
 mod native_db;
 mod native_video;
@@ -28,7 +29,6 @@ mod secure_storage;
 #[cfg(desktop)]
 mod sse;
 mod upload;
-mod client_compat;
 
 pub(crate) use proxy::{
     activate_origin, is_network_failure, perform_api_request, pick_origin_race, runtime_switch,
@@ -91,7 +91,6 @@ const ORIGIN_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(desktop)]
 const SSE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-
 /// The backend origin the shell talks to when nothing else is configured. A deliberate non-routable
 /// placeholder — identical in debug and release APKs (no dev-only `localhost`/LAN default, so the
 /// packaged debug build behaves exactly like production) — which is unreachable from a phone, exactly
@@ -106,7 +105,6 @@ const CONFIG_FILENAME: &str = "api_origin";
 /// Sibling of `api_origin`: the optional LAN (secondary) origin, validated the same way. Absent/empty →
 /// no fallback configured (the shell behaves exactly as before). Written by `persist_origin_secondary`.
 const CONFIG_SECONDARY_FILENAME: &str = "api_origin_secondary";
-
 
 /// Which origin `api_origin` currently holds, for the native fallback state machine.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -177,8 +175,18 @@ impl ServerSessionState {
                 native_db::invalidate_account_work().expect("invalidate previous session work");
                 #[cfg(not(desktop))]
                 {
-                    for (cid, voice) in self.native_voice_pending.lock().expect("native voice lock").drain() {
-                        if let Some(cancel) = self.upload_cancels.lock().expect("upload cancels lock").remove(&cid) {
+                    for (cid, voice) in self
+                        .native_voice_pending
+                        .lock()
+                        .expect("native voice lock")
+                        .drain()
+                    {
+                        if let Some(cancel) = self
+                            .upload_cancels
+                            .lock()
+                            .expect("upload cancels lock")
+                            .remove(&cid)
+                        {
                             cancel.cancel();
                         }
                         let _ = std::fs::remove_file(voice.path());
@@ -195,7 +203,8 @@ impl ServerSessionState {
 
     fn new() -> Self {
         let initial_origin = std::env::var("SOMS_API_ORIGIN")
-            .ok().and_then(|s| validate_origin(&s))
+            .ok()
+            .and_then(|s| validate_origin(&s))
             .unwrap_or_else(|| DEFAULT_API_ORIGIN.to_string());
         ServerSessionState {
             api_origin: Arc::new(Mutex::new(initial_origin.clone())),
@@ -363,7 +372,8 @@ fn persist_origin_secondary(
 pub fn run() {
     #[cfg(target_os = "android")]
     let proxy_state = android_runtime::proxy_state()
-        .expect("Application must initialize the Rust runtime before Tauri").clone();
+        .expect("Application must initialize the Rust runtime before Tauri")
+        .clone();
     #[cfg(not(target_os = "android"))]
     let proxy_state = ServerSessionState::new();
     let proxy_for_media = proxy_state.clone();
@@ -462,6 +472,11 @@ pub fn run() {
             {
                 tauri::generate_handler![
                     native_db::desktop_notifications::desktop_notification_update,
+                    native_db::profile_namespaces::native_db_profile_namespace_bindings,
+                    native_db::profile_namespaces::native_db_commit_profile_namespace_bindings,
+                    native_db::profile_namespaces::native_db_apply_profile_namespace_changes,
+                    native_db::profile_namespaces::native_db_write_profile_namespace_tomb,
+                    native_db::profile_namespaces::native_db_write_profile_tomb,
                     native_db::desktop_notifications::desktop_notifications_clear,
                     native_db::desktop_notifications::desktop_notification_pending,
                     native_db::desktop_notifications::desktop_notification_acknowledge,
@@ -505,8 +520,6 @@ pub fn run() {
                     media_cache::set_media_cache_limit,
                     native_video::create_native_video_stream,
                     native_db::client_state::native_db_threads,
-                    native_db::client_state::native_db_namespaces,
-                    native_db::client_state::native_db_archive_namespace,
                     native_db::client_state::native_db_list_relationship_requests,
                     native_db::client_state::native_db_page_relationship_requests,
                     native_db::client_state::native_db_mark_relationship_request_accepted,
@@ -585,9 +598,12 @@ pub fn run() {
                     media_cache::get_media_cache_info,
                     media_cache::set_media_cache_limit,
                     native_video::create_native_video_stream,
+                    native_db::profile_namespaces::native_db_profile_namespace_bindings,
+                    native_db::profile_namespaces::native_db_commit_profile_namespace_bindings,
+                    native_db::profile_namespaces::native_db_apply_profile_namespace_changes,
+                    native_db::profile_namespaces::native_db_write_profile_namespace_tomb,
+                    native_db::profile_namespaces::native_db_write_profile_tomb,
                     native_db::client_state::native_db_threads,
-                    native_db::client_state::native_db_namespaces,
-                    native_db::client_state::native_db_archive_namespace,
                     native_db::client_state::native_db_list_relationship_requests,
                     native_db::client_state::native_db_page_relationship_requests,
                     native_db::client_state::native_db_mark_relationship_request_accepted,
@@ -671,7 +687,8 @@ pub fn run() {
                     // The persisted file is the user-configured PRIMARY. Seed primary + active from it; a
                     // cold-start select_origin (spawned later in setup) may flip `api_origin` to the secondary
                     // if the primary is unreachable on this network.
-                    *proxy_state.api_origin_primary.lock().expect("primary lock") = persisted.clone();
+                    *proxy_state.api_origin_primary.lock().expect("primary lock") =
+                        persisted.clone();
                     *proxy_state.api_origin.lock().expect("origin lock") = persisted;
                 }
                 // Secondary (LAN) origin — optional. Absent file → None → no fallback (exact legacy behavior).

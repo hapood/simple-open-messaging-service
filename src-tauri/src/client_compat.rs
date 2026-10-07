@@ -62,7 +62,9 @@ pub(crate) async fn init_check_compat(origin: String) -> Result<serde_json::Valu
 #[tauri::command]
 pub(crate) async fn init_validate_cert(origin: String) -> Result<serde_json::Value, String> {
     if tls_posture_for(&origin) == TlsPosture::Permissive {
-        return Ok(serde_json::json!({ "valid": true, "summary": "insecure", "note": "http/ip origin — certificate validation skipped; not guaranteed secure by policy" }));
+        return Ok(
+            serde_json::json!({ "valid": true, "summary": "insecure", "note": "http/ip origin — certificate validation skipped; not guaranteed secure by policy" }),
+        );
     }
     let client = http_client_for(&origin);
     let url = format!("{}/api/v1/client/compat", origin.trim_end_matches('/'));
@@ -70,20 +72,27 @@ pub(crate) async fn init_validate_cert(origin: String) -> Result<serde_json::Val
         Ok(r) if r.status().is_success() => {
             Ok(serde_json::json!({ "valid": true, "summary": "https" }))
         }
-        Ok(r) => Err(format!("certificate/host check failed: server returned HTTP {}", r.status())),
-        Err(e) => Err(format!("certificate/host check failed (self-signed / expired / unreachable?): {e}")),
+        Ok(r) => Err(format!(
+            "certificate/host check failed: server returned HTTP {}",
+            r.status()
+        )),
+        Err(e) => Err(format!(
+            "certificate/host check failed (self-signed / expired / unreachable?): {e}"
+        )),
     }
 }
 
 #[tauri::command]
 pub(crate) async fn init_compat_status(origin: String) -> Result<serde_json::Value, String> {
-    Ok(match fetch_compat(&http_client_for(&origin), &origin).await {
-        Ok(data) => serde_json::json!({
-            "serverVersion": data.server_version,
-            "incompatible": !is_compatible(data.api_version),
-        }),
-        Err(_) => serde_json::json!({ "serverVersion": "", "incompatible": false }),
-    })
+    Ok(
+        match fetch_compat(&http_client_for(&origin), &origin).await {
+            Ok(data) => serde_json::json!({
+                "serverVersion": data.server_version,
+                "incompatible": !is_compatible(data.api_version),
+            }),
+            Err(_) => serde_json::json!({ "serverVersion": "", "incompatible": false }),
+        },
+    )
 }
 
 #[cfg(test)]

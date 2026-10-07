@@ -4,8 +4,8 @@ use super::relationship_projection::{
     apply_group_request_effect, apply_relationship_request_effect, update_live_request_projection,
 };
 use super::{
-    history_gap_is_owned, reduce_message_ranges, validate_message_ranges,
-    HistoryDirection, MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
+    history_gap_is_owned, reduce_message_ranges, validate_message_ranges, HistoryDirection,
+    MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 use rusqlite::{params, Connection};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -195,8 +195,11 @@ fn native_message_ranges_persist_canonical_reducer_output() {
 }
 
 fn test_thread_snapshot(kind: &str, feed: i64, lifecycle: &str) -> serde_json::Value {
-    let (account, role) = if kind == "GROUP" { ("!dev", serde_json::json!("MEMBER")) }
-        else { ("bob", serde_json::Value::Null) };
+    let (account, role) = if kind == "GROUP" {
+        ("!dev", serde_json::json!("MEMBER"))
+    } else {
+        ("bob", serde_json::Value::Null)
+    };
     serde_json::json!({
         "threadId":52,"threadFeedId":feed,"type":kind,"authorityNamespaceId":0,
         "conversationState":lifecycle,"blocked":lifecycle == "READ_ONLY","role":role,
@@ -213,9 +216,9 @@ fn commit_test_thread_state(conn: &mut Connection, body: &serde_json::Value) {
     super::client_state::apply_thread_state(&tx, 1, body, body["threadFeedId"].as_i64().unwrap())
         .unwrap();
     tx.commit().unwrap();
-    let local: super::attention::LocalThreadAttention = serde_json::from_value(
-        serde_json::json!({"threadId":52,"server":body,"localReadSeq":0})
-    ).unwrap();
+    let local: super::attention::LocalThreadAttention =
+        serde_json::from_value(serde_json::json!({"threadId":52,"server":body,"localReadSeq":0}))
+            .unwrap();
     super::attention::write_state(conn, 1, &local).unwrap();
 }
 
@@ -223,15 +226,20 @@ fn commit_test_thread_state(conn: &mut Connection, body: &serde_json::Value) {
 fn native_thread_state_restores_history_and_ignores_old_snapshots() {
     let mut conn = profile_cache_db();
     commit_test_thread_state(&mut conn, &test_thread_snapshot("P2P", 5, "ACTIVE"));
-    conn.execute("UPDATE threads SET last_message_at=900,unread_count=4 WHERE thread_id=52", [])
-        .unwrap();
+    conn.execute(
+        "UPDATE threads SET last_message_at=900,unread_count=4 WHERE thread_id=52",
+        [],
+    )
+    .unwrap();
     commit_test_thread_state(&mut conn, &test_thread_snapshot("P2P", 6, "READ_ONLY"));
     let mut stale = test_thread_snapshot("P2P", 5, "ACTIVE");
     stale["profile"]["profileRev"] = 99.into();
     let tx = conn.transaction().unwrap();
     super::client_state::apply_thread_state(&tx, 1, &stale, 5).unwrap();
     tx.commit().unwrap();
-    let thread = super::client_state::read_threads(&conn, 1).unwrap().remove(0);
+    let thread = super::client_state::read_threads(&conn, 1)
+        .unwrap()
+        .remove(0);
     assert_eq!(thread["conversationState"], "READ_ONLY");
     assert_eq!(thread["profileRev"], 3);
     assert_eq!(thread["blocked"], true);
@@ -245,22 +253,32 @@ fn native_read_only_and_reestablishment_preserve_group_roster() {
     commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));
     conn.execute(
         "INSERT INTO members(user_id,thread_id,member_account,member_domain,namespace_id,role)
-         VALUES(1,52,'bob','local',0,'MEMBER')", [],
-    ).unwrap();
-    conn.execute("UPDATE threads SET group_member_count=1,group_meta_feed_id='20'
-        WHERE thread_id=52", []).unwrap();
+         VALUES(1,52,'bob','local',0,'MEMBER')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE threads SET group_member_count=1,group_meta_feed_id='20'
+        WHERE thread_id=52",
+        [],
+    )
+    .unwrap();
     for (feed, lifecycle) in [(6, "READ_ONLY"), (7, "ACTIVE")] {
         commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", feed, lifecycle));
         let thread = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
         assert_eq!(thread["group"]["memberCount"], 1);
         assert_eq!(thread["group"]["groupMetaFeedId"], "20");
         assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0)).unwrap(), 1
+            conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
         );
     }
     super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "21").unwrap();
     assert_eq!(
-        conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0)).unwrap(), 0
+        conn.query_row("SELECT COUNT(*) FROM members", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
     );
     let thread = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
     assert_eq!(thread["group"]["groupMetaFeedId"], "0");
@@ -278,14 +296,19 @@ fn deleting_a_thread_clears_its_state_preview_and_roster_together() {
     commit_test_thread_state(&mut conn, &snapshot);
     conn.execute(
         "INSERT INTO members(user_id,thread_id,member_account,member_domain,namespace_id,role)
-         VALUES(1,52,'bob','local',0,'MEMBER')", [],
-    ).unwrap();
+         VALUES(1,52,'bob','local',0,'MEMBER')",
+        [],
+    )
+    .unwrap();
     super::client_state::delete_thread(&mut conn, 1, 52).unwrap();
     for table in ["threads", "thread_previews", "members"] {
-        let count: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM {table} WHERE user_id=1 AND thread_id=52"),
-            [], |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE user_id=1 AND thread_id=52"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0, "{table} retained an orphan row");
     }
 }
@@ -344,15 +367,22 @@ fn native_projection_ignores_a_local_revoke_for_a_received_request() {
     .unwrap();
     tx.commit().unwrap();
 
-    let key: String = conn.query_row("SELECT stable_key FROM relationship_requests", [], |row| row.get(0)).unwrap();
+    let key: String = conn
+        .query_row("SELECT stable_key FROM relationship_requests", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
     let projection = super::request_store::read(&conn, 1, &key).unwrap().unwrap();
     assert_eq!(projection["bucket"], "RECEIVED");
     assert_eq!(projection["status"], "REQUESTED");
     assert_eq!(projection["requestedSort"], now);
-    assert_eq!(projection["peer"], serde_json::json!({
-        "id":2, "account":"peer", "domain":"peer.test", "namespaceId":12,
-        "name":"Peer", "avatar":"", "bio":"",
-    }));
+    assert_eq!(
+        projection["peer"],
+        serde_json::json!({
+            "id":2, "account":"peer", "domain":"peer.test", "namespaceId":12,
+            "name":"Peer", "avatar":"", "bio":"",
+        })
+    );
     assert!(projection.get("group").is_none());
     let revision: String = conn
         .query_row(
@@ -396,7 +426,8 @@ fn native_projection_persists_a_local_accept_side_effect() {
     assert_eq!(projection["bucket"], "RECEIVED");
     assert_eq!(projection["direction"], "INCOMING");
     assert_eq!(projection["status"], "ACCEPTED");
-    let page = super::client_state::page_relationship_requests(&mut conn, 1, "RECEIVED", None, 10).unwrap();
+    let page = super::client_state::page_relationship_requests(&mut conn, 1, "RECEIVED", None, 10)
+        .unwrap();
     assert_eq!(page["total"], 1);
     assert_eq!(page["actionableTotal"], 0);
     assert_eq!(page["items"][0], projection);
@@ -411,9 +442,17 @@ fn native_projection_uses_request_metadata_for_revocation() {
         .as_millis() as i64;
     let tx = conn.transaction().unwrap();
     apply_relationship_request_effect(
-        &tx, 1, 1, 12, "peer", "peer.test", "me", "local.test",
+        &tx,
+        1,
+        1,
+        12,
+        "peer",
+        "peer.test",
+        "me",
+        "local.test",
         &friend_body("INCOMING", "REQUESTED", Some(now + 60_000)),
-    ).unwrap();
+    )
+    .unwrap();
     let mut body = friend_body("OUTGOING", "REVOKED", None);
     body["requestStatus"] = serde_json::json!("REJECTED");
     body["requestDirection"] = serde_json::json!("INCOMING");
@@ -431,7 +470,11 @@ fn native_projection_uses_request_metadata_for_revocation() {
     .unwrap();
     tx.commit().unwrap();
 
-    let key: String = conn.query_row("SELECT stable_key FROM relationship_requests", [], |row| row.get(0)).unwrap();
+    let key: String = conn
+        .query_row("SELECT stable_key FROM relationship_requests", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
     let projection = super::request_store::read(&conn, 1, &key).unwrap().unwrap();
     assert_eq!(projection["status"], "REJECTED");
 }
@@ -439,33 +482,58 @@ fn native_projection_uses_request_metadata_for_revocation() {
 #[test]
 fn native_group_request_projection_reconstructs_typed_subject() {
     let mut conn = request_connection();
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
     let tx = conn.transaction().unwrap();
-    apply_group_request_effect(&tx, 1, 4, 12, "!team", "remote.test", "INCOMING", &serde_json::json!({
-        "status": "REQUESTED", "requestedAt": now, "expiresAt": now + 60_000,
-        "threadId": 42, "note": "Welcome", "group": {
-            "account": "!team", "domain": "remote.test", "isLocal": false,
-            "name": "Team", "avatar": "", "description": "About",
-            "profileRev": 3
-        }
-    })).unwrap();
+    apply_group_request_effect(
+        &tx,
+        1,
+        4,
+        12,
+        "!team",
+        "remote.test",
+        "INCOMING",
+        &serde_json::json!({
+            "status": "REQUESTED", "requestedAt": now, "expiresAt": now + 60_000,
+            "threadId": 42, "note": "Welcome", "group": {
+                "account": "!team", "domain": "remote.test", "isLocal": false,
+                "name": "Team", "avatar": "", "description": "About",
+                "profileRev": 3
+            }
+        }),
+    )
+    .unwrap();
     tx.commit().unwrap();
-    let key: String = conn.query_row("SELECT stable_key FROM relationship_requests", [], |row| row.get(0)).unwrap();
+    let key: String = conn
+        .query_row("SELECT stable_key FROM relationship_requests", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
     let value = super::request_store::read(&conn, 1, &key).unwrap().unwrap();
-    assert_eq!(value["group"], serde_json::json!({
-        "account":"!team", "domain":"remote.test", "namespaceId":12,
-        "isLocal":false, "name":"Team", "avatar":"", "description":"About",
-        "profileRev":3,
-    }));
+    assert_eq!(
+        value["group"],
+        serde_json::json!({
+            "account":"!team", "domain":"remote.test", "namespaceId":12,
+            "isLocal":false, "name":"Team", "avatar":"", "description":"About",
+            "profileRev":3,
+        })
+    );
     assert_eq!(value["sourceLabel"], "remote.test");
     assert!(value.get("peer").is_none());
-    let page = super::client_state::page_relationship_requests(&mut conn, 1, "RECEIVED", None, 10).unwrap();
+    let page = super::client_state::page_relationship_requests(&mut conn, 1, "RECEIVED", None, 10)
+        .unwrap();
     assert_eq!(page["total"], 1);
     assert_eq!(page["actionableTotal"], 1);
     assert_eq!(page["items"][0], value);
-    let columns = conn.prepare("PRAGMA table_info(relationship_requests)").unwrap()
-        .query_map([], |row| row.get::<_, String>(1)).unwrap()
-        .collect::<Result<Vec<_>, _>>().unwrap();
+    let columns = conn
+        .prepare("PRAGMA table_info(relationship_requests)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     assert!(!columns.contains(&"payload_json".to_string()));
 }
 
@@ -557,34 +625,41 @@ fn old_message_cache_is_rejected_and_rebuilt_without_importing_bodies() {
 fn native_profiles_keep_exact_revisions_and_local_subject_coordinates() {
     use super::contacts::{read_profile, register_namespace, write_profile};
     let conn = profile_cache_db();
-    register_namespace(&conn, 1, 0, "local").unwrap();
+    register_namespace(&conn, 1, 0, "own.test").unwrap();
     register_namespace(&conn, 1, 7, "authority.test").unwrap();
-    for (domain, namespace, rev, name) in [
-        ("local", 7, 3, "New"),
-        ("own.test", 0, 2, "Old"),
-        ("third.test", 7, 3, "Mirror"),
+    for (domain, publisher, profile_namespace, rev, name) in [
+        ("authority.test", 7, 0, 3, "New"),
+        ("own.test", 0, 0, 2, "Old"),
+        ("third.test", 7, 8, 3, "Mirror"),
     ] {
-        write_profile(&conn, 1, &serde_json::json!({"account":"alice","domain":domain,"publisherNamespaceId":namespace,"profileNamespaceId":namespace,"profileRev":rev,"name":name,"avatarDigest":null,"bio":""})).unwrap();
+        write_profile(&conn, 1, &serde_json::json!({"account":"alice","domain":domain,"publisherNamespaceId":publisher,"profileNamespaceId":profile_namespace,"profileRev":rev,"name":name,"avatarDigest":null,"bio":""})).unwrap();
     }
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 3);
-    let names: String = conn.query_row("SELECT group_concat(name, ',') FROM (SELECT name FROM profiles WHERE domain='local' AND profile_namespace_id=0 ORDER BY profile_rev)", [], |row| row.get(0)).unwrap();
+    let names: String = conn.query_row("SELECT group_concat(profile.name, ',' ORDER BY profile.profile_rev) FROM profiles profile WHERE profile.profile_namespace_id=0", [], |row| row.get(0)).unwrap();
     assert_eq!(names, "Old,New");
-    let revision = read_profile(&conn, 1, "alice", "local", 7, 0, 3).unwrap().unwrap();
-    assert_eq!(revision, serde_json::json!({
-        "account":"alice", "domain":"local", "namespaceId":0,
-        "publisherNamespaceId":7, "profileNamespaceId":0,
-        "profileRev":3, "name":"New", "avatarDigest":null, "bio":"",
-    }));
+    let revision = read_profile(&conn, 1, 7, 0, "alice", 3).unwrap().unwrap();
+    assert_eq!(
+        revision,
+        serde_json::json!({
+            "account":"alice", "domain":"authority.test", "namespaceId":0,
+            "publisherNamespaceId":7, "profileNamespaceId":0,
+            "profileRev":3, "name":"New", "avatarDigest":null, "bio":"",
+        })
+    );
     assert!(!write_profile(&conn, 1, &revision).unwrap());
     let mut conflict = revision;
     conflict["name"] = serde_json::json!("Changed");
     assert!(write_profile(&conn, 1, &conflict).is_err());
-    let columns = conn.prepare("PRAGMA table_info(profiles)").unwrap()
-        .query_map([], |row| row.get::<_, String>(1)).unwrap()
-        .collect::<Result<Vec<_>, _>>().unwrap();
+    let columns = conn
+        .prepare("PRAGMA table_info(profiles)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     assert!(!columns.contains(&"payload_json".to_string()));
     let old_tables: i64 = conn
         .query_row(
@@ -623,7 +698,7 @@ fn native_profile_cache_rejects_a_different_avatar_for_one_revision() {
 }
 
 #[test]
-fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
+fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
     let mut conn = profile_cache_db();
     let body = serde_json::json!({
         "threadId":90,"threadFeedId":1,"type":"GROUP","authorityNamespaceId":7,
@@ -637,14 +712,14 @@ fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
     let tx = conn.transaction().unwrap();
     super::client_state::apply_thread_state(&tx, 1, &body, 1).unwrap();
     tx.commit().unwrap();
-    let local: super::attention::LocalThreadAttention = serde_json::from_value(
-        serde_json::json!({"threadId":90,"server":body,"localReadSeq":0})
-    ).unwrap();
+    let local: super::attention::LocalThreadAttention =
+        serde_json::from_value(serde_json::json!({"threadId":90,"server":body,"localReadSeq":0}))
+            .unwrap();
     super::attention::write_state(&conn, 1, &local).unwrap();
     let page = serde_json::json!([{"threadId":90,"sourceServer":"authority.test","namespaceId":7,"page":{
     "mode":"full","scannedThrough":"3","items":[
-        {"feedId":"1","operation":"MEMBER_UPSERT","account":"me","domain":"local","namespaceId":7,"body":{"role":"ADMIN","profileRev":2}},
-        {"feedId":"2","operation":"MEMBER_UPSERT","account":"other","domain":"third.test","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
+        {"feedId":"1","operation":"MEMBER_UPSERT","account":"me","domain":"own.test","namespaceId":0,"body":{"role":"ADMIN","profileRev":2}},
+        {"feedId":"2","operation":"MEMBER_UPSERT","account":"other","domain":"authority.test","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
         {"feedId":"3","operation":"GROUP_PROFILE","body":{"profileRev":4}}
     ]}}]);
     super::client_state::apply_state_feed_page(
@@ -656,14 +731,22 @@ fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
         false,
     )
     .unwrap();
-    let local_ns: i64 = conn
+    let (local_ns, local_domain): (i64, String) = conn
         .query_row(
-            "SELECT namespace_id FROM members WHERE member_account='me'",
+            "SELECT namespace_id, member_domain FROM members WHERE member_account='me'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((local_ns, local_domain.as_str()), (0, "own.test"));
+    let home_binding: String = conn
+        .query_row(
+            "SELECT domain FROM profile_namespaces WHERE user_id=1 AND publisher_namespace_id=0 AND profile_namespace_id=0",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(local_ns, 0);
+    assert_eq!(home_binding, "own.test");
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM members", [], |row| row.get(0))
         .unwrap();
@@ -674,7 +757,7 @@ fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
     assert_eq!(profiles, 0);
     let source: String = conn
         .query_row(
-            "SELECT domain FROM namespaces WHERE user_id=1 AND namespace_id=7",
+            "SELECT domain FROM profile_namespaces WHERE user_id=1 AND publisher_namespace_id=7 AND profile_namespace_id=7",
             [],
             |row| row.get(0),
         )
@@ -699,10 +782,10 @@ fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
     )
     .unwrap();
     let delta = serde_json::json!([{"threadId":90,"sourceServer":"authority.test","namespaceId":7,"page":{
-        "mode":"delta","scannedThrough":"4","items":[
-            {"feedId":"4","operation":"MEMBER_UPSERT","account":"other","domain":"third.test","namespaceId":7,
-             "body":{"role":"ADMIN","profileRev":2}}
-        ]}}]);
+    "mode":"delta","scannedThrough":"4","items":[
+        {"feedId":"4","operation":"MEMBER_UPSERT","account":"other","domain":"authority.test","namespaceId":7,
+         "body":{"role":"ADMIN","profileRev":2}}
+    ]}}]);
     super::client_state::apply_state_feed_page(
         &mut conn,
         1,
@@ -724,7 +807,7 @@ fn native_group_meta_localizes_subjects_preserves_source_and_commits_cursor() {
 
 #[test]
 fn native_message_creator_localization_preserves_message_source() {
-    let mut message = serde_json::json!({"publisherNamespaceId":7,"creator":{"account":"me","domain":"local","namespaceId":7}});
+    let mut message = serde_json::json!({"publisherNamespaceId":7,"creator":{"account":"me","domain":"local","namespaceId":0}});
     super::messages::normalize_message_creator(&mut message);
     assert_eq!(message["creator"]["namespaceId"], 0);
     assert_eq!(message["creator"]["domain"], "local");

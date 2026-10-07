@@ -10,7 +10,7 @@ CREATE TABLE threads (
   kind TEXT NOT NULL CHECK(kind IN ('P2P', 'GROUP')),
   authority_namespace_id INTEGER NOT NULL CHECK(authority_namespace_id >= 0),
   subject_account TEXT NOT NULL CHECK(subject_account <> ''),
-  subject_domain TEXT NOT NULL CHECK(subject_domain <> ''),
+  subject_domain TEXT NOT NULL,
   subject_namespace_id INTEGER NOT NULL CHECK(subject_namespace_id >= 0),
   thread_feed_id INTEGER NOT NULL CHECK(thread_feed_id > 0),
   conversation_state TEXT NOT NULL CHECK(conversation_state IN ('ACTIVE','READ_ONLY')),
@@ -58,8 +58,6 @@ CREATE TABLE threads (
   last_read_seq INTEGER,
   role TEXT CHECK(role IN ('OWNER','ADMIN','MEMBER')),
   PRIMARY KEY(user_id,thread_id),
-  FOREIGN KEY(user_id,subject_domain,authority_namespace_id)
-    REFERENCES namespaces(user_id,domain,namespace_id),
   CHECK(subject_namespace_id = authority_namespace_id),
   CHECK(join_request_read_feed_id >= -1 AND
         join_request_read_feed_id <= join_request_end_feed_id),
@@ -68,16 +66,6 @@ CREATE TABLE threads (
   CHECK((kind='GROUP' AND subject_account LIKE '!%' AND group_id > 0)
      OR (kind='P2P' AND group_id IS NULL))
 );
-CREATE TRIGGER threads_namespace_before_insert BEFORE INSERT ON threads BEGIN
-  UPDATE namespaces SET status='ARCHIVED' WHERE user_id=NEW.user_id
-    AND domain=NEW.subject_domain AND namespace_id<NEW.authority_namespace_id;
-  INSERT OR IGNORE INTO namespaces(user_id,namespace_id,domain,status)
-  VALUES(NEW.user_id,NEW.authority_namespace_id,NEW.subject_domain,
-    CASE WHEN NEW.authority_namespace_id=0 OR NOT EXISTS(
-      SELECT 1 FROM namespaces WHERE user_id=NEW.user_id AND domain=NEW.subject_domain
-        AND namespace_id>NEW.authority_namespace_id
-    ) THEN 'ACTIVE' ELSE 'ARCHIVED' END);
-END;
 "#;
 
 pub(super) const PREVIEW_SCHEMA: &str = r#"
@@ -172,11 +160,22 @@ pub(super) fn write(
         return Err("thread id mismatch".into());
     }
     for field in [
-        "threadFeedId", "conversationState", "blocked", "alias", "threadProfileRev",
-        "messageEndSeq", "tombstoneEndSeq", "groupMetaFeedEndId",
-        "joinRequestEndFeedId", "joinRequestReadFeedId", "groupInviteEndFeedId",
-        "serverLastReadSeq", "announcementReadFeedId", "serverUnreadCount",
-        "lastMentionSeq", "localReadSeq",
+        "threadFeedId",
+        "conversationState",
+        "blocked",
+        "alias",
+        "threadProfileRev",
+        "messageEndSeq",
+        "tombstoneEndSeq",
+        "groupMetaFeedEndId",
+        "joinRequestEndFeedId",
+        "joinRequestReadFeedId",
+        "groupInviteEndFeedId",
+        "serverLastReadSeq",
+        "announcementReadFeedId",
+        "serverUnreadCount",
+        "lastMentionSeq",
+        "localReadSeq",
     ] {
         if item.get(field).is_none() {
             return Err(format!("thread state has no {field}"));
@@ -391,8 +390,9 @@ pub(super) fn apply_selected_profile(
         .query_row(
             "SELECT profile.name,profile.bio FROM threads state
          JOIN profiles profile ON profile.user_id=state.user_id
-           AND profile.account=state.subject_account AND profile.domain=state.subject_domain
-           AND profile.publisher_namespace_id=state.subject_namespace_id AND profile.profile_namespace_id=state.subject_namespace_id
+           AND profile.account=state.subject_account
+           AND profile.publisher_namespace_id=state.subject_namespace_id
+           AND profile.profile_namespace_id=state.subject_namespace_id
            AND profile.profile_rev=state.thread_profile_rev
          WHERE state.user_id=?1 AND state.thread_id=?2 AND state.thread_profile_rev>0",
             params![user_id, thread_id],

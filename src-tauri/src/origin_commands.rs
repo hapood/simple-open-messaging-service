@@ -57,7 +57,9 @@ pub(crate) fn set_api_origin(
 /// The configured LAN (secondary) origin, or null when no fallback is configured (dev, or servers without
 /// SOMS_LAN_DOMAIN). The shell uses this to populate the second server-config field + persist it.
 #[tauri::command]
-pub(crate) fn get_api_origin_secondary(state: tauri::State<'_, ServerSessionState>) -> Option<String> {
+pub(crate) fn get_api_origin_secondary(
+    state: tauri::State<'_, ServerSessionState>,
+) -> Option<String> {
     state
         .api_origin_secondary
         .lock()

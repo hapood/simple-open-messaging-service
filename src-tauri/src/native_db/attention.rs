@@ -1,8 +1,8 @@
+use log::warn;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use log::warn;
 use tauri::Emitter;
 
 use super::client_state::{ClientGroupMetaApply, ClientGroupMetaPage};
@@ -22,7 +22,6 @@ fn open_thread_id() -> Option<i64> {
     let value = OPEN_THREAD_ID.load(std::sync::atomic::Ordering::Acquire);
     (value > 0).then_some(value)
 }
-
 
 /// The serialized shape emitted on the `soms-sse-event` channel for local
 /// (non-server) completion notifications. Mirrors `SseEventPayload` in sse.rs.
@@ -64,12 +63,17 @@ pub(crate) async fn native_db_drain_thread_misc(
     let group_meta_proxy = proxy.inner().clone();
     let group_meta_task = tokio::spawn(async move {
         if let Some(_target) = group_meta_end_id {
-        // The drain target lives in the threads table (group_meta_feed_end_id),
-        // refreshed by the preceding thread-feed commit, so the caller's target
-        // is redundant — `sync_group_meta_thread` reads it from `group_meta_plans`.
-        let (changed, error) =
-                sync_group_meta_thread(Some(&group_meta_app), &group_meta_proxy, user_id, thread_id, epoch)
-                    .await;
+            // The drain target lives in the threads table (group_meta_feed_end_id),
+            // refreshed by the preceding thread-feed commit, so the caller's target
+            // is redundant — `sync_group_meta_thread` reads it from `group_meta_plans`.
+            let (changed, error) = sync_group_meta_thread(
+                Some(&group_meta_app),
+                &group_meta_proxy,
+                user_id,
+                thread_id,
+                epoch,
+            )
+            .await;
             if let Some(error) = error {
                 warn!("group-meta per-thread drain failed; next wake retries: {error}");
             } else if !changed.is_empty() {
@@ -92,8 +96,15 @@ pub(crate) async fn native_db_drain_thread_misc(
     let tombstone_proxy = proxy.inner().clone();
     let tombstone_task = tokio::spawn(async move {
         if let Some(target) = tombstone_end_seq {
-            match sync_tombstone_thread(Some(&tombstone_app), &tombstone_proxy, user_id, thread_id, target, epoch)
-                .await
+            match sync_tombstone_thread(
+                Some(&tombstone_app),
+                &tombstone_proxy,
+                user_id,
+                thread_id,
+                target,
+                epoch,
+            )
+            .await
             {
                 Ok(committed) if !committed.is_empty() => {
                     let _ = tombstone_app.emit(
@@ -114,7 +125,9 @@ pub(crate) async fn native_db_drain_thread_misc(
                     );
                 }
                 Ok(_) => {}
-                Err(error) => warn!("tombstone per-thread drain failed; next wake retries: {error}"),
+                Err(error) => {
+                    warn!("tombstone per-thread drain failed; next wake retries: {error}")
+                }
             }
         }
     });
@@ -168,10 +181,13 @@ fn commit_resolved_profile(
         .get("account")
         .and_then(Value::as_str)
         .ok_or("resolved profile has no account")?;
-    let domain = profile
-        .get("domain")
-        .and_then(Value::as_str)
-        .ok_or("resolved profile has no domain")?;
+    let domain = super::profile_namespaces::display_domain(
+        conn,
+        user_id,
+        publisher_namespace_id,
+        profile_namespace_id,
+    )?
+    .ok_or("profile namespace binding is missing")?;
     let profile_rev = profile
         .get("rev")
         .and_then(Value::as_i64)
@@ -186,8 +202,8 @@ fn commit_resolved_profile(
         .ok_or("resolved profile has no bio")?;
     let avatar_digest =
         super::profile_avatars::save(user_id, profile.get("avatarBase64").and_then(Value::as_str))?;
-    super::contacts::register_namespace(conn, user_id, publisher_namespace_id, domain)?;
-    super::contacts::register_namespace(conn, user_id, profile_namespace_id, domain)?;
+    super::contacts::register_namespace(conn, user_id, publisher_namespace_id, &domain)?;
+    super::contacts::register_namespace(conn, user_id, profile_namespace_id, &domain)?;
     let snapshot = serde_json::json!({
         "publisherNamespaceId": publisher_namespace_id,
         "account": account,
@@ -253,9 +269,18 @@ fn demand_for_evidence(conn: &Connection, user_id: i64, selector: &Value) -> Res
                        AND json_extract(payload_json,'$.creator.namespaceId') IS NOT NULL",
                     params![
                         user_id,
-                        selector.get("threadId").and_then(Value::as_i64).ok_or("message evidence has no thread")?,
-                        selector.get("messageSeq").and_then(Value::as_i64).ok_or("message evidence has no sequence")?,
-                        selector.get("rev").and_then(Value::as_i64).ok_or("message evidence has no revision")?,
+                        selector
+                            .get("threadId")
+                            .and_then(Value::as_i64)
+                            .ok_or("message evidence has no thread")?,
+                        selector
+                            .get("messageSeq")
+                            .and_then(Value::as_i64)
+                            .ok_or("message evidence has no sequence")?,
+                        selector
+                            .get("rev")
+                            .and_then(Value::as_i64)
+                            .ok_or("message evidence has no revision")?,
                     ],
                     |row| row.get(0),
                 )
@@ -273,7 +298,9 @@ fn demand_for_evidence(conn: &Connection, user_id: i64, selector: &Value) -> Res
                 .get("profileRev")
                 .and_then(Value::as_i64)
                 .ok_or("Group Meta evidence has no revision")?;
-            let subject = selector.get("subject").ok_or("Group Meta evidence has no subject")?;
+            let subject = selector
+                .get("subject")
+                .ok_or("Group Meta evidence has no subject")?;
             match subject.get("type").and_then(Value::as_str) {
                 Some("GROUP") => {
                     let payload: String = conn
@@ -319,8 +346,14 @@ fn demand_for_evidence(conn: &Connection, user_id: i64, selector: &Value) -> Res
                             params![
                                 user_id,
                                 thread_id,
-                                subject.get("account").and_then(Value::as_str).ok_or("member evidence has no account")?,
-                                subject.get("domain").and_then(Value::as_str).ok_or("member evidence has no domain")?,
+                                subject
+                                    .get("account")
+                                    .and_then(Value::as_str)
+                                    .ok_or("member evidence has no account")?,
+                                subject
+                                    .get("domain")
+                                    .and_then(Value::as_str)
+                                    .ok_or("member evidence has no domain")?,
                                 rev,
                             ],
                             |row| row.get(0),
@@ -350,7 +383,11 @@ fn find_profile_for_evidence(
         "EXACT" => conn
             .query_row(
                 "SELECT json_object('publisherNamespaceId',profile.publisher_namespace_id,
-                   'account',profile.account,'domain',profile.domain,
+                   'account',profile.account,
+                   'domain',COALESCE((SELECT domain FROM profile_namespaces binding
+                     WHERE binding.user_id=profile.user_id
+                       AND binding.publisher_namespace_id=profile.publisher_namespace_id
+                       AND binding.profile_namespace_id=profile.profile_namespace_id),''),
                    'namespaceId',profile.profile_namespace_id,
                    'profileNamespaceId',profile.profile_namespace_id,
                    'profileRev',profile.profile_rev,
@@ -358,13 +395,12 @@ fn find_profile_for_evidence(
                  FROM profiles profile
                  WHERE profile.user_id=?1 AND profile.publisher_namespace_id=?2
                    AND profile.profile_namespace_id=?3 AND profile.account=?4
-                   AND profile.domain=?5 AND profile.profile_rev=?6",
+                   AND profile.profile_rev=?5",
                 params![
                     user_id,
                     selector.get("publisherNamespaceId").and_then(Value::as_i64).ok_or("exact evidence has no publisher namespace")?,
                     selector.get("profileNamespaceId").and_then(Value::as_i64).ok_or("exact evidence has no profile namespace")?,
                     selector.get("account").and_then(Value::as_str).ok_or("exact evidence has no account")?,
-                    selector.get("domain").and_then(Value::as_str).ok_or("exact evidence has no domain")?,
                     selector.get("rev").and_then(Value::as_i64).ok_or("exact evidence has no revision")?
                 ],
                 |row| row.get(0),
@@ -372,14 +408,18 @@ fn find_profile_for_evidence(
             .optional(),
         "MESSAGE_AUTHOR" => conn
             .query_row(
-                "SELECT json_object('account',profile.account,'domain',profile.domain,
+                "SELECT json_object('account',profile.account,
+                   'domain',COALESCE((SELECT domain FROM profile_namespaces binding
+                     WHERE binding.user_id=profile.user_id
+                       AND binding.publisher_namespace_id=profile.publisher_namespace_id
+                       AND binding.profile_namespace_id=profile.profile_namespace_id),''),
                    'namespaceId',profile.profile_namespace_id,'profileRev',profile.profile_rev,
                    'name',profile.name,'avatarDigest',profile.avatar_digest,'bio',profile.bio)
                  FROM messages message
                  JOIN profiles profile
                    ON profile.user_id=message.user_id
                   AND profile.account=json_extract(message.payload_json,'$.creator.account')
-                  AND profile.domain=json_extract(message.payload_json,'$.creator.domain')
+                  AND profile.publisher_namespace_id=json_extract(message.payload_json,'$.creator.namespaceId')
                   AND profile.profile_namespace_id=json_extract(message.payload_json,'$.creator.namespaceId')
                   AND profile.profile_rev=json_extract(message.payload_json,'$.profileRev')
                  WHERE message.user_id=?1 AND message.thread_id=?2 AND message.seq=?3
@@ -406,15 +446,19 @@ fn find_profile_for_evidence(
             match subject.get("type").and_then(Value::as_str) {
                 Some("GROUP") => conn
                     .query_row(
-                        "SELECT json_object('account',profile.account,'domain',profile.domain,
+                        "SELECT json_object('account',profile.account,
+                           'domain',COALESCE((SELECT domain FROM profile_namespaces binding
+                             WHERE binding.user_id=profile.user_id
+                               AND binding.publisher_namespace_id=profile.publisher_namespace_id
+                               AND binding.profile_namespace_id=profile.profile_namespace_id),''),
                            'namespaceId',profile.profile_namespace_id,'profileRev',profile.profile_rev,
                            'name',profile.name,'avatarDigest',profile.avatar_digest,'bio',profile.bio)
                          FROM threads thread
                          JOIN profiles profile
                            ON profile.user_id=thread.user_id
                           AND profile.account=thread.subject_account
-                          AND profile.domain=thread.subject_domain
-                          AND profile.publisher_namespace_id=thread.subject_namespace_id AND profile.profile_namespace_id=thread.subject_namespace_id
+                          AND profile.publisher_namespace_id=thread.subject_namespace_id
+                          AND profile.profile_namespace_id=thread.subject_namespace_id
                           AND profile.profile_rev=thread.thread_profile_rev
                          WHERE thread.user_id=?1 AND thread.thread_id=?2
                            AND thread.kind='GROUP' AND thread.thread_profile_rev=?3",
@@ -424,15 +468,19 @@ fn find_profile_for_evidence(
                     .optional(),
                 Some("MEMBER") => conn
                     .query_row(
-                        "SELECT json_object('account',profile.account,'domain',profile.domain,
+                        "SELECT json_object('account',profile.account,
+                           'domain',COALESCE((SELECT domain FROM profile_namespaces binding
+                             WHERE binding.user_id=profile.user_id
+                               AND binding.publisher_namespace_id=profile.publisher_namespace_id
+                               AND binding.profile_namespace_id=profile.profile_namespace_id),''),
                            'namespaceId',profile.profile_namespace_id,'profileRev',profile.profile_rev,
                            'name',profile.name,'avatarDigest',profile.avatar_digest,'bio',profile.bio)
                          FROM members member
                          JOIN profiles profile
                            ON profile.user_id=member.user_id
                           AND profile.account=member.member_account
-                          AND profile.domain=member.member_domain
-                          AND profile.publisher_namespace_id=member.namespace_id AND profile.profile_namespace_id=member.namespace_id
+                          AND profile.publisher_namespace_id=member.namespace_id
+                          AND profile.profile_namespace_id=member.namespace_id
                           AND profile.profile_rev=member.profile_rev
                          WHERE member.user_id=?1 AND member.thread_id=?2
                            AND member.member_account=?3 AND member.member_domain=?4
@@ -685,9 +733,13 @@ fn commit_group_meta_profile(
             params![
                 user_id,
                 reference.thread_id,
-                profile.get("name").and_then(Value::as_str)
+                profile
+                    .get("name")
+                    .and_then(Value::as_str)
                     .ok_or("resolved profile has no name")?,
-                profile.get("bio").and_then(Value::as_str)
+                profile
+                    .get("bio")
+                    .and_then(Value::as_str)
                     .ok_or("resolved profile has no bio")?,
             ],
         )
@@ -762,7 +814,7 @@ fn unresolved_group_meta_profiles(
     let mut references = Vec::new();
     let mut groups = conn
         .prepare(
-            "SELECT state.thread_id, state.subject_account, state.subject_domain,
+            "SELECT state.thread_id, state.subject_account,
                     state.subject_namespace_id, state.thread_profile_rev
              FROM threads state
              WHERE state.user_id=?1 AND state.kind='GROUP'
@@ -771,8 +823,8 @@ fn unresolved_group_meta_profiles(
                AND NOT EXISTS (
                  SELECT 1 FROM profiles profile WHERE profile.user_id=state.user_id
                    AND profile.account=state.subject_account
-                   AND profile.domain=state.subject_domain
-                   AND profile.publisher_namespace_id=state.subject_namespace_id AND profile.profile_namespace_id=state.subject_namespace_id
+                   AND profile.publisher_namespace_id=state.subject_namespace_id
+                   AND profile.profile_namespace_id=state.subject_namespace_id
                    AND profile.profile_rev=state.thread_profile_rev)",
         )
         .map_err(|e| format!("prepare unresolved group profiles: {e}"))?;
@@ -782,9 +834,9 @@ fn unresolved_group_meta_profiles(
                 is_group: true,
                 thread_id: row.get(0)?,
                 account: row.get(1)?,
-                domain: row.get(2)?,
-                namespace_id: row.get(3)?,
-                rev: row.get(4)?,
+                domain: String::new(),
+                namespace_id: row.get(2)?,
+                rev: row.get(3)?,
             })
         })
         .map_err(|e| format!("query unresolved group profiles: {e}"))?;
@@ -801,8 +853,8 @@ fn unresolved_group_meta_profiles(
                AND NOT EXISTS (
                  SELECT 1 FROM profiles profile WHERE profile.user_id=member.user_id
                    AND profile.account=member.member_account
-                   AND profile.domain=member.member_domain
-                   AND profile.publisher_namespace_id=member.namespace_id AND profile.profile_namespace_id=member.namespace_id
+                   AND profile.publisher_namespace_id=member.namespace_id
+                   AND profile.profile_namespace_id=member.namespace_id
                    AND profile.profile_rev=member.profile_rev)",
         )
         .map_err(|e| format!("prepare unresolved member profiles: {e}"))?;
@@ -830,7 +882,7 @@ fn group_meta_plans(conn: &Connection, user_id: i64) -> Result<Vec<GroupMetaPlan
             "SELECT thread_id, group_meta_feed_end_id
              FROM threads
              WHERE user_id=?1 AND kind='GROUP'
-               AND conversation_state <> 'READ_ONLY'"
+               AND conversation_state <> 'READ_ONLY'",
         )
         .map_err(|e| format!("prepare group-meta plans: {e}"))?;
     let rows = statement
@@ -843,7 +895,9 @@ fn group_meta_plans(conn: &Connection, user_id: i64) -> Result<Vec<GroupMetaPlan
         let (thread_id, target) = row.map_err(|e| format!("read group-meta plan: {e}"))?;
         let thread = super::thread_store::read(conn, user_id, thread_id)?
             .ok_or("missing group thread structure")?;
-        let Some(target) = target else { continue; };
+        let Some(target) = target else {
+            continue;
+        };
         let group = &thread["group"];
         let account = group["account"]
             .as_str()
@@ -896,7 +950,8 @@ async fn sync_group_meta_thread(
     epoch: u64,
 ) -> (Vec<i64>, Option<String>) {
     let mut changed = Vec::new();
-    let result = sync_group_meta_thread_unchecked(app, proxy, user_id, thread_id, epoch, &mut changed).await;
+    let result =
+        sync_group_meta_thread_unchecked(app, proxy, user_id, thread_id, epoch, &mut changed).await;
     changed.sort_unstable();
     changed.dedup();
     (changed, result.err())
@@ -1057,7 +1112,10 @@ async fn sync_group_meta_thread_unchecked(
     })
     .await
     .map_err(|e| format!("join unresolved Group Meta profile read: {e}"))??;
-    for reference in references.into_iter().filter(|reference| reference.thread_id == thread_id) {
+    for reference in references
+        .into_iter()
+        .filter(|reference| reference.thread_id == thread_id)
+    {
         let changed_thread_id = reference.thread_id;
         if resolve_group_meta_profile(app, proxy, user_id, epoch, reference).await? {
             changed.push(changed_thread_id);
@@ -1127,10 +1185,7 @@ async fn sync_tombstone_thread(
             proxy,
             "POST".into(),
             "/api/v1/deleted-messages/query".into(),
-            std::collections::HashMap::from([(
-                "content-type".into(),
-                "application/json".into(),
-            )]),
+            std::collections::HashMap::from([("content-type".into(), "application/json".into())]),
             Some(body),
             true,
         )
@@ -1151,13 +1206,8 @@ async fn sync_tombstone_thread(
         let has_more = page.has_more;
         let tombstones = page.tombstones;
         let page_committed = tombstones.clone();
-        super::messages::native_db_apply_deleted_messages(
-            user_id,
-            thread_id,
-            tombstones,
-            scanned,
-        )
-        .await?;
+        super::messages::native_db_apply_deleted_messages(user_id, thread_id, tombstones, scanned)
+            .await?;
         committed.extend(page_committed);
         hwm = scanned;
         if !has_more {
@@ -1449,14 +1499,15 @@ fn validate_snapshot(state: &ThreadFeedSnapshot) -> Result<(), String> {
         || !matches!(state.kind.as_str(), "P2P" | "GROUP")
         || !matches!(state.conversation_state.as_str(), "ACTIVE" | "READ_ONLY")
         || (state.kind == "P2P" && state.role.is_some())
-        || state.role.as_deref().is_some_and(|role| !matches!(role, "OWNER" | "ADMIN" | "MEMBER"))
+        || state
+            .role
+            .as_deref()
+            .is_some_and(|role| !matches!(role, "OWNER" | "ADMIN" | "MEMBER"))
         || state.authority_namespace_id != state.profile.namespace_id
         || state.profile.namespace_id < 0
         || state.profile.profile_rev < 0
         || state.profile.account.is_empty()
         || state.profile.domain.is_empty()
-        || (state.profile.domain == "local" && state.profile.namespace_id != 0)
-        || (state.profile.domain != "local" && state.profile.namespace_id == 0)
         || state.thread_profile_rev < 0
         || state.profile.profile_rev != state.thread_profile_rev
         || state.message_end_seq < 0
@@ -1480,8 +1531,9 @@ pub(super) fn read_state(
     user_id: i64,
     thread_id: i32,
 ) -> Result<LocalThreadAttention, String> {
-    let state = conn.query_row(
-        "SELECT thread_feed_id, kind, authority_namespace_id, conversation_state,
+    let state = conn
+        .query_row(
+            "SELECT thread_feed_id, kind, authority_namespace_id, conversation_state,
                 blocked, role, subject_account, subject_domain,
                 subject_namespace_id, alias, thread_profile_rev,
                 message_end_seq, tombstone_end_seq, group_meta_feed_end_id,
@@ -1489,61 +1541,90 @@ pub(super) fn read_state(
                 group_invite_end_feed_id, server_last_read_seq, announcement_read_feed_id,
                 server_unread_count, last_mention_seq, local_read_seq
          FROM threads WHERE user_id=?1 AND thread_id=?2",
-        params![user_id, thread_id],
-        |row| Ok(LocalThreadAttention {
-            notification_changed: false,
-            thread_id,
-            server: Some(ThreadFeedSnapshot {
-                thread_id,
-                thread_feed_id: row.get(0)?,
-                kind: row.get(1)?,
-                authority_namespace_id: row.get(2)?,
-                conversation_state: row.get(3)?,
-                blocked: row.get(4)?,
-                role: row.get(5)?,
-                profile: ThreadFeedProfile {
-                    account: row.get(6)?,
-                    domain: row.get(7)?,
-                    namespace_id: row.get(8)?,
-                    profile_rev: row.get(10)?,
-                },
-                alias: row.get(9)?,
-                thread_profile_rev: row.get(10)?,
-                message_end_seq: row.get(11)?,
-                tombstone_end_seq: row.get(12)?,
-                group_meta_feed_end_id: row.get(13)?,
-                join_request_end_feed_id: row.get(14)?,
-                join_request_read_feed_id: row.get(15)?,
-                group_invite_end_feed_id: row.get(16)?,
-                last_read_seq: row.get(17)?,
-                announcement_read_feed_id: row.get(18)?,
-                unread_count: row.get(19)?,
-                last_mention_seq: row.get(20)?,
-                previews: Vec::new(),
-            }),
-            local_read_seq: Some(row.get(21)?),
-        }),
-    ).optional().map_err(|e| format!("read attention: {e}"))?;
+            params![user_id, thread_id],
+            |row| {
+                Ok(LocalThreadAttention {
+                    notification_changed: false,
+                    thread_id,
+                    server: Some(ThreadFeedSnapshot {
+                        thread_id,
+                        thread_feed_id: row.get(0)?,
+                        kind: row.get(1)?,
+                        authority_namespace_id: row.get(2)?,
+                        conversation_state: row.get(3)?,
+                        blocked: row.get(4)?,
+                        role: row.get(5)?,
+                        profile: ThreadFeedProfile {
+                            account: row.get(6)?,
+                            domain: row.get(7)?,
+                            namespace_id: row.get(8)?,
+                            profile_rev: row.get(10)?,
+                        },
+                        alias: row.get(9)?,
+                        thread_profile_rev: row.get(10)?,
+                        message_end_seq: row.get(11)?,
+                        tombstone_end_seq: row.get(12)?,
+                        group_meta_feed_end_id: row.get(13)?,
+                        join_request_end_feed_id: row.get(14)?,
+                        join_request_read_feed_id: row.get(15)?,
+                        group_invite_end_feed_id: row.get(16)?,
+                        last_read_seq: row.get(17)?,
+                        announcement_read_feed_id: row.get(18)?,
+                        unread_count: row.get(19)?,
+                        last_mention_seq: row.get(20)?,
+                        previews: Vec::new(),
+                    }),
+                    local_read_seq: Some(row.get(21)?),
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| format!("read attention: {e}"))?;
     let Some(mut state) = state else {
         return Ok(LocalThreadAttention {
-            notification_changed: false, thread_id, server: None, local_read_seq: None,
+            notification_changed: false,
+            thread_id,
+            server: None,
+            local_read_seq: None,
         });
     };
-    let preview = conn.query_row(
-        "SELECT seq, created_at, sender_account, sender_domain, sender_namespace_id,
+    let preview = conn
+        .query_row(
+            "SELECT seq, created_at, sender_account, sender_domain, sender_namespace_id,
                 sender_profile_rev, status, text
          FROM thread_previews WHERE user_id=?1 AND thread_id=?2",
-        params![user_id, thread_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
-                   row.get(4)?, row.get(5)?, row.get::<_, String>(6)?, row.get(7)?)),
-    ).optional().map_err(|e| format!("read thread preview: {e}"))?;
-    if let Some((seq, created_at, account, domain, namespace_id, profile_rev, status, text)) = preview {
+            params![user_id, thread_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| format!("read thread preview: {e}"))?;
+    if let Some((seq, created_at, account, domain, namespace_id, profile_rev, status, text)) =
+        preview
+    {
         let status = serde_json::from_value(serde_json::Value::String(status))
             .map_err(|e| format!("decode thread preview status: {e}"))?;
         state.server.as_mut().unwrap().previews.push(ThreadPreview {
-            seq, created_at,
-            sender: ThreadPreviewSender { account, domain, namespace_id, profile_rev },
-            status, text,
+            seq,
+            created_at,
+            sender: ThreadPreviewSender {
+                account,
+                domain,
+                namespace_id,
+                profile_rev,
+            },
+            status,
+            text,
         });
     }
     Ok(state)
@@ -1555,9 +1636,12 @@ pub(super) fn write_state(
     state: &LocalThreadAttention,
 ) -> Result<(), String> {
     let server = state.server.as_ref().ok_or("attention snapshot missing")?;
-    let local_read_seq = state.local_read_seq.ok_or("attention read position missing")?;
-    let affected = conn.execute(
-        "UPDATE threads SET
+    let local_read_seq = state
+        .local_read_seq
+        .ok_or("attention read position missing")?;
+    let affected = conn
+        .execute(
+            "UPDATE threads SET
            thread_feed_id=?3,conversation_state=?6,blocked=?7,role=?8,
            alias=?12,thread_profile_rev=?13,message_end_seq=?14,
            tombstone_end_seq=?15,group_meta_feed_end_id=?16,
@@ -1568,19 +1652,34 @@ pub(super) fn write_state(
          WHERE user_id=?1 AND thread_id=?2 AND kind=?4
            AND authority_namespace_id=?5
            AND subject_account=?9 AND subject_domain=?10 AND subject_namespace_id=?11",
-        params![
-            user_id, state.thread_id, server.thread_feed_id, server.kind,
-            server.authority_namespace_id, server.conversation_state,
-            server.blocked, server.role,
-            server.profile.account, server.profile.domain, server.profile.namespace_id,
-            server.alias, server.thread_profile_rev,
-            server.message_end_seq, server.tombstone_end_seq, server.group_meta_feed_end_id,
-            server.join_request_end_feed_id, server.join_request_read_feed_id,
-            server.group_invite_end_feed_id, server.last_read_seq,
-            server.announcement_read_feed_id, server.unread_count, server.last_mention_seq,
-            local_read_seq,
-        ],
-    ).map_err(|e| format!("write attention: {e}"))?;
+            params![
+                user_id,
+                state.thread_id,
+                server.thread_feed_id,
+                server.kind,
+                server.authority_namespace_id,
+                server.conversation_state,
+                server.blocked,
+                server.role,
+                server.profile.account,
+                server.profile.domain,
+                server.profile.namespace_id,
+                server.alias,
+                server.thread_profile_rev,
+                server.message_end_seq,
+                server.tombstone_end_seq,
+                server.group_meta_feed_end_id,
+                server.join_request_end_feed_id,
+                server.join_request_read_feed_id,
+                server.group_invite_end_feed_id,
+                server.last_read_seq,
+                server.announcement_read_feed_id,
+                server.unread_count,
+                server.last_mention_seq,
+                local_read_seq,
+            ],
+        )
+        .map_err(|e| format!("write attention: {e}"))?;
     if affected != 1 {
         return Err("thread snapshot has no matching structural identity".into());
     }
@@ -1602,14 +1701,26 @@ pub(super) fn write_state(
                (excluded.seq, excluded.created_at, excluded.sender_account,
                 excluded.sender_domain, excluded.sender_namespace_id,
                 excluded.sender_profile_rev, excluded.status, excluded.text)",
-            params![user_id, state.thread_id, preview.seq, preview.created_at,
-                preview.sender.account, preview.sender.domain, preview.sender.namespace_id,
-                preview.sender.profile_rev, status, preview.text],
-        ).map_err(|e| format!("write thread preview: {e}"))?;
+            params![
+                user_id,
+                state.thread_id,
+                preview.seq,
+                preview.created_at,
+                preview.sender.account,
+                preview.sender.domain,
+                preview.sender.namespace_id,
+                preview.sender.profile_rev,
+                status,
+                preview.text
+            ],
+        )
+        .map_err(|e| format!("write thread preview: {e}"))?;
     } else {
-        conn.execute("DELETE FROM thread_previews WHERE user_id=?1 AND thread_id=?2",
-            params![user_id, state.thread_id])
-            .map_err(|e| format!("clear thread preview: {e}"))?;
+        conn.execute(
+            "DELETE FROM thread_previews WHERE user_id=?1 AND thread_id=?2",
+            params![user_id, state.thread_id],
+        )
+        .map_err(|e| format!("clear thread preview: {e}"))?;
     }
     Ok(())
 }
@@ -1651,7 +1762,10 @@ fn merge_states(
             let body = serde_json::to_value(&snapshot)
                 .map_err(|e| format!("encode thread structure: {e}"))?;
             super::client_state::apply_thread_state(
-                &tx, user_id, &body, i64::from(snapshot.thread_feed_id),
+                &tx,
+                user_id,
+                &body,
+                i64::from(snapshot.thread_feed_id),
             )?;
             state.server = Some(snapshot);
             state.notification_changed = notification_changed;
@@ -1753,43 +1867,41 @@ mod tests {
         snapshot.last_read_seq = 5;
         snapshot.previews = vec![preview(4), tomb.clone(), preview(6)];
         let merged = merge_states(&mut conn, 1, vec![snapshot], Some(1)).unwrap();
+        assert_eq!(merged[0].server.as_ref().unwrap().previews.len(), 3);
         assert_eq!(
-            merged[0]
-                .server
-                .as_ref()
-                .unwrap()
-                .previews
-                .len(),
-            3
-        );
-        assert_eq!(
-            read_state(&conn, 1, 7)
-                .unwrap()
-                .server
-                .unwrap()
-                .previews,
+            read_state(&conn, 1, 7).unwrap().server.unwrap().previews,
             vec![tomb]
         );
-        let persisted: (i32, String, Option<String>) = conn.query_row(
-            "SELECT seq, status, text FROM thread_previews WHERE user_id=1 AND thread_id=7",
-            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).unwrap();
+        let persisted: (i32, String, Option<String>) = conn
+            .query_row(
+                "SELECT seq, status, text FROM thread_previews WHERE user_id=1 AND thread_id=7",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
         assert_eq!(persisted, (9, "USER_RETRACTION".into(), None));
         let row: (i32, i32) = conn.query_row(
             "SELECT server_last_read_seq, tombstone_end_seq FROM threads WHERE user_id=1 AND thread_id=7",
             [], |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap();
         assert_eq!(row, (5, 2));
-        let columns = conn.prepare("PRAGMA table_info(threads)").unwrap()
-            .query_map([], |row| row.get::<_, String>(1)).unwrap()
-            .collect::<Result<Vec<_>, _>>().unwrap();
+        let columns = conn
+            .prepare("PRAGMA table_info(threads)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
         assert!(!columns.contains(&"payload_json".to_string()));
         assert!(columns.contains(&"thread_profile_rev".to_string()));
         assert!(columns.contains(&"subject_name".to_string()));
-        let old_state_table: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='thread_states'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let old_state_table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='thread_states'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(old_state_table, 0);
     }
 
@@ -1802,12 +1914,22 @@ mod tests {
         let mut replacement = snapshot(3, 0);
         replacement.profile.account = "different-peer".into();
         assert!(merge_states(&mut conn, 1, vec![other, replacement], Some(3)).is_err());
-        assert_eq!(read_state(&conn, 1, 7).unwrap().server.unwrap().thread_feed_id, 1);
+        assert_eq!(
+            read_state(&conn, 1, 7)
+                .unwrap()
+                .server
+                .unwrap()
+                .thread_feed_id,
+            1
+        );
         assert!(read_state(&conn, 1, 8).unwrap().server.is_none());
-        let cursor: String = conn.query_row(
-            "SELECT value_json FROM sync_state WHERE user_id=1 AND key='threadFeedCursor'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let cursor: String = conn
+            .query_row(
+                "SELECT value_json FROM sync_state WHERE user_id=1 AND key='threadFeedCursor'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(cursor, "1");
     }
 
@@ -1903,7 +2025,9 @@ mod tests {
         merge_states(&mut conn, 1, vec![next], Some(1)).unwrap();
         let state = read_state(&conn, 1, 7).unwrap();
         assert_eq!(state.server.unwrap().thread_profile_rev, 2);
-        let stored = super::super::thread_store::read(&conn, 1, 7).unwrap().unwrap();
+        let stored = super::super::thread_store::read(&conn, 1, 7)
+            .unwrap()
+            .unwrap();
         assert!(stored.get("profileRev").is_none());
         assert!(stored["peerUser"].get("profileRev").is_none());
         super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
@@ -1914,7 +2038,12 @@ mod tests {
         assert_eq!(list[0]["profileRev"], 2);
         assert_eq!(list[0]["peerUser"]["name"], "Selected peer");
         assert_eq!(list[0]["peerUser"]["bio"], "Latest");
-        assert_eq!(super::super::thread_store::read(&conn, 1, 7).unwrap().unwrap()["peerUser"]["name"], "");
+        assert_eq!(
+            super::super::thread_store::read(&conn, 1, 7)
+                .unwrap()
+                .unwrap()["peerUser"]["name"],
+            ""
+        );
     }
 
     fn preview(seq: i32) -> ThreadPreview {
@@ -1924,7 +2053,8 @@ mod tests {
             "sender": {"account":"peer","domain":"local","namespaceId":0,"profileRev":0},
             "status": "LIVE",
             "text": "message"
-        })).unwrap()
+        }))
+        .unwrap()
     }
 
     fn snapshot(feed: i32, seq: i32) -> ThreadFeedSnapshot {
@@ -1965,15 +2095,23 @@ mod tests {
             "account": "peer", "domain": "local", "publisherNamespaceId": 0, "profileNamespaceId": 0,
             "profileRev": 2, "name": "Peer", "avatarDigest": null, "bio": "About",
         })).unwrap();
-        let actual = find_profile_for_evidence(&conn, 1, &serde_json::json!({
-            "type": "EXACT", "account": "peer", "domain": "local",
-            "publisherNamespaceId": 0, "profileNamespaceId": 0, "rev": 2,
-        })).unwrap();
-        assert_eq!(actual, Some(serde_json::json!({
-            "account": "peer", "domain": "local", "namespaceId": 0,
-            "publisherNamespaceId": 0, "profileNamespaceId": 0,
-            "profileRev": 2, "name": "Peer", "avatarDigest": null, "bio": "About",
-        })));
+        let actual = find_profile_for_evidence(
+            &conn,
+            1,
+            &serde_json::json!({
+                "type": "EXACT", "account": "peer", "domain": "local",
+                "publisherNamespaceId": 0, "profileNamespaceId": 0, "rev": 2,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            actual,
+            Some(serde_json::json!({
+                "account": "peer", "domain": "local", "namespaceId": 0,
+                "publisherNamespaceId": 0, "profileNamespaceId": 0,
+                "profileRev": 2, "name": "Peer", "avatarDigest": null, "bio": "About",
+            }))
+        );
     }
 
     #[test]
@@ -1990,26 +2128,33 @@ mod tests {
             "account": "!team", "domain": "local", "publisherNamespaceId": 0, "profileNamespaceId": 0,
             "profileRev": 2, "name": "Team", "avatarDigest": null, "bio": "",
         })).unwrap();
-        assert!(super::super::thread_store::read(&conn, 1, 7).unwrap().unwrap()
-            .get("profileRev").is_none());
+        assert!(super::super::thread_store::read(&conn, 1, 7)
+            .unwrap()
+            .unwrap()
+            .get("profileRev")
+            .is_none());
         let selector = serde_json::json!({
             "type": "GROUP_META", "threadId": 7, "profileRev": 2,
             "subject": { "type": "GROUP" },
         });
-        assert_eq!(find_profile_for_evidence(&conn, 1, &selector).unwrap().unwrap()["name"], "Team");
+        assert_eq!(
+            find_profile_for_evidence(&conn, 1, &selector)
+                .unwrap()
+                .unwrap()["name"],
+            "Team"
+        );
         assert!(unresolved_group_meta_profiles(&conn, 1).unwrap().is_empty());
     }
 
     #[test]
-    fn namespace_identity_validation_matches_the_web_client() {
+    fn namespace_identity_validation_uses_namespace_coordinates() {
         let mut invalid = snapshot(1, 0);
-        invalid.profile.domain = "remote.example".into();
+        invalid.authority_namespace_id = 2;
         assert!(validate_snapshot(&invalid).is_err());
         invalid.profile.namespace_id = 2;
-        invalid.authority_namespace_id = 2;
         assert!(validate_snapshot(&invalid).is_ok());
         invalid.profile.domain = "local".into();
-        assert!(validate_snapshot(&invalid).is_err());
+        assert!(validate_snapshot(&invalid).is_ok());
     }
 
     #[test]
@@ -2018,7 +2163,10 @@ mod tests {
         for key in ["alias", "role", "groupMetaFeedEndId", "lastMentionSeq"] {
             let mut missing = snapshot.clone();
             missing.as_object_mut().unwrap().remove(key);
-            assert!(serde_json::from_value::<ThreadFeedSnapshot>(missing).is_err(), "{key}");
+            assert!(
+                serde_json::from_value::<ThreadFeedSnapshot>(missing).is_err(),
+                "{key}"
+            );
         }
     }
 
@@ -2073,22 +2221,14 @@ mod tests {
         let mut conn = db();
         merge_states(&mut conn, 1, vec![snapshot(50, 100)], None).unwrap();
         let count: i32 = conn
-            .query_row(
-                "SELECT count(*) FROM sync_state",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT count(*) FROM sync_state", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
         for cursor in [20, 10, 30] {
             merge_states(&mut conn, 1, vec![], Some(cursor)).unwrap();
         }
         let cursor: String = conn
-            .query_row(
-                "SELECT value_json FROM sync_state",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT value_json FROM sync_state", [], |r| r.get(0))
             .unwrap();
         assert_eq!(cursor, "30");
         assert_eq!(read_state(&conn, 1, 7).unwrap().local_read_seq, Some(100));
@@ -2131,5 +2271,7 @@ fn read_states(conn: &Connection, user_id: i64) -> Result<Vec<LocalThreadAttenti
         .map_err(|e| format!("query attention: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("read attention ids: {e}"))?;
-    ids.into_iter().map(|id| read_state(conn, user_id, id)).collect()
+    ids.into_iter()
+        .map(|id| read_state(conn, user_id, id))
+        .collect()
 }

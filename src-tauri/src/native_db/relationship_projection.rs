@@ -23,7 +23,8 @@ pub(super) fn update_live_request_projection(
         "UPDATE relationship_requests SET status=?4, updated_at=?5
          WHERE user_id=?1 AND stable_key=?2 AND status='REQUESTED' AND expires_at>?3",
         params![user_id, key, now, status, now],
-    ).map_err(|e| format!("update request projection: {e}"))?;
+    )
+    .map_err(|e| format!("update request projection: {e}"))?;
     Ok(())
 }
 
@@ -115,12 +116,7 @@ pub(super) fn apply_relationship_request_effect(
         .map_err(|e| format!("read request projection actionability: {e}"))?;
     let mut peer = body.get("peer").cloned().unwrap_or(Value::Null);
     if let Some(peer_object) = peer.as_object_mut() {
-        let peer_namespace_id =
-            if peer_object.get("domain").and_then(Value::as_str) == Some("local") {
-                0
-            } else {
-                namespace_id
-            };
+        let peer_namespace_id = if namespace_id == 0 { 0 } else { namespace_id };
         peer_object.insert("namespaceId".into(), Value::from(peer_namespace_id));
     }
     let projection = serde_json::json!({
@@ -209,11 +205,7 @@ pub(super) fn apply_group_request_effect(
     };
     let mut group = body.get("group").cloned().unwrap_or(Value::Null);
     if let Some(group_object) = group.as_object_mut() {
-        let group_namespace_id = if group_domain == "local" {
-            0
-        } else {
-            namespace_id
-        };
+        let group_namespace_id = if namespace_id == 0 { 0 } else { namespace_id };
         group_object.insert("namespaceId".into(), Value::from(group_namespace_id));
     }
     let projection = serde_json::json!({
@@ -228,7 +220,7 @@ pub(super) fn apply_group_request_effect(
         "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
         "requestedAt": requested_at,
         "group": group,
-        "sourceLabel": if body.get("group").and_then(|group| group.get("isLocal")).and_then(Value::as_bool) == Some(true) { "local" } else { group_domain },
+        "sourceLabel": group_domain,
         "requestedSort": requested_at,
         "updatedAt": now,
     });
