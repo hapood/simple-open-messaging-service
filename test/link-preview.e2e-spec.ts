@@ -77,7 +77,7 @@ describe('LINK message send (single instance)', () => {
     const invite = await request(baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ account: 'bob', domain: localIdentityDomain(), namespaceId: 0 });
+      .send({ account: 'bob', namespaceId: 0 });
     expect(invite.body.code).toBe(0);
     await waitForLocalRelationshipRequest(
       database.db,
@@ -90,7 +90,6 @@ describe('LINK message send (single instance)', () => {
       .set('Authorization', `Bearer ${bob.token}`)
       .send({
         account: alice.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(accept.body.data).toMatchObject({ status: 'OK' });
@@ -138,7 +137,7 @@ describe('LINK message send (single instance)', () => {
     const invite = await request(baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ account: 'bob2', domain: localIdentityDomain(), namespaceId: 0 })
+      .send({ account: 'bob2', namespaceId: 0 })
       .expect((res) => expect(res.body.code).toBe(0));
     await waitForLocalRelationshipRequest(
       database.db,
@@ -151,7 +150,6 @@ describe('LINK message send (single instance)', () => {
       .set('Authorization', `Bearer ${bob.token}`)
       .send({
         account: alice.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(accept.body.data).toMatchObject({ status: 'OK' });

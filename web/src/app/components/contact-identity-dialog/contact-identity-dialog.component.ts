@@ -126,14 +126,15 @@ export class ContactIdentityDialogComponent {
       }
       if (
         identity.relationship === 'SELF' ||
-        identity.friendThreadId !== undefined
+        identity.friendThreadId !== undefined ||
+        identity.namespaceId === undefined
       )
         return;
       void this.userService
         .localRelationship({
           id: identity.userId ?? 0,
           account: identity.account,
-          domain: identity.domain,
+          namespaceId: identity.namespaceId,
         })
         .then((state) => this.relationship.set(state));
     });

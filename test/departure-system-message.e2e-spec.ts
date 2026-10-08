@@ -295,7 +295,6 @@ describe('departure system message paths', () => {
               scope: 'MEMBER',
               target: {
                 account: h.member.account,
-                domain: localIdentityDomain(),
                 namespaceId: 0,
               },
             })
@@ -646,7 +645,6 @@ describe('departure system message paths', () => {
               decision: 'ACCEPTED',
               target: {
                 account: local.account,
-                domain: localIdentityDomain(),
                 namespaceId: 0,
               },
             },

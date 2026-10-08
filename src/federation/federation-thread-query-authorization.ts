@@ -51,7 +51,6 @@ export async function resolveAuthorizedFederationThreadInTx(
       JOIN "RelationshipPair" pair
         ON pair."threadId" = thread.id
        AND pair.kind = 'GROUP_MEMBER'
-       AND pair.active = true
        AND pair."endpointAType" = 'GROUP'
        AND pair."endpointAAccount" = group_state.account
        AND pair."endpointANamespaceId" = 0
@@ -103,7 +102,6 @@ export async function resolveAuthorizedFederationThreadInTx(
       JOIN "RelationshipPair" pair
         ON pair."threadId" = thread.id
        AND pair.kind = 'GROUP_MEMBER'
-       AND pair.active = true
        AND pair."endpointAType" = 'USER'
        AND pair."endpointAAccount" = local_identity.account
        AND pair."endpointANamespaceId" = 0

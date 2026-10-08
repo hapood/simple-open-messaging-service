@@ -123,7 +123,6 @@ async function clientInviteUser(
       : undefined;
   return {
     account: value.account,
-    name: profile?.displayName ?? value.account,
     avatar: profile?.avatar ?? '',
     bio: profile?.bio ?? '',
     domain: value.domain,

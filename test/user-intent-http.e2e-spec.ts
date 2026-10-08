@@ -114,7 +114,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(invite.body.code).toBe(0);
@@ -149,7 +148,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
 
@@ -159,7 +157,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(invalidAccept.body.code).toBe(BusinessCode.INVITE_NOT_FOUND);
@@ -174,7 +171,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     const afterRequest = await stateFeedEndId(invitee.id);
@@ -184,7 +180,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(invitee.token))
       .send({
         account: 'inviter',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(accepted.body.code).toBe(0);
@@ -256,7 +251,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(stranger.token))
       .send({
         account: 'inviter',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(revoked.body.code).toBe(BusinessCode.FRIEND_NOT_FOUND);
@@ -271,7 +265,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
 
@@ -280,7 +273,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(withdrawn.body.code).toBe(0);
@@ -304,7 +296,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(renewed.body.code).toBe(0);
@@ -326,7 +317,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
 
@@ -335,7 +325,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(invitee.token))
       .send({
         account: 'inviter',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(rejected.body.code).toBe(0);
@@ -350,7 +339,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(reApplied.body.code).toBe(0);
@@ -369,7 +357,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
 
@@ -430,7 +417,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(renewed.body.code).toBe(0);
@@ -452,7 +438,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(invitee.token))
       .send({
         account: 'inviter',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(crossed.body.code).toBe(0);
@@ -474,7 +459,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     const { _pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
@@ -509,7 +493,6 @@ describe('User intent HTTP contract e2e', () => {
       .set(auth(inviter.token))
       .send({
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(response.status).toBe(200);

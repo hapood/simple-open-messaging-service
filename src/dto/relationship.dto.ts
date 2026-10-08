@@ -11,8 +11,8 @@ import {
   ValidateIf,
 } from 'class-validator';
 
-/** Request a relationship by public Address. Database ids are not part of the client-facing
- * identity contract. */
+/** Author a relationship request for an identity already resolved into a namespace.
+ * Federated domain discovery and namespace binding happen before this command. */
 export class RequestRelationshipDto {
   @ApiProperty({
     example: 'alice',
@@ -23,27 +23,12 @@ export class RequestRelationshipDto {
   account!: string;
 
   @ApiProperty({
-    example: 'example.com',
-    description:
-      'Target home domain. For a local account, use the configured local identity domain.',
-  })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(63)
-  domain!: string;
-
-  @ApiProperty({
-    required: false,
     example: 7,
-    description:
-      'Target identity namespace id. Omit for first contact by domain; ' +
-      'send when prior knowledge (contact card, roster) carries the nsid ' +
-      'so the request follows the identity across a review-approved re-bind.',
+    description: 'Target identity namespace id.',
   })
-  @IsOptional()
   @IsInt()
   @Min(0)
-  namespaceId?: number;
+  namespaceId!: number;
 
   @ApiProperty({
     required: false,
@@ -76,7 +61,7 @@ export class RequestRelationshipDto {
   avatar?: string;
 }
 
-/** Revoke a user relationship/request or a pending federated group-join request by exact Address. */
+/** Revoke a user relationship/request or a pending federated group-join request by account and identity namespace. */
 export class RevokeRelationshipDto {
   @ApiProperty({ example: 'alice', description: 'Peer user or group account' })
   @IsString()
@@ -84,52 +69,28 @@ export class RevokeRelationshipDto {
   account!: string;
 
   @ApiProperty({
-    example: 'example.com',
-    description:
-      'Peer home domain. For a local account, use the configured local identity domain.',
-  })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(63)
-  domain!: string;
-
-  @ApiProperty({
-    required: false,
     example: 7,
-    description:
-      'Peer identity namespace id. Send when prior knowledge carries the ' +
-      'nsid so revocation addresses the durable identity, not just the domain.',
+    description: 'Peer identity namespace id.',
   })
-  @IsOptional()
   @IsInt()
   @Min(0)
-  namespaceId?: number;
+  namespaceId!: number;
 }
 
-/** Select a pending relationship request by counterparty Address. */
+/** Select a pending relationship request by counterparty account and identity namespace. */
 export class AcceptRelationshipDto {
   @ApiProperty({ description: 'Peer user or group account' })
   @IsString()
   @IsNotEmpty()
   account!: string;
 
-  @ApiProperty({ description: 'Peer user or group domain' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(63)
-  domain!: string;
-
   @ApiProperty({
-    required: false,
     example: 7,
-    description:
-      'Peer identity namespace id. Send when prior knowledge carries the ' +
-      'nsid so acceptance addresses the durable identity, not just the domain.',
+    description: 'Peer identity namespace id.',
   })
-  @IsOptional()
   @IsInt()
   @Min(0)
-  namespaceId?: number;
+  namespaceId!: number;
 }
 
 /** Advance the account-wide relationship-request read watermark. The value is a client state-feed

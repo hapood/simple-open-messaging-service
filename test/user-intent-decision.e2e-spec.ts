@@ -83,7 +83,7 @@ describe('user intent decision', () => {
   async function runIntent(params: {
     userId: number;
     targetUserId: number | null;
-    target: { account: string; domain: string };
+    target: { account: string; namespaceId: number };
     decision: 'ACCEPTED' | 'REVOKED' | 'REQUESTED';
     note?: string;
   }): Promise<void> {
@@ -139,11 +139,7 @@ describe('user intent decision', () => {
     await service.execute({
       userId: fromUserId,
       decision: 'REQUESTED',
-      target: {
-        account: target.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: target.account, namespaceId: 0 },
       note,
     });
   }
@@ -182,7 +178,6 @@ describe('user intent decision', () => {
         ? bob.id
         : {
             account: bob.account,
-            domain: bob.domain!,
             namespaceId: bob.namespaceId ?? 0,
           };
     const { pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
@@ -327,11 +322,7 @@ describe('user intent decision', () => {
     await runIntent({
       userId: alice.id,
       targetUserId: bob.id,
-      target: {
-        account: bob.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: bob.account, namespaceId: 0 },
       decision: 'REQUESTED',
       note: 'let us chat',
     });
@@ -381,11 +372,7 @@ describe('user intent decision', () => {
     await runIntent({
       userId: bob.id,
       targetUserId: alice.id,
-      target: {
-        account: alice.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: alice.account, namespaceId: 0 },
       decision: 'ACCEPTED',
     });
     const after = await state(alice, bob);
@@ -431,11 +418,7 @@ describe('user intent decision', () => {
     await runIntent({
       userId: alice.id,
       targetUserId: bob.id,
-      target: {
-        account: bob.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: bob.account, namespaceId: 0 },
       decision: 'REQUESTED',
       note: 'from alice',
     });
@@ -469,11 +452,7 @@ describe('user intent decision', () => {
       service.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
-        target: {
-          account: alice.account,
-          domain: localIdentityDomain(),
-          namespaceId: 0,
-        },
+        target: { account: alice.account, namespaceId: 0 },
       }),
     ).resolves.toEqual({
       status: 'NO_OP',
@@ -489,11 +468,7 @@ describe('user intent decision', () => {
       service.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
-        target: {
-          account: carol.account,
-          domain: localIdentityDomain(),
-          namespaceId: 0,
-        },
+        target: { account: carol.account, namespaceId: 0 },
       }),
     ).resolves.toMatchObject({
       status: 'REJECTED',
@@ -510,11 +485,7 @@ describe('user intent decision', () => {
     await runIntent({
       userId: alice.id,
       targetUserId: bob.id,
-      target: {
-        account: bob.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: bob.account, namespaceId: 0 },
       decision: 'REVOKED',
     });
     const after = await state(alice, bob);
@@ -547,11 +518,7 @@ describe('user intent decision', () => {
     await runIntent({
       userId: bob.id,
       targetUserId: alice.id,
-      target: {
-        account: alice.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: alice.account, namespaceId: 0 },
       decision: 'REVOKED',
     });
     const after = await state(alice, bob);
@@ -581,11 +548,7 @@ describe('user intent decision', () => {
     await runIntent({
       userId: alice.id,
       targetUserId: bob.id,
-      target: {
-        account: bob.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: bob.account, namespaceId: 0 },
       decision: 'REVOKED',
     });
     const after = await state(alice, bob);
@@ -646,11 +609,7 @@ describe('user intent decision', () => {
     await runIntent({
       userId: alice.id,
       targetUserId: bob.id,
-      target: {
-        account: bob.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: bob.account, namespaceId: 0 },
       decision: 'REVOKED',
     });
     const ended = await state(alice, bob);
@@ -666,11 +625,7 @@ describe('user intent decision', () => {
     await runIntent({
       userId: alice.id,
       targetUserId: bob.id,
-      target: {
-        account: bob.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: bob.account, namespaceId: 0 },
       decision: 'REQUESTED',
     });
     const requested = await state(alice, bob);
@@ -678,11 +633,7 @@ describe('user intent decision', () => {
     await runIntent({
       userId: bob.id,
       targetUserId: alice.id,
-      target: {
-        account: alice.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: alice.account, namespaceId: 0 },
       decision: 'ACCEPTED',
     });
     const after = await state(alice, bob);
@@ -704,7 +655,7 @@ describe('user intent decision', () => {
     await runIntent({
       userId: alice.id,
       targetUserId: null,
-      target: { account: `${prefix}-peer`, domain },
+      target: { account: `${prefix}-peer`, namespaceId },
       decision: 'REQUESTED',
       note: 'cross-server hello',
     });
@@ -762,11 +713,7 @@ describe('user intent decision', () => {
     await runIntent({
       userId: bob.id,
       targetUserId: alice.id,
-      target: {
-        account: alice.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: alice.account, namespaceId: 0 },
       decision: 'ACCEPTED',
     });
     const { pair } = await findP2PRelationship(database.db, alice.id, bob.id);
@@ -812,11 +759,7 @@ describe('user intent decision', () => {
       service.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
-        target: {
-          account: alice.account,
-          domain: localIdentityDomain(),
-          namespaceId: 0,
-        },
+        target: { account: alice.account, namespaceId: 0 },
       }),
     ).rejects.toThrow('late failure');
     const failed = await state(alice, bob);
@@ -829,11 +772,7 @@ describe('user intent decision', () => {
     await service.execute({
       userId: bob.id,
       decision: 'ACCEPTED',
-      target: {
-        account: alice.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: alice.account, namespaceId: 0 },
     });
     expect((await state(alice, bob)).pair?.active).toBe(true);
   });
@@ -846,11 +785,7 @@ describe('user intent decision', () => {
     await service.execute({
       userId: alice.id,
       decision: 'REQUESTED',
-      target: {
-        account: bob.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: bob.account, namespaceId: 0 },
     });
     // Two racing acceptances serialize on the endpoint/pair scopes: the loser
     // observes the active pair and must not double-write the system history.
@@ -858,20 +793,12 @@ describe('user intent decision', () => {
       service.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
-        target: {
-          account: alice.account,
-          domain: localIdentityDomain(),
-          namespaceId: 0,
-        },
+        target: { account: alice.account, namespaceId: 0 },
       }),
       service.execute({
         userId: bob.id,
         decision: 'ACCEPTED',
-        target: {
-          account: alice.account,
-          domain: localIdentityDomain(),
-          namespaceId: 0,
-        },
+        target: { account: alice.account, namespaceId: 0 },
       }),
     ]);
     const after = await state(alice, bob);
@@ -897,11 +824,7 @@ describe('user intent decision', () => {
     await service.execute({
       userId: alice.id,
       decision: 'REQUESTED',
-      target: {
-        account: bob.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: bob.account, namespaceId: 0 },
     });
     // A group-mirror pair in a foreign namespace carries bob's account too;
     // the P2P locator must never capture it.
@@ -942,11 +865,7 @@ describe('user intent decision', () => {
     const revoked = await service.execute({
       userId: bob.id,
       decision: 'REVOKED',
-      target: {
-        account: alice.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
-      },
+      target: { account: alice.account, namespaceId: 0 },
     });
     expect(revoked).toEqual({ status: 'APPLIED' });
     const after = await state(bob, alice);

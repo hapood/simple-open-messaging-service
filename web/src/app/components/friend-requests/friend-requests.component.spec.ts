@@ -643,7 +643,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       id: 'friend:41',
       projectionKey: 'friend:41',
       account: 'alice',
-      domain: 'local',
+      namespaceId: 0,
       direction: 'INCOMING' as const,
       status: RequestProjectionStatus.REQUESTED,
       date: 1,

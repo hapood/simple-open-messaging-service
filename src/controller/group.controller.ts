@@ -111,10 +111,9 @@ export class GroupController {
     const deduped = [
       ...new Map(
         users.map((user) => {
-          const domain = user.domain.trim().toLowerCase();
           const address = {
             account: normalizeAccount(user.account),
-            domain,
+            namespaceId: user.namespaceId,
           };
           return [JSON.stringify(address), address];
         }),
@@ -447,10 +446,10 @@ export class GroupController {
     );
   }
 
-  private managerTarget(dto: { account: string; domain: string }) {
+  private managerTarget(dto: { account: string; namespaceId: number }) {
     return {
       account: normalizeAccount(dto.account.trim()),
-      domain: dto.domain.trim().toLowerCase(),
+      namespaceId: dto.namespaceId,
     };
   }
 

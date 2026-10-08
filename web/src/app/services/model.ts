@@ -34,10 +34,7 @@ export type ContactCardTarget = {
 /** The wire payload for `send-contact-card`. The client sends only the identity
  * coordinates the server cannot derive: account, namespaceId, and profileRev.
  * The server resolves the display `domain` from `IdentityNamespace`. */
-export type ContactCardSendTarget = Pick<
-  ContactCardTarget,
-  'account' | 'namespaceId' | 'profileRev'
->;
+export type ContactCardSendTarget = ContactCardTarget;
 export interface MessageCreator {
   account: string;
   namespaceId: number;
@@ -53,7 +50,7 @@ export type Message = Omit<
   profileRev: number;
   /** Sender identity selected by this message. Domain is presentation metadata and may be absent on history rows. */
   creator: MessageCreator | null;
-  /** Local-only corrections to participant revisions in a SYSTEM row, keyed by [account, domain].
+  /** Local-only corrections to participant revisions in a SYSTEM row, keyed by [namespaceId, account].
    * The server content remains immutable; cache merges preserve corrections for the same content. */
   localSystemProfileRevs?: Record<string, number>;
   /** Federated media localize status (absent = ready). Carried on query-messages rows; one mounted-message

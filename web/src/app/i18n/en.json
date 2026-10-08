@@ -119,7 +119,8 @@
     "unknown": "Unknown",
     "unknownDevice": "Unknown device",
     "thisDevice": "This device",
-    "you": "(you)"
+    "you": "(you)",
+    "localDomainLabel": "{{domain}} (local)"
   },
   "nav": {
     "editProfileAria": "Edit profile",

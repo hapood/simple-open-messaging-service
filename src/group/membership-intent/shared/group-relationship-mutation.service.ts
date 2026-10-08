@@ -70,7 +70,7 @@ export interface GroupRelationshipMutationOptions {
   /** Commit-time fence for work derived from a federation query denial. */
   expectedAuthorization?: {
     epoch: number;
-    group: { account: string; domain: string; namespaceId: number };
+    group: { account: string; namespaceId: number };
   };
 }
 
@@ -156,7 +156,6 @@ export class GroupRelationshipMutationService {
       expectedAuthorization &&
       (thread.authorizationEpoch !== expectedAuthorization.epoch ||
         group.account !== expectedAuthorization.group.account ||
-        group.domain !== expectedAuthorization.group.domain ||
         group.namespaceId !== expectedAuthorization.group.namespaceId)
     )
       return new Map<number, bigint>();
@@ -381,7 +380,6 @@ export class GroupRelationshipMutationService {
       expectedAuthorization &&
       (state.authorizationEpoch !== expectedAuthorization.epoch ||
         state.groupAccount !== expectedAuthorization.group.account ||
-        state.groupDomain !== expectedAuthorization.group.domain ||
         state.groupNamespaceId !== expectedAuthorization.group.namespaceId)
     )
       return new Map<number, bigint>();

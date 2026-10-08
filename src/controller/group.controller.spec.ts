@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { GroupController } from './group.controller.js';
 
 describe('group invitation admission', () => {
-  it('normalizes addresses without collapsing the local public domain', async () => {
+  it('normalizes accounts and deduplicates by account and namespace', async () => {
     const execute = vi.fn().mockResolvedValue({ status: 'APPLIED' });
     const controller = Object.create(
       GroupController.prototype,
@@ -18,8 +18,9 @@ describe('group invitation admission', () => {
       {
         groupId: 7,
         users: [
-          { account: 'friend', domain: ' LOCAL.TEST ' },
-          { account: 'friend', domain: 'local' },
+          { account: 'Friend', namespaceId: 0 },
+          { account: 'friend', namespaceId: 0 },
+          { account: 'friend', namespaceId: 7 },
         ],
       },
     );
@@ -28,18 +29,18 @@ describe('group invitation admission', () => {
       threadId: 7,
       managerUserId: 3,
       decision: 'REQUESTED',
-      target: { account: 'friend', domain: 'local.test' },
+      target: { account: 'friend', namespaceId: 0 },
     });
     expect(execute).toHaveBeenNthCalledWith(2, {
       threadId: 7,
       managerUserId: 3,
       decision: 'REQUESTED',
-      target: { account: 'friend', domain: 'local' },
+      target: { account: 'friend', namespaceId: 7 },
     });
     expect(result).toEqual({
       invited: [
-        { account: 'friend', domain: 'local.test' },
-        { account: 'friend', domain: 'local' },
+        { account: 'friend', namespaceId: 0 },
+        { account: 'friend', namespaceId: 7 },
       ],
       skipped: [],
     });
@@ -65,14 +66,14 @@ describe('group invitation admission', () => {
           user: { userId: 3 },
           threadAccess: { threadId: 7, participant: { role: 'OWNER' } },
         } as never,
-        { groupId: 7, users: [{ account: 'friend', domain: 'local' }] },
+        { groupId: 7, users: [{ account: 'friend', namespaceId: 0 }] },
       ),
     ).resolves.toEqual({
       invited: [],
       skipped: [
         {
           account: 'friend',
-          domain: 'local',
+          namespaceId: 0,
           reason: 'GROUP_DISSOLVED',
           code: 'GROUP_DISSOLVED',
           message: 'group has been dissolved',
@@ -112,12 +113,12 @@ describe('group revocation admission', () => {
     await expect(
       controller.acceptJoinRequest(
         { user: { userId: 3 }, threadAccess: { threadId: 10 } } as never,
-        { account: 'member', domain: 'peer.test' } as never,
+        { account: 'member', namespaceId: 5 } as never,
       ),
     ).resolves.toEqual({ status: 'APPLIED' });
     expect(execute).toHaveBeenCalledExactlyOnceWith({
       threadId: 10,
-      target: { account: 'member', domain: 'peer.test' },
+      target: { account: 'member', namespaceId: 5 },
       scope: 'APPLICATION',
       managerUserId: 3,
       decision: 'ACCEPTED',
@@ -140,14 +141,14 @@ describe('group revocation admission', () => {
       });
       const result = await controller[method](
         { user: { userId: 3 }, threadAccess: { threadId: 10 } } as never,
-        { account: ' Member ', domain: ' PEER.TEST ' } as never,
+        { account: ' Member ', namespaceId: 5 } as never,
       );
       expect(execute).toHaveBeenCalledExactlyOnceWith({
         threadId: 10,
         managerUserId: 3,
         decision: 'REVOKED',
         scope,
-        target: { account: 'member', domain: 'peer.test' },
+        target: { account: 'member', namespaceId: 5 },
       });
       expect(result).toEqual({ status: 'APPLIED' });
     },

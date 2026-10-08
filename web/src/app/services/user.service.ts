@@ -85,7 +85,6 @@ export class FederatedResolveError extends Error {
 interface ClientIntentUser {
   id: number;
   account: string;
-  name: string;
   avatar: string;
   bio: string;
   domain: string;
@@ -842,11 +841,10 @@ export class UserService {
     );
   }
 
-  /** Author a relationship request toward one exact user or group Address. */
+  /** Author a relationship request toward one exact user or group identity. */
   requestRelationship(params: {
     account: string;
-    domain: string;
-    namespaceId?: number;
+    namespaceId: number;
     displayName?: string;
     avatar?: string;
     note?: string;
@@ -859,14 +857,16 @@ export class UserService {
 
   /** Relationship state from synchronized local projections: an active P2P thread owns FRIEND, while
    * the request-intent projection owns pending directions. No relationship network request is needed. */
-  async localRelationship(user: Pick<User, 'id' | 'account' | 'domain'>) {
+  async localRelationship(
+    user: Pick<User, 'id' | 'account' | 'namespaceId'>,
+  ) {
     const threads = await this.webdb.getThreads();
     const friendship = threads.some(
       (item) =>
         item.type === 'P2P' &&
         item.friendshipActive !== false &&
         item.peerUser.account === user.account &&
-        item.peerUser.domain === (user.domain || 'local'),
+        item.peerUser.namespaceId === user.namespaceId,
     );
     if (friendship) return 'FRIEND' as const;
     const matches = (item: FriendRequestProjection) =>
@@ -875,7 +875,7 @@ export class UserService {
       item.expiresAt > Date.now() &&
       ((user.id > 0 && item.peer?.id === user.id) ||
         (item.peer?.account === user.account &&
-          item.peer.domain === (user.domain || 'local')));
+          item.peer.namespaceId === user.namespaceId));
     const hasPending = async (direction: FriendIntentDirection) => {
       let cursor: string | null = null;
       for (;;) {
@@ -928,8 +928,7 @@ export class UserService {
   /** Accept a stored user relationship request or group invitation. */
   acceptRelationship(params: {
     account: string;
-    domain: string;
-    namespaceId?: number;
+    namespaceId: number;
   }) {
     return this.http.post<
       StandardResponse<
@@ -953,8 +952,7 @@ export class UserService {
   /** Revoke the current user relationship or pending request toward one exact Address. */
   revokeRelationship(params: {
     account: string;
-    domain: string;
-    namespaceId?: number;
+    namespaceId: number;
   }) {
     return this.http.post<
       StandardResponse<

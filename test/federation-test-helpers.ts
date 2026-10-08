@@ -205,23 +205,38 @@ export async function establishFederatedFriendship(params: {
     throw new Error(
       `federated card lookup failed: ${JSON.stringify(card.data)}`,
     );
+  const namespaceRows = await params.local.database.execute<{ id: number }>(
+    sql`
+      SELECT id
+      FROM "IdentityNamespace"
+      WHERE domain = ${params.remoteDomain}
+        AND active = true
+        AND "retiredAt" IS NULL
+      LIMIT 1
+    `,
+  );
+  const namespaceId = namespaceRows.rows[0]?.id;
+  if (!Number.isSafeInteger(namespaceId) || Number(namespaceId) <= 0)
+    throw new Error(
+      `federated card has no active namespace binding: ${JSON.stringify(card.data)}`,
+    );
   const sent = await request(params.local.baseUrl)
     .post('/api/v1/relationship/request')
     .set('Authorization', `Bearer ${params.localToken}`)
     .send({
       account: params.remoteAccount,
-      domain: params.remoteDomain,
+      namespaceId,
       displayName: params.remoteAccount,
       note: params.note ?? '',
     });
   if (sent.body.code !== 0)
     throw new Error(`federated request failed: ${JSON.stringify(sent.body)}`);
 
-  let incomingFound = false;
+  let incomingNamespaceId: number | undefined;
   const requestDeadline = Date.now() + 30_000;
   while (Date.now() < requestDeadline) {
     const incoming = await params.remote.database.execute(sql`
-      SELECT 1
+      SELECT pair."endpointBNamespaceId" AS "namespaceId"
       FROM "RelationshipPair" pair
       JOIN "RelationshipIntent" intent
         ON intent."authorAccount" = pair."endpointBAccount"
@@ -237,15 +252,22 @@ export async function establishFederatedFriendship(params: {
         AND pair."endpointBNamespaceId" <> 0
       LIMIT 1
     `);
-    incomingFound = incoming.rows.length > 0;
-    if (incomingFound) break;
+    const namespaceId = incoming.rows[0]?.namespaceId;
+    if (Number.isSafeInteger(namespaceId) && Number(namespaceId) > 0) {
+      incomingNamespaceId = Number(namespaceId);
+      break;
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  if (!incomingFound) throw new Error('federated request did not reach remote');
+  if (incomingNamespaceId === undefined)
+    throw new Error('federated request did not reach remote');
   const accepted = await request(params.remote.baseUrl)
     .post('/api/v1/relationship/accept')
     .set('Authorization', `Bearer ${params.remoteToken}`)
-    .send({ account: params.localAccount, domain: params.localDomain });
+    .send({
+      account: params.localAccount,
+      namespaceId: incomingNamespaceId,
+    });
   if (accepted.body.code !== 0)
     throw new Error(
       `federated accept failed: ${JSON.stringify(accepted.body)}`,

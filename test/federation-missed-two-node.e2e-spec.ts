@@ -539,7 +539,7 @@ describe('federation durable missed transport (two nodes)', () => {
     const removed = await request(appA.baseUrl)
       .post('/api/v1/relationship/revoke')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'missedbob', domain: FED_DOMAIN_B });
+      .send({ account: 'missedbob', namespaceId: bobAddressOnA.namespaceId });
     expect(removed.body.code).toBe(BusinessCode.OK);
     // The revocation commits synchronously now; its peer feed item parks in
     // the blocked outbound queue until the proxy unblocks.
@@ -552,7 +552,7 @@ describe('federation durable missed transport (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         account: 'missedbob',
-        domain: FED_DOMAIN_B,
+        namespaceId: bobAddressOnA.namespaceId,
         displayName: 'Missed Bob',
         note: 'restore after compacted revoke',
       });

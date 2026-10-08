@@ -15,7 +15,6 @@ export interface GroupAuthoredMembershipRequestInput {
   groupDescription: string;
   groupProfileRev: number;
   targetAccount: string;
-  targetDomain: string;
   targetNamespaceId: number;
   /** Local Account.id of the invitee, or null for a peer-hosted one. */
   localTargetId: number | null;

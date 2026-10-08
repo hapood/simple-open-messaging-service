@@ -184,7 +184,6 @@ export class GroupRevokeFanoutService {
                 expectedAuthorizationEpoch: denial.expectedAuthorizationEpoch,
                 direction: group.namespaceId === 0 ? 'GROUP' : 'MEMBER',
                 groupAccount: group.account,
-                groupDomain: group.domain,
                 groupNamespaceId: group.namespaceId,
               }
             : {}),

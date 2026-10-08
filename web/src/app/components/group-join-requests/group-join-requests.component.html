@@ -19,12 +19,9 @@
         } @else {
           @for (
             request of invitations();
-            track request.account +
-              '@' +
-              request.domain +
-              ':' +
-              request.namespaceId
+            track candidateKey(request)
           ) {
+            @let resolvedDomain = request.namespaceId | namespaceDomain | async;
             <article class="request-row">
               <app-user-avatar
                 class="avatar"
@@ -32,12 +29,13 @@
                 [name]="request.name"
                 [account]="request.account"
                 [src]="request.avatar"
-                [federatedDomain]="request.domain || null"
+                [federatedDomain]="resolvedDomain"
               />
               <div class="request-copy">
                 <div class="request-name">{{ request.name }}</div>
                 <div class="request-account">
-                  {{ request.account }}&#64;{{ request.domain || 'local' }}
+                  {{ request.account
+                  }}{{ resolvedDomain ? '@' + resolvedDomain : '' }}
                 </div>
               </div>
               @if (request.status === 'REQUESTED') {
@@ -89,12 +87,9 @@
         } @else {
           @for (
             request of applications();
-            track request.account +
-              '@' +
-              request.domain +
-              ':' +
-              request.namespaceId
+            track candidateKey(request)
           ) {
+            @let resolvedDomain = request.namespaceId | namespaceDomain | async;
             <article class="request-row">
               <app-user-avatar
                 class="avatar"
@@ -102,12 +97,13 @@
                 [name]="request.name"
                 [account]="request.account"
                 [src]="request.avatar"
-                [federatedDomain]="request.domain || null"
+                [federatedDomain]="resolvedDomain"
               />
               <div class="request-copy">
                 <div class="request-name">{{ request.name }}</div>
                 <div class="request-account">
-                  {{ request.account }}&#64;{{ request.domain || 'local' }}
+                  {{ request.account
+                  }}{{ resolvedDomain ? '@' + resolvedDomain : '' }}
                 </div>
                 @if (request.note) {
                   <div class="request-note">{{ request.note }}</div>
@@ -183,6 +179,7 @@
         } @else if (candidates().length > 0) {
           <div class="candidate-list">
             @for (candidate of candidates(); track candidateKey(candidate)) {
+              @let resolvedDomain = candidate.namespaceId | namespaceDomain | async;
               <article class="candidate-row">
                 <app-user-avatar
                   class="avatar"
@@ -191,14 +188,14 @@
                   [account]="candidate.account"
                   [src]="candidate.avatar"
                   [federatedDomain]="
-                    candidate.namespaceId !== 0 ? candidate.domain : null
+                    candidate.namespaceId !== 0 ? resolvedDomain : null
                   "
                 />
                 <div class="candidate-meta">
                   <app-user-identity-label
                     [name]="candidate.name"
                     [domain]="
-                      candidate.namespaceId !== 0 ? candidate.domain : null
+                      candidate.namespaceId !== 0 ? resolvedDomain : null
                     "
                   />
                   <div class="candidate-bio">

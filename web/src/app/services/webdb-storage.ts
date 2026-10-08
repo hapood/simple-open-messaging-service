@@ -3426,7 +3426,7 @@ export class WebdbStorage {
     threadId: number,
     seq: number,
     account: string,
-    domain: string,
+    namespaceId: number,
     profileRev: number,
   ): Promise<boolean> {
     if (
@@ -3435,7 +3435,8 @@ export class WebdbStorage {
       !Number.isSafeInteger(seq) ||
       seq < 1 ||
       !account ||
-      !domain ||
+      !Number.isSafeInteger(namespaceId) ||
+      namespaceId < 0 ||
       !Number.isSafeInteger(profileRev) ||
       profileRev < 1
     )
@@ -3449,7 +3450,7 @@ export class WebdbStorage {
             threadId,
             seq,
             account,
-            domain,
+            namespaceId,
             profileRev,
           },
         );
@@ -3463,7 +3464,7 @@ export class WebdbStorage {
         await tx.done;
         return false;
       }
-      const participant = JSON.stringify([account, domain]);
+      const participant = JSON.stringify([namespaceId, account]);
       if (message.localSystemProfileRevs?.[participant] === profileRev) {
         await tx.done;
         return false;

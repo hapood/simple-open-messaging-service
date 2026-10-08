@@ -54,7 +54,7 @@ describe('UserService.localRelationship', () => {
           kind: 'FRIEND',
           status: 'REQUESTED',
           expiresAt: Date.now() + 60_000,
-          peer: { id: 0, account, domain: 'bravo.test' },
+          peer: { id: 0, account, namespaceId: 7 },
         });
         const items =
           direction === 'OUTGOING'
@@ -77,7 +77,11 @@ describe('UserService.localRelationship', () => {
           {
             type: 'P2P',
             friendshipActive: true,
-            peerUser: { id: 0, account: 'someone-else', domain: 'bravo.test' },
+            peerUser: {
+              id: 0,
+              account: 'someone-else',
+              namespaceId: 7,
+            },
           },
         ],
       },
@@ -88,7 +92,7 @@ describe('UserService.localRelationship', () => {
       service.localRelationship({
         id: 0,
         account: 'bob',
-        domain: 'bravo.test',
+        namespaceId: 7,
       }),
     ).resolves.toBe('OUTGOING_PENDING');
     expect(listLocalFriendRequests).toHaveBeenCalledTimes(2);

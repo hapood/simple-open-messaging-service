@@ -600,24 +600,23 @@ export class PeerProfileComponent {
       },
       (result) => {
         if (!result) return;
-        void this.finishRemoveFriend(trd, peer.account, peer.domain);
+        void this.finishRemoveFriend(trd, {
+          account: peer.account,
+          namespaceId: peer.namespaceId,
+        });
       },
     );
   }
 
   private async finishRemoveFriend(
     trd: ConversationItem,
-    account: string,
-    domain?: string,
+    identity: { account: string; namespaceId: number },
   ) {
     if (this.unfriendPending()) return;
     this.unfriendPending.set(true);
     try {
       const res = await firstValueFrom(
-        this.userService.revokeRelationship({
-          account,
-          domain: domain || 'local',
-        }),
+        this.userService.revokeRelationship(identity),
       );
       if (res.code !== 0)
         return this.toast.warn(translateBizResult(res, this.transloco));

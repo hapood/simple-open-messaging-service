@@ -54,7 +54,6 @@ describe('group disband task fan-out', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         account: member.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(sent.body.code).toBe(BusinessCode.OK);
@@ -63,7 +62,6 @@ describe('group disband task fan-out', () => {
       .set('Authorization', `Bearer ${member.token}`)
       .send({
         account: owner.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(accepted.body.code).toBe(BusinessCode.OK);
@@ -78,7 +76,7 @@ describe('group disband task fan-out', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         groupId: threadId,
-        users: [{ account: member.account, domain: localIdentityDomain() }],
+        users: [{ account: member.account, namespaceId: 0 }],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
     const joined = await request(app.getHttpServer())

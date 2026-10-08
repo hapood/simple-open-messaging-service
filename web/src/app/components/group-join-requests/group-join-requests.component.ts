@@ -6,6 +6,7 @@ import {
   OnDestroy,
   signal,
 } from '@angular/core';
+import { AsyncPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom, Subscription } from 'rxjs';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
@@ -37,12 +38,14 @@ import {
   hasUnreadGroupJoinRequests,
   mergeGroupJoinRequestPage,
 } from '../../services/group-join-request-state';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 
 type RequestListKind = 'INVITATION' | 'APPLICATION';
 
 @Component({
   selector: 'app-group-join-requests',
   imports: [
+    AsyncPipe,
     FormsModule,
     MatButtonModule,
     MatProgressBarModule,
@@ -51,6 +54,7 @@ type RequestListKind = 'INVITATION' | 'APPLICATION';
     TranslocoPipe,
     UserAvatarComponent,
     UserIdentityLabelComponent,
+    NamespaceDomainPipe,
   ],
   templateUrl: './group-join-requests.component.html',
   styleUrl: './group-join-requests.component.scss',
@@ -148,12 +152,12 @@ export class GroupJoinRequestsComponent implements OnDestroy {
           ? this.groups.acceptJoinRequest({
               groupId,
               account: application.account,
-              domain: application.domain,
+              namespaceId: application.namespaceId,
             })
           : this.groups.rejectJoinRequest({
               groupId,
               account: application.account,
-              domain: application.domain,
+              namespaceId: application.namespaceId,
             }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
@@ -181,7 +185,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
         this.groups.revokeInvitation({
           groupId,
           account: invitation.account,
-          domain: invitation.domain,
+          namespaceId: invitation.namespaceId,
         }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
@@ -204,8 +208,11 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     }
   }
 
-  candidateKey(candidate: { account: string; domain: string }): string {
-    return `${candidate.account}@${candidate.domain}`;
+  candidateKey(candidate: {
+    account: string;
+    namespaceId: number;
+  }): string {
+    return JSON.stringify([candidate.namespaceId, candidate.account]);
   }
 
   async invite(candidate: GroupInviteCandidate): Promise<void> {
@@ -222,7 +229,9 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       const res = await firstValueFrom(
         this.groups.inviteUsers({
           groupId,
-          users: [{ account: candidate.account, domain: candidate.domain }],
+          users: [
+            { account: candidate.account, namespaceId: candidate.namespaceId },
+          ],
         }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
@@ -270,7 +279,6 @@ export class GroupJoinRequestsComponent implements OnDestroy {
                 namespaceId: user.namespaceId,
                 profileRev: user.profileRev,
                 account: user.account,
-                domain: user.domain || 'local',
                 name: user.name,
                 avatar: user.avatar,
                 bio: user.bio ?? '',

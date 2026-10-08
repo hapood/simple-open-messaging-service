@@ -13,7 +13,6 @@ export const FRIEND_INTENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 interface FriendRequestPeer {
   id: number;
   account: string;
-  name: string;
   avatar: string;
   bio: string;
   domain: string;

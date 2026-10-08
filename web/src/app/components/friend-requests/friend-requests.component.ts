@@ -13,6 +13,7 @@ import {
   OnDestroy,
   ChangeDetectionStrategy,
 } from '@angular/core';
+import { AsyncPipe } from '@angular/common';
 import { Observable, Subject, Subscription, finalize } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
@@ -43,6 +44,7 @@ import { VirtualInfiniteListComponent } from '../virtual-infinite-list/virtual-i
 import { FriendRequestCardComponent } from '../friend-request-card/friend-request-card.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
 import type { ProfileDemand } from '../../../../../shared/profile-demand';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 
 export enum AddTabStatus {
   INIT,
@@ -68,14 +70,12 @@ type PendingReq = {
   peerId?: string;
   name?: string;
   account?: string;
-  domain?: string;
   namespaceId?: number;
   reqMessage?: string;
   status: RequestProjectionStatusValue;
   date: number;
   errText: string;
   kind?: 'FRIEND' | 'GROUP';
-  sourceLabel?: string;
   profileRev?: number;
 };
 type RelationshipState =
@@ -87,6 +87,7 @@ type RelationshipState =
 @Component({
   selector: 'app-friend-requests',
   imports: [
+    AsyncPipe,
     UserAvatarComponent,
     FormsModule,
     MatButtonModule,
@@ -100,6 +101,7 @@ type RelationshipState =
     VirtualInfiniteListComponent,
     FriendRequestCardComponent,
     UserIdentityLabelComponent,
+    NamespaceDomainPipe,
   ],
   templateUrl: './friend-requests.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -204,7 +206,7 @@ export class FriendRequestsComponent implements OnDestroy {
       () =>
         this.userService.revokeRelationship({
           account: req.account!,
-          domain: req.domain || 'local',
+          namespaceId: req.namespaceId!,
         }),
       (res) => {
         if (res.code === 0) {
@@ -451,18 +453,18 @@ export class FriendRequestsComponent implements OnDestroy {
     this.inviteUser.set(user);
   }
 
-  isSelf(user: Pick<User, 'account' | 'domain'>): boolean {
+  isSelf(user: Pick<User, 'account' | 'namespaceId'>): boolean {
     const self = this.userService.sessionProfile();
     return (
       !!self &&
       self.account === user.account &&
-      (self.domain || 'local') === (user.domain || 'local')
+      self.namespaceId === user.namespaceId
     );
   }
 
   completeInvite(result: {
     account: string;
-    domain: string;
+    namespaceId: number;
     status: 'OUTGOING_PENDING' | 'FRIEND';
   }) {
     if (this.initialUser()) {
@@ -471,14 +473,14 @@ export class FriendRequestsComponent implements OnDestroy {
     }
     this.relationshipStates.update((states) =>
       new Map(states).set(
-        this.addressIdentity(result.account, result.domain),
+        this.identityKey(result.account, result.namespaceId),
         result.status,
       ),
     );
     this.inviteUser.set(null);
   }
 
-  relationshipLabel(user: Pick<User, 'account' | 'domain'>): string {
+  relationshipLabel(user: Pick<User, 'account' | 'namespaceId'>): string {
     if (user.account.startsWith('!')) return 'friend.joinGroup';
     switch (this.relationshipStates().get(this.userIdentity(user))) {
       case 'OUTGOING_PENDING':
@@ -572,7 +574,7 @@ export class FriendRequestsComponent implements OnDestroy {
       () =>
         this.userService.revokeRelationship({
           account: req.account!,
-          domain: req.domain || 'local',
+          namespaceId: req.namespaceId!,
         }),
       (res) => {
         if (res.code === 0) {
@@ -655,10 +657,13 @@ export class FriendRequestsComponent implements OnDestroy {
     for (const entry of subscriptions) entry.subscription?.unsubscribe();
   }
 
-  private inviteAction(req: PendingReq): { account: string; domain: string } {
-    if (!req.account || !req.domain)
-      throw new Error('relationship request projection has no Address');
-    return { account: req.account, domain: req.domain };
+  private inviteAction(req: PendingReq): {
+    account: string;
+    namespaceId: number;
+  } {
+    if (!req.account || req.namespaceId === undefined)
+      throw new Error('relationship request projection has no identity');
+    return { account: req.account, namespaceId: req.namespaceId };
   }
 
   requestStatusLabel(status: RequestProjectionStatusValue): string {
@@ -684,9 +689,7 @@ export class FriendRequestsComponent implements OnDestroy {
         projectionKey: projection.key,
         direction: projection.direction,
         peerId: this.userIdentity(peer),
-        name: peer.name,
         account: peer.account,
-        domain: peer.domain,
         namespaceId: peer.namespaceId,
         reqMessage: projection.note,
         status: projection.status,
@@ -710,20 +713,16 @@ export class FriendRequestsComponent implements OnDestroy {
       date: projection.requestedAt,
       errText: '',
       kind: 'GROUP',
-      sourceLabel:
-        group.namespaceId === 0
-          ? this.transloco.translate('friend.localGroup')
-          : '',
       profileRev: group.profileRev,
     };
   }
 
-  userIdentity(peer: Pick<User, 'account' | 'domain'>): string {
-    return this.addressIdentity(peer.account, peer.domain ?? 'local');
+  userIdentity(peer: Pick<User, 'account' | 'namespaceId'>): string {
+    return this.identityKey(peer.account, peer.namespaceId);
   }
 
-  private addressIdentity(account: string, domain: string): string {
-    return JSON.stringify([domain || 'local', account]);
+  private identityKey(account: string, namespaceId: number): string {
+    return JSON.stringify([namespaceId, account]);
   }
 
   relativeDate(timestamp: number): string {
@@ -745,6 +744,16 @@ export class FriendRequestsComponent implements OnDestroy {
 
   absoluteDate(timestamp: number): string {
     return dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss');
+  }
+
+  displayRequestDomain(
+    request: Pick<PendingReq, 'kind' | 'namespaceId'>,
+    domain: string | null,
+  ): string | null {
+    if (!domain) return null;
+    return request.kind === 'GROUP' && request.namespaceId === 0
+      ? this.transloco.translate('common.localDomainLabel', { domain })
+      : domain;
   }
 
   async loadIncomingInvites(reset = false) {
@@ -826,7 +835,7 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   profileEvidence(request: PendingReq): ProfileDemand | undefined {
-    return request.account && request.domain && request.profileRev
+    return request.account && request.profileRev
       ? {
           publisherNamespaceId: request.namespaceId ?? 0,
           lookup: 'ACCOUNT_PROFILE',

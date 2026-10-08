@@ -326,14 +326,16 @@
   </mat-tab-group>
 
   @if (selectedRequest(); as req) {
+    @let resolvedDomain = req.namespaceId | namespaceDomain | async;
+    @let displayDomain = displayRequestDomain(req, resolvedDomain);
     <section class="request-detail">
       <mat-card appearance="outlined" class="detail-profile">
         @if (req.account) {
           <div
             class="profile-meta"
-            [attr.title]="req.account + '@' + (req.domain || 'local')"
+            [attr.title]="req.account + (displayDomain ? '@' + displayDomain : '')"
           >
-            {{ req.account }}&#64;{{ req.domain || 'local' }}
+            {{ req.account }}{{ displayDomain ? '@' + displayDomain : '' }}
           </div>
         }
         <div class="detail-profile-row">
@@ -343,15 +345,19 @@
             "
             [name]="req.name ?? ''"
             [account]="req.account"
-            [federatedDomain]="
-              req.kind === 'GROUP' || req.namespaceId !== 0 ? req.domain : null
-            "
+            [federatedDomain]="displayDomain"
             [profileEvidence]="profileEvidence(req)"
           />
           <span class="profile-copy">
-            <strong>{{
-              req.name ?? ('friend.invalidUser' | transloco)
-            }}</strong>
+            <app-user-identity-label
+              class="detail-identity"
+              [name]="
+                req.kind === 'GROUP'
+                  ? (req.name ?? ('friend.invalidUser' | transloco))
+                  : (req.account ?? ('friend.invalidUser' | transloco))
+              "
+              [profileEvidence]="profileEvidence(req)"
+            />
             <span class="profile-description">
               {{ req.reqMessage || ('friend.noMessage' | transloco) }}
             </span>

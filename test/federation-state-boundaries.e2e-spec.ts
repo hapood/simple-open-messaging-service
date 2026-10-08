@@ -205,7 +205,6 @@ describe('federation directed-state boundaries', () => {
             decision: 'REQUESTED',
             target: {
               account: peer.account,
-              domain: peer.domain,
               namespaceId: peer.namespaceId,
             },
           },
@@ -330,7 +329,6 @@ describe('federation directed-state boundaries', () => {
           decision: 'REQUESTED',
           target: {
             account: peer.account,
-            domain: peer.domain,
             namespaceId: peer.namespaceId,
           },
         },
@@ -451,7 +449,6 @@ describe('federation directed-state boundaries', () => {
           decision: 'REQUESTED',
           target: {
             account: peer.account,
-            domain: peer.domain,
             namespaceId: peer.namespaceId,
           },
           note: 'new request',

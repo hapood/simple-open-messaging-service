@@ -444,7 +444,12 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     if (id === undefined) return;
     this.busy.set(true);
     this.groupService
-      .setRole({ groupId: id, account: m.account, domain: m.domain, role })
+      .setRole({
+        groupId: id,
+        account: m.account,
+        namespaceId: m.namespaceId,
+        role,
+      })
       .pipe(finalize(() => this.busy.set(false)))
       .subscribe({
         next: (res) => {
@@ -493,7 +498,11 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     if (id === undefined) return;
     this.busy.set(true);
     this.groupService
-      .kickMember({ groupId: id, account: m.account, domain: m.domain })
+      .kickMember({
+        groupId: id,
+        account: m.account,
+        namespaceId: m.namespaceId,
+      })
       .pipe(finalize(() => this.busy.set(false)))
       .subscribe({
         next: (res) => {
@@ -512,7 +521,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       .transferOwnership({
         groupId: id,
         account: m.account,
-        domain: m.domain,
+        namespaceId: m.namespaceId,
       })
       .pipe(finalize(() => this.busy.set(false)))
       .subscribe({

@@ -16,7 +16,6 @@ function request(
     namespaceId: 0,
     profileRev: 1,
     account: `user-${feedId}`,
-    domain: 'local',
     name: `User ${feedId}`,
     avatar: '',
     note: '',

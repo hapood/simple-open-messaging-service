@@ -176,10 +176,10 @@ mod tomb_tests {
         write_message_slot(&tx, 1, MessageSlotWrite::Message(other)).unwrap();
         tx.commit().unwrap();
         assert!(
-            correct_system_message_profile(&mut conn, 1, 42, 4, "alice", "peer.test", 2).unwrap()
+            correct_system_message_profile(&mut conn, 1, 42, 4, "alice", 7, 2).unwrap()
         );
         assert!(
-            !correct_system_message_profile(&mut conn, 1, 42, 4, "alice", "peer.test", 2).unwrap()
+            !correct_system_message_profile(&mut conn, 1, 42, 4, "alice", 7, 2).unwrap()
         );
         let tx = conn.transaction().unwrap();
         write_message_slot(&tx, 1, MessageSlotWrite::Message(system.clone())).unwrap();
@@ -195,7 +195,7 @@ mod tomb_tests {
             parse_json(payload).unwrap()
         };
         assert_eq!(
-            read(4)["localSystemProfileRevs"]["[\"alice\",\"peer.test\"]"],
+            read(4)["localSystemProfileRevs"]["[7,\"alice\"]"],
             2
         );
         assert!(read(5).get("localSystemProfileRevs").is_none());
@@ -1841,14 +1841,14 @@ pub(crate) async fn native_db_correct_system_message_profile(
     thread_id: i64,
     seq: i64,
     account: String,
-    domain: String,
+    namespace_id: i64,
     profile_rev: i64,
 ) -> Result<bool, String> {
     if user_id < 1
         || thread_id < 1
         || seq < 1
         || account.is_empty()
-        || domain.is_empty()
+        || namespace_id < 0
         || profile_rev < 1
     {
         return Err("invalid system profile correction".into());
@@ -1860,7 +1860,7 @@ pub(crate) async fn native_db_correct_system_message_profile(
             thread_id,
             seq,
             &account,
-            &domain,
+            namespace_id,
             profile_rev,
         )
     })
@@ -1874,7 +1874,7 @@ fn correct_system_message_profile(
     thread_id: i64,
     seq: i64,
     account: &str,
-    domain: &str,
+    namespace_id: i64,
     profile_rev: i64,
 ) -> Result<bool, String> {
     let tx = conn
@@ -1896,7 +1896,7 @@ fn correct_system_message_profile(
     {
         return Ok(false);
     }
-    let participant = serde_json::to_string(&(account, domain))
+    let participant = serde_json::to_string(&(namespace_id, account))
         .map_err(|e| format!("encode system participant: {e}"))?;
     let revisions = message
         .as_object_mut()

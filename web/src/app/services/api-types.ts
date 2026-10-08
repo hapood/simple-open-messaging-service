@@ -4211,10 +4211,10 @@ export interface components {
             /** @example alice */
             account: string;
             /**
-             * @description User home domain; 'local' denotes this server.
-             * @example example.com
+             * @description User identity namespace id.
+             * @example 7
              */
-            domain: string;
+            namespaceId: number;
         };
         InviteGroupDto: {
             /** @description Existing friends to invite by public address. */
@@ -4288,10 +4288,10 @@ export interface components {
              */
             account: string;
             /**
-             * @description Member home domain
-             * @example example.com
+             * @description Member identity namespace id
+             * @example 7
              */
-            domain: string;
+            namespaceId: number;
         };
         GroupIdDto: {
             /**
@@ -4321,10 +4321,10 @@ export interface components {
              */
             account: string;
             /**
-             * @description Member home domain
-             * @example example.com
+             * @description Member identity namespace id
+             * @example 7
              */
-            domain: string;
+            namespaceId: number;
         };
         TransferGroupDto: {
             /**
@@ -4338,10 +4338,10 @@ export interface components {
              */
             account: string;
             /**
-             * @description Member home domain
-             * @example example.com
+             * @description Member identity namespace id
+             * @example 7
              */
-            domain: string;
+            namespaceId: number;
         };
         SetRoleGroupDto: {
             /**
@@ -4355,10 +4355,10 @@ export interface components {
              */
             account: string;
             /**
-             * @description Member home domain
-             * @example example.com
+             * @description Member identity namespace id
+             * @example 7
              */
-            domain: string;
+            namespaceId: number;
             /**
              * @description New role (ADMIN | MEMBER)
              * @example ADMIN
@@ -4402,10 +4402,10 @@ export interface components {
              */
             account: string;
             /**
-             * @description Peer home domain. Use the literal 'local' for a local account.
-             * @example local
+             * @description Peer identity namespace id.
+             * @example 7
              */
-            domain: string;
+            namespaceId: number;
         };
         RequestRelationshipDto: {
             /**
@@ -4414,10 +4414,10 @@ export interface components {
              */
             account: string;
             /**
-             * @description Target home domain. Use the literal 'local' for a local account.
-             * @example local
+             * @description Target identity namespace id.
+             * @example 7
              */
-            domain: string;
+            namespaceId: number;
             /**
              * @description Relationship request note (≤255 chars)
              * @example Hi from the conference
@@ -4431,8 +4431,11 @@ export interface components {
         AcceptRelationshipDto: {
             /** @description Peer user or group account */
             account: string;
-            /** @description Peer user or group domain */
-            domain: string;
+            /**
+             * @description Peer identity namespace id.
+             * @example 7
+             */
+            namespaceId: number;
         };
         RegisterDeviceResultDto: {
             sessionId: number;

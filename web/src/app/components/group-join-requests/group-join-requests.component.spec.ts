@@ -19,7 +19,6 @@ function row(feedId: number, status: GroupJoinRequest['status'] = 'REQUESTED') {
     namespaceId: 0,
     profileRev: 1,
     account: `user-${feedId}`,
-    domain: 'local',
     name: `User ${feedId}`,
     avatar: '',
     note: '',
@@ -137,7 +136,6 @@ describe('GroupJoinRequestsComponent', () => {
       namespaceId: 7,
       profileRev: 1,
       account: 'friend',
-      domain: 'peer.test',
       name: 'Friend',
       avatar: '',
       bio: '',
@@ -148,7 +146,7 @@ describe('GroupJoinRequestsComponent', () => {
       of({
         code: 0,
         data: {
-          invited: [{ account: 'friend', domain: 'peer.test' }],
+          invited: [{ account: 'friend', namespaceId: 7 }],
           skipped: [],
         },
       }) as never,
@@ -156,7 +154,7 @@ describe('GroupJoinRequestsComponent', () => {
     await component.invite(candidate);
     expect(groups.inviteUsers).toHaveBeenCalledWith({
       groupId: 7,
-      users: [{ account: 'friend', domain: 'peer.test' }],
+      users: [{ account: 'friend', namespaceId: 7 }],
     });
     expect(component.candidates()[0].state).toBe('INVITED');
   });
@@ -169,7 +167,6 @@ describe('GroupJoinRequestsComponent', () => {
         namespaceId: 7,
         profileRev: 1,
         account: 'friend',
-        domain: 'peer.test',
         name: 'Friend',
         avatar: '',
         bio: '',
@@ -177,13 +174,17 @@ describe('GroupJoinRequestsComponent', () => {
       },
     ]);
     component.invitations.set([
-      { ...row(12), account: 'friend', domain: 'peer.test' },
+      {
+        ...row(12),
+        account: 'friend',
+        namespaceId: 7,
+      },
     ]);
     await component.revokeInvitation(component.invitations()[0]);
     expect(groups.revokeInvitation).toHaveBeenCalledWith({
       groupId: 7,
       account: 'friend',
-      domain: 'peer.test',
+      namespaceId: 7,
     });
     expect(component.candidates()[0].state).toBe('AVAILABLE');
   });
@@ -209,7 +210,7 @@ describe('GroupJoinRequestsComponent', () => {
     expect(groups.rejectJoinRequest).toHaveBeenCalledWith({
       groupId: 7,
       account: 'user-1',
-      domain: 'local',
+      namespaceId: 0,
     });
     expect(component.applications()[0].status).toBe('REJECTED');
     expect(

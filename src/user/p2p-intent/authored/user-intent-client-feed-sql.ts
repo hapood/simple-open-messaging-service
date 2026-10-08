@@ -154,9 +154,8 @@ export function userIntentClientBodiesSql(
           'requestedAt', cp."requestedAt", 'expiresAt', cp."expiresAt",
           'direction', cp.direction,
           'localThreadId', cp."localThreadId", 'established', cp.established,
-          'peer', jsonb_build_object('account', cp."clientPeerAccount", 'name',
-            cp."clientPeerAccount", 'avatar', '',
-            'bio', '', 'domain', cp."clientPeerDomain",
+          'peer', jsonb_build_object('account', cp."clientPeerAccount",
+            'avatar', '', 'bio', '', 'domain', cp."clientPeerDomain",
             'profileRev', cp."clientPeerProfileRev")
         )${requestOutcome} AS body
       FROM client_peers cp

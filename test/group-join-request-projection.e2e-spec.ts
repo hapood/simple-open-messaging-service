@@ -144,8 +144,8 @@ describe('group join request projection', () => {
       .send({
         groupId: threadId,
         account: applicant.account,
-        domain: localIdentityDomain(),
-      });
+        namespaceId: 0,
+              });
     expect(rejected.body.code).toBe(BusinessCode.OK);
 
     const history = await request(app.getHttpServer())
@@ -218,8 +218,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         account: member.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
+                namespaceId: 0,
       });
     expect(friendRequest.body.code).toBe(BusinessCode.OK);
     await waitForLocalRelationshipRequest(
@@ -233,8 +232,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${member.token}`)
       .send({
         account: owner.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
+                namespaceId: 0,
       });
     expect(accepted.body.code).toBe(BusinessCode.OK);
     expect(accepted.body.data).toMatchObject({ status: 'OK' });
@@ -249,13 +247,13 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         groupId: threadId,
-        users: [{ account: member.account, domain: localIdentityDomain() }],
+        users: [{ account: member.account, namespaceId: 0 }],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
     expect(invited.body.data.invited).toEqual([
       {
         account: member.account,
-        domain: localIdentityDomain(),
+        namespaceId: 0,
       },
     ]);
 
@@ -271,7 +269,6 @@ describe('group join request projection', () => {
     expect(requestedRows).toHaveLength(1);
     expect(requestedRows[0]).toMatchObject({
       account: member.account,
-      domain: localIdentityDomain(),
       namespaceId: 0,
       status: 'REQUESTED',
     });
@@ -286,8 +283,8 @@ describe('group join request projection', () => {
       .send({
         groupId: threadId,
         account: member.account,
-        domain: localIdentityDomain(),
-      });
+        namespaceId: 0,
+              });
     expect(revoked.body.code).toBe(BusinessCode.OK);
     const history = await request(app.getHttpServer())
       .post('/api/v1/group/invitations')
@@ -324,7 +321,6 @@ describe('group join request projection', () => {
       .send({ groupId: threadId });
     expect(pending.body.data.data[0]).toMatchObject({
       account: applicant.account,
-      domain: localIdentityDomain(),
       namespaceId: 0,
       status: 'REQUESTED',
     });
@@ -335,8 +331,8 @@ describe('group join request projection', () => {
       .send({
         groupId: threadId,
         account: applicant.account,
-        domain: localIdentityDomain(),
-      });
+        namespaceId: 0,
+              });
     expect(accepted.body.code).toBe(BusinessCode.OK);
 
     const projections = await database.db.query.groupRequestProjection.findMany(
@@ -363,8 +359,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         account: member.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
+                namespaceId: 0,
       });
     await waitForLocalRelationshipRequest(
       app.get(DatabaseService).db,
@@ -377,8 +372,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${member.token}`)
       .send({
         account: owner.account,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
+                namespaceId: 0,
       });
     expect(friendAccepted.body.data).toMatchObject({ status: 'OK' });
     const created = await request(app.getHttpServer())
@@ -391,7 +385,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         groupId: threadId,
-        users: [{ account: member.account, domain: localIdentityDomain() }],
+        users: [{ account: member.account, namespaceId: 0 }],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
 

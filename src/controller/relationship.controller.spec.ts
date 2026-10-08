@@ -38,21 +38,21 @@ describe('RelationshipController.markRelationshipRequestsRead', () => {
 });
 
 describe('RelationshipController.acceptRelationship', () => {
-  it('resolves an addressed group invitation from its relationship intent', async () => {
+  it('resolves a group invitation from its relationship intent by namespace', async () => {
     const memberIntents = {
-      executeAddressed: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
+      executeByNamespace: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
     };
     const controller = build({ memberIntents });
 
     await expect(
       controller.acceptRelationship({ user: { userId: 7 } } as never, {
         account: '!remote-group',
-        domain: 'peer.test',
+        namespaceId: 5,
       }),
     ).resolves.toEqual({ status: 'APPLIED' });
-    expect(memberIntents.executeAddressed).toHaveBeenCalledWith({
+    expect(memberIntents.executeByNamespace).toHaveBeenCalledWith({
       memberUserId: 7,
-      target: { account: '!remote-group', domain: 'peer.test' },
+      target: { account: '!remote-group', namespaceId: 5 },
       decision: 'ACCEPTED',
     });
   });
@@ -69,17 +69,17 @@ describe('RelationshipController.acceptRelationship', () => {
     await expect(
       controller.acceptRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
-        domain: 'local',
+        namespaceId: 0,
       }),
     ).resolves.toEqual({ status: 'OK', threadId: 12 });
     expect(userIntents.execute).toHaveBeenCalledWith({
       userId: 7,
       decision: 'ACCEPTED',
-      target: { account: 'bob', domain: 'local' },
+      target: { account: 'bob', namespaceId: 0 },
     });
   });
 
-  it('accepts an address-only remote request synchronously through the intent service', async () => {
+  it('accepts a federated request synchronously through the intent service', async () => {
     const userIntents = {
       execute: vi.fn().mockResolvedValue({
         status: 'APPLIED',
@@ -91,13 +91,13 @@ describe('RelationshipController.acceptRelationship', () => {
     await expect(
       controller.acceptRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
-        domain: 'peer.test',
+        namespaceId: 5,
       }),
     ).resolves.toEqual({ status: 'OK', threadId: 21 });
     expect(userIntents.execute).toHaveBeenCalledWith({
       userId: 7,
       decision: 'ACCEPTED',
-      target: { account: 'bob', domain: 'peer.test' },
+      target: { account: 'bob', namespaceId: 5 },
     });
   });
 
@@ -115,7 +115,7 @@ describe('RelationshipController.acceptRelationship', () => {
     await expect(
       controller.acceptRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
-        domain: 'local',
+        namespaceId: 0,
       }),
     ).resolves.toMatchObject({
       code: BusinessCode.INVITE_NOT_FOUND,
@@ -123,7 +123,7 @@ describe('RelationshipController.acceptRelationship', () => {
     });
   });
 
-  it('forwards a namespace id on acceptance for nsid-first addressing', async () => {
+  it('forwards the namespace id on acceptance', async () => {
     const userIntents = {
       execute: vi.fn().mockResolvedValue({ status: 'APPLIED', threadId: 21 }),
     };
@@ -132,14 +132,13 @@ describe('RelationshipController.acceptRelationship', () => {
     await expect(
       controller.acceptRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
-        domain: 'peer.test',
         namespaceId: 5,
       }),
     ).resolves.toEqual({ status: 'OK', threadId: 21 });
     expect(userIntents.execute).toHaveBeenCalledWith({
       userId: 7,
       decision: 'ACCEPTED',
-      target: { account: 'bob', domain: 'peer.test', namespaceId: 5 },
+      target: { account: 'bob', namespaceId: 5 },
     });
   });
 });
@@ -154,17 +153,17 @@ describe('RelationshipController.revokeRelationship', () => {
     await expect(
       controller.revokeRelationship({ user: { userId: 7 } } as never, {
         account: ' Bob ',
-        domain: 'local',
+        namespaceId: 0,
       }),
     ).resolves.toEqual({ status: 'OK' });
     expect(userIntents.execute).toHaveBeenCalledWith({
       userId: 7,
       decision: 'REVOKED',
-      target: { account: 'bob', domain: 'local' },
+      target: { account: 'bob', namespaceId: 0 },
     });
   });
 
-  it('revokes a federated relationship by address through the intent service', async () => {
+  it('revokes a federated relationship by namespace through the intent service', async () => {
     const userIntents = {
       execute: vi.fn().mockResolvedValue({}),
     };
@@ -173,13 +172,13 @@ describe('RelationshipController.revokeRelationship', () => {
     await expect(
       controller.revokeRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
-        domain: 'peer.test',
+        namespaceId: 5,
       }),
     ).resolves.toEqual({ status: 'OK' });
     expect(userIntents.execute).toHaveBeenCalledWith({
       userId: 7,
       decision: 'REVOKED',
-      target: { account: 'bob', domain: 'peer.test' },
+      target: { account: 'bob', namespaceId: 5 },
     });
   });
 
@@ -198,7 +197,7 @@ describe('RelationshipController.revokeRelationship', () => {
       { user: { userId: 7 } } as never,
       {
         account: 'bob',
-        domain: 'local',
+        namespaceId: 0,
       },
     );
     expect(result).toMatchObject({
@@ -207,21 +206,21 @@ describe('RelationshipController.revokeRelationship', () => {
     });
   });
 
-  it('revokes an addressed group application synchronously', async () => {
+  it('revokes a group application by namespace synchronously', async () => {
     const memberIntents = {
-      executeAddressed: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
+      executeByNamespace: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
     };
     const controller = build({ memberIntents });
 
     await expect(
       controller.revokeRelationship({ user: { userId: 7 } } as never, {
         account: '!remote-group',
-        domain: 'peer.test',
+        namespaceId: 5,
       }),
     ).resolves.toEqual({ status: 'APPLIED' });
-    expect(memberIntents.executeAddressed).toHaveBeenCalledWith({
+    expect(memberIntents.executeByNamespace).toHaveBeenCalledWith({
       memberUserId: 7,
-      target: { account: '!remote-group', domain: 'peer.test' },
+      target: { account: '!remote-group', namespaceId: 5 },
       decision: 'REVOKED',
     });
   });
@@ -230,7 +229,7 @@ describe('RelationshipController.revokeRelationship', () => {
 describe('RelationshipController.requestRelationship', () => {
   it('authors an exact local-group application with quota admission', async () => {
     const memberIntents = {
-      executeAddressed: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
+      executeByNamespace: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
     };
     const controller = build({
       userQuota: { tick: vi.fn() },
@@ -240,25 +239,24 @@ describe('RelationshipController.requestRelationship', () => {
     await expect(
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: '!local-group',
-        domain: 'local',
+        namespaceId: 0,
         note: 'hello',
       }),
     ).resolves.toEqual({ status: 'APPLIED' });
-    expect(memberIntents.executeAddressed).toHaveBeenCalledWith({
+    expect(memberIntents.executeByNamespace).toHaveBeenCalledWith({
       memberUserId: 7,
-      target: { account: '!local-group', domain: 'local' },
+      target: { account: '!local-group', namespaceId: 0 },
       decision: 'REQUESTED',
       note: 'hello',
-      snapshot: { displayName: undefined },
       admissionInTx: expect.any(Function),
     });
   });
 
-  it('authors an addressed remote-group application directly', async () => {
+  it('authors a remote-group application directly', async () => {
     const admissionTx = { admission: true };
     const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
     const memberIntents = {
-      executeAddressed: vi.fn().mockImplementation(async (params) => {
+      executeByNamespace: vi.fn().mockImplementation(async (params) => {
         await params.admissionInTx(admissionTx);
         return { status: 'APPLIED' };
       }),
@@ -271,15 +269,15 @@ describe('RelationshipController.requestRelationship', () => {
     await expect(
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: '!remote-group',
-        domain: 'peer.test',
+        namespaceId: 5,
         displayName: 'Remote Group',
         avatar: 'avatar',
         note: 'let me in',
       }),
     ).resolves.toEqual({ status: 'APPLIED' });
-    expect(memberIntents.executeAddressed).toHaveBeenCalledWith({
+    expect(memberIntents.executeByNamespace).toHaveBeenCalledWith({
       memberUserId: 7,
-      target: { account: '!remote-group', domain: 'peer.test' },
+      target: { account: '!remote-group', namespaceId: 5 },
       decision: 'REQUESTED',
       note: 'let me in',
       snapshot: { displayName: 'Remote Group', avatar: 'avatar' },
@@ -302,7 +300,7 @@ describe('RelationshipController.requestRelationship', () => {
     await expect(
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: ' Bob ',
-        domain: 'local',
+        namespaceId: 0,
         note: 'hello',
       }),
     ).resolves.toEqual({ status: 'OK' });
@@ -310,7 +308,7 @@ describe('RelationshipController.requestRelationship', () => {
       {
         userId: 7,
         decision: 'REQUESTED',
-        target: { account: 'bob', domain: 'local' },
+        target: { account: 'bob', namespaceId: 0 },
         note: 'hello',
       },
       expect.objectContaining({ admissionInTx: expect.any(Function) }),
@@ -330,12 +328,12 @@ describe('RelationshipController.requestRelationship', () => {
     await expect(
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
-        domain: 'local',
+        namespaceId: 0,
       }),
     ).resolves.toEqual({ status: 'OK', threadId: 33 });
   });
 
-  it('runs the addressed request synchronously with in-transaction quota admission', async () => {
+  it('runs the federated request synchronously with in-transaction quota admission', async () => {
     const userQuota = { tick: vi.fn().mockResolvedValue(undefined) };
     const admissionTx = { admission: true };
     const userIntents = {
@@ -352,7 +350,7 @@ describe('RelationshipController.requestRelationship', () => {
     await expect(
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
-        domain: 'peer.test',
+        namespaceId: 5,
         displayName: 'Bob',
         note: 'across servers',
       }),
@@ -361,7 +359,7 @@ describe('RelationshipController.requestRelationship', () => {
       {
         userId: 7,
         decision: 'REQUESTED',
-        target: { account: 'bob', domain: 'peer.test' },
+        target: { account: 'bob', namespaceId: 5 },
         note: 'across servers',
       },
       expect.objectContaining({ admissionInTx: expect.any(Function) }),
@@ -369,7 +367,7 @@ describe('RelationshipController.requestRelationship', () => {
     expect(userQuota.tick).toHaveBeenCalledWith(7, 'requests', admissionTx);
   });
 
-  it('keeps the local public domain as an addressed remote target', async () => {
+  it('runs a federated request without optional display metadata', async () => {
     const userIntents = {
       execute: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
     };
@@ -378,7 +376,7 @@ describe('RelationshipController.requestRelationship', () => {
     await expect(
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
-        domain: 'us.test',
+        namespaceId: 5,
         displayName: 'Bob',
       }),
     ).resolves.toEqual({ status: 'OK' });
@@ -386,7 +384,7 @@ describe('RelationshipController.requestRelationship', () => {
       {
         userId: 7,
         decision: 'REQUESTED',
-        target: { account: 'bob', domain: 'us.test' },
+        target: { account: 'bob', namespaceId: 5 },
         note: '',
       },
       expect.objectContaining({ admissionInTx: expect.any(Function) }),
@@ -407,7 +405,7 @@ describe('RelationshipController.requestRelationship', () => {
     await expect(
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
-        domain: 'peer.test',
+        namespaceId: 5,
         displayName: 'Bob',
       }),
     ).resolves.toMatchObject({
@@ -416,7 +414,7 @@ describe('RelationshipController.requestRelationship', () => {
     });
   });
 
-  it('forwards a namespace id from the DTO to the intent service for nsid-first addressing', async () => {
+  it('forwards the namespace id from the DTO to the intent service', async () => {
     const userIntents = {
       execute: vi.fn().mockResolvedValue({ status: 'APPLIED', threadId: 42 }),
     };
@@ -425,7 +423,6 @@ describe('RelationshipController.requestRelationship', () => {
     await expect(
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
-        domain: 'peer.test',
         namespaceId: 5,
         displayName: 'Bob',
         note: 'nsid-first',
@@ -435,7 +432,7 @@ describe('RelationshipController.requestRelationship', () => {
       {
         userId: 7,
         decision: 'REQUESTED',
-        target: { account: 'bob', domain: 'peer.test', namespaceId: 5 },
+        target: { account: 'bob', namespaceId: 5 },
         note: 'nsid-first',
       },
       expect.objectContaining({ admissionInTx: expect.any(Function) }),
@@ -469,7 +466,7 @@ describe('RelationshipController.requestRelationship', () => {
       await expect(
         controller.requestRelationship({ user: { userId: 7 } } as never, {
           account: reason === 'SELF_TARGET' ? 'alice' : 'bob',
-          domain: 'local',
+          namespaceId: 0,
         }),
       ).resolves.toMatchObject({
         code: expectedCode,

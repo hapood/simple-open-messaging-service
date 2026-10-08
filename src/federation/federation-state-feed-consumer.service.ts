@@ -389,7 +389,6 @@ export class FederationStateFeedConsumerService {
                   threadId: groupState.id,
                   member: {
                     account: normalizeAccount(item.account),
-                    domain: peerDomain,
                     namespaceId,
                   },
                   body: receivedBody,

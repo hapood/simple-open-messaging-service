@@ -62,7 +62,7 @@ interface RemoteMemberMembershipIntentBody {
  * authoritative group inside the State Feed consumer transaction. */
 export interface RemoteMemberMembershipIntentCommand {
   threadId: number;
-  member: { account: string; domain: string; namespaceId: number };
+  member: { account: string; namespaceId: number };
   body: RemoteMemberMembershipIntentBody;
 }
 
@@ -143,14 +143,8 @@ export class RemoteMemberMembershipIntentService {
       ...validated,
     };
     const memberAccount = normalizeAccount(command.member.account);
-    const memberDomain = command.member.domain.trim().toLowerCase();
-    const member: {
-      account: string;
-      domain: string;
-      namespaceId: number;
-    } = {
+    const member: { account: string; namespaceId: number } = {
       account: memberAccount,
-      domain: memberDomain,
       namespaceId: command.member.namespaceId,
     };
     // Pre-lock locator: names the group's business scope and lets a dissolved
@@ -248,7 +242,6 @@ export class RemoteMemberMembershipIntentService {
           pairId,
           managerUserId: 0,
           targetAccount: member.account,
-          targetDomain: member.domain,
           targetNamespaceId: member.namespaceId,
         }),
       )
@@ -366,7 +359,7 @@ export class RemoteMemberMembershipIntentService {
       threadId: number;
       threadLock: ThreadContentLock;
       group: { groupAccount: string; groupDomain: string };
-      member: { account: string; domain: string; namespaceId: number };
+      member: { account: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
       clientUpdates: PendingClientStateFeedUpdate[];
       peers: Set<number>;
@@ -448,7 +441,7 @@ export class RemoteMemberMembershipIntentService {
       threadId: number;
       threadLock: ThreadContentLock;
       group: { groupAccount: string; groupDomain: string };
-      member: { account: string; domain: string; namespaceId: number };
+      member: { account: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
       clientUpdates: PendingClientStateFeedUpdate[];
       peers: Set<number>;
@@ -511,7 +504,7 @@ export class RemoteMemberMembershipIntentService {
       threadId: number;
       threadLock: ThreadContentLock;
       group: { groupAccount: string; groupDomain: string };
-      member: { account: string; domain: string; namespaceId: number };
+      member: { account: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
       clientUpdates: PendingClientStateFeedUpdate[];
       peers: Set<number>;
@@ -587,7 +580,7 @@ export class RemoteMemberMembershipIntentService {
       pairId: bigint;
       threadId: number;
       group: { groupAccount: string; groupDomain: string };
-      member: { account: string; domain: string; namespaceId: number };
+      member: { account: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
       clientUpdates: PendingClientStateFeedUpdate[];
       peers: Set<number>;
@@ -649,7 +642,7 @@ export class RemoteMemberMembershipIntentService {
     tx: DatabaseTransaction,
     context: {
       threadId: number;
-      member: { account: string; domain: string; namespaceId: number };
+      member: { account: string; namespaceId: number };
       clientUpdates: PendingClientStateFeedUpdate[];
       peers: Set<number>;
     },
@@ -680,7 +673,7 @@ export class RemoteMemberMembershipIntentService {
         messageEndSeq: number;
         tombstoneEndSeq: number;
       };
-      member: { account: string; domain: string; namespaceId: number };
+      member: { account: string; namespaceId: number };
       group: { groupAccount: string; groupDomain: string };
     },
   ): Promise<boolean> {

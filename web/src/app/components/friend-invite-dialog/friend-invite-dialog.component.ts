@@ -48,7 +48,7 @@ export class FriendInviteDialogComponent {
   readonly standalone = input(false);
   readonly completed = output<{
     account: string;
-    domain: string;
+    namespaceId: number;
     status: 'OUTGOING_PENDING' | 'FRIEND';
   }>();
   readonly cancelled = output<void>();
@@ -59,7 +59,7 @@ export class FriendInviteDialogComponent {
   readonly displayUserName = displayUserName;
   readonly avatarIdentity = computed(() => {
     const user = this.user();
-    return JSON.stringify([user.domain ?? 'local', user.account]);
+    return JSON.stringify([user.namespaceId, user.account]);
   });
 
   cancel(): void {
@@ -89,13 +89,12 @@ export class FriendInviteDialogComponent {
     const note = this.note().trim().slice(0, 255);
     const request = this.userService.requestRelationship({
       account: user.account,
-      domain: user.domain || 'local',
-      ...((user.domain || 'local') === 'local'
+      namespaceId: user.namespaceId,
+      ...(user.namespaceId === 0
         ? {}
         : {
             displayName: user.name,
             avatar,
-            ...(user.namespaceId > 0 ? { namespaceId: user.namespaceId } : {}),
           }),
       note,
     });
@@ -106,7 +105,7 @@ export class FriendInviteDialogComponent {
             res.data && 'threadId' in res.data ? res.data.threadId : undefined;
           const result = {
             account: this.user().account,
-            domain: this.user().domain || 'local',
+            namespaceId: this.user().namespaceId,
             status:
               threadId || res.messageKey === 'friend.msg.alreadyFriends'
                 ? 'FRIEND'

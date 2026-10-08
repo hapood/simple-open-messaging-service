@@ -10,17 +10,18 @@ describe('group invitation address validation', () => {
     { groupId: 1, users: [76] },
     { groupId: 1, users: [{ account: 'friend' }] },
     { groupId: 1, users: [{ account: '!group', domain: 'peer.test' }] },
+    { groupId: 1, users: [{ account: 'friend', namespaceId: 'x' }] },
   ])('rejects malformed invitation %j', async (body) => {
     expect(
       await validate(plainToInstance(InviteGroupDto, body)),
     ).not.toHaveLength(0);
   });
-  it('accepts an address without a user id or namespace', async () => {
+  it('accepts an address with an identity namespace id', async () => {
     expect(
       await validate(
         plainToInstance(InviteGroupDto, {
           groupId: 1,
-          users: [{ account: 'friend', domain: 'peer.test' }],
+          users: [{ account: 'friend', namespaceId: 7 }],
         }),
       ),
     ).toHaveLength(0);

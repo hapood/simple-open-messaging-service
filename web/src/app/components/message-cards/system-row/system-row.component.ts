@@ -117,7 +117,10 @@ export class SystemRowComponent {
     onCleanup: (callback: () => void) => void,
   ): void {
     const threadId = data.threadId!;
-    const participantKey = JSON.stringify([identity.account, identity.domain]);
+    const participantKey = JSON.stringify([
+      identity.profileNamespaceId,
+      identity.account,
+    ]);
     let revision =
       data.type === 'system'
         ? (data.localSystemProfileRevs?.[participantKey] ?? identity.profileRev)
@@ -206,7 +209,7 @@ export class SystemRowComponent {
                 threadId,
                 data.msgId,
                 identity.account,
-                identity.domain,
+                identity.profileNamespaceId,
                 profile.rev,
               );
           },

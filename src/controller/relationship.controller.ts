@@ -65,7 +65,7 @@ export class RelationshipController {
   @Post('revoke')
   @ApiOperation({
     summary:
-      'Revoke a user relationship/request or a pending federated group-join request by Address',
+      'Revoke a user relationship/request or a pending federated group-join request by account and identity namespace',
   })
   async revokeRelationship(
     @Request() req: FastifyRequest,
@@ -73,11 +73,11 @@ export class RelationshipController {
   ) {
     const me = req.user.userId;
     const account = dto.account.trim().toLowerCase();
-    const domain = dto.domain.trim().toLowerCase();
+    const namespaceId = dto.namespaceId;
     if (account.startsWith('!')) {
-      const outcome = await this.memberIntents.executeAddressed({
+      const outcome = await this.memberIntents.executeByNamespace({
         memberUserId: me,
-        target: { account, domain },
+        target: { account, namespaceId },
         decision: 'REVOKED',
       });
       if (isBusinessRejection(outcome))
@@ -95,16 +95,13 @@ export class RelationshipController {
       decision: 'REVOKED',
       target: {
         account,
-        domain,
-        ...(dto.namespaceId !== undefined
-          ? { namespaceId: dto.namespaceId }
-          : {}),
+        namespaceId,
       },
     });
     if (isBusinessRejection(outcome) && outcome.code === BusinessCode.NOT_FOUND)
       return businessEnvelope(
         BusinessCode.FRIEND_NOT_FOUND,
-        `relationship with [${account}@${domain}] does not exist`,
+        `relationship with account [${account}], namespaceId [${namespaceId}] does not exist`,
         { status: outcome.status, reason: outcome.reason },
       );
     return this.intentResult(outcome);
@@ -122,15 +119,15 @@ export class RelationshipController {
   ) {
     const me = req.user.userId;
     const account = dto.account.trim().toLowerCase();
-    const domain = dto.domain.trim().toLowerCase();
+    const namespaceId = dto.namespaceId;
     if (account.startsWith('!')) {
       return this.memberIntentResult(
-        await this.memberIntents.executeAddressed({
+        await this.memberIntents.executeByNamespace({
           memberUserId: me,
-          target: { account, domain },
+          target: { account, namespaceId },
           decision: 'REQUESTED',
           note: dto.note ?? '',
-          ...(dto.namespaceId === 0
+          ...(namespaceId === 0
             ? {}
             : {
                 snapshot: {
@@ -142,39 +139,15 @@ export class RelationshipController {
         }),
       );
     }
-    if (dto.namespaceId !== undefined && dto.namespaceId !== 0) {
-      // The addressed request runs in the intent transaction like the local
-      // branch: quota admission inside it, the peer feed item and post-commit
-      // wake owned by the composed statement.
-      const outcome = await this.userIntents.execute(
-        {
-          userId: me,
-          decision: 'REQUESTED',
-          target: {
-            account,
-            domain,
-            ...(dto.namespaceId !== undefined
-              ? { namespaceId: dto.namespaceId }
-              : {}),
-          },
-          note: dto.note ?? '',
-        },
-        { admissionInTx: (tx) => this.userQuota.tick(me, 'requests', tx) },
-      );
-      return this.intentResult(outcome);
-    }
-    // Quota admission runs inside the intent transaction,
-    // so a rolled-back request does not consume the counter.
+    // A known-nsid target: the request follows the row's current domain binding
+    // across a review-approved re-bind; only a reset retirement is a mismatch.
     const outcome = await this.userIntents.execute(
       {
         userId: me,
         decision: 'REQUESTED',
         target: {
           account,
-          domain,
-          ...(dto.namespaceId !== undefined
-            ? { namespaceId: dto.namespaceId }
-            : {}),
+          namespaceId,
         },
         note: dto.note ?? '',
       },
@@ -201,7 +174,7 @@ export class RelationshipController {
   @Post('accept')
   @ApiOperation({
     summary:
-      'Accept a relationship request by intent id or Address (friend → P2P thread; group → join as MEMBER)',
+      'Accept a relationship request by account and identity namespace (friend → P2P thread; group → join as MEMBER)',
   })
   async acceptRelationship(
     @Request() req: FastifyRequest,
@@ -209,17 +182,17 @@ export class RelationshipController {
   ) {
     const me = req.user.userId;
     const account = normalizeAccount(dto.account);
-    const domain = dto.domain.trim().toLowerCase();
+    const namespaceId = dto.namespaceId;
     if (account.startsWith('!')) {
       return this.memberIntentResult(
-        await this.memberIntents.executeAddressed({
+        await this.memberIntents.executeByNamespace({
           memberUserId: me,
-          target: { account, domain },
+          target: { account, namespaceId },
           decision: 'ACCEPTED',
         }),
       );
     }
-    // Address resolution and the live-request gate belong to the intent
+    // Identity resolution and the live-request gate belong to the intent
     // transaction, so stale or missing requests return REJECTED instead of
     // escaping through the exception pipeline.
     const outcome = await this.userIntents.execute({
@@ -227,10 +200,7 @@ export class RelationshipController {
       decision: 'ACCEPTED',
       target: {
         account,
-        domain,
-        ...(dto.namespaceId !== undefined
-          ? { namespaceId: dto.namespaceId }
-          : {}),
+        namespaceId,
       },
     });
     if (isBusinessRejection(outcome) && outcome.code === BusinessCode.NOT_FOUND)

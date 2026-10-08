@@ -6,31 +6,27 @@
   (keydown.enter)="opened.emit()"
 >
   <span class="avatar">
+    @let resolvedDomain = requestItem().namespaceId | namespaceDomain | async;
     <app-user-avatar
       [type]="
         requestItem().kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
       "
       [name]="requestItem().name ?? ''"
       [account]="requestItem().account"
-      [federatedDomain]="
-        requestItem().kind === 'GROUP' || requestItem().namespaceId !== 0
-          ? requestItem().domain
-          : null
-      "
+      [federatedDomain]="displayDomain(resolvedDomain)"
       [profileEvidence]="profileEvidence()"
     />
   </span>
   <span class="content">
     <span class="heading">
       <app-user-identity-label
-        [name]="requestItem().name ?? ('friend.invalidUser' | transloco)"
-        [domain]="
+        [name]="
           requestItem().kind === 'GROUP'
-            ? requestItem().sourceLabel
-            : requestItem().namespaceId !== 0
-              ? requestItem().domain
-              : null
+            ? (requestItem().name ?? ('friend.invalidUser' | transloco))
+            : (requestItem().account ?? ('friend.invalidUser' | transloco))
         "
+        [domain]="displayDomain(resolvedDomain)"
+        [profileEvidence]="profileEvidence()"
       />
     </span>
     <span class="message" [class.error]="requestItem().errText">

@@ -15,7 +15,6 @@ export interface GroupJoinRequest {
   namespaceId: number;
   profileRev: number;
   account: string;
-  domain: string;
   name: string;
   avatar: string;
   note: string;
@@ -28,7 +27,6 @@ export interface GroupInviteCandidate {
   namespaceId: number;
   profileRev: number;
   account: string;
-  domain: string;
   name: string;
   avatar: string;
   bio: string;
@@ -77,15 +75,15 @@ export class GroupService {
 
   /** Invite each target through the manager-authored membership transaction. */
   inviteUsers(params: {
-    users: { account: string; domain: string }[];
+    users: { account: string; namespaceId: number }[];
     groupId: number;
   }) {
     return this.http.post<
       StandardResponse<{
-        invited: { account: string; domain: string }[];
+        invited: { account: string; namespaceId: number }[];
         skipped: Array<{
           account: string;
-          domain: string;
+          namespaceId: number;
           reason: string;
           code: string;
           message: string;
@@ -122,7 +120,11 @@ export class GroupService {
     >(`${apiPrefix()}/group/dissolve`, params);
   }
 
-  kickMember(params: { groupId: number; account: string; domain: string }) {
+  kickMember(params: {
+    groupId: number;
+    account: string;
+    namespaceId: number;
+  }) {
     return this.http.post<StandardResponse<MembershipIntentResult>>(
       `${apiPrefix()}/group/kick`,
       params,
@@ -132,7 +134,7 @@ export class GroupService {
   transferOwnership(params: {
     groupId: number;
     account: string;
-    domain: string;
+    namespaceId: number;
   }) {
     return this.http.post<StandardResponse<GroupRosterRoleResult>>(
       `${apiPrefix()}/group/transfer`,
@@ -144,7 +146,7 @@ export class GroupService {
   setRole(params: {
     groupId: number;
     account: string;
-    domain: string;
+    namespaceId: number;
     role: 'ADMIN' | 'MEMBER';
   }) {
     return this.http.post<StandardResponse<GroupRosterRoleResult>>(
@@ -206,7 +208,7 @@ export class GroupService {
   acceptJoinRequest(params: {
     groupId: number;
     account: string;
-    domain: string;
+    namespaceId: number;
   }) {
     return this.http.post<StandardResponse<MembershipIntentResult>>(
       `${apiPrefix()}/group/join-request/accept`,
@@ -217,7 +219,7 @@ export class GroupService {
   rejectJoinRequest(params: {
     groupId: number;
     account: string;
-    domain: string;
+    namespaceId: number;
   }) {
     return this.http.post<StandardResponse<MembershipIntentResult>>(
       `${apiPrefix()}/group/join-request/reject`,
@@ -228,7 +230,7 @@ export class GroupService {
   revokeInvitation(params: {
     groupId: number;
     account: string;
-    domain: string;
+    namespaceId: number;
   }) {
     return this.http.post<StandardResponse<MembershipIntentResult>>(
       `${apiPrefix()}/group/invitation/revoke`,

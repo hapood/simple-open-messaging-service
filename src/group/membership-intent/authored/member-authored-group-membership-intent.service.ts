@@ -151,40 +151,39 @@ export class MemberAuthoredGroupMembershipIntentService {
     return applied.outcome;
   }
 
-  async executeAddressed(params: {
+  async executeByNamespace(params: {
     memberUserId: number;
-    target: { account: string; domain: string };
-    decision: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
+    target: { account: string; namespaceId: number };
+    decision: 'ACCEPTED' | 'REQUESTED' | 'REVOKED';
     note?: string;
     snapshot?: FederatedPendingProfileSnapshot;
     admissionInTx?: (tx: DatabaseTransaction) => Promise<void>;
   }): Promise<MemberAuthoredGroupMembershipIntentResult> {
     const account = normalizeAccount(params.target.account);
-    const domain = params.target.domain.trim().toLowerCase();
+    const namespaceId = params.target.namespaceId;
     if (!account.startsWith('!'))
       return this.reject(
         'GROUP_NOT_FOUND',
         BusinessCode.NOT_FOUND,
         'group not found',
       );
-    const storedDomain = domain;
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
     const applied = await this.deps.database.db.transaction(async (tx) => {
-      const namespaceId = (
-        await tx.execute<{ namespaceId: number }>(sql`
-          SELECT ns.id AS "namespaceId"
+      const storedDomain = (
+        await tx.execute<{ domain: string }>(sql`
+          SELECT ns.domain
           FROM "IdentityNamespace" ns
-          WHERE ns.domain = ${storedDomain}
+          WHERE ns.id = ${namespaceId}
             AND ns.active = true
             AND ns."retiredAt" IS NULL
         `)
-      ).rows[0]?.namespaceId;
-      if (namespaceId === undefined)
+      ).rows[0]?.domain;
+      if (!storedDomain)
         return {
           outcome: this.reject(
             'GROUP_NOT_FOUND',
-            BusinessCode.NOT_FOUND,
-            'group not found',
+            BusinessCode.INVITE_NOT_FOUND,
+            'group request not found',
           ),
           peers: new Map<number, bigint>(),
         };
@@ -260,7 +259,7 @@ export class MemberAuthoredGroupMembershipIntentService {
    * locked mutation writer before any intent or projection write. */
   async executeQueryDeniedRevocation(params: {
     threadId: number;
-    group: { account: string; domain: string; namespaceId: number };
+    group: { account: string; namespaceId: number };
     memberUserId: number;
     expectedAuthorizationEpoch: number;
   }): Promise<QueryDeniedMembershipRevocationResult> {

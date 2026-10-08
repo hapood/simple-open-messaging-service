@@ -86,12 +86,17 @@ describe('federated Address friend requests', () => {
       }),
     ).toBeUndefined();
 
+    const namespaceBOnA = (
+      await appA.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.domain, FED_DOMAIN_B),
+      })
+    )!.id;
     const sent = await request(appA.baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${aliceToken}`)
       .send({
         account: 'address-bob',
-        domain: FED_DOMAIN_B,
+        namespaceId: namespaceBOnA,
         displayName: 'Address Bob',
         note: 'address request',
       });
@@ -160,10 +165,15 @@ describe('federated Address friend requests', () => {
         }),
       }),
     });
+    const namespaceAOnB = (
+      await appB.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.domain, FED_DOMAIN_A),
+      })
+    )!.id;
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bobToken}`)
-      .send({ account: 'address-alice', domain: FED_DOMAIN_A });
+      .send({ account: 'address-alice', namespaceId: namespaceAOnB });
     expect(accepted.body.code, JSON.stringify(accepted.body)).toBe(
       BusinessCode.OK,
     );
@@ -267,7 +277,14 @@ describe('federated Address friend requests', () => {
 
   it('refreshes and revokes an outgoing request without a foreign account row', async () => {
     const charlie = await registerAndLogin(appB, 'address-charlie', 'Charlie');
-    const target = { account: charlie.account, domain: FED_DOMAIN_B };
+    const target = {
+      account: charlie.account,
+      namespaceId: (
+        await appA.database.query.identityNamespace.findFirst({
+          where: eq(identityNamespace.domain, FED_DOMAIN_B),
+        })
+      )!.id,
+    };
     const send = async (note: string) => {
       const response = await request(appA.baseUrl)
         .post('/api/v1/relationship/request')
@@ -419,8 +436,22 @@ describe('federated Address friend requests', () => {
       'address-reject-bob',
       'Reject Bob',
     );
-    const target = { account: bob.account, domain: FED_DOMAIN_B };
-    const reverseTarget = { account: alice.account, domain: FED_DOMAIN_A };
+    const target = {
+      account: bob.account,
+      namespaceId: (
+        await appA.database.query.identityNamespace.findFirst({
+          where: eq(identityNamespace.domain, FED_DOMAIN_B),
+        })
+      )!.id,
+    };
+    const reverseTarget = {
+      account: alice.account,
+      namespaceId: (
+        await appB.database.query.identityNamespace.findFirst({
+          where: eq(identityNamespace.domain, FED_DOMAIN_A),
+        })
+      )!.id,
+    };
     const send = async (note: string) => {
       const response = await request(appA.baseUrl)
         .post('/api/v1/relationship/request')
@@ -477,7 +508,7 @@ describe('federated Address friend requests', () => {
 
     const lookup = await request(appA.baseUrl)
       .get('/api/v1/user/resolve-federated-stream')
-      .query(target)
+      .query({ account: bob.account, domain: FED_DOMAIN_B })
       .set('Authorization', `Bearer ${alice.token}`)
       .set('Accept', 'text/event-stream');
     expect(lookup.status).toBe(200);
@@ -552,12 +583,15 @@ describe('federated Address friend requests', () => {
     const group = (await appA.database.query.messageThread.findFirst({
       where: eq(messageThread.id, threadId),
     }))!;
+    const ns = (await appA.database.query.identityNamespace.findFirst({
+      where: eq(identityNamespace.domain, FED_DOMAIN_B),
+    }))!;
     const invite = await request(appA.baseUrl)
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${aliceToken}`)
       .send({
         groupId: threadId,
-        users: [{ account: 'address-bob', domain: FED_DOMAIN_B }],
+        users: [{ account: 'address-bob', namespaceId: ns.id }],
       });
     expect(invite.body.code).toBe(BusinessCode.OK);
     const authoredInvite = await appA.database.query.peerStateFeed.findFirst({
@@ -590,9 +624,6 @@ describe('federated Address friend requests', () => {
       .set('Authorization', `Bearer ${bobToken}`)
       .send({ groupId: mirror.id });
     expect(accepted.body.code).toBe(BusinessCode.OK);
-    const ns = (await appA.database.query.identityNamespace.findFirst({
-      where: eq(identityNamespace.domain, FED_DOMAIN_B),
-    }))!;
     const remote = {
       account: 'address-bob',
       domain: FED_DOMAIN_B,
@@ -615,7 +646,7 @@ describe('federated Address friend requests', () => {
       .send({
         groupId: threadId,
         account: remote.account,
-        domain: remote.domain,
+        namespaceId: remote.namespaceId,
       });
     expect(kicked.body.code).toBe(BusinessCode.OK);
     await vi.waitFor(
@@ -692,7 +723,14 @@ describe('federated Address friend requests', () => {
   }, 60_000);
 
   it('concludes a received revocation inline and permits reauthorization', async () => {
-    const target = { account: 'address-bob', domain: FED_DOMAIN_B };
+    const target = {
+      account: 'address-bob',
+      namespaceId: (
+        await appA.database.query.identityNamespace.findFirst({
+          where: eq(identityNamespace.domain, FED_DOMAIN_B),
+        })
+      )!.id,
+    };
     const revoke = await request(appA.baseUrl)
       .post('/api/v1/relationship/revoke')
       .set('Authorization', `Bearer ${aliceToken}`)
@@ -812,7 +850,7 @@ describe('federated Address friend requests', () => {
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bobToken}`)
-      .send({ account: peer.account, domain: peer.domain });
+      .send({ account: peer.account, namespaceId: peer.namespaceId });
     expect(accepted.body.code).toBe(BusinessCode.OK);
     expect(accepted.body.data).toMatchObject({ status: 'OK' });
     expect(

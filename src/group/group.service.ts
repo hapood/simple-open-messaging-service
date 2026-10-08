@@ -206,7 +206,6 @@ export class GroupService {
       namespaceId: number;
       profileRev: number;
       account: string;
-      domain: string;
       name: string;
       avatar: string;
       note: string;
@@ -218,13 +217,11 @@ export class GroupService {
           AND projection."expiresAt" <= CURRENT_TIMESTAMP
           THEN 'EXPIRED' ELSE projection.status END AS status,
         projection."memberAccount" AS account,
-        ns.domain AS domain,
         projection."profileNamespaceId" AS "namespaceId", projection."memberProfileRev" AS "profileRev",
         projection."memberAccount" AS name, '' AS avatar, projection.note,
         (EXTRACT(EPOCH FROM projection."requestedAt") * 1000)::bigint AS "requestedAt",
         (EXTRACT(EPOCH FROM projection."expiresAt") * 1000)::bigint AS "expiresAt"
       FROM "GroupRequestProjection" projection
-      JOIN "IdentityNamespace" ns ON ns.id = projection."profileNamespaceId"
       WHERE projection."threadId" = ${threadId}
         AND projection.direction = ${direction}
         ${before === undefined ? sql.empty() : sql`AND projection."feedId" < ${before}`}

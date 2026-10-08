@@ -270,7 +270,7 @@ describe('SystemRowComponent', () => {
         42,
         1,
         'alice',
-        'peer.test',
+        12,
         4,
       ),
     );
@@ -325,7 +325,7 @@ describe('SystemRowComponent', () => {
       },
       {
         isGroupConversation: true,
-        localSystemProfileRevs: { '["alice","peer.test"]': 4 },
+        localSystemProfileRevs: { '[12,"alice"]': 4 },
       },
     );
     await vi.waitFor(() =>

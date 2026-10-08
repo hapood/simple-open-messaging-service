@@ -58,14 +58,14 @@ export type GroupAuthoredMembershipIntentCommand =
       threadId: number;
       managerUserId: number;
       decision: 'REQUESTED';
-      target: { account: string; domain: string };
+      target: { account: string; namespaceId: number };
       note?: string;
     }
   | {
       threadId: number;
       managerUserId: number;
       decision: 'ACCEPTED';
-      target: { account: string; domain: string };
+      target: { account: string; namespaceId: number };
       scope: 'APPLICATION' | 'INVITATION';
       note?: never;
     }
@@ -73,7 +73,7 @@ export type GroupAuthoredMembershipIntentCommand =
       threadId: number;
       managerUserId: number;
       decision: 'REVOKED';
-      target: { account: string; domain: string };
+      target: { account: string; namespaceId: number };
       scope: 'APPLICATION' | 'INVITATION' | 'MEMBER';
       note?: never;
     };
@@ -100,7 +100,6 @@ export type QueryDeniedMembershipRevocationResult =
 
 type Applicant = {
   account: string;
-  domain: string;
   namespaceId: number;
 };
 
@@ -187,7 +186,7 @@ export class GroupAuthoredMembershipIntentService {
    * mutation locks and fences the captured thread generation at commit time. */
   async executeQueryDeniedRevocation(params: {
     threadId: number;
-    group: { account: string; domain: string; namespaceId: 0 };
+    group: { account: string; namespaceId: 0 };
     member: AccountSubjectAddress;
     expectedAuthorizationEpoch: number;
   }): Promise<QueryDeniedMembershipRevocationResult> {
@@ -261,20 +260,17 @@ export class GroupAuthoredMembershipIntentService {
     >,
   ): Promise<ValidatedDecision | GroupAuthoredMembershipIntentResult> {
     const targetAccount = normalizeAccount(params.target.account);
-    const targetDomain = params.target.domain.trim().toLowerCase();
     const candidate = (
       await tx.execute<{
         pairId: string;
         account: string;
-        domain: string;
         namespaceId: number;
         groupAccount: string;
-        groupDomain: string;
       }>(
         groupAuthoredMembershipAddressLocatorSql({
           threadId: params.threadId,
           targetAccount,
-          targetDomain,
+          targetNamespaceId: params.target.namespaceId,
         }),
       )
     ).rows[0];
@@ -290,7 +286,6 @@ export class GroupAuthoredMembershipIntentService {
       );
     const member: Applicant = {
       account: candidate.account,
-      domain: candidate.domain,
       namespaceId: candidate.namespaceId,
     };
     await lockBusinessAccountsInTx(tx, [
@@ -405,7 +400,6 @@ export class GroupAuthoredMembershipIntentService {
     >,
   ): Promise<ValidatedDecision | GroupAuthoredMembershipIntentResult> {
     const targetAccount = normalizeAccount(params.target.account);
-    const targetDomain = params.target.domain.trim().toLowerCase();
     const located = (
       await tx.execute<{
         groupAccount: string;
@@ -415,7 +409,7 @@ export class GroupAuthoredMembershipIntentService {
         groupAuthoredInvitationLocatorSql({
           threadId: params.threadId,
           targetAccount,
-          targetDomain,
+          targetNamespaceId: params.target.namespaceId,
         }),
       )
     ).rows[0];
@@ -433,7 +427,6 @@ export class GroupAuthoredMembershipIntentService {
       );
     const member: Applicant = {
       account: targetAccount,
-      domain: targetDomain,
       namespaceId: located.targetNamespaceId,
     };
     await lockBusinessAccountsInTx(tx, [
@@ -507,7 +500,7 @@ export class GroupAuthoredMembershipIntentService {
   private async lockParticipantsInTx(
     tx: DatabaseTransaction,
     params: GroupAuthoredMembershipIntentCommand,
-    member: { account: string; domain: string; namespaceId: number },
+    member: Applicant,
   ): Promise<void> {
     await tx.execute(
       sql`SELECT participant.id FROM "AccountThreadState" participant
@@ -533,7 +526,6 @@ export class GroupAuthoredMembershipIntentService {
         pairId,
         managerUserId: params.managerUserId,
         targetAccount: member.account,
-        targetDomain: member.domain,
         targetNamespaceId: member.namespaceId,
       }),
     );
@@ -615,7 +607,6 @@ export class GroupAuthoredMembershipIntentService {
       );
     const member: Applicant = {
       account: row.memberAccount!,
-      domain: row.memberDomain!,
       namespaceId: row.profileNamespaceId!,
     };
     const memberNote: string = row.memberNote ?? '';
@@ -713,7 +704,6 @@ export class GroupAuthoredMembershipIntentService {
       );
     const member: Applicant = {
       account: row.memberAccount!,
-      domain: row.memberDomain!,
       namespaceId: row.profileNamespaceId!,
     };
     return this.finalizeValidationInTx(tx, {
@@ -799,7 +789,6 @@ export class GroupAuthoredMembershipIntentService {
     );
     const member: Applicant = {
       account: row.memberAccount!,
-      domain: row.memberDomain!,
       namespaceId: row.profileNamespaceId!,
     };
     return this.finalizeValidationInTx(tx, {
@@ -821,7 +810,6 @@ export class GroupAuthoredMembershipIntentService {
         groupDescription: row.description,
         groupProfileRev: row.profileRev,
         targetAccount: member.account,
-        targetDomain: member.domain,
         targetNamespaceId: member.namespaceId,
         localTargetId: row.localMemberId,
         note: (params.note ?? '').slice(0, 255),

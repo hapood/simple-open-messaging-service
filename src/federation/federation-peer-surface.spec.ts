@@ -206,7 +206,6 @@ describe('thread-query FORBIDDEN convergence', () => {
         decision: 'REVOKED',
         target: {
           account: 'remote-user',
-          domain: 'peer.test',
           namespaceId: 5,
         },
       },

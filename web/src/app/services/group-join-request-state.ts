@@ -41,11 +41,11 @@ export function mergeGroupJoinRequestPage(
 ): GroupJoinRequest[] {
   const byApplicant = new Map<string, GroupJoinRequest>(
     current.map(
-      (row) => [JSON.stringify([row.account, row.domain]), row] as const,
+      (row) => [JSON.stringify([row.namespaceId, row.account]), row] as const,
     ),
   );
   for (const row of incoming) {
-    const key = JSON.stringify([row.account, row.domain]);
+    const key = JSON.stringify([row.namespaceId, row.account]);
     const previous = byApplicant.get(key);
     if (!previous || row.feedId >= previous.feedId) byApplicant.set(key, row);
   }

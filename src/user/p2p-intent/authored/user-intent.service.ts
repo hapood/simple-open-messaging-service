@@ -62,11 +62,13 @@ import type { FederationNamespaceService } from '../../../federation/federation-
 import { RELATIONSHIP_INTENT_REQUEST_TTL_MS } from '../../../common/relationship-intent-state.js';
 
 /** One command family: a local user's authored intent about one P2P pair.
- * The target is addressed; the pair is minted when absent (REQUESTED only). */
+ * The target is addressed by account and identity namespace; the pair is
+ * minted when absent (REQUESTED only). The domain is resolved from the
+ * namespace row's current binding — a handshake-only concern. */
 export interface UserIntentCommand {
   userId: number;
   decision: 'ACCEPTED' | 'REVOKED' | 'REQUESTED';
-  target: { account: string; domain: string; namespaceId?: number };
+  target: { account: string; namespaceId: number };
   note?: string;
 }
 
@@ -242,20 +244,16 @@ export class UserIntentService {
     ValidatedIntent | NoOpIntent | RejectedIntent | StaleAuthorization
   > {
     const targetAccount = normalizeAccount(params.target.account);
-    const targetDomain = params.target.domain.trim().toLowerCase();
-    // Identity addressing: a namespace id is the durable key; a domain is
-    // only a first-contact entry hint and a delivery address. A caller with
-    // prior knowledge (a contact card or roster reference carries the nsid)
-    // addresses the peer BY ID — the intent then follows the row's current
-    // domain binding across a review-approved re-bind, and only a reset
-    // retirement (the identity the caller knew no longer exists) is a
-    // mismatch. First contact by address resolves the domain's current
-    // active namespace, exactly as before.
-    let effectiveDomain = targetDomain;
+    // Identity addressing: the namespace id is the durable key. The target's
+    // delivery domain is resolved from the namespace row's current binding;
+    // namespace zero (the local authority) keeps the node's own identity
+    // domain because its namespace row is intentionally inactive.
     let targetNamespaceId: number;
+    let effectiveDomain: string;
     if (params.target.namespaceId === 0) {
       targetNamespaceId = 0;
-    } else if (params.target.namespaceId !== undefined) {
+      effectiveDomain = await this.deps.namespaces.localDomainInTx(tx);
+    } else {
       try {
         const row = await this.deps.namespaces.captureActiveByIdInTx(
           tx,
@@ -270,27 +268,6 @@ export class UserIntentService {
           BusinessCode.FEDERATION_IDENTITY_MISMATCH,
           `target namespace ${params.target.namespaceId} is retired or unknown`,
         );
-      }
-    } else {
-      // First contact by domain: the node's own identity domain is namespace 0
-      // by definition and its row is intentionally inactive, so resolve it
-      // before the active federation-peer lookup.
-      const localDomain = await this.deps.namespaces.localDomainInTx(tx);
-      if (targetDomain === localDomain) {
-        targetNamespaceId = 0;
-      } else {
-        try {
-          targetNamespaceId = (
-            await this.deps.namespaces.captureActiveInTx(tx, targetDomain)
-          ).namespaceId;
-        } catch (error) {
-          if (!(error instanceof BusinessException)) throw error;
-          return this.reject(
-            'PEER_UNAVAILABLE',
-            BusinessCode.FEDERATION_DELIVERY_FAILED,
-            `federation peer ${targetDomain} is unavailable`,
-          );
-        }
       }
     }
     const located = await this.locateInTx(tx, {
@@ -692,7 +669,6 @@ export class UserIntentService {
           decision: 'REVOKED',
           target: {
             account: context.actor.account,
-            domain: context.actor.domain,
             namespaceId: context.actor.namespaceId,
           },
         },

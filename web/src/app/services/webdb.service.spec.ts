@@ -810,14 +810,14 @@ describe('WebdbService', () => {
       };
       await webdb.putCachedMessages([message, { ...message, seq: 2 }]);
       expect(
-        await webdb.correctSystemMessageProfile(42, 1, 'alice', 'peer.test', 2),
+        await webdb.correctSystemMessageProfile(42, 1, 'alice', 7, 2),
       ).toBe(true);
       expect(
-        await webdb.correctSystemMessageProfile(42, 1, 'alice', 'peer.test', 2),
+        await webdb.correctSystemMessageProfile(42, 1, 'alice', 7, 2),
       ).toBe(false);
       await webdb.putCachedMessages([message, { ...message, seq: 2 }]);
       expect(await webdb.getMessage(42, 1)).toMatchObject({
-        localSystemProfileRevs: { '["alice","peer.test"]': 2 },
+        localSystemProfileRevs: { '[7,"alice"]': 2 },
       });
       expect(await webdb.getMessage(42, 2)).not.toHaveProperty(
         'localSystemProfileRevs',

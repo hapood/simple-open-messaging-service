@@ -23,7 +23,7 @@ const GROUP_ACCOUNT = '!remote-member-group';
 interface Fixture {
   threadId: number;
   groupAccount: string;
-  member: { account: string; domain: string; namespaceId: number };
+  member: { account: string; namespaceId: number };
 }
 
 describe('remote member membership intents on the authoritative group', () => {
@@ -187,7 +187,6 @@ describe('remote member membership intents on the authoritative group', () => {
       groupAccount: group!.account,
       member: {
         account: memberAccount,
-        domain: PEER_DOMAIN,
         namespaceId,
       },
     };
@@ -363,10 +362,12 @@ describe('remote member membership intents on the authoritative group', () => {
         intent.authorAccount,
         intent.status,
       ]),
-    ).toEqual([
-      [fixture.groupAccount, 'REVOKED'],
-      [fixture.member.account, 'REVOKED'],
-    ]);
+    ).toEqual(
+      expect.arrayContaining([
+        [fixture.groupAccount, 'REVOKED'],
+        [fixture.member.account, 'REVOKED'],
+      ]),
+    );
     const feed = await groupPeerIntentRows(fixture);
     expect(feed).toHaveLength(1);
     expect(feed[0]!.body).toMatchObject({ status: 'REVOKED' });

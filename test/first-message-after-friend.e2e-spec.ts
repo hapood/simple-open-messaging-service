@@ -83,7 +83,7 @@ describe('First message after friend-add is delivered (single instance)', () => 
     const _invite = await request(baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${alice.token}`)
-      .send({ account: 'bob', domain: localIdentityDomain(), namespaceId: 0 })
+      .send({ account: 'bob', namespaceId: 0 })
       .expect((res) => {
         expect(res.status).toBe(200);
         expect(res.body.code).toBe(0);
@@ -95,7 +95,6 @@ describe('First message after friend-add is delivered (single instance)', () => 
       .set('Authorization', `Bearer ${bob.token}`)
       .send({
         account: 'alice',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(accept.status).toBe(200);
@@ -235,7 +234,6 @@ describe('First message after friend-add is delivered (single instance)', () => 
         .set('Authorization', `Bearer ${alice.token}`)
         .send({
           account: 'bob',
-          domain: localIdentityDomain(),
           namespaceId: 0,
         });
       expect(removed.status).toBe(200);
@@ -336,7 +334,6 @@ describe('First message after friend-add is delivered (single instance)', () => 
           decision: 'REQUESTED',
           target: {
             account: foreignBob.account,
-            domain: foreignBob.domain,
             namespaceId: foreignBob.namespaceId,
           },
         },
@@ -409,7 +406,6 @@ describe('First message after friend-add is delivered (single instance)', () => 
           decision: 'REQUESTED',
           target: {
             account: foreignBob.account,
-            domain: foreignBob.domain,
             namespaceId: foreignBob.namespaceId,
           },
         },

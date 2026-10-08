@@ -60,15 +60,11 @@ export class GroupInviteAddressDto {
   @Matches(/^[^!\s@][^\s@]*$/)
   account!: string;
 
-  @ApiProperty({
-    example: 'example.com',
-    description:
-      'User home domain. For a local user, use the configured local identity domain.',
-  })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(63)
-  domain!: string;
+  @ApiProperty({ example: 7, description: 'Invitee identity namespace id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  namespaceId!: number;
 }
 
 export class InviteGroupDto {
@@ -200,11 +196,11 @@ class GroupMemberTargetDto {
   @MaxLength(31)
   account!: string;
 
-  @ApiProperty({ example: 'example.com', description: 'Member home domain' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(63)
-  domain!: string;
+  @ApiProperty({ example: 7, description: 'Member identity namespace id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  namespaceId!: number;
 }
 
 export class HandleGroupJoinRequestDto extends GroupMemberTargetDto {}

@@ -83,14 +83,13 @@ describe('group disband task handlers', () => {
         namespaceId: 5,
         expectedAuthorizationEpoch: 8,
         groupAccount: '!group',
-        groupDomain: 'local',
         groupNamespaceId: 0,
       },
     };
     await handler.execute(task);
     expect(executeQueryDeniedRevocation).toHaveBeenCalledWith({
       threadId: 12,
-      group: { account: '!group', domain: 'local', namespaceId: 0 },
+      group: { account: '!group', namespaceId: 0 },
       member: {
         account: 'remote',
         namespaceId: 5,

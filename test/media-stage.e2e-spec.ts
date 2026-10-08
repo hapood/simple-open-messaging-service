@@ -144,7 +144,6 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
           decision: 'REQUESTED',
           target: {
             account: targetAccount,
-            domain: localIdentityDomain(),
             namespaceId: 0,
           },
           note,

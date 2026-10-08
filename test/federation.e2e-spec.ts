@@ -482,7 +482,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         account: 'bob',
-        domain: DOM_B,
+        namespaceId: namespaceBOnA,
         displayName: 'Bob',
         note: 'hi from aaa',
       });
@@ -556,7 +556,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ account: 'alice', domain: DOM_A });
+      .send({ account: 'alice', namespaceId: namespaceAOnB });
     expect(accepted.body.code).toBe(BusinessCode.OK);
     // The address-only acceptance activates synchronously on the accepting
     // side; the origin learns through the peer state-feed push.
@@ -701,7 +701,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .set('Authorization', `Bearer ${alpha.token}`)
         .send({
           account: betaAccount,
-          domain: DOM_B,
+          namespaceId: namespaceBOnA,
           displayName: 'Cross Beta',
           note: 'A request',
         });
@@ -715,7 +715,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .set('Authorization', `Bearer ${beta.token}`)
         .send({
           account: alphaAccount,
-          domain: DOM_A,
+          namespaceId: namespaceAOnB,
           displayName: 'Cross Alpha',
           note: 'B request',
         });
@@ -2053,7 +2053,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: groupThreadA,
-        users: [{ account: 'bob', domain: DOM_B }],
+        users: [
+          { account: 'bob', namespaceId: bobAddressOnA.namespaceId },
+        ],
       });
     expect(invite.body.code, JSON.stringify(invite.body)).toBe(BusinessCode.OK);
 
@@ -2476,12 +2478,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       'erin-join-projection',
       'Erin',
     );
+    const namespaceAOnB = await requireActiveNamespaceId(appB, DOM_A);
     const apply = await request(appB.baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${tokenErin}`)
       .send({
         account: firstGroupAccount,
-        domain: DOM_A,
+        namespaceId: namespaceAOnB,
         displayName: 'fed-group',
         note: 'federated application',
       });
@@ -2540,7 +2543,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .send({
         groupId: firstGroupThreadA,
         account: projected.memberAccount,
-        domain: DOM_B,
+        namespaceId: await requireActiveNamespaceId(appA, DOM_B),
       });
     expect(rejected.body.code, JSON.stringify(rejected.body)).toBe(
       BusinessCode.OK,
@@ -2681,7 +2684,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenErin}`)
       .send({
         account: firstGroupAccount,
-        domain: DOM_A,
+        namespaceId: namespaceAOnB,
         displayName: 'fed-group',
         note: 'renewed application',
       });
@@ -2713,7 +2716,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const revoked = await request(appB.baseUrl)
       .post('/api/v1/relationship/revoke')
       .set('Authorization', `Bearer ${tokenErin}`)
-      .send({ account: firstGroupAccount, domain: DOM_A });
+      .send({ account: firstGroupAccount, namespaceId: namespaceAOnB });
     expect(revoked.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTask(appB.database, revoked.body);
     await vi.waitFor(
@@ -2853,14 +2856,22 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: firstGroupThreadA,
-        users: [{ account: 'dave', domain: DOM_B }],
+        users: [
+          {
+            account: 'dave',
+            namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+          },
+        ],
       });
     expect(groupInviteDave.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, groupInviteDave.body);
     expect(
       groupInviteDave.body.data.invited,
       JSON.stringify(groupInviteDave.body),
-    ).toContainEqual({ account: 'dave', domain: DOM_B });
+    ).toContainEqual({
+      account: 'dave',
+      namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+    });
     await vi.waitFor(
       async () => {
         const relationship = await findGroupRelationship(
@@ -3363,14 +3374,22 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: firstGroupThreadA,
-        users: [{ account: 'dave', domain: DOM_B }],
+        users: [
+          {
+            account: 'dave',
+            namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+          },
+        ],
       });
     expect(reinvite.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, reinvite.body);
     expect(
       reinvite.body.data.invited,
       JSON.stringify(reinvite.body),
-    ).toContainEqual({ account: 'dave', domain: DOM_B });
+    ).toContainEqual({
+      account: 'dave',
+      namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+    });
     await vi.waitFor(
       async () => {
         const relationship = await findGroupRelationship(
@@ -3580,7 +3599,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: firstGroupThreadA,
-        users: [{ account: 'bob', domain: DOM_B }],
+        users: [
+          { account: 'bob', namespaceId: bobAddressOnA.namespaceId },
+        ],
       });
     expect(reinviteBob.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, reinviteBob.body);
@@ -3726,7 +3747,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .set('Authorization', `Bearer ${tokenB}`)
         .send({
           account: firstGroupAccount,
-          domain: DOM_A,
+          namespaceId: await requireActiveNamespaceId(appB, DOM_A),
           displayName: 'fed-group',
         });
       expect(rejoin.body.code).toBe(BusinessCode.OK);
@@ -3830,7 +3851,12 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: originThreadId,
-        users: [{ account: 'dave', domain: DOM_B }],
+        users: [
+          {
+            account: 'dave',
+            namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+          },
+        ],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, invited.body);
@@ -4073,7 +4099,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const res = await request(appA.baseUrl)
       .post('/api/v1/relationship/revoke')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'bob', domain: DOM_B });
+      .send({
+        account: 'bob',
+        namespaceId: bobAddressOnA.namespaceId,
+      });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
     // The unfriend commits synchronously, including the boundary head item
@@ -4115,7 +4144,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         account: 'bob',
-        domain: DOM_B,
+        namespaceId: bobAddressOnA.namespaceId,
         displayName: 'Bob',
         note: 'revive from alice',
       });
@@ -4234,7 +4263,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const response = await request(appA.baseUrl)
       .post('/api/v1/relationship/revoke')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ account: 'bob', domain: DOM_B });
+      .send({
+        account: 'bob',
+        namespaceId: bobAddressOnA.namespaceId,
+      });
     expect(response.body.code).toBe(BusinessCode.OK);
     expect(response.body.data).toEqual({ status: 'OK' });
 

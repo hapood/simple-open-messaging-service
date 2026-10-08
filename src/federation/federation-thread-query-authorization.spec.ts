@@ -90,7 +90,7 @@ describe('resolveAuthorizedFederationThreadInTx', () => {
     expect(query).toContain("pair.kind = 'GROUP_MEMBER'");
     expect(query).toContain("'ORIGIN_DISTRIBUTION' AS");
     expect(query).toContain('LEFT JOIN "ThreadAudience" audience');
-    expect(query).toContain('pair.active = true');
+    expect(query).not.toContain('pair.active = true');
     expect(query).toContain('pair."endpointANamespaceId" = 0');
     expect(query).toContain('pair."endpointBNamespaceId" = $');
     expect(query).toContain('group_state."namespaceId" = 0');
@@ -132,7 +132,7 @@ describe('resolveAuthorizedFederationThreadInTx', () => {
     expect(mirrorQuery).toMatch(/group_state\.domain = \$\d+/);
     expect(mirrorQuery).toContain('JOIN "AccountThreadState" local_state');
     expect(mirrorQuery).toContain('JOIN "RelationshipIntent" intent');
-    expect(mirrorQuery).toContain('pair.active = true');
+    expect(mirrorQuery).not.toContain('pair.active = true');
     expect(mirrorQuery).not.toContain('FOR SHARE');
     expect(mirrorQuery).not.toContain('ThreadAudience');
   });

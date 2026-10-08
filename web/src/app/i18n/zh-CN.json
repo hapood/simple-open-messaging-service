@@ -119,7 +119,8 @@
     "unknown": "未知",
     "unknownDevice": "未知设备",
     "thisDevice": "本设备",
-    "you": "（你）"
+    "you": "（你）",
+    "localDomainLabel": "{{domain}}（本地）"
   },
   "nav": {
     "editProfileAria": "编辑个人资料",

@@ -60,7 +60,7 @@ export function groupAuthoredMembershipTargetLocatorSql(input: {
 export function groupAuthoredInvitationLocatorSql(input: {
   threadId: number;
   targetAccount: string;
-  targetDomain: string;
+  targetNamespaceId: number;
 }) {
   return sql`
     SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
@@ -68,7 +68,7 @@ export function groupAuthoredInvitationLocatorSql(input: {
     FROM ${groupStateSql} g
     LEFT JOIN LATERAL (
       SELECT 0::integer AS "namespaceId"
-      WHERE ${input.targetDomain} = (SELECT domain FROM "IdentityNamespace" WHERE id = 0)
+      WHERE ${input.targetNamespaceId} = 0
         AND EXISTS (
           SELECT 1 FROM "Account" local_target
           WHERE local_target.account = ${input.targetAccount}
@@ -77,8 +77,8 @@ export function groupAuthoredInvitationLocatorSql(input: {
       UNION ALL
       SELECT ns.id
       FROM "IdentityNamespace" ns
-      WHERE ${input.targetDomain} <> (SELECT domain FROM "IdentityNamespace" WHERE id = 0)
-        AND ns.domain = ${input.targetDomain}
+      WHERE ${input.targetNamespaceId} <> 0
+        AND ns.id = ${input.targetNamespaceId}
         AND ns.active = true
         AND ns."retiredAt" IS NULL
     ) target ON true
@@ -91,11 +91,12 @@ export function groupAuthoredInvitationLocatorSql(input: {
 export function groupAuthoredMembershipAddressLocatorSql(input: {
   threadId: number;
   targetAccount: string;
-  targetDomain: string;
+  targetNamespaceId: number;
 }) {
   return sql`
     SELECT pair.id::text AS "pairId",
-      pair."endpointBAccount" AS account, ${input.targetDomain}::text AS domain,
+      pair."endpointBAccount" AS account,
+      (SELECT ns.domain FROM "IdentityNamespace" ns WHERE ns.id = pair."endpointBNamespaceId") AS domain,
       pair."endpointBNamespaceId" AS "namespaceId",
       g.account AS "groupAccount", g.domain AS "groupDomain"
     FROM ${groupStateSql} g
@@ -107,12 +108,7 @@ export function groupAuthoredMembershipAddressLocatorSql(input: {
       AND pair."endpointBType" = 'USER'
     WHERE g.id = ${input.threadId}
       AND pair."endpointBAccount" = ${input.targetAccount}
-      AND pair."endpointBNamespaceId" = CASE
-        WHEN ${input.targetDomain} = (SELECT domain FROM "IdentityNamespace" WHERE id = 0) THEN 0
-        ELSE (SELECT ns.id FROM "IdentityNamespace" ns
-          WHERE ns.domain = ${input.targetDomain}
-            AND ns.active = true
-            AND ns."retiredAt" IS NULL) END
+      AND pair."endpointBNamespaceId" = ${input.targetNamespaceId}
     ORDER BY pair.id DESC LIMIT 1
   `;
 }
@@ -126,7 +122,6 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
   pairId: bigint;
   managerUserId: number;
   targetAccount: string;
-  targetDomain: string;
   targetNamespaceId: number;
 }) {
   return sql`

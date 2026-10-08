@@ -102,7 +102,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         account: 'reversecarol',
-        domain: FED_DOMAIN_A,
         namespaceId: 0,
       });
     expect(localFriendRequest.body.code).toBe(BusinessCode.OK);
@@ -117,7 +116,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenCarol}`)
       .send({
         account: 'reversealice',
-        domain: FED_DOMAIN_A,
         namespaceId: 0,
       });
     expect(localFriendAccepted.body.code).toBe(BusinessCode.OK);
@@ -178,7 +176,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: originThreadId,
-        users: [{ account: 'reversebob', domain: FED_DOMAIN_B }],
+        users: [
+          { account: 'reversebob', namespaceId: bobAddressOnA.namespaceId },
+        ],
       });
     expect(invited.body.code, JSON.stringify(invited.body)).toBe(
       BusinessCode.OK,
@@ -663,7 +663,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: originThreadId,
-        users: [{ account: 'reversebob', domain: FED_DOMAIN_B }],
+        users: [
+          { account: 'reversebob', namespaceId: bobAddressOnA.namespaceId },
+        ],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, invited.body);
@@ -908,7 +910,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: originThreadId,
-        users: [{ account: 'reversecarol', domain: FED_DOMAIN_A }],
+        users: [{ account: 'reversecarol', namespaceId: 0 }],
       });
     expect(inviteCarol.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, inviteCarol.body);
@@ -959,7 +961,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
         .set('Authorization', `Bearer ${tokenA}`)
         .send({
           groupId: originThreadId,
-          users: [{ account: 'reversebob', domain: FED_DOMAIN_B }],
+          users: [
+            { account: 'reversebob', namespaceId: bobAddressOnA.namespaceId },
+          ],
         });
       expect(invited.body.code, JSON.stringify(invited.body)).toBe(
         BusinessCode.OK,
@@ -1023,7 +1027,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
         .post('/api/v1/group/join-request')
         .set('Authorization', `Bearer ${tokenB}`)
         .send({ groupId: mirror.id });
-      expect(joined.body.code).toBe(BusinessCode.OK);
+      expect(joined.body.code, JSON.stringify(joined.body)).toBe(
+        BusinessCode.OK,
+      );
       await waitForAcceptedDurableTask(appB.database, joined.body);
     };
     await joinBob();
@@ -1693,7 +1699,9 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: originThreadId,
-        users: [{ account: 'reversebob', domain: FED_DOMAIN_B }],
+        users: [
+          { account: 'reversebob', namespaceId: bobAddressOnA.namespaceId },
+        ],
       });
     expect(reinvited.body.code, JSON.stringify(reinvited.body)).toBe(
       BusinessCode.OK,

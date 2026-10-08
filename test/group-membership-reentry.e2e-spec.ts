@@ -68,7 +68,6 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${first.token}`)
       .send({
         account: second.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(sent.body.code).toBe(BusinessCode.OK);
@@ -83,7 +82,6 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${second.token}`)
       .send({
         account: first.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       });
     expect(accepted.body.code).toBe(BusinessCode.OK);
@@ -100,7 +98,7 @@ describe('group membership re-entry and ownership transfer', () => {
       .set('Authorization', `Bearer ${manager.token}`)
       .send({
         groupId,
-        users: [{ account: member.account, domain: localIdentityDomain() }],
+        users: [{ account: member.account, namespaceId: 0 }],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
     expect(
@@ -162,7 +160,7 @@ describe('group membership re-entry and ownership transfer', () => {
       .send({
         groupId,
         account: member.account,
-        domain: localIdentityDomain(),
+        namespaceId: 0,
       });
     expect(kicked.body.code).toBe(BusinessCode.OK);
     expect(await currentMember(groupId, member.id)).toBeUndefined();
@@ -256,7 +254,7 @@ describe('group membership re-entry and ownership transfer', () => {
       .send({
         groupId,
         account: oldOwner.account,
-        domain: localIdentityDomain(),
+        namespaceId: 0,
       });
     expect(kicked.body.code).toBe(BusinessCode.OK);
     expect(await currentMember(groupId, oldOwner.id)).toBeUndefined();

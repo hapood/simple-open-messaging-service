@@ -54,11 +54,9 @@ export class FederationThreadQueryDenialService {
       if (!endpoint) {
         const groupLocations = await tx.execute<{
           groupAccount: string;
-          groupDomain: string;
           groupNamespaceId: number;
         }>(sql`
           SELECT group_profile.account AS "groupAccount",
-            group_profile.domain AS "groupDomain",
             group_profile."namespaceId" AS "groupNamespaceId"
           FROM "MessageThread" thread
           JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
@@ -96,7 +94,7 @@ export class FederationThreadQueryDenialService {
           WHERE thread.id = ${threadId}
             AND thread.type = 'GROUP'
             AND group_profile.account = ${groupLocation.groupAccount}
-            AND group_profile.domain = ${groupLocation.groupDomain}
+            AND group_profile."namespaceId" = ${groupLocation.groupNamespaceId}
           FOR NO KEY UPDATE OF thread
         `);
         const lockedGroup = lockedGroups.rows[0];
@@ -107,17 +105,8 @@ export class FederationThreadQueryDenialService {
           return 'STALE' as const;
         }
 
-        const groupMembers = await tx.execute<{
-          groupId: number;
-          groupDomain: string;
-          memberUserId: number | null;
-          memberAccount: string;
-          profileNamespaceId: number;
-        }>(sql`
-          SELECT group_profile.id AS "groupId",
-            group_profile.domain AS "groupDomain",
-            member_identity.id AS "memberUserId",
-            member.account AS "memberAccount", member."namespaceId" AS "profileNamespaceId"
+        const groupMembers = await tx.execute(sql`
+          SELECT 1
           FROM "MessageThread" thread
           JOIN ${groupStateSql} group_profile ON group_profile.id = thread.id
           JOIN "RelationshipPair" pair
@@ -179,7 +168,6 @@ export class FederationThreadQueryDenialService {
         decision: 'REVOKED',
         target: {
           account: result.remoteAccount,
-          domain: peerDomain,
           namespaceId,
         },
       },

@@ -35,14 +35,14 @@ export type QueryDeniedGroupMembershipRevocationTask =
   | {
       direction: 'GROUP';
       threadId: number;
-      group: { account: string; domain: string; namespaceId: 0 };
+      group: { account: string; namespaceId: 0 };
       member: Exclude<AccountTarget, number>;
       expectedAuthorizationEpoch: number;
     }
   | {
       direction: 'MEMBER';
       threadId: number;
-      group: { account: string; domain: string; namespaceId: number };
+      group: { account: string; namespaceId: number };
       memberUserId: number;
       expectedAuthorizationEpoch: number;
     };
@@ -53,20 +53,16 @@ export function readQueryDeniedGroupMembershipRevocationTask(
   const denial = readForbiddenGroupTask(task);
   const { memberUserId } = readForcedMemberRevokeTask(task);
   const groupAccount = task.payload.groupAccount;
-  const groupDomain = task.payload.groupDomain;
   const groupNamespaceId = task.payload.groupNamespaceId;
   if (
     typeof groupAccount !== 'string' ||
     !isValidGroupAccount(groupAccount) ||
-    typeof groupDomain !== 'string' ||
-    groupDomain.length === 0 ||
     !Number.isSafeInteger(groupNamespaceId) ||
     (groupNamespaceId as number) < 0
   )
     throw new Error('invalid denied group identity');
   const group = {
     account: groupAccount,
-    domain: groupDomain,
     namespaceId: groupNamespaceId as number,
   };
   if (
@@ -94,7 +90,6 @@ export function readQueryDeniedGroupMembershipRevocationTask(
   if (
     task.payload.direction !== 'MEMBER' ||
     typeof memberUserId !== 'number' ||
-    group.domain !== denial.peerDomain ||
     group.namespaceId !== denial.namespaceId
   )
     throw new Error('invalid denied member direction');
