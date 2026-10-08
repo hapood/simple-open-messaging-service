@@ -131,6 +131,19 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     expect(fixture.componentInstance.showImage()).toBe(true);
   });
 
+  it('renders an account fallback when no profile name is cached', () => {
+    fixture.componentRef.setInput('type', UserAvatarType.OTHER);
+    fixture.componentRef.setInput('account', 'bob');
+    fixture.detectChanges();
+    expect(fixture.componentInstance.effectiveName()).toBe('bob');
+    expect(fixture.componentInstance.initial()).toBe('BO');
+    expect(
+      fixture.nativeElement
+        .querySelector('[role="img"]')
+        .getAttribute('aria-label'),
+    ).toBe('bob avatar');
+  });
+
   it('falls back to the first two characters when there is no src', () => {
     fixture.componentRef.setInput('type', UserAvatarType.OTHER);
     fixture.componentRef.setInput('name', 'Bob');

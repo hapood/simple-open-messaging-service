@@ -654,15 +654,18 @@ export class WebdbStorage {
       this.profileWake.next({ event, key, reason });
       return;
     }
-    const result = await this.resolveProfileDemand({
-      publisherNamespaceId: key.publisherNamespaceId,
-      lookup: 'ACCOUNT_PROFILE',
-      target: {
-        profileNamespaceId: key.profileNamespaceId,
-        account: key.account,
-        rev: key.rev,
+    const result = await this.resolveProfileDemand(
+      {
+        publisherNamespaceId: key.publisherNamespaceId,
+        lookup: 'ACCOUNT_PROFILE',
+        target: {
+          profileNamespaceId: key.profileNamespaceId,
+          account: key.account,
+          rev: key.rev,
+        },
       },
-    });
+      { evidence: null },
+    );
     // Native SSE is delivered after SQLite materialization. Browser commits
     // notify through the worker instead of emitting again at the request layer.
     if (isTauri() && result.status === 'READY') {

@@ -10,7 +10,7 @@ import {
 import { ApiBody, ApiOkResponse } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import {
-  parseProfileDemand,
+  parseProfileRequest,
   ProfileDemandParseError,
   type ProfileDemand,
 } from '../../shared/profile-demand.js';
@@ -72,6 +72,47 @@ export class ProfileResolutionController {
               additionalProperties: false,
             },
             groupAccount: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+        {
+          type: 'object',
+          required: ['demand', 'evidence'],
+          properties: {
+            evidence: { type: 'string', nullable: true, enum: [null] },
+            demand: {
+              type: 'object',
+              required: ['publisherNamespaceId', 'lookup', 'target'],
+              properties: {
+                publisherNamespaceId: { type: 'integer', minimum: 0 },
+                lookup: {
+                  type: 'string',
+                  enum: ['ACCOUNT_PROFILE', 'GROUP_MEMBER_PROFILE'],
+                },
+                target: {
+                  type: 'object',
+                  required: ['profileNamespaceId', 'account', 'rev'],
+                  properties: {
+                    profileNamespaceId: { type: 'integer', minimum: 0 },
+                    account: { type: 'string', minLength: 1 },
+                    rev: { type: 'integer', minimum: 1 },
+                  },
+                  additionalProperties: false,
+                },
+                groupAccount: { type: 'string', minLength: 1 },
+              },
+              oneOf: [
+                {
+                  properties: { lookup: { enum: ['ACCOUNT_PROFILE'] } },
+                  not: { required: ['groupAccount'] },
+                },
+                {
+                  properties: { lookup: { enum: ['GROUP_MEMBER_PROFILE'] } },
+                  required: ['groupAccount'],
+                },
+              ],
+              additionalProperties: false,
+            },
           },
           additionalProperties: false,
         },
@@ -143,11 +184,16 @@ export class ProfileResolutionController {
     if (sessionId === undefined || sessionId === null)
       throw new Error('authenticated profile resolution requires a session');
     try {
-      return this.coordinator.start(
-        req.user.userId,
-        sessionId,
-        toProfileClientResolutionDemand(parseProfileDemand(body)),
-      );
+      const parsed = parseProfileRequest(body);
+      return 'demand' in parsed
+        ? this.coordinator.startCacheOnly(
+            toProfileClientResolutionDemand(parsed.demand),
+          )
+        : this.coordinator.start(
+            req.user.userId,
+            sessionId,
+            toProfileClientResolutionDemand(parsed),
+          );
     } catch (error) {
       if (error instanceof ProfileDemandParseError)
         throw new BadRequestException(error.message);

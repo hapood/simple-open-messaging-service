@@ -67,10 +67,24 @@ export class ProfileResolutionCoordinatorService {
     sessionId: number,
     demand: ProfileClientResolutionDemand,
   ): Promise<ProfileResolutionStart> {
+    // Evidence authorizes new resolution work, not reads of an existing snapshot.
+    const cached = await this.readCached(this.profileKeyForDemand(demand));
+    if (cached) return { status: 'READY', profile: cached };
     await this.authorizeDemand(userId, demand);
     return this.enqueueResolution(demand, {
       listenerSessionIds: [sessionId],
     });
+  }
+
+  async startCacheOnly(
+    demand: ProfileClientResolutionDemand,
+  ): Promise<ProfileResolutionStart> {
+    const cached = await this.readCached(this.profileKeyForDemand(demand));
+    if (cached) return { status: 'READY', profile: cached };
+    throw new BusinessException(
+      BusinessCode.NOT_FOUND,
+      'profile revision is not cached',
+    );
   }
 
   async resolveDemand(demand: ProfileResolutionDemand): Promise<void> {
@@ -84,16 +98,8 @@ export class ProfileResolutionCoordinatorService {
   ): Promise<ProfileResolutionStart> {
     const key = this.profileKeyForDemand(demand);
     const keyString = profileKeyString(key);
-    const cached = this.cache.get(keyString);
-    if (cached) {
-      this.touch(keyString, cached);
-      return { status: 'READY', profile: cached };
-    }
-    const durable = await this.readDurable(key);
-    if (durable) {
-      this.touch(keyString, durable);
-      return { status: 'READY', profile: durable };
-    }
+    const cached = await this.readCached(key);
+    if (cached) return { status: 'READY', profile: cached };
     if (key.publisherNamespaceId === 0) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
@@ -117,6 +123,16 @@ export class ProfileResolutionCoordinatorService {
     this.enqueue(keyString);
     this.drain();
     return { status: 'PENDING', key };
+  }
+
+  /** Cache reads neither attach listeners nor create remote resolution work. */
+  private async readCached(
+    key: ProfileKey,
+  ): Promise<ResolvedClientProfile | null> {
+    const keyString = profileKeyString(key);
+    const profile = this.cache.get(keyString) ?? (await this.readDurable(key));
+    if (profile) this.touch(keyString, profile);
+    return profile ?? null;
   }
 
   private async authorizeDemand(
@@ -420,12 +436,6 @@ export class ProfileResolutionCoordinatorService {
         'profile namespace does not match the requested target',
       );
     }
-    const fetched = this.clientProfile(
-      profile.profile,
-      expected.publisherNamespaceId,
-      expected.profileNamespaceId,
-    );
-    this.touch(profileKeyString(expected), fetched);
     await this.profiles.materializeExactForeignProfile(
       profile.profile,
       expected.publisherNamespaceId,
@@ -437,6 +447,7 @@ export class ProfileResolutionCoordinatorService {
         'materialized profile revision is unavailable',
       );
     }
+    this.touch(profileKeyString(expected), materialized);
     return materialized;
   }
 

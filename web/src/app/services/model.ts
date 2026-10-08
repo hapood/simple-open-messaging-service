@@ -204,10 +204,7 @@ export type GroupConversationItem = Extract<
   { type: 'GROUP' }
 >;
 
-type P2PPeerInput = Pick<
-  User,
-  'account' | 'name' | 'domain' | 'namespaceId'
-> &
+type P2PPeerInput = Pick<User, 'account' | 'name' | 'domain' | 'namespaceId'> &
   Partial<Omit<User, 'id' | 'account' | 'name' | 'domain' | 'namespaceId'>>;
 
 /** Construct the canonical local projection for a newly activated, empty P2P thread. */
@@ -302,15 +299,12 @@ export function createGroupConversation(
   };
 }
 
-/**
- * A user's display name — the nickname (e.g. "Bob"), NOT the login handle. Registration guarantees a
- * non-empty nickname, so there is no account fallback (the handle is never shown as a label). For
- * federated peers are identified by the avatar's globe marker, so the name stays clean. Single source
- * for the name text.
- */
+/** A conversation label prefers the remark and cached profile name. A cache
+ * miss still has an identity: display the account/address rather than a blank label. */
 export function displayThreadName(t: ConversationItem): string {
   if (t.alias) return t.alias;
-  return t.type === 'P2P' ? displayUserName(t.peerUser) : t.group.name;
+  const subject = t.type === 'P2P' ? t.peerUser : t.group;
+  return subject.name?.trim() || displayUserAccount(subject);
 }
 
 export function displayUserName(u: { name?: string | null }): string {

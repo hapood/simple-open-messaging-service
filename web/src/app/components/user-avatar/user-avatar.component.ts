@@ -14,8 +14,14 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import {
   ProfileRepository,
   type ResolvedProfile,
+  type UnevidencedProfileDemand,
 } from '../../services/profile-store.service';
 import type { ProfileDemand } from '../../../../../shared/profile-demand';
+
+/** Avatar profile inputs: a bare {@link ProfileDemand} keeps the evidenced
+ *  resolution contract; an {@link UnevidencedProfileDemand} resolves from
+ *  caches only (client IndexedDB, then the server durable cache). */
+export type AvatarProfileDemand = ProfileDemand | UnevidencedProfileDemand;
 
 /**
  * Initials avatar (industry best-practice palette).
@@ -109,29 +115,31 @@ export class UserAvatarComponent {
    *  misleading initial) paints until the backing profile/session is ready. Callers pass
    *  `!sessionProfile()` while the source signal is still loading. */
   readonly loading = input(false);
-  readonly profileEvidence = input<ProfileDemand | undefined>(undefined);
-  private readonly effectiveProfileEvidence = computed(() => {
-    const explicit = this.profileEvidence();
-    if (explicit) return explicit;
-    const preview = this.src();
-    if (
-      this.type() !== UserAvatarType.SELF ||
-      (preview && !preview.startsWith('/'))
-    )
-      return undefined;
-    const self = this.userService.sessionProfile();
-    return self && (self.profileRev ?? 0) > 0
-      ? {
-          publisherNamespaceId: self.namespaceId ?? 0,
-          lookup: 'ACCOUNT_PROFILE' as const,
-          target: {
-            profileNamespaceId: self.namespaceId ?? 0,
-            account: self.account,
-            rev: self.profileRev,
-          },
-        }
-      : undefined;
-  });
+  readonly profileEvidence = input<AvatarProfileDemand | undefined>(undefined);
+  private readonly effectiveProfileEvidence = computed(
+    (): AvatarProfileDemand | undefined => {
+      const explicit = this.profileEvidence();
+      if (explicit) return explicit;
+      const preview = this.src();
+      if (
+        this.type() !== UserAvatarType.SELF ||
+        (preview && !preview.startsWith('/'))
+      )
+        return undefined;
+      const self = this.userService.sessionProfile();
+      return self && (self.profileRev ?? 0) > 0
+        ? {
+            publisherNamespaceId: self.namespaceId ?? 0,
+            lookup: 'ACCOUNT_PROFILE' as const,
+            target: {
+              profileNamespaceId: self.namespaceId ?? 0,
+              account: self.account,
+              rev: self.profileRev,
+            },
+          }
+        : undefined;
+    },
+  );
   readonly UserAvatarType = UserAvatarType;
   private readonly resolvedProfile = signal<ResolvedProfile | null>(null);
 
@@ -153,7 +161,9 @@ export class UserAvatarComponent {
       this.name() ||
       (this.type() === UserAvatarType.SELF
         ? this.userService.sessionProfile()?.name
-        : undefined),
+        : undefined) ||
+      this.account() ||
+      undefined,
   );
 
   /** Image load failure (corrupt/404) → fall back to initials. Reset on src/identity change to retry the new image. */

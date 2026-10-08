@@ -187,7 +187,7 @@ fn commit_resolved_profile(
         publisher_namespace_id,
         profile_namespace_id,
     )?
-    .ok_or("profile namespace binding is missing")?;
+    .unwrap_or_default();
     let profile_rev = profile
         .get("rev")
         .and_then(Value::as_i64)
@@ -202,8 +202,6 @@ fn commit_resolved_profile(
         .ok_or("resolved profile has no bio")?;
     let avatar_digest =
         super::profile_avatars::save(user_id, profile.get("avatarBase64").and_then(Value::as_str))?;
-    super::contacts::register_namespace(conn, user_id, publisher_namespace_id, &domain)?;
-    super::contacts::register_namespace(conn, user_id, profile_namespace_id, &domain)?;
     let snapshot = serde_json::json!({
         "publisherNamespaceId": publisher_namespace_id,
         "account": account,
@@ -219,289 +217,153 @@ fn commit_resolved_profile(
     Ok(snapshot)
 }
 
-fn demand_for_evidence(conn: &Connection, user_id: i64, selector: &Value) -> Result<Value, String> {
-    let kind = selector
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or("profile evidence has no type")?;
-    match kind {
-        "EXACT" => Ok(serde_json::json!({
-            "publisherNamespaceId": selector
-                .get("publisherNamespaceId")
-                .and_then(Value::as_i64)
-                .ok_or("exact evidence has no publisher namespace")?,
-            "lookup": "ACCOUNT_PROFILE",
-            "target": {
-                "profileNamespaceId": selector
-                    .get("profileNamespaceId")
-                    .and_then(Value::as_i64)
-                    .ok_or("exact evidence has no profile namespace")?,
-                "account": selector
-                    .get("account")
-                    .and_then(Value::as_str)
-                    .ok_or("exact evidence has no account")?,
-                "domain": selector
-                    .get("domain")
-                    .and_then(Value::as_str)
-                    .ok_or("exact evidence has no domain")?,
-                "rev": selector
-                    .get("rev")
-                    .and_then(Value::as_i64)
-                    .ok_or("exact evidence has no revision")?,
-            },
-        })),
-        "MESSAGE_AUTHOR" => {
-            let payload: String = conn
-                .query_row(
-                    "SELECT json_object(
-                       'publisherNamespaceId', json_extract(payload_json,'$.creator.namespaceId'),
-                       'lookup', 'ACCOUNT_PROFILE',
-                       'target', json_object(
-                         'profileNamespaceId', json_extract(payload_json,'$.creator.namespaceId'),
-                         'account', json_extract(payload_json,'$.creator.account'),
-                         'domain', json_extract(payload_json,'$.creator.domain'),
-                         'rev', json_extract(payload_json,'$.profileRev')))
-                     FROM messages
-                     WHERE user_id=?1 AND thread_id=?2 AND seq=?3
-                       AND json_extract(payload_json,'$.profileRev')=?4
-                       AND json_extract(payload_json,'$.creator.account') IS NOT NULL
-                       AND json_extract(payload_json,'$.creator.domain') IS NOT NULL
-                       AND json_extract(payload_json,'$.creator.namespaceId') IS NOT NULL",
-                    params![
-                        user_id,
-                        selector
-                            .get("threadId")
-                            .and_then(Value::as_i64)
-                            .ok_or("message evidence has no thread")?,
-                        selector
-                            .get("messageSeq")
-                            .and_then(Value::as_i64)
-                            .ok_or("message evidence has no sequence")?,
-                        selector
-                            .get("rev")
-                            .and_then(Value::as_i64)
-                            .ok_or("message evidence has no revision")?,
-                    ],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|e| format!("build message-author profile demand: {e}"))?
-                .ok_or("message-author profile evidence is not locally available")?;
-            parse_json(payload)
-        }
-        "GROUP_META" => {
-            let thread_id = selector
-                .get("threadId")
-                .and_then(Value::as_i64)
-                .ok_or("Group Meta evidence has no thread")?;
-            let rev = selector
-                .get("profileRev")
-                .and_then(Value::as_i64)
-                .ok_or("Group Meta evidence has no revision")?;
-            let subject = selector
-                .get("subject")
-                .ok_or("Group Meta evidence has no subject")?;
-            match subject.get("type").and_then(Value::as_str) {
-                Some("GROUP") => {
-                    let payload: String = conn
-                        .query_row(
-                            "SELECT json_object(
-                               'publisherNamespaceId', subject_namespace_id,
-                               'lookup', 'ACCOUNT_PROFILE',
-                               'target', json_object(
-                                 'profileNamespaceId', subject_namespace_id,
-                                 'account', subject_account,
-                                 'domain', subject_domain,
-                                 'rev', thread_profile_rev))
-                             FROM threads
-                             WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'
-                               AND thread_profile_rev=?3",
-                            params![user_id, thread_id, rev],
-                            |row| row.get(0),
-                        )
-                        .optional()
-                        .map_err(|e| format!("build group profile demand: {e}"))?
-                        .ok_or("Group Meta profile evidence is not locally available")?;
-                    parse_json(payload)
-                }
-                Some("MEMBER") => {
-                    let payload: String = conn
-                        .query_row(
-                            "SELECT json_object(
-                               'publisherNamespaceId', member.namespace_id,
-                               'lookup', 'GROUP_MEMBER_PROFILE',
-                               'target', json_object(
-                                 'profileNamespaceId', member.namespace_id,
-                                 'account', member.member_account,
-                                 'domain', member.member_domain,
-                                 'rev', member.profile_rev),
-                               'groupAccount', thread.subject_account)
-                             FROM members member
-                             JOIN threads thread ON thread.user_id=member.user_id
-                              AND thread.thread_id=member.thread_id
-                              AND thread.kind='GROUP'
-                             WHERE member.user_id=?1 AND member.thread_id=?2
-                               AND member.member_account=?3 AND member.member_domain=?4
-                               AND member.profile_rev=?5 AND member.left_state=0",
-                            params![
-                                user_id,
-                                thread_id,
-                                subject
-                                    .get("account")
-                                    .and_then(Value::as_str)
-                                    .ok_or("member evidence has no account")?,
-                                subject
-                                    .get("domain")
-                                    .and_then(Value::as_str)
-                                    .ok_or("member evidence has no domain")?,
-                                rev,
-                            ],
-                            |row| row.get(0),
-                        )
-                        .optional()
-                        .map_err(|e| format!("build group member profile demand: {e}"))?
-                        .ok_or("Group member profile evidence is not locally available")?;
-                    parse_json(payload)
-                }
-                _ => Err("unknown Group Meta profile subject".into()),
-            }
-        }
-        _ => Err("unknown profile evidence type".into()),
-    }
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProfileTarget {
+    profile_namespace_id: i64,
+    account: String,
+    rev: i64,
 }
 
-fn find_profile_for_evidence(
+#[derive(Deserialize)]
+#[serde(tag = "lookup", deny_unknown_fields)]
+enum ProfileDemand {
+    #[serde(rename = "ACCOUNT_PROFILE")]
+    Account {
+        #[serde(rename = "publisherNamespaceId")]
+        publisher_namespace_id: i64,
+        target: ProfileTarget,
+    },
+    #[serde(rename = "GROUP_MEMBER_PROFILE")]
+    GroupMember {
+        #[serde(rename = "publisherNamespaceId")]
+        publisher_namespace_id: i64,
+        target: ProfileTarget,
+        #[serde(rename = "groupAccount")]
+        group_account: String,
+    },
+}
+
+#[derive(Clone)]
+struct ProfileCacheKey {
+    publisher_namespace_id: i64,
+    target: ProfileTarget,
+}
+
+fn parse_profile_request(request: &Value) -> Result<(ProfileCacheKey, bool), String> {
+    let object = request
+        .as_object()
+        .ok_or("profile request must be an object")?;
+    let (demand, no_evidence) = if let Some(demand) = object.get("demand") {
+        if object.len() != 2 || object.get("evidence") != Some(&Value::Null) {
+            return Err("invalid unevidenced profile request".into());
+        }
+        (demand, true)
+    } else {
+        (request, false)
+    };
+    let parsed: ProfileDemand = serde_json::from_value(demand.clone())
+        .map_err(|e| format!("invalid profile demand: {e}"))?;
+    let (publisher_namespace_id, target) = match parsed {
+        ProfileDemand::Account {
+            publisher_namespace_id,
+            target,
+        } => (publisher_namespace_id, target),
+        ProfileDemand::GroupMember {
+            publisher_namespace_id,
+            target,
+            group_account,
+        } => {
+            if group_account.trim().is_empty() {
+                return Err("profile demand has no group account".into());
+            }
+            (publisher_namespace_id, target)
+        }
+    };
+    if publisher_namespace_id < 0
+        || target.profile_namespace_id < 0
+        || publisher_namespace_id > 9_007_199_254_740_991
+        || target.profile_namespace_id > 9_007_199_254_740_991
+        || target.rev < 1
+        || target.rev > 9_007_199_254_740_991
+        || target.account.trim().is_empty()
+    {
+        return Err("invalid profile coordinates".into());
+    }
+    Ok((
+        ProfileCacheKey {
+            publisher_namespace_id,
+            target,
+        },
+        no_evidence,
+    ))
+}
+
+fn find_profile_for_key(
     conn: &Connection,
     user_id: i64,
-    selector: &Value,
+    key: &ProfileCacheKey,
 ) -> Result<Option<Value>, String> {
-    let kind = selector
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or("profile evidence has no type")?;
-    let payload: Option<String> = match kind {
-        "EXACT" => conn
-            .query_row(
-                "SELECT json_object('publisherNamespaceId',profile.publisher_namespace_id,
-                   'account',profile.account,
-                   'domain',COALESCE((SELECT domain FROM profile_namespaces binding
-                     WHERE binding.user_id=profile.user_id
-                       AND binding.publisher_namespace_id=profile.publisher_namespace_id
-                       AND binding.profile_namespace_id=profile.profile_namespace_id),''),
-                   'namespaceId',profile.profile_namespace_id,
-                   'profileNamespaceId',profile.profile_namespace_id,
-                   'profileRev',profile.profile_rev,
-                   'name',profile.name,'avatarDigest',profile.avatar_digest,'bio',profile.bio)
-                 FROM profiles profile
-                 WHERE profile.user_id=?1 AND profile.publisher_namespace_id=?2
-                   AND profile.profile_namespace_id=?3 AND profile.account=?4
-                   AND profile.profile_rev=?5",
-                params![
-                    user_id,
-                    selector.get("publisherNamespaceId").and_then(Value::as_i64).ok_or("exact evidence has no publisher namespace")?,
-                    selector.get("profileNamespaceId").and_then(Value::as_i64).ok_or("exact evidence has no profile namespace")?,
-                    selector.get("account").and_then(Value::as_str).ok_or("exact evidence has no account")?,
-                    selector.get("rev").and_then(Value::as_i64).ok_or("exact evidence has no revision")?
-                ],
-                |row| row.get(0),
-            )
-            .optional(),
-        "MESSAGE_AUTHOR" => conn
-            .query_row(
-                "SELECT json_object('account',profile.account,
-                   'domain',COALESCE((SELECT domain FROM profile_namespaces binding
-                     WHERE binding.user_id=profile.user_id
-                       AND binding.publisher_namespace_id=profile.publisher_namespace_id
-                       AND binding.profile_namespace_id=profile.profile_namespace_id),''),
-                   'namespaceId',profile.profile_namespace_id,'profileRev',profile.profile_rev,
-                   'name',profile.name,'avatarDigest',profile.avatar_digest,'bio',profile.bio)
-                 FROM messages message
-                 JOIN profiles profile
-                   ON profile.user_id=message.user_id
-                  AND profile.account=json_extract(message.payload_json,'$.creator.account')
-                  AND profile.publisher_namespace_id=json_extract(message.payload_json,'$.creator.namespaceId')
-                  AND profile.profile_namespace_id=json_extract(message.payload_json,'$.creator.namespaceId')
-                  AND profile.profile_rev=json_extract(message.payload_json,'$.profileRev')
-                 WHERE message.user_id=?1 AND message.thread_id=?2 AND message.seq=?3
-                   AND json_extract(message.payload_json,'$.profileRev')=?4",
-                params![
-                    user_id,
-                    selector.get("threadId").and_then(Value::as_i64).ok_or("message evidence has no thread")?,
-                    selector.get("messageSeq").and_then(Value::as_i64).ok_or("message evidence has no sequence")?,
-                    selector.get("rev").and_then(Value::as_i64).ok_or("message evidence has no revision")?
-                ],
-                |row| row.get(0),
-            )
-            .optional(),
-        "GROUP_META" => {
-            let thread_id = selector
-                .get("threadId")
-                .and_then(Value::as_i64)
-                .ok_or("Group Meta evidence has no thread")?;
-            let rev = selector
-                .get("profileRev")
-                .and_then(Value::as_i64)
-                .ok_or("Group Meta evidence has no revision")?;
-            let subject = selector.get("subject").ok_or("Group Meta evidence has no subject")?;
-            match subject.get("type").and_then(Value::as_str) {
-                Some("GROUP") => conn
-                    .query_row(
-                        "SELECT json_object('account',profile.account,
-                           'domain',COALESCE((SELECT domain FROM profile_namespaces binding
-                             WHERE binding.user_id=profile.user_id
-                               AND binding.publisher_namespace_id=profile.publisher_namespace_id
-                               AND binding.profile_namespace_id=profile.profile_namespace_id),''),
-                           'namespaceId',profile.profile_namespace_id,'profileRev',profile.profile_rev,
-                           'name',profile.name,'avatarDigest',profile.avatar_digest,'bio',profile.bio)
-                         FROM threads thread
-                         JOIN profiles profile
-                           ON profile.user_id=thread.user_id
-                          AND profile.account=thread.subject_account
-                          AND profile.publisher_namespace_id=thread.subject_namespace_id
-                          AND profile.profile_namespace_id=thread.subject_namespace_id
-                          AND profile.profile_rev=thread.thread_profile_rev
-                         WHERE thread.user_id=?1 AND thread.thread_id=?2
-                           AND thread.kind='GROUP' AND thread.thread_profile_rev=?3",
-                        params![user_id, thread_id, rev],
-                        |row| row.get(0),
-                    )
-                    .optional(),
-                Some("MEMBER") => conn
-                    .query_row(
-                        "SELECT json_object('account',profile.account,
-                           'domain',COALESCE((SELECT domain FROM profile_namespaces binding
-                             WHERE binding.user_id=profile.user_id
-                               AND binding.publisher_namespace_id=profile.publisher_namespace_id
-                               AND binding.profile_namespace_id=profile.profile_namespace_id),''),
-                           'namespaceId',profile.profile_namespace_id,'profileRev',profile.profile_rev,
-                           'name',profile.name,'avatarDigest',profile.avatar_digest,'bio',profile.bio)
-                         FROM members member
-                         JOIN profiles profile
-                           ON profile.user_id=member.user_id
-                          AND profile.account=member.member_account
-                          AND profile.publisher_namespace_id=member.namespace_id
-                          AND profile.profile_namespace_id=member.namespace_id
-                          AND profile.profile_rev=member.profile_rev
-                         WHERE member.user_id=?1 AND member.thread_id=?2
-                           AND member.member_account=?3 AND member.member_domain=?4
-                           AND member.profile_rev=?5 AND member.left_state=0",
-                        params![
-                            user_id,
-                            thread_id,
-                            subject.get("account").and_then(Value::as_str).ok_or("member evidence has no account")?,
-                            subject.get("domain").and_then(Value::as_str).ok_or("member evidence has no domain")?,
-                            rev
-                        ],
-                        |row| row.get(0),
-                    )
-                    .optional(),
-                _ => return Err("invalid Group Meta evidence subject".into()),
-            }
-        }
-        _ => return Err("invalid profile evidence type".into()),
+    let payload: Option<String> = conn
+        .query_row(
+            "SELECT json_object('publisherNamespaceId',profile.publisher_namespace_id,
+           'account',profile.account,
+           'domain',COALESCE((SELECT domain FROM profile_namespaces binding
+             WHERE binding.user_id=profile.user_id
+               AND binding.publisher_namespace_id=profile.publisher_namespace_id
+               AND binding.profile_namespace_id=profile.profile_namespace_id),''),
+           'namespaceId',profile.profile_namespace_id,
+           'profileNamespaceId',profile.profile_namespace_id,
+           'profileRev',profile.profile_rev,
+           'name',profile.name,'avatarDigest',profile.avatar_digest,'bio',profile.bio)
+         FROM profiles profile
+         WHERE profile.user_id=?1 AND profile.publisher_namespace_id=?2
+           AND profile.profile_namespace_id=?3 AND profile.account=?4
+           AND profile.profile_rev=?5",
+            params![
+                user_id,
+                key.publisher_namespace_id,
+                key.target.profile_namespace_id,
+                key.target.account,
+                key.target.rev
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("read cached profile: {e}"))?;
+    payload.map(parse_json).transpose()
+}
+
+async fn handle_profile_error(
+    user_id: i64,
+    epoch: u64,
+    key: &ProfileCacheKey,
+    code: i32,
+) -> Result<(), String> {
+    if code == 0 {
+        return Ok(());
     }
-    .map_err(|e| format!("read cached profile evidence: {e}"))?;
-    payload.map(super::parse_json).transpose()
+    // Permanent loss is sparse: the tomb covers the identity across all revisions.
+    if code == 50033 {
+        let tomb = serde_json::from_value(serde_json::json!({
+            "publisherNamespaceId": key.publisher_namespace_id,
+            "profileNamespaceId": key.target.profile_namespace_id,
+            "account": key.target.account,
+        }))
+        .map_err(|e| format!("invalid profile tomb key: {e}"))?;
+        super::lifetime::spawn_at(Ok(epoch), move || {
+            super::profile_namespaces::write_profile_tomb(
+                &open()?,
+                user_id,
+                &tomb,
+                super::client_state::chrono_millis(),
+            )
+        })
+        .await
+        .map_err(|e| format!("join profile tomb write: {e}"))??;
+        return Err("profile permanently lost (UNRECOVERABLE)".into());
+    }
+    Err("profile resolution failed".into())
 }
 
 #[tauri::command]
@@ -509,42 +371,38 @@ pub(crate) async fn native_profile_resolve(
     app: tauri::AppHandle,
     proxy: tauri::State<'_, ServerSessionState>,
     user_id: i64,
-    selector: Value,
+    request: Value,
 ) -> Result<Value, String> {
-    resolve_profile(&app, &proxy, user_id, selector).await
+    resolve_profile(&app, &proxy, user_id, request).await
 }
 
 async fn resolve_profile(
     app: &tauri::AppHandle,
     proxy: &ServerSessionState,
     user_id: i64,
-    selector: Value,
+    request: Value,
 ) -> Result<Value, String> {
-    if user_id <= 0 || !selector.is_object() {
+    if user_id <= 0 {
         return Err("invalid profile resolution request".into());
     }
+    let (key, no_evidence) = parse_profile_request(&request)?;
     let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
-    let cached_selector = selector.clone();
+    let cached_key = key.clone();
     if let Some(profile) = super::lifetime::spawn_at(Ok(epoch), move || {
-        find_profile_for_evidence(&open()?, user_id, &cached_selector)
+        find_profile_for_key(&open()?, user_id, &cached_key)
     })
     .await
     .map_err(|e| format!("join cached profile lookup: {e}"))??
     {
         return Ok(serde_json::json!({ "status": "READY", "profile": profile }));
     }
-    let demand = super::lifetime::spawn_at(Ok(epoch), move || {
-        demand_for_evidence(&open()?, user_id, &selector)
-    })
-    .await
-    .map_err(|e| format!("join profile demand build: {e}"))??;
     let response = perform_api_request_with_events(
         Some(app),
         proxy,
         "POST".into(),
         "/api/v1/user/profile-resolution".into(),
         std::collections::HashMap::from([("content-type".into(), "application/json".into())]),
-        Some(serde_json::to_vec(&demand).map_err(|e| e.to_string())?),
+        Some(serde_json::to_vec(&request).map_err(|e| e.to_string())?),
         true,
     )
     .await?;
@@ -553,11 +411,12 @@ async fn resolve_profile(
     }
     let envelope: GroupMetaResponse = serde_json::from_str(&response.body)
         .map_err(|e| format!("decode profile-resolution response: {e}"))?;
-    if envelope.code != 0 {
-        return Err("profile resolution failed".into());
-    }
+    handle_profile_error(user_id, epoch, &key, envelope.code).await?;
     let data = envelope.data.ok_or("missing profile-resolution result")?;
     if data.get("status").and_then(Value::as_str) == Some("PENDING") {
+        if no_evidence {
+            return Err("unevidenced profile lookup must not return PENDING".into());
+        }
         return Ok(data);
     }
     if data.get("status").and_then(Value::as_str) != Some("READY") {
@@ -596,11 +455,6 @@ pub(crate) async fn materialize_profile_event(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or("profile event has no account")?;
-    let domain = key
-        .get("domain")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or("profile event has no domain")?;
     let rev = key
         .get("rev")
         .and_then(Value::as_i64)
@@ -611,14 +465,16 @@ pub(crate) async fn materialize_profile_event(
         proxy,
         user_id,
         serde_json::json!({
-            "publisherNamespaceId": publisher_namespace_id,
-            "lookup": "ACCOUNT_PROFILE",
-            "target": {
-                "profileNamespaceId": profile_namespace_id,
-                "account": account,
-                "domain": domain,
-                "rev": rev,
+            "demand": {
+                "publisherNamespaceId": publisher_namespace_id,
+                "lookup": "ACCOUNT_PROFILE",
+                "target": {
+                    "profileNamespaceId": profile_namespace_id,
+                    "account": account,
+                    "rev": rev,
+                },
             },
+            "evidence": null,
         }),
     )
     .await?;
@@ -631,7 +487,6 @@ pub(crate) async fn materialize_profile_event(
     if profile.get("publisherNamespaceId").and_then(Value::as_i64) != Some(publisher_namespace_id)
         || profile.get("profileNamespaceId").and_then(Value::as_i64) != Some(profile_namespace_id)
         || profile.get("account").and_then(Value::as_str) != Some(account)
-        || profile.get("domain").and_then(Value::as_str) != Some(domain)
         || profile.get("profileRev").and_then(Value::as_i64) != Some(rev)
     {
         return Err("resolved profile does not match profile event key".into());
@@ -654,7 +509,6 @@ struct GroupMetaProfileReference {
     is_group: bool,
     thread_id: i64,
     account: String,
-    domain: String,
     namespace_id: i64,
     rev: i64,
 }
@@ -665,26 +519,24 @@ fn commit_group_meta_profile(
     reference: &GroupMetaProfileReference,
     profile: &Value,
 ) -> Result<(), String> {
-    if profile.get("account").and_then(Value::as_str) != Some(&reference.account)
-        || profile.get("domain").and_then(Value::as_str) != Some(&reference.domain)
+    if profile.get("account").and_then(Value::as_str) != Some(reference.account.as_str())
+        || profile.get("publisherNamespaceId").and_then(Value::as_i64)
+            != Some(reference.namespace_id)
+        || profile.get("profileNamespaceId").and_then(Value::as_i64) != Some(reference.namespace_id)
+        || profile.get("rev").and_then(Value::as_i64) != Some(reference.rev)
     {
         return Err("resolved profile revision does not match Group Meta".into());
     }
-    let actual_rev = profile
-        .get("rev")
-        .and_then(Value::as_i64)
-        .ok_or("resolved profile has no revision")?;
     let current: bool = if reference.is_group {
         conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM threads
              WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'
-               AND subject_account=?3 AND subject_domain=?4
-               AND subject_namespace_id=?5 AND thread_profile_rev=?6)",
+               AND subject_account=?3
+               AND subject_namespace_id=?4 AND thread_profile_rev=?5)",
             params![
                 user_id,
                 reference.thread_id,
                 reference.account,
-                reference.domain,
                 reference.namespace_id,
                 reference.rev
             ],
@@ -693,13 +545,12 @@ fn commit_group_meta_profile(
     } else {
         conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM members WHERE user_id=?1 AND thread_id=?2
-             AND member_account=?3 AND member_domain=?4 AND namespace_id=?5
-             AND profile_rev=?6 AND left_state=0)",
+             AND member_account=?3 AND namespace_id=?4
+             AND profile_rev=?5 AND left_state=0)",
             params![
                 user_id,
                 reference.thread_id,
                 reference.account,
-                reference.domain,
                 reference.namespace_id,
                 reference.rev
             ],
@@ -710,23 +561,8 @@ fn commit_group_meta_profile(
     if !current {
         return Ok(());
     }
-    let avatar_digest =
-        super::profile_avatars::save(user_id, profile.get("avatarBase64").and_then(Value::as_str))?;
-    super::contacts::register_namespace(conn, user_id, reference.namespace_id, &reference.domain)?;
-    super::contacts::write_profile(
-        conn,
-        user_id,
-        &serde_json::json!({
-            "account": reference.account,
-            "domain": reference.domain,
-            "namespaceId": reference.namespace_id,
-            "profileRev": actual_rev,
-            "name": profile.get("name").and_then(Value::as_str).ok_or("resolved profile has no name")?,
-            "avatarDigest": avatar_digest,
-            "bio": profile.get("bio").and_then(Value::as_str).ok_or("resolved profile has no bio")?,
-        }),
-    )?;
-    if reference.is_group && actual_rev == reference.rev {
+    commit_resolved_profile(conn, user_id, profile)?;
+    if reference.is_group {
         conn.execute(
             "UPDATE threads SET subject_name=?3,subject_avatar='',subject_bio=?4
              WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'",
@@ -755,17 +591,31 @@ async fn resolve_group_meta_profile(
     epoch: u64,
     reference: GroupMetaProfileReference,
 ) -> Result<bool, String> {
-    let selector = if reference.is_group {
+    let target = serde_json::json!({
+        "profileNamespaceId": reference.namespace_id,
+        "account": reference.account,
+        "rev": reference.rev,
+    });
+    let demand = if reference.is_group {
         serde_json::json!({
-            "type": "GROUP_META", "threadId": reference.thread_id,
-            "profileRev": reference.rev, "subject": { "type": "GROUP" },
+            "publisherNamespaceId": reference.namespace_id,
+            "lookup": "ACCOUNT_PROFILE",
+            "target": target,
         })
     } else {
+        let thread_id = reference.thread_id;
+        let group_account: String = super::lifetime::spawn_at(Ok(epoch), move || {
+            open()?.query_row(
+                "SELECT subject_account FROM threads WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'",
+                params![user_id, thread_id],
+                |row| row.get(0),
+            ).map_err(|e| format!("read group account for profile demand: {e}"))
+        }).await.map_err(|e| format!("join group account lookup: {e}"))??;
         serde_json::json!({
-            "type": "GROUP_META", "threadId": reference.thread_id,
-            "profileRev": reference.rev,
-            "subject": { "type": "MEMBER", "account": reference.account,
-                         "domain": reference.domain },
+            "publisherNamespaceId": reference.namespace_id,
+            "lookup": "GROUP_MEMBER_PROFILE",
+            "target": target,
+            "groupAccount": group_account,
         })
     };
     let response = perform_api_request_with_events(
@@ -774,7 +624,7 @@ async fn resolve_group_meta_profile(
         "POST".into(),
         "/api/v1/user/profile-resolution".into(),
         std::collections::HashMap::from([("content-type".into(), "application/json".into())]),
-        Some(serde_json::to_vec(&selector).map_err(|e| e.to_string())?),
+        Some(serde_json::to_vec(&demand).map_err(|e| e.to_string())?),
         true,
     )
     .await?;
@@ -783,9 +633,8 @@ async fn resolve_group_meta_profile(
     }
     let envelope: GroupMetaResponse = serde_json::from_str(&response.body)
         .map_err(|e| format!("decode profile-resolution response: {e}"))?;
-    if envelope.code != 0 {
-        return Err("profile resolution failed".into());
-    }
+    let (key, _) = parse_profile_request(&demand)?;
+    handle_profile_error(user_id, epoch, &key, envelope.code).await?;
     let data = envelope.data.ok_or("missing profile-resolution result")?;
     match data.get("status").and_then(Value::as_str) {
         Some("READY") => {
@@ -834,7 +683,6 @@ fn unresolved_group_meta_profiles(
                 is_group: true,
                 thread_id: row.get(0)?,
                 account: row.get(1)?,
-                domain: String::new(),
                 namespace_id: row.get(2)?,
                 rev: row.get(3)?,
             })
@@ -845,7 +693,7 @@ fn unresolved_group_meta_profiles(
     }
     let mut members = conn
         .prepare(
-            "SELECT member.thread_id, member.member_account, member.member_domain,
+            "SELECT member.thread_id, member.member_account,
                     member.namespace_id, member.profile_rev
              FROM members member
              WHERE member.user_id=?1 AND member.left_state=0 AND member.profile_rev>0
@@ -864,9 +712,8 @@ fn unresolved_group_meta_profiles(
                 is_group: false,
                 thread_id: row.get(0)?,
                 account: row.get(1)?,
-                domain: row.get(2)?,
-                namespace_id: row.get(3)?,
-                rev: row.get(4)?,
+                namespace_id: row.get(2)?,
+                rev: row.get(3)?,
             })
         })
         .map_err(|e| format!("query unresolved member profiles: {e}"))?;
@@ -2088,22 +1935,121 @@ mod tests {
         }
     }
     #[test]
-    fn exact_profile_evidence_uses_the_typed_cache() {
+    fn profile_requests_reject_obsolete_selectors_and_unknown_fields() {
+        for selector in [
+            serde_json::json!({ "type": "EXACT", "account": "peer", "domain": "local",
+                "publisherNamespaceId": 0, "profileNamespaceId": 0, "rev": 2 }),
+            serde_json::json!({ "type": "MESSAGE_AUTHOR", "threadId": 7, "messageSeq": 1, "rev": 2 }),
+            serde_json::json!({ "type": "GROUP_META", "threadId": 7, "profileRev": 2,
+                "subject": { "type": "GROUP" } }),
+            serde_json::json!({ "publisherNamespaceId": 0, "lookup": "ACCOUNT_PROFILE",
+                "target": { "profileNamespaceId": 0, "account": "peer", "rev": 2, "domain": "local" } }),
+        ] {
+            assert!(parse_profile_request(&selector).is_err());
+        }
+    }
+
+    #[test]
+    fn unevidenced_profile_requests_have_the_same_cache_key() {
+        let demand = serde_json::json!({
+            "publisherNamespaceId": 3, "lookup": "ACCOUNT_PROFILE",
+            "target": { "profileNamespaceId": 5, "account": "peer", "rev": 2 },
+        });
+        let (key, evidenced) = parse_profile_request(&demand).unwrap();
+        let (unevidenced_key, no_evidence) =
+            parse_profile_request(&serde_json::json!({ "demand": demand, "evidence": null }))
+                .unwrap();
+        assert!(!evidenced);
+        assert!(no_evidence);
+        assert_eq!(
+            key.publisher_namespace_id,
+            unevidenced_key.publisher_namespace_id
+        );
+        assert_eq!(
+            key.target.profile_namespace_id,
+            unevidenced_key.target.profile_namespace_id
+        );
+        assert_eq!(key.target.account, unevidenced_key.target.account);
+        assert_eq!(key.target.rev, unevidenced_key.target.rev);
+    }
+
+    #[test]
+    fn ready_profiles_do_not_require_display_bindings_or_create_diagonal_bindings() {
+        let conn = db();
+        let profile = serde_json::json!({
+            "publisherNamespaceId": 3, "profileNamespaceId": 5,
+            "account": "peer", "rev": 2, "name": "Peer", "bio": "About",
+            "avatarBase64": null,
+        });
+        let snapshot = commit_resolved_profile(&conn, 1, &profile).unwrap();
+        assert_eq!(snapshot["name"], "Peer");
+        let (key, _) = parse_profile_request(&serde_json::json!({
+            "publisherNamespaceId": 3, "lookup": "ACCOUNT_PROFILE",
+            "target": { "profileNamespaceId": 5, "account": "peer", "rev": 2 },
+        }))
+        .unwrap();
+        assert_eq!(
+            find_profile_for_key(&conn, 1, &key).unwrap().unwrap()["name"],
+            "Peer"
+        );
+        let bindings: i64 = conn
+            .query_row("SELECT COUNT(*) FROM profile_namespaces", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(bindings, 0);
+        let mut other = key;
+        other.publisher_namespace_id = 4;
+        assert!(find_profile_for_key(&conn, 1, &other).unwrap().is_none());
+    }
+
+    #[test]
+    fn group_meta_ready_uses_current_coordinates_without_a_wire_domain() {
+        let mut conn = db();
+        let mut group = snapshot(1, 0);
+        group.kind = "GROUP".into();
+        group.role = Some("OWNER".into());
+        group.profile.account = "!team".into();
+        group.profile.profile_rev = 2;
+        group.thread_profile_rev = 2;
+        merge_states(&mut conn, 1, vec![group], None).unwrap();
+        let reference = GroupMetaProfileReference {
+            is_group: true,
+            thread_id: 7,
+            account: "!team".into(),
+            namespace_id: 0,
+            rev: 2,
+        };
+        let mut profile = serde_json::json!({
+            "publisherNamespaceId": 0, "profileNamespaceId": 0,
+            "account": "!team", "rev": 2, "name": "Team", "bio": "About",
+            "avatarBase64": null,
+        });
+        profile["rev"] = serde_json::json!(3);
+        assert!(commit_group_meta_profile(&conn, 1, &reference, &profile).is_err());
+        profile["rev"] = serde_json::json!(2);
+        commit_group_meta_profile(&conn, 1, &reference, &profile).unwrap();
+        let stored = super::super::thread_store::read(&conn, 1, 7)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored["group"]["name"], "Team");
+        assert!(unresolved_group_meta_profiles(&conn, 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn exact_profile_key_uses_the_typed_cache() {
         let conn = db();
         super::super::contacts::register_namespace(&conn, 1, 0, "local").unwrap();
         super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
             "account": "peer", "domain": "local", "publisherNamespaceId": 0, "profileNamespaceId": 0,
             "profileRev": 2, "name": "Peer", "avatarDigest": null, "bio": "About",
         })).unwrap();
-        let actual = find_profile_for_evidence(
-            &conn,
-            1,
-            &serde_json::json!({
-                "type": "EXACT", "account": "peer", "domain": "local",
-                "publisherNamespaceId": 0, "profileNamespaceId": 0, "rev": 2,
-            }),
-        )
+        let (key, _) = parse_profile_request(&serde_json::json!({
+            "publisherNamespaceId": 0, "lookup": "ACCOUNT_PROFILE",
+            "target": { "profileNamespaceId": 0, "account": "peer", "rev": 2 },
+        }))
         .unwrap();
+        let actual = find_profile_for_key(&conn, 1, &key).unwrap();
         assert_eq!(
             actual,
             Some(serde_json::json!({
@@ -2115,7 +2061,7 @@ mod tests {
     }
 
     #[test]
-    fn group_profile_evidence_uses_only_the_state_revision() {
+    fn group_profile_demand_reads_the_exact_revision() {
         let mut conn = db();
         let mut group = snapshot(1, 0);
         group.kind = "GROUP".into();
@@ -2133,14 +2079,13 @@ mod tests {
             .unwrap()
             .get("profileRev")
             .is_none());
-        let selector = serde_json::json!({
-            "type": "GROUP_META", "threadId": 7, "profileRev": 2,
-            "subject": { "type": "GROUP" },
-        });
+        let (key, _) = parse_profile_request(&serde_json::json!({
+            "publisherNamespaceId": 0, "lookup": "ACCOUNT_PROFILE",
+            "target": { "profileNamespaceId": 0, "account": "!team", "rev": 2 },
+        }))
+        .unwrap();
         assert_eq!(
-            find_profile_for_evidence(&conn, 1, &selector)
-                .unwrap()
-                .unwrap()["name"],
+            find_profile_for_key(&conn, 1, &key).unwrap().unwrap()["name"],
             "Team"
         );
         assert!(unresolved_group_meta_profiles(&conn, 1).unwrap().is_empty());

@@ -10,6 +10,42 @@ import {
 import type { ProfileDemand } from '../../../../shared/profile-demand';
 import { ProfileRepository } from './profile-store.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { WebdbStorage } from './webdb-storage';
+
+describe('Profile wake cache reads', () => {
+  it('reads a prepared profile without authorizing another remote resolution', async () => {
+    const storage = new WebdbStorage(() => null, new SessionLifecycleService());
+    const key = {
+      publisherNamespaceId: 3,
+      profileNamespaceId: 5,
+      account: 'alice',
+      rev: 7,
+    };
+    const resolve = vi
+      .spyOn(storage, 'resolveProfileDemand')
+      .mockResolvedValue({
+        status: 'READY',
+        profile: {
+          publisherNamespaceId: 3,
+          profileNamespaceId: 5,
+          account: 'alice',
+          profileRev: 7,
+          name: 'Alice',
+          bio: '',
+          avatarDigest: null,
+        },
+      });
+    await storage.applyProfileEvent('PROFILE_AVAILABLE', key);
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(
+      {
+        publisherNamespaceId: 3,
+        lookup: 'ACCOUNT_PROFILE',
+        target: { profileNamespaceId: 5, account: 'alice', rev: 7 },
+      },
+      { evidence: null },
+    );
+  });
+});
 
 describe('ProfileRepository resolution scheduler', () => {
   const profileWake = new Subject<ProfileWake>();
@@ -21,7 +57,9 @@ describe('ProfileRepository resolution scheduler', () => {
   beforeEach(() => {
     resolveProfileEvidence.mockReset();
     getProfileAvatarBlob.mockReset();
-    getProfileAvatarBlob.mockResolvedValue(new Blob(['a'], { type: 'image/webp' }));
+    getProfileAvatarBlob.mockResolvedValue(
+      new Blob(['a'], { type: 'image/webp' }),
+    );
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -50,7 +88,8 @@ describe('ProfileRepository resolution scheduler', () => {
       profileNamespaceId: 4,
       profileRev: 7,
       name: 'Alice',
-      avatarDigest: 'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb',
+      avatarDigest:
+        'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb',
       bio: 'Bio',
     };
     resolveProfileEvidence.mockResolvedValue({
@@ -76,6 +115,70 @@ describe('ProfileRepository resolution scheduler', () => {
     });
     expect(resolveProfileEvidence).toHaveBeenCalledTimes(1);
     expect(getProfileAvatarBlob).toHaveBeenCalledOnce();
+  });
+
+  it('performs an unevidenced one-shot lookup without registering a pending entry', async () => {
+    const demand: ProfileDemand = {
+      publisherNamespaceId: 4,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 4, account: 'ALICE', rev: 7 },
+    };
+    resolveProfileEvidence.mockResolvedValue({
+      status: 'READY',
+      profile: {
+        publisherNamespaceId: 4,
+        profileNamespaceId: 4,
+        account: 'alice',
+        profileRev: 7,
+        name: 'Alice',
+        bio: '',
+        avatarDigest: null,
+      },
+    });
+
+    await expect(
+      firstValueFrom(repository.resolve({ demand, evidence: null })),
+    ).resolves.toMatchObject({ name: 'Alice' });
+    expect(resolveProfileEvidence).toHaveBeenCalledWith(
+      { ...demand, target: { ...demand.target, account: 'alice' } },
+      { evidence: null },
+    );
+    expect(repository['resolutions'].size).toBe(0);
+    profileWake.next({
+      event: 'PROFILE_AVAILABLE',
+      key: {
+        publisherNamespaceId: 4,
+        profileNamespaceId: 4,
+        account: 'alice',
+        rev: 7,
+      },
+    });
+    expect(resolveProfileEvidence).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let an unevidenced cache miss fail an evidenced resolution', async () => {
+    const demand: ProfileDemand = {
+      publisherNamespaceId: 4,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 4, account: 'alice', rev: 7 },
+    };
+    resolveProfileEvidence.mockImplementation(async (_demand, options) => {
+      if (options?.evidence === null)
+        throw new Error('profile revision is not cached');
+      return {
+        status: 'PENDING',
+        key: { publisherNamespaceId: 4, ...demand.target },
+      };
+    });
+    const subscription = repository.resolve(demand).subscribe();
+    await expect(
+      firstValueFrom(repository.resolveWithoutEvidence(demand)),
+    ).rejects.toThrow('profile revision is not cached');
+    expect(repository['resolutions'].size).toBe(1);
+    expect([...repository['resolutions'].keys()]).toEqual([
+      JSON.stringify(demand),
+    ]);
+    subscription.unsubscribe();
   });
 
   it('keeps a pending evidence subscription and retries it after a runtime wake', async () => {
@@ -134,23 +237,21 @@ describe('ProfileRepository resolution scheduler', () => {
       avatarDigest: null,
       bio: '',
     } satisfies ProfileSnapshot;
-    resolveProfileEvidence.mockImplementation(
-      async (demand: ProfileDemand) => {
-        const isAlice = demand.target.account === 'alice';
-        const key = {
-          publisherNamespaceId: 4,
-          profileNamespaceId: 4,
-          account: isAlice ? 'alice' : 'bob',
-          rev: 7,
-        };
-        const calls = resolveProfileEvidence.mock.calls.filter(
-          ([value]) => value.target.account === demand.target.account,
-        ).length;
-        return calls > 1 && isAlice
-          ? { status: 'READY', profile: alice }
-          : { status: 'PENDING', key };
-      },
-    );
+    resolveProfileEvidence.mockImplementation(async (demand: ProfileDemand) => {
+      const isAlice = demand.target.account === 'alice';
+      const key = {
+        publisherNamespaceId: 4,
+        profileNamespaceId: 4,
+        account: isAlice ? 'alice' : 'bob',
+        rev: 7,
+      };
+      const calls = resolveProfileEvidence.mock.calls.filter(
+        ([value]) => value.target.account === demand.target.account,
+      ).length;
+      return calls > 1 && isAlice
+        ? { status: 'READY', profile: alice }
+        : { status: 'PENDING', key };
+    });
 
     const aliceResult = firstValueFrom(
       repository.resolve({
@@ -172,7 +273,12 @@ describe('ProfileRepository resolution scheduler', () => {
 
     profileWake.next({
       event: 'PROFILE_AVAILABLE',
-      key: { publisherNamespaceId: 4, profileNamespaceId: 4, account: 'alice', rev: 7 },
+      key: {
+        publisherNamespaceId: 4,
+        profileNamespaceId: 4,
+        account: 'alice',
+        rev: 7,
+      },
     });
 
     await expect(aliceResult).resolves.toMatchObject({ account: 'alice' });

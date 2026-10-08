@@ -1,5 +1,8 @@
 import type { ConversationItem } from '../../services/model';
-import type { ProfileDemand } from '../../../../../shared/profile-demand';
+import {
+  unevidencedProfileDemand,
+  type UnevidencedProfileDemand,
+} from '../../../../../shared/profile-demand';
 import { UserAvatarType } from './model';
 
 /**
@@ -33,12 +36,17 @@ export function conversationAvatarSrc(
   return t.type === 'P2P' ? t.peerUser.avatar : t.group.avatar;
 }
 
+/** Thread-projection profile demand. A conversation subject's `profileRev`
+ *  comes from the thread feed, not from any disclosure evidence, so the
+ *  demand resolves from caches only: the client IndexedDB, then the server's
+ *  durable cache. A miss falls back to the account/address identity instead
+ *  of re-fetching from the federated source. */
 export function conversationAvatarEvidence(
   t: ConversationItem,
-): ProfileDemand | undefined {
+): UnevidencedProfileDemand | undefined {
   if (t.profileRev < 1) return undefined;
   const subject = t.type === 'P2P' ? t.peerUser : t.group;
-  return {
+  return unevidencedProfileDemand({
     publisherNamespaceId: subject.namespaceId,
     lookup: 'ACCOUNT_PROFILE',
     target: {
@@ -46,5 +54,5 @@ export function conversationAvatarEvidence(
       account: subject.account,
       rev: t.profileRev,
     },
-  };
+  });
 }

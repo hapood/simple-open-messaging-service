@@ -245,7 +245,7 @@ fn write_namespace_tomb(
     Ok(())
 }
 
-fn write_profile_tomb(
+pub(super) fn write_profile_tomb(
     conn: &Connection,
     user_id: i64,
     key: &ProfileTombKey,

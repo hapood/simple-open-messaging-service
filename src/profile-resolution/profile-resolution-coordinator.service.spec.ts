@@ -89,6 +89,154 @@ describe('ProfileResolutionCoordinatorService', () => {
     ).toBe('NOT_FOUND');
   });
 
+  it.each([ProfileLookup.ACCOUNT_PROFILE, ProfileLookup.GROUP_MEMBER_PROFILE])(
+    'short-circuits evidenced %s demands on a durable or memory cache hit',
+    async (lookup) => {
+      const { subject, database, profiles, sse } = createSubject({
+        storedProfile: wireProfile,
+      });
+      const demand =
+        lookup === ProfileLookup.ACCOUNT_PROFILE
+          ? accountDemand
+          : { ...accountDemand, lookup, groupAccount: '!group' };
+      // This requester would not be authorized to start new resolution work.
+      database.db.execute.mockResolvedValue({ rows: [] });
+      const authorize = vi.spyOn(subject as any, 'authorizeDemand');
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(subject.start(999, 123, demand)).resolves.toMatchObject({
+          status: 'READY',
+          profile: { account: 'alice', name: 'Alice', rev: 4 },
+        });
+      }
+      expect(profiles.getStoredProfile).toHaveBeenCalledExactlyOnceWith(
+        7,
+        'alice',
+        12,
+        4,
+      );
+      expect(authorize).not.toHaveBeenCalled();
+      expect(
+        database.db.query.identityNamespace.findFirst,
+      ).not.toHaveBeenCalled();
+      expect(database.db.execute).not.toHaveBeenCalled();
+      expect(profiles.fetchExactAccountProfile).not.toHaveBeenCalled();
+      expect(profiles.fetchExactGroupMemberProfile).not.toHaveBeenCalled();
+      expect(subject['pending'].size).toBe(0);
+      expect(subject['queue']).toEqual([]);
+      expect(sse.onProfileAvailable).not.toHaveBeenCalled();
+      expect(sse.onProfileUnavailable).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still authorizes evidenced demands on a cache miss before creating work', async () => {
+    const { subject, database, profiles } = createSubject();
+    database.db.execute.mockResolvedValue({ rows: [] });
+    await expect(subject.start(999, 123, accountDemand)).rejects.toMatchObject({
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+    expect(profiles.getStoredProfile).toHaveBeenCalledExactlyOnceWith(
+      7,
+      'alice',
+      12,
+      4,
+    );
+    expect(database.db.execute).toHaveBeenCalledOnce();
+    expect(profiles.fetchExactAccountProfile).not.toHaveBeenCalled();
+    expect(subject['pending'].size).toBe(0);
+  });
+
+  it('serves cache-only client demands from durable storage without authorizing or fetching', async () => {
+    const { subject, database, profiles } = createSubject({
+      storedProfile: wireProfile,
+    });
+
+    await expect(subject.startCacheOnly(accountDemand)).resolves.toMatchObject({
+      status: 'READY',
+      profile: { account: 'alice', name: 'Alice', rev: 4 },
+    });
+
+    expect(database.db.execute).not.toHaveBeenCalled();
+    expect(profiles.fetchExactAccountProfile).not.toHaveBeenCalled();
+  });
+
+  it('rejects cache-only client demands on a durable miss without remote fetch', async () => {
+    const { subject, database, profiles } = createSubject();
+
+    await expect(subject.startCacheOnly(accountDemand)).rejects.toMatchObject({
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+
+    expect(database.db.execute).not.toHaveBeenCalled();
+    expect(profiles.fetchExactAccountProfile).not.toHaveBeenCalled();
+    expect(subject['pending'].size).toBe(0);
+    expect(subject['queue']).toEqual([]);
+  });
+
+  it('does not attach cache-only callers to existing remote resolution work', async () => {
+    const { subject, profiles, sse } = createSubject();
+    const key = { publisherNamespaceId: 7, ...accountDemand.target };
+    const listeners = new Set([123]);
+    subject['pending'].set(JSON.stringify([7, 12, 'alice', 4]), {
+      key,
+      demand: accountDemand,
+      listeners,
+      state: 'ACTIVE',
+    });
+
+    await expect(subject.startCacheOnly(accountDemand)).rejects.toMatchObject({
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+    expect(listeners).toEqual(new Set([123]));
+    expect(subject['queue']).toEqual([]);
+    expect(profiles.fetchExactAccountProfile).not.toHaveBeenCalled();
+    expect(sse.onProfileAvailable).not.toHaveBeenCalled();
+    expect(sse.onProfileUnavailable).not.toHaveBeenCalled();
+  });
+
+  it('does not publish a fetched profile to the cache before durable materialization', async () => {
+    const { subject, profiles } = createSubject();
+    profiles.fetchExactAccountProfile.mockResolvedValue(wireProfile);
+    let release!: () => void;
+    profiles.materializeExactForeignProfile.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const fetched = subject['fetch'](
+      { publisherNamespaceId: 7, ...accountDemand.target },
+      accountDemand,
+    );
+    await vi.waitFor(() =>
+      expect(profiles.materializeExactForeignProfile).toHaveBeenCalled(),
+    );
+    await expect(subject.startCacheOnly(accountDemand)).rejects.toMatchObject({
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+    expect(subject['cache'].size).toBe(0);
+    profiles.getStoredProfile.mockResolvedValue(wireProfile);
+    release();
+    await expect(fetched).resolves.toMatchObject({ name: 'Alice' });
+  });
+
+  it('does not retain a transient READY cache entry when materialization fails', async () => {
+    const { subject, profiles } = createSubject();
+    profiles.fetchExactAccountProfile.mockResolvedValue(wireProfile);
+    profiles.materializeExactForeignProfile.mockRejectedValue(
+      new Error('snapshot write failed'),
+    );
+    await expect(
+      subject['fetch'](
+        { publisherNamespaceId: 7, ...accountDemand.target },
+        accountDemand,
+      ),
+    ).rejects.toThrow('snapshot write failed');
+    await expect(subject.startCacheOnly(accountDemand)).rejects.toMatchObject({
+      bizCode: BusinessCode.NOT_FOUND,
+    });
+    expect(subject['cache'].size).toBe(0);
+  });
+
   it('uses the namespace publisher domain for ACCOUNT_PROFILE transport', async () => {
     const { subject, profiles } = createSubject();
     profiles.fetchExactAccountProfile.mockResolvedValue(wireProfile);
@@ -278,16 +426,16 @@ describe('ProfileResolutionCoordinatorService', () => {
     });
     const { subject, profiles, sse } = createSubject();
     profiles.fetchExactAccountProfile.mockReturnValue(fetched);
+    let materialized = false;
     profiles.materializeExactForeignProfile.mockImplementation(async () => {
+      materialized = true;
       order.push('materialized');
     });
-    profiles.getStoredProfile
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(null)
-      .mockImplementation(async () => {
-        order.push('read-durable');
-        return wireProfile;
-      });
+    profiles.getStoredProfile.mockImplementation(async () => {
+      if (!materialized) return null;
+      order.push('read-durable');
+      return wireProfile;
+    });
     sse.onProfileAvailable.mockImplementation(() => {
       order.push('sse');
     });
@@ -331,7 +479,7 @@ describe('ProfileResolutionCoordinatorService', () => {
     expect(subject['pending'].size).toBe(1);
   });
 
-  it('touches the profile LRU immediately after a successful fetch result', async () => {
+  it('touches the profile LRU after successful durable materialization', async () => {
     const { subject, profiles } = createSubject();
     profiles.fetchExactAccountProfile.mockResolvedValue(wireProfile);
     profiles.getStoredProfile.mockResolvedValue(wireProfile);

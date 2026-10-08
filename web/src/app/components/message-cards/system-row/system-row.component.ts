@@ -8,7 +8,10 @@ import { ProfileRepository } from '../../../services/profile-store.service';
 import { WebdbService } from '../../../services/webdb.service';
 import { ConversationListService } from '../../../services/conversation-list.service';
 
-import type { ProfileDemand } from '../../../../../../shared/profile-demand';
+import {
+  unevidencedProfileDemand,
+  type ProfileDemand,
+} from '../../../../../../shared/profile-demand';
 import { UserService } from '../../../services/user.service';
 import { displayUserAccount } from '../../../services/model';
 import {
@@ -131,15 +134,17 @@ export class SystemRowComponent {
       const current = ++request;
       if (!revision) return;
       void firstValueFrom(
-        this.profiles.resolve({
-          publisherNamespaceId: identity.profileNamespaceId,
-          lookup: 'ACCOUNT_PROFILE',
-          target: {
-            profileNamespaceId: identity.profileNamespaceId,
-            account: identity.account,
-            rev: revision,
-          },
-        }),
+        this.profiles.resolve(
+          unevidencedProfileDemand({
+            publisherNamespaceId: identity.profileNamespaceId,
+            lookup: 'ACCOUNT_PROFILE',
+            target: {
+              profileNamespaceId: identity.profileNamespaceId,
+              account: identity.account,
+              rev: revision,
+            },
+          }),
+        ),
       )
         .then((profile) => {
           if (!cancelled && current === request)

@@ -210,7 +210,8 @@ export class ThreadRepository {
         this.memberProfiles.notifyChanged(
           data.threadIds.filter((threadId) =>
             this._items().some(
-              (thread) => thread.type === 'GROUP' && thread.threadId === threadId,
+              (thread) =>
+                thread.type === 'GROUP' && thread.threadId === threadId,
             ),
           ),
         );
@@ -301,15 +302,18 @@ export class ThreadRepository {
     if (reference.profileRev < 1) return;
     const epoch = this.sessionEpoch;
     try {
-      const result = await this.webdb.resolveProfileDemand({
-        publisherNamespaceId: reference.namespaceId,
-        lookup: 'ACCOUNT_PROFILE',
-        target: {
-          profileNamespaceId: reference.namespaceId,
-          account: reference.account,
-          rev: reference.profileRev,
+      const result = await this.webdb.resolveProfileDemand(
+        {
+          publisherNamespaceId: reference.namespaceId,
+          lookup: 'ACCOUNT_PROFILE',
+          target: {
+            profileNamespaceId: reference.namespaceId,
+            account: reference.account,
+            rev: reference.profileRev,
+          },
         },
-      });
+        { evidence: null },
+      );
       if (epoch !== this.sessionEpoch || result.status === 'PENDING') return;
       const profile = result.profile;
       this._items.update((items) =>

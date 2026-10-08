@@ -14,6 +14,20 @@ export type ProfileDemand =
       groupAccount: string;
     };
 
+/** A one-shot cache lookup: client cache first, then backend cache, never federation. */
+export interface UnevidencedProfileDemand {
+  readonly demand: ProfileDemand;
+  readonly evidence: null;
+}
+
+export type ProfileRequest = ProfileDemand | UnevidencedProfileDemand;
+
+export function unevidencedProfileDemand(
+  demand: ProfileDemand,
+): UnevidencedProfileDemand {
+  return { demand, evidence: null };
+}
+
 export interface ProfileTarget {
   profileNamespaceId: number;
   account: string;
@@ -33,6 +47,18 @@ export class ProfileDemandParseError extends Error {
     super(message);
     this.name = 'ProfileDemandParseError';
   }
+}
+
+/** Parse current request shapes only; incomplete envelopes and obsolete selectors are invalid. */
+export function parseProfileRequest(value: unknown): ProfileRequest {
+  const request = record(value, 'profile request must be an object');
+  if (Object.hasOwn(request, 'demand')) {
+    assertOnlyKeys(request, 'demand', 'evidence');
+    if (request['evidence'] !== null)
+      throw new ProfileDemandParseError('invalid unevidenced profile request');
+    return unevidencedProfileDemand(parseProfileDemand(request['demand']));
+  }
+  return parseProfileDemand(value);
 }
 
 /** Parse the closed profile-resolution wire contract at untrusted JSON boundaries. */

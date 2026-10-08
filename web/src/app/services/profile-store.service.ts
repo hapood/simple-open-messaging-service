@@ -1,7 +1,14 @@
 import { Injectable, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Observable, ReplaySubject } from 'rxjs';
-import type { ProfileDemand } from '../../../../shared/profile-demand';
+import { defer, Observable, ReplaySubject } from 'rxjs';
+import type {
+  ProfileDemand,
+  UnevidencedProfileDemand,
+} from '../../../../shared/profile-demand';
+export {
+  unevidencedProfileDemand,
+  type UnevidencedProfileDemand,
+} from '../../../../shared/profile-demand';
 import {
   WebdbService,
   type ProfileWake,
@@ -66,7 +73,31 @@ export class ProfileRepository {
   }
 
   /** Resolve one demand through the platform database executor. The main thread performs no HTTP. */
-  resolve(demand: ProfileDemand): Observable<ResolvedProfile> {
+  resolve(
+    demand: ProfileDemand | UnevidencedProfileDemand,
+  ): Observable<ResolvedProfile> {
+    return 'demand' in demand
+      ? this.resolveWithoutEvidence(demand.demand)
+      : this.startResolution(demand);
+  }
+
+  /** Resolve from caches only: client IndexedDB, then the server durable
+   *  cache. A cache miss ends in an error (callers fall back to the
+   *  account/address identity); the server never remote-fetches. */
+  resolveWithoutEvidence(demand: ProfileDemand): Observable<ResolvedProfile> {
+    demand = normalizeDemand(demand);
+    // A one-shot lookup has no pending entry and never subscribes to wakes.
+    return defer(async () => {
+      const result = await this.webdb.resolveProfileDemand(demand, {
+        evidence: null,
+      });
+      if (result.status !== 'READY')
+        throw new Error('unevidenced profile lookup must not return PENDING');
+      return this.readResolvedProfile(result.profile);
+    });
+  }
+
+  private startResolution(demand: ProfileDemand): Observable<ResolvedProfile> {
     demand = normalizeDemand(demand);
     const demandKey = JSON.stringify(demand);
     const existing = this.resolutions.get(demandKey);
@@ -153,16 +184,15 @@ export class ProfileRepository {
       });
   }
 
-  private async commitReady(
-    entry: ResolutionEntry,
+  private async readResolvedProfile(
     snapshot: ProfileSnapshot,
-  ): Promise<void> {
+  ): Promise<ResolvedProfile> {
     const avatarBlob = snapshot.avatarDigest
       ? await this.webdb.getProfileAvatarBlob(snapshot.avatarDigest)
       : null;
     if (snapshot.avatarDigest && !avatarBlob)
       throw new Error('resolved profile avatar bytes are missing');
-    const profile: ResolvedProfile = {
+    return {
       namespaceId: snapshot.profileNamespaceId,
       account: snapshot.account,
       rev: snapshot.profileRev,
@@ -171,11 +201,19 @@ export class ProfileRepository {
       avatarDigest: snapshot.avatarDigest,
       avatarBlob: avatarBlob ?? null,
     };
-    const key = JSON.stringify([
-      profile.namespaceId,
-      profile.account,
-      profile.rev,
-    ]);
+  }
+
+  private async commitReady(
+    entry: ResolutionEntry,
+    snapshot: ProfileSnapshot,
+  ): Promise<void> {
+    const profile = await this.readResolvedProfile(snapshot);
+    const key = profileKey({
+      publisherNamespaceId: snapshot.publisherNamespaceId,
+      profileNamespaceId: profile.namespaceId,
+      account: profile.account,
+      rev: profile.rev,
+    });
     this.lru.delete(key);
     this.lru.set(key, profile);
     this.demandKeys.delete(entry.demandKey);

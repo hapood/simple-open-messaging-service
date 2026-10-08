@@ -155,7 +155,6 @@ interface ResolvedProfile {
   publisherNamespaceId: number;
   profileNamespaceId: number;
   account: string;
-  domain: string;
   rev: number;
   name: string;
   bio: string;
@@ -166,14 +165,21 @@ type ProfileResolutionAttempt =
   | { status: 'READY'; profile: ResolvedProfile }
   | { status: 'PENDING'; key: ProfileKey };
 
-const requestProfile = async (demand: ProfileDemand) => {
+const requestProfile = async (
+  demand: ProfileDemand,
+  options: { evidence?: null } = {},
+) => {
   const cached = await storage.findProfileForDemand(demand);
   if (cached) return { status: 'READY', profile: cached } as const;
   const response = await fetch(URLS.profileResolution, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(demand),
+    body: JSON.stringify(
+      Object.hasOwn(options, 'evidence')
+        ? { demand, evidence: options.evidence }
+        : demand,
+    ),
   });
   if (!response.ok)
     throw new Error(`profile-resolution HTTP ${response.status}`);
@@ -198,8 +204,11 @@ const requestProfile = async (demand: ProfileDemand) => {
   }
   if (envelope.code !== 0 || !envelope.data)
     throw new Error(envelope.message ?? 'profile resolution failed');
-  if (envelope.data.status === 'PENDING')
+  if (envelope.data.status === 'PENDING') {
+    if (options.evidence === null)
+      throw new Error('unevidenced profile lookup must not return PENDING');
     return envelope.data as ProfileResolutionAttempt;
+  }
   const profile = envelope.data.profile;
   return {
     status: 'READY',
@@ -287,8 +296,7 @@ const requestTombstone = async (input: {
         : { maxMessageSeq: input.maxMessageSeq }),
     }),
   });
-  if (!response.ok)
-    throw new Error(`tombstone query HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`tombstone query HTTP ${response.status}`);
   return response.json();
 };
 
@@ -314,9 +322,7 @@ const resolveGroupMetaProfile = async (
             account: reference.account,
             rev: reference.rev,
           },
-          groupAccount: await storage.groupAccountForThread(
-            reference.threadId,
-          ),
+          groupAccount: await storage.groupAccountForThread(reference.threadId),
         };
   return (await requestProfile(demand)).status === 'READY';
 };
@@ -333,6 +339,7 @@ type Request =
       type: 'resolve-profile';
       userId: string;
       demand: ProfileDemand;
+      evidence?: null;
     }
   | {
       id: number;
@@ -470,7 +477,11 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
           return;
         }
         if (data.type === 'resolve-profile') {
-          const result = await requestProfile(data.demand);
+          const result = await requestProfile(data.demand, {
+            ...(Object.hasOwn(data, 'evidence')
+              ? { evidence: data.evidence }
+              : {}),
+          });
           postMessage({ id: data.id, ok: true, result });
           return;
         }
@@ -488,60 +499,64 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
           // Group Meta drain (groups only; non-groups no-op inside).
           let groupMetaFlight = groupMetaDrains.get(threadId);
           if (!groupMetaFlight) {
-            groupMetaFlight = new TrailingSingleFlight<string>(async (target) => {
-              try {
-                const changed = await syncGroupMetaThread(
-                  storage,
-                  requestGroupMeta,
-                  resolveGroupMetaProfile,
-                  threadId,
-                  target,
-                  guard,
-                );
-                if (changed.length)
-                  postMessage({
-                    type: 'group-meta-committed',
-                    userId: Number(data.userId),
-                    threadIds: changed,
-                  });
-              } catch (error) {
-                console.warn(
-                  '[group-meta] per-thread drain failed; next wake retries',
-                  error,
-                );
-              }
-            });
+            groupMetaFlight = new TrailingSingleFlight<string>(
+              async (target) => {
+                try {
+                  const changed = await syncGroupMetaThread(
+                    storage,
+                    requestGroupMeta,
+                    resolveGroupMetaProfile,
+                    threadId,
+                    target,
+                    guard,
+                  );
+                  if (changed.length)
+                    postMessage({
+                      type: 'group-meta-committed',
+                      userId: Number(data.userId),
+                      threadIds: changed,
+                    });
+                } catch (error) {
+                  console.warn(
+                    '[group-meta] per-thread drain failed; next wake retries',
+                    error,
+                  );
+                }
+              },
+            );
             groupMetaDrains.set(threadId, groupMetaFlight);
           }
           // Tombstone drain.
           let tombstoneFlight = tombstoneDrains.get(threadId);
           if (!tombstoneFlight) {
-            tombstoneFlight = new TrailingSingleFlight<number>(async (target) => {
-              try {
-                const committed = await syncTombstoneThread(
-                  storage,
-                  requestTombstone,
-                  threadId,
-                  target,
-                  undefined,
-                  guard,
-                );
-                if (committed.length)
-                  postMessage({
-                    type: 'tombstone-committed',
+            tombstoneFlight = new TrailingSingleFlight<number>(
+              async (target) => {
+                try {
+                  const committed = await syncTombstoneThread(
+                    storage,
+                    requestTombstone,
                     threadId,
-                    tombstones: committed.map((item) => ({
-                      seq: item.messageSeq,
-                      type: item.type,
-                    })),
-                  });
-              } catch (error) {
-                console.warn(
-                  '[tombstone] per-thread drain failed; next wake retries',
-                  error,
-                );
-              }
-            });
+                    target,
+                    undefined,
+                    guard,
+                  );
+                  if (committed.length)
+                    postMessage({
+                      type: 'tombstone-committed',
+                      threadId,
+                      tombstones: committed.map((item) => ({
+                        seq: item.messageSeq,
+                        type: item.type,
+                      })),
+                    });
+                } catch (error) {
+                  console.warn(
+                    '[tombstone] per-thread drain failed; next wake retries',
+                    error,
+                  );
+                }
+              },
+            );
             tombstoneDrains.set(threadId, tombstoneFlight);
           }
           // Fire both concurrently; they share one `openThreadId` guard.

@@ -5,7 +5,10 @@ import {
   provideTranslocoTranspiler,
 } from '@jsverse/transloco';
 import { of, Subject } from 'rxjs';
-import { createP2PConversation, type ConversationItem } from '../../../services/model';
+import {
+  createP2PConversation,
+  type ConversationItem,
+} from '../../../services/model';
 import { vi } from 'vitest';
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
@@ -63,25 +66,32 @@ describe('SystemRowComponent', () => {
   };
   beforeEach(() => {
     getProfile.mockReset().mockResolvedValue(undefined);
-    resolveProfile.mockReset().mockReturnValue(of({
-      account: 'alice',
-      domain: 'peer.test',
-      namespaceId: 12,
-      rev: 3,
-      name: '',
-    }));
+    resolveProfile.mockReset().mockReturnValue(
+      of({
+        account: 'alice',
+        domain: 'peer.test',
+        namespaceId: 12,
+        rev: 3,
+        name: '',
+      }),
+    );
     correctSystemMessageProfile.mockReset().mockResolvedValue(true);
     conversations.set([]);
     TestBed.configureTestingModule({
       imports: [SystemRowComponent],
       providers: [
         provideZonelessChangeDetection(),
-        { provide: UserService, useValue: { sessionProfile: signal({
-          account: 'me',
-          domain: 'chat.example.test',
-          namespaceId: 0,
-          profileRev: 0,
-        }) } },
+        {
+          provide: UserService,
+          useValue: {
+            sessionProfile: signal({
+              account: 'me',
+              domain: 'chat.example.test',
+              namespaceId: 0,
+              profileRev: 0,
+            }),
+          },
+        },
         {
           provide: ProfileRepository,
           useValue: { getProfile, resolve: resolveProfile },
@@ -175,13 +185,15 @@ describe('SystemRowComponent', () => {
     'derives friendship perspective from initiator: %j',
     async (initiator, expected) => {
       const profiledPeer = { ...alice, profileRev: 3 };
-      resolveProfile.mockReturnValue(of({
-        account: 'alice',
-        domain: 'peer.test',
-        namespaceId: 12,
-        rev: 3,
-        name: 'Alice Profile',
-      }));
+      resolveProfile.mockReturnValue(
+        of({
+          account: 'alice',
+          domain: 'peer.test',
+          namespaceId: 12,
+          rev: 3,
+          name: 'Alice Profile',
+        }),
+      );
       const fixture = render({
         type: 'FRIEND_REMOVED',
         initiator,
@@ -192,6 +204,14 @@ describe('SystemRowComponent', () => {
       );
       fixture.detectChanges();
       expect(fixture.nativeElement.textContent).toContain(expected);
+      expect(resolveProfile).toHaveBeenCalledExactlyOnceWith({
+        evidence: null,
+        demand: {
+          publisherNamespaceId: 12,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { profileNamespaceId: 12, account: 'alice', rev: 3 },
+        },
+      });
     },
   );
 
@@ -206,20 +226,24 @@ describe('SystemRowComponent', () => {
 
   it('rereads the event revision from the local profile cache when it changes', async () => {
     resolveProfile
-      .mockReturnValueOnce(of({
-        account: 'alice',
-        domain: 'peer.test',
-        namespaceId: 12,
-        rev: 3,
-        name: '',
-      }))
-      .mockReturnValue(of({
-        account: 'alice',
-        domain: 'peer.test',
-        namespaceId: 12,
-        rev: 3,
-        name: 'Alice Profile',
-      }));
+      .mockReturnValueOnce(
+        of({
+          account: 'alice',
+          domain: 'peer.test',
+          namespaceId: 12,
+          rev: 3,
+          name: '',
+        }),
+      )
+      .mockReturnValue(
+        of({
+          account: 'alice',
+          domain: 'peer.test',
+          namespaceId: 12,
+          rev: 3,
+          name: 'Alice Profile',
+        }),
+      );
     const fixture = render(
       { type: 'GROUP_JOINED', member: { ...alice, profileRev: 3 } },
       { isGroupConversation: true },
@@ -229,7 +253,9 @@ describe('SystemRowComponent', () => {
     );
     memberChanges.next([42]);
     await vi.waitFor(() =>
-      expect(fixture.nativeElement.textContent).toContain('Alice Profile 加入了群聊'),
+      expect(fixture.nativeElement.textContent).toContain(
+        'Alice Profile 加入了群聊',
+      ),
     );
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain(
@@ -281,21 +307,27 @@ describe('SystemRowComponent', () => {
   });
 
   it("tracks the caller's P2P remark for a cached group participant", async () => {
-    resolveProfile.mockReturnValue(of({
-      account: 'alice',
-      domain: 'peer.test',
-      namespaceId: 12,
-      rev: 4,
-      name: 'Alice cached',
-    }));
+    resolveProfile.mockReturnValue(
+      of({
+        account: 'alice',
+        domain: 'peer.test',
+        namespaceId: 12,
+        rev: 4,
+        name: 'Alice cached',
+      }),
+    );
     const participant = { ...alice, profileNamespaceId: 12, profileRev: 3 };
-    const thread = createP2PConversation(7, {
-      account: participant.account,
-      name: 'Alice',
-      domain: participant.domain,
-      namespaceId: participant.profileNamespaceId,
-      profileRev: participant.profileRev,
-    }, { alias: 'My remark' });
+    const thread = createP2PConversation(
+      7,
+      {
+        account: participant.account,
+        name: 'Alice',
+        domain: participant.domain,
+        namespaceId: participant.profileNamespaceId,
+        profileRev: participant.profileRev,
+      },
+      { alias: 'My remark' },
+    );
     conversations.set([thread]);
     const fixture = render(
       { type: 'GROUP_LEFT', member: participant },
@@ -311,13 +343,15 @@ describe('SystemRowComponent', () => {
   });
 
   it('reads a departed member from its own cached revision without requesting evidence', async () => {
-    resolveProfile.mockReturnValue(of({
-      account: 'alice',
-      domain: 'peer.test',
-      namespaceId: 12,
-      rev: 4,
-      name: 'Alice cached',
-    }));
+    resolveProfile.mockReturnValue(
+      of({
+        account: 'alice',
+        domain: 'peer.test',
+        namespaceId: 12,
+        rev: 4,
+        name: 'Alice cached',
+      }),
+    );
     const fixture = render(
       {
         type: 'GROUP_LEFT',
@@ -330,12 +364,15 @@ describe('SystemRowComponent', () => {
     );
     await vi.waitFor(() =>
       expect(resolveProfile).toHaveBeenCalledWith({
-        publisherNamespaceId: 12,
-        lookup: 'ACCOUNT_PROFILE',
-        target: {
-          profileNamespaceId: 12,
-          account: 'alice',
-          rev: 4,
+        evidence: null,
+        demand: {
+          publisherNamespaceId: 12,
+          lookup: 'ACCOUNT_PROFILE',
+          target: {
+            profileNamespaceId: 12,
+            account: 'alice',
+            rev: 4,
+          },
         },
       }),
     );
@@ -344,25 +381,30 @@ describe('SystemRowComponent', () => {
   });
 
   it('reads the creator profile at the event revision', async () => {
-    resolveProfile.mockReturnValue(of({
-      account: 'alice',
-      domain: 'peer.test',
-      namespaceId: 12,
-      rev: 3,
-      name: 'Alice Profile',
-    }));
+    resolveProfile.mockReturnValue(
+      of({
+        account: 'alice',
+        domain: 'peer.test',
+        namespaceId: 12,
+        rev: 3,
+        name: 'Alice Profile',
+      }),
+    );
     const fixture = render(
       { type: 'GROUP_CREATED', creator: { ...alice, profileRev: 3 } },
       { isGroupConversation: true },
     );
     await vi.waitFor(() =>
       expect(resolveProfile).toHaveBeenCalledWith({
-        publisherNamespaceId: 12,
-        lookup: 'ACCOUNT_PROFILE',
-        target: {
-          profileNamespaceId: 12,
-          account: 'alice',
-          rev: 3,
+        evidence: null,
+        demand: {
+          publisherNamespaceId: 12,
+          lookup: 'ACCOUNT_PROFILE',
+          target: {
+            profileNamespaceId: 12,
+            account: 'alice',
+            rev: 3,
+          },
         },
       }),
     );

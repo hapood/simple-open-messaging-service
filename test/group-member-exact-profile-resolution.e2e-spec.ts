@@ -140,21 +140,31 @@ describe('exact profile completion for a federated group member', () => {
     );
   });
 
-  it('does not disclose a cached snapshot to an unrelated viewer or a revision absent from the roster', async () => {
+  it('serves cached exact snapshots without checking the viewer or current roster revision', async () => {
     await expect(
       subject.start(outsiderId, 0, selector()),
-    ).rejects.toMatchObject({
-      bizCode: BusinessCode.NOT_FOUND,
+    ).resolves.toMatchObject({
+      status: 'READY',
+      profile: { rev: 2, name: 'Updated member' },
     });
     await expect(
       subject.start(viewerId, 0, {
         ...selector(),
         target: { ...selector().target, rev: 1 },
       }),
+    ).resolves.toMatchObject({
+      status: 'READY',
+      profile: { rev: 1, name: 'Historical member' },
+    });
+    await expect(
+      subject.start(outsiderId, 0, {
+        ...selector(),
+        target: { ...selector().target, rev: 3 },
+      }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
   });
 
-  it('rechecks current membership even when the exact snapshot is cached', async () => {
+  it('checks current membership only on a cache miss', async () => {
     await database.db
       .update(tables.relationshipPair)
       .set({ active: false })
@@ -162,9 +172,13 @@ describe('exact profile completion for a federated group member', () => {
     try {
       await expect(
         subject.start(viewerId, 0, selector()),
-      ).rejects.toMatchObject({
-        bizCode: BusinessCode.NOT_FOUND,
-      });
+      ).resolves.toMatchObject({ status: 'READY', profile: { rev: 2 } });
+      await expect(
+        subject.start(viewerId, 0, {
+          ...selector(),
+          target: { ...selector().target, rev: 3 },
+        }),
+      ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
     } finally {
       await database.db
         .update(tables.relationshipPair)
@@ -173,7 +187,7 @@ describe('exact profile completion for a federated group member', () => {
     }
   });
 
-  it('does not use a departed subject as authorization', async () => {
+  it('serves a departed subject from cache but does not authorize an uncached revision', async () => {
     const member = and(
       eq(tables.groupMetaMemberFeed.threadId, threadId),
       eq(tables.groupMetaMemberFeed.memberAccount, account),
@@ -188,9 +202,13 @@ describe('exact profile completion for a federated group member', () => {
     try {
       await expect(
         subject.start(viewerId, 0, selector()),
-      ).rejects.toMatchObject({
-        bizCode: BusinessCode.NOT_FOUND,
-      });
+      ).resolves.toMatchObject({ status: 'READY', profile: { rev: 2 } });
+      await expect(
+        subject.start(viewerId, 0, {
+          ...selector(),
+          target: { ...selector().target, rev: 3 },
+        }),
+      ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
     } finally {
       await database.db
         .update(tables.groupMetaMemberFeed)

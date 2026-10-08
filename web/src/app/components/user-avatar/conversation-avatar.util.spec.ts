@@ -3,6 +3,7 @@ import {
   conversationAvatarAccount,
   conversationAvatarDomain,
   conversationAvatarSrc,
+  conversationAvatarEvidence,
 } from './conversation-avatar.util';
 import { UserAvatarType } from './model';
 import type { ConversationItem } from '../../services/model';
@@ -29,6 +30,18 @@ describe('conversation-avatar util', () => {
     peerUser: { avatar: '' },
     group: { id: 12, account: '!group-12', avatar: '/uploads/g12.png' },
   } as unknown as ConversationItem;
+
+  it('keeps a profile lookup for thread projections without disclosure evidence', () => {
+    const request = conversationAvatarEvidence({ ...p2p, profileRev: 7 });
+    expect(request).toEqual({
+      evidence: null,
+      demand: {
+        publisherNamespaceId: 0,
+        lookup: 'ACCOUNT_PROFILE',
+        target: { profileNamespaceId: 0, account: 'alice', rev: 7 },
+      },
+    });
+  });
 
   it('maps P2P → OTHER and GROUP → GROUP', () => {
     expect(conversationAvatarType(p2p)).toBe(UserAvatarType.OTHER);

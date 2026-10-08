@@ -188,7 +188,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
     expect(sse.onProfileFailed).not.toHaveBeenCalled();
   });
 
-  it('still rejects a viewer without thread authorization', async () => {
+  it('serves cached snapshots without thread authorization, but rejects an uncached revision', async () => {
     const [outsider] = await database.db
       .insert(tables.account)
       .values({ account: 'profile-outsider', updatedAt: new Date() })
@@ -203,6 +203,16 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
           rev: 1,
         },
       } satisfies ProfileClientResolutionDemand),
+    ).resolves.toMatchObject({
+      status: 'READY',
+      profile: { rev: 1, name: 'Local historical' },
+    });
+    await expect(
+      coordinator().start(outsider.id, 0, {
+        publisherNamespaceId: 0,
+        lookup: ProfileLookup.ACCOUNT_PROFILE,
+        target: { profileNamespaceId: 0, account, rev: 3 },
+      }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
   });
 });

@@ -42,11 +42,11 @@ pub(super) fn write_profile(
         .get("profileNamespaceId")
         .and_then(Value::as_i64)
         .ok_or("profile has no profile namespace")?;
+    // Display bindings arrive independently of immutable profile snapshots.
     let domain = profile
         .get("domain")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or("profile has no domain")?;
+        .filter(|value| !value.is_empty());
     let rev = profile
         .get("profileRev")
         .and_then(Value::as_i64)
@@ -63,16 +63,18 @@ pub(super) fn write_profile(
         .get("bio")
         .and_then(Value::as_str)
         .ok_or("profile has no bio")?;
-    conn.execute(
-        "INSERT INTO profile_namespaces(
-           user_id,publisher_namespace_id,profile_namespace_id,domain,root_public_key,
-           update_feed_id,change_seq,expired,status,refreshed_at
-         ) VALUES(?1,?2,?3,?4,NULL,0,0,0,'ACTIVE',0)
-         ON CONFLICT(user_id,publisher_namespace_id,profile_namespace_id) DO UPDATE SET
-           domain=excluded.domain",
-        params![user_id, publisher_namespace, profile_namespace, domain],
-    )
-    .map_err(|e| format!("write profile namespace binding: {e}"))?;
+    if let Some(domain) = domain {
+        conn.execute(
+            "INSERT INTO profile_namespaces(
+               user_id,publisher_namespace_id,profile_namespace_id,domain,root_public_key,
+               update_feed_id,change_seq,expired,status,refreshed_at
+             ) VALUES(?1,?2,?3,?4,NULL,0,0,0,'ACTIVE',0)
+             ON CONFLICT(user_id,publisher_namespace_id,profile_namespace_id) DO UPDATE SET
+               domain=excluded.domain",
+            params![user_id, publisher_namespace, profile_namespace, domain],
+        )
+        .map_err(|e| format!("write profile namespace binding: {e}"))?;
+    }
     let existing: Option<(String, Option<String>, String)> = conn
         .query_row(
             "SELECT name, avatar_digest, bio FROM profiles
