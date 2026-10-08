@@ -88,6 +88,15 @@ export class ProfileEditorComponent {
   /** Brief "Saved" confirmation on the Save button after a successful save (~1.5s). */
   readonly justSaved = signal(false);
   private savedTimer?: ReturnType<typeof setTimeout>;
+  readonly accountCopied = signal(false);
+  private accountCopiedTimer?: ReturnType<typeof setTimeout>;
+
+  readonly accountAddress = computed(() => {
+    const profile = this.sessionProfile();
+    return profile?.account && profile.domain
+      ? `${profile.account}@${profile.domain}`
+      : '';
+  });
 
   nameLength(): number {
     return unicodeCodePointLength(this.name());
@@ -147,6 +156,7 @@ export class ProfileEditorComponent {
     // Clear the "Saved" flash timer if the editor is torn down mid-flash (dialog close, tab switch).
     this.destroyRef.onDestroy(() => {
       clearTimeout(this.savedTimer);
+      clearTimeout(this.accountCopiedTimer);
       this.clearAvatarPreview();
     });
   }
@@ -255,6 +265,22 @@ export class ProfileEditorComponent {
     this.justSaved.set(true);
     clearTimeout(this.savedTimer);
     this.savedTimer = setTimeout(() => this.justSaved.set(false), 1500);
+  }
+
+  async copyAccountAddress(): Promise<void> {
+    const address = this.accountAddress();
+    if (!address) return;
+    try {
+      await navigator.clipboard.writeText(address);
+      this.accountCopied.set(true);
+      clearTimeout(this.accountCopiedTimer);
+      this.accountCopiedTimer = setTimeout(
+        () => this.accountCopied.set(false),
+        1500,
+      );
+    } catch {
+      this.accountCopied.set(false);
+    }
   }
 
   goBack() {

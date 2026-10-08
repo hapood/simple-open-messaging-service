@@ -36,6 +36,12 @@ describe('ProfileEditorComponent', () => {
     return TestBed.createComponent(ProfileEditorComponent).componentInstance;
   }
 
+  it('renders the account address from the namespace domain', () => {
+    const component = createComponent();
+
+    expect(component.accountAddress()).toBe('charlie@local');
+  });
+
   it('counts and limits nickname and bio by Unicode code points', () => {
     const component = createComponent();
 

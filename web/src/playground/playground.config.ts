@@ -94,7 +94,8 @@ const playgroundUserService = {
     account: 'me',
     name: 'Me',
     avatar: '',
-    domain: 'local',
+    domain: 'chat.example.test',
+    namespaceId: 0,
   }),
   /** Relationship request state is empty in the playground, but keeps the production signal contract intact. */
   relationshipRequestStateRevision: playgroundRelationshipRequestRevision,

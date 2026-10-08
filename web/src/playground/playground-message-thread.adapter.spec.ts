@@ -24,7 +24,7 @@ describe('PlaygroundMessageThreadAdapter', () => {
       data: {
         type: 'msg',
         msgId: -1,
-        creator: JSON.stringify([0, 'mock.local', 'user-1']),
+        creator: JSON.stringify([0, 'user-1']),
         isSelf: true,
         name: 'Me',
         text: JSON.stringify({ displayName: 'Maya', account: 'maya' }),
@@ -173,9 +173,7 @@ describe('PlaygroundMessageThreadAdapter', () => {
       adapter.withdrawMessage({ threadId: 1, seq: 1 }),
     );
     expect(result.code).toBe(0);
-    expect((await source.init(-1, 50, 0)).map((item) => item.id)).toEqual([
-      2,
-    ]);
+    expect((await source.init(-1, 50, 0)).map((item) => item.id)).toEqual([2]);
   });
 
   it('confirms a delayed link in its original conversation, not the newly opened one', async () => {
@@ -193,7 +191,7 @@ describe('PlaygroundMessageThreadAdapter', () => {
       data: {
         type: 'msg',
         msgId: -1,
-        creator: JSON.stringify([0, 'mock.local', 'user-1']),
+        creator: JSON.stringify([0, 'user-1']),
         isSelf: true,
         name: 'Me',
         text: 'Link for first thread',

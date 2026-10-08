@@ -105,7 +105,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       data: {
         ...request.optimistic.data,
         msgId: sentId,
-        creator: JSON.stringify([0, 'mock.local', 'user-1']),
+        creator: JSON.stringify([0, 'user-1']),
         isSelf: true,
         name: 'Me',
         // The real production source carries `sent` when the push echo wins the HTTP-response race.
@@ -145,7 +145,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
             ...(optimistic.data as ChatMsgData),
             type: 'msg' as const,
             msgId: sentId,
-            creator: JSON.stringify([0, 'mock.local', 'user-1']),
+            creator: JSON.stringify([0, 'user-1']),
             isSelf: true,
             name: 'Me',
             text: optimistic.data.text,
@@ -269,11 +269,7 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
       const data: ChatMsgData = {
         type: 'msg',
         msgId: id,
-        creator: JSON.stringify([
-          0,
-          'mock.local',
-          `user-${2 + senderOffset}`,
-        ]),
+        creator: JSON.stringify([0, `user-${2 + senderOffset}`]),
         isSelf: false,
         isGroupConversation,
         name: ['Alice', 'Maya', 'Noah', 'Olivia'][senderOffset],

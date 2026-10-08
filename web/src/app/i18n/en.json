@@ -215,6 +215,8 @@
     "bio": "Bio",
     "bioPlaceholder": "Say something about yourself",
     "account": "Account",
+    "copyAccount": "Copy account",
+    "accountCopied": "Account copied",
     "changeAvatarAria": "Change avatar",
     "nameEmpty": "Name cannot be empty",
     "nameTooLong": "Must be 31 characters or fewer",

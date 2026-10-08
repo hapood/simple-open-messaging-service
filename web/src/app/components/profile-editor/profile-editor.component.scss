@@ -56,6 +56,9 @@
 }
 
 .account-identity {
+  position: relative;
+  width: 100%;
+  max-width: 320px;
   margin-top: 12px;
   text-align: center;
 
@@ -67,13 +70,50 @@
   }
 
   strong {
-    display: block;
-    margin-top: 2px;
+    min-width: 0;
     font-size: 14px;
     line-height: 20px;
     font-weight: 500;
     color: var(--app-text-muted);
     overflow-wrap: anywhere;
+  }
+}
+
+.account-address-row {
+  position: relative;
+  margin-top: 2px;
+  padding: 0 36px;
+}
+
+.account-address-row strong {
+  display: block;
+  text-align: center;
+}
+
+.copy-account-btn {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--app-text-muted);
+  background: transparent;
+  cursor: pointer;
+  transform: translateY(-50%);
+
+  &:hover {
+    background: var(--app-surface, rgba(0, 0, 0, 0.06));
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: 1px;
   }
 }
 

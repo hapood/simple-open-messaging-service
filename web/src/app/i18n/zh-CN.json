@@ -215,6 +215,8 @@
     "bio": "个人简介",
     "bioPlaceholder": "介绍一下你自己",
     "account": "账户名",
+    "copyAccount": "复制账户名",
+    "accountCopied": "账户名已复制",
     "changeAvatarAria": "更换头像",
     "nameEmpty": "昵称不能为空",
     "nameTooLong": "不能超过 31 个字符",

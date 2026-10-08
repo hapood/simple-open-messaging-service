@@ -42,6 +42,8 @@ function mockUser(id: number, account: string): readonly [number, User] {
     {
       id,
       account,
+      domain: 'chat.example.test',
+      namespaceId: 0,
       createdAt: 0,
       updatedAt: 0,
       isDeleted: false,
@@ -56,6 +58,8 @@ const MOCK_USERS: ReadonlyMap<number, User> = new Map([
     {
       id: 1,
       account: 'Me',
+      domain: 'chat.example.test',
+      namespaceId: 0,
       createdAt: 0,
       updatedAt: 0,
       isDeleted: false,
@@ -66,6 +70,8 @@ const MOCK_USERS: ReadonlyMap<number, User> = new Map([
     {
       id: 2,
       account: 'Alice',
+      domain: 'chat.example.test',
+      namespaceId: 0,
       createdAt: 0,
       updatedAt: 0,
       isDeleted: false,
