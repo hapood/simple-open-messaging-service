@@ -9,23 +9,20 @@
     @let resolvedDomain = requestItem().namespaceId | namespaceDomain | async;
     <app-user-avatar
       [type]="
-        requestItem().kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
+        requestItem().kind === 'GROUP'
+          ? UserAvatarType.GROUP
+          : UserAvatarType.OTHER
       "
-      [name]="requestItem().name ?? ''"
       [account]="requestItem().account"
-      [federatedDomain]="displayDomain(resolvedDomain)"
+      [federatedDomain]="resolvedDomain"
       [profileEvidence]="profileEvidence()"
     />
   </span>
   <span class="content">
     <span class="heading">
       <app-user-identity-label
-        [name]="
-          requestItem().kind === 'GROUP'
-            ? (requestItem().name ?? ('friend.invalidUser' | transloco))
-            : (requestItem().account ?? ('friend.invalidUser' | transloco))
-        "
-        [domain]="displayDomain(resolvedDomain)"
+        [account]="requestItem().account"
+        [domain]="resolvedDomain"
         [profileEvidence]="profileEvidence()"
       />
     </span>
@@ -72,8 +69,10 @@
         (click)="act($event, 'approve')"
       >
         {{
-          (requestItem().kind === 'GROUP' ? 'friend.joinGroup' : 'friend.approve')
-            | transloco
+          (requestItem().kind === 'GROUP'
+            ? 'friend.joinGroup'
+            : 'friend.approve'
+          ) | transloco
         }}
       </button>
     } @else {

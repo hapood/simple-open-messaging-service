@@ -23,7 +23,6 @@ import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 export interface FriendRequestCardModel {
   id: string;
   peerId?: number | string;
-  name?: string;
   account?: string;
   namespaceId?: number;
   reqMessage?: string;
@@ -74,15 +73,6 @@ export class FriendRequestCardComponent {
           },
         }
       : undefined;
-  }
-
-  displayDomain(domain: string | null): string | null {
-    const request = this.requestItem();
-    if (!domain || (request.kind !== 'GROUP' && request.namespaceId === 0))
-      return null;
-    return request.kind === 'GROUP' && request.namespaceId === 0
-      ? this.transloco.translate('common.localDomainLabel', { domain })
-      : domain;
   }
 
   act(event: Event, action: 'approve' | 'revoke' | 'reject'): void {

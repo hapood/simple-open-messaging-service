@@ -17,10 +17,7 @@
         } @else if (invitations().length === 0) {
           <p class="state">{{ 'group.noSentInvitations' | transloco }}</p>
         } @else {
-          @for (
-            request of invitations();
-            track candidateKey(request)
-          ) {
+          @for (request of invitations(); track candidateKey(request)) {
             @let resolvedDomain = request.namespaceId | namespaceDomain | async;
             <article class="request-row">
               <app-user-avatar
@@ -85,10 +82,7 @@
         } @else if (applications().length === 0) {
           <p class="state">{{ 'group.noJoinRequests' | transloco }}</p>
         } @else {
-          @for (
-            request of applications();
-            track candidateKey(request)
-          ) {
+          @for (request of applications(); track candidateKey(request)) {
             @let resolvedDomain = request.namespaceId | namespaceDomain | async;
             <article class="request-row">
               <app-user-avatar
@@ -179,7 +173,8 @@
         } @else if (candidates().length > 0) {
           <div class="candidate-list">
             @for (candidate of candidates(); track candidateKey(candidate)) {
-              @let resolvedDomain = candidate.namespaceId | namespaceDomain | async;
+              @let resolvedDomain =
+                candidate.namespaceId | namespaceDomain | async;
               <article class="candidate-row">
                 <app-user-avatar
                   class="avatar"
@@ -187,16 +182,13 @@
                   [name]="candidate.name"
                   [account]="candidate.account"
                   [src]="candidate.avatar"
-                  [federatedDomain]="
-                    candidate.namespaceId !== 0 ? resolvedDomain : null
-                  "
+                  [federatedDomain]="resolvedDomain"
                 />
                 <div class="candidate-meta">
                   <app-user-identity-label
-                    [name]="candidate.name"
-                    [domain]="
-                      candidate.namespaceId !== 0 ? resolvedDomain : null
-                    "
+                    [account]="candidate.account"
+                    [profile]="candidate"
+                    [domain]="resolvedDomain"
                   />
                   <div class="candidate-bio">
                     {{ candidate.bio || ('friend.noBio' | transloco) }}

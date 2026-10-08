@@ -101,7 +101,6 @@ export interface MirrorGroupPresentationInput {
   groupAccount: string;
   groupDomain: string;
   groupNamespaceId: number;
-  groupName: string;
   groupAvatar: string;
   groupDescription: string;
   groupProfileRev: number;
@@ -149,7 +148,7 @@ export function mirrorIntentFeedBodySql(params: {
       'threadId', ${params.threadId}::integer,
       'group', jsonb_build_object('account', ${params.presentation.groupAccount}::text,
         'namespaceId', ${params.presentation.groupNamespaceId}::integer,
-        'name', ${params.presentation.groupName}::text, 'avatar', ${params.presentation.groupAvatar}::text,
+        'avatar', ${params.presentation.groupAvatar}::text,
         'description', ${params.presentation.groupDescription}::text,
         'profileRev', ${params.presentation.groupProfileRev}::integer)) || ${provenance}`;
 }

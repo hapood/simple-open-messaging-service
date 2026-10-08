@@ -67,7 +67,10 @@
             </span>
             <span class="thread-info">
               <span class="thread-row">
-                <app-user-identity-label [name]="displayName(thread)" />
+                <app-user-identity-label
+                  [account]="avatarAccount(thread)"
+                  [profileEvidence]="avatarEvidence(thread)"
+                />
                 @if (thread.pinned) {
                   <span
                     class="thread-status-icon"
@@ -132,9 +135,7 @@
                 }
                 @if (thread.unreadCount > 0) {
                   <span class="unread-badge" aria-hidden="true">
-                    {{
-                      thread.unreadCount >= 100 ? '99+' : thread.unreadCount
-                    }}
+                    {{ thread.unreadCount >= 100 ? '99+' : thread.unreadCount }}
                   </span>
                 }
               </span>

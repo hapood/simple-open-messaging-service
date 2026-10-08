@@ -170,15 +170,14 @@
                         [name]="u.name"
                         [account]="u.account"
                         [src]="u.avatar"
-                        [federatedDomain]="
-                          u.namespaceId !== 0 ? u.domain : null
-                        "
+                        [federatedDomain]="u.domain"
                       ></app-user-avatar>
                     </div>
                     <div class="result-meta">
                       <app-user-identity-label
-                        [name]="displayUserName(u)"
-                        [domain]="u.namespaceId !== 0 ? u.domain : null"
+                        [account]="u.account"
+                        [profile]="u"
+                        [domain]="u.domain"
                       />
                       <div class="user-account">
                         {{ u.bio || ('friend.noBio' | transloco) }}
@@ -327,13 +326,15 @@
 
   @if (selectedRequest(); as req) {
     @let resolvedDomain = req.namespaceId | namespaceDomain | async;
-    @let displayDomain = displayRequestDomain(req, resolvedDomain);
+    @let displayDomain = resolvedDomain;
     <section class="request-detail">
       <mat-card appearance="outlined" class="detail-profile">
         @if (req.account) {
           <div
             class="profile-meta"
-            [attr.title]="req.account + (displayDomain ? '@' + displayDomain : '')"
+            [attr.title]="
+              req.account + (displayDomain ? '@' + displayDomain : '')
+            "
           >
             {{ req.account }}{{ displayDomain ? '@' + displayDomain : '' }}
           </div>
@@ -343,7 +344,6 @@
             [type]="
               req.kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
             "
-            [name]="req.name ?? ''"
             [account]="req.account"
             [federatedDomain]="displayDomain"
             [profileEvidence]="profileEvidence(req)"
@@ -351,11 +351,7 @@
           <span class="profile-copy">
             <app-user-identity-label
               class="detail-identity"
-              [name]="
-                req.kind === 'GROUP'
-                  ? (req.name ?? ('friend.invalidUser' | transloco))
-                  : (req.account ?? ('friend.invalidUser' | transloco))
-              "
+              [account]="req.account"
               [profileEvidence]="profileEvidence(req)"
             />
             <span class="profile-description">

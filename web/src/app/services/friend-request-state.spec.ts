@@ -15,6 +15,7 @@ const friendInput: FriendIntentProjectionInput = {
   account: 'alice',
   subjectAccount: 'bob',
   subjectNamespaceId: 12,
+  feedId: 1,
   status: 'REQUESTED',
   direction: 'OUTGOING',
   localThreadId: 7,
@@ -26,7 +27,6 @@ const friendInput: FriendIntentProjectionInput = {
     id: 2,
     account: 'bob',
     domain: 'remote.test',
-    name: 'Bob',
     avatar: '',
     bio: '',
   },
@@ -34,6 +34,7 @@ const friendInput: FriendIntentProjectionInput = {
 
 const groupInput: GroupInviteProjectionInput = {
   namespaceId: 0,
+  feedId: 1,
   status: 'REQUESTED',
   note: '',
   requestedAt: 1_000,
@@ -43,7 +44,6 @@ const groupInput: GroupInviteProjectionInput = {
   group: {
     namespaceId: 0,
     account: '!group',
-    name: 'Group',
     avatar: '',
     description: '',
     profileRev: 1,
@@ -87,14 +87,19 @@ describe('request projection effects', () => {
     ).record!;
     const accepted = applyFriendIntentToProjection(
       request,
-      { ...friendInput, status: 'ACCEPTED', direction: 'INCOMING' },
+      { ...friendInput, feedId: 2, status: 'ACCEPTED', direction: 'INCOMING' },
       3_000,
     ).record;
     expect(accepted?.status).toBe('ACCEPTED');
     expect(
       applyFriendIntentToProjection(
         { ...request, expiresAt: 3_000 },
-        { ...friendInput, status: 'ACCEPTED', direction: 'INCOMING' },
+        {
+          ...friendInput,
+          feedId: 2,
+          status: 'ACCEPTED',
+          direction: 'INCOMING',
+        },
         3_000,
       ).record?.status,
     ).toBe('REQUESTED');
@@ -143,7 +148,12 @@ describe('request projection effects', () => {
     expect(
       applyGroupIntentToProjection(
         request,
-        { ...groupInput, status: 'REVOKED', requestStatus: 'WITHDRAWN' },
+        {
+          ...groupInput,
+          feedId: 2,
+          status: 'REVOKED',
+          requestStatus: 'WITHDRAWN',
+        },
         3_000,
       ).record?.status,
     ).toBe('WITHDRAWN');
@@ -160,6 +170,7 @@ describe('request projection effects', () => {
         requested,
         {
           ...groupInput,
+          feedId: 2,
           status: 'REVOKED',
           requestStatus,
         },
@@ -173,6 +184,7 @@ describe('request projection effects', () => {
           {
             ...groupInput,
             status: 'REVOKED',
+            feedId: 1,
             requestStatus:
               requestStatus === 'REJECTED' ? 'WITHDRAWN' : 'REJECTED',
           },
@@ -183,6 +195,7 @@ describe('request projection effects', () => {
         terminal,
         {
           ...groupInput,
+          feedId: 4,
           requestedAt: 5_000,
           expiresAt: 15_000,
         },
@@ -190,6 +203,7 @@ describe('request projection effects', () => {
       ).record!;
       expect(next.status).toBe('REQUESTED');
       expect(next.requestedAt).toBe(5_000);
+      expect(next.sourceFeedId).toBe(4);
 
       const friend = applyFriendIntentToProjection(
         undefined,
@@ -200,6 +214,7 @@ describe('request projection effects', () => {
         friend,
         {
           ...friendInput,
+          feedId: 2,
           status: 'REVOKED',
           requestStatus,
         },
@@ -211,6 +226,7 @@ describe('request projection effects', () => {
           closedFriend,
           {
             ...friendInput,
+            feedId: 1,
             status: 'REVOKED',
           },
           4_000,
@@ -218,4 +234,36 @@ describe('request projection effects', () => {
       ).toEqual(closedFriend);
     },
   );
+
+  it('lets a newer REQUESTED fact replace an older terminal projection', () => {
+    const request = applyFriendIntentToProjection(
+      undefined,
+      friendInput,
+      2_000,
+    ).record!;
+    const accepted = applyFriendIntentToProjection(
+      request,
+      { ...friendInput, feedId: 2, status: 'ACCEPTED', direction: 'INCOMING' },
+      3_000,
+    ).record!;
+    const renewed = applyFriendIntentToProjection(
+      accepted,
+      { ...friendInput, feedId: 3, requestedAt: 3_000, expiresAt: 13_000 },
+      4_000,
+    ).record!;
+    expect(renewed.status).toBe('REQUESTED');
+    expect(renewed.sourceFeedId).toBe(3);
+    expect(
+      applyFriendIntentToProjection(
+        renewed,
+        {
+          ...friendInput,
+          feedId: 2,
+          status: 'ACCEPTED',
+          direction: 'INCOMING',
+        },
+        5_000,
+      ).record,
+    ).toEqual(renewed);
+  });
 });

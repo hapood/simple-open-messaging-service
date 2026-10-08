@@ -31,7 +31,6 @@ import {
   UserService,
   User,
 } from '../../services/user.service';
-import { displayUserName } from '../../services/model';
 import type { FriendRequestProjection } from '../../services/friend-request-state';
 import {
   UserAvatarComponent,
@@ -68,7 +67,6 @@ type PendingReq = {
   direction: 'INCOMING' | 'OUTGOING';
   /** Stable Address key used by the avatar and selection projections. */
   peerId?: string;
-  name?: string;
   account?: string;
   namespaceId?: number;
   reqMessage?: string;
@@ -184,7 +182,6 @@ export class FriendRequestsComponent implements OnDestroy {
   UserAvatarType = UserAvatarType;
   AddTabStatus = AddTabStatus;
   AppIconType = AppIconType;
-  displayUserName = displayUserName;
 
   openRequest(req: PendingReq): void {
     this.selectedRequest.set(req);
@@ -704,8 +701,11 @@ export class FriendRequestsComponent implements OnDestroy {
       id: projection.key,
       projectionKey: projection.key,
       direction: projection.direction,
-      peerId: JSON.stringify(['pending-group', group.namespaceId, group.account]),
-      name: group.name,
+      peerId: JSON.stringify([
+        'pending-group',
+        group.namespaceId,
+        group.account,
+      ]),
       account: group.account,
       namespaceId: group.namespaceId,
       reqMessage: group.description,
@@ -744,16 +744,6 @@ export class FriendRequestsComponent implements OnDestroy {
 
   absoluteDate(timestamp: number): string {
     return dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss');
-  }
-
-  displayRequestDomain(
-    request: Pick<PendingReq, 'kind' | 'namespaceId'>,
-    domain: string | null,
-  ): string | null {
-    if (!domain) return null;
-    return request.kind === 'GROUP' && request.namespaceId === 0
-      ? this.transloco.translate('common.localDomainLabel', { domain })
-      : domain;
   }
 
   async loadIncomingInvites(reset = false) {

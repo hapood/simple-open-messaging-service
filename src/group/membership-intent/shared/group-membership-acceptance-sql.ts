@@ -9,7 +9,6 @@ export interface GroupMembershipAcceptanceInput {
   threadId: number;
   groupAccount: string;
   groupProfileRev: number;
-  groupName: string;
   groupAvatar: string;
   groupDescription: string;
   memberAccount: string;
@@ -276,7 +275,7 @@ function prepareRecipient(input: GroupMembershipAcceptanceInput): SQL {
         'requestedAt', floor(extract(epoch FROM i."requestedAt") * 1000)::bigint, 'expiresAt', NULL,
         'threadId', ${input.threadId}::integer, 'established', true,
         'group', jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
-          'name', ${input.groupName}::text, 'avatar', ${input.groupAvatar}::text, 'description', ${input.groupDescription}::text,
+          'avatar', ${input.groupAvatar}::text, 'description', ${input.groupDescription}::text,
           'profileRev', ${input.groupProfileRev}::integer)) AS body
       FROM accepted_intent i
     ), recipient_allocation AS (

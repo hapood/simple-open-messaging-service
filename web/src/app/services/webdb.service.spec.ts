@@ -38,26 +38,33 @@ const peerProfile = {
 };
 
 async function seedGroupFeed(webdb: WebdbService): Promise<void> {
-  await webdb.mergeThreadStates([threadFeedSnapshot(9, {
-    type: 'GROUP',
-    role: 'OWNER',
-    profileAccount: '!team',
-    publisherNamespaceId: 0,
-    profileRev: 0,
-  })]);
+  await webdb.mergeThreadStates([
+    threadFeedSnapshot(9, {
+      type: 'GROUP',
+      role: 'OWNER',
+      profileAccount: '!team',
+      publisherNamespaceId: 0,
+      profileRev: 0,
+    }),
+  ]);
 }
 
-async function seedThread(webdb: WebdbService, item: ConversationItem): Promise<void> {
+async function seedThread(
+  webdb: WebdbService,
+  item: ConversationItem,
+): Promise<void> {
   const subject = item.type === 'GROUP' ? item.group : item.peerUser;
   const feedId = item.threadFeedId ?? 1;
-  await webdb.mergeThreadStates([threadFeedSnapshot(item.threadId, {
-    threadFeedId: feedId,
-    type: item.type,
-    role: item.role,
-    publisherNamespaceId: item.publisherNamespaceId,
-    profileAccount: subject.account,
-    profileRev: item.profileRev,
-  })]);
+  await webdb.mergeThreadStates([
+    threadFeedSnapshot(item.threadId, {
+      threadFeedId: feedId,
+      type: item.type,
+      role: item.role,
+      publisherNamespaceId: item.publisherNamespaceId,
+      profileAccount: subject.account,
+      profileRev: item.profileRev,
+    }),
+  ]);
   await webdb.putThread({ ...item, threadFeedId: feedId });
 }
 
@@ -92,7 +99,10 @@ describe('WebdbService', () => {
         postMessage: vi.fn(),
         terminate: vi.fn(),
       } as unknown as Worker;
-      const workerStorage = new WebdbStorage(() => worker, new SessionLifecycleService());
+      const workerStorage = new WebdbStorage(
+        () => worker,
+        new SessionLifecycleService(),
+      );
       await workerStorage.openForUser('1');
       let port: MessagePort | null = null;
       let workerPort: MessagePort | undefined;
@@ -163,18 +173,30 @@ describe('WebdbService', () => {
         domain: peerProfile.domain,
         namespaceId: peerProfile.namespaceId,
       });
-      await webdb.mergeThreadStates([{
-        ...threadStructure(7, {
-          profileAccount: peerProfile.account,
-          publisherNamespaceId: peerProfile.namespaceId,
+      await webdb.mergeThreadStates([
+        {
+          ...threadStructure(7, {
+            profileAccount: peerProfile.account,
+            publisherNamespaceId: peerProfile.namespaceId,
+            profileRev: 2,
+          }),
+          threadId: 7,
+          threadFeedId: 10,
+          messageEndSeq: 6,
+          tombstoneEndSeq: 0,
+          alias: null,
           profileRev: 2,
-        }),
-        threadId: 7, threadFeedId: 10, messageEndSeq: 6, tombstoneEndSeq: 0,
-        alias: null, profileRev: 2, groupMetaFeedEndId: null,
-        joinRequestEndFeedId: 0, joinRequestReadFeedId: -1, groupInviteEndFeedId: 0,
-        lastReadSeq: 0, unreadCount: 0, lastMentionSeq: null, previews: [],
-        announcementReadFeedId: 0,
-      }]);
+          groupMetaFeedEndId: null,
+          joinRequestEndFeedId: 0,
+          joinRequestReadFeedId: -1,
+          groupInviteEndFeedId: 0,
+          lastReadSeq: 0,
+          unreadCount: 0,
+          lastMentionSeq: null,
+          previews: [],
+          announcementReadFeedId: 0,
+        },
+      ]);
       expect((await webdb.getThreads())[0]?.profileRev).toBe(2);
       await webdb.putThread({ ...item, threadFeedId: 10, profileRev: 99 });
       const stored = (await webdb.getThreads())[0];
@@ -206,7 +228,10 @@ describe('WebdbService', () => {
         lastMentionSeq: null,
         previews: [],
       };
-      await webdb.mergeThreadStates([{ ...snapshot, threadFeedId: 8, lastReadSeq: 100 }], 8);
+      await webdb.mergeThreadStates(
+        [{ ...snapshot, threadFeedId: 8, lastReadSeq: 100 }],
+        8,
+      );
       await webdb.advanceThreadRead(7, 105);
       await webdb.mergeThreadStates([snapshot], 10);
       await webdb.mergeThreadStates([
@@ -322,7 +347,8 @@ describe('WebdbService', () => {
 
     it('normalizes local mirror members without changing the group source and keeps unresolved members', async () => {
       const db = await webdb.openForUser('1');
-      await seedThread(webdb,
+      await seedThread(
+        webdb,
         createGroupConversation(90, {
           id: 90,
           name: 'Mirror',
@@ -448,8 +474,17 @@ describe('WebdbService', () => {
         name: 'New',
         bio: '',
       };
-      await webdb.commitResolvedProfile({ ...base, rev: 3, avatarBase64: null });
-      await webdb.commitResolvedProfile({ ...base, rev: 2, name: 'Old', avatarBase64: null });
+      await webdb.commitResolvedProfile({
+        ...base,
+        rev: 3,
+        avatarBase64: null,
+      });
+      await webdb.commitResolvedProfile({
+        ...base,
+        rev: 2,
+        name: 'Old',
+        avatarBase64: null,
+      });
       await webdb.commitResolvedProfile({
         ...base,
         profileNamespaceId: 8,
@@ -490,7 +525,8 @@ describe('WebdbService', () => {
 
     it('applies metadata references without accepting inline profile content', async () => {
       const db = await webdb.openForUser('1');
-      await seedThread(webdb,
+      await seedThread(
+        webdb,
         createGroupConversation(90, {
           id: 90,
           name: 'Team',
@@ -936,9 +972,7 @@ describe('WebdbService', () => {
         LocalCacheVersionMismatchError,
       );
       const raw = await openDB('soms-webdb-u1');
-      expect((await raw.get('meta', 'sentinel')).value).toBe(
-        'still-present',
-      );
+      expect((await raw.get('meta', 'sentinel')).value).toBe('still-present');
       raw.close();
     });
 
@@ -1226,16 +1260,19 @@ describe('WebdbService', () => {
         expect(await webdb.getThreads()).toEqual([]);
         await webdb.applyStateFeedPage([event(true, 2)], 2);
         expect(await webdb.getThreads()).toEqual([]);
-        await webdb.mergeThreadStates([
-          threadFeedSnapshot(77, {
-            threadFeedId: 3,
-            type: kind,
-            conversationState: 'READ_ONLY',
-            profileAccount: kind === 'GROUP' ? '!history' : 'alice',
-            publisherNamespaceId: 0,
-            profileRev: 0,
-          }),
-        ], 3);
+        await webdb.mergeThreadStates(
+          [
+            threadFeedSnapshot(77, {
+              threadFeedId: 3,
+              type: kind,
+              conversationState: 'READ_ONLY',
+              profileAccount: kind === 'GROUP' ? '!history' : 'alice',
+              publisherNamespaceId: 0,
+              profileRev: 0,
+            }),
+          ],
+          3,
+        );
         expect(await webdb.getThreads()).toEqual([
           expect.objectContaining({
             threadId: 77,
@@ -1274,7 +1311,6 @@ describe('WebdbService', () => {
           peer: {
             id: 2,
             account: 'bob',
-            name: 'Bob',
             avatar: '',
             bio: '',
             domain: 'peer.test',
@@ -1283,14 +1319,19 @@ describe('WebdbService', () => {
       };
 
       await webdb.applyStateFeedPage([revoked], 12);
-      await webdb.mergeThreadStates([
-        threadFeedSnapshot(7, {
-          threadFeedId: 13, conversationState: 'READ_ONLY', blocked: true,
-          profileAccount: (peerProfile).account,
-          publisherNamespaceId: (peerProfile).namespaceId,
-          profileRev: (peerProfile).profileRev,
-        }),
-      ], 13);
+      await webdb.mergeThreadStates(
+        [
+          threadFeedSnapshot(7, {
+            threadFeedId: 13,
+            conversationState: 'READ_ONLY',
+            blocked: true,
+            profileAccount: peerProfile.account,
+            publisherNamespaceId: peerProfile.namespaceId,
+            profileRev: peerProfile.profileRev,
+          }),
+        ],
+        13,
+      );
 
       expect(await webdb.getSyncState('stateFeedId')).toBe(12);
       expect(
@@ -1353,14 +1394,17 @@ describe('WebdbService', () => {
 
       await webdb.applyStateFeedPage(items, 21);
       expect(await webdb.getThreads()).toEqual([]);
-      await webdb.mergeThreadStates([
-        threadFeedSnapshot(7, {
-          threadFeedId: 22,
-          profileAccount: 'bob',
-          publisherNamespaceId: 0,
-          profileRev: 1,
-        }),
-      ], 22);
+      await webdb.mergeThreadStates(
+        [
+          threadFeedSnapshot(7, {
+            threadFeedId: 22,
+            profileAccount: 'bob',
+            publisherNamespaceId: 0,
+            profileRev: 1,
+          }),
+        ],
+        22,
+      );
 
       expect(await webdb.getThreads()).toEqual([
         expect.objectContaining({
@@ -1559,10 +1603,7 @@ describe('WebdbService', () => {
       expect(
         await webdb.getRelationshipRequestPage('RECEIVED', null, 20),
       ).toMatchObject({ total: 1, actionableTotal: 0 });
-      await webdb.applyStateFeedPage(
-        [event(23, 'INCOMING', 'ACCEPTED')],
-        23,
-      );
+      await webdb.applyStateFeedPage([event(23, 'INCOMING', 'ACCEPTED')], 23);
       expect(await db!.getAll('relationshipRequests')).toHaveLength(2);
     });
 
@@ -1589,7 +1630,6 @@ describe('WebdbService', () => {
               peer: {
                 id: 2,
                 account: 'alice',
-                name: 'Alice',
                 avatar: '',
                 bio: '',
                 domain: 'peer.test',
@@ -1645,7 +1685,6 @@ describe('WebdbService', () => {
           peer: {
             id: 2,
             account: 'alice',
-            name: 'Alice',
             avatar: '',
             bio: 'About Alice',
             domain: 'peer.test',
@@ -1654,13 +1693,17 @@ describe('WebdbService', () => {
       });
 
       await webdb.applyStateFeedPage([event(10, 'INCOMING', 'REQUESTED')], 10);
-      expect(await webdb.getSyncState('relationshipRequestStateRevision')).toBe(10);
+      expect(await webdb.getSyncState('relationshipRequestStateRevision')).toBe(
+        10,
+      );
       expect(
         await webdb.getRelationshipRequestPage('RECEIVED', null, 20),
       ).toMatchObject({ total: 1, actionableTotal: 1 });
 
       await webdb.applyStateFeedPage([event(11, 'OUTGOING', 'REVOKED')], 11);
-      expect(await webdb.getSyncState('relationshipRequestStateRevision')).toBe(10);
+      expect(await webdb.getSyncState('relationshipRequestStateRevision')).toBe(
+        10,
+      );
       expect(await db!.getAll('relationshipRequests')).toEqual([
         expect.objectContaining({
           bucket: 'RECEIVED',
@@ -1679,13 +1722,13 @@ describe('WebdbService', () => {
       ]);
     });
 
-    it('hydrates an existing incoming request when its profile-backed update arrives', async () => {
+    it('updates an existing incoming request when a newer request fact arrives', async () => {
       const db = await webdb.openForUser('1');
       const requestedAt = Date.now();
       const expiresAt = requestedAt + 60_000;
       const incoming = (
         feedId: number,
-        peer: { name: string; avatar: string },
+        peer: { avatar: string },
       ): ClientStateFeedItem => ({
         feedId,
         namespaceId: 12,
@@ -1704,7 +1747,6 @@ describe('WebdbService', () => {
           peer: {
             id: 0,
             account: 'alice',
-            name: peer.name,
             avatar: peer.avatar,
             bio: '',
             domain: 'peer.test',
@@ -1712,19 +1754,16 @@ describe('WebdbService', () => {
         },
       });
 
-      await webdb.applyStateFeedPage(
-        [incoming(30, { name: 'alice', avatar: '' })],
-        30,
-      );
+      await webdb.applyStateFeedPage([incoming(30, { avatar: '' })], 30);
       expect(await db!.getAll('relationshipRequests')).toEqual([
         expect.objectContaining({
           status: 'REQUESTED',
-          peer: expect.objectContaining({ name: 'alice', avatar: '' }),
+          peer: expect.objectContaining({ avatar: '' }),
         }),
       ]);
 
       await webdb.applyStateFeedPage(
-        [incoming(31, { name: 'Alice', avatar: '/uploads/alice-512.webp' })],
+        [incoming(31, { avatar: '/uploads/alice-512.webp' })],
         31,
       );
 
@@ -1733,12 +1772,13 @@ describe('WebdbService', () => {
           status: 'REQUESTED',
           peer: expect.objectContaining({
             id: 0,
-            name: 'Alice',
             avatar: '/uploads/alice-512.webp',
           }),
         }),
       ]);
-      expect(await webdb.getSyncState('relationshipRequestStateRevision')).toBe(30);
+      expect(await webdb.getSyncState('relationshipRequestStateRevision')).toBe(
+        30,
+      );
       expect(await webdb.getSyncState('stateFeedId')).toBe(31);
     });
 
@@ -1763,7 +1803,6 @@ describe('WebdbService', () => {
           peer: {
             id: 2,
             account: 'alice',
-            name: 'Alice',
             avatar: 'avatar.webp',
             bio: 'About Alice',
             domain: 'peer.test',
@@ -1808,7 +1847,6 @@ describe('WebdbService', () => {
           group: {
             namespaceId: 12,
             account: '!group',
-            name: 'Group',
             avatar: 'group.webp',
             description: 'About group',
             profileRev: 2,
@@ -1856,7 +1894,6 @@ describe('WebdbService', () => {
               group: {
                 namespaceId: 12,
                 account: '!group',
-                name: 'Group',
                 avatar: '',
                 description: '',
                 profileRev: 1,
@@ -1953,10 +1990,16 @@ describe('WebdbService', () => {
       };
       await webdb.mergeThreadStates([head], 4);
       expect(await webdb.getThreads()).toEqual([
-        expect.objectContaining({ threadId: 9, threadFeedId: 4, visible: true }),
+        expect.objectContaining({
+          threadId: 9,
+          threadFeedId: 4,
+          visible: true,
+        }),
       ]);
       expect(await db!.get('threads', 9)).toMatchObject({ type: 'P2P' });
-      expect(attentionSnapshot((await webdb.getThreadStates())[0])).toEqual(head);
+      expect(attentionSnapshot((await webdb.getThreadStates())[0])).toEqual(
+        head,
+      );
       expect(await webdb.getSyncState('threadFeedCursor')).toBe(4);
       const invalid = threadFeedSnapshot(10, {
         threadFeedId: 7,
@@ -1964,14 +2007,20 @@ describe('WebdbService', () => {
         publisherNamespaceId: -1,
         profileRev: 0,
       });
-      await expect(webdb.mergeThreadStates([
-        threadFeedSnapshot(11, {
-          threadFeedId: 6,
-          profileAccount: peerProfile.account,
-          publisherNamespaceId: peerProfile.namespaceId,
-          profileRev: peerProfile.profileRev,
-        }), invalid,
-      ], 7)).rejects.toThrow();
+      await expect(
+        webdb.mergeThreadStates(
+          [
+            threadFeedSnapshot(11, {
+              threadFeedId: 6,
+              profileAccount: peerProfile.account,
+              publisherNamespaceId: peerProfile.namespaceId,
+              profileRev: peerProfile.profileRev,
+            }),
+            invalid,
+          ],
+          7,
+        ),
+      ).rejects.toThrow();
       expect(await db!.get('threads', 11)).toBeUndefined();
       expect(await webdb.getSyncState('threadFeedCursor')).toBe(4);
     });
@@ -1996,7 +2045,8 @@ describe('WebdbService', () => {
     it('commits compact member references and a group profile without treating the group profile as a member', async () => {
       await webdb.openForUser('1');
       const db = await webdb.db();
-      await seedThread(webdb,
+      await seedThread(
+        webdb,
         createGroupConversation(9, {
           id: 9,
           account: '!team',
@@ -2041,12 +2091,16 @@ describe('WebdbService', () => {
         },
       });
       expect((await webdb.getThreads())[0].profileRev).toBe(0);
-      await webdb.mergeThreadStates([threadFeedSnapshot(9, {
-        threadFeedId: 2, type: 'GROUP', role: 'OWNER',
-        profileAccount: '!team',
-        publisherNamespaceId: 0,
-        profileRev: 4,
-      })]);
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(9, {
+          threadFeedId: 2,
+          type: 'GROUP',
+          role: 'OWNER',
+          profileAccount: '!team',
+          publisherNamespaceId: 0,
+          profileRev: 4,
+        }),
+      ]);
       expect((await webdb.getThreads())[0].profileRev).toBe(4);
       expect(await db.get('threads', 9)).toMatchObject({ profileRev: 4 });
       expect(await db.get('threads', 9)).not.toHaveProperty('group');
@@ -2389,12 +2443,16 @@ describe('WebdbService', () => {
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 9),
       ).toMatchObject({ role: 'OWNER' });
-      await webdb.mergeThreadStates([threadFeedSnapshot(9, {
-        threadFeedId: 2, type: 'GROUP', role: 'ADMIN',
-        profileAccount: '!team',
-        publisherNamespaceId: 0,
-        profileRev: 0,
-      })]);
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(9, {
+          threadFeedId: 2,
+          type: 'GROUP',
+          role: 'ADMIN',
+          profileAccount: '!team',
+          publisherNamespaceId: 0,
+          profileRev: 0,
+        }),
+      ]);
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 9),
       ).toMatchObject({ role: 'ADMIN' });
@@ -2424,12 +2482,16 @@ describe('WebdbService', () => {
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 9),
       ).toMatchObject({ role: 'ADMIN' });
-      await webdb.mergeThreadStates([threadFeedSnapshot(9, {
-        threadFeedId: 3, type: 'GROUP', role: null,
-        profileAccount: '!team',
-        publisherNamespaceId: 0,
-        profileRev: 0,
-      })]);
+      await webdb.mergeThreadStates([
+        threadFeedSnapshot(9, {
+          threadFeedId: 3,
+          type: 'GROUP',
+          role: null,
+          profileAccount: '!team',
+          publisherNamespaceId: 0,
+          profileRev: 0,
+        }),
+      ]);
       expect(
         (await webdb.getThreads()).find((item) => item.threadId === 9),
       ).toMatchObject({ role: null });
@@ -2529,16 +2591,19 @@ describe('WebdbService', () => {
       ];
 
       await webdb.applyStateFeedPage(items, 2);
-      await webdb.mergeThreadStates([
-        threadFeedSnapshot(12, {
-          threadFeedId: 3,
-          type: 'GROUP',
-          profileAccount: '!dev',
-          publisherNamespaceId: 0,
-          profileRev: 1,
-          role: 'OWNER',
-        }),
-      ], 3);
+      await webdb.mergeThreadStates(
+        [
+          threadFeedSnapshot(12, {
+            threadFeedId: 3,
+            type: 'GROUP',
+            profileAccount: '!dev',
+            publisherNamespaceId: 0,
+            profileRev: 1,
+            role: 'OWNER',
+          }),
+        ],
+        3,
+      );
       await webdb.applyGroupMetaPage({
         threadId: 12,
         namespaceId: 0,
@@ -2611,17 +2676,20 @@ describe('WebdbService', () => {
       expect((await webdb.getThreads())[0]).toEqual(
         expect.objectContaining({ conversationState: 'ACTIVE' }),
       );
-      await webdb.mergeThreadStates([
-        threadFeedSnapshot(12, {
-          threadFeedId: 5,
-          type: 'GROUP',
-          conversationState: 'READ_ONLY',
-          role: null,
-          profileAccount: '!dev',
-          publisherNamespaceId: 0,
-          profileRev: 1,
-        }),
-      ], 5);
+      await webdb.mergeThreadStates(
+        [
+          threadFeedSnapshot(12, {
+            threadFeedId: 5,
+            type: 'GROUP',
+            conversationState: 'READ_ONLY',
+            role: null,
+            profileAccount: '!dev',
+            publisherNamespaceId: 0,
+            profileRev: 1,
+          }),
+        ],
+        5,
+      );
       expect(await webdb.getThreads()).toEqual([
         expect.objectContaining({
           threadId: 12,
@@ -2691,16 +2759,19 @@ describe('WebdbService', () => {
       } satisfies ClientStateFeedItem;
 
       await webdb.applyStateFeedPage([relationship], 2);
-      await webdb.mergeThreadStates([
-        threadFeedSnapshot(95, {
-          threadFeedId: 1,
-          type: 'GROUP',
-          role: 'OWNER',
-          profileAccount: group.account,
-          publisherNamespaceId: 0,
-          profileRev: 1,
-        }),
-      ], 1);
+      await webdb.mergeThreadStates(
+        [
+          threadFeedSnapshot(95, {
+            threadFeedId: 1,
+            type: 'GROUP',
+            role: 'OWNER',
+            profileAccount: group.account,
+            publisherNamespaceId: 0,
+            profileRev: 1,
+          }),
+        ],
+        1,
+      );
 
       expect(await webdb.getThreads()).toEqual([
         expect.objectContaining({

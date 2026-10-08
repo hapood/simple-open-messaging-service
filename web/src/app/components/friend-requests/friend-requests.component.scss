@@ -544,12 +544,10 @@ $danger: var(--app-danger);
   flex-direction: column;
   gap: 4px;
 
-  strong {
-    color: var(--app-text);
-    font-size: 16px;
-    font-weight: var(--app-font-weight-medium, 500);
-    line-height: 24px;
-    overflow-wrap: anywhere;
+  .detail-identity {
+    --identity-name-size: 16px;
+    --identity-name-weight: var(--app-font-weight-medium, 500);
+    min-height: 24px;
   }
 
   .profile-description {

@@ -467,7 +467,7 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 38;
+export const CACHE_SCHEMA_VERSION = 39;
 // Cursors moved out of the generic `settings` bag: account-level cursors now
 // live in a dedicated `syncState` store, per-thread cursors in `threadSyncState`.
 // Message content now stores canonical CAS paths; discard cached contextual URLs.
@@ -1814,10 +1814,9 @@ export class WebdbStorage {
     for (const thread of threads) {
       // A thread's subject pair is (publisherNamespaceId, publisherNamespaceId):
       // the feed's authority namespace owns the subject's profile namespace.
-      const binding = await tx.objectStore('profileNamespaces').get([
-        thread.publisherNamespaceId,
-        thread.publisherNamespaceId,
-      ]);
+      const binding = await tx
+        .objectStore('profileNamespaces')
+        .get([thread.publisherNamespaceId, thread.publisherNamespaceId]);
       if (binding)
         bindings.set(
           `${thread.publisherNamespaceId}:${thread.publisherNamespaceId}`,
@@ -1887,10 +1886,7 @@ export class WebdbStorage {
       });
       return;
     }
-    const tx = (await this.db()).transaction(
-      ['threads'],
-      'readwrite',
-    );
+    const tx = (await this.db()).transaction(['threads'], 'readwrite');
     // Presentation-only batch: omitted entries retain their authoritative
     // feed state; clearing the table here would silently lose valid threads.
     const previous = new Map(
@@ -2059,6 +2055,7 @@ export class WebdbStorage {
    * READY results are committed there before this promise resolves. */
   async resolveProfileDemand(
     demand: ProfileDemand,
+    options: { evidence?: null } = {},
   ): Promise<ProfileResolutionAttempt> {
     if (this.accountMaintenance || this.currentUserId === null)
       throw new Error('account cache lifetime expired');
@@ -2067,12 +2064,17 @@ export class WebdbStorage {
     const result = isTauri()
       ? await tauriInvoke<ProfileResolutionAttempt>('native_profile_resolve', {
           userId: Number(userId),
-          demand,
+          request: Object.hasOwn(options, 'evidence')
+            ? { demand, evidence: options.evidence }
+            : demand,
         })
       : await this.requestDbWorker<ProfileResolutionAttempt>({
           type: 'resolve-profile',
           userId,
           demand,
+          ...(Object.hasOwn(options, 'evidence')
+            ? { evidence: options.evidence }
+            : {}),
         });
     if (!result) throw new Error('database worker unavailable');
     if (epoch !== this.cacheEpoch)
@@ -2291,8 +2293,13 @@ export class WebdbStorage {
             for (const side of ['INCOMING', 'OUTGOING'] as const) {
               const key = groupRequestKey(op.namespaceId, groupAccount, side);
               const current = await store.get(key);
-              if (current?.status === 'REQUESTED')
-                await store.put(markProjectionAccepted(current));
+              if (
+                current?.status === 'REQUESTED' &&
+                op.feedId > current.sourceFeedId
+              )
+                await store.put(
+                  markProjectionAccepted(current, Date.now(), op.feedId),
+                );
             }
             return;
           }
@@ -2312,6 +2319,7 @@ export class WebdbStorage {
             await store.get(key),
             {
               namespaceId: op.namespaceId,
+              feedId: op.feedId,
               ...body,
               group,
               direction,
@@ -2346,6 +2354,7 @@ export class WebdbStorage {
           await store.get(projectionKey),
           {
             namespaceId: op.namespaceId,
+            feedId: op.feedId,
             account: op.account,
             subjectAccount: op.subjectAccount,
             subjectNamespaceId: op.subjectNamespaceId,
@@ -2832,9 +2841,7 @@ export class WebdbStorage {
           },
         );
         if (!response.ok)
-          throw new Error(
-            `profile-namespace resolve HTTP ${response.status}`,
-          );
+          throw new Error(`profile-namespace resolve HTTP ${response.status}`);
         const envelope = (await response.json()) as {
           code?: number;
           data?:
@@ -2872,7 +2879,11 @@ export class WebdbStorage {
         // it. The caller decides whether to retry (demand round) or hold
         // the cursor (change-feed drain); failed pairs are reported back
         // instead of being silently swallowed.
-        console.warn('[profile-namespace] resolve failed for pair', pair, error);
+        console.warn(
+          '[profile-namespace] resolve failed for pair',
+          pair,
+          error,
+        );
         failed.push(pair);
       }
     }
@@ -3114,10 +3125,9 @@ export class WebdbStorage {
             state.profileAccount,
             state.profileRev,
           ]);
-        const binding = await tx.objectStore('profileNamespaces').get([
-          state.publisherNamespaceId,
-          state.publisherNamespaceId,
-        ]);
+        const binding = await tx
+          .objectStore('profileNamespaces')
+          .get([state.publisherNamespaceId, state.publisherNamespaceId]);
         const domain = binding?.domain ?? '';
         if (!cached)
           references.push({
@@ -3946,5 +3956,8 @@ function compareMemberIdentity(
   left: Pick<MemberRecord, 'namespaceId' | 'account'>,
   right: Pick<MemberRecord, 'namespaceId' | 'account'>,
 ): number {
-  return left.namespaceId - right.namespaceId || left.account.localeCompare(right.account);
+  return (
+    left.namespaceId - right.namespaceId ||
+    left.account.localeCompare(right.account)
+  );
 }

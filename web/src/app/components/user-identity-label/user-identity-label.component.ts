@@ -1,11 +1,29 @@
-import { ChangeDetectionStrategy, Component, input } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  computed,
+  effect,
+  inject,
+  input,
+  signal,
+} from '@angular/core';
+import type { ProfileDemand } from '../../../../../shared/profile-demand';
+import {
+  ProfileRepository,
+  type ResolvedProfile,
+  type UnevidencedProfileDemand,
+} from '../../services/profile-store.service';
 
 /** A single-line user identity heading. Both halves may truncate so a long nickname or federated
- * domain never displaces trailing row metadata such as timestamps and action buttons. */
+ * domain never displaces trailing row metadata such as timestamps and action buttons. When profile
+ * evidence is present, the immutable profile revision owns the displayed name. Search results may
+ * supply an already-resolved profile; otherwise the account is the loading and error fallback. */
 @Component({
   selector: 'app-user-identity-label',
   template: `
-    <span class="identity-name" [title]="name()">{{ name() }}</span>
+    <span class="identity-name" [title]="effectiveName()">{{
+      effectiveName()
+    }}</span>
     @if (domain()) {
       <span class="identity-domain" [title]="domain()!">{{ domain() }}</span>
     }
@@ -54,6 +72,32 @@ import { ChangeDetectionStrategy, Component, input } from '@angular/core';
   ],
 })
 export class UserIdentityLabelComponent {
-  readonly name = input.required<string>();
+  private readonly profiles = inject(ProfileRepository);
+  readonly account = input<string | undefined>(undefined);
+  readonly profile = input<{ name: string } | undefined>(undefined);
   readonly domain = input<string | null | undefined>(undefined);
+  readonly profileEvidence = input<
+    ProfileDemand | UnevidencedProfileDemand | undefined
+  >(undefined);
+  private readonly resolvedProfile = signal<ResolvedProfile | null>(null);
+  readonly effectiveName = computed(
+    () =>
+      this.resolvedProfile()?.name ||
+      this.profile()?.name ||
+      this.account() ||
+      '',
+  );
+
+  constructor() {
+    effect((onCleanup) => {
+      const evidence = this.profileEvidence();
+      this.resolvedProfile.set(null);
+      if (!evidence) return;
+      const subscription = this.profiles.resolve(evidence).subscribe({
+        next: (profile) => this.resolvedProfile.set(profile),
+        error: () => this.resolvedProfile.set(null),
+      });
+      onCleanup(() => subscription.unsubscribe());
+    });
+  }
 }

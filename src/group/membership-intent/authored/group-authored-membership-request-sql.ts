@@ -10,7 +10,6 @@ export interface GroupAuthoredMembershipRequestInput {
   threadId: number;
   pairId: bigint;
   groupAccount: string;
-  groupName: string;
   groupAvatar: string;
   groupDescription: string;
   groupProfileRev: number;

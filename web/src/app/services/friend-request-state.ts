@@ -37,7 +37,6 @@ export interface FriendRequestProjection {
   group?: {
     account: string;
     namespaceId: number;
-    name: string;
     avatar: string;
     description: string;
     profileRev: number;
@@ -45,9 +44,11 @@ export interface FriendRequestProjection {
   sourceLabel?: string;
   requestedSort: number;
   updatedAt: number;
+  sourceFeedId: number;
 }
 
 export interface FriendIntentProjectionInput {
+  feedId: number;
   requestStatus?: RequestRevocationStatus;
   requestDirection?: FriendRequestDirection;
   namespaceId: number;
@@ -64,6 +65,7 @@ export interface FriendIntentProjectionInput {
 }
 
 export interface GroupInviteProjectionInput {
+  feedId: number;
   requestStatus?: RequestRevocationStatus;
   requestDirection?: FriendRequestDirection;
   namespaceId: number;
@@ -133,9 +135,11 @@ export function applyFriendIntentToProjection(
   input: FriendIntentProjectionInput,
   now: number,
 ): ProjectionTransition {
+  if (current && input.feedId <= current.sourceFeedId)
+    return { record: current, becameActionable: false };
   if (input.status === 'ACCEPTED' && input.direction === 'OUTGOING')
     return current
-      ? updateLiveProjection(current, 'ACCEPTED', now)
+      ? updateLiveProjection(current, 'ACCEPTED', now, input.feedId)
       : { record: null, becameActionable: false };
   if (input.status === 'REVOKED' && !input.requestStatus)
     return { record: current ?? null, becameActionable: false };
@@ -146,6 +150,7 @@ export function applyFriendIntentToProjection(
         ? input.requestStatus!
         : RequestProjectionStatus.ACCEPTED,
       now,
+      input.feedId,
     );
 
   const expiresAt = boundedIntentExpiry(input.requestedAt, input.expiresAt);
@@ -165,6 +170,7 @@ export function applyFriendIntentToProjection(
     peer: input.peer,
     requestedSort: input.requestedAt ?? 0,
     updatedAt: now,
+    sourceFeedId: input.feedId,
   };
   return {
     record,
@@ -179,8 +185,12 @@ export function applyFriendIntentToProjection(
 export function markProjectionAccepted(
   current: FriendRequestProjection,
   now = Date.now(),
+  sourceFeedId?: number,
 ): FriendRequestProjection {
-  return updateLiveProjection(current, 'ACCEPTED', now).record ?? current;
+  return (
+    updateLiveProjection(current, 'ACCEPTED', now, sourceFeedId).record ??
+    current
+  );
 }
 
 export function applyGroupIntentToProjection(
@@ -189,6 +199,8 @@ export function applyGroupIntentToProjection(
   now: number,
 ): ProjectionTransition {
   const direction = input.direction ?? 'INCOMING';
+  if (current && input.feedId <= current.sourceFeedId)
+    return { record: current, becameActionable: false };
   if (input.status === 'ACCEPTED' && direction === 'OUTGOING')
     return { record: current ?? null, becameActionable: false };
   if (input.status === 'REVOKED' && !input.requestStatus)
@@ -200,17 +212,14 @@ export function applyGroupIntentToProjection(
         ? input.requestStatus!
         : RequestProjectionStatus.ACCEPTED,
       now,
+      input.feedId,
     );
 
   const expiresAt = boundedIntentExpiry(input.requestedAt, input.expiresAt);
   if (expiresAt === null || expiresAt <= now)
     return { record: current ?? null, becameActionable: false };
   const record: FriendRequestProjection = {
-    key: groupRequestKey(
-      input.namespaceId,
-      input.group.account,
-      direction,
-    ),
+    key: groupRequestKey(input.namespaceId, input.group.account, direction),
     namespaceId: input.namespaceId,
     kind: 'GROUP',
     bucket: direction === 'INCOMING' ? 'RECEIVED' : 'SENT',
@@ -224,6 +233,7 @@ export function applyGroupIntentToProjection(
     sourceLabel: input.group.namespaceId === 0 ? 'local' : '',
     requestedSort: input.requestedAt ?? 0,
     updatedAt: now,
+    sourceFeedId: input.feedId,
   };
   return {
     record,
@@ -237,11 +247,17 @@ function updateLiveProjection(
   current: FriendRequestProjection | undefined,
   status: Exclude<RequestProjectionStatusValue, 'REQUESTED'>,
   now: number,
+  sourceFeedId?: number,
 ): ProjectionTransition {
   if (!current || current.status !== 'REQUESTED' || current.expiresAt <= now)
     return { record: current ?? null, becameActionable: false };
   return {
-    record: { ...current, status, updatedAt: now },
+    record: {
+      ...current,
+      status,
+      updatedAt: now,
+      ...(sourceFeedId === undefined ? {} : { sourceFeedId }),
+    },
     becameActionable: false,
   };
 }

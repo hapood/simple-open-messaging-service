@@ -21,7 +21,6 @@ import type { ThreadContentLock } from '../../../common/locks/thread-content-loc
 import { GroupRole } from '../../../database/enums.js';
 import * as tables from '../../../database/schema.js';
 import {
-  applyFederatedPendingProfileSnapshot,
   RelationshipService,
   type FederatedPendingProfileSnapshot,
 } from '../../../relationship/relationship.service.js';
@@ -160,10 +159,9 @@ export class GroupRelationshipMutationService {
     )
       return new Map<number, bigint>();
     if (!lockedGroupPair) await this.lockMemberRelationshipFeedInTx(tx, group);
-    const projectedGroup = applyFederatedPendingProfileSnapshot(
-      { name: group.name, avatar: group.avatar },
-      groupSnapshot,
-    );
+    const projectedAvatar = groupSnapshot
+      ? (groupSnapshot.avatar ?? '')
+      : group.avatar;
     const memberDirection = buildIntentDirection(member, group);
     const membership =
       await this.groupRelationships.writeLockedAuthoredIntentInTx(tx, {
@@ -261,8 +259,7 @@ export class GroupRelationshipMutationService {
             group: {
               account: group.account,
               namespaceId: 0,
-              name: projectedGroup.name,
-              avatar: projectedGroup.avatar,
+              avatar: projectedAvatar,
               description: group.description,
               profileRev: group.profileRev,
             },
@@ -320,8 +317,7 @@ export class GroupRelationshipMutationService {
           group: {
             account: group.account,
             namespaceId: group.namespaceId,
-            name: projectedGroup.name,
-            avatar: projectedGroup.avatar,
+            avatar: projectedAvatar,
             description: group.description,
             profileRev: group.profileRev,
           },
@@ -360,7 +356,6 @@ export class GroupRelationshipMutationService {
       .select({
         groupId: groupStateTable.id,
         groupAccount: groupStateFields.account,
-        groupName: groupStateFields.name,
         groupAvatar: groupStateFields.avatar,
         groupDescription: groupStateFields.description,
         groupProfileRev: groupStateFields.profileRev,
@@ -464,7 +459,6 @@ export class GroupRelationshipMutationService {
           group: {
             account: state.groupAccount,
             namespaceId: 0,
-            name: state.groupName,
             avatar: state.groupAvatar,
             description: state.groupDescription,
             profileRev: state.groupProfileRev,

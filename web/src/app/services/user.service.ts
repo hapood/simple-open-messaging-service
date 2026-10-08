@@ -152,7 +152,6 @@ export interface ClientGroupInviteIntent {
   group: {
     account: string;
     namespaceId: number;
-    name: string;
     avatar: string;
     description: string;
     profileRev: number;

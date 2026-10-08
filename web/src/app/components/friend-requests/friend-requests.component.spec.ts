@@ -67,11 +67,11 @@ describe('FriendRequestsComponent federated search progress', () => {
           requestedAt: 1,
           requestedSort: 1,
           updatedAt: 1,
+          sourceFeedId: Number(id),
           peer: {
             namespaceId: 0,
             id: Number(id),
             account: name,
-            name,
             avatar: '',
             bio: '',
             domain: 'local',
@@ -680,11 +680,11 @@ describe('FriendRequestsComponent federated search progress', () => {
           requestedAt: 2,
           requestedSort: 2,
           updatedAt: 2,
+          sourceFeedId: 2,
           peer: {
             namespaceId: 0,
             id: 41,
             account: 'alice',
-            name: 'Alice refreshed',
             avatar: '',
             bio: '',
             domain: 'local',
@@ -698,7 +698,8 @@ describe('FriendRequestsComponent federated search progress', () => {
     });
     await refresh;
 
-    expect(component.pendingReqList()[0].name).toBe('Alice refreshed');
+    expect(component.pendingReqList()[0].account).toBe('alice');
+    expect(component.pendingReqList()[0]).not.toHaveProperty('name');
     expect(component.isInviteActionPending(request.id)).toBe(true);
 
     acceptResult.next({ code: 0 });

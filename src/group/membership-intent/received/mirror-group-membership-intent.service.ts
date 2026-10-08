@@ -666,7 +666,6 @@ export class MirrorGroupMembershipIntentService {
       groupAccount: state.account,
       groupDomain: state.domain,
       groupNamespaceId: state.namespaceId,
-      groupName: state.name,
       groupAvatar: state.avatar,
       groupDescription: state.description,
       groupProfileRev: state.profileRev,

@@ -12,7 +12,6 @@ describe('mirror group membership activation profile selection', () => {
           groupAccount: '!group',
           groupDomain: 'origin.example',
           groupNamespaceId: 3,
-          groupName: 'Group',
           groupAvatar: '',
           groupDescription: '',
           groupProfileRev: 7,
