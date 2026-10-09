@@ -17,11 +17,13 @@ import type { BrowserNotificationBatch } from './notification-descriptor.model';
 import type {
   ClientGroupMetaApply,
   ClientGroupMetaFeedPage,
+  GroupMetaCommitPatch,
   GroupMetaProfileReference,
 } from './group-meta-model';
 export type {
   ClientGroupMetaApply,
   ClientGroupMetaFeedPage,
+  GroupMetaCommitPatch,
 } from './group-meta-model';
 import { openDB, deleteDB, type DBSchema, type IDBPDatabase } from 'idb';
 import {
@@ -392,6 +394,33 @@ function withStoredPreview(
   };
 }
 
+/** Attention facts a projection is derived from. Comparing them inside the write transaction
+ *  implements a compare-and-set: derived columns are persisted only against the exact facts the
+ *  projection was computed from, so a result computed before a concurrent feed merge or local read
+ *  advance can never overwrite the newer projection state. */
+function attentionFactsUnchanged(
+  snapshotRow: StoredThread,
+  snapshotPreview: StoredThreadPreview | undefined,
+  currentRow: StoredThread,
+  currentPreview: StoredThreadPreview | undefined,
+): boolean {
+  return (
+    snapshotRow.threadFeedId === currentRow.threadFeedId &&
+    snapshotRow.messageEndSeq === currentRow.messageEndSeq &&
+    snapshotRow.lastReadSeq === currentRow.lastReadSeq &&
+    snapshotRow.unreadCount === currentRow.unreadCount &&
+    snapshotRow.lastMentionSeq === currentRow.lastMentionSeq &&
+    snapshotRow.localReadSeq === currentRow.localReadSeq &&
+    snapshotPreview?.seq === currentPreview?.seq &&
+    snapshotPreview?.createdAt === currentPreview?.createdAt &&
+    snapshotPreview?.status === currentPreview?.status &&
+    snapshotPreview?.text === currentPreview?.text &&
+    snapshotPreview?.senderAccount === currentPreview?.senderAccount &&
+    snapshotPreview?.senderProfileNamespaceId ===
+      currentPreview?.senderProfileNamespaceId
+  );
+}
+
 function requireThreadIdentity(
   item: ConversationItem,
   state: StoredThreadAttention | undefined,
@@ -457,6 +486,7 @@ export interface MessageDbSchema extends DBSchema {
   messages: {
     key: [number, number];
     value: CachedMessage;
+    indexes: { byOrigin: [number, number, number] };
   };
   messageRanges: {
     key: [number, number];
@@ -477,7 +507,7 @@ export const CACHE_SCHEMA_VERSION = 40;
 // Cursors moved out of the generic `settings` bag: account-level cursors now
 // live in a dedicated `syncState` store, per-thread cursors in `threadSyncState`.
 // Message content now stores canonical CAS paths; discard cached contextual URLs.
-export const MESSAGE_CACHE_SCHEMA_VERSION = 7;
+export const MESSAGE_CACHE_SCHEMA_VERSION = 8;
 const IDB_FORMAT_VERSION = 1;
 
 export class LocalCacheUnavailableError extends Error {
@@ -550,6 +580,7 @@ export type StateFeedWorkerFactory = () => Worker | null;
 
 /** Fire-and-forget events the worker pushes without a request id. */
 type StateFeedWorkerEvent =
+  | { type: 'message-db-committed'; userId: number; threadId: number }
   | {
       type: 'notification-batch';
       userId: number;
@@ -574,7 +605,12 @@ type StateFeedWorkerEvent =
       userId: number;
       projection: ThreadAttentionProjection;
     }
-  | { type: 'group-meta-committed'; userId: number; threadIds: number[] }
+  | {
+      type: 'group-meta-committed';
+      userId: number;
+      threadIds: number[];
+      patches: GroupMetaCommitPatch[];
+    }
   | { type: 'state-feed-committed'; userId: number };
 
 /** A request response carrying the pending id. */
@@ -605,6 +641,11 @@ export interface ThreadAttentionProjection {
 }
 
 export class WebdbStorage {
+  protected readonly messageDbCommitted = new Subject<{
+    userId: number;
+    threadId: number;
+  }>();
+  readonly messageDbCommitted$ = this.messageDbCommitted.asObservable();
   private readonly workerFailed = new Subject<void>();
   readonly workerFailed$ = this.workerFailed.asObservable();
   private readonly browserNotifications =
@@ -636,11 +677,14 @@ export class WebdbStorage {
   }>();
   readonly threadAttentionProjectionCommitted$ =
     this.threadAttentionProjectionCommitted.asObservable();
-  /** Emitted by the database worker after a per-thread Group Meta drain
-   *  commits, so member-profile views re-read the cache for those groups. */
+  /** Emitted by the database worker after a per-thread Group Meta drain commits.
+   *  `patches` carries the committed Group Meta facts so the renderer patches its
+   *  in-memory conversations directly; `threadIds` additionally covers threads whose
+   *  member-profile materialization changed without a meta row change. */
   protected readonly groupMetaCommitted = new Subject<{
     userId: number;
     threadIds: number[];
+    patches: GroupMetaCommitPatch[];
   }>();
   readonly groupMetaCommitted$ = this.groupMetaCommitted.asObservable();
   /** Emitted by the database worker after a state-feed drain commits. */
@@ -1090,9 +1134,14 @@ export class WebdbStorage {
             'message cache recreation expected an empty IndexedDB',
           );
         db.createObjectStore('meta', { keyPath: 'key' });
-        db.createObjectStore('messages', {
+        const messages = db.createObjectStore('messages', {
           keyPath: ['threadId', 'seq'],
         });
+        messages.createIndex('byOrigin', [
+          'threadId',
+          'publisherNamespaceId',
+          'originSeq',
+        ]);
         const ranges = db.createObjectStore('messageRanges', {
           keyPath: ['threadId', 'left'],
         });
@@ -1126,7 +1175,10 @@ export class WebdbStorage {
       )
         return false;
       const rangeIndexes = db.transaction('messageRanges').store.indexNames;
-      return rangeIndexes.contains('byThreadRight');
+      return (
+        rangeIndexes.contains('byThreadRight') &&
+        db.transaction('messages').store.indexNames.contains('byOrigin')
+      );
     } catch {
       return false;
     }
@@ -1956,11 +2008,14 @@ export class WebdbStorage {
     threadId: number,
     self: MessageCreator,
   ): Promise<ThreadAttentionProjection> {
+    // Capture the owning account before the async operation: emitting a late
+    // projection under a switched account would tag another user's list.
+    const userId = Number(this.currentUserId);
     const result = await this.runAccountOperation(() =>
       this.projectThreadAttentionInternal(threadId, self),
     );
     this.threadAttentionProjectionCommitted.next({
-      userId: Number(this.currentUserId),
+      userId,
       projection: result,
     });
     return result;
@@ -1988,10 +2043,24 @@ export class WebdbStorage {
         },
       );
     const core = await this.db();
-    const stored = await core.get('threads', threadId);
+    // Facts-first two-phase projection. The attention facts (thread state row + preview row) and
+    // the message-DB slot count live in two databases, so they cannot share one transaction.
+    // Instead: read one consistent core snapshot, count outside any core transaction, then
+    // persist the derived columns only when the committed facts still match that snapshot
+    // (compare-and-set). A mismatch means a concurrent feed merge / local read just committed
+    // newer facts — every such writer triggers its own projection afterwards, so this attempt
+    // simply fails instead of retrying: no stale result ever reaches the row or the event payload.
+    const snapshotTx = core.transaction(
+      ['threads', 'threadPreviews'],
+      'readonly',
+    );
+    const stored = await snapshotTx.objectStore('threads').get(threadId);
+    const preview = await snapshotTx
+      .objectStore('threadPreviews')
+      .get(threadId);
+    await snapshotTx.done;
     if (!stored)
       throw new Error('cannot reproject thread attention before state exists');
-    const preview = await core.get('threadPreviews', threadId);
     const state = withStoredPreview(stored, preview);
     const range = attentionCountRange(state);
     const count = await this.countUnreadMessageSlots(
@@ -2018,12 +2087,26 @@ export class WebdbStorage {
       lastMessageSenderAccount: preview?.senderAccount ?? null,
       lastMessageSenderNamespaceId: preview?.senderProfileNamespaceId ?? null,
     };
-    const current = await core.get('threads', threadId);
-    if (!current)
+    const writeTx = core.transaction(
+      ['threads', 'threadPreviews'],
+      'readwrite',
+    );
+    const current = await writeTx.objectStore('threads').get(threadId);
+    const currentPreview = await writeTx
+      .objectStore('threadPreviews')
+      .get(threadId);
+    if (!current) {
+      await writeTx.done;
       throw new Error('cannot persist thread projection before state exists');
-    await core.put('threads', {
+    }
+    if (!attentionFactsUnchanged(stored, preview, current, currentPreview)) {
+      await writeTx.done;
+      throw new Error(
+        'thread attention projection conflicted with concurrent facts',
+      );
+    }
+    await writeTx.objectStore('threads').put({
       ...current,
-      localReadSeq: current.localReadSeq,
       projectedUnreadCount: result.unreadCount,
       mentionMe: result.mentionUnread.includes('me'),
       mentionAll: result.mentionUnread.includes('all'),
@@ -2032,6 +2115,7 @@ export class WebdbStorage {
       lastMessageSenderAccount: result.lastMessageSenderAccount,
       lastMessageSenderNamespaceId: result.lastMessageSenderNamespaceId,
     });
+    await writeTx.done;
     return result;
   }
 
@@ -2156,10 +2240,20 @@ export class WebdbStorage {
     });
   }
 
-  /** Apply one fetched Group Meta page and advance its durable scan cursor atomically. */
-  async applyGroupMetaPage(update: ClientGroupMetaApply): Promise<void> {
-    await this.runAccountOperation(async () => {
-      await this.applyStateFeedPageInternal([], null, false, [update]);
+  /** Apply one fetched Group Meta page and advance its durable scan cursor atomically.
+   *  Resolves with the Group Meta facts the page materialized into the thread row, or
+   *  null when the thread was skipped (non-group / read-only). */
+  async applyGroupMetaPage(
+    update: ClientGroupMetaApply,
+  ): Promise<GroupMetaCommitPatch | null> {
+    return this.runAccountOperation(async () => {
+      const patches = await this.applyStateFeedPageInternal(
+        [],
+        null,
+        false,
+        [update],
+      );
+      return patches[0] ?? null;
     });
   }
 
@@ -2255,6 +2349,11 @@ export class WebdbStorage {
           this.profileWake.next(data.wake);
           return;
         }
+        if (data.type === 'message-db-committed') {
+          if (data.userId === Number(this.currentUserId))
+            this.messageDbCommitted.next(data);
+          return;
+        }
         if (data.type === 'tombstone-committed') {
           this.tombstoneCommitted.next({
             threadId: data.threadId,
@@ -2273,6 +2372,7 @@ export class WebdbStorage {
           this.groupMetaCommitted.next({
             userId: data.userId,
             threadIds: data.threadIds,
+            patches: data.patches,
           });
           return;
         }
@@ -2354,7 +2454,7 @@ export class WebdbStorage {
     resetProjection: boolean,
     groupMeta: readonly ClientGroupMetaApply[],
     fullThrough?: number | null,
-  ): Promise<void> {
+  ): Promise<GroupMetaCommitPatch[]> {
     if (isTauri())
       throw new Error(
         'native state-feed commits belong to the Rust SSE executor',
@@ -2371,6 +2471,7 @@ export class WebdbStorage {
       ],
       'readwrite',
     );
+    const patches: GroupMetaCommitPatch[] = [];
     try {
       if (resetProjection) {
         await tx.objectStore('relationshipRequests').clear();
@@ -2582,29 +2683,37 @@ export class WebdbStorage {
           const presentation = restoreThreadForStorageMutation(thread);
           if (presentation.type !== 'GROUP')
             throw new Error('invalid group structure');
+          const next = {
+            ...presentation,
+            groupMetaRecoveryThrough: update.page.hasMore
+              ? presentation.groupMetaRecoveryThrough
+              : null,
+            groupMetaRecoveryAnnouncement:
+              update.page.mode === 'full' && update.page.hasMore
+                ? (presentation.groupMetaRecoveryAnnouncement ?? null)
+                : null,
+            group: {
+              ...presentation.group,
+              memberCount: activeMembers.length,
+              groupMetaFeedId: update.page.scannedThrough,
+              ...(update.page.mode === 'full' && !update.page.hasMore
+                ? {
+                    announcement:
+                      presentation.groupMetaRecoveryAnnouncement ?? null,
+                  }
+                : {}),
+            },
+          };
           await tx.objectStore('threads').put({
             ...thread,
-            ...storeThreadPresentation({
-              ...presentation,
-              groupMetaRecoveryThrough: update.page.hasMore
-                ? presentation.groupMetaRecoveryThrough
-                : null,
-              groupMetaRecoveryAnnouncement:
-                update.page.mode === 'full' && update.page.hasMore
-                  ? (presentation.groupMetaRecoveryAnnouncement ?? null)
-                  : null,
-              group: {
-                ...presentation.group,
-                memberCount: activeMembers.length,
-                groupMetaFeedId: update.page.scannedThrough,
-                ...(update.page.mode === 'full' && !update.page.hasMore
-                  ? {
-                      announcement:
-                        presentation.groupMetaRecoveryAnnouncement ?? null,
-                    }
-                  : {}),
-              },
-            }),
+            ...storeThreadPresentation(next),
+          });
+          patches.push({
+            threadId: update.threadId,
+            groupMetaFeedId: next.group.groupMetaFeedId,
+            memberCount: next.group.memberCount,
+            announcement: next.group.announcement ?? null,
+            groupMetaRecoveryThrough: next.groupMetaRecoveryThrough ?? null,
           });
         }
       }
@@ -2647,6 +2756,7 @@ export class WebdbStorage {
           .objectStore('syncState')
           .put({ key: 'stateFeedId', value: feedId });
       await tx.done;
+      return patches;
     } catch (error) {
       // Application errors do not automatically abort an IndexedDB transaction.
       try {
@@ -3606,6 +3716,8 @@ export class WebdbStorage {
   async putCachedMessages(messages: MessageQueryRow[]): Promise<void> {
     if (messages.length === 0) return;
     return this.runMessageOperation(async () => {
+      const userId = this.currentUserId;
+      const epoch = this.cacheEpoch;
       if (isTauri() && this.currentUserId != null) {
         await tauriInvoke('native_db_put_cached_messages', {
           userId: Number(this.currentUserId),
@@ -3619,6 +3731,13 @@ export class WebdbStorage {
         await tx.store.put(mergeCachedMessage(existing, message));
       }
       await tx.done;
+      if (epoch === this.cacheEpoch && userId === this.currentUserId) {
+        for (const threadId of new Set(
+          messages.map((message) => message.threadId),
+        )) {
+          this.messageDbCommitted.next({ userId: Number(userId), threadId });
+        }
+      }
     });
   }
 
@@ -3803,6 +3922,8 @@ export class WebdbStorage {
   private async commitBrowserMessagePageInternal(
     input: CommitMessagePageInput,
   ): Promise<CommittedMessagePage> {
+    const userId = this.currentUserId;
+    const epoch = this.cacheEpoch;
     if (input.messages.some((message) => message.threadId !== input.threadId))
       throw new Error('message page contains a message from another thread');
     if (
@@ -3851,6 +3972,12 @@ export class WebdbStorage {
       });
     }
     await tx.done;
+    if (epoch === this.cacheEpoch && userId === this.currentUserId) {
+      this.messageDbCommitted.next({
+        userId: Number(userId),
+        threadId: input.threadId,
+      });
+    }
     return { messages: committedMessages, ranges };
   }
 
@@ -3861,6 +3988,41 @@ export class WebdbStorage {
     return this.runMessageOperation(() =>
       this.getMessageInternal(threadId, seq),
     );
+  }
+
+  /** Read a cached origin target without changing timeline coverage. */
+  async getMessageByOrigin(
+    threadId: number,
+    namespaceId: number,
+    originSeq: number,
+  ): Promise<Message | undefined> {
+    return this.runMessageOperation(async () => {
+      if (isTauri() && this.currentUserId != null) {
+        return (
+          (await tauriInvoke<Message | null>(
+            'native_db_get_message_by_origin',
+            {
+              userId: Number(this.currentUserId),
+              threadId,
+              namespaceId,
+              originSeq,
+            },
+          )) ?? undefined
+        );
+      }
+      const db = await this.messageDb();
+      const row =
+        namespaceId === 0
+          ? await db.get('messages', [threadId, originSeq])
+          : await db.getFromIndex('messages', 'byOrigin', [
+              threadId,
+              namespaceId,
+              originSeq,
+            ]);
+      if (!row || !isCachedMessageBody(row)) return undefined;
+      if (row.publisherNamespaceId !== namespaceId) return undefined;
+      return row;
+    });
   }
 
   /** Read deletion facts independently of cached bodies; an absent row is not a tombstone. */

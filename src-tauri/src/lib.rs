@@ -536,6 +536,7 @@ pub fn run() {
                     native_db::attention::native_profile_resolve,
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_advance_thread_read,
+                    native_db::attention::native_db_project_thread_attention,
                     native_db::attention::native_db_drain_thread_misc,
                     native_db::native_db_put_meta,
                     native_db::preferences::native_db_get_preference,
@@ -560,6 +561,7 @@ pub fn run() {
                     native_db::messages::native_db_newest_messages,
                     native_db::messages::native_db_correct_system_message_profile,
                     native_db::messages::native_db_delete_messages_by_thread,
+                    native_db::messages::native_db_get_message_by_origin,
                     navigation::open_external_url,
                 ]
             }
@@ -620,6 +622,7 @@ pub fn run() {
                     native_db::attention::native_profile_resolve,
                     native_db::attention::native_thread_feed_changes,
                     native_db::attention::native_db_advance_thread_read,
+                    native_db::attention::native_db_project_thread_attention,
                     native_db::attention::native_db_drain_thread_misc,
                     native_db::native_db_put_meta,
                     native_db::preferences::native_db_get_preference,
@@ -644,6 +647,7 @@ pub fn run() {
                     native_db::messages::native_db_newest_messages,
                     native_db::messages::native_db_correct_system_message_profile,
                     native_db::messages::native_db_delete_messages_by_thread,
+                    native_db::messages::native_db_get_message_by_origin,
                     navigation::open_external_url,
                 ]
             }

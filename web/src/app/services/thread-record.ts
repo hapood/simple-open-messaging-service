@@ -15,7 +15,8 @@ export type StoredThread = StoredThreadAttention & {
   pinned: boolean;
   pinnedAt: number | null;
   lastMessagePreview: string | null;
-  lastMessageSenderId: string | null;
+  lastMessageSenderAccount: string | null;
+  lastMessageSenderNamespaceId: number | null;
   projectedUnreadCount: number;
   mentionMe: boolean;
   mentionAll: boolean;
@@ -48,7 +49,8 @@ export function storeThreadPresentation(
     pinned: item.pinned,
     pinnedAt: item.pinnedAt,
     lastMessagePreview: item.lastMessagePreview ?? null,
-    lastMessageSenderId: item.lastMessageSenderId ?? null,
+    lastMessageSenderAccount: item.lastMessageSenderAccount ?? null,
+    lastMessageSenderNamespaceId: item.lastMessageSenderNamespaceId ?? null,
     projectedUnreadCount: item.unreadCount,
     mentionMe: item.mentionUnread.includes('me'),
     mentionAll: item.mentionUnread.includes('all'),
@@ -112,7 +114,8 @@ export function restoreThread(
     announcementReadFeedId: row.announcementReadFeedId,
     unreadCount: row.projectedUnreadCount,
     lastMessagePreview: row.lastMessagePreview,
-    lastMessageSenderId: row.lastMessageSenderId,
+    lastMessageSenderAccount: row.lastMessageSenderAccount,
+    lastMessageSenderNamespaceId: row.lastMessageSenderNamespaceId,
     mentionUnread: [
       ...(row.mentionMe ? ['me' as const] : []),
       ...(row.mentionAll ? ['all' as const] : []),

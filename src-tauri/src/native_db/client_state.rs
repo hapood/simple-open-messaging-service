@@ -1,5 +1,5 @@
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 fn preserve_thread_profile(incoming: &mut Value, current: &Value) {
@@ -54,6 +54,28 @@ pub(crate) struct ClientGroupMetaApply {
     pub(super) source_server: String,
     pub(super) namespace_id: i64,
     pub(super) page: ClientGroupMetaPage,
+}
+
+/// One announcement fact exactly as materialized into the thread row.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct GroupMetaAnnouncement {
+    pub(super) feed_id: String,
+    pub(super) text: Option<String>,
+}
+
+/// Group Meta facts one committed page materialized into the thread row, carried on the
+/// LOCAL_GROUP_META_COMMITTED event so the renderer patches its in-memory conversation
+/// without re-reading the database. `group_meta_recovery_through` is the recovery window
+/// boundary: present while a full recovery is open, cleared when it completes.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct GroupMetaCommitPatch {
+    pub(super) thread_id: i64,
+    pub(super) group_meta_feed_id: String,
+    pub(super) member_count: i64,
+    pub(super) announcement: Option<GroupMetaAnnouncement>,
+    pub(super) group_meta_recovery_through: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -580,7 +602,7 @@ pub(super) fn apply_state_feed_page(
     feed_id: i64,
     group_meta: Vec<ClientGroupMetaApply>,
     reset_projection: bool,
-) -> Result<(), String> {
+) -> Result<Vec<GroupMetaCommitPatch>, String> {
     apply_state_feed_page_with_resume(
         conn,
         user_id,
@@ -603,7 +625,7 @@ pub(super) fn apply_state_feed_page_with_resume(
     group_meta: Vec<ClientGroupMetaApply>,
     reset_projection: bool,
     full_through: Option<Option<i64>>,
-) -> Result<(), String> {
+) -> Result<Vec<GroupMetaCommitPatch>, String> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| format!("begin state-feed page: {e}"))?;
@@ -661,6 +683,7 @@ pub(super) fn apply_state_feed_page_with_resume(
             )?;
         }
     }
+    let mut patches: Vec<GroupMetaCommitPatch> = Vec::new();
     for update in group_meta {
         if update.source_server.is_empty() {
             return Err("group-meta sourceServer must be canonical and non-empty".into());
@@ -821,10 +844,33 @@ pub(super) fn apply_state_feed_page_with_resume(
                 group.insert("memberCount".into(), Value::from(member_count.max(0)));
                 group.insert(
                     "groupMetaFeedId".into(),
-                    Value::String(update.page.scanned_through),
+                    Value::String(update.page.scanned_through.clone()),
                 );
             }
             super::thread_store::write(&tx, user_id, update.thread_id, &thread)?;
+            patches.push(GroupMetaCommitPatch {
+                thread_id: update.thread_id,
+                group_meta_feed_id: update.page.scanned_through.clone(),
+                member_count: member_count.max(0),
+                announcement: thread
+                    .pointer("/group/announcement")
+                    .and_then(Value::as_object)
+                    .map(|object| GroupMetaAnnouncement {
+                        feed_id: object
+                            .get("feedId")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        text: object
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                    }),
+                group_meta_recovery_through: thread
+                    .get("groupMetaRecoveryThrough")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            });
         }
     }
     for op in &items {
@@ -899,14 +945,14 @@ pub(super) fn apply_state_feed_page_with_resume(
     .map_err(|e| format!("save thread revision: {e}"))?;
     tx.commit()
         .map_err(|e| format!("commit state-feed page: {e}"))?;
-    Ok(())
+    Ok(patches)
 }
 
 pub(super) fn apply_group_meta_page(
     conn: &mut Connection,
     user_id: i64,
     update: ClientGroupMetaApply,
-) -> Result<(), String> {
+) -> Result<Option<GroupMetaCommitPatch>, String> {
     let feed_id = conn
         .query_row(
             "SELECT CAST(value_json AS INTEGER) FROM sync_state WHERE user_id=?1 AND key='stateFeedId'",
@@ -916,7 +962,9 @@ pub(super) fn apply_group_meta_page(
         .optional()
         .map_err(|e| format!("read state-feed cursor for group meta: {e}"))?
         .unwrap_or(0);
-    apply_state_feed_page(conn, user_id, Vec::new(), feed_id, vec![update], false)
+    let patches =
+        apply_state_feed_page(conn, user_id, Vec::new(), feed_id, vec![update], false)?;
+    Ok(patches.into_iter().next())
 }
 
 /// The current account's server snapshot is the sole authority for conversation visibility.
@@ -993,7 +1041,8 @@ pub(super) fn apply_thread_state(
     let mut thread = previous.unwrap_or_else(|| serde_json::json!({
         "threadId": thread_id, "type": kind, "role": null, "lastMessageAt": null, "lastMessageSeq": null,
         "muted": false, "pinned": false, "pinnedAt": null,
-        "lastReadSeq": null, "unreadCount": 0, "mentionUnread": [], "lastMessagePreview": null, "lastMessageSenderId": null
+        "lastReadSeq": null, "unreadCount": 0, "mentionUnread": [], "lastMessagePreview": null,
+        "lastMessageSenderAccount": null, "lastMessageSenderNamespaceId": null
     }));
     if old_state.is_some_and(|(old_feed, _)| old_feed >= feed_id) {
         return Ok(());

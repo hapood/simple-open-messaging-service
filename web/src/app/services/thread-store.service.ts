@@ -10,6 +10,8 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { filter, map, Subject, Subscription } from 'rxjs';
 import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
 import { WebdbService } from './webdb.service';
+import type { ThreadAttentionProjection } from './webdb-storage';
+import type { GroupMetaCommitPatch } from './group-meta-model';
 import { preserveThreadProfile } from './thread-profile-projection';
 import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
@@ -17,7 +19,6 @@ import { MessageRepository } from './message-repository.service';
 import {
   ConversationItem,
   GroupConversationItem,
-  messagePreviewSenderKey,
   localSubjectIdentity,
   P2PConversationItem,
   ThreadPeerUser,
@@ -30,11 +31,9 @@ import type { ThreadNotificationUpdate } from './thread-notification';
 
 import {
   advanceLocalAttentionRead,
-  attentionCountRange,
   attentionSnapshot,
   mergeThreadAttention,
   threadNotificationChanged,
-  projectThreadAttention,
   type LocalThreadAttention,
   type ThreadFeedSnapshot,
   type ThreadAliasApplied,
@@ -177,7 +176,7 @@ export class ThreadRepository {
     this.messageRepo.slotsChanged$
       .pipe(takeUntilDestroyed())
       .subscribe((threadId) => {
-        void this.projectThread(threadId);
+        void this.projectThreadAttention(threadId);
       });
     // Cached rows can be painted before HELLO, while sessionUserId is already null. Logout must
     // reset them explicitly rather than relying on an identity signal transition.
@@ -204,10 +203,17 @@ export class ThreadRepository {
         if (data.userId !== this.userService.sessionUserId()) return;
         void this.applyThreadStates(data.states, true);
       });
+    this.webdb.threadAttentionProjectionCommitted$
+      .pipe(takeUntilDestroyed())
+      .subscribe((data) => {
+        if (data.userId !== this.userService.sessionUserId()) return;
+        this.applyThreadAttentionProjection(data.projection);
+      });
     this.webdb.groupMetaCommitted$
       .pipe(takeUntilDestroyed())
       .subscribe((data) => {
         if (data.userId !== this.userService.sessionUserId()) return;
+        this.applyGroupMetaPatches(data.patches);
         this.memberProfiles.notifyChanged(
           data.threadIds.filter((threadId) =>
             this._items().some(
@@ -289,7 +295,7 @@ export class ThreadRepository {
     effect(() => {
       if (this.userService.sessionProfile())
         for (const threadId of this.threadStates.keys())
-          void this.projectThread(threadId);
+          void this.projectThreadAttention(threadId);
     });
     effect(() => {
       const id = this.userService.sessionUserId();
@@ -699,13 +705,13 @@ export class ThreadRepository {
       threadId,
       advanceLocalAttentionRead(currentState, seq),
     );
-    void this.projectThread(threadId);
     const epoch = this.sessionEpoch;
     void this.webdb
       .advanceThreadRead(threadId, seq)
       .then((state) => {
-        if (epoch === this.sessionEpoch)
-          void this.applyThreadStates([state], false);
+        if (epoch !== this.sessionEpoch) return;
+        void this.applyThreadStates([state], false);
+        void this.projectThreadAttention(threadId);
       })
       .catch((error) =>
         console.warn('[thread-feed] local read persistence failed', error),
@@ -777,7 +783,8 @@ export class ThreadRepository {
           reconciled = {
             ...reconciled,
             lastMessagePreview: current.lastMessagePreview,
-            lastMessageSenderId: current.lastMessageSenderId,
+            lastMessageSenderAccount: current.lastMessageSenderAccount,
+            lastMessageSenderNamespaceId: current.lastMessageSenderNamespaceId,
           };
         }
         base[idx] = this.withConfirmedAlias(reconciled);
@@ -1005,7 +1012,11 @@ export class ThreadRepository {
             )
             .catch(() => undefined);
       }
-      const item = await this.projectThread(state.threadId);
+      const projection = await this.projectThreadAttention(state.threadId);
+      const item =
+        projection && snapshot
+          ? this.applyThreadAttentionProjection(projection, snapshot)
+          : undefined;
       if (notify && item && snapshot)
         notifications.push({ item, state: snapshot });
     }
@@ -1013,76 +1024,93 @@ export class ThreadRepository {
       this.threadNotifications.next(notifications);
   }
 
-  private async projectThread(
+  private async projectThreadAttention(
     threadId: number,
-  ): Promise<ConversationItem | undefined> {
+  ): Promise<ThreadAttentionProjection | undefined> {
     const state = this.threadStates.get(threadId);
-    if (!state) return;
-    const server = attentionSnapshot(state);
-    if (!server) return;
-    const range = attentionCountRange(state);
     const me = this.userService.sessionProfile();
-    if (!range || !me) return;
+    if (!state || !me) return;
     const epoch = this.sessionEpoch;
     const token = {};
     this.projectionTokens.set(threadId, token);
-    const count = await this.webdb
-      .countUnreadMessageSlots(threadId, range.afterSeq, range.throughSeq, {
+    const projection = await this.webdb
+      .projectThreadAttention(threadId, {
         account: me.account,
         namespaceId: me.namespaceId,
       })
       .catch((error) => {
         if (epoch === this.sessionEpoch)
-          console.warn('[thread-feed] count projection failed', error);
+          console.warn('[thread-feed] attention projection failed', error);
         return null;
       });
-    if (count === null) return;
     if (
+      projection === null ||
       epoch !== this.sessionEpoch ||
       this.threadStates.get(threadId) !== state ||
       this.projectionTokens.get(threadId) !== token
     )
       return;
-    const projection = projectThreadAttention(state, count)!;
-    // Preview membership belongs to the server; optimistic reads only affect
-    // attention state and must not prune the conversation summary.
-    const preview = server.previews?.at(-1);
-    const namespaceId = preview?.sender.profileNamespaceId ?? null;
+    return projection;
+  }
+
+  /** Patch committed Group Meta facts straight into the in-memory conversations.
+   *  The payload was produced inside the committing transaction, so memory and
+   *  the durable row agree without a database re-read; isGroupMetaCurrent() and
+   *  the group-info member reload react to the advanced cursor immediately. */
+  private applyGroupMetaPatches(patches: GroupMetaCommitPatch[]): void {
+    if (!patches.length) return;
+    const byThread = new Map(
+      patches.map((patch) => [patch.threadId, patch] as const),
+    );
+    this._items.update((items) =>
+      items.map((item) => {
+        if (item.type !== 'GROUP') return item;
+        const patch = byThread.get(item.threadId);
+        if (!patch) return item;
+        return {
+          ...item,
+          groupMetaRecoveryThrough: patch.groupMetaRecoveryThrough,
+          group: {
+            ...item.group,
+            memberCount: patch.memberCount,
+            groupMetaFeedId: patch.groupMetaFeedId,
+            announcement: patch.announcement,
+          },
+        };
+      }),
+    );
+  }
+
+  private applyThreadAttentionProjection(
+    projection: ThreadAttentionProjection,
+    server?: ThreadFeedSnapshot,
+  ): ConversationItem | undefined {
     let projected: ConversationItem | undefined;
     this._items.update((items) =>
       items.map((item) => {
-        if (item.threadId !== threadId) return item;
+        if (item.threadId !== projection.threadId) return item;
         const changed = {
           ...item,
           lastReadSeq: projection.lastReadSeq,
-          announcementReadFeedId: Math.max(
-            item.announcementReadFeedId ?? 0,
-            server.announcementReadFeedId ?? 0,
-          ),
+          announcementReadFeedId: server
+            ? Math.max(
+                item.announcementReadFeedId ?? 0,
+                server.announcementReadFeedId ?? 0,
+              )
+            : item.announcementReadFeedId,
           unreadCount: projection.unreadCount,
-          mentionUnread: projection.hasUnreadMention ? ['me' as const] : [],
-          joinRequestEndFeedId: server.joinRequestEndFeedId,
-          joinRequestReadFeedId: server.joinRequestReadFeedId,
-          groupInviteEndFeedId: server.groupInviteEndFeedId,
-          lastMessagePreview: preview
-            ? preview.status === 'LIVE'
-              ? (preview.text ?? '')
-              : preview.status === 'USER_RETRACTION'
-                ? '[Message retracted]'
-                : '[Message removed by administrator]'
-            : null,
-          lastMessageAt: preview
-            ? Date.parse(preview.createdAt)
-            : item.lastMessageAt,
-          lastMessageSenderId:
-            preview && namespaceId != null
-              ? messagePreviewSenderKey({
-                  account: preview.sender.account,
-                  profileNamespaceId: namespaceId,
-                })
-              : null,
+          mentionUnread: projection.mentionUnread,
+          joinRequestEndFeedId:
+            server?.joinRequestEndFeedId ?? item.joinRequestEndFeedId,
+          joinRequestReadFeedId:
+            server?.joinRequestReadFeedId ?? item.joinRequestReadFeedId,
+          groupInviteEndFeedId:
+            server?.groupInviteEndFeedId ?? item.groupInviteEndFeedId,
+          lastMessagePreview: projection.lastMessagePreview,
+          lastMessageAt: projection.lastMessageAt,
+          lastMessageSenderAccount: projection.lastMessageSenderAccount,
+          lastMessageSenderNamespaceId: projection.lastMessageSenderNamespaceId,
         };
-        void this.persistThread(changed);
         projected = changed;
         return changed;
       }),

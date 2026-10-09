@@ -68,7 +68,8 @@ describe('WebdbService native SQLite routing', () => {
       unreadCount: 0,
       mentionUnread: [],
       lastMessagePreview: null,
-      lastMessageSenderId: null,
+      lastMessageSenderAccount: null,
+      lastMessageSenderNamespaceId: null,
       type: 'P2P',
       peerUser: {
         account: 'peer',
@@ -121,8 +122,12 @@ describe('WebdbService native SQLite routing', () => {
   });
 
   it('does not allow a renderer to submit native state-feed pages', async () => {
-    await expect(service.applyStateFeedPage([], 81, true)).rejects.toThrow('Rust SSE executor');
-    expect(calls).not.toContainEqual(expect.objectContaining({ cmd: 'native_db_apply_state_feed_page' }));
+    await expect(service.applyStateFeedPage([], 81, true)).rejects.toThrow(
+      'Rust SSE executor',
+    );
+    expect(calls).not.toContainEqual(
+      expect.objectContaining({ cmd: 'native_db_apply_state_feed_page' }),
+    );
   });
 
   it('routes revisioned profiles and meta state without falling back to IndexedDB', async () => {
@@ -138,11 +143,13 @@ describe('WebdbService native SQLite routing', () => {
     responses.set('native_db_get_profile', profile);
     responses.set('native_db_get_meta', 12);
 
-    expect(await service.getProfile({
-      publisherNamespaceId: 0,
-      lookup: 'ACCOUNT_PROFILE',
-      target: { profileNamespaceId: 0, account: 'alice', rev: 6 },
-    })).toEqual(profile);
+    expect(
+      await service.getProfile({
+        publisherNamespaceId: 0,
+        lookup: 'ACCOUNT_PROFILE',
+        target: { profileNamespaceId: 0, account: 'alice', rev: 6 },
+      }),
+    ).toEqual(profile);
     await service.putSyncState('stateFeedId', 12);
     expect(await service.getSyncState('stateFeedId')).toBe(12);
   });
@@ -196,18 +203,25 @@ describe('WebdbService native SQLite routing', () => {
 
   it('reads a digest-selected native file as a Blob', async () => {
     const digest = 'a'.repeat(64);
-    responses.set('native_db_get_profile_avatar', Array.from(new TextEncoder().encode('cached')));
+    responses.set(
+      'native_db_get_profile_avatar',
+      Array.from(new TextEncoder().encode('cached')),
+    );
     const blob = await service.getProfileAvatarBlob(digest);
     expect(blob?.type).toBe('image/webp');
     expect(await blob?.text()).toBe('cached');
-    expect(calls).toContainEqual(expect.objectContaining({
-      cmd: 'native_db_get_profile_avatar',
-      args: expect.objectContaining({ userId: 42, digest }),
-    }));
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        cmd: 'native_db_get_profile_avatar',
+        args: expect.objectContaining({ userId: 42, digest }),
+      }),
+    );
   });
 
   it('routes message cache maintenance, point reads, newest reads and thread cleanup to SQLite', async () => {
     const message = {
+      publisherNamespaceId: 0,
+      originSeq: 3,
       threadId: 9,
       namespaceId: 0,
       seq: 3,

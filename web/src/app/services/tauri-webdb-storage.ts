@@ -3,6 +3,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import type { SessionLifecycleService } from './session-lifecycle.service';
 import { WebdbStorage } from './webdb-storage';
 import type { LocalThreadAttention } from '../../../../shared/thread-attention';
+import type { GroupMetaCommitPatch } from './group-meta-model';
 import { WebsocketService } from './websocket.service';
 import { tauriInvoke } from './runtime';
 
@@ -40,7 +41,19 @@ export class TauriWebdbStorage extends WebdbStorage {
     this.ws.eventSubject
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((m) => {
-        if (m.event === 'LOCAL_THREAD_FEED_COMMITTED') {
+        if (m.event === 'LOCAL_MESSAGE_DB_COMMITTED') {
+          const data = m.data as
+            | { userId?: number; threadId?: number }
+            | undefined;
+          if (
+            data?.userId === this.currentUserIdAsNumber() &&
+            typeof data?.threadId === 'number'
+          )
+            this.messageDbCommitted.next({
+              userId: data.userId!,
+              threadId: data.threadId,
+            });
+        } else if (m.event === 'LOCAL_THREAD_FEED_COMMITTED') {
           const data = m.data as
             | { userId?: number; states?: LocalThreadAttention[] }
             | undefined;
@@ -62,7 +75,11 @@ export class TauriWebdbStorage extends WebdbStorage {
             this.stateFeedCommitted.next({ userId: data.userId });
         } else if (m.event === 'LOCAL_GROUP_META_COMMITTED') {
           const data = m.data as
-            | { userId?: number; threadIds?: number[] }
+            | {
+                userId?: number;
+                threadIds?: number[];
+                patches?: GroupMetaCommitPatch[];
+              }
             | undefined;
           if (
             data?.userId !== undefined &&
@@ -72,6 +89,7 @@ export class TauriWebdbStorage extends WebdbStorage {
             this.groupMetaCommitted.next({
               userId: data.userId,
               threadIds: data.threadIds,
+              patches: Array.isArray(data.patches) ? data.patches : [],
             });
         } else if (m.event === 'LOCAL_TOMBSTONE_COMMITTED') {
           const data = m.data as
@@ -100,25 +118,19 @@ export class TauriWebdbStorage extends WebdbStorage {
   /** Numeric mirror of the inherited `currentUserId` (a string) for event
    *  filtering; Rust emits `userId` as a number. */
   private currentUserIdAsNumber(): number | undefined {
-    return this.currentUserId === null
-      ? undefined
-      : Number(this.currentUserId);
+    return this.currentUserId === null ? undefined : Number(this.currentUserId);
   }
 
   /** Tauri never opens an IndexedDB handle: the Rust executor (SQLCipher) owns
    *  durable state. We still record the active user and publish `ready` so the
    *  rest of the renderer (which treats `WebdbStorage` uniformly) keeps working. */
-  override async openExistingForUser(
-    userId: string,
-  ): Promise<null> {
+  override async openExistingForUser(userId: string): Promise<null> {
     this.currentUserId = userId;
     this.ready.set(true);
     return null;
   }
 
-  override async recreateForUser(
-    userId: string,
-  ): Promise<null> {
+  override async recreateForUser(userId: string): Promise<null> {
     this.currentUserId = userId;
     this.ready.set(true);
     return null;

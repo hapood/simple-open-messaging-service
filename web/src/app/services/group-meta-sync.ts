@@ -3,6 +3,7 @@ import type { ConversationItem } from './model';
 import type {
   ClientGroupMetaApply,
   ClientGroupMetaFeedPage,
+  GroupMetaCommitPatch,
   GroupMetaProfileReference,
 } from './group-meta-model';
 
@@ -15,7 +16,9 @@ export interface GroupMetaSyncStorage {
   getThreadStates(): Promise<LocalThreadAttention[]>;
   getUnresolvedGroupMetaProfiles(): Promise<GroupMetaProfileReference[]>;
   beginGroupMetaRecovery(threadId: number, through: string): Promise<void>;
-  applyGroupMetaPage(update: ClientGroupMetaApply): Promise<void>;
+  applyGroupMetaPage(
+    update: ClientGroupMetaApply,
+  ): Promise<GroupMetaCommitPatch | null>;
 }
 
 export interface GroupMetaRequest {
@@ -163,6 +166,7 @@ async function syncGroupMetaThreadUnchecked(
   threadId: number,
   target: string,
   changed: number[],
+  committed: GroupMetaCommitPatch[],
   failures: string[],
   guard?: () => boolean,
 ): Promise<void> {
@@ -238,13 +242,16 @@ async function syncGroupMetaThreadUnchecked(
         after,
         through,
       });
-      await storage.applyGroupMetaPage({
+      const patch = await storage.applyGroupMetaPage({
         threadId: thread.threadId,
         sourceServer: thread.group.domain,
         namespaceId: thread.group.namespaceId,
         page,
       });
-      changed.push(thread.threadId);
+      if (patch) {
+        committed.push(patch);
+        changed.push(thread.threadId);
+      }
       after = page.scannedThrough;
       if (!page.hasMore) {
         if (mode === 'full' && BigInt(after) < BigInt(target)) {
@@ -269,8 +276,15 @@ export async function syncGroupMetaThread(
   threadId: number,
   target: string,
   guard?: () => boolean,
-): Promise<number[]> {
+): Promise<{
+  /** Committed Group Meta facts, one per thread (latest wins). */
+  patches: GroupMetaCommitPatch[];
+  /** Threads with any committed change, including profile resolutions
+   *  that altered member display without a meta row change. */
+  threadIds: number[];
+}> {
   const changed: number[] = [];
+  const committed: GroupMetaCommitPatch[] = [];
   const failures: string[] = [];
   await syncGroupMetaThreadUnchecked(
     storage,
@@ -279,6 +293,7 @@ export async function syncGroupMetaThread(
     threadId,
     target,
     changed,
+    committed,
     failures,
     guard,
   );
@@ -308,7 +323,10 @@ export async function syncGroupMetaThread(
       [...new Set(changed)],
     );
   }
-  return [...new Set(changed)];
+  return {
+    patches: [...new Map(committed.map((p) => [p.threadId, p])).values()],
+    threadIds: [...new Set(changed)],
+  };
 }
 
 async function syncGroupMetaUnchecked(
@@ -318,6 +336,7 @@ async function syncGroupMetaUnchecked(
   changed: number[],
   failures: string[],
 ): Promise<number[]> {
+  const committed: GroupMetaCommitPatch[] = [];
   const [threads, states] = await Promise.all([
     storage.getThreads(),
     storage.getThreadStates(),
@@ -341,6 +360,7 @@ async function syncGroupMetaUnchecked(
       state.threadId,
       target,
       changed,
+      committed,
       failures,
     );
   }

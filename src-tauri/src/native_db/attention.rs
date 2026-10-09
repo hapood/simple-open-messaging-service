@@ -1,3 +1,4 @@
+use chrono::DateTime;
 use log::warn;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -6,6 +7,7 @@ use std::collections::BTreeMap;
 use tauri::Emitter;
 
 use super::client_state::{ClientGroupMetaApply, ClientGroupMetaPage};
+use super::messages::{count_unread_message_slots, MessageCountOwner};
 use super::{open, parse_json};
 use crate::{proxy::perform_api_request_with_events, ServerSessionState};
 
@@ -66,7 +68,7 @@ pub(crate) async fn native_db_drain_thread_misc(
             // The drain target lives in the threads table (group_meta_feed_end_id),
             // refreshed by the preceding thread-feed commit, so the caller's target
             // is redundant — `sync_group_meta_thread` reads it from `group_meta_plans`.
-            let (changed, error) = sync_group_meta_thread(
+            let (changed, patches, error) = sync_group_meta_thread(
                 Some(&group_meta_app),
                 &group_meta_proxy,
                 user_id,
@@ -86,6 +88,7 @@ pub(crate) async fn native_db_drain_thread_misc(
                         data: serde_json::json!({
                             "userId": user_id,
                             "threadIds": changed,
+                            "patches": patches,
                         }),
                     },
                 );
@@ -795,13 +798,26 @@ async fn sync_group_meta_thread(
     user_id: i64,
     thread_id: i64,
     epoch: u64,
-) -> (Vec<i64>, Option<String>) {
+) -> (
+    Vec<i64>,
+    Vec<super::client_state::GroupMetaCommitPatch>,
+    Option<String>,
+) {
     let mut changed = Vec::new();
-    let result =
-        sync_group_meta_thread_unchecked(app, proxy, user_id, thread_id, epoch, &mut changed).await;
+    let mut patches = Vec::new();
+    let result = sync_group_meta_thread_unchecked(
+        app,
+        proxy,
+        user_id,
+        thread_id,
+        epoch,
+        &mut changed,
+        &mut patches,
+    )
+    .await;
     changed.sort_unstable();
     changed.dedup();
-    (changed, result.err())
+    (changed, patches, result.err())
 }
 
 async fn sync_group_meta_thread_unchecked(
@@ -811,6 +827,7 @@ async fn sync_group_meta_thread_unchecked(
     thread_id: i64,
     epoch: u64,
     changed: &mut Vec<i64>,
+    patches: &mut Vec<super::client_state::GroupMetaCommitPatch>,
 ) -> Result<(), String> {
     let plans = super::lifetime::spawn_at(Ok(epoch), move || group_meta_plans(&open()?, user_id))
         .await
@@ -937,12 +954,16 @@ async fn sync_group_meta_thread_unchecked(
                 namespace_id: plan.namespace_id,
                 page,
             };
-            super::lifetime::spawn_at(Ok(epoch), move || {
-                super::client_state::apply_group_meta_page(&mut open()?, user_id, update)
-            })
-            .await
-            .map_err(|e| format!("join group-meta page commit: {e}"))??;
-            changed.push(plan.thread_id);
+            let patch =
+                super::lifetime::spawn_at(Ok(epoch), move || {
+                    super::client_state::apply_group_meta_page(&mut open()?, user_id, update)
+                })
+                .await
+                .map_err(|e| format!("join group-meta page commit: {e}"))??;
+            if let Some(patch) = patch {
+                patches.push(patch);
+                changed.push(plan.thread_id);
+            }
             after = scanned;
             if !has_more {
                 if mode == "full" && after < target {
@@ -1656,6 +1677,149 @@ fn advance_read(
     tx.commit()
         .map_err(|e| format!("commit attention read: {e}"))?;
     Ok(state)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ThreadAttentionProjection {
+    thread_id: i32,
+    last_read_seq: i32,
+    unread_count: i32,
+    mention_unread: Vec<&'static str>,
+    last_message_preview: Option<String>,
+    last_message_at: Option<i64>,
+    last_message_sender_account: Option<String>,
+    last_message_sender_namespace_id: Option<i32>,
+}
+
+fn attention_count_range(state: &LocalThreadAttention) -> Result<(i32, i32), String> {
+    let server = state.server.as_ref().ok_or("attention snapshot missing")?;
+    let local_read_seq = state
+        .local_read_seq
+        .ok_or("attention read position missing")?;
+    let effective_read_seq = server
+        .message_end_seq
+        .min(server.last_read_seq.max(local_read_seq));
+    let server_read_seq = server.message_end_seq.min(server.last_read_seq);
+    Ok((
+        server_read_seq.min(effective_read_seq),
+        server_read_seq.max(effective_read_seq),
+    ))
+}
+
+fn preview_timestamp_millis(value: &str) -> Option<i64> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|time| time.timestamp_millis())
+}
+
+fn project_thread_attention(
+    state: &LocalThreadAttention,
+    interval_count: i64,
+) -> Result<ThreadAttentionProjection, String> {
+    let server = state.server.as_ref().ok_or("attention snapshot missing")?;
+    let local_read_seq = state
+        .local_read_seq
+        .ok_or("attention read position missing")?;
+    let (after_seq, through_seq) = attention_count_range(state)?;
+    if interval_count < 0 || interval_count > i64::from(through_seq - after_seq) {
+        return Err("invalid attention interval count".into());
+    }
+    let effective_read_seq = server
+        .message_end_seq
+        .min(server.last_read_seq.max(local_read_seq));
+    let server_read_seq = server.message_end_seq.min(server.last_read_seq);
+    let unread = if effective_read_seq > server_read_seq {
+        (server.unread_count - interval_count as i32).max(0)
+    } else {
+        server.unread_count.max(0)
+    };
+    let has_mention = server
+        .last_mention_seq
+        .is_some_and(|seq| seq > effective_read_seq);
+    Ok(ThreadAttentionProjection {
+        thread_id: state.thread_id,
+        last_read_seq: effective_read_seq,
+        unread_count: unread,
+        mention_unread: if has_mention { vec!["me"] } else { vec![] },
+        last_message_preview: server.previews.last().map(|preview| match preview.status {
+            ThreadPreviewStatus::Live => preview.text.clone().unwrap_or_default(),
+            ThreadPreviewStatus::UserRetraction => "[Message retracted]".into(),
+            ThreadPreviewStatus::ModerationRemoval => "[Message removed by administrator]".into(),
+        }),
+        last_message_at: server
+            .previews
+            .last()
+            .and_then(|preview| preview_timestamp_millis(&preview.created_at)),
+        last_message_sender_account: server
+            .previews
+            .last()
+            .map(|preview| preview.sender.account.clone()),
+        last_message_sender_namespace_id: server
+            .previews
+            .last()
+            .map(|preview| preview.sender.namespace_id),
+    })
+}
+
+fn project_attention(
+    conn: &mut Connection,
+    user_id: i64,
+    thread_id: i32,
+    self_identity: &MessageCountOwner,
+) -> Result<ThreadAttentionProjection, String> {
+    if thread_id <= 0 {
+        return Err("invalid local attention projection".into());
+    }
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| format!("begin attention projection: {e}"))?;
+    let state = read_state(&tx, user_id, thread_id)?;
+    if state.server.is_none() {
+        return Err("cannot project attention before its feed snapshot".into());
+    }
+    let (after_seq, through_seq) = attention_count_range(&state)?;
+    let count = count_unread_message_slots(
+        &tx,
+        user_id,
+        thread_id,
+        after_seq,
+        through_seq,
+        self_identity,
+    )?;
+    let projection = project_thread_attention(&state, count)?;
+    tx.execute(
+        "UPDATE threads SET unread_count=?3,last_read_seq=?4,mention_me=?5,mention_all=0,
+             last_message_preview=?6,last_message_at=?7,
+             last_message_sender_account=?8,last_message_sender_namespace_id=?9
+         WHERE user_id=?1 AND thread_id=?2",
+        params![
+            user_id,
+            thread_id,
+            projection.unread_count,
+            projection.last_read_seq,
+            projection.mention_unread.contains(&"me"),
+            projection.last_message_preview,
+            projection.last_message_at,
+            projection.last_message_sender_account,
+            projection.last_message_sender_namespace_id,
+        ],
+    )
+    .map_err(|e| format!("write attention projection: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("commit attention projection: {e}"))?;
+    Ok(projection)
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_project_thread_attention(
+    user_id: i64,
+    thread_id: i32,
+    owner: MessageCountOwner,
+) -> Result<ThreadAttentionProjection, String> {
+    super::lifetime::spawn(move || project_attention(&mut open()?, user_id, thread_id, &owner))
+    .await
+    .map_err(|e| format!("join attention projection: {e}"))?
 }
 
 #[tauri::command]

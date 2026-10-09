@@ -28,7 +28,7 @@ use messages::{
     MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 
-const CACHE_SCHEMA_VERSION: i64 = 39;
+const CACHE_SCHEMA_VERSION: i64 = 41;
 
 pub(crate) fn invalidate_account_work() -> Result<(), String> {
     drop(lifetime::CACHE_LIFETIME.invalidate()?);
@@ -163,6 +163,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         "members_thread",
         "members_search",
         "messages_user_thread_seq",
+        "messages_by_origin",
         "message_ranges_by_right",
     ] {
         let exists: bool = conn
@@ -301,6 +302,10 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS messages_user_thread_seq
           ON messages(user_id, thread_id, seq);
+        CREATE INDEX IF NOT EXISTS messages_by_origin
+          ON messages(user_id, thread_id,
+            json_extract(payload_json, '$.publisherNamespaceId'),
+            json_extract(payload_json, '$.originSeq'));
         CREATE TABLE IF NOT EXISTS message_ranges (
           user_id INTEGER NOT NULL,
           thread_id INTEGER NOT NULL,

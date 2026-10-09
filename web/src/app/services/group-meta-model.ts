@@ -24,7 +24,7 @@ export interface ClientGroupMetaFeedPage {
     | {
         feedId: string;
         operation: 'GROUP_PROFILE';
-        body: { profileRev: number };
+        body: { profileNamespaceId: number; profileRev: number };
       }
     | {
         feedId: string;
@@ -42,6 +42,26 @@ export interface ClientGroupMetaApply {
   sourceServer: string;
   namespaceId: number;
   page: ClientGroupMetaFeedPage;
+}
+
+/** One announcement fact exactly as materialized into the thread row. */
+export interface GroupMetaAnnouncementFact {
+  feedId: string;
+  text: string | null;
+}
+
+/** Group Meta facts one committed page materialized into the thread row. Carried on the
+ *  committed notification so the renderer patches its in-memory conversation directly
+ *  instead of re-reading the database (and so no presentation write-through can race
+ *  the drain). `groupMetaFeedId`/`groupMetaRecoveryThrough` are load-bearing beyond the
+ *  visible member count: isGroupMetaCurrent() gates the announcement on them and
+ *  group-info reloads its member page when the cursor advances. */
+export interface GroupMetaCommitPatch {
+  threadId: number;
+  groupMetaFeedId: string;
+  memberCount: number;
+  announcement: GroupMetaAnnouncementFact | null;
+  groupMetaRecoveryThrough: string | null;
 }
 
 export type GroupMetaProfileReference =

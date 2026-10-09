@@ -19,11 +19,7 @@ import {
   ConversationLoadStatus,
 } from '../../services/conversation-list.service';
 import { UserService } from '../../services/user.service';
-import {
-  ConversationItem,
-  displayThreadName,
-  messagePreviewSenderKey,
-} from '../../services/model';
+import { ConversationItem, displayThreadName } from '../../services/model';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -174,15 +170,17 @@ export class ThreadListComponent implements OnInit {
       (markerKey
         ? `${this.transloco.translate(markerKey)}${markerSuffix}`
         : raw) ?? '';
-    if (!base || t.lastMessageSenderId == null) return base;
+    if (
+      !base ||
+      t.lastMessageSenderAccount == null ||
+      t.lastMessageSenderNamespaceId == null
+    )
+      return base;
     const self = this.userService.sessionProfile();
     if (
       self &&
-      t.lastMessageSenderId ===
-        messagePreviewSenderKey({
-          account: self.account,
-          profileNamespaceId: self.namespaceId,
-        })
+      t.lastMessageSenderAccount === self.account &&
+      t.lastMessageSenderNamespaceId === self.namespaceId
     )
       return this.transloco.translate('chat.youPrefix', { text: base }) ?? '';
     return base;

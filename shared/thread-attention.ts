@@ -107,19 +107,17 @@ export function advanceLocalAttentionRead(
   };
 }
 
-/** Count known eligible message slots, including tombs, in (afterSeq, throughSeq]. */
+/** Count known eligible message slots between server and local read positions. */
 export function attentionCountRange(current: LocalThreadAttention) {
+  const effectiveReadSeq = Math.min(
+    current.messageEndSeq,
+    Math.max(current.lastReadSeq, current.localReadSeq),
+  );
+  const serverReadSeq = Math.min(current.messageEndSeq, current.lastReadSeq);
   return {
     threadId: current.threadId,
-    afterSeq: Math.min(
-      current.messageEndSeq,
-      current.lastReadSeq,
-      current.localReadSeq,
-    ),
-    throughSeq: Math.min(
-      current.messageEndSeq,
-      Math.max(current.lastReadSeq, current.localReadSeq),
-    ),
+    afterSeq: Math.min(serverReadSeq, effectiveReadSeq),
+    throughSeq: Math.max(serverReadSeq, effectiveReadSeq),
   };
 }
 
@@ -135,15 +133,24 @@ export function projectThreadAttention(
     intervalCount > range.throughSeq - range.afterSeq
   )
     throw new Error('Invalid attention interval count');
-  const direction = Math.sign(current.lastReadSeq - current.localReadSeq);
+  const effectiveReadSeq = Math.min(
+    current.messageEndSeq,
+    Math.max(current.lastReadSeq, current.localReadSeq),
+  );
+  const unreadCount = Math.max(
+    0,
+    effectiveReadSeq > Math.min(current.messageEndSeq, current.lastReadSeq)
+      ? current.unreadCount - intervalCount
+      : current.unreadCount,
+  );
   return {
     threadId: current.threadId,
     threadFeedId: current.threadFeedId,
-    lastReadSeq: current.localReadSeq,
-    unreadCount: Math.max(0, current.unreadCount + direction * intervalCount),
+    lastReadSeq: effectiveReadSeq,
+    unreadCount,
     hasUnreadMention:
       current.lastMentionSeq !== null &&
-      current.lastMentionSeq > current.localReadSeq,
+      current.lastMentionSeq > effectiveReadSeq,
   };
 }
 

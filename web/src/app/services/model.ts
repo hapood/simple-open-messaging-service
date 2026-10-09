@@ -44,7 +44,7 @@ export type Message = Omit<
   'contentType' | 'mediaStatus' | 'creator'
 > & {
   contentType: S['MessageResponseDto']['contentType'];
-  /** Namespace that published this message copy (zero is the local authority). */
+  /** Author profile namespace. This is not necessarily the publisher namespace. */
   namespaceId: number;
   /** Immutable author profile selected when this message was committed. */
   profileRev: number;
@@ -113,15 +113,6 @@ export function messageCreatorKey(
     : JSON.stringify([creator.namespaceId, creator.account]);
 }
 
-/** Stable key for a thread-feed preview sender. The feed carries the account and profile namespace; the
- * binding domain is joined separately when the sender is rendered. */
-export function messagePreviewSenderKey(sender: {
-  account: string;
-  profileNamespaceId: number;
-}): string {
-  return JSON.stringify([sender.profileNamespaceId, sender.account]);
-}
-
 /** Message sender keys identify the immutable subject selected by a message row.
  * Domains are presentation metadata resolved separately from profile namespace bindings. */
 export function parseUserIdentityKey(key: string): {
@@ -188,7 +179,8 @@ type ConversationItemBase = {
   unreadCount: number;
   // Latest-message preview state is derived from message catch-up and the local message cache.
   lastMessagePreview?: string | null;
-  lastMessageSenderId?: string | null;
+  lastMessageSenderAccount?: string | null;
+  lastMessageSenderNamespaceId?: number | null;
   /** Distinct mention kinds among the server's bounded unread sample. */
   mentionUnread: Array<'all' | 'me'>;
   /** Manager-only join-application projection coordinates from the thread head. */
@@ -269,7 +261,8 @@ export function createP2PConversation(
     unreadCount: 0,
     mentionUnread: [],
     lastMessagePreview: null,
-    lastMessageSenderId: null,
+    lastMessageSenderAccount: null,
+    lastMessageSenderNamespaceId: null,
     ...overrides,
     peerUser,
   };
@@ -316,7 +309,8 @@ export function createGroupConversation(
     unreadCount: 0,
     mentionUnread: [],
     lastMessagePreview: null,
-    lastMessageSenderId: null,
+    lastMessageSenderAccount: null,
+    lastMessageSenderNamespaceId: null,
     groupMetaRecoveryThrough: null,
     ...overrides,
     group: groupProfile,

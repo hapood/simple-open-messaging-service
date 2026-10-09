@@ -22,6 +22,10 @@ import {
 const storage = new WebdbStorage();
 const preferences = new PreferenceStorage();
 
+storage.messageDbCommitted$.subscribe((event) =>
+  postMessage({ type: 'message-db-committed', ...event }),
+);
+
 // API endpoints are worker-local configuration, not per-event payload. Same-origin
 // relative paths work in the worker scope; the dev proxy / Tauri backend match them.
 const URLS = {
@@ -502,7 +506,7 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
             groupMetaFlight = new TrailingSingleFlight<string>(
               async (target) => {
                 try {
-                  const changed = await syncGroupMetaThread(
+                  const committed = await syncGroupMetaThread(
                     storage,
                     requestGroupMeta,
                     resolveGroupMetaProfile,
@@ -510,11 +514,12 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                     target,
                     guard,
                   );
-                  if (changed.length)
+                  if (committed.threadIds.length)
                     postMessage({
                       type: 'group-meta-committed',
                       userId: Number(data.userId),
-                      threadIds: changed,
+                      threadIds: committed.threadIds,
+                      patches: committed.patches,
                     });
                 } catch (error) {
                   console.warn(
