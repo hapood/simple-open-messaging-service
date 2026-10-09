@@ -12,10 +12,8 @@ describe('ContactPickerDialogComponent', () => {
   it('selects a federated person by profile reference instead of a local numeric id', () => {
     const peer = createP2PConversation(7, {
       account: 'bob',
-      domain: 'bravo.test',
       namespaceId: 4,
       profileRev: 5,
-      name: 'Bob',
     });
     const closeDlg = vi.fn();
     TestBed.configureTestingModule({
@@ -36,7 +34,6 @@ describe('ContactPickerDialogComponent', () => {
       expect.objectContaining({
         target: {
           account: 'bob',
-          domain: 'bravo.test',
           namespaceId: 4,
           profileRev: 5,
         },
@@ -73,7 +70,6 @@ describe('ContactPickerDialogComponent', () => {
       expect.objectContaining({
         target: {
           account: '!group12',
-          domain: 'bravo.test',
           namespaceId: 4,
           profileRev: 6,
         },

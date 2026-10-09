@@ -23,8 +23,6 @@ export type StoredThread = StoredThreadAttention & {
   subjectName: string;
   subjectAvatar: string;
   subjectBio: string;
-  subjectCreatedAt: number;
-  subjectUpdatedAt: number;
   subjectDeleted?: boolean;
   peerProfileMessageSeq?: number;
   groupDissolvedAt?: number | null;
@@ -58,8 +56,6 @@ export function storeThreadPresentation(
     subjectAvatar: subject.avatar,
     subjectBio:
       item.type === 'GROUP' ? item.group.description : item.peerUser.bio,
-    subjectCreatedAt: subject.createdAt,
-    subjectUpdatedAt: subject.updatedAt,
   };
   if (item.type === 'P2P')
     return {
@@ -133,13 +129,10 @@ export function restoreThread(
       peerProfileMessageSeq: row.peerProfileMessageSeq,
       peerUser: {
         account: row.profileAccount,
-        domain: subject.domain,
         namespaceId: subject.namespaceId,
         name: row.subjectName,
         avatar: row.subjectAvatar,
         bio: row.subjectBio,
-        createdAt: row.subjectCreatedAt,
-        updatedAt: row.subjectUpdatedAt,
         isGroup: false,
         isDeleted: row.subjectDeleted ?? false,
       },
@@ -168,8 +161,6 @@ export function restoreThread(
       name: row.subjectName,
       avatar: row.subjectAvatar,
       description: row.subjectBio,
-      createdAt: row.subjectCreatedAt,
-      updatedAt: row.subjectUpdatedAt,
       dissolvedAt: row.groupDissolvedAt,
       memberCount: row.groupMemberCount,
       groupMetaFeedId: row.groupMetaFeedId,

@@ -21,13 +21,8 @@ export function conversationAvatarAccount(t: ConversationItem): string {
   return t.type === 'P2P' ? t.peerUser.account : t.group.account;
 }
 
-/** Federated display domain: a local subject (namespace zero) never shows a marker,
- *  while a federated subject always renders its real federation domain. */
-export function conversationAvatarDomain(
-  t: ConversationItem,
-): string | undefined {
-  const subject = t.type === 'P2P' ? t.peerUser : t.group;
-  return subject.namespaceId !== 0 ? subject.domain || undefined : undefined;
+export function conversationAvatarNamespaceId(t: ConversationItem): number {
+  return t.type === 'P2P' ? t.peerUser.namespaceId : t.group.namespaceId;
 }
 
 export function conversationAvatarSrc(

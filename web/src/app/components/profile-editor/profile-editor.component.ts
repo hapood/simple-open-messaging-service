@@ -15,6 +15,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserService } from '../../services/user.service';
+import { LocalDomainService } from '../../services/local-domain.service';
 import { translateBizResult } from '../../services/biz-code';
 import {
   UserAvatarComponent,
@@ -59,6 +60,7 @@ import {
 })
 export class ProfileEditorComponent {
   private readonly userService = inject(UserService);
+  private readonly localDomain = inject(LocalDomainService);
   private readonly transloco = inject(TranslocoService);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -93,8 +95,9 @@ export class ProfileEditorComponent {
 
   readonly accountAddress = computed(() => {
     const profile = this.sessionProfile();
-    return profile?.account && profile.domain
-      ? `${profile.account}@${profile.domain}`
+    const domain = this.localDomain.domain();
+    return profile?.account && domain
+      ? `${profile.account}@${domain}`
       : '';
   });
 

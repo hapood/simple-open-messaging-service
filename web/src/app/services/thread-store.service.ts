@@ -20,6 +20,7 @@ import {
   messagePreviewSenderKey,
   localSubjectIdentity,
   P2PConversationItem,
+  ThreadPeerUser,
   User,
 } from './model';
 import { MemberProfileRepository } from './member-profile-store.service';
@@ -582,7 +583,7 @@ export class ThreadRepository {
 
   /** Replace a P2P item's peerUser (avatar/name/bio) after a federated profile sync. No-op for groups /
    *  absent items. (Via the facade from peer-profile / chat-open.) */
-  updatePeerUser(threadId: number, user: User): void {
+  updatePeerUser(threadId: number, user: ThreadPeerUser & Pick<User, 'id' | 'profileRev'>): void {
     user = localSubjectIdentity(user);
     let changed: P2PConversationItem | undefined;
     this._items.update((list) => {
@@ -595,7 +596,6 @@ export class ThreadRepository {
         found.peerProfileMessageSeq != null ||
         user.profileRev !== found.profileRev ||
         user.account !== found.peerUser.account ||
-        user.domain !== found.peerUser.domain ||
         user.namespaceId !== found.peerUser.namespaceId
       )
         return list;
@@ -753,7 +753,6 @@ export class ThreadRepository {
           current.peerProfileMessageSeq >
             (reconciled.peerProfileMessageSeq ?? 0) &&
           current.peerUser.account === reconciled.peerUser.account &&
-          current.peerUser.domain === reconciled.peerUser.domain &&
           current.peerUser.namespaceId === reconciled.peerUser.namespaceId
         ) {
           reconciled = {
@@ -1290,7 +1289,6 @@ function threadProfileReference(item: ConversationItem) {
   const profile = item.type === 'GROUP' ? item.group : item.peerUser;
   return {
     account: profile.account,
-    domain: profile.domain,
     namespaceId: profile.namespaceId,
     profileRev: item.profileRev,
   };

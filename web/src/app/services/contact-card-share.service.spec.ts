@@ -36,9 +36,8 @@ describe('ContactCardShareService', () => {
     const service = TestBed.inject(ContactCardShareService);
     const chat = createP2PConversation(5, {
       account: 'alice',
-      name: 'Alice',
-      domain: 'chat.example.test',
       namespaceId: 0,
+      profileRev: 1,
     });
 
     service.open(chat);

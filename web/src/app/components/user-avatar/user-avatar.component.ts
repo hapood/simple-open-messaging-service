@@ -5,9 +5,14 @@ import {
   signal,
   effect,
   inject,
+  Injector,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { UserAvatarType } from './model';
+import { toObservable, toSignal } from '@angular/core/rxjs-interop';
+import { map, of, switchMap } from 'rxjs';
+import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
+import { namespaceDisplayDomain } from '../../services/profile-namespace-domain';
+import { UserAvatarType, type AvatarDomainSource } from './model';
 import { assetUrl } from '../../services/runtime';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
@@ -30,9 +35,9 @@ export type AvatarProfileDemand = ProfileDemand | UnevidencedProfileDemand;
  * with a background color:
  *  · SELF: the theme's action blue, recognizable as "you" and responsive to
  *    the light/dark palette.
- *  · OTHER / identified GROUP: an account+domain-hashed deterministic palette. The stable key includes the
- *    avatar type, so a user and group with the same address do not share an identity namespace. Local identities
- *    use `local` as their domain. If an account is not available yet, a draft group uses the theme's action blue;
+ *  · OTHER / identified GROUP: an account+namespace-hashed palette for namespace sources,
+ *    or an account+domain-hashed palette for fixed address snapshots. The key includes avatar type.
+ *    If an account is not available yet, a draft group uses the theme's action blue;
  *    display names and database ids never affect identity color.
  *    The palette uses Material dark shades, reaching WCAG AA contrast against white text.
  *
@@ -98,9 +103,17 @@ export class UserAvatarComponent {
     const conversation = this.conversations
       ?.items()
       .find((item) => item.threadId === threadId && item.type === 'P2P');
+    const evidence = this.effectiveProfileEvidence();
+    const demand =
+      evidence && ('demand' in evidence ? evidence.demand : evidence);
+    const source = this.domainSource();
+    const namespaceId =
+      source?.type === 'namespace'
+        ? source.namespaceId
+        : demand?.target.profileNamespaceId;
     return conversation?.type === 'P2P' &&
       conversation.peerUser.account === this.account() &&
-      conversation.peerUser.domain === this.federatedDomain()
+      conversation.peerUser.namespaceId === namespaceId
       ? (conversation.alias?.trim() ?? '')
       : '';
   });
@@ -109,8 +122,27 @@ export class UserAvatarComponent {
   readonly account = input<string | undefined | null>(undefined);
   /** Optional unresolved image URL or local preview. Empty selects the generated fallback. */
   readonly src = input<string | undefined | null>(undefined);
-  /** Identity home domain. `local` means local; a foreign domain renders the shared top-right globe marker. */
+  /** Fixed snapshot domain. Ordinary identities resolve the namespace binding independently of profiles. */
   readonly federatedDomain = input<string | undefined | null>(undefined);
+  /** Absent only for loading/preview surfaces with no domain source. Each source has required coordinates. */
+  readonly domainSource = input<AvatarDomainSource | undefined>(undefined);
+  private readonly injector = inject(Injector);
+  private readonly resolvedDomain = toSignal(
+    toObservable(this.domainSource).pipe(
+      switchMap((source) => {
+        if (!source) return of(null);
+        if (source.type === 'snapshot') return of(source.domain);
+        return this.injector
+          .get(ProfileNamespaceRepository)
+          .resolve({
+            publisherNamespaceId: 0,
+            profileNamespaceId: source.namespaceId,
+          })
+          .pipe(map(namespaceDisplayDomain));
+      }),
+    ),
+    { initialValue: null },
+  );
   /** Unresolved identity → render the glass shimmer placeholder so no avatar content (and no
    *  misleading initial) paints until the backing profile/session is ready. Callers pass
    *  `!sessionProfile()` while the source signal is still loading. */
@@ -129,10 +161,10 @@ export class UserAvatarComponent {
       const self = this.userService.sessionProfile();
       return self && (self.profileRev ?? 0) > 0
         ? {
-            publisherNamespaceId: self.namespaceId ?? 0,
+            publisherNamespaceId: 0,
             lookup: 'ACCOUNT_PROFILE' as const,
             target: {
-              profileNamespaceId: self.namespaceId ?? 0,
+              profileNamespaceId: 0,
               account: self.account,
               rev: self.profileRev,
             },
@@ -143,11 +175,10 @@ export class UserAvatarComponent {
   readonly UserAvatarType = UserAvatarType;
   private readonly resolvedProfile = signal<ResolvedProfile | null>(null);
 
-  /** Normalized foreign domain used by the marker. */
-  readonly federatedMarkerDomain = computed(() => {
-    const domain = this.federatedDomain()?.trim();
-    return domain && domain.toLowerCase() !== 'local' ? domain : null;
-  });
+  /** Real domain, including namespace zero. Fixed snapshots retain their recorded domain. */
+  readonly federatedMarkerDomain = computed(
+    () => this.federatedDomain()?.trim() || this.resolvedDomain() || null,
+  );
 
   private readonly effectiveSrc = computed(() => {
     const profile = this.resolvedProfile();
@@ -237,12 +268,15 @@ export class UserAvatarComponent {
   });
 
   /** Deterministic 31× hash for fallback colors. Every non-SELF identity is keyed exclusively by its
-   * namespaced account + home domain. Local identities use the explicit `local` domain. */
+   * account + namespace coordinate, or the real domain of a fixed address snapshot. */
   private hashColorKey(): number {
     const account = this.account() ?? '';
-    const domain = this.federatedMarkerDomain()?.toLowerCase() || 'local';
+    const domain = this.federatedMarkerDomain()?.toLowerCase();
     const namespace = this.type() === UserAvatarType.GROUP ? 'g' : 'u';
-    const n = account ? JSON.stringify([namespace, domain, account]) : '';
+    const source = this.domainSource();
+    const coordinate =
+      source?.type === 'namespace' ? source.namespaceId : domain;
+    const n = account ? JSON.stringify([namespace, coordinate, account]) : '';
     let h = 0;
     for (let i = 0; i < n.length; i++)
       h = (Math.imul(h, 31) + n.charCodeAt(i)) | 0;

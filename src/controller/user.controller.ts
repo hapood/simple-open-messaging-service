@@ -34,7 +34,6 @@ import { RegisterDto } from '../dto/auth.dto.js';
 import {
   UserResolveDto,
   UserSearchDto,
-  QueryUsersDto,
   UpdateProfileDto,
 } from '../dto/user.dto.js';
 import { S2sResponseError } from '../federation/federation-errors.js';
@@ -98,7 +97,6 @@ export class UserController {
   ) {}
 
   private async resolveLocalAccount(account: string) {
-    const domain = this.keypairs.localAddress(account).domain;
     if (account.startsWith('!')) {
       const group = await this.groups.findPublicLocalGroupByAccount(account);
       if (!group) return null;
@@ -109,17 +107,13 @@ export class UserController {
         avatar: group.avatar,
         bio: group.description,
         isGroup: true,
-        domain,
         namespaceId: 0,
-        createdAt: group.createdAt,
-        updatedAt: group.updatedAt,
         profileRev: group.profileRev,
         isDeleted: false,
       };
     }
     return this.userService.findUniqueUser({
-      account_domain: { account, domain },
-      namespaceId: 0,
+      account,
       availability: 'AVAILABLE',
     });
   }
@@ -422,19 +416,6 @@ export class UserController {
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @Post('user/query')
-  @ApiOperation({
-    summary: 'Look up users by account and domain in batch (≤100)',
-  })
-  @ApiResultResponse(UserResponseDto, true)
-  async queryUserBase(@Body() dto: QueryUsersDto) {
-    return this.userService.queryUsers({
-      where: { addresses: dto.addresses, availability: 'AVAILABLE' },
-    });
-  }
-
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
   @Post('user/resolve')
   @ApiOperation({ summary: 'Resolve a local user or group by exact account' })
   @ApiResultResponse(UserResponseDto)
@@ -554,8 +535,13 @@ export class UserController {
             { account, domain },
             possession,
           );
+          // Recognition (stage one) already materialized the peer's identity
+          // namespace row; the context read is the identity coordinate the
+          // federated request DTOs carry — no domain on the transient card.
+          const { namespaceId } =
+            await this.federationRecognition.captureContext(domain);
           finish('resolved', {
-            user: this.transientFederatedUser(profile, domain),
+            user: this.transientFederatedUser(profile, namespaceId),
           });
         } catch (error) {
           if (sink.closed) return;
@@ -593,8 +579,13 @@ export class UserController {
     });
   }
 
-  private transientFederatedUser(profile: S2SProfile, domain: string) {
-    const now = Date.now();
+  /** Transient resolve card. Identity is the pure `(namespaceId, account)`
+   *  coordinate — no domain field: clients address mutations by namespaceId
+   *  and render display domains from their own namespace cache. */
+  private transientFederatedUser(
+    profile: S2SProfile,
+    namespaceId: number,
+  ): UserResponseDto {
     return {
       id: 0,
       account: profile.account,
@@ -604,13 +595,9 @@ export class UserController {
         : '',
       bio: profile.bio,
       isGroup: profile.account.startsWith('!'),
-      domain,
-      createdAt: now,
-      updatedAt: now,
+      namespaceId,
       isDeleted: false,
       profileRev: 0,
-      remoteProfileRev: profile.profileRev,
-      mustChangePassword: false,
     };
   }
 

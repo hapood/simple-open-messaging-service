@@ -4,8 +4,8 @@ const thread = (name: string, namespaceId = 0): ConversationItem =>
   ({
     type: 'P2P',
     alias: null,
-    peerUser: { name, account: 'bob', domain: 'peer.test', namespaceId },
-  }) as ConversationItem;
+    peerUser: { name, account: 'bob', namespaceId },
+  }) as unknown as ConversationItem;
 
 describe('thread profile label fallback', () => {
   it('keeps remarks and cached display names ahead of the account', () => {
@@ -20,8 +20,8 @@ describe('thread profile label fallback', () => {
     expect(displayThreadName(thread('  '))).toBe('bob');
   });
 
-  it('renders a foreign account address on a cache miss', () => {
-    expect(displayThreadName(thread('', 12))).toBe('bob@peer.test');
+  it('renders the foreign account while its namespace domain is resolved separately', () => {
+    expect(displayThreadName(thread('', 12))).toBe('bob');
   });
 
   it('renders a group address on a cache miss', () => {

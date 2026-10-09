@@ -15,10 +15,8 @@ const DEMO_CONVERSATION = createP2PConversation(
   1,
   {
     account: 'alice',
-    bio: 'Product designer · Shanghai',
-    name: 'Alice',
-    domain: 'chat.example.test',
     namespaceId: 0,
+    profileRev: 1,
   },
   {
     lastMessageAt: Date.now() - 60_000,
@@ -28,13 +26,10 @@ const DEMO_CONVERSATION = createP2PConversation(
   },
 );
 
-const DEMO_INVITABLE_FRIEND = createP2PConversation(6, {
-  account: 'liam',
-  bio: 'Android engineer · Hangzhou',
-  name: 'Liam',
-  domain: 'chat.example.test',
-  namespaceId: 0,
-});
+const DEMO_INVITABLE_FRIEND = createP2PConversation(
+  6,
+  { account: 'liam', namespaceId: 0, profileRev: 1 },
+);
 
 const DEMO_GROUP_CONVERSATION = createGroupConversation(
   2,

@@ -1,9 +1,8 @@
 import { Injectable, HttpStatus } from '@nestjs/common';
-import { and, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, ilike, or, sql } from 'drizzle-orm';
 import { DatabaseService } from '../database/database.service.js';
 import {
   account as accountTable,
-  identityNamespace,
   profileTable,
 } from '../database/schema.js';
 import { isValidUserAccount, normalizeAccount } from '../common/account.js';
@@ -23,10 +22,7 @@ const publicUserColumns = {
   name: sql<string>`COALESCE(${profileTable.displayName}, ${accountTable.account})`,
   avatar: sql<string>`COALESCE(${profileTable.avatar}, '')`,
   bio: sql<string>`COALESCE(${profileTable.bio}, '')`,
-  domain: identityNamespace.domain,
   namespaceId: accountTable.namespaceId,
-  createdAt: accountTable.createdAt,
-  updatedAt: accountTable.updatedAt,
   availability: accountTable.availability,
   defaultProfileRev: accountTable.defaultProfileRev,
 };
@@ -39,7 +35,6 @@ export class UserService {
     return this.database.db
       .select(publicUserColumns)
       .from(accountTable)
-      .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
       .leftJoin(profileTable, selectedProfile)
       .where(userLookupCondition(where))
       .limit(1)
@@ -53,7 +48,6 @@ export class UserService {
     return this.database.db
       .select(publicUserColumns)
       .from(accountTable)
-      .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
       .leftJoin(profileTable, selectedProfile)
       .where(
         and(
@@ -76,7 +70,6 @@ export class UserService {
         disabledAt: accountTable.disabledAt,
       })
       .from(accountTable)
-      .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
       .leftJoin(profileTable, selectedProfile)
       .where(userLookupCondition(where))
       .limit(1)
@@ -93,7 +86,6 @@ export class UserService {
         bio: profileTable.bio,
       })
       .from(accountTable)
-      .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
       .innerJoin(profileTable, selectedProfile)
       .where(eq(accountTable.id, userId))
       .limit(1)
@@ -148,52 +140,10 @@ export class UserService {
       const [row] = await tx
         .select(publicUserColumns)
         .from(accountTable)
-        .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
         .leftJoin(profileTable, selectedProfile)
         .where(eq(accountTable.id, userId));
       return row;
     });
-  }
-
-  queryUsers(params: {
-    where?: {
-      id?: { in: number[] };
-      addresses?: Array<{ account: string; domain: string }>;
-      availability?: 'AVAILABLE' | 'REMOVED';
-    };
-  }) {
-    const addresses = params.where?.addresses;
-    return this.database.db
-      .select(publicUserColumns)
-      .from(accountTable)
-      .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
-      .leftJoin(profileTable, selectedProfile)
-      .where(
-        and(
-          params.where?.id
-            ? inArray(accountTable.id, params.where.id.in)
-            : undefined,
-          params.where?.addresses !== undefined
-            ? addresses?.length
-              ? or(
-                  ...addresses.map((address) =>
-                    and(
-                      eq(
-                        accountTable.account,
-                        normalizeAccount(address.account),
-                      ),
-                      eq(identityNamespace.domain, address.domain),
-                      eq(accountTable.namespaceId, 0),
-                    ),
-                  ),
-                )
-              : sql`false`
-            : undefined,
-          params.where?.availability === undefined
-            ? undefined
-            : eq(accountTable.availability, params.where.availability),
-        ),
-      );
   }
 
   async searchUsers(
@@ -212,7 +162,6 @@ export class UserService {
       this.database.db
         .select(publicUserColumns)
         .from(accountTable)
-        .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
         .leftJoin(profileTable, selectedProfile)
         .where(where)
         .orderBy(desc(accountTable.createdAt))
@@ -221,7 +170,6 @@ export class UserService {
       this.database.db
         .select({ value: count() })
         .from(accountTable)
-        .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
         .leftJoin(profileTable, selectedProfile)
         .where(where)
         .then(([row]) => row.value),
@@ -263,13 +211,10 @@ export class UserService {
   }
 }
 
+/** Account-name lookups are local-only; namespace-address lookups use the explicit address method. */
 export type UserLookup = (
-  | { id: number; account_domain?: never; namespaceId?: never }
-  | {
-      id?: never;
-      account_domain: { account: string; domain: string };
-      namespaceId: number;
-    }
+  | { id: number; account?: never }
+  | { id?: never; account: string }
 ) & { availability?: 'AVAILABLE' | 'REMOVED' };
 
 export type PublicUser = NonNullable<
@@ -277,24 +222,17 @@ export type PublicUser = NonNullable<
 >;
 
 function userLookupCondition(where: UserLookup) {
-  if (where.account_domain && !Number.isInteger(where.namespaceId))
-    throw new Error('address lookup requires an explicit namespaceId');
   const unique =
     where.id !== undefined
       ? eq(accountTable.id, where.id)
-      : where.account_domain
-        ? where.namespaceId === 0
-          ? and(
-              eq(
-                accountTable.account,
-                normalizeAccount(where.account_domain.account),
-              ),
-              eq(identityNamespace.domain, where.account_domain.domain),
-              eq(accountTable.namespaceId, 0),
-            )
-          : sql`false`
+      : where.account !== undefined
+        ? and(
+            eq(accountTable.account, normalizeAccount(where.account)),
+            // Local-user lookup: account rows are local identities (namespace 0).
+            eq(accountTable.namespaceId, 0),
+          )
         : undefined;
-  if (!unique) throw new Error('user lookup requires id or account_domain');
+  if (!unique) throw new Error('user lookup requires id or account');
   return and(
     unique,
     where.availability === undefined

@@ -1,3 +1,5 @@
+import { AsyncPipe } from '@angular/common';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import {
   Component,
   input,
@@ -30,6 +32,7 @@ import {
   conversationAvatarType,
   conversationAvatarAccount,
   conversationAvatarEvidence,
+  conversationAvatarNamespaceId,
 } from '../user-avatar/conversation-avatar.util';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
@@ -49,6 +52,8 @@ import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-st
   selector: 'app-thread-list',
   imports: [
     UserAvatarComponent,
+    NamespaceDomainPipe,
+    AsyncPipe,
     IconComponent,
     EmptyStateComponent,
     TranslocoPipe,
@@ -211,16 +216,13 @@ export class ThreadListComponent implements OnInit {
 
   readonly avatarEvidence = conversationAvatarEvidence;
 
-  federatedDomain(t: ConversationItem): string | undefined {
-    const domain = t.type === 'P2P' ? t.peerUser.domain : t.group.domain;
-    return domain || undefined;
-  }
+  readonly avatarNamespaceId = conversationAvatarNamespaceId;
 
   /** One concise announcement for screen readers; visible badges/icons remain aria-hidden to avoid repetition. */
-  accessibleLabel(t: ConversationItem): string {
+  accessibleLabel(t: ConversationItem, domain: string | null = null): string {
     const parts = [
       this.displayName(t),
-      this.federatedDomain(t),
+      domain,
       t.blocked
         ? this.transloco.translate('threadList.blocked')
         : this.previewText(t),

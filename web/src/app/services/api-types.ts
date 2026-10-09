@@ -549,23 +549,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/user/query": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Look up users by account and domain in batch (≤100) */
-        post: operations["UserController_queryUserBase"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/user/resolve": {
         parameters: {
             query?: never;
@@ -4073,25 +4056,10 @@ export interface components {
              */
             isGroup: boolean;
             /**
-             * @description Canonical identity domain; local users use local
-             * @example example.com
-             */
-            domain: string;
-            /**
              * @description Identity namespace; 0 for identities created on this server
              * @example 7
              */
             namespaceId: number;
-            /**
-             * @description Created at (ms timestamp)
-             * @example 31
-             */
-            createdAt: number;
-            /**
-             * @description Updated at (ms timestamp)
-             * @example 1700000000000
-             */
-            updatedAt: number;
             /**
              * @description Profile revision (name/avatar/bio). The federation + chat-open staleness cursor.
              * @example 3
@@ -4113,24 +4081,6 @@ export interface components {
             bio: string;
             /** @description Canonical base64 image bytes. Omit to keep the previous avatar; null removes it. */
             avatarBase64?: string | null;
-        };
-        UserAddressDto: {
-            /** @example alice */
-            account: string;
-            /** @example local */
-            domain: string;
-        };
-        QueryUsersDto: {
-            /**
-             * @description List of user addresses (≤100 per query)
-             * @example [
-             *       {
-             *         "account": "alice",
-             *         "domain": "local"
-             *       }
-             *     ]
-             */
-            addresses: components["schemas"]["UserAddressDto"][];
         };
         UserResolveDto: {
             /**
@@ -5835,31 +5785,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-        };
-    };
-    UserController_queryUserBase: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["QueryUsersDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["UserResponseDto"][];
-                    };
-                };
             };
         };
     };

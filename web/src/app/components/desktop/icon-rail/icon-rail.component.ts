@@ -36,11 +36,16 @@ import { LanguageService } from '../../../services/language.service';
           [title]="'nav.editProfileAria' | transloco"
           [attr.aria-label]="'nav.editProfileAria' | transloco"
         >
-          <app-user-avatar
-            [type]="UserAvatarType.SELF"
-            [loading]="!sessionProfile()"
-            [name]="$safeNavigationMigration(sessionProfile()?.name)"
-          />
+          @if (sessionProfile(); as self) {
+            <app-user-avatar
+              [type]="UserAvatarType.SELF"
+              [domainSource]="{ type: 'namespace', namespaceId: 0 }"
+              [name]="self.name"
+              [account]="self.account"
+            />
+          } @else {
+            <app-user-avatar [type]="UserAvatarType.SELF" [loading]="true" />
+          }
         </button>
         <button
           class="rail-btn"

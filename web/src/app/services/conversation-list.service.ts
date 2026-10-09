@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { UserService } from './user.service';
 import { ThreadRepository } from './thread-store.service';
-import { User } from './model';
+import { ThreadPeerUser, User } from './model';
 
 export { ConversationLoadStatus } from './thread-store.service';
 
@@ -174,7 +174,7 @@ export class ConversationListService {
   }
 
   /** Replace a P2P item's peerUser (avatar/name/bio) after a profile sync. */
-  updatePeerUser(threadId: number, user: User): void {
+  updatePeerUser(threadId: number, user: ThreadPeerUser & Pick<User, 'id' | 'profileRev'>): void {
     this.repo.updatePeerUser(threadId, user);
   }
 

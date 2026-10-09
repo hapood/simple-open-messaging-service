@@ -13,8 +13,6 @@ import {
   UserAvatarType,
 } from '../../user-avatar/user-avatar.component';
 import { RouteService, PopupType } from '../../../services/route.service';
-import { ConversationListService } from '../../../services/conversation-list.service';
-import { UserService } from '../../../services/user.service';
 import { NavStateMachineService } from '../../../services/nav-state.service';
 
 interface ContactCard {
@@ -35,8 +33,6 @@ interface ContactCard {
 })
 export class ContactCardRowComponent {
   private readonly route = inject(RouteService);
-  private readonly conversations = inject(ConversationListService);
-  private readonly userService = inject(UserService);
   private readonly nav = inject(NavStateMachineService);
   readonly UserAvatarType = UserAvatarType;
   readonly data = input.required<ChatMsgData>();
@@ -57,6 +53,7 @@ export class ContactCardRowComponent {
       const value = JSON.parse(this.data().text) as Partial<ContactCard>;
       return typeof value.account === 'string' &&
         typeof value.domain === 'string' &&
+        value.domain.trim().length > 0 &&
         typeof value.displayName === 'string' &&
         typeof value.bio === 'string'
         ? (value as ContactCard)
@@ -75,51 +72,11 @@ export class ContactCardRowComponent {
   openCard(): void {
     const card = this.card();
     if (!card) return;
-    const conversation = this.conversations
-      .items()
-      .find((item) =>
-        card.account.startsWith('!')
-          ? item.type === 'GROUP' &&
-            item.group.account === card.account &&
-            item.group.domain === card.domain
-          : item.type === 'P2P' &&
-            item.peerUser.account === card.account &&
-            item.peerUser.domain === card.domain &&
-            item.friendshipActive !== false,
-      );
     this.route.popupDlg(
-      PopupType.CONTACT_IDENTITY,
+      PopupType.FRIEND_REQUESTS,
       {
-        identity: {
-          account: card.account,
-          name: card.displayName,
-          bio: card.bio,
-          avatar: card.avatar,
-          domain: card.domain,
-          ...(conversation?.type === 'GROUP'
-            ? { namespaceId: conversation.group.namespaceId }
-            : conversation?.type === 'P2P'
-              ? { namespaceId: conversation.peerUser.namespaceId }
-              : {}),
-          relationship:
-            card.account === this.userService.sessionProfile()?.account &&
-            card.domain ===
-              (this.userService.sessionProfile()?.domain || 'local')
-              ? 'SELF'
-              : conversation?.type === 'P2P'
-                ? 'FRIEND'
-                : 'NONE',
-          ...(conversation?.type === 'GROUP'
-            ? {
-                groupThreadId: conversation.threadId,
-                userId: conversation.group.id,
-              }
-            : conversation?.type === 'P2P'
-              ? {
-                  friendThreadId: conversation.threadId,
-                }
-              : {}),
-        },
+        initialTab: 'add',
+        initialAddress: { account: card.account, domain: card.domain },
       },
       undefined,
       { scopeThreadId: this.nav.chatThreadId() },

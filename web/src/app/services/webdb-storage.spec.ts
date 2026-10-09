@@ -211,11 +211,10 @@ describe('shared background storage', () => {
         7,
         {
           account: 'peer',
-          name: 'Peer',
-          domain: 'chat.example.test',
           namespaceId: 0,
+          profileRev: 99,
         },
-        { profileRev: 99, threadFeedId: 1 },
+        { threadFeedId: 1 },
       ),
     );
     expect((await storage.getThreads())[0].profileRev).toBe(4);
@@ -226,9 +225,8 @@ describe('shared background storage', () => {
     await storage.openForUser(userId);
     const peer = createP2PConversation(7, {
       account: 'peer',
-      name: 'Peer',
-      domain: 'chat.example.test',
       namespaceId: 0,
+      profileRev: 0,
     });
     await expect(storage.putThread(peer)).rejects.toThrow(
       'matching feed state',
@@ -247,9 +245,8 @@ describe('shared background storage', () => {
         { ...peer, threadFeedId: 1 },
         createP2PConversation(8, {
           account: 'other',
-          name: 'Other',
-          domain: 'chat.example.test',
           namespaceId: 0,
+          profileRev: 0,
         }),
       ]),
     ).rejects.toThrow('matching feed state');
@@ -353,9 +350,8 @@ describe('shared background storage', () => {
       7,
       {
         account: 'peer',
-        name: 'Peer',
-        domain: 'chat.example.test',
         namespaceId: 0,
+        profileRev: 0,
       },
       { threadFeedId: 1 },
     );
@@ -367,7 +363,7 @@ describe('shared background storage', () => {
     expect(persisted).toMatchObject({
       type: 'P2P',
       profileAccount: 'peer',
-      subjectName: 'Peer',
+      subjectName: '',
     });
     expect(persisted).not.toHaveProperty('peerUser');
     expect(persisted).not.toHaveProperty('group');
@@ -403,9 +399,8 @@ describe('shared background storage', () => {
         7,
         {
           account: 'peer',
-          name: 'Profile',
-          domain: 'chat.example.test',
           namespaceId: 0,
+          profileRev: 0,
         },
         { alias: 'Stale structure' },
       ),

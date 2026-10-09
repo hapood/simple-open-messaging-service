@@ -45,29 +45,10 @@ export class UserResponseDto {
   isGroup!: boolean;
 
   @ApiProperty({
-    example: 'example.com',
-    description:
-      "Canonical identity domain; local users use this server's configured identity domain",
-  })
-  domain!: string;
-
-  @ApiProperty({
     example: 7,
     description: 'Identity namespace; 0 for identities created on this server',
   })
   namespaceId!: number;
-
-  @ApiProperty({
-    example: 31,
-    description: 'Created at (ms timestamp)',
-  })
-  createdAt!: number;
-
-  @ApiProperty({
-    example: 1_700_000_000_000,
-    description: 'Updated at (ms timestamp)',
-  })
-  updatedAt!: number;
 
   @ApiProperty({
     example: 3,

@@ -8,6 +8,9 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslocoService } from '@jsverse/transloco';
+import { firstValueFrom } from 'rxjs';
+import { ProfileNamespaceRepository } from './profile-namespace-store.service';
+import { namespaceDisplayDomain } from './profile-namespace-domain';
 import { ConversationListService } from './conversation-list.service';
 import { isAndroidNative, isTauri, listenEvent, tauriInvoke } from './runtime';
 import { NotificationPrefsService } from './notification-prefs.service';
@@ -35,6 +38,7 @@ export class UnreadAttentionService {
   private readonly i18n = inject(TranslocoService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly webdb = inject(WebdbService);
+  private readonly namespaces = inject(ProfileNamespaceRepository);
   private readonly webPush = inject(WebPushService);
   private readonly baseTitle =
     typeof document !== 'undefined' ? document.title : 'SOMS';
@@ -244,6 +248,13 @@ export class UnreadAttentionService {
           this.nav.chatThreadId() === activeChat
         )
           continue;
+        const subject = update.item.type === 'GROUP'
+          ? update.item.group : update.item.peerUser;
+        const binding = await firstValueFrom(this.namespaces.resolve({
+          publisherNamespaceId: 0,
+          profileNamespaceId: subject.namespaceId,
+        }));
+        if (generation !== this.generation || !this.lifecycle.isCurrent(epoch)) break;
         const descriptor = threadNotificationDescriptor(
           update,
           this.prefs.previewMode(),
@@ -254,6 +265,7 @@ export class UnreadAttentionService {
             removed:
               '[' + this.i18n.translate('chat.messageRemovedByAdmin') + ']',
           },
+          namespaceDisplayDomain(binding),
         );
         descriptor.silent = !!descriptor.silent || !this.prefs.sound();
         if (generation !== this.generation || !this.lifecycle.isCurrent(epoch))

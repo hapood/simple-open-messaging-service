@@ -1,4 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { of } from 'rxjs';
+import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
 import {
   provideTransloco,
@@ -44,16 +46,16 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
 
   /** Minimal ConversationItem — only threadId + unreadCount are exercised by the badge sum. */
   function item(threadId: number, unreadCount: number): ConversationItem {
-    return createP2PConversation(
+    const thread = createP2PConversation(
       threadId,
       {
         account: `u${threadId}`,
-        name: `User ${threadId}`,
-        domain: 'chat.example.test',
         namespaceId: 0,
+        profileRev: 1,
       },
       { unreadCount },
     );
+    return thread;
   }
 
   beforeEach(() => {
@@ -69,6 +71,10 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       imports: [MessageHeaderComponent],
       providers: [
         provideZonelessChangeDetection(),
+        {
+          provide: ProfileNamespaceRepository,
+          useValue: { resolve: () => of({ domain: 'alpha.test', status: 'ACTIVE' }) },
+        },
         provideHttpClient(withXhr()),
         provideTransloco({
           config: {

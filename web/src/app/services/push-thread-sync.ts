@@ -1,4 +1,5 @@
 import { WebdbStorage } from './webdb-storage';
+import { namespaceDisplayDomain } from './profile-namespace-domain';
 import { PreferenceStorage } from './preference-storage';
 import { syncThreadFeed, type ThreadFeedSyncResult } from './thread-feed-sync';
 import {
@@ -91,6 +92,11 @@ export async function syncPushThreads(
     // A concurrently deleted local conversation must not produce a fabricated notification.
     const item = rows.find((row) => row.threadId === state.threadId);
     if (!item) continue;
+    const subject = item.type === 'GROUP' ? item.group : item.peerUser;
+    const [binding] = await storage.getProfileNamespaceBindings([{
+      publisherNamespaceId: 0,
+      profileNamespaceId: subject.namespaceId,
+    }]);
     const descriptor = threadNotificationDescriptor(
       {
         item: {
@@ -103,6 +109,7 @@ export async function syncPushThreads(
       },
       mode === 'private' ? 'private' : 'message',
       copy,
+      binding ? namespaceDisplayDomain(binding) : null,
     );
     descriptor.silent = !!descriptor.silent || sound === false;
     if (enabled !== false) {

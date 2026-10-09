@@ -26,6 +26,7 @@ import {
         [type]="UserAvatarType.OTHER"
         [name]="other().name"
         [account]="other().account"
+        [domainSource]="other().domainSource"
         [federatedDomain]="other().domain"
         [profileEvidence]="other().profileEvidence"
         [src]="other().snapshotAvatarUrl"
@@ -39,6 +40,7 @@ import {
       <app-user-avatar
         [type]="UserAvatarType.SELF"
         [name]="self().name"
+        [domainSource]="self().domainSource"
         [federatedDomain]="self().domain"
         [profileEvidence]="self().profileEvidence"
         [src]="self().snapshotAvatarUrl"

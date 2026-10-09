@@ -610,7 +610,6 @@ export class UserService {
             void this.webdb.putMeta('selfProfile', resolved);
             void this.webdb.putMeta('selfIdentity', {
               account: resolved.account,
-              domain: resolved.domain,
             });
           }
           return resolved;
@@ -714,13 +713,6 @@ export class UserService {
   }) {
     return this.http.post<StandardResponse<User>>(
       `${apiPrefix()}/user/update-profile`,
-      params,
-    );
-  }
-
-  queryUserInfo(params: { userIds: number[] }) {
-    return this.http.post<StandardResponse<User[]>>(
-      `${apiPrefix()}/user/query`,
       params,
     );
   }
@@ -854,20 +846,27 @@ export class UserService {
     );
   }
 
-  /** Relationship state from synchronized local projections: an active P2P thread owns FRIEND, while
-   * the request-intent projection owns pending directions. No relationship network request is needed. */
+  /** Relationship state from synchronized local projections. An active P2P or group thread owns
+   * FRIEND (already established); P2P request intents supply pending directions. */
   async localRelationship(
     user: Pick<User, 'id' | 'account' | 'namespaceId'>,
   ) {
     const threads = await this.webdb.getThreads();
-    const friendship = threads.some(
-      (item) =>
-        item.type === 'P2P' &&
-        item.friendshipActive !== false &&
-        item.peerUser.account === user.account &&
-        item.peerUser.namespaceId === user.namespaceId,
+    const isGroup = user.account.startsWith('!');
+    const friendship = threads.some((item) =>
+      isGroup
+        ? item.type === 'GROUP' &&
+          item.conversationState !== 'READ_ONLY' &&
+          item.group.dissolvedAt == null &&
+          item.group.account === user.account &&
+          item.group.namespaceId === user.namespaceId
+        : item.type === 'P2P' &&
+          item.friendshipActive !== false &&
+          item.peerUser.account === user.account &&
+          item.peerUser.namespaceId === user.namespaceId,
     );
     if (friendship) return 'FRIEND' as const;
+    if (isGroup) return 'NONE' as const;
     const matches = (item: FriendRequestProjection) =>
       item.kind === 'FRIEND' &&
       item.status === 'REQUESTED' &&

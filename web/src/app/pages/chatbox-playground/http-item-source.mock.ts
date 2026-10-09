@@ -42,12 +42,14 @@ function mockUser(id: number, account: string): readonly [number, User] {
     {
       id,
       account,
-      domain: 'chat.example.test',
+      name: account,
+      avatar: '',
+      bio: '',
+      isGroup: false,
       namespaceId: 0,
-      createdAt: 0,
-      updatedAt: 0,
+      profileRev: 1,
       isDeleted: false,
-    } as User,
+    },
   ];
 }
 
@@ -58,24 +60,28 @@ const MOCK_USERS: ReadonlyMap<number, User> = new Map([
     {
       id: 1,
       account: 'Me',
-      domain: 'chat.example.test',
+      name: 'Me',
+      avatar: '',
+      bio: '',
+      isGroup: false,
       namespaceId: 0,
-      createdAt: 0,
-      updatedAt: 0,
+      profileRev: 1,
       isDeleted: false,
-    } as User,
+    },
   ],
   [
     2,
     {
       id: 2,
       account: 'Alice',
-      domain: 'chat.example.test',
+      name: 'Alice',
+      avatar: '',
+      bio: '',
+      isGroup: false,
       namespaceId: 0,
-      createdAt: 0,
-      updatedAt: 0,
+      profileRev: 1,
       isDeleted: false,
-    } as User,
+    },
   ],
   mockUser(3, 'Maya'),
   mockUser(4, 'Noah'),
@@ -83,7 +89,7 @@ const MOCK_USERS: ReadonlyMap<number, User> = new Map([
 ]);
 
 /**
- * Playground mock user-query service: mirrors production UserService.queryUserInfo (POST /user/query).
+ * Playground-only profile fixtures keyed by message sender.
  * The mock is in-memory (synchronous `of`); production is HTTP; identical signatures → MockItemSource.ensureProfiles is
  * isomorphic to the production HttpItemSource.
  */

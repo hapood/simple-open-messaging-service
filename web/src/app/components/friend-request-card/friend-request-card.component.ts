@@ -23,8 +23,8 @@ import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 export interface FriendRequestCardModel {
   id: string;
   peerId?: number | string;
-  account?: string;
-  namespaceId?: number;
+  account: string;
+  namespaceId: number;
   reqMessage?: string;
   status: RequestProjectionStatusValue;
   date: number;
@@ -64,10 +64,10 @@ export class FriendRequestCardComponent {
     const request = this.requestItem();
     return request.account && request.profileRev
       ? {
-          publisherNamespaceId: request.namespaceId ?? 0,
+          publisherNamespaceId: request.namespaceId,
           lookup: 'ACCOUNT_PROFILE',
           target: {
-            profileNamespaceId: request.namespaceId ?? 0,
+            profileNamespaceId: request.namespaceId,
             account: request.account,
             rev: request.profileRev,
           },

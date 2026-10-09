@@ -1,4 +1,5 @@
-import { Subject } from 'rxjs';
+import { of, Subject } from 'rxjs';
+import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
 import type { Mock } from 'vitest';
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
@@ -57,6 +58,12 @@ describe('ThreadListComponent', () => {
       imports: [ThreadListComponent],
       providers: [
         provideZonelessChangeDetection(),
+        {
+          provide: ProfileNamespaceRepository,
+          useValue: {
+            resolve: () => of({ domain: 'remote.example', status: 'ACTIVE' }),
+          },
+        },
         provideHttpClient(withXhr()),
         provideTransloco({
           config: {
@@ -97,18 +104,17 @@ describe('ThreadListComponent', () => {
     comp = fixture.componentInstance;
   });
 
-  /** Minimal P2P ConversationItem — only displayThreadName (→ peer nickname) is exercised by the filters. */
+  /** Empty profile projection; identity coordinates are available before profile hydration. */
   function p2p(
     threadId: number,
     peerId: number,
-    name = `User ${peerId}`,
   ): P2PConversationItem {
-    return createP2PConversation(threadId, {
+    const item = createP2PConversation(threadId, {
       account: `u${peerId}`,
-      name,
-      domain: 'chat.example.test',
       namespaceId: 0,
+      profileRev: 1,
     });
+    return item;
   }
 
   it('leaves the preview blank until a message body is available', async () => {
@@ -168,8 +174,12 @@ describe('ThreadListComponent', () => {
     expect(comp.isSearchEmpty()).toBe(true);
   });
 
-  it('isSearchEmpty is false when a search term matches a thread', () => {
-    items.set([p2p(1, 11)]);
+  it('isSearchEmpty is false when a search term matches a hydrated profile name', () => {
+    const thread = p2p(1, 11);
+    items.set([{
+      ...thread,
+      peerUser: { ...thread.peerUser, name: 'User 11' },
+    }]);
     fixture.componentRef.setInput('searchText', 'user 11');
     expect(comp.isSearchEmpty()).toBe(false);
   });
@@ -204,7 +214,7 @@ describe('ThreadListComponent', () => {
 
   it('renders each conversation as a native button with current and accessible state', async () => {
     const thread = {
-      ...p2p(1, 11, 'A very long conversation name'),
+      ...p2p(1, 11),
       unreadCount: 1000,
       muted: true,
       pinned: true,
@@ -213,7 +223,6 @@ describe('ThreadListComponent', () => {
       peerUser: {
         ...p2p(1, 11).peerUser,
         name: 'A very long conversation name',
-        domain: 'remote.example',
       },
     };
     items.set([thread]);

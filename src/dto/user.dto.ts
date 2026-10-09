@@ -1,13 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
-  ArrayMaxSize,
-  IsArray,
   IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
-  ValidateNested,
   MaxLength,
   Min,
   MinLength,
@@ -138,32 +135,4 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   avatarBase64?: string | null;
-}
-
-export class UserAddressDto {
-  @ApiProperty({ example: 'alice' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(31)
-  account!: string;
-
-  @ApiProperty({ example: 'example.com' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(63)
-  domain!: string;
-}
-
-export class QueryUsersDto {
-  @ApiProperty({
-    type: UserAddressDto,
-    isArray: true,
-    example: [{ account: 'alice', domain: 'example.com' }],
-    description: 'List of user addresses (≤100 per query)',
-  })
-  @IsArray()
-  @ArrayMaxSize(100, { message: 'must contain at most 100 addresses' })
-  @ValidateNested({ each: true })
-  @Type(() => UserAddressDto)
-  addresses!: UserAddressDto[];
 }

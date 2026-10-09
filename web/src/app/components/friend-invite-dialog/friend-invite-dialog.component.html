@@ -7,7 +7,7 @@
           [name]="user().name"
           [account]="user().account"
           [src]="user().avatar"
-          [federatedDomain]="user().namespaceId !== 0 ? user().domain : null"
+          [federatedDomain]="user().namespaceId !== 0 ? (user().namespaceId | namespaceDomain | async) : null"
         ></app-user-avatar>
       </div>
       <div class="user-meta">

@@ -113,6 +113,9 @@ export class ChatboxStickyOverlaysComponent implements OnDestroy {
           account: host.dataset['messageAvatarAccount'] || undefined,
           identityId: identity,
           domain: host.dataset['messageAvatarDomain'] || undefined,
+          domainSource: host.dataset['messageAvatarDomainSource']
+            ? JSON.parse(host.dataset['messageAvatarDomainSource'])
+            : undefined,
         });
       }
       const date = host.querySelector<HTMLElement>('.msg-date');
@@ -265,6 +268,7 @@ function sameStickyAvatar(
       a.identityId === b.identityId &&
       a.account === b.account &&
       a.domain === b.domain &&
+      JSON.stringify(a.domainSource) === JSON.stringify(b.domainSource) &&
       a.side === b.side &&
       a.top === b.top)
   );

@@ -15,6 +15,7 @@
         [name]="data().name"
         [p2pThreadId]="data().isGroupConversation ? undefined : data().threadId"
         [account]="data().avatarAccount"
+        [domainSource]="data().avatarDomainSource"
         [federatedDomain]="data().avatarDomain"
         [profileEvidence]="data().profileEvidence"
         [src]="data().snapshotAvatarUrl"
@@ -86,6 +87,7 @@
         [type]="UserAvatarType.SELF"
         [name]="data().name"
         [account]="data().avatarAccount"
+        [domainSource]="data().avatarDomainSource"
         [federatedDomain]="data().avatarDomain"
         [src]="data().snapshotAvatarUrl"
       />

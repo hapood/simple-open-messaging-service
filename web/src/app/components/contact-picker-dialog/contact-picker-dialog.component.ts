@@ -1,12 +1,14 @@
+import { AsyncPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { displayThreadName, type ConversationItem } from '../../services/model';
 import { RouteService } from '../../services/route.service';
 import { UserAvatarComponent } from '../user-avatar/user-avatar.component';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import {
   conversationAvatarAccount,
-  conversationAvatarDomain,
+  conversationAvatarNamespaceId,
   conversationAvatarEvidence,
   conversationAvatarSrc,
   conversationAvatarType,
@@ -15,7 +17,12 @@ import {
 @Component({
   selector: 'app-contact-picker-dialog',
   standalone: true,
-  imports: [UserAvatarComponent, TranslocoPipe],
+  imports: [
+    UserAvatarComponent,
+    NamespaceDomainPipe,
+    AsyncPipe,
+    TranslocoPipe,
+  ],
   templateUrl: './contact-picker-dialog.component.html',
   styleUrl: './contact-picker-dialog.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -27,7 +34,7 @@ export class ContactPickerDialogComponent {
   readonly displayName = displayThreadName;
   readonly avatarType = conversationAvatarType;
   readonly avatarAccount = conversationAvatarAccount;
-  readonly avatarDomain = conversationAvatarDomain;
+  readonly avatarNamespaceId = conversationAvatarNamespaceId;
   readonly avatarEvidence = conversationAvatarEvidence;
   readonly avatarSrc = conversationAvatarSrc;
 
@@ -36,13 +43,10 @@ export class ContactPickerDialogComponent {
     this.route.closeDlg({
       target: {
         account: target.account,
-        domain: target.domain,
         namespaceId: target.namespaceId,
         profileRev: item.profileRev,
       },
-      account:
-        item.type === 'GROUP' ? item.group.account : item.peerUser.account,
-      domain: item.type === 'GROUP' ? item.group.domain : item.peerUser.domain,
+      account: item.type === 'GROUP' ? item.group.account : item.peerUser.account,
       name: this.displayName(item),
       avatar: this.avatarSrc(item),
       bio:

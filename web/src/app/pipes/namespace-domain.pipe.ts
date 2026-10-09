@@ -1,16 +1,8 @@
 import { inject, Pipe, type PipeTransform } from '@angular/core';
 import { map, of, type Observable } from 'rxjs';
 import { ProfileNamespaceRepository } from '../services/profile-namespace-store.service';
-import type { ProfileNamespaceBinding } from '../services/webdb-storage';
-
-export function namespaceDisplayDomain(
-  binding: ProfileNamespaceBinding,
-): string | null {
-  if (!binding.domain) return null;
-  return binding.status === 'ARCHIVED'
-    ? `${binding.profileNamespaceId}.archive.${binding.domain}`
-    : binding.domain;
-}
+import { namespaceDisplayDomain } from '../services/profile-namespace-domain';
+export { namespaceDisplayDomain } from '../services/profile-namespace-domain';
 
 /** Resolves the current display domain for a server-local namespace id.
  * Identity remains `(namespaceId, account)`; the mutable domain binding is

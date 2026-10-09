@@ -915,7 +915,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       ...(p.avatarIdentityId === undefined
         ? {}
         : { avatarIdentityId: p.avatarIdentityId }),
-      avatarAccount: p.account,
+      avatarAccount: creatorIdentity.account,
+      avatarDomainSource: {
+        type: 'namespace',
+        namespaceId: creatorIdentity.namespaceId,
+      },
       ...(m.creator && m.profileRev > 0
         ? {
             profileEvidence: {

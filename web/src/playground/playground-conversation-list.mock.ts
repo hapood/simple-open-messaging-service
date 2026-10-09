@@ -3,6 +3,7 @@ import { Subject } from 'rxjs';
 import type {
   ConversationItem,
   P2PConversationItem,
+  ThreadPeerUser,
   User,
 } from '../app/services/model';
 import { ConversationLoadStatus } from '../app/services/thread-store.service';
@@ -58,13 +59,16 @@ export class PlaygroundConversationList {
     this.patch(threadId, patch);
   }
 
-  updatePeerUser(threadId: number, peerUser: User): void {
+  updatePeerUser(
+    threadId: number,
+    peerUser: ThreadPeerUser & Pick<User, 'id' | 'profileRev'>,
+  ): void {
     this.conversations.update((items) =>
-      items.map((item) =>
-        item.threadId === threadId && item.type === 'P2P'
-          ? { ...item, peerUser }
-          : item,
-      ),
+      items.map((item) => {
+        if (item.threadId !== threadId || item.type !== 'P2P') return item;
+        const { id: _id, profileRev: _profileRev, ...rest } = peerUser;
+        return { ...item, peerUser: rest };
+      }),
     );
   }
 

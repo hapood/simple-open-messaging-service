@@ -243,6 +243,7 @@ export function createMsgCbElement(
     );
     tailAvatarRef.setInput('name', message.name);
     tailAvatarRef.setInput('account', message.avatarAccount);
+    tailAvatarRef.setInput('domainSource', message.avatarDomainSource);
     tailAvatarRef.setInput('federatedDomain', message.avatarDomain);
     tailAvatarRef.setInput('src', message.snapshotAvatarUrl);
     tailAvatarRef.setInput('profileEvidence', message.profileEvidence);
@@ -278,6 +279,7 @@ export function createMsgCbElement(
         identityId: message.avatarIdentityId,
         account: message.avatarAccount,
         domain: message.avatarDomain,
+        domainSource: message.avatarDomainSource,
       });
       const naturalAvatar = host.querySelector<HTMLElement>(
         '.msg-has-avatar > .msg-avatar:not(.msg-avatar-tail)',

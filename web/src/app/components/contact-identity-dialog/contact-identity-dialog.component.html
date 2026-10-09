@@ -23,7 +23,11 @@
     </div>
   </div>
   <div class="identity-account">
-    {{ identity().account }}&#64;{{ displayDomain() }}
+    {{ identity().account }}&#64;@if (isLocalDomain()) {
+      {{ 'common.localDomainLabel' | transloco: { domain: displayDomain() } }}
+    } @else {
+      {{ displayDomain() }}
+    }
   </div>
   @if (actionKey(); as key) {
     <app-dialog-action-footer

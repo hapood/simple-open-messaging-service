@@ -1,3 +1,4 @@
+import { AsyncPipe } from '@angular/common';
 import {
   Component,
   computed,
@@ -19,7 +20,7 @@ import { RouteService } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
 import {
   conversationAvatarAccount,
-  conversationAvatarDomain,
+  conversationAvatarNamespaceId,
   conversationAvatarEvidence,
   conversationAvatarType,
 } from '../user-avatar/conversation-avatar.util';
@@ -46,6 +47,7 @@ import type { ChatMsgData } from '../message-cards/chat-item';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import { ForwardRecentTargetsService } from '../../services/forward-recent-targets.service';
 
 export type ForwardMode = 'DIRECT' | 'HISTORY';
@@ -77,6 +79,8 @@ export interface ForwardDialogResult {
     ForwardRowComponent,
     ContactCardRowComponent,
     IconComponent,
+    NamespaceDomainPipe,
+    AsyncPipe,
     PageHeaderComponent,
   ],
   templateUrl: './forward-dialog.component.html',
@@ -163,7 +167,7 @@ export class ForwardDialogComponent {
   readonly displayName = displayThreadName;
   readonly avatarType = conversationAvatarType;
   readonly avatarAccount = conversationAvatarAccount;
-  readonly avatarDomain = conversationAvatarDomain;
+  readonly avatarNamespaceId = conversationAvatarNamespaceId;
   readonly avatarEvidence = conversationAvatarEvidence;
   readonly directPreviewMessage = computed<ChatMsgData | null>(() => {
     const original = this.messages()[0]?.original;
@@ -173,19 +177,8 @@ export class ForwardDialogComponent {
     if (!self) return null;
     return {
       ...original,
-      creator: messageCreatorKey({
-        account: self.account,
-        namespaceId: self.namespaceId,
-      }),
       isSelf: true,
-      name: self?.name || self?.account || original.name,
-      avatar: self?.avatar || undefined,
-      avatarIdentityId: messageCreatorKey({
-        account: self.account,
-        namespaceId: self.namespaceId,
-      }),
-      avatarAccount: self?.account,
-      avatarDomain: self?.domain,
+      name: self.name || self.account,
       quote: undefined,
     };
   });

@@ -7,7 +7,7 @@
           [type]="avatarType(item)"
           [name]="displayName(item)"
           [account]="avatarAccount(item)"
-          [federatedDomain]="avatarDomain(item)"
+          [federatedDomain]="avatarNamespaceId(item) | namespaceDomain | async"
           [profileEvidence]="avatarEvidence(item)"
         />
         <span>{{ displayName(item) }}</span>

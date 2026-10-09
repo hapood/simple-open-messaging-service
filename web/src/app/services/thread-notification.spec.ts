@@ -17,11 +17,22 @@ describe('thread notification presentation', () => {
         7,
         {
           account: 'peer',
-          name: 'Peer',
-          domain: 'chat.example.test',
           namespaceId: 0,
+          profileRev: 1,
         },
-        { unreadCount: 101, lastReadSeq: 3 },
+        {
+          unreadCount: 101,
+          lastReadSeq: 3,
+          peerUser: {
+            account: 'peer',
+            namespaceId: 0,
+            name: 'Peer',
+            avatar: '',
+            bio: '',
+            isGroup: false,
+            isDeleted: false,
+          },
+        },
       ),
       state: {
         threadId: 7,
@@ -84,6 +95,15 @@ describe('thread notification presentation', () => {
     expect(threadNotificationDescriptor(value, 'message', copy).title).toBe(
       'Group profile',
     );
+  });
+
+  it('uses the resolved domain in the address fallback without storing it on the peer', () => {
+    const value = update();
+    if (value.item.type !== 'P2P') throw new Error('expected P2P fixture');
+    value.item.peerUser.name = '';
+    expect(threadNotificationDescriptor(value, 'message', copy, 'alpha.test').title)
+      .toBe('peer@alpha.test');
+    expect(threadNotificationDescriptor(value, 'message', copy).title).toBe('peer');
   });
 
   it('uses projected count, latest sequence and the moderation reason', () => {

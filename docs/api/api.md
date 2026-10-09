@@ -172,9 +172,8 @@ requests, `publisherNamespaceId` selects the locally recognized peer and is not
 sent as a profile field; `target.profileNamespaceId` becomes the S2S path's
 `:namespaceId`. Account Profile and Group Member Profile map directly to their corresponding S2S operations. Exact relationship-intent profile disclosures are authorized through Account Profile with the requested exact revision.
 
-### POST `/user/query` · `/user/resolve` · `/user/search`
+### POST `/user/resolve` · `/user/search`
 
-- `query`: `{ userIds: number[] }` (`@ArrayMaxSize(100)`) batch user lookup.
 - `resolve` / `search`: local exact/fuzzy lookup. A foreign domain is rejected by `resolve`; federated
   exact lookup must use the temporary stream below. (`10001` not found.)
 

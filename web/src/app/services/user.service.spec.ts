@@ -46,6 +46,26 @@ const profile = (
 });
 
 describe('UserService.localRelationship', () => {
+  it.each([
+    { namespaceId: 7, state: 'ACTIVE', dissolvedAt: null, expected: 'FRIEND' },
+    { namespaceId: 8, state: 'ACTIVE', dissolvedAt: null, expected: 'NONE' },
+    { namespaceId: 7, state: 'READ_ONLY', dissolvedAt: null, expected: 'NONE' },
+    { namespaceId: 7, state: 'ACTIVE', dissolvedAt: 1, expected: 'NONE' },
+  ])('checks group membership by namespace and account: %j', async (value) => {
+    const service = Object.create(UserService.prototype) as UserService;
+    Object.assign(service, {
+      webdb: {
+        getThreads: async () => [{
+          type: 'GROUP',
+          conversationState: value.state,
+          group: { account: '!team', namespaceId: value.namespaceId, dissolvedAt: value.dissolvedAt },
+        }],
+      },
+    });
+    await expect(service.localRelationship({ id: 0, account: '!team', namespaceId: 7 }))
+      .resolves.toBe(value.expected);
+  });
+
   it('matches transient federated users by exact Address across request pages', async () => {
     const service = Object.create(UserService.prototype) as UserService;
     const listLocalFriendRequests = vi.fn(

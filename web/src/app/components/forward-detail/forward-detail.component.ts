@@ -297,6 +297,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       avatarIdentityId: creator,
       avatarAccount: message.author.account,
       avatarDomain: message.author.domain,
+      avatarDomainSource: { type: 'snapshot', domain: message.author.domain },
       text:
         hasKnownContentType && contentType === 'PURE_TEXT'
           ? toDisplayText(
@@ -363,13 +364,16 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
     collect(child);
     return JSON.stringify({
       bundleId: child.id,
-      summaryLines: messages.slice(0, 2).map((item) =>
-        `${item.profile?.displayName || item.author.account}：${deriveMessagePreview(
-          item.contentType,
-          item.content,
-          toDisplayText,
-        )}`,
-      ),
+      summaryLines: messages
+        .slice(0, 2)
+        .map(
+          (item) =>
+            `${item.profile?.displayName || item.author.account}：${deriveMessagePreview(
+              item.contentType,
+              item.content,
+              toDisplayText,
+            )}`,
+        ),
       messageCount: messages.length,
     });
   }

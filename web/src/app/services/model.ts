@@ -71,9 +71,36 @@ export function isRenderableMessageTomb(
 /** Identity coordinates are already canonical. Locality is determined only by namespace zero;
  * the domain always remains the real federation domain supplied by the server. */
 export function localSubjectIdentity<
-  T extends { domain: string; namespaceId: number },
+  T extends { namespaceId: number },
 >(identity: T): T {
   return identity;
+}
+
+/** Thread peer identity and locally materialized profile display fields.
+ * Domain bindings are resolved separately; profileRev belongs to the conversation projection. */
+export interface ThreadPeerUser {
+  account: string;
+  name: string;
+  avatar: string;
+  bio: string;
+  namespaceId: number;
+  isGroup: false;
+  isDeleted: boolean;
+}
+
+/** Cross-dialog user reference: display fields plus the identity namespace coordinate. Unlike
+ * ThreadPeerUser this is a transient hand-off between dialogs, not a persisted row. `domain` is
+ * optional presentation data supplied by card/facts sources; display resolution goes through the
+ * namespace binding cache, and the domain only feeds functional address re-fill (search). */
+export interface UserRef {
+  id: number;
+  account: string;
+  name: string;
+  avatar: string;
+  bio: string;
+  namespaceId: number;
+  isGroup: boolean;
+  domain?: string;
 }
 
 export function messageCreatorKey(creator: MessageCreator): string;
@@ -128,8 +155,6 @@ interface Group {
   domain: string;
   namespaceId: number;
   threadId: number;
-  createdAt: number;
-  updatedAt: number;
   dissolvedAt?: number | null;
   memberCount: number;
   groupMetaFeedId: string;
@@ -177,7 +202,7 @@ export type ConversationItem = ConversationItemBase &
   (
     | {
         type: 'P2P';
-        peerUser: Omit<S['UserResponseDto'], 'id' | 'profileRev'>;
+        peerUser: ThreadPeerUser;
         /** Greatest peer-authored message coordinate selecting this thread's display profile. */
         peerProfileMessageSeq?: number;
         group?: never;
@@ -204,8 +229,11 @@ export type GroupConversationItem = Extract<
   { type: 'GROUP' }
 >;
 
-type P2PPeerInput = Pick<User, 'account' | 'name' | 'domain' | 'namespaceId'> &
-  Partial<Omit<User, 'id' | 'account' | 'name' | 'domain' | 'namespaceId'>>;
+type P2PPeerInput = {
+  account: string;
+  namespaceId: number;
+  profileRev: number;
+};
 
 /** Construct the canonical local projection for a newly activated, empty P2P thread. */
 export function createP2PConversation(
@@ -213,23 +241,21 @@ export function createP2PConversation(
   peer: P2PPeerInput,
   overrides: Partial<P2PConversationItem> = {},
 ): P2PConversationItem {
-  const peerProfile = localSubjectIdentity({
+  const peerUser: ThreadPeerUser = {
+    name: '',
     avatar: '',
     bio: '',
-    isGroup: false,
-    createdAt: 0,
-    updatedAt: 0,
-    profileRev: 0,
     isDeleted: false,
-    ...peer,
     ...overrides.peerUser,
-  });
-  const { profileRev, ...peerUser } = peerProfile;
+    account: peer.account,
+    namespaceId: peer.namespaceId,
+    isGroup: false,
+  };
   return {
     threadId,
-    publisherNamespaceId: peerUser.namespaceId,
+    publisherNamespaceId: peer.namespaceId,
     type: 'P2P',
-    profileRev,
+    profileRev: peer.profileRev,
     role: null,
     lastMessageAt: null,
     lastMessageSeq: null,
@@ -265,8 +291,6 @@ export function createGroupConversation(
     avatar: '',
     description: '',
     threadId,
-    createdAt: 0,
-    updatedAt: 0,
     profileRev: 0,
     dissolvedAt: null,
     memberCount: 0,

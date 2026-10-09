@@ -32,6 +32,7 @@ import {
   User,
 } from '../../services/user.service';
 import type { FriendRequestProjection } from '../../services/friend-request-state';
+import { UserRef } from '../../services/model';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -67,8 +68,8 @@ type PendingReq = {
   direction: 'INCOMING' | 'OUTGOING';
   /** Stable Address key used by the avatar and selection projections. */
   peerId?: string;
-  account?: string;
-  namespaceId?: number;
+  account: string;
+  namespaceId: number;
   reqMessage?: string;
   status: RequestProjectionStatusValue;
   date: number;
@@ -127,7 +128,7 @@ export class FriendRequestsComponent implements OnDestroy {
   private searchGeneration = 0;
   /** Exact account resolution always yields zero or one row. */
   readonly localResults = signal<User[]>([]);
-  readonly inviteUser = signal<User | null>(null);
+  readonly inviteUser = signal<UserRef | null>(null);
   readonly errMsg = signal('');
   readonly addTabStatus = signal<AddTabStatus>(AddTabStatus.INIT);
   readonly relationshipStates = signal<ReadonlyMap<string, RelationshipState>>(
@@ -171,7 +172,11 @@ export class FriendRequestsComponent implements OnDestroy {
   /** Optional profile-card shortcut. Local targets can open the shared invite step immediately;
    * federated targets first run the normal exact-address resolve so first-contact handshake progress
    * remains visible and cancellable in this dialog. */
-  initialUser = input<User | undefined>(undefined);
+  initialUser = input<UserRef | undefined>(undefined);
+  /** Fixed address snapshots are resolved before assigning namespace coordinates or relationship state. */
+  initialAddress = input<{ account: string; domain: string } | undefined>(
+    undefined,
+  );
   activeTab = signal(0);
   isShowBackBtn = signal(true);
   private readonly incomingList =
@@ -202,8 +207,8 @@ export class FriendRequestsComponent implements OnDestroy {
       req,
       () =>
         this.userService.revokeRelationship({
-          account: req.account!,
-          namespaceId: req.namespaceId!,
+          account: req.account,
+          namespaceId: req.namespaceId,
         }),
       (res) => {
         if (res.code === 0) {
@@ -311,7 +316,10 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   searchUser() {
-    const curSearchText = this.searchText().trim();
+    const address = this.initialAddress();
+    const curSearchText = address
+      ? `${address.account}@${address.domain}`
+      : this.searchText().trim();
     if (!curSearchText) return;
     this.addTabStatus.set(AddTabStatus.SEARCHING);
     this.cancelInFlight();
@@ -402,12 +410,6 @@ export class FriendRequestsComponent implements OnDestroy {
    *  state to decide can-add / already-friends / request-already-sent / they-sent-you-one, then show
    *  the single-user card. Shared by both search paths so the post-select UX is identical. */
   private applySelectedUser(user: User) {
-    if (user.isGroup) {
-      this.relationshipStates.set(new Map());
-      this.localResults.set([user]);
-      this.addTabStatus.set(AddTabStatus.SUCCESS);
-      return;
-    }
     if (this.isSelf(user)) {
       this.relationshipStates.set(new Map());
       this.localResults.set([user]);
@@ -434,7 +436,7 @@ export class FriendRequestsComponent implements OnDestroy {
     this.addTabStatus.set(AddTabStatus.SUCCESS);
   }
 
-  activateResult(user: User) {
+  activateResult(user: UserRef) {
     if (this.isSelf(user)) return;
     const status =
       this.relationshipStates().get(this.userIdentity(user)) ?? 'NONE';
@@ -445,7 +447,7 @@ export class FriendRequestsComponent implements OnDestroy {
     if (status === 'NONE') this.openInviteDialog(user);
   }
 
-  openInviteDialog(user: User) {
+  openInviteDialog(user: UserRef) {
     if (this.isSelf(user)) return;
     this.inviteUser.set(user);
   }
@@ -478,7 +480,10 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   relationshipLabel(user: Pick<User, 'account' | 'namespaceId'>): string {
-    if (user.account.startsWith('!')) return 'friend.joinGroup';
+    if (user.account.startsWith('!'))
+      return this.relationshipStates().get(this.userIdentity(user)) === 'FRIEND'
+        ? 'chat.alreadyJoined'
+        : 'friend.joinGroup';
     switch (this.relationshipStates().get(this.userIdentity(user))) {
       case 'OUTGOING_PENDING':
         return 'friend.sentStatus';
@@ -505,7 +510,8 @@ export class FriendRequestsComponent implements OnDestroy {
   cancelSearch() {
     this.cancelInFlight();
     this.addTabStatus.set(AddTabStatus.INIT);
-    this.searchText.set('');
+    const address = this.initialAddress();
+    this.searchText.set(address ? `${address.account}@${address.domain}` : '');
     this.localResults.set([]);
   }
 
@@ -570,8 +576,8 @@ export class FriendRequestsComponent implements OnDestroy {
       req,
       () =>
         this.userService.revokeRelationship({
-          account: req.account!,
-          namespaceId: req.namespaceId!,
+          account: req.account,
+          namespaceId: req.namespaceId,
         }),
       (res) => {
         if (res.code === 0) {
@@ -827,10 +833,10 @@ export class FriendRequestsComponent implements OnDestroy {
   profileEvidence(request: PendingReq): ProfileDemand | undefined {
     return request.account && request.profileRev
       ? {
-          publisherNamespaceId: request.namespaceId ?? 0,
+          publisherNamespaceId: request.namespaceId,
           lookup: 'ACCOUNT_PROFILE',
           target: {
-            profileNamespaceId: request.namespaceId ?? 0,
+            profileNamespaceId: request.namespaceId,
             account: request.account,
             rev: request.profileRev,
           },
@@ -839,13 +845,22 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   ngOnInit() {
+    const address = this.initialAddress();
+    if (address) {
+      this.activeTab.set(0);
+      this.searchText.set(`${address.account}@${address.domain}`);
+      this.searchUser();
+      return;
+    }
     const initialUser = this.initialUser();
     if (initialUser) {
       this.activeTab.set(0);
       if (initialUser.namespaceId === 0) {
         this.inviteUser.set(initialUser);
       } else {
-        this.searchText.set(`${initialUser.account}@${initialUser.domain}`);
+        this.searchText.set(
+          `${initialUser.account}@${initialUser.domain ?? ''}`,
+        );
         this.searchUser();
       }
       return;

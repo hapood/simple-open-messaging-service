@@ -23,13 +23,15 @@
     @if (!readOnly()) {
       <div class="identity">
         <span class="profile-avatar">
-          <app-user-avatar
-            [type]="UserAvatarType.GROUP"
-            [name]="group()?.name ?? ''"
-            [account]="$safeNavigationMigration(group()?.account)"
-            [federatedDomain]="displayDomain()"
-            [profileEvidence]="groupProfileEvidence()"
-          ></app-user-avatar>
+          @if (group(); as identity) {
+            <app-user-avatar
+              [type]="UserAvatarType.GROUP"
+              [name]="identity.name"
+              [account]="identity.account"
+              [federatedDomain]="displayDomain()"
+              [profileEvidence]="groupProfileEvidence()"
+            />
+          }
         </span>
       </div>
       <mat-card appearance="outlined" class="group-profile-card">
@@ -333,13 +335,15 @@
       </app-page-header>
       <div class="profile-editor-body">
         <label class="avatar-edit">
-          <app-user-avatar
-            [type]="UserAvatarType.GROUP"
-            [name]="nameEdit()"
-            [account]="$safeNavigationMigration(group()?.account)"
-            [src]="avatarUrl()"
-            [federatedDomain]="group()?.domain"
-          />
+          @if (group(); as identity) {
+            <app-user-avatar
+              [type]="UserAvatarType.GROUP"
+              [name]="nameEdit()"
+              [account]="identity.account"
+              [src]="avatarUrl()"
+              [federatedDomain]="identity.domain"
+            />
+          }
           <span class="avatar-hint">{{
             'group.changeAvatarHint' | transloco
           }}</span>

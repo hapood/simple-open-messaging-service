@@ -1,3 +1,5 @@
+import { AsyncPipe } from '@angular/common';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import {
   afterNextRender,
   Component,
@@ -84,15 +86,17 @@ import { ConversationListService } from '../../services/conversation-list.servic
           @if (!snap().swapped && showRemotePlaceholder()) {
             <div class="remote-camera-off">
               <div class="remote-avatar">
-                <app-user-avatar
-                  [type]="UserAvatarType.OTHER"
-                  [name]="snap().peerName || '?'"
-                  [account]="peer()?.account"
-                  [federatedDomain]="
-                    peer()?.namespaceId === 0 ? null : peer()?.domain
-                  "
-                  [src]="snap().peerAvatar"
-                ></app-user-avatar>
+                @if (peer(); as identity) {
+                  <app-user-avatar
+                    [type]="UserAvatarType.OTHER"
+                    [name]="snap().peerName || '?'"
+                    [account]="identity.account"
+                    [federatedDomain]="identity.namespaceId | namespaceDomain | async"
+                    [src]="snap().peerAvatar"
+                  />
+                } @else {
+                  <app-user-avatar [loading]="true" />
+                }
               </div>
               <span>
                 @if (waitingForRemoteVideo()) {
@@ -123,15 +127,17 @@ import { ConversationListService } from '../../services/conversation-list.servic
             <video autoplay muted playsinline #selfVideo></video>
             @if (snap().swapped && showRemotePlaceholder()) {
               <div class="pip-peer-off">
-                <app-user-avatar
-                  [type]="UserAvatarType.OTHER"
-                  [name]="snap().peerName || '?'"
-                  [account]="peer()?.account"
-                  [federatedDomain]="
-                    peer()?.namespaceId === 0 ? null : peer()?.domain
-                  "
-                  [src]="snap().peerAvatar"
-                ></app-user-avatar>
+                @if (peer(); as identity) {
+                  <app-user-avatar
+                    [type]="UserAvatarType.OTHER"
+                    [name]="snap().peerName || '?'"
+                    [account]="identity.account"
+                    [federatedDomain]="identity.namespaceId | namespaceDomain | async"
+                    [src]="snap().peerAvatar"
+                  />
+                } @else {
+                  <app-user-avatar [loading]="true" />
+                }
               </div>
             } @else if (!snap().swapped && !snap().cameraEnabled) {
               <app-icon
@@ -145,7 +151,10 @@ import { ConversationListService } from '../../services/conversation-list.servic
           @if (snap().swapped && !snap().cameraEnabled) {
             <div class="remote-camera-off local-camera-off">
               <div class="remote-avatar">
-                <app-user-avatar [type]="UserAvatarType.SELF"></app-user-avatar>
+                <app-user-avatar
+                  [type]="UserAvatarType.SELF"
+                  [domainSource]="{ type: 'namespace', namespaceId: 0 }"
+                />
               </div>
               <span>{{ 'call.cameraOff' | transloco }}</span>
             </div>
@@ -178,13 +187,17 @@ import { ConversationListService } from '../../services/conversation-list.servic
                initial-letter fallback covers a no-avatar / cache-miss peer. -->
           <div class="peer">
             <div class="avatar">
-              <app-user-avatar
-                [type]="UserAvatarType.OTHER"
-                [name]="snap().peerName || '?'"
-                [account]="peer()?.account"
-                [federatedDomain]="peer()?.namespaceId === 0 ? null : peer()?.domain"
-                [src]="snap().peerAvatar"
-              ></app-user-avatar>
+              @if (peer(); as identity) {
+                <app-user-avatar
+                  [type]="UserAvatarType.OTHER"
+                  [name]="snap().peerName || '?'"
+                  [account]="identity.account"
+                  [federatedDomain]="identity.namespaceId | namespaceDomain | async"
+                  [src]="snap().peerAvatar"
+                />
+              } @else {
+                <app-user-avatar [loading]="true" />
+              }
             </div>
           </div>
         }
@@ -351,7 +364,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
       </div>
     }
   `,
-  imports: [TranslocoModule, UserAvatarComponent, IconComponent],
+  imports: [TranslocoModule, UserAvatarComponent, IconComponent, NamespaceDomainPipe, AsyncPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [
     `

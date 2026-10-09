@@ -47,6 +47,7 @@
             class="search-input"
             [ngModelOptions]="{ standalone: true }"
             [(ngModel)]="searchText"
+            [readOnly]="initialAddress() !== undefined"
             type="text"
             [placeholder]="'friend.searchPlaceholder' | transloco"
             autocomplete="off"
@@ -170,14 +171,14 @@
                         [name]="u.name"
                         [account]="u.account"
                         [src]="u.avatar"
-                        [federatedDomain]="u.domain"
+                        [federatedDomain]="u.namespaceId | namespaceDomain | async"
                       ></app-user-avatar>
                     </div>
                     <div class="result-meta">
                       <app-user-identity-label
                         [account]="u.account"
                         [profile]="u"
-                        [domain]="u.domain"
+                        [domain]="u.namespaceId | namespaceDomain | async"
                       />
                       <div class="user-account">
                         {{ u.bio || ('friend.noBio' | transloco) }}

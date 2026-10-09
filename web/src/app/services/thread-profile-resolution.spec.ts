@@ -78,10 +78,8 @@ describe('resolved thread profile identity', () => {
     await seedThread(
       createP2PConversation(92, {
         account: 'bob',
-        domain: 'local',
         namespaceId: 0,
         profileRev: 1,
-        name: '',
       }),
     );
     await storage.commitResolvedProfile({

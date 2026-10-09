@@ -43,6 +43,7 @@
         }
       } @else {
         @for (thread of filteredThreadList(); track thread.threadId) {
+          @let resolvedDomain = avatarNamespaceId(thread) | namespaceDomain | async;
           <button
             type="button"
             class="thread-item"
@@ -53,7 +54,7 @@
             [attr.aria-current]="
               thread.threadId === openThreadId() ? 'true' : null
             "
-            [attr.aria-label]="accessibleLabel(thread)"
+            [attr.aria-label]="accessibleLabel(thread, resolvedDomain)"
             (click)="onUsrTrdClick(thread)"
           >
             <span class="thread-avatar">
@@ -61,7 +62,7 @@
                 [type]="avatarType(thread)"
                 [name]="displayName(thread)"
                 [account]="avatarAccount(thread)"
-                [federatedDomain]="federatedDomain(thread)"
+                [federatedDomain]="resolvedDomain"
                 [profileEvidence]="avatarEvidence(thread)"
               ></app-user-avatar>
             </span>

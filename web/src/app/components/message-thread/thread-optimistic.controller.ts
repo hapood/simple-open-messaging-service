@@ -13,7 +13,6 @@ import type { MessageThreadSource } from './message-thread-adapter';
 export interface OptimisticAuthor {
   account: string;
   name: string;
-  domain: string;
   namespaceId: number;
 }
 
@@ -80,6 +79,11 @@ export class ThreadOptimisticController {
         isSelf: true,
         isGroupConversation,
         name: author.name,
+        avatarAccount: author.account,
+        avatarDomainSource: {
+          type: 'namespace',
+          namespaceId: author.namespaceId,
+        },
         text,
         time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
         contentType,

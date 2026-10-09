@@ -39,15 +39,17 @@
       }
       <div class="avatar-wrap">
         <div class="avatar">
-          <app-user-avatar
-            [type]="UserAvatarType.SELF"
-            [loading]="!sessionProfile()"
-            [name]="name() || sessionProfile()?.account"
-            [src]="
-              avatarPreviewUrl() ||
-              $safeNavigationMigration(sessionProfile()?.avatar)
-            "
-          />
+          @if (sessionProfile(); as self) {
+            <app-user-avatar
+              [type]="UserAvatarType.SELF"
+              [domainSource]="{ type: 'namespace', namespaceId: 0 }"
+              [name]="name() || self.account"
+              [account]="self.account"
+              [src]="avatarPreviewUrl() || self.avatar"
+            />
+          } @else {
+            <app-user-avatar [type]="UserAvatarType.SELF" [loading]="true" />
+          }
           <button
             class="avatar-edit"
             type="button"

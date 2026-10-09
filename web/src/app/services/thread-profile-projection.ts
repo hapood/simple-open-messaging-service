@@ -11,7 +11,6 @@ export function preserveThreadProfile(
   const subject = incoming.type === 'P2P' ? incoming.peerUser : incoming.group;
   if (
     oldSubject.account !== subject.account ||
-    oldSubject.domain !== subject.domain ||
     oldSubject.namespaceId !== subject.namespaceId ||
     current.profileRev <= incoming.profileRev
   )

@@ -1,7 +1,7 @@
 import {
   conversationAvatarType,
   conversationAvatarAccount,
-  conversationAvatarDomain,
+  conversationAvatarNamespaceId,
   conversationAvatarSrc,
   conversationAvatarEvidence,
 } from './conversation-avatar.util';
@@ -19,7 +19,6 @@ describe('conversation-avatar util', () => {
     type: 'P2P',
     peerUser: {
       account: 'alice',
-      domain: 'chat.example.test',
       namespaceId: 0,
       avatar: '/uploads/u7.png',
     },
@@ -28,7 +27,7 @@ describe('conversation-avatar util', () => {
   const group = {
     type: 'GROUP',
     peerUser: { avatar: '' },
-    group: { id: 12, account: '!group-12', avatar: '/uploads/g12.png' },
+    group: { id: 12, account: '!group-12', namespaceId: 7, avatar: '/uploads/g12.png' },
   } as unknown as ConversationItem;
 
   it('keeps a profile lookup for thread projections without disclosure evidence', () => {
@@ -53,10 +52,10 @@ describe('conversation-avatar util', () => {
     expect(conversationAvatarSrc(group)).toBe('/uploads/g12.png');
   });
 
-  it('derives the stable account and home domain used by the avatar', () => {
+  it('derives required identity coordinates without a domain', () => {
     expect(conversationAvatarAccount(p2p)).toBe('alice');
-    expect(conversationAvatarDomain(p2p)).toBeUndefined();
+    expect(conversationAvatarNamespaceId(p2p)).toBe(0);
     expect(conversationAvatarAccount(group)).toBe('!group-12');
-    expect(conversationAvatarDomain(group)).toBeUndefined();
+    expect(conversationAvatarNamespaceId(group)).toBe(7);
   });
 });

@@ -1,3 +1,5 @@
+import { AsyncPipe } from '@angular/common';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import {
   Component,
   computed,
@@ -46,6 +48,8 @@ import { conversationAvatarEvidence } from '../user-avatar/conversation-avatar.u
   selector: 'app-peer-profile',
   imports: [
     UserAvatarComponent,
+    NamespaceDomainPipe,
+    AsyncPipe,
     TranslocoPipe,
     ThreadAliasEditorComponent,
     MatCardModule,
@@ -77,17 +81,19 @@ import { conversationAvatarEvidence } from '../user-avatar/conversation-avatar.u
       </app-page-header>
 
       <div class="body" appFocusedInputReveal>
-        <div class="identity">
-          <span class="profile-avatar">
-            <app-user-avatar
-              [type]="UserAvatarType.OTHER"
-              [name]="peer()?.name ?? ''"
-              [account]="$safeNavigationMigration(peer()?.account)"
-              [profileEvidence]="peerProfileEvidence()"
-              [federatedDomain]="peerDomain()"
-            />
-          </span>
-        </div>
+        @if (peer(); as identity) {
+          <div class="identity">
+            <span class="profile-avatar">
+              <app-user-avatar
+                [type]="UserAvatarType.OTHER"
+                [name]="identity.name"
+                [account]="identity.account"
+                [profileEvidence]="peerProfileEvidence()"
+                [federatedDomain]="identity.namespaceId | namespaceDomain | async"
+              />
+            </span>
+          </div>
+        }
 
         <mat-card appearance="outlined" class="peer-profile-card">
           <div class="profile-meta">{{ peerAccount() }}</div>
@@ -473,8 +479,6 @@ export class PeerProfileComponent {
     const p = this.peer();
     return p ? displayUserAccount(p) : '';
   });
-  /** The peer's domain when federated, else null. */
-  readonly peerDomain = computed(() => this.peer()?.domain ?? null);
 
   constructor() {
     effect(() => {

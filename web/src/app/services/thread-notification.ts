@@ -44,6 +44,7 @@ export function threadNotificationDescriptor(
     retracted: string;
     removed: string;
   },
+  displayDomain: string | null = null,
 ): NotificationDescriptor {
   const preview = state.previews
     ?.filter((p) => p.seq > (item.lastReadSeq ?? state.lastReadSeq))
@@ -56,7 +57,9 @@ export function threadNotificationDescriptor(
     (item.type === 'GROUP'
       ? item.group.name || fallback
       : item.peerUser.name ||
-        `${item.peerUser.account}@${item.peerUser.domain}`);
+        (displayDomain
+          ? `${item.peerUser.account}@${displayDomain}`
+          : item.peerUser.account));
   const textFor = (
     preview: NonNullable<ThreadFeedSnapshot['previews']>[number],
   ) =>

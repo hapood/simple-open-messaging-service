@@ -6,7 +6,7 @@ import { UserService } from '../../services/user.service';
 import { WebdbService, type ProfileWake } from '../../services/webdb.service';
 import { ProfileRepository } from '../../services/profile-store.service';
 import { ConversationListService } from '../../services/conversation-list.service';
-import type { ConversationItem } from '../../services/model';
+import { createP2PConversation, type ConversationItem } from '../../services/model';
 
 describe('UserAvatarComponent (imgSrc branching)', () => {
   let fixture: ComponentFixture<UserAvatarComponent>;
@@ -88,12 +88,17 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     fixture.componentRef.setInput('account', 'alice');
     fixture.componentRef.setInput('federatedDomain', 'peer.test');
     fixture.componentRef.setInput('p2pThreadId', 42);
-    const conversation = {
-      threadId: 42,
-      type: 'P2P',
-      peerUser: { account: 'alice', domain: 'peer.test' },
-      alias: 'Friend',
-    } as ConversationItem;
+    vi.spyOn(TestBed.inject(ProfileRepository), 'resolve').mockReturnValue(new Subject());
+    fixture.componentRef.setInput('profileEvidence', {
+      publisherNamespaceId: 4,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 4, account: 'alice', rev: 1 },
+    });
+    const conversation = createP2PConversation(
+      42,
+      { account: 'alice', namespaceId: 4, profileRev: 1 },
+      { alias: 'Friend' },
+    );
     conversations.set([conversation]);
     fixture.detectChanges();
     expect(fixture.componentInstance.initial()).toBe('FR');

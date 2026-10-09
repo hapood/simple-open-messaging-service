@@ -1,3 +1,5 @@
+import { AsyncPipe } from '@angular/common';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import {
   Component,
   computed,
@@ -59,7 +61,7 @@ import {
 import {
   conversationAvatarAccount,
   conversationAvatarEvidence,
-  conversationAvatarDomain,
+  conversationAvatarNamespaceId,
   conversationAvatarType,
 } from '../user-avatar/conversation-avatar.util';
 import {
@@ -227,6 +229,8 @@ let nativeComposerContextSequence = Date.now() * 1000;
     ChatboxPopupComponent,
     EmptyStateComponent,
     UserAvatarComponent,
+    NamespaceDomainPipe,
+    AsyncPipe,
     TranslocoModule,
   ],
   templateUrl: './friend-message.component.html',
@@ -657,9 +661,9 @@ export class MessageThreadComponent implements OnDestroy {
     const t = this.userMsgTrd();
     return t ? conversationAvatarAccount(t) : undefined;
   });
-  readonly emptyAvatarDomain = computed<string | undefined>(() => {
+  readonly emptyAvatarNamespaceId = computed(() => {
     const t = this.userMsgTrd();
-    return t ? conversationAvatarDomain(t) : undefined;
+    return t ? conversationAvatarNamespaceId(t) : undefined;
   });
   readonly emptyAvatarEvidence = computed(() => {
     const t = this.userMsgTrd();
@@ -1602,7 +1606,6 @@ export class MessageThreadComponent implements OnDestroy {
         (item) =>
           item.type === 'P2P' &&
           item.peerUser.account === profile.account &&
-          item.peerUser.domain === profile.domain &&
           item.peerUser.namespaceId === profile.namespaceId &&
           item.friendshipActive !== false,
       )?.threadId;
@@ -1619,8 +1622,7 @@ export class MessageThreadComponent implements OnDestroy {
           friendThreadId,
           relationship:
             profile.account === this.userService.sessionProfile()?.account &&
-            profile.namespaceId ===
-              this.userService.sessionProfile()?.namespaceId
+            profile.namespaceId === 0
               ? 'SELF'
               : friendThreadId === undefined
                 ? 'NONE'

@@ -10,8 +10,9 @@ import {
 import { TranslocoPipe } from '@jsverse/transloco';
 import { RouteService, PopupType } from '../../services/route.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
-import type { User } from '../../services/model';
+import type { UserRef } from '../../services/model';
 import { UserService } from '../../services/user.service';
+import { LocalDomainService } from '../../services/local-domain.service';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -25,9 +26,8 @@ export interface ContactIdentityDialogData {
   avatar?: string;
   bio: string;
   domain: string;
-  /** Present only when this dialog is bound to a materialized identity. A raw contact-card payload
-   * is an address string and intentionally has no storage namespace. */
-  namespaceId?: number;
+  /** Resolved identity coordinate. Fixed address snapshots enter the address-query flow instead. */
+  namespaceId: number;
   friendThreadId?: number;
   groupThreadId?: number;
   relationship?: RelationshipState;
@@ -52,6 +52,7 @@ export class ContactIdentityDialogComponent {
   private readonly route = inject(RouteService);
   private readonly nav = inject(NavStateMachineService);
   private readonly userService = inject(UserService);
+  private readonly localDomain = inject(LocalDomainService);
   readonly identity = input.required<ContactIdentityDialogData>();
   readonly relationship = signal<RelationshipState | undefined>(undefined);
   readonly optimisticFriendThreadId = signal<number | undefined>(undefined);
@@ -72,6 +73,9 @@ export class ContactIdentityDialogComponent {
     return domain || null;
   });
   readonly displayDomain = computed(() => this.identity().domain);
+  readonly isLocalDomain = computed(
+    () => this.identity().domain === this.localDomain.domain(),
+  );
   readonly actionKey = computed(() => {
     const identity = this.identity();
     if (this.isGroup())
@@ -126,8 +130,7 @@ export class ContactIdentityDialogComponent {
       }
       if (
         identity.relationship === 'SELF' ||
-        identity.friendThreadId !== undefined ||
-        identity.namespaceId === undefined
+        identity.friendThreadId !== undefined
       )
         return;
       void this.userService
@@ -176,16 +179,17 @@ export class ContactIdentityDialogComponent {
         bio: identity.bio ?? '',
         domain: identity.domain,
         namespaceId: identity.namespaceId,
-      } as User,
+        isGroup: false,
+      },
     });
   }
 
   private openGroupJoinRequest(identity: ContactIdentityDialogData): void {
-    const open = (user: User) => {
+    const open = (user: UserRef) => {
       this.route.closeDlg();
       this.route.popupDlg(PopupType.FRIEND_INVITE, { user, standalone: true });
     };
-    const user = {
+    const user: UserRef = {
       id: identity.userId ?? 0,
       account: identity.account,
       name: identity.name,
@@ -193,20 +197,8 @@ export class ContactIdentityDialogComponent {
       bio: identity.bio ?? '',
       domain: identity.domain,
       isGroup: true,
-    } as User;
-
-    if (user.id > 0 || identity.namespaceId !== undefined) {
-      open(user);
-      return;
-    }
-
-    this.joiningGroup.set(true);
-    this.userService.resolveUser({ account: identity.account }).subscribe({
-      next: (result) => {
-        this.joiningGroup.set(false);
-        if (result.code === 0 && result.data?.isGroup) open(result.data);
-      },
-      error: () => this.joiningGroup.set(false),
-    });
+      namespaceId: identity.namespaceId,
+    };
+    open(user);
   }
 }

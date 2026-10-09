@@ -35,11 +35,7 @@ export class AuthService {
 
   async validateUser(account: string, password: string) {
     const user = await this.userService.findUniqueUserForAuth({
-      account_domain: {
-        account: normalizeAccount(account),
-        domain: await localIdentityDomain(this.database.db),
-      },
-      namespaceId: 0,
+      account: normalizeAccount(account),
     });
     if (user === null || user.disabledAt !== null) {
       return undefined;

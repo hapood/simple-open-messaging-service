@@ -1,4 +1,5 @@
 /** Geometry-only sticky-avatar calculation, kept independent of Angular and the virtual-scroll kernel. */
+import type { AvatarDomainSource } from '../components/user-avatar/model';
 import type { ProfileDemand } from '../../../../shared/profile-demand';
 
 const STICKY_AVATAR_TOP_GAP_PX = 12;
@@ -29,6 +30,7 @@ export interface StickyAvatarView {
   readonly identityId?: string;
   readonly account?: string;
   readonly domain?: string;
+  readonly domainSource?: AvatarDomainSource;
   readonly side: 'self' | 'other';
   readonly top: number;
 }
@@ -40,6 +42,7 @@ export interface StickyAvatarIdentity {
   readonly identityId?: string;
   readonly account?: string;
   readonly domain?: string;
+  readonly domainSource?: AvatarDomainSource;
 }
 
 export interface StickyAvatarMeasuredRow extends StickyAvatarRow {
@@ -49,6 +52,7 @@ export interface StickyAvatarMeasuredRow extends StickyAvatarRow {
   readonly identityId?: string;
   readonly account?: string;
   readonly domain?: string;
+  readonly domainSource?: AvatarDomainSource;
   readonly naturalAvatar?: HTMLElement;
   readonly tailAvatar?: HTMLElement;
 }
@@ -75,6 +79,11 @@ export function writeStickyAvatarIdentity(
   else delete host.dataset['messageSnapshotAvatarUrl'];
   host.dataset['messageAvatarAccount'] = avatar.account ?? '';
   host.dataset['messageAvatarDomain'] = avatar.domain ?? '';
+  if (avatar.domainSource)
+    host.dataset['messageAvatarDomainSource'] = JSON.stringify(
+      avatar.domainSource,
+    );
+  else delete host.dataset['messageAvatarDomainSource'];
   if (avatar.identityId == null) {
     delete host.dataset['messageAvatarIdentity'];
   } else {
@@ -182,6 +191,7 @@ export function resolveStickyAvatar(
       // avatar: an omitted account hashes the empty string and pins every float avatar to PALETTE[0].
       account: row.account,
       domain: row.domain,
+      domainSource: row.domainSource,
       side: placement.side,
       // DOM rectangles may carry sub-pixel viewport coordinates (device scale, compositor transforms). The
       // natural avatar is laid out on the integer-pixel timeline grid; quantize only the final overlay-local

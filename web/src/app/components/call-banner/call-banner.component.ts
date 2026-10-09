@@ -1,3 +1,5 @@
+import { AsyncPipe } from '@angular/common';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -17,7 +19,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
 
 @Component({
   selector: 'app-call-banner',
-  imports: [IconComponent, TranslocoModule, UserAvatarComponent],
+  imports: [IconComponent, TranslocoModule, UserAvatarComponent, NamespaceDomainPipe, AsyncPipe],
   template: `
     @if (visible()) {
       <div class="call-banner" role="status">
@@ -27,15 +29,19 @@ import { ConversationListService } from '../../services/conversation-list.servic
           (click)="presentation.restore()"
           [attr.aria-label]="'call.returnToCall' | transloco"
         >
-          <span class="avatar"
-            ><app-user-avatar
-              [type]="UserAvatarType.OTHER"
-              [name]="state().peerName || '?'"
-              [account]="peer()?.account"
-              [federatedDomain]="peer()?.namespaceId === 0 ? null : peer()?.domain"
-              [src]="state().peerAvatar"
-            ></app-user-avatar
-          ></span>
+          <span class="avatar">
+            @if (peer(); as identity) {
+              <app-user-avatar
+                [type]="UserAvatarType.OTHER"
+                [name]="state().peerName || '?'"
+                [account]="identity.account"
+                [federatedDomain]="identity.namespaceId | namespaceDomain | async"
+                [src]="state().peerAvatar"
+              />
+            } @else {
+              <app-user-avatar [loading]="true" />
+            }
+          </span>
           <span class="copy"
             ><strong>{{
               state().peerName || ('call.audioCall' | transloco)

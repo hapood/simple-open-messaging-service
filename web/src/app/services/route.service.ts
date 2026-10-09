@@ -35,7 +35,7 @@ import {
   type LinkCardGenerationDialogResult,
   type LinkCardGenerationMode,
 } from '../components/link-card-generation-dialog/link-card-generation-dialog.component';
-import type { ContactCardTarget, User } from './model';
+import type { ContactCardTarget, User, UserRef } from './model';
 import {
   ContactIdentityDialogComponent,
   type ContactIdentityDialogData,
@@ -122,9 +122,10 @@ export interface PopupInput {
   [PopupType.FRIEND_REQUESTS]: {
     subject?: Subject<any>;
     initialTab?: 'add' | 'pending';
-    initialUser?: User;
+    initialUser?: UserRef;
+    initialAddress?: { account: string; domain: string };
   };
-  [PopupType.FRIEND_INVITE]: { user: User; standalone: true };
+  [PopupType.FRIEND_INVITE]: { user: UserRef; standalone: true };
   [PopupType.NEW_GROUP]: undefined;
   [PopupType.EDIT_PROFILE]: undefined;
   [PopupType.AVATAR_EDITOR]: { file: File };

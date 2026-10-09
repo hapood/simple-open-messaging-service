@@ -1,3 +1,7 @@
+import { toObservable, toSignal } from '@angular/core/rxjs-interop';
+import { map, of, switchMap } from 'rxjs';
+import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
+import { namespaceDisplayDomain } from '../../pipes/namespace-domain.pipe';
 import {
   Component,
   computed,
@@ -39,6 +43,23 @@ import { currentGroupAnnouncement } from '../../services/group-announcement';
 export class MessageHeaderComponent {
   readonly AppIconType = AppIconType;
   readonly userMsgTrd = input<ConversationItem>();
+  private readonly namespaces = inject(ProfileNamespaceRepository);
+  private readonly callPeerDomain = toSignal(
+    toObservable(this.userMsgTrd).pipe(
+      switchMap((thread) =>
+        thread?.type === 'P2P'
+          ? this.namespaces.resolve({
+              publisherNamespaceId: 0,
+              profileNamespaceId: thread.peerUser.namespaceId,
+            }).pipe(map((binding) => ({
+              threadId: thread.threadId,
+              domain: namespaceDisplayDomain(binding),
+            })))
+          : of(null),
+      ),
+    ),
+    { initialValue: null },
+  );
   /** The current thread's id, fed to the embedded search field. Derived from userMsgTrd. */
   readonly threadId = computed(() => this.userMsgTrd()?.threadId ?? 0);
 
@@ -110,7 +131,9 @@ export class MessageHeaderComponent {
     if (this.callActive()) return;
     const thread = this.userMsgTrd();
     const peer = thread?.peerUser;
-    if (!thread || !peer) return;
+    const binding = this.callPeerDomain();
+    if (!thread || !peer || binding?.threadId !== thread.threadId || !binding.domain)
+      return;
     this.callAdapter.initiate(
       thread.threadId,
       uuid(),
@@ -118,7 +141,7 @@ export class MessageHeaderComponent {
       peer.name ?? '',
       peer.avatar ?? '',
       peer.account,
-      peer.domain,
+      binding.domain,
     );
   }
 

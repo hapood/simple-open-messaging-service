@@ -23,8 +23,7 @@ export function applyThreadStateSnapshot(
     throw new Error('thread type changed');
   const identity = {
     account: snapshot.profileAccount,
-    domain: '',
-    namespaceId: 0,
+    namespaceId: snapshot.publisherNamespaceId,
     profileRev: snapshot.profileRev,
     name: '',
   };
@@ -34,6 +33,7 @@ export function applyThreadStateSnapshot(
       ? createP2PConversation(snapshot.threadId, identity)
       : createGroupConversation(snapshot.threadId, {
           ...identity,
+          domain: '',
           id: snapshot.threadId,
         }));
   const next = {
@@ -52,7 +52,6 @@ export function applyThreadStateSnapshot(
   if (next.type === 'P2P') {
     const sameAddress =
       next.peerUser.account === identity.account &&
-      next.peerUser.domain === identity.domain &&
       next.peerUser.namespaceId === identity.namespaceId;
     if (!sameAddress) {
       next.peerProfileMessageSeq = undefined;

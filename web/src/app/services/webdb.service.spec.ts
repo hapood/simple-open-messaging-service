@@ -168,10 +168,8 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       const item = createP2PConversation(7, {
         account: 'peer',
-        name: 'Old',
-        profileRev: 1,
-        domain: peerProfile.domain,
         namespaceId: peerProfile.namespaceId,
+        profileRev: 1,
       });
       await webdb.mergeThreadStates([
         {
@@ -1414,7 +1412,7 @@ describe('WebdbService', () => {
           conversationState: 'ACTIVE',
           peerUser: expect.objectContaining({
             account: 'bob',
-            domain: '',
+            namespaceId: 0,
           }),
         }),
       ]);

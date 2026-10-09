@@ -61,9 +61,8 @@ describe('MessageThreadComponent initial failure presentation', () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const thread = createP2PConversation(42, {
       account: 'peer',
-      name: 'Peer',
-      domain: 'chat.example.test',
       namespaceId: 0,
+      profileRev: 1,
     });
     // Exercise the real kernel initialization with a failing source. Rendering,
     // transport, and the A/B coordinator have their own tests; no constructor effects run here.

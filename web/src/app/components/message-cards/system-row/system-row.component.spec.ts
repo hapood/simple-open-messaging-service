@@ -321,8 +321,6 @@ describe('SystemRowComponent', () => {
       7,
       {
         account: participant.account,
-        name: 'Alice',
-        domain: participant.domain,
         namespaceId: participant.profileNamespaceId,
         profileRev: participant.profileRev,
       },

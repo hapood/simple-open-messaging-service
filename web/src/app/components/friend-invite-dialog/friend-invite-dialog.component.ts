@@ -7,13 +7,15 @@ import {
   signal,
   ChangeDetectionStrategy,
 } from '@angular/core';
+import { AsyncPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { translateBizResult } from '../../services/biz-code';
-import { displayUserName } from '../../services/model';
-import { User, UserService } from '../../services/user.service';
+import { displayUserName, UserRef } from '../../services/model';
+import { UserService } from '../../services/user.service';
+import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import { RouteService } from '../../services/route.service';
 import { avatarBlobDataUrl } from '../../services/profile-avatar-bytes';
 import { assetUrl } from '../../services/runtime';
@@ -27,10 +29,12 @@ import {
 @Component({
   selector: 'app-friend-invite-dialog',
   imports: [
+    AsyncPipe,
     FormsModule,
     TranslocoPipe,
     UserAvatarComponent,
     DialogActionFooterComponent,
+    NamespaceDomainPipe,
   ],
   templateUrl: './friend-invite-dialog.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -43,7 +47,7 @@ export class FriendInviteDialogComponent {
   private readonly http = inject(HttpClient);
   private readonly groupService = inject(GroupService);
 
-  readonly user = input.required<User>();
+  readonly user = input.required<UserRef>();
   /** Direct popup mode; embedded uses continue to delegate completion to their parent. */
   readonly standalone = input(false);
   readonly completed = output<{

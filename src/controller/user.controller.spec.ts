@@ -84,7 +84,7 @@ describe('UserController.resolveUser', () => {
       name: 'Group',
       bio: 'Hello',
       isGroup: true,
-      domain: 'local.example',
+      namespaceId: 0,
     });
     expect(groups.findPublicLocalGroupByAccount).toHaveBeenCalledWith('!group');
   });
@@ -162,12 +162,14 @@ describe('UserController.resolveFederatedUserStream', () => {
     const profiles = {
       fetchRemoteAccount: vi.fn().mockResolvedValue({
         account: '!group',
-        domain: 'peer.example',
         displayName: 'Remote Group',
         avatar: null,
         bio: '',
         profileRev: 2,
       }),
+    };
+    const federationRecognition = {
+      captureContext: vi.fn().mockResolvedValue({ namespaceId: 7 }),
     };
     const controller = new UserController(
       {} as never,
@@ -179,7 +181,7 @@ describe('UserController.resolveFederatedUserStream', () => {
       keypairs as never,
       peerLifecycle as never,
       profiles as never,
-      {} as never,
+      federationRecognition as never,
       {} as never,
       {} as never,
       {} as never,
@@ -206,7 +208,7 @@ describe('UserController.resolveFederatedUserStream', () => {
     expect(
       events.find((event) => event.type === 'resolved')?.data,
     ).toMatchObject({
-      user: { isGroup: true, name: 'Remote Group' },
+      user: { isGroup: true, name: 'Remote Group', namespaceId: 7 },
     });
   });
 
@@ -233,7 +235,6 @@ describe('UserController.resolveFederatedUserStream', () => {
         calls.push('profile');
         return {
           account: 'bob',
-          domain: 'peer.example',
           displayName: 'Bob',
           avatar: null,
           bio: '',
@@ -242,6 +243,10 @@ describe('UserController.resolveFederatedUserStream', () => {
       }),
     };
     const federationRecognition = {
+      captureContext: vi.fn(async () => {
+        calls.push('context');
+        return { namespaceId: 7 };
+      }),
       subscribeProgress: vi.fn(
         (_domain: string, listener: (stage: 'DISCOVERING') => void) => {
           listener('DISCOVERING');
@@ -277,7 +282,13 @@ describe('UserController.resolveFederatedUserStream', () => {
         .pipe(toArray()),
     );
 
-    expect(calls).toEqual(['recognize', 'health', 'directions', 'profile']);
+    expect(calls).toEqual([
+      'recognize',
+      'health',
+      'directions',
+      'profile',
+      'context',
+    ]);
     expect(
       events
         .filter((event) => event.type === 'progress')
@@ -290,7 +301,7 @@ describe('UserController.resolveFederatedUserStream', () => {
     ).toContainEqual({ stage: 'FETCHING_USER' });
     expect(
       events.find((event) => event.type === 'resolved')?.data,
-    ).toMatchObject({ user: { name: 'Bob' } });
+    ).toMatchObject({ user: { name: 'Bob', namespaceId: 7 } });
   });
 
   it('unsubscribes recognition progress when the HTTP stream disconnects', async () => {
@@ -310,6 +321,7 @@ describe('UserController.resolveFederatedUserStream', () => {
             resolveRecognition = resolve;
           }),
       ),
+      captureContext: vi.fn().mockResolvedValue({ namespaceId: 7 }),
     };
     const keypairs = {
       localAddress: vi.fn((account: string) => ({
@@ -352,6 +364,7 @@ describe('UserController.resolveFederatedUserStream', () => {
     resolveRecognition();
     await Promise.resolve();
     expect(events).toEqual([]);
+    expect(federationRecognition.captureContext).not.toHaveBeenCalled();
   });
 
   it('uses a VOUCH possession challenge when namespace coordinates are provided', async () => {
@@ -369,12 +382,14 @@ describe('UserController.resolveFederatedUserStream', () => {
     const profiles = {
       fetchRemoteAccount: vi.fn().mockResolvedValue({
         account: 'alice',
-        domain: 'peer.example',
         displayName: 'Alice',
         avatar: null,
         bio: '',
         profileRev: 3,
       }),
+    };
+    const federationRecognition = {
+      captureContext: vi.fn().mockResolvedValue({ namespaceId: 7 }),
     };
     const controller = new UserController(
       {} as never,
@@ -386,7 +401,7 @@ describe('UserController.resolveFederatedUserStream', () => {
       keypairs as never,
       peerLifecycle as never,
       profiles as never,
-      {} as never,
+      federationRecognition as never,
       {} as never,
       {} as never,
       {} as never,
@@ -411,7 +426,7 @@ describe('UserController.resolveFederatedUserStream', () => {
     );
     expect(
       events.find((event) => event.type === 'resolved')?.data,
-    ).toMatchObject({ user: { name: 'Alice' } });
+    ).toMatchObject({ user: { name: 'Alice', namespaceId: 7 } });
   });
 
   it('falls back to PIN when only one namespace coordinate is provided', async () => {
@@ -429,7 +444,6 @@ describe('UserController.resolveFederatedUserStream', () => {
     const profiles = {
       fetchRemoteAccount: vi.fn().mockResolvedValue({
         account: 'alice',
-        domain: 'peer.example',
         displayName: 'Alice',
         avatar: null,
         bio: '',
@@ -446,7 +460,9 @@ describe('UserController.resolveFederatedUserStream', () => {
       keypairs as never,
       peerLifecycle as never,
       profiles as never,
-      {} as never,
+      {
+        captureContext: vi.fn().mockResolvedValue({ namespaceId: 7 }),
+      } as never,
       {} as never,
       {} as never,
       {} as never,
@@ -455,7 +471,7 @@ describe('UserController.resolveFederatedUserStream', () => {
       {} as never,
       {} as never,
     );
-    await lastValueFrom(
+    const events = await lastValueFrom(
       controller
         .resolveFederatedUserStream({
           account: 'alice',
@@ -468,6 +484,12 @@ describe('UserController.resolveFederatedUserStream', () => {
       { account: 'alice', domain: 'peer.example' },
       { kind: 'PIN' },
     );
+    expect(
+      events.find((event) => event.type === 'resolved')?.data,
+    ).toMatchObject({
+      user: { account: 'alice', namespaceId: 7 },
+    });
+    expect(events.some((event) => event.type === 'failed')).toBe(false);
   });
 
   it('reports IDENTITY_LOST when a VOUCH challenge is uncertifiable', async () => {

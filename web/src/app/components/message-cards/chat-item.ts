@@ -1,3 +1,4 @@
+import type { AvatarDomainSource } from '../user-avatar/model';
 import type { ProfileDemand } from '../../../../../shared/profile-demand';
 
 // Federated media localize status values — the stable wire format (backend serializeBody + MEDIA_STATUS
@@ -80,11 +81,13 @@ interface ChatMessageBase {
   name: string;
   /** Avatar asset embedded in a forwarded snapshot; ordinary profiles use profileEvidence. */
   snapshotAvatarUrl?: string;
-  /** Full user identity key encoded as `[namespaceId, domain, account]`. */
+  /** Stable sender/profile identity key. Snapshot sources may use bundle-scoped keys. */
   avatarIdentityId?: string;
   /** Stable sender account used with avatarDomain for deterministic fallback colors. */
   avatarAccount?: string;
-  /** Sender home domain; non-empty for federated identities and drives the avatar globe marker. */
+  /** Namespace identity or fixed snapshot address, independent of profile resolution. */
+  avatarDomainSource?: AvatarDomainSource;
+  /** Fixed domain supplied by snapshot sources. */
   avatarDomain?: string;
   /** Authorization evidence used by the shared avatar/profile repository. */
   profileEvidence?: ProfileDemand;

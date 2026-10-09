@@ -5,11 +5,12 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoService } from '@jsverse/transloco';
 import { of, Subject } from 'rxjs';
 import { RouteService } from '../../services/route.service';
-import type { User } from '../../services/model';
+import type { UserRef } from '../../services/model';
 import {
   FederatedResolveError,
   FriendIntentPage,
   UserService,
+  User,
 } from '../../services/user.service';
 import {
   AddTabStatus,
@@ -17,6 +18,38 @@ import {
 } from './friend-requests.component';
 
 describe('FriendRequestsComponent federated search progress', () => {
+  it.each(['bob', '!team'])('keeps the fixed card address for %s across retry and cancellation', (account) => {
+    const userService = {
+      sessionProfile: () => undefined,
+      resolveFederatedUser: vi.fn().mockReturnValue(new Subject()),
+    };
+    TestBed.configureTestingModule({
+      imports: [FriendRequestsComponent],
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: userService },
+        { provide: RouteService, useValue: {} },
+        { provide: MatSnackBar, useValue: { open: vi.fn() } },
+        { provide: TranslocoService, useValue: { translate: (key: string) => key } },
+      ],
+    }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+    const fixture = TestBed.createComponent(FriendRequestsComponent);
+    fixture.componentRef.setInput('initialAddress', { account, domain: 'bravo.test' });
+    const component = fixture.componentInstance;
+    component.ngOnInit();
+    expect(component.searchText()).toBe(`${account}@bravo.test`);
+    expect(userService.resolveFederatedUser).toHaveBeenLastCalledWith(
+      { account, domain: 'bravo.test' }, expect.any(Function),
+    );
+    component.cancelSearch();
+    expect(component.searchText()).toBe(`${account}@bravo.test`);
+    component.searchText.set('someone@other.test');
+    component.searchUser();
+    expect(userService.resolveFederatedUser).toHaveBeenLastCalledWith(
+      { account, domain: 'bravo.test' }, expect.any(Function),
+    );
+  });
+
   it('keeps only the newest incoming reset when state-feed refreshes overlap', async () => {
     const pending: Array<{
       resolve: (value: FriendIntentPage) => void;
@@ -169,13 +202,16 @@ describe('FriendRequestsComponent federated search progress', () => {
   );
 
   it('opens the shared invite step directly for a local profile shortcut', () => {
-    const local = {
+    const local: UserRef = {
       id: 7,
       account: 'alice',
       name: 'Alice',
+      avatar: '',
+      bio: '',
       domain: 'chat.example.test',
       namespaceId: 0,
-    } as User;
+      isGroup: false,
+    };
     TestBed.configureTestingModule({
       imports: [FriendRequestsComponent],
       providers: [
@@ -275,11 +311,17 @@ describe('FriendRequestsComponent federated search progress', () => {
   });
 
   it('uses exact resolution for a local account and exposes at most one result', async () => {
-    const local = {
+    const local: User = {
       id: 7,
       account: 'alice',
       name: 'Alice',
-    } as User;
+      avatar: '',
+      bio: '',
+      isGroup: false,
+      namespaceId: 0,
+      profileRev: 1,
+      isDeleted: false,
+    };
     const userService = {
       sessionUserId: signal<number | null>(null),
       sessionProfile: () => ({ id: 1 }),
@@ -328,11 +370,17 @@ describe('FriendRequestsComponent federated search progress', () => {
   });
 
   it('shows but does not activate the current user resolved by a bare account', () => {
-    const self = {
+    const self: User = {
       id: 1,
       account: 'me',
       name: 'Me',
-    } as User;
+      avatar: '',
+      bio: '',
+      isGroup: false,
+      namespaceId: 0,
+      profileRev: 1,
+      isDeleted: false,
+    };
     const userService = {
       sessionProfile: () => self,
       resolveUser: vi.fn().mockReturnValue(of({ code: 0, data: self })),
@@ -367,13 +415,17 @@ describe('FriendRequestsComponent federated search progress', () => {
   });
 
   it('shows first-contact handshake progress until resolve and localization finish', async () => {
-    const resolve = new Subject<{ user: User }>();
-    const remote = {
+    const resolve = new Subject<{ user: UserRef }>();
+    const remote: UserRef = {
       id: 0,
       account: 'bob',
       name: 'Bob',
+      avatar: '',
+      bio: '',
       domain: 'peer.test',
-    } as User;
+      namespaceId: 5,
+      isGroup: false,
+    };
     const userService = {
       sessionProfile: () => ({ id: 1 }),
       relationshipIntentStateRevision: signal(0),
@@ -420,12 +472,16 @@ describe('FriendRequestsComponent federated search progress', () => {
   });
 
   it('uses the local relationship projection for a resolved own-domain user', async () => {
-    const local = {
+    const local: UserRef = {
       id: 7,
       account: 'alice',
       name: 'Alice',
+      avatar: '',
+      bio: '',
       domain: 'local',
-    } as User;
+      namespaceId: 0,
+      isGroup: false,
+    };
     const userService = {
       sessionProfile: () => ({ id: 1 }),
       relationshipIntentStateRevision: signal(0),
@@ -462,12 +518,16 @@ describe('FriendRequestsComponent federated search progress', () => {
   });
 
   it('allows a new federated request after the synchronized projection records rejection', async () => {
-    const remote = {
+    const remote: UserRef = {
       id: 0,
       account: 'bob',
       name: 'Bob',
+      avatar: '',
+      bio: '',
       domain: 'peer.test',
-    } as User;
+      namespaceId: 5,
+      isGroup: false,
+    };
     const userService = {
       sessionProfile: () => ({ id: 1 }),
       relationshipIntentStateRevision: signal(0),
@@ -502,12 +562,15 @@ describe('FriendRequestsComponent federated search progress', () => {
   });
 
   it('shows but does not activate the current user resolved through an explicit own-domain address', () => {
-    const self = {
+    const self: UserRef = {
       id: 1,
       account: 'me',
       name: 'Me',
-      domain: 'local',
-    } as User;
+      avatar: '',
+      bio: '',
+      namespaceId: 0,
+      isGroup: false,
+    };
     const userService = {
       sessionProfile: () => self,
       resolveFederatedUser: vi.fn().mockReturnValue(of({ user: self })),
