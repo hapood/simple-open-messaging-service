@@ -817,6 +817,39 @@ describe('FederationRecognitionService inbound Recognize result states', () => {
     expect(target.namespaceUpdate).toHaveBeenCalled();
   });
 
+  it('keeps a live epoch arriving under a different domain pending despite a new coordinate', async () => {
+    const target = resolutionTarget({
+      domainEpoch: [],
+      rootEpoch: [
+        { id: 7, domain: 'old.example', peerAssignedLocalNamespaceId: 1 },
+      ],
+    });
+
+    await target.verify({
+      domain: 'peer.example',
+      keyId: 'peer.example/key-1',
+      claimedRoot: TEST_ROOT_KEY,
+      signedRequest,
+      headers: recognizeHeaders,
+      signatureExpires: Math.floor(Date.now() / 1000) + 300,
+      senderAssignedLocalNamespaceId: 2,
+    });
+
+    expect(target.acceptInbound).not.toHaveBeenCalled();
+    expect(target.reviewInsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'domain-rebind',
+        matchedNamespaceId: 7,
+        nextDomain: 'peer.example',
+        claimedRoot: TEST_ROOT_KEY,
+        status: 'pending',
+        claim: expect.objectContaining({
+          senderAssignedLocalNamespaceId: 2,
+        }),
+      }),
+    );
+    expect(target.namespaceUpdate).toHaveBeenCalled();
+  });
   it('records a root rotation review when the group still contains the pin', async () => {
     const target = resolutionTarget({
       domainEpoch: [

@@ -460,10 +460,10 @@ export class FederationRecognitionService {
     if (rootEpoch) {
       // Claimed root pinned under a different domain: domain re-binding
       // arrival (recognition 4.4). The hostname-verified fetch already
-      // performed is the proof of control over the new domain.
-      requireCoordinateMatch({
-        peerAssignedLocalNamespaceId: rootEpoch.peerAssignedLocalNamespaceId,
-      });
+      // performed is the proof of control over the new domain. The sender-
+      // assigned coordinate is recorded in the pending review, not rejected
+      // against the old domain binding: a re-binding may legitimately carry
+      // the coordinate assigned for the new binding.
       if (
         domainEpoch &&
         domainEpoch.id !== rootEpoch.id &&
