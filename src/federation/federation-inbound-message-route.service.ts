@@ -70,7 +70,7 @@ export class FederationInboundMessageRouteService {
       return item.authorRef === 'THREAD_ACCOUNT'
         ? {
             account: item.thread.account,
-            namespaceId: peerAssignedLocalNamespaceId,
+            namespaceId: 0,
             publisherLocal: true,
             receiverLocal: false,
           }
@@ -328,7 +328,11 @@ export class FederationInboundMessageRouteService {
     if ('peerAccount' in thread) {
       const route = await this.resolveMessage(
         tx,
-        { thread, authorRef: 'THREAD_ACCOUNT' } as FederationMessageFeedMessage,
+        {
+          thread,
+          authorRef: 'THREAD_ACCOUNT',
+          namespaceId: 0,
+        } as FederationMessageFeedMessage,
         sourceDomain,
         namespaceId,
         peerAssignedLocalNamespaceId,

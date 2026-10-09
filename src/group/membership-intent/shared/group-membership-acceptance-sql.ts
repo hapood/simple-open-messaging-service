@@ -307,7 +307,7 @@ function peerRecipient(input: GroupMembershipAcceptanceInput): SQL {
           'groupMetaFeedEndId', h."groupMetaFeedEndId") AS body FROM peer_heads h
       UNION ALL
       SELECT 'RELATIONSHIP_INTENT'::"PeerStateEventType", ${input.memberAccount}, ${input.profileNamespaceId}, 2,
-        jsonb_build_object('status', i.status, 'profileRev', i."profileRev", 'note', i.note,
+        jsonb_build_object('status', i.status, 'namespaceId', 0, 'profileRev', i."profileRev", 'note', i.note,
           'requestedAt', floor(extract(epoch FROM i."requestedAt") * 1000)::bigint, 'expiresAt', NULL,
           'messageEndSeq', h."relationshipMessageEndSeq", 'tombstoneEndSeq', h."tombstoneEndSeq")
       FROM peer_heads h CROSS JOIN accepted_intent i

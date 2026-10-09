@@ -85,10 +85,6 @@ export class FederationRecognitionService {
     Promise<FederationHealthStatus>
   >();
   private readonly inboundRecognizeInFlight = new Map<string, Promise<void>>();
-  private readonly inboundRecognizeResults = new Map<
-    string,
-    { expiresAtMs: number; result: RecognizeResult }
-  >();
   private readonly progress = new Map<
     string,
     {
@@ -197,14 +193,9 @@ export class FederationRecognitionService {
     signatureExpires: number;
   }): Promise<RecognizeResult> {
     const domain = this.normalizeDomain(params.domain);
-    const cached = this.inboundRecognizeResults.get(domain);
-    if (cached && cached.expiresAtMs > Date.now()) return cached.result;
-    if (cached) this.inboundRecognizeResults.delete(domain);
-    // Review gate: an open review for this arrival domain (a re-binding whose
-    // next domain it is, or a rotation of the namespace bound to it) answers
-    // pending without re-verification; the latest resolved review answers with
-    // its rejection code. A rejected rotation is operation-level: the epoch's
-    // ordinary lifecycle is untouched and only the rotation stays refused.
+    // Recognition is deliberately database-authoritative.  The in-flight map
+    // coalesces expensive verification, while the committed namespace row is
+    // the source of truth for a later request.
     const review = await this.findReviewForDomain(domain);
     if (review?.status === 'pending') {
       return {
@@ -227,24 +218,26 @@ export class FederationRecognitionService {
             : 'domain re-binding rejected by administrator review',
       };
     }
-    const existing = this.inboundRecognizeInFlight.get(domain);
-    if (!existing) {
+    const recognized = await this.readRecognizedInbound(
+      domain,
+      params.claimedRoot,
+    );
+    if (recognized) return recognized;
+
+    const identityKey = `${domain}/${params.claimedRoot}/${params.keyId}`;
+    if (!this.inboundRecognizeInFlight.has(identityKey)) {
       const run = this.verifyInboundRecognize({ ...params, domain }).finally(
         () => {
-          if (this.inboundRecognizeInFlight.get(domain) === run) {
-            this.inboundRecognizeInFlight.delete(domain);
+          if (this.inboundRecognizeInFlight.get(identityKey) === run) {
+            this.inboundRecognizeInFlight.delete(identityKey);
           }
         },
       );
-      this.inboundRecognizeInFlight.set(domain, run);
+      this.inboundRecognizeInFlight.set(identityKey, run);
       void run.catch((error) => {
-        const result = this.toRecognizeFailure(error);
-        this.inboundRecognizeResults.set(domain, {
-          expiresAtMs: params.signatureExpires * 1000,
-          result,
-        });
+        const failure = this.toRecognizeFailure(error);
         this.logger.warn(
-          `Recognize ${domain} verification failed: ${result.message}`,
+          `Recognize ${domain} verification failed: ${failure.message}`,
         );
       });
     }
@@ -461,14 +454,6 @@ export class FederationRecognitionService {
         params.senderAssignedLocalNamespaceId,
       );
       await this.discovery.cacheDocument(normalized, context.namespaceId, doc);
-      this.inboundRecognizeResults.set(normalized, {
-        expiresAtMs: params.signatureExpires * 1000,
-        result: {
-          ok: true,
-          status: 'recognized',
-          peerAssignedLocalNamespaceId: context.namespaceId,
-        },
-      });
       return;
     }
 
@@ -570,14 +555,40 @@ export class FederationRecognitionService {
       params.senderAssignedLocalNamespaceId,
     );
     await this.discovery.cacheDocument(normalized, context.namespaceId, doc);
-    this.inboundRecognizeResults.set(normalized, {
-      expiresAtMs: params.signatureExpires * 1000,
-      result: {
-        ok: true,
-        status: 'recognized',
-        peerAssignedLocalNamespaceId: context.namespaceId,
+    return;
+  }
+
+  private async readRecognizedInbound(
+    domain: string,
+    claimedRoot: string,
+  ): Promise<Extract<RecognizeResult, { status: 'recognized' }> | null> {
+    const query = this.database.db.query?.identityNamespace;
+    if (!query) return null;
+    const peer = await query.findFirst({
+      where: and(
+        eq(tables.identityNamespace.domain, domain),
+        eq(tables.identityNamespace.rootPublicKey, claimedRoot),
+        eq(tables.identityNamespace.active, true),
+        isNull(tables.identityNamespace.retiredAt),
+      ),
+      columns: {
+        peerAssignedLocalNamespaceId: true,
+        peerAcceptanceConfirmed: true,
+        localServiceAvailable: true,
+        trustLevel: true,
       },
     });
+    return !peer ||
+      peer.peerAssignedLocalNamespaceId === null ||
+      !peer.peerAcceptanceConfirmed ||
+      !peer.localServiceAvailable ||
+      peer.trustLevel === 'halted'
+      ? null
+      : {
+          ok: true,
+          status: 'recognized',
+          peerAssignedLocalNamespaceId: peer.peerAssignedLocalNamespaceId,
+        };
   }
 
   /** Latest review relevant to arrivals from one domain: open reviews first,
