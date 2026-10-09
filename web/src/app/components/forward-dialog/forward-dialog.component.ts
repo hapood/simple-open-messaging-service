@@ -1,4 +1,3 @@
-import { AsyncPipe } from '@angular/common';
 import {
   Component,
   computed,
@@ -47,7 +46,6 @@ import type { ChatMsgData } from '../message-cards/chat-item';
 import { MESSAGE_THREAD_ADAPTER } from '../message-thread/message-thread-adapter';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
-import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import { ForwardRecentTargetsService } from '../../services/forward-recent-targets.service';
 
 export type ForwardMode = 'DIRECT' | 'HISTORY';
@@ -79,9 +77,7 @@ export interface ForwardDialogResult {
     ForwardRowComponent,
     ContactCardRowComponent,
     IconComponent,
-    NamespaceDomainPipe,
-    AsyncPipe,
-    PageHeaderComponent,
+        PageHeaderComponent,
   ],
   templateUrl: './forward-dialog.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,

@@ -68,7 +68,12 @@ export class ContactCardRowComponent {
   readonly cardAvatarType = computed(() =>
     this.isGroupCard() ? UserAvatarType.GROUP : UserAvatarType.OTHER,
   );
-  readonly cardFederatedDomain = computed(() => this.card()?.domain ?? null);
+  readonly cardDomainSource = computed(() => {
+    const card = this.card();
+    return card
+      ? ({ type: 'snapshot', domain: card.domain } as const)
+      : undefined;
+  });
   openCard(): void {
     const card = this.card();
     if (!card) return;

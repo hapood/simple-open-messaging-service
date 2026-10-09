@@ -1,5 +1,3 @@
-import { AsyncPipe } from '@angular/common';
-import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import {
   Component,
   computed,
@@ -48,9 +46,7 @@ import { conversationAvatarEvidence } from '../user-avatar/conversation-avatar.u
   selector: 'app-peer-profile',
   imports: [
     UserAvatarComponent,
-    NamespaceDomainPipe,
-    AsyncPipe,
-    TranslocoPipe,
+        TranslocoPipe,
     ThreadAliasEditorComponent,
     MatCardModule,
     MatButtonModule,
@@ -89,7 +85,7 @@ import { conversationAvatarEvidence } from '../user-avatar/conversation-avatar.u
                 [name]="identity.name"
                 [account]="identity.account"
                 [profileEvidence]="peerProfileEvidence()"
-                [federatedDomain]="identity.namespaceId | namespaceDomain | async"
+                [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
               />
             </span>
           </div>

@@ -10,7 +10,7 @@
       [type]="avatarType()"
       [name]="identity().name"
       [account]="identity().account"
-      [federatedDomain]="federatedDomain()"
+      [domainSource]="{ type: 'namespace', namespaceId: identity().namespaceId }"
       [src]="identity().avatar"
     />
     <div class="identity-copy">

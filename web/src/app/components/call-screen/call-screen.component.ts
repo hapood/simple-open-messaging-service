@@ -1,5 +1,3 @@
-import { AsyncPipe } from '@angular/common';
-import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import {
   afterNextRender,
   Component,
@@ -91,7 +89,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
                     [type]="UserAvatarType.OTHER"
                     [name]="snap().peerName || '?'"
                     [account]="identity.account"
-                    [federatedDomain]="identity.namespaceId | namespaceDomain | async"
+                    [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
                     [src]="snap().peerAvatar"
                   />
                 } @else {
@@ -132,7 +130,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
                     [type]="UserAvatarType.OTHER"
                     [name]="snap().peerName || '?'"
                     [account]="identity.account"
-                    [federatedDomain]="identity.namespaceId | namespaceDomain | async"
+                    [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
                     [src]="snap().peerAvatar"
                   />
                 } @else {
@@ -192,7 +190,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
                   [type]="UserAvatarType.OTHER"
                   [name]="snap().peerName || '?'"
                   [account]="identity.account"
-                  [federatedDomain]="identity.namespaceId | namespaceDomain | async"
+                  [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
                   [src]="snap().peerAvatar"
                 />
               } @else {
@@ -364,7 +362,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
       </div>
     }
   `,
-  imports: [TranslocoModule, UserAvatarComponent, IconComponent, NamespaceDomainPipe, AsyncPipe],
+  imports: [TranslocoModule, UserAvatarComponent, IconComponent, ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [
     `

@@ -15,6 +15,7 @@ import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import { LanguageService } from '../../../services/language.service';
 import { MemberProfileRepository } from '../../../services/member-profile-store.service';
 import { ProfileRepository } from '../../../services/profile-store.service';
+import { ProfileNamespaceRepository } from '../../../services/profile-namespace-store.service';
 import { WebdbService } from '../../../services/webdb.service';
 import { ConversationListService } from '../../../services/conversation-list.service';
 import { UserService } from '../../../services/user.service';
@@ -97,6 +98,17 @@ describe('SystemRowComponent', () => {
           useValue: { getProfile, resolve: resolveProfile },
         },
         { provide: WebdbService, useValue: { correctSystemMessageProfile } },
+        {
+          provide: ProfileNamespaceRepository,
+          useValue: {
+            resolve: () =>
+              of({
+                publisherNamespaceId: 0,
+                profileNamespaceId: 0,
+                domain: 'chat.example.test',
+              }),
+          },
+        },
         {
           provide: ConversationListService,
           useValue: { items: conversations },

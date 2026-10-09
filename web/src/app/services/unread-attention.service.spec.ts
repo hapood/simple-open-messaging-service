@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
-import { Subject } from 'rxjs';
+import { Subject, of } from 'rxjs';
 import { UnreadAttentionService } from './unread-attention.service';
 import { ConversationListService } from './conversation-list.service';
 import { NotificationPrefsService } from './notification-prefs.service';
@@ -9,6 +9,7 @@ import { NavStateMachineService } from './nav-state.service';
 import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { WebdbService } from './webdb.service';
+import { ProfileNamespaceRepository } from './profile-namespace-store.service';
 import { WebPushService } from './web-push.service';
 import type {
   BrowserNotificationBatch,
@@ -44,6 +45,10 @@ describe('UnreadAttentionService browser worker bridge', () => {
         {
           provide: WebdbService,
           useValue: { browserNotifications$: browserNotifications },
+        },
+        {
+          provide: ProfileNamespaceRepository,
+          useValue: { resolve: () => of({ domain: 'chat.example.test' }) },
         },
         { provide: WebPushService, useValue: { worker } },
         {

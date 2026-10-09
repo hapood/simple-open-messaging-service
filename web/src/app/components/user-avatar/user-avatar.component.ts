@@ -122,9 +122,7 @@ export class UserAvatarComponent {
   readonly account = input<string | undefined | null>(undefined);
   /** Optional unresolved image URL or local preview. Empty selects the generated fallback. */
   readonly src = input<string | undefined | null>(undefined);
-  /** Fixed snapshot domain. Ordinary identities resolve the namespace binding independently of profiles. */
-  readonly federatedDomain = input<string | undefined | null>(undefined);
-  /** Absent only for loading/preview surfaces with no domain source. Each source has required coordinates. */
+  /** Namespace or fixed-address source for the displayed domain. */
   readonly domainSource = input<AvatarDomainSource | undefined>(undefined);
   private readonly injector = inject(Injector);
   private readonly resolvedDomain = toSignal(
@@ -175,10 +173,13 @@ export class UserAvatarComponent {
   readonly UserAvatarType = UserAvatarType;
   private readonly resolvedProfile = signal<ResolvedProfile | null>(null);
 
-  /** Real domain, including namespace zero. Fixed snapshots retain their recorded domain. */
-  readonly federatedMarkerDomain = computed(
-    () => this.federatedDomain()?.trim() || this.resolvedDomain() || null,
-  );
+  /** Remote domain marker derived from the identity domain source. The local namespace is never marked. */
+  readonly federatedMarkerDomain = computed(() => {
+    const source = this.domainSource();
+    if (!source) return null;
+    if (source.type === 'namespace' && source.namespaceId === 0) return null;
+    return this.resolvedDomain();
+  });
 
   private readonly effectiveSrc = computed(() => {
     const profile = this.resolvedProfile();
@@ -238,7 +239,7 @@ export class UserAvatarComponent {
     effect(() => {
       this.imgSrc();
       this.account();
-      this.federatedDomain();
+      this.domainSource();
       this.effectiveProfileEvidence();
       this.imgFailed.set(false);
     });
@@ -271,11 +272,14 @@ export class UserAvatarComponent {
    * account + namespace coordinate, or the real domain of a fixed address snapshot. */
   private hashColorKey(): number {
     const account = this.account() ?? '';
-    const domain = this.federatedMarkerDomain()?.toLowerCase();
     const namespace = this.type() === UserAvatarType.GROUP ? 'g' : 'u';
     const source = this.domainSource();
     const coordinate =
-      source?.type === 'namespace' ? source.namespaceId : domain;
+      source?.type === 'namespace'
+        ? source.namespaceId
+        : source?.type === 'snapshot'
+          ? source.domain
+          : this.federatedMarkerDomain();
     const n = account ? JSON.stringify([namespace, coordinate, account]) : '';
     let h = 0;
     for (let i = 0; i < n.length; i++)

@@ -62,7 +62,7 @@
                 [type]="avatarType(thread)"
                 [name]="displayName(thread)"
                 [account]="avatarAccount(thread)"
-                [federatedDomain]="resolvedDomain"
+                [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(thread) }"
                 [profileEvidence]="avatarEvidence(thread)"
               ></app-user-avatar>
             </span>

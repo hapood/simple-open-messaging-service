@@ -55,7 +55,7 @@ describe('ContactCardShareService', () => {
         target: {
           account: 'alice',
           namespaceId: 0,
-          profileRev: 0,
+          profileRev: 1,
         },
       }),
     );

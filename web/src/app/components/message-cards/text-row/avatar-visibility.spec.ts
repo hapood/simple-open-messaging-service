@@ -13,6 +13,7 @@ import {
 } from '@jsverse/transloco';
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
+import type { AvatarDomainSource } from '../../user-avatar/model';
 import { UserAvatarComponent } from '../../user-avatar/user-avatar.component';
 import type { AuthoredMessageItem, ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
@@ -44,7 +45,7 @@ class StubUserAvatarComponent {
   readonly p2pThreadId = input<number | undefined>(undefined);
   readonly identityId = input<number | undefined>(undefined);
   readonly account = input<string | undefined | null>(undefined);
-  readonly federatedDomain = input<string | undefined | null>(undefined);
+  readonly domainSource = input<AvatarDomainSource | undefined>(undefined);
   readonly src = input<string | undefined | null>(undefined);
   readonly profileEvidence = input<unknown>(undefined);
 }

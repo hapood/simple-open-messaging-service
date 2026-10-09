@@ -175,7 +175,7 @@
                 [type]="emptyAvatarType()"
                 [name]="emptyTitle()"
                 [account]="emptyAvatarAccount()"
-                [federatedDomain]="emptyAvatarNamespaceId() | namespaceDomain | async"
+                [domainSource]="{ type: 'namespace', namespaceId: emptyAvatarNamespaceId() }"
                 [profileEvidence]="emptyAvatarEvidence()"
               >
               </app-user-avatar>

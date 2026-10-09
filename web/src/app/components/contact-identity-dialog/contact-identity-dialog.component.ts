@@ -68,10 +68,6 @@ export class ContactIdentityDialogComponent {
   readonly avatarType = computed(() =>
     this.isGroup() ? UserAvatarType.GROUP : UserAvatarType.OTHER,
   );
-  readonly federatedDomain = computed(() => {
-    const domain = this.identity().domain;
-    return domain || null;
-  });
   readonly displayDomain = computed(() => this.identity().domain);
   readonly isLocalDomain = computed(
     () => this.identity().domain === this.localDomain.domain(),

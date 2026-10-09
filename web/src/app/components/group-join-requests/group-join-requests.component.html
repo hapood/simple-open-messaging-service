@@ -26,7 +26,7 @@
                 [name]="request.name"
                 [account]="request.account"
                 [src]="request.avatar"
-                [federatedDomain]="resolvedDomain"
+                [domainSource]="{ type: 'namespace', namespaceId: request.namespaceId }"
               />
               <div class="request-copy">
                 <div class="request-name">{{ request.name }}</div>
@@ -91,7 +91,7 @@
                 [name]="request.name"
                 [account]="request.account"
                 [src]="request.avatar"
-                [federatedDomain]="resolvedDomain"
+                [domainSource]="{ type: 'namespace', namespaceId: request.namespaceId }"
               />
               <div class="request-copy">
                 <div class="request-name">{{ request.name }}</div>
@@ -182,7 +182,7 @@
                   [name]="candidate.name"
                   [account]="candidate.account"
                   [src]="candidate.avatar"
-                  [federatedDomain]="resolvedDomain"
+                  [domainSource]="{ type: 'namespace', namespaceId: candidate.namespaceId }"
                 />
                 <div class="candidate-meta">
                   <app-user-identity-label

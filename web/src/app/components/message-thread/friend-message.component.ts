@@ -1,5 +1,3 @@
-import { AsyncPipe } from '@angular/common';
-import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import {
   Component,
   computed,
@@ -229,9 +227,7 @@ let nativeComposerContextSequence = Date.now() * 1000;
     ChatboxPopupComponent,
     EmptyStateComponent,
     UserAvatarComponent,
-    NamespaceDomainPipe,
-    AsyncPipe,
-    TranslocoModule,
+        TranslocoModule,
   ],
   templateUrl: './friend-message.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -663,7 +659,7 @@ export class MessageThreadComponent implements OnDestroy {
   });
   readonly emptyAvatarNamespaceId = computed(() => {
     const t = this.userMsgTrd();
-    return t ? conversationAvatarNamespaceId(t) : undefined;
+    return t ? conversationAvatarNamespaceId(t) : 0;
   });
   readonly emptyAvatarEvidence = computed(() => {
     const t = this.userMsgTrd();

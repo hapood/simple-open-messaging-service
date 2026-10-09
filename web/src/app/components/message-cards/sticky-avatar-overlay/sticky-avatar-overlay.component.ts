@@ -27,7 +27,6 @@ import {
         [name]="other().name"
         [account]="other().account"
         [domainSource]="other().domainSource"
-        [federatedDomain]="other().domain"
         [profileEvidence]="other().profileEvidence"
         [src]="other().snapshotAvatarUrl"
       />
@@ -41,7 +40,6 @@ import {
         [type]="UserAvatarType.SELF"
         [name]="self().name"
         [domainSource]="self().domainSource"
-        [federatedDomain]="self().domain"
         [profileEvidence]="self().profileEvidence"
         [src]="self().snapshotAvatarUrl"
       />

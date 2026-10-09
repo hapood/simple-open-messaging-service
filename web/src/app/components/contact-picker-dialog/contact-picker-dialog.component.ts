@@ -1,11 +1,9 @@
-import { AsyncPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { displayThreadName, type ConversationItem } from '../../services/model';
 import { RouteService } from '../../services/route.service';
 import { UserAvatarComponent } from '../user-avatar/user-avatar.component';
-import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import {
   conversationAvatarAccount,
   conversationAvatarNamespaceId,
@@ -19,9 +17,7 @@ import {
   standalone: true,
   imports: [
     UserAvatarComponent,
-    NamespaceDomainPipe,
-    AsyncPipe,
-    TranslocoPipe,
+        TranslocoPipe,
   ],
   templateUrl: './contact-picker-dialog.component.html',
   styleUrl: './contact-picker-dialog.component.scss',

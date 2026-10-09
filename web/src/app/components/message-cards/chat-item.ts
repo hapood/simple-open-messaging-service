@@ -83,12 +83,10 @@ interface ChatMessageBase {
   snapshotAvatarUrl?: string;
   /** Stable sender/profile identity key. Snapshot sources may use bundle-scoped keys. */
   avatarIdentityId?: string;
-  /** Stable sender account used with avatarDomain for deterministic fallback colors. */
+  /** Stable sender account used with the avatar domain source for deterministic fallback colors. */
   avatarAccount?: string;
   /** Namespace identity or fixed snapshot address, independent of profile resolution. */
   avatarDomainSource?: AvatarDomainSource;
-  /** Fixed domain supplied by snapshot sources. */
-  avatarDomain?: string;
   /** Authorization evidence used by the shared avatar/profile repository. */
   profileEvidence?: ProfileDemand;
   /** PURE_TEXT body / fallback text for unsupported types. */

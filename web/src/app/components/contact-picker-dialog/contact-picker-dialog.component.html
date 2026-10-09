@@ -7,7 +7,7 @@
           [type]="avatarType(item)"
           [name]="displayName(item)"
           [account]="avatarAccount(item)"
-          [federatedDomain]="avatarNamespaceId(item) | namespaceDomain | async"
+          [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(item) }"
           [profileEvidence]="avatarEvidence(item)"
         />
         <span>{{ displayName(item) }}</span>

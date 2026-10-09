@@ -14,7 +14,7 @@
           : UserAvatarType.OTHER
       "
       [account]="requestItem().account"
-      [federatedDomain]="resolvedDomain"
+      [domainSource]="{ type: 'namespace', namespaceId: requestItem().namespaceId }"
       [profileEvidence]="profileEvidence()"
     />
   </span>

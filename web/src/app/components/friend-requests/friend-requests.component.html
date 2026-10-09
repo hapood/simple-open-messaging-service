@@ -171,7 +171,7 @@
                         [name]="u.name"
                         [account]="u.account"
                         [src]="u.avatar"
-                        [federatedDomain]="u.namespaceId | namespaceDomain | async"
+                        [domainSource]="{ type: 'namespace', namespaceId: u.namespaceId }"
                       ></app-user-avatar>
                     </div>
                     <div class="result-meta">
@@ -346,7 +346,7 @@
               req.kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
             "
             [account]="req.account"
-            [federatedDomain]="displayDomain"
+            [domainSource]="{ type: 'namespace', namespaceId: req.namespaceId }"
             [profileEvidence]="profileEvidence(req)"
           />
           <span class="profile-copy">

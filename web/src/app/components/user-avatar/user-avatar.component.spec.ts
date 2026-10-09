@@ -86,7 +86,10 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     fixture.componentRef.setInput('type', UserAvatarType.OTHER);
     fixture.componentRef.setInput('name', 'Profile Name');
     fixture.componentRef.setInput('account', 'alice');
-    fixture.componentRef.setInput('federatedDomain', 'peer.test');
+    fixture.componentRef.setInput('domainSource', {
+      type: 'snapshot',
+      domain: 'peer.test',
+    });
     fixture.componentRef.setInput('p2pThreadId', 42);
     vi.spyOn(TestBed.inject(ProfileRepository), 'resolve').mockReturnValue(new Subject());
     fixture.componentRef.setInput('profileEvidence', {
@@ -218,7 +221,10 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
   it('uses account and domain for fallback color', () => {
     fixture.componentRef.setInput('type', UserAvatarType.GROUP);
     fixture.componentRef.setInput('account', '!group-account');
-    fixture.componentRef.setInput('federatedDomain', 'remote.example');
+    fixture.componentRef.setInput('domainSource', {
+      type: 'snapshot',
+      domain: 'remote.example',
+    });
     const color = fixture.componentInstance.groupFill().from;
 
     fixture.componentRef.setInput('name', 'Renamed group');
@@ -231,7 +237,10 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     fixture.componentRef.setInput('account', 'alice');
     const localColor = fixture.componentInstance.bg();
 
-    fixture.componentRef.setInput('federatedDomain', 'remote.example');
+    fixture.componentRef.setInput('domainSource', {
+      type: 'snapshot',
+      domain: 'remote.example',
+    });
 
     expect(fixture.componentInstance.bg()).not.toBe(localColor);
   });
@@ -251,7 +260,10 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
 
   it('renders the federated marker in the same scalable coordinate system as the avatar', () => {
     fixture.componentRef.setInput('name', 'Remote user');
-    fixture.componentRef.setInput('federatedDomain', 'remote.example');
+    fixture.componentRef.setInput('domainSource', {
+      type: 'snapshot',
+      domain: 'remote.example',
+    });
     fixture.detectChanges();
 
     const marker = fixture.nativeElement.querySelector(
@@ -268,9 +280,12 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     expect(marker.querySelector('app-icon')).toBeNull();
   });
 
-  it('does not render the federated marker for the local domain sentinel', () => {
+  it('does not render the federated marker for the local namespace', () => {
     fixture.componentRef.setInput('name', 'Local user');
-    fixture.componentRef.setInput('federatedDomain', 'local');
+    fixture.componentRef.setInput('domainSource', {
+      type: 'namespace',
+      namespaceId: 0,
+    });
     fixture.detectChanges();
 
     expect(

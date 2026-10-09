@@ -3,6 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { TranslocoService } from '@jsverse/transloco';
 import { of, throwError } from 'rxjs';
 import { UserService } from '../../services/user.service';
+import { LocalDomainService } from '../../services/local-domain.service';
 import { ProfileEditorComponent } from './profile-editor.component';
 
 describe('ProfileEditorComponent', () => {
@@ -10,7 +11,7 @@ describe('ProfileEditorComponent', () => {
     const sessionProfile = signal({
       id: 1,
       account: 'charlie',
-      domain: 'local',
+      domain: 'chat.example.test',
       name: 'Charlie',
       bio: '',
       avatar: '',
@@ -28,6 +29,10 @@ describe('ProfileEditorComponent', () => {
           },
         },
         {
+          provide: LocalDomainService,
+          useValue: { domain: signal('chat.example.test') },
+        },
+        {
           provide: TranslocoService,
           useValue: { translate: (key: string) => key },
         },
@@ -39,7 +44,7 @@ describe('ProfileEditorComponent', () => {
   it('renders the account address from the namespace domain', () => {
     const component = createComponent();
 
-    expect(component.accountAddress()).toBe('charlie@local');
+    expect(component.accountAddress()).toBe('charlie@chat.example.test');
   });
 
   it('counts and limits nickname and bio by Unicode code points', () => {

@@ -120,7 +120,7 @@
                   [type]="UserAvatarType.SELF"
                   [name]="selfProfile()?.name || selfProfile()?.account || ''"
                   [account]="selfProfile()?.account"
-                  [federatedDomain]="0 | namespaceDomain | async"
+                  [domainSource]="{ type: 'namespace', namespaceId: 0 }"
                 />
                 <div class="forward-dialog__direct-more-content">
                   <span class="forward-dialog__direct-more-name">{{
@@ -187,7 +187,7 @@
                       [type]="avatarType(item)"
                       [name]="displayName(item)"
                       [account]="avatarAccount(item)"
-                      [federatedDomain]="avatarNamespaceId(item) | namespaceDomain | async"
+                      [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(item) }"
                       [profileEvidence]="avatarEvidence(item)"
                     ></app-user-avatar>
                     <span
@@ -229,7 +229,7 @@
                   [type]="avatarType(item)"
                   [name]="displayName(item)"
                   [account]="avatarAccount(item)"
-                  [federatedDomain]="avatarNamespaceId(item) | namespaceDomain | async"
+                  [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(item) }"
                   [profileEvidence]="avatarEvidence(item)"
                 ></app-user-avatar>
               </span>

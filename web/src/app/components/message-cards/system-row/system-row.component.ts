@@ -13,7 +13,6 @@ import {
   type ProfileDemand,
 } from '../../../../../../shared/profile-demand';
 import { UserService } from '../../../services/user.service';
-import { LocalDomainService } from '../../../services/local-domain.service';
 import { displayUserAccount } from '../../../services/model';
 import {
   Component,
@@ -81,7 +80,6 @@ export class SystemRowComponent {
   private readonly webdb = inject(WebdbService);
   private readonly conversations = inject(ConversationListService);
   private readonly users = inject(UserService);
-  private readonly localDomain = inject(LocalDomainService);
   private readonly profileName = signal('');
   private readonly event = computed(() =>
     parseSystemMessageContent(this.data().text),
@@ -95,7 +93,7 @@ export class SystemRowComponent {
         return event.participants.find(
           (participant) =>
             participant.account !== self?.account ||
-            participant.domain !== (this.localDomain.domain() ?? 'local'),
+            participant.profileNamespaceId !== self?.namespaceId,
         );
       }
       if ('member' in event) return event.member;

@@ -1,5 +1,3 @@
-import { AsyncPipe } from '@angular/common';
-import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -19,7 +17,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
 
 @Component({
   selector: 'app-call-banner',
-  imports: [IconComponent, TranslocoModule, UserAvatarComponent, NamespaceDomainPipe, AsyncPipe],
+  imports: [IconComponent, TranslocoModule, UserAvatarComponent, ],
   template: `
     @if (visible()) {
       <div class="call-banner" role="status">
@@ -35,7 +33,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
                 [type]="UserAvatarType.OTHER"
                 [name]="state().peerName || '?'"
                 [account]="identity.account"
-                [federatedDomain]="identity.namespaceId | namespaceDomain | async"
+                [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
                 [src]="state().peerAvatar"
               />
             } @else {

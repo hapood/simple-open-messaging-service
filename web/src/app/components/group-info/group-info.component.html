@@ -28,7 +28,7 @@
               [type]="UserAvatarType.GROUP"
               [name]="identity.name"
               [account]="identity.account"
-              [federatedDomain]="displayDomain()"
+              [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
               [profileEvidence]="groupProfileEvidence()"
             />
           }
@@ -198,7 +198,7 @@
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
                 [account]="m.account"
-                [federatedDomain]="m.domain || null"
+                [domainSource]="{ type: 'snapshot', domain: m.domain }"
                 [profileEvidence]="memberProfileEvidence(m)"
                 [title]="m.name"
               ></app-user-avatar>
@@ -341,7 +341,7 @@
               [name]="nameEdit()"
               [account]="identity.account"
               [src]="avatarUrl()"
-              [federatedDomain]="identity.domain"
+              [domainSource]="{ type: 'snapshot', domain: identity.domain }"
             />
           }
           <span class="avatar-hint">{{
@@ -404,7 +404,7 @@
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
                 [account]="m.account"
-                [federatedDomain]="m.domain || null"
+                [domainSource]="{ type: 'snapshot', domain: m.domain }"
                 [profileEvidence]="memberProfileEvidence(m)"
               ></app-user-avatar>
               <div class="member-info">

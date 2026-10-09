@@ -296,7 +296,6 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       snapshotAvatarUrl: this.avatarUrl(message),
       avatarIdentityId: creator,
       avatarAccount: message.author.account,
-      avatarDomain: message.author.domain,
       avatarDomainSource: { type: 'snapshot', domain: message.author.domain },
       text:
         hasKnownContentType && contentType === 'PURE_TEXT'
