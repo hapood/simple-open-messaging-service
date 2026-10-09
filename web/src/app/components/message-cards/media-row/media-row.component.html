@@ -56,6 +56,13 @@
         {{ data().name || ('common.unknown' | transloco) }}
       </div>
     }
+    @if (data().quote; as quote) {
+      <app-msg-quote-block
+        [quote]="quote"
+        [isSelf]="data().isSelf"
+        (quoteJump)="quoteJump.emit($event)"
+      />
+    }
     <div
       class="msg-media-frame"
       [style.width.px]="containerW()"

@@ -193,10 +193,21 @@ export class MessageResponseDto {
   @ApiProperty({
     example: 42,
     description:
-      'Per-thread monotonic seq (0-indexed) — the message ordering key + identity. Allocated per-thread ' +
-      '(NOT global): its deltas reveal only THIS thread volume, never server-wide throughput.',
+      'Per-thread local sequence. This is the client cache and timeline coordinate.',
   })
   seq!: number;
+
+  @ApiProperty({
+    example: 42,
+    nullable: true,
+    type: Number,
+    description:
+      'Origin sequence in publisherNamespaceId. Null for messages authored locally and not yet assigned an upstream origin.',
+  })
+  originSeq!: number | null;
+
+  @ApiProperty({ minimum: 0, description: 'Namespace owning originSeq.' })
+  publisherNamespaceId!: number;
 
   @ApiProperty({
     example: 7,
@@ -295,6 +306,9 @@ export class MessageQueryPageDto {
     },
   })
   messages!: Array<MessageResponseDto | MessageTombResponseDto>;
+
+  @ApiProperty({ type: Number, nullable: true })
+  resolvedAnchorSeq!: number | null;
 
   @ApiProperty({ type: () => [MessageHistoryGapDto] })
   gaps!: MessageHistoryGapDto[];

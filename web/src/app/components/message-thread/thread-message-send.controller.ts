@@ -5,6 +5,7 @@ import {
   toRenderMessageEntities,
 } from '../../lib/message-entity';
 import { stringifyTextMessageContent } from '../../../../../shared/text-message-content';
+import { withMessageContentQuote } from '../../../../../shared/message-content-quote';
 import type { LinkCardContent } from '../../services/link-card-generation.service';
 import type { StandardResponse } from '../../services/model';
 import type { ChatItemData, ChatMsgData } from '../message-cards/chat-item';
@@ -126,15 +127,17 @@ export class ThreadMessageSendController {
     const threadId = this.host.threadId();
     const source = this.host.source();
     if (!threadId || !source || !item.clientMessageId) return;
+    const textContent = stringifyTextMessageContent({
+      text: item.data.wireText ?? item.data.text,
+    });
+    const content =
+      item.data.quote?.seq === undefined
+        ? textContent
+        : withMessageContentQuote(textContent, { seq: item.data.quote.seq });
     void withSendTimeout(
       this.adapter.sendText({
         threadId,
-        content: stringifyTextMessageContent({
-          text: item.data.wireText ?? item.data.text,
-          ...(item.data.quote?.seq !== undefined
-            ? { quote: { seq: item.data.quote.seq } }
-            : {}),
-        }),
+        content,
         clientMessageId: item.clientMessageId,
         optimistic: item,
         source,

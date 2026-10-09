@@ -72,6 +72,7 @@ import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import { deriveMessagePreview } from '../../shared/message-preview.js';
 import {
   parseMessageContentQuote,
+  storedQuoteCoordinate,
   withMessageContentQuote,
 } from '../../shared/message-content-quote.js';
 import {
@@ -135,6 +136,9 @@ export interface ClientMessagePageQuery {
   before?: number;
   through?: number;
   take: number;
+  anchorSeq?: number;
+  anchorNamespaceId?: number;
+  anchorOriginSeq?: number;
 }
 
 export interface ClientMessageHistoryGap {
@@ -157,6 +161,7 @@ function authorNamespaceId(message: { profileNamespaceId: number }): number {
 export function stripMessageId<
   T extends {
     id: bigint;
+    content: string;
     creatorAccount: string | null;
     profileNamespaceId: number;
     publisherNamespaceId: number;
@@ -167,7 +172,8 @@ export function stripMessageId<
   namespaceId: number;
   creator: MessageAuthorAddress | null;
 } {
-  const { id, creatorAccount, profileNamespaceId, ...rest } = msg;
+  const { id, creatorAccount, profileNamespaceId, ...rest } =
+    projectClientMessageContent(msg);
   return {
     ...rest,
     namespaceId: authorNamespaceId(msg),
@@ -178,6 +184,28 @@ export function stripMessageId<
             account: creatorAccount,
             namespaceId: authorNamespaceId(msg),
           },
+  };
+}
+
+function projectClientMessageContent<
+  T extends {
+    content: string;
+    publisherNamespaceId: number;
+  },
+>(row: T): T {
+  const quote = parseMessageContentQuote(row.content);
+  if (!quote) return row;
+  const value = JSON.parse(row.content) as Record<string, unknown>;
+  const coordinate = storedQuoteCoordinate(quote, row.publisherNamespaceId);
+  return {
+    ...row,
+    content: JSON.stringify({
+      ...value,
+      quote: {
+        namespaceId: coordinate.namespaceId,
+        originSeq: coordinate.seq,
+      },
+    }),
   };
 }
 
@@ -428,9 +456,8 @@ export class MessageService {
               'invalid system message content',
             );
           }
-          const explicitQuoteSeq = quoteTargetSeq;
-          const contentQuoteSeq = textContent?.quote?.seq;
-          const resolvedQuoteSeq = explicitQuoteSeq ?? contentQuoteSeq;
+          const resolvedQuoteSeq =
+            quoteTargetSeq ?? parseMessageContentQuote(content)?.seq;
           const quoteTarget =
             resolvedQuoteSeq === undefined || resolvedQuoteSeq === 0
               ? null
@@ -1278,7 +1305,46 @@ export class MessageService {
             scope.visibleThroughSeq ?? scope.currentEnd,
           ) + 1;
         const cursorData = { resumeAfter: lower, resumeBefore: upper };
-        const { after, before, through } = query;
+        let { after, before } = query;
+        const { through } = query;
+        let resolvedAnchorSeq: number | null = null;
+        const hasAnchor =
+          query.anchorSeq !== undefined || query.anchorOriginSeq !== undefined;
+        if (hasAnchor) {
+          const target = await tx.query.message.findFirst({
+            where: and(
+              eq(message.threadId, query.threadId),
+              gt(message.seq, lower),
+              lt(message.seq, upper),
+              query.anchorSeq !== undefined
+                ? eq(message.seq, query.anchorSeq)
+                : query.anchorNamespaceId === 0
+                  ? eq(message.seq, query.anchorOriginSeq!)
+                  : and(
+                      eq(
+                        message.publisherNamespaceId,
+                        query.anchorNamespaceId!,
+                      ),
+                      eq(message.originSeq, query.anchorOriginSeq!),
+                    ),
+            ),
+            columns: { seq: true },
+          });
+          resolvedAnchorSeq = target?.seq ?? null;
+          if (!target) {
+            return {
+              messages: [] as Message[],
+              tombs: new Map<number, ClientMessageTomb>(),
+              gaps: [] as ClientMessageHistoryGap[],
+              scannedThrough: lower,
+              hasMore: false,
+              resolvedAnchorSeq,
+            };
+          }
+          // The anchor page reads backward including the resolved local slot. Further
+          // history reads use only local cursors and never the supplied origin sequence.
+          before = target.seq + 1;
+        }
         if (after === undefined && before === undefined)
           throw new BusinessException(
             BusinessCode.CLIENT_FEED_CURSOR_UNAVAILABLE,
@@ -1399,20 +1465,14 @@ export class MessageService {
           gaps,
           scannedThrough,
           hasMore,
-          filters: {
-            clearedThroughSeq: scope.clearedSeq,
-            visibleThroughSeq: scope.visibleThroughSeq,
-          },
+          resolvedAnchorSeq,
         };
       },
       { isolationLevel: 'repeatable read', accessMode: 'read only' },
     );
 
     const live = await this.attachMediaStatus(
-      await this.attachQuotePreviews(
-        page.messages.filter((row) => !row.isDeleted),
-        page.filters,
-      ),
+      page.messages.filter((row) => !row.isDeleted),
     );
     const bySeq = new Map(live.map((row) => [row.seq, row]));
     const messages = page.messages.map((row) =>
@@ -1423,6 +1483,7 @@ export class MessageService {
       gaps: page.gaps,
       scannedThrough: page.scannedThrough,
       hasMore: page.hasMore,
+      resolvedAnchorSeq: page.resolvedAnchorSeq,
     };
   }
 
@@ -1607,10 +1668,15 @@ export class MessageService {
         >,
   ): Promise<T[]> {
     if (
-      msgs.some(
-        (m) =>
-          m.publisherNamespaceId > 0 && parseMessageContentQuote(m.content),
-      )
+      msgs.some((m) => {
+        const quote = parseMessageContentQuote(m.content);
+        return (
+          quote &&
+          (m.publisherNamespaceId > 0 ||
+            quote.namespaceId !== undefined ||
+            quote.sourceSeq !== undefined)
+        );
+      })
     ) {
       msgs = await this.database.db.transaction(
         (tx) => resolveStoredQuotes(tx, msgs),
@@ -1751,12 +1817,20 @@ export class MessageService {
           quote.seq <= viewerFilters.clearedThroughSeq) ||
         (viewerFilters?.visibleThroughSeq != null &&
           quote.seq > viewerFilters.visibleThroughSeq);
+      const {
+        digest: _digest,
+        namespaceId: _namespaceId,
+        ...publicQuote
+      } = quote;
       return {
         ...message,
         content: JSON.stringify({
           ...JSON.parse(message.content),
           quote: {
-            ...quote,
+            ...publicQuote,
+            ...(!preview && quote.seq > 0
+              ? { status: 'NOT_FOUND' as const }
+              : {}),
             ...(outsideVisibility
               ? { status: 'NOT_FOUND' as const }
               : quote.status

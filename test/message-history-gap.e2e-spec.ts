@@ -12,7 +12,12 @@ import {
   deletedMessage,
 } from '../src/database/schema.js';
 import { ContentType } from '../src/database/enums.js';
-import { seedAcceptedRelationship, seedSession, seedUser } from './seed.js';
+import {
+  seedAcceptedRelationship,
+  seedSession,
+  seedUser,
+  seedFederatedPeerNamespace,
+} from './seed.js';
 import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
 import { createTestApp } from './support/app';
 import { truncateTablesForTest } from './support/truncate';
@@ -94,7 +99,22 @@ describe('client message history gaps', () => {
     const response = await request(app.getHttpServer()).get(
       '/api/v1/docs-json',
     );
+    if (process.env.SOMS_TEST_OPENAPI_PATH) {
+      await (
+        await import('node:fs/promises')
+      ).writeFile(
+        process.env.SOMS_TEST_OPENAPI_PATH,
+        JSON.stringify(response.body),
+      );
+    }
     const schemas = response.body.components.schemas;
+    expect(schemas.MessageResponseDto.properties).toHaveProperty('originSeq');
+    expect(schemas.MessageResponseDto.properties).toHaveProperty(
+      'publisherNamespaceId',
+    );
+    expect(schemas.MessageQueryPageDto.properties).toHaveProperty(
+      'resolvedAnchorSeq',
+    );
     expect(schemas.MessageQueryPageDto.properties.messages.items.oneOf).toEqual(
       [
         { $ref: '#/components/schemas/MessageResponseDto' },
@@ -211,6 +231,83 @@ describe('client message history gaps', () => {
     expect(result.body.data.messages[0]).not.toHaveProperty('content');
     expect(result.body.data.messages[0]).not.toHaveProperty('mediaStatus');
     expect(result.body.data.messages[1]).toHaveProperty('content');
+  });
+
+  it('resolves origin anchors to local coordinates without exposing quote digests', async () => {
+    const namespaceId = await seedFederatedPeerNamespace(
+      database.db,
+      'anchor.example.test',
+    );
+    await database.db
+      .update(message)
+      .set({
+        publisherNamespaceId: namespaceId,
+        originSeq: 26,
+        content: JSON.stringify({
+          text: 'reply',
+          quote: { seq: 1, namespaceId, digest: 'd'.repeat(64) },
+        }),
+      })
+      .where(eq(message.seq, 36));
+    const result = await queryMessages({
+      anchorNamespaceId: namespaceId,
+      anchorOriginSeq: 26,
+      take: 1,
+    });
+    expect(result.body.code).toBe(0);
+    expect(result.body.data.resolvedAnchorSeq).toBe(36);
+    expect(result.body.data.messages[0].seq).toBe(36);
+    const localAlias = await queryMessages({
+      anchorNamespaceId: 0,
+      anchorOriginSeq: 36,
+      take: 1,
+    });
+    expect(localAlias.body.data.resolvedAnchorSeq).toBe(36);
+    expect(JSON.parse(result.body.data.messages[0].content).quote).toEqual({
+      namespaceId,
+      originSeq: 1,
+    });
+    const [stored] = await database.db
+      .select({ content: message.content })
+      .from(message)
+      .where(eq(message.seq, 36));
+    expect(JSON.parse(stored.content).quote.digest).toBe('d'.repeat(64));
+    await database.db
+      .update(accountThreadState)
+      .set({ messageVisibleThroughSeq: 20 })
+      .where(eq(accountThreadState.accountId, viewerId));
+    const hidden = await queryMessages({
+      anchorNamespaceId: namespaceId,
+      anchorOriginSeq: 26,
+      take: 1,
+    });
+    expect(hidden.body.data.resolvedAnchorSeq).toBeNull();
+    expect(hidden.body.data.messages).toEqual([]);
+  });
+
+  it('resolves a local tomb anchor while keeping the tomb contract local-only', async () => {
+    await database.db.transaction(async (tx) => {
+      await requireThreadContentLockInTx(tx, threadId);
+      await tx.insert(deletedMessage).values({
+        threadId,
+        messageSeq: 36,
+        deletionSeq: 1,
+        type: 'USER_RETRACTION',
+      });
+      await tx
+        .update(message)
+        .set({ isDeleted: true })
+        .where(eq(message.seq, 36));
+    });
+    const result = await queryMessages({ anchorSeq: 36, take: 1 });
+    expect(result.body.code).toBe(0);
+    expect(result.body.data.resolvedAnchorSeq).toBe(36);
+    expect(result.body.data.messages[0]).toMatchObject({
+      seq: 36,
+      contentType: 'TOMB',
+    });
+    expect(result.body.data.messages[0]).not.toHaveProperty('originSeq');
+    expect(result.body.data.messages[0]).not.toHaveProperty('content');
   });
 
   it('clips the backward endpoint while validating the starting cursor', async () => {

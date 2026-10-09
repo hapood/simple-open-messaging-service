@@ -12,6 +12,7 @@ import { UserService } from './user.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { Message, MediaStatus, type MessageQueryRow } from './model';
 import { isTauri, tauriInvoke } from './runtime';
+import { historyAnchorRequest, type HistoryAnchor } from './history-anchor';
 
 export interface MessageHistoryTarget {
   namespaceId: number;
@@ -584,6 +585,9 @@ export class MessageRepository {
   }
 
   constructor() {
+    this.webdb.messageDbCommitted$.subscribe(({ threadId }) =>
+      this.slotsChanged.next(threadId),
+    );
     this.ws.reconnect$.subscribe(() => {
       this.newerTruncateSeq.clear();
       this.reconnectSignal.next();
@@ -671,6 +675,43 @@ export class MessageRepository {
     } catch {
       /* IDB unavailable / closed — cache is best-effort */
     }
+  }
+
+  /** Resolve a navigation selector without adding it to any history scan's coverage. */
+  async resolveHistoryAnchor(
+    threadId: number,
+    anchor: HistoryAnchor,
+  ): Promise<number | null> {
+    const epoch = this.sessionLifecycle.accountEpoch;
+    const response = await firstValueFrom(
+      this.msg.queryMessageHistoryPage({
+        threadId,
+        take: 1,
+        ...historyAnchorRequest(anchor),
+      }),
+    );
+    if (response.code !== 0 || !response.data || !('messages' in response.data))
+      throw new Error('history anchor resolution failed');
+    if (!this.sessionLifecycle.isCurrent(epoch))
+      throw new Error('account session expired during anchor resolution');
+    const page = response.data;
+    const seq = page.resolvedAnchorSeq;
+    if (seq === null) return null;
+    if (!Number.isSafeInteger(seq) || seq < 1)
+      throw new Error('history anchor returned an invalid local sequence');
+    if (page.messages.some((row) => row.threadId !== threadId))
+      throw new Error('history anchor returned a different thread');
+    // These slots are opportunistic cache entries, not a directional scan. In
+    // particular, never pass them to reduceMessageRanges or advance messageHead.
+    await this.webdb.putCachedMessages(page.messages);
+    if (!this.sessionLifecycle.isCurrent(epoch))
+      throw new Error('account session expired during anchor commit');
+    this.slotsChanged.next(threadId);
+    return seq;
+  }
+
+  getMessageByOrigin(threadId: number, namespaceId: number, originSeq: number) {
+    return this.webdb.getMessageByOrigin(threadId, namespaceId, originSeq);
   }
 
   getDeletedMessageSeqs(threadId: number, seqs: number[]): Promise<number[]> {

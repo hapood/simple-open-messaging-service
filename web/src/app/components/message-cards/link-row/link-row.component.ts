@@ -9,6 +9,8 @@ import {
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
+import { QuoteBlockComponent } from '../quote-block/quote-block.component';
+import type { HistoryAnchor } from '../../../services/history-anchor';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -43,6 +45,7 @@ interface LinkCard {
   selector: 'app-msg-link-row',
   standalone: true,
   imports: [
+    QuoteBlockComponent,
     UserAvatarComponent,
     DateRowComponent,
     TranslocoPipe,
@@ -56,6 +59,7 @@ export class LinkRowComponent {
   private readonly externalLinks = inject(ExternalLinkService);
   readonly UserAvatarType = UserAvatarType;
   readonly data = input.required<ChatMsgData>();
+  readonly quoteJump = output<HistoryAnchor>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
   /** Whether a date-separator pill should render above this row (first message of its day). */

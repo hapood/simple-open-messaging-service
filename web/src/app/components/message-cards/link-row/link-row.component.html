@@ -54,6 +54,13 @@
         {{ data().name || ('common.unknown' | transloco) }}
       </div>
     }
+    @if (data().quote; as quote) {
+      <app-msg-quote-block
+        [quote]="quote"
+        [isSelf]="data().isSelf"
+        (quoteJump)="quoteJump.emit($event)"
+      />
+    }
     <div class="link-shell" [class.msg-sending]="isSending()">
       <button
         type="button"

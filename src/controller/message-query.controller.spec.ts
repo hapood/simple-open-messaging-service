@@ -80,6 +80,46 @@ function dto(overrides: Partial<QueryMessagesDto> = {}): QueryMessagesDto {
 }
 
 describe('MessageController.queryMessages cursor contract', () => {
+  it.each([{ anchorSeq: 104 }, { anchorNamespaceId: 3, anchorOriginSeq: 4 }])(
+    'passes a complete anchor without requiring a pagination cursor: %j',
+    async (anchor) => {
+      const { controller, queryClientMessagePage, req } = setup();
+      queryClientMessagePage.mockResolvedValueOnce({
+        messages: [],
+        gaps: [],
+        scannedThrough: 0,
+        hasMore: false,
+        resolvedAnchorSeq: 104,
+      });
+      const page = await controller.queryMessages(
+        req,
+        dto({ after: undefined, ...anchor }),
+      );
+      expect(page.resolvedAnchorSeq).toBe(104);
+      expect(queryClientMessagePage).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining(anchor),
+      );
+    },
+  );
+
+  it.each([
+    { anchorNamespaceId: 3 },
+    { anchorOriginSeq: 4 },
+    { anchorSeq: 104, anchorNamespaceId: 3, anchorOriginSeq: 4 },
+    { anchorSeq: 104, before: 105 },
+    { anchorNamespaceId: 3, anchorOriginSeq: 4, through: 1 },
+  ])('rejects incomplete or mixed anchor requests: %j', async (anchor) => {
+    const { controller, queryClientMessagePage, req } = setup();
+    await expect(
+      controller.queryMessages(req, dto({ after: undefined, ...anchor })),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.VALIDATION_FAILED,
+      status: 400,
+    });
+    expect(queryClientMessagePage).not.toHaveBeenCalled();
+  });
+
   it('maps a bounded forward interval and returns a direction-relative cursor', async () => {
     const { controller, queryClientMessagePage, req } = setup([
       { seq: 11 },

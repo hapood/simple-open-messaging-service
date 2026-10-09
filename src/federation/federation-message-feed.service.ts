@@ -29,7 +29,7 @@ import {
   forwardMessage,
   forwardBundle,
 } from '../database/schema.js';
-import { storedQuoteCoordinate } from '../../shared/text-message-content.js';
+import { storedQuoteCoordinate } from '../../shared/message-content-quote.js';
 import { parseMessageContentQuote } from '../../shared/message-content-quote.js';
 import { findStoredQuoteTargets } from '../message/stored-quote-targets.js';
 import {

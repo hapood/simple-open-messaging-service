@@ -547,14 +547,6 @@ export class SseService implements OnModuleDestroy {
     this.pushToSession(sessionId, 'PROFILE_AVAILABLE', key);
   }
 
-  onQuoteResolution(
-    userId: number,
-    event: 'QUOTE_RESOLVED' | 'QUOTE_FAILED',
-    data: unknown,
-  ) {
-    this.pushToUser(userId, event, data);
-  }
-
   onProfileUnavailable(
     sessionId: number,
     data: {

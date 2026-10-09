@@ -12,12 +12,19 @@ import {
 } from '../../user-avatar/user-avatar.component';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
+import { QuoteBlockComponent } from '../quote-block/quote-block.component';
+import type { HistoryAnchor } from '../../../services/history-anchor';
 import { parseForwardCard } from './forward-card';
 
 @Component({
   selector: 'app-msg-forward-row',
   standalone: true,
-  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe],
+  imports: [
+    DateRowComponent,
+    UserAvatarComponent,
+    TranslocoPipe,
+    QuoteBlockComponent,
+  ],
   templateUrl: './forward-row.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './forward-row.component.scss',
@@ -25,6 +32,7 @@ import { parseForwardCard } from './forward-card';
 export class ForwardRowComponent {
   readonly UserAvatarType = UserAvatarType;
   readonly data = input.required<ChatMsgData>();
+  readonly quoteJump = output<HistoryAnchor>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
   readonly showDate = input(false);

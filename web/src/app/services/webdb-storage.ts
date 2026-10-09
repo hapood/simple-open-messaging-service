@@ -2247,12 +2247,9 @@ export class WebdbStorage {
     update: ClientGroupMetaApply,
   ): Promise<GroupMetaCommitPatch | null> {
     return this.runAccountOperation(async () => {
-      const patches = await this.applyStateFeedPageInternal(
-        [],
-        null,
-        false,
-        [update],
-      );
+      const patches = await this.applyStateFeedPageInternal([], null, false, [
+        update,
+      ]);
       return patches[0] ?? null;
     });
   }
@@ -4020,7 +4017,8 @@ export class WebdbStorage {
               originSeq,
             ]);
       if (!row || !isCachedMessageBody(row)) return undefined;
-      if (row.publisherNamespaceId !== namespaceId) return undefined;
+      if (namespaceId !== 0 && row.publisherNamespaceId !== namespaceId)
+        return undefined;
       return row;
     });
   }

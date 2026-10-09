@@ -192,16 +192,6 @@ export class FederationInboundMessagePageService {
             ? parseTextMessageContent(item.content)
             : null;
         if (
-          item.contentType === ContentType.PURE_TEXT &&
-          (!incomingText || incomingText.quote !== undefined)
-        ) {
-          throw new BusinessException(
-            BusinessCode.FEDERATION_MALFORMED,
-            'invalid federated text quote',
-            HttpStatus.BAD_REQUEST,
-          );
-        }
-        if (
           item.contentType === ContentType.SYSTEM &&
           (item.quoteTarget !== undefined || item.quoteDigest !== undefined)
         ) {

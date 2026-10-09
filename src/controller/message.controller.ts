@@ -92,6 +92,10 @@ import {
   unicodeCodePointLength,
   hasUnpairedSurrogate,
 } from '../../shared/text-message-content.js';
+import {
+  readMessageContentQuote,
+  withMessageContentQuote,
+} from '../../shared/message-content-quote.js';
 
 @ApiTags('message')
 @Controller()
@@ -260,6 +264,15 @@ export class MessageController {
       }
     }
     const contentType = dto.contentType ?? ContentType.PURE_TEXT;
+    let contentQuote: ReturnType<typeof readMessageContentQuote>;
+    try {
+      contentQuote = readMessageContentQuote(dto.content);
+    } catch {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid message quote',
+      );
+    }
     if (contentType === ContentType.PURE_TEXT) {
       // Keep the pre-envelope wire contract working: older clients send the text body directly.
       // JSON-looking input is still required to be a valid envelope so malformed quote payloads are
@@ -296,17 +309,12 @@ export class MessageController {
       }
       dto.content = stringifyTextMessageContent({
         text: await this.canonicalizeMentions(req, textContent.text),
-        ...(textContent.quote
-          ? {
-              quote: {
-                seq: textContent.quote.seq,
-                ...(textContent.quote.digest
-                  ? { digest: textContent.quote.digest }
-                  : {}),
-              },
-            }
-          : {}),
       });
+      if (contentQuote) {
+        dto.content = withMessageContentQuote(dto.content, {
+          seq: contentQuote.seq,
+        });
+      }
     } else if (!dto.content?.trim()) {
       throw new BusinessException(BusinessCode.MESSAGE_EMPTY, 'no content');
     }
@@ -341,9 +349,7 @@ export class MessageController {
       }>;
     } = { clearedThroughSeq: req.threadAccess.clearedSeq };
     const hasQuote =
-      dto.quoteTargetSeq !== undefined ||
-      (contentType === ContentType.PURE_TEXT &&
-        parseTextMessageContent(dto.content)?.quote !== undefined);
+      dto.quoteTargetSeq !== undefined || contentQuote !== undefined;
     if (
       hasQuote &&
       req.threadAccess.threadType === 'P2P' &&
@@ -793,6 +799,24 @@ export class MessageController {
     @Request() req: FastifyRequest,
     @Body() dto: QueryMessagesDto,
   ) {
+    const hasOriginAnchor =
+      dto.anchorNamespaceId !== undefined || dto.anchorOriginSeq !== undefined;
+    const hasAnchor = hasOriginAnchor || dto.anchorSeq !== undefined;
+    if (
+      (hasOriginAnchor &&
+        (dto.anchorNamespaceId === undefined ||
+          dto.anchorOriginSeq === undefined)) ||
+      (hasOriginAnchor && dto.anchorSeq !== undefined) ||
+      (hasAnchor &&
+        (dto.after !== undefined ||
+          dto.before !== undefined ||
+          dto.through !== undefined))
+    )
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'provide one complete anchor without pagination cursors',
+        HttpStatus.BAD_REQUEST,
+      );
     if (dto.after !== undefined && dto.before !== undefined)
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
@@ -802,6 +826,7 @@ export class MessageController {
     if (
       dto.after === undefined &&
       dto.before === undefined &&
+      !hasAnchor &&
       (dto.through !== undefined || dto.take !== undefined)
     )
       throw new BusinessException(
@@ -828,6 +853,13 @@ export class MessageController {
       before,
       through,
       take: dto.take ?? 20,
+      ...(dto.anchorSeq === undefined ? {} : { anchorSeq: dto.anchorSeq }),
+      ...(hasOriginAnchor
+        ? {
+            anchorNamespaceId: dto.anchorNamespaceId,
+            anchorOriginSeq: dto.anchorOriginSeq,
+          }
+        : {}),
     });
   }
 

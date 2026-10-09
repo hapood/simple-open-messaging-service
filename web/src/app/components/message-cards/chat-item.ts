@@ -98,6 +98,7 @@ interface ChatMessageBase {
     /** A local tombstone makes the preview unavailable and disables navigation. */
     unavailable?: boolean;
     status?: 'PENDING' | 'NOT_FOUND';
+    anchor?: import('../../services/history-anchor').HistoryAnchor;
     /** Jump target in the current message source; absent for a display-only snapshot. */
     seq?: number;
     author?: string;

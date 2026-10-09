@@ -388,7 +388,7 @@ describe('WebdbService', () => {
             {
               feedId: '3',
               operation: 'GROUP_PROFILE',
-              body: { profileRev: 4 },
+              body: { profileNamespaceId: 0, profileRev: 4 },
             },
           ],
         },
@@ -578,7 +578,11 @@ describe('WebdbService', () => {
             ],
           },
         }),
-      ).resolves.toBeUndefined();
+      ).resolves.toMatchObject({
+        threadId: 90,
+        groupMetaFeedId: '2',
+        memberCount: 2,
+      });
       expect(await db!.getAll('members')).toHaveLength(2);
       expect(await webdb.getSyncState('stateFeedId')).toBe(98);
       expect(
@@ -632,6 +636,8 @@ describe('WebdbService', () => {
       async (type) => {
         await webdb.openForUser('1');
         const message: Message = {
+          publisherNamespaceId: 0,
+          originSeq: 4,
           threadId: 42,
           namespaceId: 0,
           seq: 4,
@@ -672,9 +678,57 @@ describe('WebdbService', () => {
       },
     );
 
+    it('indexes origin targets by thread and emits only after the cache commit', async () => {
+      await webdb.openForUser('1');
+      const message: Message = {
+        threadId: 42,
+        seq: 104,
+        publisherNamespaceId: 3,
+        originSeq: 4,
+        namespaceId: 0,
+        creator: { account: 'alice', namespaceId: 0 },
+        profileRev: 1,
+        createdAt: 100,
+        updatedAt: 100,
+        contentType: 'PURE_TEXT',
+        content: '{"text":"target"}',
+        isDeleted: false,
+        localState: 'READY',
+      };
+      const reads: Promise<Message | undefined>[] = [];
+      const sub = webdb.messageDbCommitted$.subscribe((event) => {
+        expect(event).toEqual({ userId: 1, threadId: 42 });
+        reads.push(webdb.getMessageByOrigin(42, 3, 4));
+      });
+      await webdb.putCachedMessages([message]);
+      expect(await Promise.all(reads)).toEqual([message]);
+      expect(await webdb.getMessageByOrigin(99, 3, 4)).toBeUndefined();
+      expect(await webdb.getMessageByOrigin(42, 9, 4)).toBeUndefined();
+      expect(await webdb.getMessageByOrigin(42, 0, 104)).toEqual(message);
+      sub.unsubscribe();
+      await webdb.applyDeletedMessages(
+        42,
+        [
+          {
+            threadId: 42,
+            messageSeq: 104,
+            deletionSeq: 1,
+            type: 'USER_RETRACTION',
+            createdAt: 100,
+            updatedAt: 100,
+          },
+        ],
+        1,
+      );
+      expect(await webdb.getMessageByOrigin(42, 3, 4)).toBeUndefined();
+      expect(await webdb.getDeletedMessageSeqs(42, [104])).toEqual([104]);
+    });
+
     it('commits identified tombs as timeline slots without exposing deleted bodies', async () => {
       await webdb.openForUser('1');
       const message: Message = {
+        publisherNamespaceId: 0,
+        originSeq: 4,
         threadId: 42,
         namespaceId: 0,
         seq: 4,
@@ -730,6 +784,8 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       const owner = { account: 'me', namespaceId: 0 };
       const base: Message = {
+        publisherNamespaceId: 0,
+        originSeq: 1,
         threadId: 42,
         namespaceId: 0,
         seq: 1,
@@ -830,6 +886,8 @@ describe('WebdbService', () => {
     it('keeps a system profile correction local to its row across cache refills', async () => {
       await webdb.openForUser('1');
       const message: Message = {
+        publisherNamespaceId: 0,
+        originSeq: 1,
         threadId: 42,
         namespaceId: 0,
         seq: 1,
@@ -870,6 +928,8 @@ describe('WebdbService', () => {
         Array.from(
           { length: 120 },
           (_, i): Message => ({
+            publisherNamespaceId: 0,
+            originSeq: i + 1,
             threadId: 42,
             namespaceId: 0,
             seq: i + 1,
@@ -1518,7 +1578,7 @@ describe('WebdbService', () => {
         status: 'REQUESTED' | 'ACCEPTED',
       ): ClientStateFeedItem => ({
         feedId,
-        namespaceId: direction === 'OUTGOING' ? 0 : 12,
+        namespaceId: 12,
         account: direction === 'OUTGOING' ? 'bravo' : 'admin',
         domain: direction === 'OUTGOING' ? 'local.test' : 'bravo.test',
         eventType: 'RELATIONSHIP_INTENT',
@@ -1661,7 +1721,7 @@ describe('WebdbService', () => {
         status: 'REQUESTED' | 'REVOKED',
       ): ClientStateFeedItem => ({
         feedId,
-        namespaceId: direction === 'INCOMING' ? 12 : 0,
+        namespaceId: 12,
         account: direction === 'INCOMING' ? 'alice' : 'me',
         domain: direction === 'INCOMING' ? 'peer.test' : 'local.test',
         eventType: 'RELATIONSHIP_INTENT',
@@ -1734,7 +1794,7 @@ describe('WebdbService', () => {
         domain: 'peer.test',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'me',
-        subjectNamespaceId: 12,
+        subjectNamespaceId: 0,
         body: {
           status: 'REQUESTED',
           note: 'hello',
@@ -2067,7 +2127,7 @@ describe('WebdbService', () => {
             {
               feedId: '1',
               operation: 'GROUP_PROFILE',
-              body: { profileRev: 4 },
+              body: { profileNamespaceId: 0, profileRev: 4 },
             },
             {
               feedId: '2',

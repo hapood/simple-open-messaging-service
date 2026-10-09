@@ -10,6 +10,8 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatIconModule } from '@angular/material/icon';
 import { MEDIA_STATUS, type ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
+import { QuoteBlockComponent } from '../quote-block/quote-block.component';
+import type { HistoryAnchor } from '../../../services/history-anchor';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -36,6 +38,7 @@ import {
   selector: 'app-msg-file-row',
   standalone: true,
   imports: [
+    QuoteBlockComponent,
     DateRowComponent,
     UserAvatarComponent,
     TranslocoPipe,
@@ -51,6 +54,7 @@ export class FileRowComponent {
   /** Exposed for the template (status comparisons use MEDIA_STATUS.* — no bare literals). */
   readonly MEDIA_STATUS = MEDIA_STATUS;
   readonly data = input.required<ChatMsgData>();
+  readonly quoteJump = output<HistoryAnchor>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
   readonly showDate = input<boolean>(false);

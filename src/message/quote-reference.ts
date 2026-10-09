@@ -4,9 +4,9 @@ import type { Database } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
 import {
   parseMessageContentQuote,
+  storedQuoteCoordinate,
   withMessageContentQuote,
 } from '../../shared/message-content-quote.js';
-import { storedQuoteCoordinate } from '../../shared/text-message-content.js';
 
 type Message = typeof tables.message.$inferSelect;
 

@@ -37,6 +37,9 @@ interface RowComponent {
   isShowHead: InputSignal<boolean>;
   isGroupStart: InputSignal<boolean>;
   showDate: InputSignal<boolean>;
+  quoteJump?: import('@angular/core').OutputEmitterRef<
+    import('../../services/history-anchor').HistoryAnchor
+  >;
 }
 
 const DATE_SEPARATOR_HEIGHT_PX = 47;
@@ -180,7 +183,9 @@ export function createMsgCbElement(
     memberId?: number,
   ) => void,
   onOpenForward?: (bundleId: string) => void,
-  onQuoteJump?: (seq: number) => void,
+  onQuoteJump?: (
+    anchor: import('../../services/history-anchor').HistoryAnchor,
+  ) => void,
   onOpenMemberProfile?: (identityKey: string, anchor: DOMRect) => void,
 ): CbElement<ChatItemData> {
   const data = item.data as ChatMsgData; // date is derived at the render layer
@@ -513,10 +518,8 @@ export function createMsgCbElement(
       base();
     };
   };
-  if (comp === TextRowComponent && onQuoteJump) {
-    const sub = (ref.instance as TextRowComponent).quoteJump.subscribe(
-      onQuoteJump,
-    );
+  if (ref.instance.quoteJump && onQuoteJump) {
+    const sub = ref.instance.quoteJump.subscribe(onQuoteJump);
     wrapDestroy(() => sub.unsubscribe());
   }
   if (onRetry) {

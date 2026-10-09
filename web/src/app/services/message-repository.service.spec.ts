@@ -90,6 +90,103 @@ describe('MessageRepository', () => {
     await webdb.openForUser('1');
   });
 
+  it('resolves origin navigation to local seq without extending coverage', async () => {
+    queryMessageHistoryPageSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        data: {
+          messages: [msg(42, 104)],
+          gaps: [],
+          scannedThrough: 1,
+          hasMore: false,
+          resolvedAnchorSeq: 104,
+        },
+      }),
+    );
+    expect(
+      await repo.resolveHistoryAnchor(42, {
+        kind: 'origin',
+        namespaceId: 3,
+        originSeq: 4,
+        localSeq: 999,
+      }),
+    ).toBe(104);
+    expect(queryMessageHistoryPageSpy).toHaveBeenCalledWith({
+      threadId: 42,
+      take: 1,
+      anchorNamespaceId: 3,
+      anchorOriginSeq: 4,
+    });
+    expect((await webdb.getMessage(42, 104))?.seq).toBe(104);
+    expect(await webdb.getMessageRanges(42)).toEqual([]);
+  });
+
+  it('reads the resolved local anchor from the response rather than trusting the input', async () => {
+    queryMessageHistoryPageSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        data: {
+          messages: [msg(42, 104)],
+          gaps: [],
+          scannedThrough: 1,
+          hasMore: false,
+          resolvedAnchorSeq: 104,
+        },
+      }),
+    );
+    expect(await repo.resolveHistoryAnchor(42, { kind: 'local', seq: 4 })).toBe(
+      104,
+    );
+    expect(queryMessageHistoryPageSpy).toHaveBeenCalledWith({
+      threadId: 42,
+      take: 1,
+      anchorSeq: 4,
+    });
+  });
+
+  it('does not cache an unresolved anchor', async () => {
+    const put = vi.spyOn(webdb, 'putCachedMessages');
+    queryMessageHistoryPageSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        data: {
+          messages: [],
+          gaps: [],
+          scannedThrough: 0,
+          hasMore: false,
+          resolvedAnchorSeq: null,
+        },
+      }),
+    );
+    expect(
+      await repo.resolveHistoryAnchor(42, {
+        kind: 'origin',
+        namespaceId: 3,
+        originSeq: 4,
+      }),
+    ).toBeNull();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it('rejects anchor slots from another thread before caching', async () => {
+    queryMessageHistoryPageSpy.mockReturnValueOnce(
+      of({
+        code: 0,
+        data: {
+          messages: [msg(99, 104)],
+          gaps: [],
+          scannedThrough: 1,
+          hasMore: false,
+          resolvedAnchorSeq: 104,
+        },
+      }),
+    );
+    await expect(
+      repo.resolveHistoryAnchor(42, { kind: 'local', seq: 4 }),
+    ).rejects.toThrow('different thread');
+    expect(await webdb.getMessage(99, 104)).toBeUndefined();
+  });
+
   it('stops cursor recovery when the server returns unchanged bounds', async () => {
     queryMessageHistoryPageSpy.mockReturnValue(
       of({ code: 30006, data: { resumeAfter: 0, resumeBefore: 11 } }),
@@ -385,5 +482,4 @@ describe('MessageRepository', () => {
       deletionType: 'MODERATION_REMOVAL',
     });
   });
-
 });

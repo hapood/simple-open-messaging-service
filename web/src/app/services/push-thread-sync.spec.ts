@@ -245,6 +245,8 @@ describe('Push thread-feed synchronization', () => {
 
   it('rebases the server count using local read progress, counting tomb slots and excluding own messages', async () => {
     const message: Message = {
+      publisherNamespaceId: 0,
+      originSeq: 1,
       threadId: 7,
       namespaceId: 0,
       seq: 1,
@@ -279,9 +281,14 @@ describe('Push thread-feed synchronization', () => {
       ],
       1,
     );
-    await storage.mergeThreadStates([{
-      ...snapshot(1), messageEndSeq: 2, unreadCount: 2, lastMentionSeq: null,
-    }]);
+    await storage.mergeThreadStates([
+      {
+        ...snapshot(1),
+        messageEndSeq: 2,
+        unreadCount: 2,
+        lastMentionSeq: null,
+      },
+    ]);
     await storage.advanceThreadRead(7, 2);
     const result = await syncPushThreads(
       storage,

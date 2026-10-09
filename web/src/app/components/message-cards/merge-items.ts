@@ -66,7 +66,12 @@ export function mergeAlbumItems(
   while (i < items.length) {
     const it = items[i];
     const msg = it.data;
-    if (msg.type === 'msg' && isAlbumMedia(msg.contentType) && msg.images) {
+    if (
+      msg.type === 'msg' &&
+      isAlbumMedia(msg.contentType) &&
+      msg.images &&
+      !msg.quote
+    ) {
       const imgs = [...msg.images];
       let boundary = it.boundary; // head's boundary wins
       let j = i + 1;
@@ -74,6 +79,7 @@ export function mergeAlbumItems(
         const nj = items[j].data;
         if (
           nj.type !== 'msg' ||
+          !!nj.quote ||
           !isAlbumMedia(nj.contentType) ||
           nj.creator !== msg.creator
         )
@@ -145,7 +151,9 @@ export function absorbAlbumTail(
     t.type !== 'msg' ||
     ic.type !== 'msg' ||
     !isAlbumMedia(t.contentType) ||
-    !isAlbumMedia(ic.contentType)
+    !isAlbumMedia(ic.contentType) ||
+    !!t.quote ||
+    !!ic.quote
   ) {
     return null;
   }

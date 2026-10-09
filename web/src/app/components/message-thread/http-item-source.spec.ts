@@ -135,6 +135,12 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     }>();
     const getDeletedMessageSeqs = vi.fn().mockResolvedValue([]);
     const onQuoteDeleted = vi.fn();
+    const onQuoteUpdated = vi.fn();
+    const slotsChanged$ = new Subject<number>();
+    const getMessageByOrigin = vi.fn().mockResolvedValue({
+      ...row(44, 1),
+      content: JSON.stringify({ text: 'original message' }),
+    });
     const reconnectSignal$ = new Subject<void>();
     let truncateSeq: number | undefined;
     liveSignal$.subscribe((signal) => {
@@ -243,6 +249,8 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       );
     const repo = {
       queryMessages,
+      slotsChanged$,
+      getMessageByOrigin,
       deletedLive$,
       getDeletedMessageSeqs,
       queryNativeMessageHistory,
@@ -318,18 +326,14 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       resolve: vi
         .fn()
         .mockName('resolve')
-        .mockImplementation(
-          (demand: {
-            target: { account: string };
-          }) => {
-            const user = users.find(
-              (candidate) =>
-                candidate.account.toLowerCase() ===
-                demand.target.account.toLowerCase(),
-            );
-            return of(user);
-          },
-        ),
+        .mockImplementation((demand: { target: { account: string } }) => {
+          const user = users.find(
+            (candidate) =>
+              candidate.account.toLowerCase() ===
+              demand.target.account.toLowerCase(),
+          );
+          return of(user);
+        }),
     } as unknown as ProfileRepository;
     const activeProfileRepo = resolutionRepo ?? profileRepo;
     const newerAvailable = vi.fn().mockName('onNewerAvailable');
@@ -340,6 +344,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       outbox,
       {
         onQuoteDeleted,
+        onQuoteUpdated,
         onNewerAvailable: newerAvailable,
       },
       messages as never,
@@ -350,6 +355,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       deletedLive$,
       getDeletedMessageSeqs,
       onQuoteDeleted,
+      onQuoteUpdated,
+      slotsChanged$,
+      getMessageByOrigin,
       repo,
       liveSignal$,
       reconnectSignal$,
@@ -570,9 +578,15 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     src.finishLocalInit(undefined);
     const queryMessages = repo.queryMessages as Mock;
-    let finishQuery!: (value: { data: MessageQueryRow[]; hasMore: boolean }) => void;
+    let finishQuery!: (value: {
+      data: MessageQueryRow[];
+      hasMore: boolean;
+    }) => void;
     queryMessages.mockImplementationOnce(
-      () => new Promise((resolve) => { finishQuery = resolve; }),
+      () =>
+        new Promise((resolve) => {
+          finishQuery = resolve;
+        }),
     );
     const resultPromise = firstValueFrom(src.requestNewer(100, 50));
     await vi.waitFor(() => expect(queryMessages).toHaveBeenCalledOnce());
@@ -598,10 +612,16 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     const reads = new StableReadTracker(commit);
     reads.startFromViewport([100]);
     commit.mockClear();
-    let finishQuery!: (value: { data: MessageQueryRow[]; hasMore: boolean }) => void;
+    let finishQuery!: (value: {
+      data: MessageQueryRow[];
+      hasMore: boolean;
+    }) => void;
     const queryMessages = repo.queryMessages as Mock;
     queryMessages.mockImplementationOnce(
-      () => new Promise((resolve) => { finishQuery = resolve; }),
+      () =>
+        new Promise((resolve) => {
+          finishQuery = resolve;
+        }),
     );
     const page = firstValueFrom(src.requestNewer(100, 50));
     await vi.waitFor(() => expect(queryMessages).toHaveBeenCalledOnce());
@@ -613,7 +633,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     finishQuery({ data: [row(101, 2)], hasMore: false });
     const delivered = await page;
     expect(delivered.kind).toBe('items');
-    expect(delivered.kind === 'items' ? delivered.items.map((item) => item.id) : []).toEqual([101]);
+    expect(
+      delivered.kind === 'items' ? delivered.items.map((item) => item.id) : [],
+    ).toEqual([101]);
     reads.noteFullyVisible([101]); // a layout callback may still fire while hidden
     expect(commit.mock.calls).toEqual([[100]]);
 
@@ -1298,17 +1320,113 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(items[0].data.status).toBeUndefined();
   });
 
+  it('refreshes an unresolved mounted quote after a same-thread DB commit and unregisters', async () => {
+    const { src, getMessageByOrigin, slotsChanged$, onQuoteUpdated } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+    });
+    getMessageByOrigin.mockResolvedValue(undefined);
+    const unregister = src.mountQuote(101, {
+      anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
+    });
+    await vi.waitFor(() => expect(getMessageByOrigin).toHaveBeenCalledOnce());
+    getMessageByOrigin.mockResolvedValue({
+      ...row(44, 1),
+      content: '{"text":"new target"}',
+    });
+    slotsChanged$.next(99);
+    expect(getMessageByOrigin).toHaveBeenCalledOnce();
+    slotsChanged$.next(42);
+    await vi.waitFor(() =>
+      expect(onQuoteUpdated).toHaveBeenCalledWith(
+        101,
+        expect.objectContaining({ seq: 44, body: 'new target' }),
+      ),
+    );
+    unregister();
+    const calls = getMessageByOrigin.mock.calls.length;
+    slotsChanged$.next(42);
+    expect(getMessageByOrigin).toHaveBeenCalledTimes(calls);
+    src.destroy();
+  });
+
+  it('rechecks persisted tombs after mounting', async () => {
+    const { src, getDeletedMessageSeqs, onQuoteUpdated } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+    });
+    getDeletedMessageSeqs.mockResolvedValue([44]);
+    src.mountQuote(101, {
+      anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
+      seq: 44,
+      body: 'old',
+    });
+    await vi.waitFor(() =>
+      expect(onQuoteUpdated).toHaveBeenCalledWith(101, {
+        seq: 44,
+        unavailable: true,
+      }),
+    );
+    src.destroy();
+  });
+
+  it('does not restore a summary when a tomb event arrives during target lookup', async () => {
+    const { src, getMessageByOrigin, deletedLive$, onQuoteUpdated } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+    });
+    getMessageByOrigin.mockImplementation(async () => {
+      deletedLive$.next({
+        threadId: 42,
+        deletions: [{ seq: 44, type: 'USER_RETRACTION' }],
+      });
+      return { ...row(44, 1), content: '{"text":"stale"}' };
+    });
+    src.mountQuote(101, {
+      anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
+    });
+    await vi.waitFor(() =>
+      expect(onQuoteUpdated).toHaveBeenCalledWith(101, {
+        seq: 44,
+        unavailable: true,
+      }),
+    );
+    src.destroy();
+  });
+
+  it('discards a lookup completing after unmount', async () => {
+    const { src, getMessageByOrigin, onQuoteUpdated } = setup({
+      code: 0,
+      message: 'ok',
+      data: [],
+    });
+    let finish!: (value: unknown) => void;
+    getMessageByOrigin.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const unregister = src.mountQuote(101, {
+      anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
+    });
+    unregister();
+    finish({ ...row(44, 1), content: '{"text":"late"}' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onQuoteUpdated).not.toHaveBeenCalled();
+    src.destroy();
+  });
+
   function quotedReply() {
     return {
       ...row(101, 2),
       content: JSON.stringify({
         text: 'reply',
         quote: {
-          seq: 44,
-          author: 'Alice',
-          body: 'old preview',
-          image: '/old.jpg',
-          contentType: 'IMAGE',
+          namespaceId: 3,
+          originSeq: 4,
         },
       }),
     };
@@ -1379,16 +1497,14 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     src.destroy();
   });
 
-  it('rawToItems preserves the server-authored structured reply and jump target', async () => {
+  it('rawToItems builds the reply summary from a real cached target', async () => {
     const quoted = {
       ...row(101, 2),
       content: JSON.stringify({
         text: 'reply',
         quote: {
-          seq: 44,
-          author: 'Alice',
-          body: 'original message',
-          contentType: 'PURE_TEXT',
+          namespaceId: 3,
+          originSeq: 4,
         },
       }),
     };
@@ -1402,10 +1518,9 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     const items = await src.init(-1, 50, 0);
 
     expect(items[0].data.quote).toEqual({
+      anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
       seq: 44,
-      author: 'Alice',
       body: 'original message',
-      contentType: 'PURE_TEXT',
     });
   });
 
@@ -1429,7 +1544,10 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
   it('keeps an unavailable quote jump target with an empty preview for localized fallback', async () => {
     const quoted = {
       ...row(101, 2),
-      content: JSON.stringify({ text: 'reply', quote: { seq: 44 } }),
+      content: JSON.stringify({
+        text: 'reply',
+        quote: { namespaceId: 3, originSeq: 4 },
+      }),
     };
     const { src } = setup({
       code: 0,
@@ -1440,7 +1558,11 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
 
     const items = await src.init(-1, 50, 0);
 
-    expect(items[0].data.quote).toEqual({ seq: 44 });
+    expect(items[0].data.quote).toEqual({
+      anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
+      seq: 44,
+      body: 'original message',
+    });
   });
 
   it('restores a persisted AUDIO message as a playable voice card after reopening the thread', async () => {

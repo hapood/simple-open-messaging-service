@@ -48,6 +48,33 @@ describe('MediaRowComponent — deferred image loading', () => {
     });
   });
 
+  it.each(['IMAGE', 'VIDEO'] as const)(
+    'renders a clickable origin quote on %s without opening its media',
+    async (contentType) => {
+      const media = image(1, 4096);
+      const fixture = await render([media], contentType);
+      const anchor = { kind: 'origin' as const, namespaceId: 3, originSeq: 4 };
+      fixture.componentRef.setInput('data', {
+        ...message([media], contentType),
+        quote: { anchor },
+      });
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const jumped = vi.fn();
+      const opened = vi.fn();
+      fixture.componentInstance.quoteJump.subscribe(jumped);
+      fixture.componentInstance.openImage.subscribe(opened);
+      const quote = fixture.nativeElement.querySelector(
+        'button.msg-quote',
+      ) as HTMLButtonElement;
+      expect(quote.textContent).toContain('Click to view quoted message');
+      quote.click();
+      expect(jumped).toHaveBeenCalledWith(anchor);
+      expect(opened).not.toHaveBeenCalled();
+      fixture.destroy();
+    },
+  );
+
   it('opens the viewer without rendering the old click-to-load copy', async () => {
     const images = [image(1, 4096)];
     const fixture = await render(images);

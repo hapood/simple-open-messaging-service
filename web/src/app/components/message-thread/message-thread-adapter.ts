@@ -25,15 +25,28 @@ import type {
   UploadProgressHandler,
 } from '../../services/message.service';
 import { MESSAGE_SEND_TIMEOUT_MS } from './message-send-timeout';
+import type { HistoryAnchor } from '../../services/history-anchor';
 
 export interface MessageThreadLiveCallbacks {
   onQuoteDeleted?: (replySeq: number, targetSeq: number) => void;
+  onQuoteUpdated?: (
+    replySeq: number,
+    quote: import('../message-cards/chat-item').ChatMsgData['quote'],
+  ) => void;
   onNewerAvailable: (seq: number) => void;
   onMediaStatus: (seq: number, status: MediaStatus) => void;
 }
 
 /** The complete source contract consumed by the production thread shell. */
 export interface MessageThreadSource extends CbSource<ChatItemData> {
+  /** Optional for alternate offline/demo sources; production resolves through the repository. */
+  resolveHistoryAnchor?(anchor: HistoryAnchor): Promise<number | null>;
+  mountQuote?(
+    replySeq: number,
+    quote: NonNullable<
+      import('../message-cards/chat-item').ChatMsgData['quote']
+    >,
+  ): () => void;
   addPending(item: CbItem<ChatItemData>): void;
   pendingByClientMessageId(
     clientMessageId: string,

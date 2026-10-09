@@ -4,10 +4,13 @@ import {
   computed,
   inject,
   input,
+  output,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
+import { QuoteBlockComponent } from '../quote-block/quote-block.component';
+import type { HistoryAnchor } from '../../../services/history-anchor';
 import {
   UserAvatarComponent,
   UserAvatarType,
@@ -26,7 +29,12 @@ interface ContactCard {
 @Component({
   selector: 'app-msg-contact-card-row',
   standalone: true,
-  imports: [UserAvatarComponent, DateRowComponent, TranslocoPipe],
+  imports: [
+    UserAvatarComponent,
+    DateRowComponent,
+    TranslocoPipe,
+    QuoteBlockComponent,
+  ],
   templateUrl: './contact-card-row.component.html',
   styleUrl: './contact-card-row.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -36,6 +44,7 @@ export class ContactCardRowComponent {
   private readonly nav = inject(NavStateMachineService);
   readonly UserAvatarType = UserAvatarType;
   readonly data = input.required<ChatMsgData>();
+  readonly quoteJump = output<HistoryAnchor>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
   readonly showDate = input(false);

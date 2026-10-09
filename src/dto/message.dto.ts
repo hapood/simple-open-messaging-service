@@ -386,6 +386,42 @@ export class QueryMessagesDto {
   through?: number;
 
   @ApiPropertyOptional({
+    example: 7,
+    description:
+      'Origin anchor namespace. When supplied with originSeq, the server resolves it to the local thread seq before reading history.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  anchorNamespaceId?: number;
+
+  @ApiPropertyOptional({
+    minimum: 1,
+    description:
+      'Local anchor sequence. Cannot be combined with origin anchor or pagination cursors.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(Number.MAX_SAFE_INTEGER)
+  anchorSeq?: number;
+
+  @ApiPropertyOptional({
+    example: 42,
+    description:
+      'Origin anchor sequence in anchorNamespaceId. Requires anchorNamespaceId and cannot be combined with after/before.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(Number.MAX_SAFE_INTEGER)
+  anchorOriginSeq?: number;
+
+  @ApiPropertyOptional({
     type: Number,
     example: 20,
     default: 20,

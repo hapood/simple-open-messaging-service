@@ -62,6 +62,7 @@ export interface MessageQueryPage {
   gaps: MessageHistoryGap[];
   scannedThrough: number;
   hasMore: boolean;
+  resolvedAnchorSeq: number | null;
 }
 
 export interface MessageQueryCursorData {
@@ -77,6 +78,9 @@ export interface MessageHistoryBackendRequest {
   after?: number;
   before?: number;
   through?: number;
+  anchorSeq?: number;
+  anchorNamespaceId?: number;
+  anchorOriginSeq?: number;
 }
 
 interface MessageTombstoneQueryPage {

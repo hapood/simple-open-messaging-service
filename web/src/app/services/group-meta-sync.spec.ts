@@ -57,6 +57,7 @@ function fixture() {
     applyGroupMetaPage: vi.fn(async ({ page }) => {
       thread.group.groupMetaFeedId = page.scannedThrough;
       thread.groupMetaRecoveryThrough = page.hasMore ? '3' : null;
+      return null;
     }),
   };
   return { storage, thread, state, unresolved };

@@ -144,6 +144,7 @@ import {
 } from './message-selection';
 import { MessageInteractionController } from './message-interaction.controller';
 import { jumpToMessage } from './message-jump';
+import type { HistoryAnchor } from '../../services/history-anchor';
 import { MessageForwardController } from './message-forward.controller';
 import {
   ThreadPasteQueueController,
@@ -1166,6 +1167,11 @@ export class MessageThreadComponent implements OnDestroy {
           mediaStatus: aggregate,
         });
       },
+      onQuoteUpdated: (replySeq, quote) => {
+        this.scroller?.mutateItem(replySeq, (item) => ({
+          ...item, data: { ...item.data, quote },
+        }));
+      },
       onQuoteDeleted: (replySeq: number, targetSeq: number) => {
         this.scroller?.mutateItem(replySeq, (item) => ({
           ...item,
@@ -1339,7 +1345,10 @@ export class MessageThreadComponent implements OnDestroy {
       (event, selectedItem, pointer, memberId) =>
         this.onMessageInteraction(event, selectedItem, pointer, memberId),
       (bundleId) => this.route.popupDlg(PopupType.FORWARD_DETAIL, { bundleId }),
-      (seq) => this.onSearchJump(seq),
+      async (anchor) => {
+        if (!(await this.jumpToHistoryAnchor(anchor)))
+          this.toast.warn(this.transloco.translate('chat.messageNotFound'));
+      },
       (userId, anchor) => void this.openSenderProfile(userId, anchor),
     );
     const contextId = this.messageContextMenu()?.targetSeq;
@@ -1351,6 +1360,11 @@ export class MessageThreadComponent implements OnDestroy {
       contextId,
     );
     this.bindMediaAvailability(rendered, item);
+    if (item.data.quote && this.source?.mountQuote) {
+      const unregister = this.source.mountQuote(item.id, item.data.quote);
+      const destroy = rendered.destroy.bind(rendered);
+      rendered.destroy = () => { unregister(); destroy(); };
+    }
     return rendered;
   }
 
@@ -2888,8 +2902,8 @@ export class MessageThreadComponent implements OnDestroy {
   /** Jump the kernel to a search match seq (from the search bar's prev/next). The kernel re-seeds around
    *  an unmounted seq and flashes the row via the existing highlight path. */
   async onSearchJump(id: number): Promise<void> {
-    const found = await jumpToMessage(this.scroller, id);
-    if (found === false) {
+    const found = await this.jumpToMessage(id);
+    if (!found) {
       this.toast.warn(this.transloco.translate('chat.messageNotFound'));
     }
   }
@@ -2904,7 +2918,19 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   async jumpToMessage(id: number): Promise<boolean> {
-    return (await jumpToMessage(this.scroller, id)) !== false;
+    return this.jumpToHistoryAnchor({ kind: 'local', seq: id });
+  }
+
+  async jumpToHistoryAnchor(anchor: HistoryAnchor): Promise<boolean> {
+    const source = this.source;
+    const scroller = this.scroller;
+    if (!source || !scroller) return false;
+    const seq = source.resolveHistoryAnchor
+      ? await source.resolveHistoryAnchor(anchor)
+      : anchor.kind === 'local' ? anchor.seq : null;
+    if (seq === null || source !== this.source || scroller !== this.scroller)
+      return false;
+    return (await jumpToMessage(scroller, seq)) !== false;
   }
 
   /** Recreate the injected source while keeping the production chatbox shell mounted. */

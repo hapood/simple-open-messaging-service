@@ -223,8 +223,8 @@ describe('MessageService.promoteOutboundBatchIfReady staged quote', () => {
     vi.clearAllMocks();
   });
 
-  it('resolves the staged quote target into a server-authored payload quote', async () => {
-    const { svc } = harness({
+  it('stores a durable quote but returns only client origin coordinates', async () => {
+    const { svc, messageReturning } = harness({
       stageContent: JSON.stringify({ _quoteTargetSeq: 4 }),
       quoteTarget: quoteTargetRow(),
     });
@@ -233,17 +233,23 @@ describe('MessageService.promoteOutboundBatchIfReady staged quote', () => {
     const content = JSON.parse(result!.message.content as string);
     expect(content).toMatchObject({
       url: `/uploads/msg-assets/aa/aa/${FILE_DIGEST}`,
-      quote: { seq: 4, digest: QUOTE_DIGEST },
+      quote: { namespaceId: 0, originSeq: 4 },
+    });
+    const stored = (await messageReturning())[0] as { content: string };
+    expect(JSON.parse(stored.content).quote).toEqual({
+      seq: 4,
+      digest: QUOTE_DIGEST,
     });
   });
 
-  it('derives payloadDigest over the wire projection with the quote digest', async () => {
-    const { svc } = harness({
+  it('derives payloadDigest over the durable wire projection with the quote digest', async () => {
+    const { svc, messageReturning } = harness({
       stageContent: JSON.stringify({ _quoteTargetSeq: 4 }),
       quoteTarget: quoteTargetRow(),
     });
     const result = await svc.promoteOutboundBatchIfReady(clientMessageId);
-    const content = result!.message.content as string;
+    const content = ((await messageReturning())[0] as { content: string })
+      .content;
     expect(result!.message.payloadDigest).toBe(
       wirePayloadDigest(
         'IMAGE' as ContentType,

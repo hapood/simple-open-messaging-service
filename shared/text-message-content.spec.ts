@@ -9,32 +9,30 @@ import {
 } from './text-message-content.js';
 
 describe('text message content protocol', () => {
-  it('round-trips text and a server-authored quote', () => {
-    const wire = stringifyTextMessageContent({
-      text: 'hello',
-      quote: { seq: 31, author: 'Alice', body: 'original' },
-    });
-    expect(parseTextMessageContent(wire)).toEqual({
-      text: 'hello',
-      quote: { seq: 31, author: 'Alice', body: 'original' },
-    });
+  it('round-trips only the text payload', () => {
+    const wire = stringifyTextMessageContent({ text: 'hello' });
+    expect(parseTextMessageContent(wire)).toEqual({ text: 'hello' });
     expect(requireTextMessageContent(wire).text).toBe('hello');
   });
 
-  it.each([
-    'plain legacy text',
-    '{}',
-    '{"text":1}',
-    '{"text":"hello","quote":null}',
-    '{"text":"hello","quote":{"seq":-1}}',
-    '{"text":"hello","quote":{"seq":1.5}}',
-    '{"text":"hello","quote":{"seq":1,"author":2}}',
-  ])('rejects malformed content: %s', (content) => {
-    expect(parseTextMessageContent(content)).toBeNull();
-    expect(() => requireTextMessageContent(content)).toThrow(
-      'invalid PURE_TEXT message envelope',
-    );
-  });
+  it.each([null, { seq: -1 }, { seq: 31, author: 'Alice' }])(
+    'leaves quote interpretation to the common envelope parser: %j',
+    (quote) => {
+      expect(
+        parseTextMessageContent(JSON.stringify({ text: 'hello', quote })),
+      ).toEqual({ text: 'hello' });
+    },
+  );
+
+  it.each(['plain legacy text', '{}', '{"text":1}'])(
+    'rejects malformed content: %s',
+    (content) => {
+      expect(parseTextMessageContent(content)).toBeNull();
+      expect(() => requireTextMessageContent(content)).toThrow(
+        'invalid PURE_TEXT message envelope',
+      );
+    },
+  );
 
   it('counts Unicode code points instead of UTF-16 code units', () => {
     const text = '😀'.repeat(TEXT_MESSAGE_MAX_CODE_POINTS);

@@ -20,8 +20,6 @@ import { LinkCardService } from '../../../services/link-card.service';
 import { RouteService } from '../../../services/route.service';
 import type { ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
-import { Subject } from 'rxjs';
-import { QuoteResolutionService } from '../../../services/quote-resolution.service';
 
 @Component({
   selector: 'app-user-avatar',
@@ -55,32 +53,17 @@ function message(quote: ChatMsgData['quote']): ChatMsgData {
 }
 
 describe('TextRowComponent — forwarded quote navigation', () => {
-  it('refreshes a pending quote on mount and displays the resolved result', async () => {
-    const results = new Subject<{
-      seq: number;
-      author: string;
-      body: string;
-    }>();
-    const resolve = vi.fn(() => results);
-    TestBed.overrideProvider(QuoteResolutionService, { useValue: { resolve } });
-    const ref = mount({
-      ...message({ seq: 0, status: 'PENDING' }),
-      threadId: 7,
-    });
+  it('keeps a missing origin target clickable without fetching a preview', async () => {
+    const anchor = { kind: 'origin' as const, namespaceId: 3, originSeq: 4 };
+    const ref = mount({ ...message({ anchor }), threadId: 7 });
     await TestBed.tick();
-    expect(resolve).toHaveBeenCalledWith({ threadId: 7, messageSeq: 2 });
-    expect(
-      (ref.location.nativeElement as HTMLElement).querySelector(
-        'button.msg-quote',
-      ),
-    ).toBeNull();
-    results.next({ seq: 5, author: 'Alice', body: 'loaded quote' });
-    ref.changeDetectorRef.detectChanges();
-    expect((ref.location.nativeElement as HTMLElement).textContent).toContain(
-      'loaded quote',
-    );
+    const targets: unknown[] = [];
+    ref.instance.quoteJump.subscribe((target) => targets.push(target));
+    (ref.location.nativeElement as HTMLElement)
+      .querySelector<HTMLButtonElement>('button.msg-quote')!
+      .click();
+    expect(targets).toEqual([anchor]);
     ref.destroy();
-    expect(results.observed).toBe(false);
   });
   beforeEach(() => {
     TestBed.configureTestingModule({
@@ -129,7 +112,8 @@ describe('TextRowComponent — forwarded quote navigation', () => {
 
   it('emits the bundle-local target id when the quoted message was forwarded', () => {
     const ref = mount(message({ author: 'Alice', body: 'original', seq: 1 }));
-    const targets: number[] = [];
+    const targets: import('../../../services/history-anchor').HistoryAnchor[] =
+      [];
     const subscription = ref.instance.quoteJump.subscribe((id) =>
       targets.push(id),
     );
@@ -138,7 +122,7 @@ describe('TextRowComponent — forwarded quote navigation', () => {
       .querySelector<HTMLButtonElement>('.msg-quote')!
       .click();
 
-    expect(targets).toEqual([1]);
+    expect(targets).toEqual([{ kind: 'local', seq: 1 }]);
     subscription.unsubscribe();
     ref.destroy();
   });
@@ -156,7 +140,8 @@ describe('TextRowComponent — forwarded quote navigation', () => {
       }),
     );
     const host = ref.location.nativeElement as HTMLElement;
-    const targets: number[] = [];
+    const targets: import('../../../services/history-anchor').HistoryAnchor[] =
+      [];
     ref.instance.quoteJump.subscribe((seq) => targets.push(seq));
     const quote = host.querySelector<HTMLElement>('.msg-quote')!;
     expect(quote.textContent?.trim()).toBe('Message not found');
@@ -179,16 +164,16 @@ describe('TextRowComponent — forwarded quote navigation', () => {
     ref.destroy();
   });
 
-  it('keeps an unavailable quote in a separate block before the message body', () => {
+  it('keeps an uncached quote in a separate clickable block before the message body', () => {
     const ref = mount(message({ seq: 1 }));
     const host = ref.location.nativeElement as HTMLElement;
     const bubble = host.querySelector<HTMLElement>('.msg-bubble')!;
     const quote = bubble.querySelector<HTMLElement>('.msg-quote')!;
     const body = bubble.querySelector<HTMLElement>('.msg-bubble-text')!;
 
-    expect(quote.textContent?.trim()).toBe('Message not found');
+    expect(quote.textContent?.trim()).toBe('Click to view quoted message');
     expect(body.textContent).toContain('reply');
-    expect(quote.nextElementSibling).toBe(body);
+    expect(quote.closest('app-msg-quote-block')?.nextElementSibling).toBe(body);
     expect(getComputedStyle(bubble).flexDirection).toBe('column');
 
     ref.destroy();

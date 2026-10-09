@@ -76,7 +76,10 @@ import {
   toRenderMessageEntities,
 } from '../../lib/message-entity';
 import { requireTextMessageContent } from '../../../../../shared/text-message-content';
+import { parseClientMessageQuote } from '../../../../../shared/client-message-quote';
+import { deriveMessagePreview } from '../../../../../shared/message-preview';
 import { isTauri } from '../../services/runtime';
+import type { HistoryAnchor } from '../../services/history-anchor';
 
 /**
  * Backend QueryMessagesDto enforces @Max(50) per request — the source owns this ceiling so the kernel's
@@ -95,6 +98,7 @@ class MessagePageLoadError extends Error {
 
 export interface HttpItemSourceLiveOpts {
   onQuoteDeleted?: (replySeq: number, targetSeq: number) => void;
+  onQuoteUpdated?: (replySeq: number, quote: ChatMsgData['quote']) => void;
   /** Presentation-only notice for the unread/new-message badge. It never invokes a kernel load or retry. */
   onNewerAvailable?: (seq: number) => void;
   /** A mediaStatus change landed for this thread through the shared availability service — the
@@ -106,6 +110,14 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private readonly deletedQuoteSeqs = new Set<number>();
   private readonly repliesByQuote = new Map<number, Set<number>>();
   private deletedSub?: Subscription;
+  private quoteDbSub?: Subscription;
+  private readonly mountedQuotes = new Map<
+    number,
+    { quote: NonNullable<ChatMsgData['quote']>; version: number }
+  >();
+  private readonly onQuoteUpdated: NonNullable<
+    HttpItemSourceLiveOpts['onQuoteUpdated']
+  >;
   private noOlder = false;
   private noNewer = true; // anchor is the latest; always true (SSE pushes one way only)
 
@@ -174,6 +186,15 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     private readonly memberProfiles?: MemberProfileRepository,
   ) {
     this.pending = outbox.forThread(conv.threadId);
+    this.onQuoteUpdated = live.onQuoteUpdated ?? (() => {});
+    this.quoteDbSub = repo.slotsChanged$
+      .pipe(filter((threadId) => threadId === conv.threadId))
+      .subscribe(() => {
+        for (const [seq, entry] of this.mountedQuotes) {
+          if (!entry.quote.body && !entry.quote.unavailable)
+            void this.refreshMountedQuote(seq).catch(() => {});
+        }
+      });
     this.deletedSub = repo.deletedLive$
       .pipe(filter((event) => event.threadId === conv.threadId))
       .subscribe(({ deletions }) => {
@@ -245,6 +266,73 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    *    global edges).
    * Returns ascending raw messages; the global oldest/newest carry a boundary flag.
    */
+  mountQuote(
+    replySeq: number,
+    quote: NonNullable<ChatMsgData['quote']>,
+  ): () => void {
+    const entry = { quote, version: 0 };
+    this.mountedQuotes.set(replySeq, entry);
+    // The DB listener is already active. Re-read after registration to cover
+    // any commit between initial construction and mounting the reply.
+    void this.refreshMountedQuote(replySeq).catch(() => {});
+    return () => {
+      if (this.mountedQuotes.get(replySeq) === entry)
+        this.mountedQuotes.delete(replySeq);
+    };
+  }
+
+  private async refreshMountedQuote(replySeq: number): Promise<void> {
+    const entry = this.mountedQuotes.get(replySeq);
+    if (!entry) return;
+    const version = ++entry.version;
+    let quote = entry.quote;
+    if (quote.unavailable) return;
+    const anchor = quote.anchor;
+    if (anchor?.kind === 'origin') {
+      const target = await this.repo.getMessageByOrigin(
+        this.conv.threadId,
+        anchor.namespaceId,
+        anchor.originSeq,
+      );
+      if (target)
+        quote = {
+          anchor,
+          seq: target.seq,
+          body: deriveMessagePreview(
+            target.contentType,
+            target.content,
+            toDisplayText,
+          ),
+        };
+    }
+    if (quote.seq !== undefined) {
+      const seq = quote.seq;
+      const replies = this.repliesByQuote.get(seq) ?? new Set<number>();
+      replies.add(replySeq);
+      this.repliesByQuote.set(seq, replies);
+      const deleted = await this.repo.getDeletedMessageSeqs(
+        this.conv.threadId,
+        [seq],
+      );
+      if (deleted.length || this.deletedQuoteSeqs.has(seq))
+        quote = { seq, unavailable: true };
+    }
+    if (this.mountedQuotes.get(replySeq) !== entry || entry.version !== version)
+      return;
+    if (
+      entry.quote.seq === quote.seq &&
+      entry.quote.body === quote.body &&
+      entry.quote.unavailable === quote.unavailable
+    )
+      return;
+    entry.quote = quote;
+    this.onQuoteUpdated(replySeq, quote);
+  }
+
+  resolveHistoryAnchor(anchor: HistoryAnchor): Promise<number | null> {
+    return this.repo.resolveHistoryAnchor(this.conv.threadId, anchor);
+  }
+
   async init(
     anchorId: number,
     olderCount: number,
@@ -606,6 +694,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }
 
   destroy(): void {
+    this.quoteDbSub?.unsubscribe();
+    this.mountedQuotes.clear();
     this.deletedSub?.unsubscribe();
     this.sseSub?.unsubscribe();
     this.sseSub = undefined;
@@ -646,14 +736,34 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   private async rawToItems(msgs: Message[]): Promise<CbItem<ChatItemData>[]> {
     const quoteSeqs = new Set<number>();
+    const quotes = new Map<number, ChatMsgData['quote']>();
     for (const message of msgs) {
-      if (message.contentType !== 'PURE_TEXT') continue;
-      const seq = requireTextMessageContent(message.content).quote?.seq;
-      if (seq === undefined) continue;
-      quoteSeqs.add(seq);
-      const replies = this.repliesByQuote.get(seq) ?? new Set<number>();
+      const reference = parseClientMessageQuote(message.content);
+      if (!reference) continue;
+      const target = await this.repo.getMessageByOrigin(
+        this.conv.threadId,
+        reference.namespaceId,
+        reference.originSeq,
+      );
+      const anchor: HistoryAnchor = { kind: 'origin', ...reference };
+      quotes.set(message.seq, {
+        anchor,
+        ...(target
+          ? {
+              seq: target.seq,
+              body: deriveMessagePreview(
+                target.contentType,
+                target.content,
+                toDisplayText,
+              ),
+            }
+          : {}),
+      });
+      if (!target) continue;
+      quoteSeqs.add(target.seq);
+      const replies = this.repliesByQuote.get(target.seq) ?? new Set<number>();
       replies.add(message.seq);
-      this.repliesByQuote.set(seq, replies);
+      this.repliesByQuote.set(target.seq, replies);
     }
     for (const item of this.pending) {
       if (item.data.quote?.seq !== undefined)
@@ -720,7 +830,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // bubbles. Backend serializeBody ships clientMessageId on the wire (no DTO whitelisting).
       const item: CbItem<ChatMsgData> = {
         id,
-        data: this.toMsgData(m, images, file),
+        data: { ...this.toMsgData(m, images, file), quote: quotes.get(m.seq) },
       };
       if (
         item.data.quote?.seq !== undefined &&
@@ -949,39 +1059,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       file,
       createdAtMs: m.createdAt,
       mediaStatus: m.mediaStatus,
-      quote: textContent?.quote
-        ? {
-            seq: textContent.quote.seq,
-            status: textContent.quote.status,
-            ...(textContent.quote.author !== undefined
-              ? { author: textContent.quote.author }
-              : {}),
-            ...(textContent.quote.body !== undefined
-              ? { body: textContent.quote.body }
-              : {}),
-            ...(textContent.quote.contentType !== undefined
-              ? {
-                  contentType: textContent.quote
-                    .contentType as ChatMsgData['contentType'],
-                }
-              : {}),
-            ...(textContent.quote.image !== undefined
-              ? { image: textContent.quote.image }
-              : {}),
-            ...(textContent.quote.imageLabel !== undefined
-              ? { imageLabel: textContent.quote.imageLabel }
-              : {}),
-            ...(textContent.quote.imageIdentity !== undefined
-              ? { imageIdentity: textContent.quote.imageIdentity }
-              : {}),
-            ...(textContent.quote.imageSize !== undefined
-              ? { imageSize: textContent.quote.imageSize }
-              : {}),
-            ...(textContent.quote.imageShape !== undefined
-              ? { imageShape: textContent.quote.imageShape }
-              : {}),
-          }
-        : undefined,
     };
   }
 

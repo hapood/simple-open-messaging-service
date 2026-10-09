@@ -5,9 +5,6 @@ import {
   input,
   output,
   ChangeDetectionStrategy,
-  effect,
-  signal,
-  Injector,
 } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
@@ -16,11 +13,10 @@ import {
   UserAvatarComponent,
   UserAvatarType,
 } from '../../user-avatar/user-avatar.component';
-import { ImageDownloadService } from '../../../services/image-download.service';
-import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
+import { QuoteBlockComponent } from '../quote-block/quote-block.component';
 import { LinkCardService } from '../../../services/link-card.service';
 import { ExternalLinkService } from '../../../services/external-link.service';
-import { QuoteResolutionService } from '../../../services/quote-resolution.service';
+import type { HistoryAnchor } from '../../../services/history-anchor';
 
 /**
  * Plain-text message row (WhatsApp style: avatar + name + bubble + tail + bottom-right timestamp).
@@ -35,47 +31,17 @@ import { QuoteResolutionService } from '../../../services/quote-resolution.servi
 @Component({
   selector: 'app-msg-text-row',
   standalone: true,
-  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe],
+  imports: [
+    DateRowComponent,
+    UserAvatarComponent,
+    TranslocoPipe,
+    QuoteBlockComponent,
+  ],
   templateUrl: './text-row.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './text-row.component.scss',
 })
 export class TextRowComponent {
-  private readonly injector = inject(Injector);
-  private readonly resolvedQuote = signal<{
-    key: string;
-    quote: NonNullable<ChatMsgData['quote']>;
-  } | null>(null);
-
-  constructor() {
-    effect((onCleanup) => {
-      const data = this.data();
-      if (
-        !data.threadId ||
-        data.quote?.status !== 'PENDING' ||
-        data.quote.unavailable
-      )
-        return;
-      const key = `${data.threadId}:${data.msgId}`;
-      const sub = this.injector
-        .get(QuoteResolutionService)
-        .resolve({ threadId: data.threadId, messageSeq: data.msgId })
-        .subscribe({
-          next: (quote) =>
-            this.resolvedQuote.set({
-              key,
-              quote: {
-                ...quote,
-                contentType: quote.contentType as ChatMsgData['contentType'],
-              },
-            }),
-          error: () => {}, // Keep pending state; another mount or reconnect may retry.
-        });
-      onCleanup(() => sub.unsubscribe());
-    });
-  }
-  private readonly downloads = inject(ImageDownloadService);
-  private readonly mediaThreshold = inject(MediaSizeThresholdService);
   private readonly linkCards = inject(LinkCardService);
   private readonly externalLinks = inject(ExternalLinkService);
   readonly UserAvatarType = UserAvatarType;
@@ -97,11 +63,6 @@ export class TextRowComponent {
       !this.data().isSelf,
   );
 
-  quoteAvatarType(identity: string | undefined): UserAvatarType {
-    return identity?.startsWith('!')
-      ? UserAvatarType.GROUP
-      : UserAvatarType.OTHER;
-  }
   /** Render a status tick (clock/check/retry) only for self-sent messages that carry a delivery status. */
   readonly statusTick = computed(
     () => this.data().isSelf && !!this.data().status,
@@ -118,7 +79,8 @@ export class TextRowComponent {
    *  clientMessageId (the emitted value is a click signal — createMsgCbElement maps it to item.clientMessageId). */
   readonly retry = output<number>();
   readonly cancel = output<number>();
-  readonly quoteJump = output<number>();
+  readonly quoteJump = output<HistoryAnchor>();
+
   readonly linkCard = computed(() =>
     this.data().contentType === 'PURE_TEXT'
       ? this.linkCards.matchFirst(this.data().text)
@@ -143,42 +105,4 @@ export class TextRowComponent {
     const card = this.linkCard();
     if (card) await this.externalLinks.open(card.url);
   }
-
-  replyImageSrc(quote: NonNullable<ChatMsgData['quote']>): string {
-    return this.downloads.thumbnailUrl({
-      msgId: quote.seq,
-      src: quote.image ?? '',
-    });
-  }
-
-  isReplyImageGated(quote: NonNullable<ChatMsgData['quote']>): boolean {
-    return (
-      quote.contentType === 'IMAGE' &&
-      this.mediaThreshold.shouldDefer(quote.imageSize ?? 0)
-    );
-  }
-
-  readonly displayQuote = computed(() => {
-    const data = this.data();
-    const resolved = this.resolvedQuote();
-    const quote = data.quote?.unavailable
-      ? data.quote
-      : resolved?.key === `${data.threadId}:${data.msgId}`
-        ? resolved.quote
-        : data.quote;
-    return quote?.unavailable
-      ? { seq: quote.seq, unavailable: true }
-      : quote?.status
-        ? { seq: quote.seq, status: quote.status }
-        : quote;
-  });
-
-  readonly quotePreview = computed(() => {
-    const quote = this.displayQuote();
-    return {
-      author: quote?.author ?? '',
-      body: quote?.body ?? '',
-      isFileSet: quote?.contentType === 'GALLERY',
-    };
-  });
 }

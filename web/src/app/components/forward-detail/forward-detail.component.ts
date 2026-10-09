@@ -216,7 +216,10 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       undefined,
       undefined,
       (bundleId) => this.openChild(bundleId),
-      (id) => void jumpToMessage(this.scroller, id),
+      (anchor) => {
+        if (anchor.kind === 'local')
+          void jumpToMessage(this.scroller, anchor.seq);
+      },
     );
   }
 

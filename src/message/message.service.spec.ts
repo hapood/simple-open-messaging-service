@@ -309,6 +309,97 @@ describe('MessageService committed profile work', () => {
 });
 
 describe('MessageService.queryClientMessagePage', () => {
+  it.each([
+    { anchorNamespaceId: 3, anchorOriginSeq: 4 },
+    { anchorNamespaceId: 0, anchorOriginSeq: 104 },
+    { anchorSeq: 104 },
+  ])('resolves an anchor in the history snapshot: %j', async (anchor) => {
+    const target = mk({
+      id: 104n,
+      seq: 104,
+      contentType: 'PURE_TEXT',
+      content: '{"text":"target"}',
+    });
+    const tx = {
+      select: vi
+        .fn()
+        .mockReturnValueOnce(
+          selectBuilder(
+            [{ clearedSeq: 100, visibleThroughSeq: 150, currentEnd: 200 }],
+            true,
+          ),
+        )
+        .mockReturnValueOnce(selectBuilder([])),
+      query: {
+        message: {
+          findFirst: vi.fn().mockResolvedValue({ seq: 104 }),
+          findMany: vi.fn().mockResolvedValue([target]),
+        },
+      },
+    };
+    const transaction = vi.fn((work) => work(tx));
+    const svc = new MessageService(
+      {
+        db: {
+          transaction,
+          query: {
+            messageAsset: { findMany: vi.fn().mockResolvedValue([]) },
+            mediaAsset: { findMany: vi.fn().mockResolvedValue([]) },
+            pendingMedia: { findMany: vi.fn().mockResolvedValue([]) },
+          },
+        },
+      } as never,
+      {} as never,
+      {} as never,
+    );
+    const page = await svc.queryClientMessagePage(7, {
+      threadId: 1,
+      take: 1,
+      ...anchor,
+    });
+    expect(page.resolvedAnchorSeq).toBe(104);
+    expect(page.messages.map((row) => row.seq)).toEqual([104]);
+    expect(page.scannedThrough).toBe(101);
+    expect(transaction).toHaveBeenCalledExactlyOnceWith(expect.any(Function), {
+      isolationLevel: 'repeatable read',
+      accessMode: 'read only',
+    });
+    expect(tx.query.message.findFirst).toHaveBeenCalledOnce();
+  });
+
+  it('returns no resolved coordinate for a missing or invisible anchor', async () => {
+    const tx = {
+      select: vi
+        .fn()
+        .mockReturnValue(
+          selectBuilder(
+            [{ clearedSeq: 100, visibleThroughSeq: 150, currentEnd: 200 }],
+            true,
+          ),
+        ),
+      query: {
+        message: {
+          findFirst: vi.fn().mockResolvedValue(undefined),
+          findMany: vi.fn(),
+        },
+      },
+    };
+    const svc = new MessageService(
+      { db: { transaction: vi.fn((work) => work(tx)) } } as never,
+      {} as never,
+      {} as never,
+    );
+    const page = await svc.queryClientMessagePage(7, {
+      threadId: 1,
+      anchorNamespaceId: 3,
+      anchorOriginSeq: 4,
+      take: 1,
+    });
+    expect(page.resolvedAnchorSeq).toBeNull();
+    expect(page.messages).toEqual([]);
+    expect(tx.query.message.findMany).not.toHaveBeenCalled();
+  });
+
   it('returns authoritative recovery cursors before querying an out-of-range before cursor', async () => {
     const tx = {
       select: vi.fn().mockReturnValue(
@@ -530,7 +621,7 @@ describe('MessageService.attachMediaStatus', () => {
     expect('id' in out[0]).toBe(false); // id is stripped (throughput side-channel)
   });
 
-  it('keeps an inline text quote inside content while stripping the internal id', async () => {
+  it('projects an inline quote to client coordinates while stripping the internal id', async () => {
     const store = {
       mediaMessage: { findMany: vi.fn().mockResolvedValue([]) },
       mediaAsset: { findMany: vi.fn() },
@@ -556,7 +647,11 @@ describe('MessageService.attachMediaStatus', () => {
 
     const [out] = await svc.attachMediaStatus([input]);
 
-    expect(out.content).toBe(content);
+    expect(JSON.parse(out.content)).toEqual({
+      text: 'reply',
+      quote: { namespaceId: 0, originSeq: 4 },
+    });
+    expect(input.content).toBe(content);
     expect('id' in out).toBe(false);
   });
 
@@ -785,7 +880,44 @@ describe('MessageService quote previews', () => {
     expect(store.message.findMany).toHaveBeenCalledTimes(2);
   });
 
-  it('leaves preview absent when the target is unavailable', async () => {
+  it('does not expose stored quote digest in client previews', async () => {
+    const storedContent = JSON.stringify({
+      text: 'reply',
+      quote: { seq: 4, digest: 'd'.repeat(64) },
+    });
+    const reply = mk({
+      id: 9n,
+      seq: 12,
+      contentType: 'PURE_TEXT',
+      content: storedContent,
+    });
+    const target = {
+      ...mk({
+        id: 4n,
+        seq: 4,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'original' }),
+      }),
+      account: { name: 'Alice' },
+    };
+    const svc = new MessageService(
+      databaseMock({ message: vi.fn().mockResolvedValue([target]) }) as never,
+      {} as never,
+      {} as never,
+    );
+
+    const [out] = await svc.attachQuotePreviews([reply]);
+
+    expect(JSON.parse(out.content).quote).toEqual({
+      seq: 4,
+      author: 'Alice',
+      body: 'original',
+      contentType: 'PURE_TEXT',
+    });
+    expect(reply.content).toBe(storedContent);
+  });
+
+  it('marks the reply target not found when the target is unavailable', async () => {
     const reply = mk({
       id: 9n,
       seq: 12,
@@ -818,7 +950,7 @@ describe('MessageService quote previews', () => {
 
     expect(JSON.parse(out.content)).toEqual({
       text: 'reply',
-      quote: { seq: 4 },
+      quote: { seq: 4, status: 'NOT_FOUND' },
     });
   });
 

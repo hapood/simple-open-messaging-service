@@ -56,6 +56,22 @@ describe('mergeAlbumItems', () => {
     },
   });
 
+  it('preserves each quoted attachment as its own row across both merge paths', () => {
+    const before = imageItem(1);
+    const reply = imageItem(2);
+    reply.data.quote = {
+      anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
+    };
+    const after = imageItem(3);
+    expect(mergeAlbumItems([before, reply, after])).toEqual([
+      before,
+      reply,
+      after,
+    ]);
+    expect(absorbAlbumTail(before, reply)).toBeNull();
+    expect(absorbAlbumTail(reply, after)).toBeNull();
+  });
+
   it('regression: a lone IMAGE carrying clientMessageId PRESERVES it (optimistic→real reconcile key)', () => {
     // The confirmed real of an optimistic image send: a fresh server id (1000) + the SAME clientMessageId as the
     // optimistic bubble. After merge this clientMessageId must survive so mountNewerReals can match the confirm.

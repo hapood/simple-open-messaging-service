@@ -417,6 +417,18 @@ describe('federated message content projection', () => {
     ).toThrow('invalid fields');
   });
 
+  it.each([null, { seq: 1 }, { seq: -1 }])(
+    'rejects any inline quote field in wire text: %j',
+    (quote) => {
+      expect(() =>
+        fromFederatedMessageContent(
+          ContentType.PURE_TEXT,
+          JSON.stringify({ text: 'hello', quote }),
+        ),
+      ).toThrow('invalid fields');
+    },
+  );
+
   it('passes user mentions through unchanged at the federation boundary', () => {
     const stored = JSON.stringify({
       text: 'hello [@Alice](somfp://user/0/alice)',

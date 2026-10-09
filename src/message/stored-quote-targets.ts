@@ -1,8 +1,10 @@
 import { and, eq, or } from 'drizzle-orm';
 import type { Database } from '../database/database.service.js';
 import * as tables from '../database/schema.js';
-import { parseMessageContentQuote } from '../../shared/message-content-quote.js';
-import { storedQuoteCoordinate } from '../../shared/text-message-content.js';
+import {
+  parseMessageContentQuote,
+  storedQuoteCoordinate,
+} from '../../shared/message-content-quote.js';
 
 type Message = typeof tables.message.$inferSelect;
 type QuoteMessage = Pick<

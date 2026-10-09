@@ -21,8 +21,6 @@ import { MessageModule } from '../message/message.module.js';
 import { ThreadPreviewModule } from '../message/thread-preview.module.js';
 import { ClientStateFeedModule } from '../client-state-feed/client-state-feed.module.js';
 import { QuotaModule } from '../quota/quota.module.js';
-import { QuoteResolutionController } from './quote-resolution.controller.js';
-import { QuoteResolutionCoordinatorService } from './quote-resolution-coordinator.service.js';
 import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
 import { ForwardBundleModule } from '../forward/forward-bundle.module.js';
 import { FederationRecognitionService } from './federation-recognition.service.js';
@@ -135,7 +133,6 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
     S2sVerifyController,
     S2sRecognitionController,
     ProfileResolutionController,
-    QuoteResolutionController,
   ],
   providers: [
     {
@@ -251,7 +248,6 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
     FederationPeerHttp,
     ProfileEvidenceProjectionService,
     ProfileResolutionCoordinatorService,
-    QuoteResolutionCoordinatorService,
     FederationMediaRangeClient,
     FederationInboundFileSync,
     FederationPendingMediaPromoter,

@@ -58,103 +58,12 @@
       class="msg-bubble msg-{{ side() }} msg-{{ pos() }}"
       [class.msg-sending]="isSending()"
     >
-      @if (displayQuote(); as quote) {
-        @if (
-          quote.seq !== undefined &&
-          quote.seq > 0 &&
-          !quote.unavailable &&
-          !quote.status
-        ) {
-          <button
-            type="button"
-            class="msg-quote"
-            [class.msg-quote--visual]="
-              quote.imageShape === 'avatar' || quote.image
-            "
-            (click)="quoteJump.emit(quote.seq)"
-          >
-            @if (quote.imageShape === 'avatar') {
-              <app-user-avatar
-                class="msg-quote-visual msg-quote-avatar"
-                [type]="quoteAvatarType(quote.imageIdentity)"
-                [name]="quote.imageLabel"
-                [account]="quote.imageIdentity"
-                [src]="quote.image"
-              />
-            } @else if (quote.image && isReplyImageGated(quote)) {
-              <span
-                class="msg-quote-visual msg-quote-placeholder"
-                aria-hidden="true"
-              ></span>
-            } @else if (quote.image) {
-              <img
-                class="msg-quote-visual"
-                [src]="replyImageSrc(quote)"
-                alt=""
-              />
-            }
-            <span class="msg-quote-copy">
-              @if (quotePreview().author; as author) {
-                <strong>{{ author }}</strong>
-              }
-              @if (quotePreview().isFileSet) {
-                <span>{{ 'chat.fileGroup' | transloco }}</span>
-              } @else {
-                <span>{{
-                  quotePreview().body ||
-                    ((quote.status === 'PENDING'
-                      ? 'chat.quoteNotFetched'
-                      : 'chat.messageNotFound'
-                    ) | transloco)
-                }}</span>
-              }
-            </span>
-          </button>
-        } @else {
-          <div
-            class="msg-quote"
-            [class.msg-quote--visual]="
-              quote.imageShape === 'avatar' || quote.image
-            "
-          >
-            @if (quote.imageShape === 'avatar') {
-              <app-user-avatar
-                class="msg-quote-visual msg-quote-avatar"
-                [type]="quoteAvatarType(quote.imageIdentity)"
-                [name]="quote.imageLabel"
-                [account]="quote.imageIdentity"
-                [src]="quote.image"
-              />
-            } @else if (quote.image && isReplyImageGated(quote)) {
-              <span
-                class="msg-quote-visual msg-quote-placeholder"
-                aria-hidden="true"
-              ></span>
-            } @else if (quote.image) {
-              <img
-                class="msg-quote-visual"
-                [src]="replyImageSrc(quote)"
-                alt=""
-              />
-            }
-            <span class="msg-quote-copy">
-              @if (quotePreview().author; as author) {
-                <strong>{{ author }}</strong>
-              }
-              @if (quotePreview().isFileSet) {
-                <span>{{ 'chat.fileGroup' | transloco }}</span>
-              } @else {
-                <span>{{
-                  quotePreview().body ||
-                    ((quote.status === 'PENDING'
-                      ? 'chat.quoteNotFetched'
-                      : 'chat.messageNotFound'
-                    ) | transloco)
-                }}</span>
-              }
-            </span>
-          </div>
-        }
+      @if (data().quote; as quote) {
+        <app-msg-quote-block
+          [quote]="quote"
+          [isSelf]="data().isSelf"
+          (quoteJump)="quoteJump.emit($event)"
+        />
       }
       <p class="msg-bubble-text">
         @if (linkTextParts(); as parts) {

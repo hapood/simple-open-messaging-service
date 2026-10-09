@@ -543,7 +543,7 @@
     "messageNotFound": "消息不存在",
     "messageRetracted": "消息已撤回",
     "messageRemovedByAdmin": "消息已被管理员删除",
-    "quoteNotFetched": "引用消息尚未拉取",
+    "quoteNotFetched": "点击查看引用",
     "clearSearch": "清除搜索",
     "emptyTagline": "选择一个聊天开始对话",
     "messageListAria": "对话消息",

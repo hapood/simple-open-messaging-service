@@ -3,6 +3,18 @@ use std::collections::BTreeSet;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tauri::Emitter;
+
+fn emit_message_commit(app: &tauri::AppHandle, user_id: i64, thread_id: i64) {
+    let _ = app.emit(
+        "soms-sse-event",
+        serde_json::json!({
+            "event": "LOCAL_MESSAGE_DB_COMMITTED", "status": 0,
+            "message": "local message cache committed",
+            "data": { "userId": user_id, "threadId": thread_id },
+        }),
+    );
+}
 
 use super::{json_text, open, parse_json};
 use crate::{perform_api_request, ServerSessionState};
@@ -164,6 +176,30 @@ mod tomb_tests {
     }
 
     #[test]
+    fn origin_lookup_is_scoped_and_tombs_keep_only_local_identity() {
+        let mut conn = database();
+        let mut remote = message();
+        remote["publisherNamespaceId"] = json!(3);
+        remote["originSeq"] = json!(104);
+        let tx = conn.transaction().unwrap();
+        write_message_slot(&tx, 1, MessageSlotWrite::Message(remote.clone())).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            load_origin_message(&conn, 1, 42, 3, 104).unwrap(),
+            Some(remote)
+        );
+        assert!(load_origin_message(&conn, 2, 42, 3, 104).unwrap().is_none());
+        assert!(load_origin_message(&conn, 1, 99, 3, 104).unwrap().is_none());
+        assert!(load_origin_message(&conn, 1, 42, 0, 4).unwrap().is_some());
+        let tx = conn.transaction().unwrap();
+        let tomb = write_message_slot(&tx, 1, deletion("USER_RETRACTION")).unwrap();
+        tx.commit().unwrap();
+        assert!(tomb.get("originSeq").is_none());
+        assert!(tomb.get("publisherNamespaceId").is_none());
+        assert!(load_origin_message(&conn, 1, 42, 3, 104).unwrap().is_none());
+    }
+
+    #[test]
     fn local_system_profile_correction_survives_refills_of_only_its_row() {
         let mut conn = database();
         let tx = conn.transaction().unwrap();
@@ -175,12 +211,8 @@ mod tomb_tests {
         other["seq"] = json!(5);
         write_message_slot(&tx, 1, MessageSlotWrite::Message(other)).unwrap();
         tx.commit().unwrap();
-        assert!(
-            correct_system_message_profile(&mut conn, 1, 42, 4, "alice", 7, 2).unwrap()
-        );
-        assert!(
-            !correct_system_message_profile(&mut conn, 1, 42, 4, "alice", 7, 2).unwrap()
-        );
+        assert!(correct_system_message_profile(&mut conn, 1, 42, 4, "alice", 7, 2).unwrap());
+        assert!(!correct_system_message_profile(&mut conn, 1, 42, 4, "alice", 7, 2).unwrap());
         let tx = conn.transaction().unwrap();
         write_message_slot(&tx, 1, MessageSlotWrite::Message(system.clone())).unwrap();
         tx.commit().unwrap();
@@ -194,10 +226,7 @@ mod tomb_tests {
                 .unwrap();
             parse_json(payload).unwrap()
         };
-        assert_eq!(
-            read(4)["localSystemProfileRevs"]["[7,\"alice\"]"],
-            2
-        );
+        assert_eq!(read(4)["localSystemProfileRevs"]["[7,\"alice\"]"], 2);
         assert!(read(5).get("localSystemProfileRevs").is_none());
     }
 
@@ -1313,6 +1342,8 @@ async fn walk_native_history(
             known_newest,
         )
         .await?;
+        drop(super::lifetime::CACHE_LIFETIME.admit(account_epoch)?);
+        emit_message_commit(app, user_id, thread_id);
         ranges = committed.ranges;
         let Some(scan) = scan else {
             return Ok(DirectionalWalk {
@@ -1597,10 +1628,16 @@ pub(crate) async fn native_message_history_get(
 
 #[tauri::command]
 pub(crate) async fn native_db_put_cached_messages(
+    app: tauri::AppHandle,
     user_id: i64,
     messages: Vec<Value>,
 ) -> Result<(), String> {
-    super::lifetime::spawn(move || {
+    let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
+    let thread_ids: BTreeSet<i64> = messages
+        .iter()
+        .filter_map(|message| message.get("threadId").and_then(Value::as_i64))
+        .collect();
+    super::lifetime::spawn_at(Ok(epoch), move || {
         let mut conn = open()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1612,7 +1649,12 @@ pub(crate) async fn native_db_put_cached_messages(
             .map_err(|error| format!("commit cached message write: {error}"))
     })
     .await
-    .map_err(|error| format!("join cached message write: {error}"))?
+    .map_err(|error| format!("join cached message write: {error}"))??;
+    drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
+    for thread_id in thread_ids {
+        emit_message_commit(&app, user_id, thread_id);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1779,6 +1821,50 @@ pub(crate) async fn native_db_get_deleted_message_seqs(
     super::lifetime::spawn(move || load_deleted_message_seqs(&open()?, user_id, thread_id, seqs))
         .await
         .map_err(|e| format!("join tombstone read: {e}"))?
+}
+
+fn load_origin_message(
+    conn: &Connection,
+    user_id: i64,
+    thread_id: i64,
+    namespace_id: i64,
+    origin_seq: i64,
+) -> Result<Option<Value>, String> {
+    let query = if namespace_id == 0 {
+        "SELECT payload_json FROM messages WHERE user_id=?1 AND thread_id=?2
+         AND ?3=0 AND seq=?4 AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1"
+    } else {
+        "SELECT payload_json FROM messages WHERE user_id=?1 AND thread_id=?2
+         AND json_extract(payload_json, '$.publisherNamespaceId')=?3
+         AND json_extract(payload_json, '$.originSeq')=?4
+         AND COALESCE(json_extract(payload_json, '$.isDeleted'), 0) != 1"
+    };
+    let value = conn
+        .query_row(
+            query,
+            params![user_id, thread_id, namespace_id, origin_seq],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| format!("get origin message: {e}"))?;
+    value.map(parse_json).transpose()
+}
+
+#[tauri::command]
+pub(crate) async fn native_db_get_message_by_origin(
+    user_id: i64,
+    thread_id: i64,
+    namespace_id: i64,
+    origin_seq: i64,
+) -> Result<Option<Value>, String> {
+    if user_id <= 0 || thread_id <= 0 || namespace_id < 0 || origin_seq <= 0 {
+        return Err("invalid origin message coordinate".into());
+    }
+    super::lifetime::spawn(move || {
+        load_origin_message(&open()?, user_id, thread_id, namespace_id, origin_seq)
+    })
+    .await
+    .map_err(|e| format!("join origin message read: {e}"))?
 }
 
 #[tauri::command]

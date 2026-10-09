@@ -157,6 +157,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/abandon-media-stage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Abandon one uncommitted local media-send stage */
+        post: operations["MessageController_abandonMediaStage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/query-messages": {
         parameters: {
             query?: never;
@@ -304,6 +321,38 @@ export interface paths {
         put?: never;
         /** Manually re-run federated media localize for one message (retry after a localize failure) */
         post: operations["MessageController_relocalizeMedia"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/message/media-message-progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["MessageController_mediaMessageProgress"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/message/media-file-progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["MessageController_mediaFileProgress"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -515,6 +564,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/user/profile-namespace-feed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Fetch compacted profile-namespace binding changes for this device */
+        get: operations["UserController_queryProfileNamespaceFeed"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/user/state-feed": {
         parameters: {
             query?: never;
@@ -558,7 +624,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resolve a local user by account */
+        /** Resolve a local user or group by exact account */
         post: operations["UserController_resolveUser"];
         delete?: never;
         options?: never;
@@ -610,6 +676,22 @@ export interface paths {
         put?: never;
         /** Register a new user */
         post: operations["UserController_registerLocal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/profile-namespaces/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["ProfileNamespaceController_resolve"];
         delete?: never;
         options?: never;
         head?: never;
@@ -786,6 +868,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/group/announcement/set": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish or clear the origin group announcement */
+        post: operations["GroupController_setAnnouncement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/announcement/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Acknowledge a displayed group announcement coordinate */
+        post: operations["GroupController_markAnnouncementRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/group/leave": {
         parameters: {
             query?: never;
@@ -914,7 +1030,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Revoke a user relationship/request or a pending federated group-join request by Address */
+        /** Revoke a user relationship/request or a pending federated group-join request by account and identity namespace */
         post: operations["RelationshipController_revokeRelationship"];
         delete?: never;
         options?: never;
@@ -948,7 +1064,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Accept a relationship request by intent id or Address (friend → P2P thread; group → join as MEMBER) */
+        /** Accept a relationship request by account and identity namespace (friend → P2P thread; group → join as MEMBER) */
         post: operations["RelationshipController_acceptRelationship"];
         delete?: never;
         options?: never;
@@ -1363,6 +1479,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/events/receipt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["EventsController_receipt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/link-preview/generations": {
         parameters: {
             query?: never;
@@ -1391,6 +1523,310 @@ export interface paths {
         get: operations["LinkPreviewController_generation"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/.well-known/somfp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["WellKnownController_getWellKnown"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/group-meta": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getGroupMeta"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/feed-heads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["S2sController_postDiscoveryHwm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/profile-namespace-feed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getProfileNamespaceFeed"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/profile-namespaces/{nsid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getProfileNamespace"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/message-tombstones": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_queryMessageTombstones"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_queryMessages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/message-provenance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["S2sController_postMessageProvenance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/state-feed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getStateFeed"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/call": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["S2sController_postCall"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/accounts/{account}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getAccountProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/account-profiles/{namespaceId}/{account}/{profileRev}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getExactAccountProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/group-member-profiles/{groupAccount}/{namespaceId}/{memberAccount}/{profileRev}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getGroupMemberProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/media/{digest}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/forward-bundles/{bundleId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getForwardBundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["S2sVerifyController_verify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/recognize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["S2sRecognitionController_recognize"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/s2s/v1/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sRecognitionController_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/profile-resolution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["ProfileResolutionController_start"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2241,7 +2677,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/admin/federation/peers/{domain}/events": {
+    "/api/v1/admin/federation/peers/{domain}/namespaces": {
         parameters: {
             query?: never;
             header?: never;
@@ -2250,8 +2686,127 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** A peer trust-lifecycle event timeline (available → degraded → available …) */
-        post: operations["AdminFederationController_peerEvents"];
+        /** List identity namespaces owned by a federated peer */
+        post: operations["AdminFederationController_peerNamespaces"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/identity-reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List pending peer identity reviews (domain re-binds, root rotations) */
+        post: operations["AdminFederationController_pendingIdentityReviews"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/local-root-epochs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List local federation root identity epochs */
+        post: operations["AdminFederationController_localRootEpochs"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/local-root-epochs/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rotate the local federation root identity epoch immediately */
+        post: operations["AdminFederationController_rotateLocalRoot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/local-root-epochs/{id}/unpublish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop publishing an expired predecessor root epoch */
+        post: operations["AdminFederationController_unpublishLocalRoot"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/identity-reviews/{id}/predecessor-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Seal a fresh challenge under the pinned predecessor root and ask the peer to open it (rotation continuity evidence) */
+        post: operations["AdminFederationController_predecessorCheck"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/identity-reviews/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve a pending peer identity review */
+        post: operations["AdminFederationController_approveIdentityReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/identity-reviews/{id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject a pending peer identity review */
+        post: operations["AdminFederationController_rejectIdentityReview"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2303,6 +2858,57 @@ export interface paths {
         put?: never;
         /** Recover an identity-mismatch halted peer only when the original pinned identity is reachable again */
         post: operations["AdminFederationController_recoverPeerIdentity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers/{domain}/recognize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start or retry outbound recognition with a federated peer */
+        post: operations["AdminFederationController_recognizePeer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/health/probe": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Probe one federated namespace through the signed S2S health endpoint */
+        post: operations["AdminFederationController_probeFederationHealth"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/message-provenance/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify one federated message with its authoritative peer */
+        post: operations["AdminFederationController_verifyMessageProvenance"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3125,279 +3731,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/.well-known/somfp": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["WellKnownController_getWellKnown"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/group-meta": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_getGroupMeta"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/feed-heads": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["S2sController_postDiscoveryHwm"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/message-tombstones": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_queryMessageTombstones"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/messages": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_queryMessages"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/message-author-profile": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_getMessageAuthorProfile"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/group-meta-profile": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_getGroupMetaProfile"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/state-feed": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_getStateFeed"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/call": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["S2sController_postCall"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/accounts/{account}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_getAccountProfile"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/profiles/{account}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_getAuthorizedProfile"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/media/{digest}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_getFile"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/forward-bundles/{bundleId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sController_getForwardBundle"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/recognize": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["S2sRecognitionController_recognize"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/s2s/v1/health": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["S2sRecognitionController_health"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/user/profile-resolution": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["ProfileResolutionController_start"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/message/quote-resolution": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Resolve a visible message quote; pending results arrive on the authenticated events stream */
-        post: operations["QuoteResolutionController_start"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3426,6 +3759,8 @@ export interface components {
             messageKey?: string;
             /** @description Populated only by paginated endpoints (e.g. query-messages): whether an earlier page exists. Undefined for non-paginated endpoints. */
             hasMore: boolean | null;
+            /** @description Total visible matches for search-messages, independent of the page cursor. */
+            totalCount: number | null;
             /** @description Populated by bounded pagination requests: whether this page actually reached the truncation boundary. */
             truncated: boolean | null;
         };
@@ -3506,17 +3841,29 @@ export interface components {
         MessageAuthorAddressResponseDto: {
             /** @example alice */
             account: string;
-            /** @example local */
+            /** @example example.com */
             domain: string;
             /** @example 7 */
             namespaceId: number;
         };
         MessageResponseDto: {
             /**
-             * @description Per-thread monotonic seq (0-indexed) — the message ordering key + identity. Allocated per-thread (NOT global): its deltas reveal only THIS thread volume, never server-wide throughput.
+             * @description Namespace of the message author identity.
+             * @example 0
+             */
+            namespaceId: number;
+            /**
+             * @description Per-thread local sequence. This is the client cache and timeline coordinate.
              * @example 42
              */
             seq: number;
+            /**
+             * @description Origin sequence in publisherNamespaceId. Null for messages authored locally and not yet assigned an upstream origin.
+             * @example 42
+             */
+            originSeq: number | null;
+            /** @description Namespace owning originSeq. */
+            publisherNamespaceId: number;
             /**
              * @description Immutable complete-profile revision selected when this message was authored
              * @example 7
@@ -3538,10 +3885,10 @@ export interface components {
              */
             threadId: number;
             /**
-             * @description Sender address snapshot; SYSTEM notifications use $system@local at namespace 0
+             * @description Sender address snapshot; SYSTEM notifications use $system at namespace 0; domain is the configured local identity domain.
              * @example {
              *       "account": "alice",
-             *       "domain": "local"
+             *       "domain": "example.com"
              *     }
              */
             creator: components["schemas"]["MessageAuthorAddressResponseDto"] | null;
@@ -3586,6 +3933,11 @@ export interface components {
              */
             contentType?: "PURE_TEXT" | "LINK";
             /**
+             * @description Local sequence of the message being quoted.
+             * @example 31
+             */
+            quoteTargetSeq?: number;
+            /**
              * @description Client-generated UUID for send idempotency. Retrying a send with the same clientMessageId returns the original Message instead of creating a duplicate. Omit when retry identity is not required.
              * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
              */
@@ -3595,7 +3947,6 @@ export interface components {
         };
         ContactCardTargetDto: {
             account: string;
-            domain: string;
             namespaceId: number;
             profileRev: number;
         };
@@ -3606,6 +3957,11 @@ export interface components {
              */
             threadId: number;
             target: components["schemas"]["ContactCardTargetDto"];
+            /**
+             * @description Local sequence of the message being quoted.
+             * @example 31
+             */
+            quoteTargetSeq?: number;
             /** @description Client send-idempotency UUID */
             clientMessageId: string;
         };
@@ -3633,6 +3989,11 @@ export interface components {
              * @enum {string}
              */
             mode: "DIRECT" | "HISTORY";
+            /**
+             * @description Local sequence of the message being quoted.
+             * @example 31
+             */
+            quoteTargetSeq?: number;
             /** @description Client send-idempotency UUID */
             clientMessageId: string;
         };
@@ -3649,6 +4010,11 @@ export interface components {
             contentType: "IMAGE" | "FILE" | "VIDEO" | "AUDIO" | "GALLERY";
             /** @description Client-generated UUID identifying this staged send. The same value is sent on the subsequent upload to promote it; retrying the stage is idempotent. */
             clientMessageId: string;
+            /**
+             * @description Local sequence of the message being quoted.
+             * @example 31
+             */
+            quoteTargetSeq?: number;
             /**
              * @description Number of files in this batch. 1 for single-file types (the default); N (≤10) for GALLERY. Each file is uploaded separately sharing the same clientMessageId; the Nth upload promotes the batch.
              * @default 1
@@ -3667,9 +4033,18 @@ export interface components {
              */
             threadId: number;
         };
+        AbandonMediaStageDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /** @description Client-generated UUID identifying the staged send. */
+            clientMessageId: string;
+        };
         MessageTombResponseDto: {
             /**
-             * @description Per-thread monotonic seq (0-indexed) — the message ordering key + identity. Allocated per-thread (NOT global): its deltas reveal only THIS thread volume, never server-wide throughput.
+             * @description Per-thread local sequence. This is the client cache and timeline coordinate.
              * @example 42
              */
             seq: number;
@@ -3684,10 +4059,10 @@ export interface components {
              */
             threadId: number;
             /**
-             * @description Sender address snapshot; SYSTEM notifications use $system@local at namespace 0
+             * @description Sender address snapshot; SYSTEM notifications use $system at namespace 0; domain is the configured local identity domain.
              * @example {
              *       "account": "alice",
-             *       "domain": "local"
+             *       "domain": "example.com"
              *     }
              */
             creator: components["schemas"]["MessageAuthorAddressResponseDto"] | null;
@@ -3718,6 +4093,7 @@ export interface components {
         };
         MessageQueryPageDto: {
             messages: (components["schemas"]["MessageResponseDto"] | components["schemas"]["MessageTombResponseDto"])[];
+            resolvedAnchorSeq: number | null;
             gaps: components["schemas"]["MessageHistoryGapDto"][];
             /**
              * @description Direction-relative scan cursor
@@ -3748,6 +4124,18 @@ export interface components {
              * @example 80
              */
             through?: number;
+            /**
+             * @description Origin anchor namespace. When supplied with originSeq, the server resolves it to the local thread seq before reading history.
+             * @example 7
+             */
+            anchorNamespaceId?: number;
+            /** @description Local anchor sequence. Cannot be combined with origin anchor or pagination cursors. */
+            anchorSeq?: number;
+            /**
+             * @description Origin anchor sequence in anchorNamespaceId. Requires anchorNamespaceId and cannot be combined with after/before.
+             * @example 42
+             */
+            anchorOriginSeq?: number;
             /**
              * @description Suggested page size (1-50).
              * @default 20
@@ -3787,33 +4175,26 @@ export interface components {
             seq: number;
             /** Format: date-time */
             createdAt: string;
-            sender: {
+            sender?: {
                 account: string;
-                domain: string;
-                namespaceId: number;
+                profileNamespaceId: number;
                 profileRev: number;
             };
             /** @enum {string} */
             status: "LIVE" | "USER_RETRACTION" | "MODERATION_REMOVAL";
             text?: string;
         };
-        ThreadFeedProfileDto: {
-            account: string;
-            domain: string;
-            namespaceId: number;
-            profileRev: number;
-        };
         ThreadFeedStateDto: {
             /** @enum {string} */
             type: "P2P" | "GROUP";
-            authorityNamespaceId: number;
+            publisherNamespaceId: number;
             /** @enum {string} */
             conversationState: "ACTIVE" | "READ_ONLY";
             blocked: boolean;
-            /** @enum {string} */
+            /** @enum {string|null} */
             role: "OWNER" | "ADMIN" | "MEMBER" | null;
-            profile: components["schemas"]["ThreadFeedProfileDto"];
-            threadProfileRev: number;
+            profileAccount: string;
+            profileRev: number;
             alias: string | null;
             previews?: components["schemas"]["ThreadFeedPreviewDto"][];
             /** @example 12 */
@@ -4084,7 +4465,7 @@ export interface components {
         };
         UserResolveDto: {
             /**
-             * @description Account (a local account, or the peer user's account)
+             * @description Exact user or group account (local or peer)
              * @example alice
              */
             account: string;
@@ -4093,6 +4474,16 @@ export interface components {
              * @example bbb.com
              */
             domain?: string;
+            /**
+             * @description Server-local namespace id of the publisher vouching for the target identity. When both publisherNamespaceId and profileNamespaceId are present, the resolve uses a VOUCH possession challenge — verifying the vouched root key — instead of the first-contact PIN challenge.
+             * @example 12
+             */
+            publisherNamespaceId?: number;
+            /**
+             * @description Namespace id of the profile within the publisher's namespace space (0 = the publisher itself). Required together with publisherNamespaceId for VOUCH-based resolve; absent degrades to PIN.
+             * @example 5
+             */
+            profileNamespaceId?: number;
         };
         UserSearchDto: {
             /**
@@ -4161,7 +4552,7 @@ export interface components {
             /** @example alice */
             account: string;
             /**
-             * @description User identity namespace id.
+             * @description Invitee identity namespace id
              * @example 7
              */
             namespaceId: number;
@@ -4249,6 +4640,23 @@ export interface components {
              * @example 12
              */
             groupId: number;
+        };
+        SetGroupAnnouncementDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /** @description Plain text (1–4096 Unicode code points), or null to clear */
+            text: string | null;
+        };
+        ReadGroupAnnouncementDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            announcementFeedId: number;
         };
         DurableTaskAcceptedDto: {
             /**
@@ -4522,6 +4930,11 @@ export interface components {
             kind: "offer" | "answer" | "ice" | "video-state";
             /** @description Opaque WebRTC payload (SDP / ICE candidate JSON). Relayed verbatim, never persisted. */
             payload: string;
+        };
+        EventsReceiptDto: {
+            /** Format: uuid */
+            sseUuid: string;
+            threadFeedEndId: number;
         };
         LinkCardGenerationStartDto: {
             generationId: string;
@@ -4827,13 +5240,11 @@ export interface components {
              * @example available
              */
             status?: string;
-        };
-        AdminFederationPeerEventsDto: {
             /**
-             * @description Max events to return (optional, default 100)
-             * @example 100
+             * @description Filter by local identity namespace id (optional)
+             * @example 1
              */
-            take?: number;
+            namespaceId?: number;
         };
         AdminFederationResetDto: {
             /**
@@ -4848,6 +5259,16 @@ export interface components {
              * @example peer.example
              */
             confirmDomain: string;
+        };
+        AdminFederationHealthProbeDto: {
+            /** @example 1 */
+            namespaceId: number;
+        };
+        AdminFederationMessageProvenanceDto: {
+            /** @example 123 */
+            threadId: number;
+            /** @example 42 */
+            seq: number;
         };
         AdminFederationBlockDto: {
             /**
@@ -5273,6 +5694,27 @@ export interface operations {
             };
         };
     };
+    MessageController_abandonMediaStage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AbandonMediaStageDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     MessageController_queryMessages: {
         parameters: {
             query?: never;
@@ -5469,6 +5911,52 @@ export interface operations {
                 "application/json": components["schemas"]["RelocalizeMediaDto"];
             };
         };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_mediaMessageProgress: {
+        parameters: {
+            query: {
+                /** @description Conversation (MessageThread) id */
+                threadId: number;
+                /** @description Per-thread message seq */
+                seq: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_mediaFileProgress: {
+        parameters: {
+            query: {
+                /** @description Conversation (MessageThread) id */
+                threadId: number;
+                /** @description Per-thread message seq */
+                seq: number;
+                /** @description CAS digest for one file in the message */
+                digest: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             200: {
                 headers: {
@@ -5741,6 +6229,26 @@ export interface operations {
             };
         };
     };
+    UserController_queryProfileNamespaceFeed: {
+        parameters: {
+            query: {
+                after: string;
+                take: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     UserController_queryStateFeed: {
         parameters: {
             query: {
@@ -5816,10 +6324,14 @@ export interface operations {
     UserController_resolveFederatedUserStream: {
         parameters: {
             query: {
-                /** @description Account (a local account, or the peer user's account) */
+                /** @description Exact user or group account (local or peer) */
                 account: string;
                 /** @description Peer domain. Omitted/empty = local lookup. */
                 domain?: string;
+                /** @description Server-local namespace id of the publisher vouching for the target identity. When both publisherNamespaceId and profileNamespaceId are present, the resolve uses a VOUCH possession challenge — verifying the vouched root key — instead of the first-contact PIN challenge. */
+                publisherNamespaceId?: number;
+                /** @description Namespace id of the profile within the publisher's namespace space (0 = the publisher itself). Required together with publisherNamespaceId for VOUCH-based resolve; absent degrades to PIN. */
+                profileNamespaceId?: number;
             };
             header?: never;
             path?: never;
@@ -5869,6 +6381,31 @@ export interface operations {
             };
         };
         responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ProfileNamespaceController_resolve: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    publisherNamespaceId: number;
+                    profileNamespaceId: number;
+                };
+            };
+        };
+        responses: {
+            /** @description READY carries the binding (possibly an expired placeholder); PENDING means no local row exists — a tomb was planted and a background refresh was scheduled. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6080,6 +6617,48 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["GroupIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupController_setAnnouncement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetGroupAnnouncementDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupController_markAnnouncementRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReadGroupAnnouncementDto"];
             };
         };
         responses: {
@@ -6557,7 +7136,6 @@ export interface operations {
             };
         };
     };
-
     CallsController_initiate: {
         parameters: {
             query?: never;
@@ -6800,6 +7378,27 @@ export interface operations {
             };
         };
     };
+    EventsController_receipt: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EventsReceiptDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     LinkPreviewController_preview: {
         parameters: {
             query?: never;
@@ -6841,6 +7440,425 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    WellKnownController_getWellKnown: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getGroupMeta: {
+        parameters: {
+            query: {
+                account: string;
+                mode: string;
+                after: string;
+                take: string;
+                through: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_postDiscoveryHwm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getProfileNamespaceFeed: {
+        parameters: {
+            query: {
+                after: string;
+                take: string;
+                through: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getProfileNamespace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_queryMessageTombstones: {
+        parameters: {
+            query: {
+                account: string;
+                peerAccount: string;
+                after: string;
+                take: string;
+                through: string;
+                includeSelf: string;
+                maxMessageSeq: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_queryMessages: {
+        parameters: {
+            query: {
+                account: string;
+                peerAccount: string;
+                after: string;
+                before: string;
+                take: string;
+                through: string;
+                includeSelf: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_postMessageProvenance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getStateFeed: {
+        parameters: {
+            query: {
+                after: string;
+                take: string;
+                through: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_postCall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getAccountProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getExactAccountProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getGroupMemberProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getFile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getForwardBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sVerifyController_verify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sRecognitionController_recognize: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sRecognitionController_health: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    ProfileResolutionController_start: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    publisherNamespaceId: number;
+                    /** @enum {string} */
+                    lookup: "ACCOUNT_PROFILE";
+                    target: {
+                        profileNamespaceId: number;
+                        account: string;
+                        rev: number;
+                    };
+                } | {
+                    publisherNamespaceId: number;
+                    /** @enum {string} */
+                    lookup: "GROUP_MEMBER_PROFILE";
+                    target: {
+                        profileNamespaceId: number;
+                        account: string;
+                        rev: number;
+                    };
+                    groupAccount: string;
+                } | {
+                    /** @enum {string|null} */
+                    evidence: null;
+                    demand: {
+                        publisherNamespaceId: number;
+                        /** @enum {string} */
+                        lookup: "ACCOUNT_PROFILE" | "GROUP_MEMBER_PROFILE";
+                        target: {
+                            profileNamespaceId: number;
+                            account: string;
+                            rev: number;
+                        };
+                        groupAccount?: string;
+                    } & ({
+                        /** @enum {unknown} */
+                        lookup?: "ACCOUNT_PROFILE";
+                    } | {
+                        /** @enum {unknown} */
+                        lookup?: "GROUP_MEMBER_PROFILE";
+                    });
+                };
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status: "READY";
+                        profile: {
+                            publisherNamespaceId: number;
+                            profileNamespaceId: number;
+                            account: string;
+                            rev: number;
+                            name: string;
+                            bio: string;
+                            avatarBase64: string | null;
+                        };
+                    } | {
+                        /** @enum {string} */
+                        status: "PENDING";
+                        key: {
+                            publisherNamespaceId: number;
+                            profileNamespaceId: number;
+                            account: string;
+                            rev: number;
+                        };
+                    };
+                };
             };
         };
     };
@@ -7853,7 +8871,7 @@ export interface operations {
             };
         };
     };
-    AdminFederationController_peerEvents: {
+    AdminFederationController_peerNamespaces: {
         parameters: {
             query?: never;
             header?: never;
@@ -7862,11 +8880,134 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AdminFederationPeerEventsDto"];
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
+    };
+    AdminFederationController_pendingIdentityReviews: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_localRootEpochs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_rotateLocalRoot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_unpublishLocalRoot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_predecessorCheck: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_approveIdentityReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_rejectIdentityReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             200: {
                 headers: {
@@ -7930,6 +9071,67 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AdminFederationIdentityRecoverDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_recognizePeer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_probeFederationHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminFederationHealthProbeDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_verifyMessageProvenance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminFederationMessageProvenanceDto"];
             };
         };
         responses: {
@@ -8872,385 +10074,6 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    WellKnownController_getWellKnown: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_getGroupMeta: {
-        parameters: {
-            query: {
-                account: string;
-                mode: string;
-                after: string;
-                take: string;
-                through: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_postDiscoveryHwm: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_queryMessageTombstones: {
-        parameters: {
-            query: {
-                account: string;
-                peerAccount: string;
-                after: string;
-                take: string;
-                through: string;
-                includeSelf: string;
-                maxMessageSeq: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_queryMessages: {
-        parameters: {
-            query: {
-                account: string;
-                peerAccount: string;
-                after: string;
-                before: string;
-                take: string;
-                through: string;
-                includeSelf: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_getMessageAuthorProfile: {
-        parameters: {
-            query: {
-                account: string;
-                peerAccount: string;
-                messageSeq: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_getGroupMetaProfile: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_getStateFeed: {
-        parameters: {
-            query: {
-                after: string;
-                take: string;
-                through: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_postCall: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_getAccountProfile: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_getAuthorizedProfile: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_getFile: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_getForwardBundle: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sRecognitionController_recognize: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sRecognitionController_health: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    ProfileResolutionController_start: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    /** @enum {string} */
-                    type: "EXACT";
-                    account: string;
-                    domain: string;
-                    rev: number;
-                } | {
-                    /** @enum {string} */
-                    type: "MESSAGE_AUTHOR";
-                    threadId: number;
-                    messageSeq: number;
-                    rev: number;
-                } | {
-                    /** @enum {string} */
-                    type: "GROUP_META";
-                    threadId: number;
-                    profileRev: number;
-                    subject: {
-                        /** @enum {string} */
-                        type: "GROUP";
-                    } | {
-                        /** @enum {string} */
-                        type: "MEMBER";
-                        account: string;
-                        domain: string;
-                    };
-                };
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        /** @enum {string} */
-                        status: "READY";
-                        profile: {
-                            namespaceId: number;
-                            account: string;
-                            domain: string;
-                            rev: number;
-                            name: string;
-                            bio: string;
-                            avatarBase64: string | null;
-                        };
-                    } | {
-                        /** @enum {string} */
-                        status: "PENDING";
-                        key: {
-                            namespaceId: number;
-                            account: string;
-                            domain: string;
-                            rev: number;
-                        };
-                    };
-                };
-            };
-        };
-    };
-    QuoteResolutionController_start: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    threadId: number;
-                    messageSeq: number;
-                };
-            };
-        };
         responses: {
             200: {
                 headers: {
