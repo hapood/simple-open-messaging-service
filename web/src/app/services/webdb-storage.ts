@@ -65,8 +65,10 @@ import {
 } from './message-range';
 import {
   advanceLocalAttentionRead,
+  attentionCountRange,
   mergeThreadAttention,
   attentionSnapshot,
+  projectThreadAttention,
   type LocalThreadAttention,
   type ThreadFeedSnapshot,
 } from '../../../../shared/thread-attention';
@@ -467,7 +469,11 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 39;
+export const CACHE_SCHEMA_VERSION = 40;
+// v40: friend request projection keys now canonicalize the author's home
+// namespace (0 for the local user) instead of the pair namespace. Records
+// written under the old key shape cannot be addressed by feed facts anymore,
+// so the whole cache is discarded and rebuilt from the state feed.
 // Cursors moved out of the generic `settings` bag: account-level cursors now
 // live in a dedicated `syncState` store, per-thread cursors in `threadSyncState`.
 // Message content now stores canonical CAS paths; discard cached contextual URLs.
@@ -563,6 +569,11 @@ type StateFeedWorkerEvent =
       userId: number;
       states: LocalThreadAttention[];
     }
+  | {
+      type: 'thread-attention-projection-committed';
+      userId: number;
+      projection: ThreadAttentionProjection;
+    }
   | { type: 'group-meta-committed'; userId: number; threadIds: number[] }
   | { type: 'state-feed-committed'; userId: number };
 
@@ -582,6 +593,17 @@ type StateFeedWorkerResponse =
 type StateFeedWorkerMessage = StateFeedWorkerEvent | StateFeedWorkerResponse;
 
 /** Shared storage implementation used by page and background runtimes. */
+export interface ThreadAttentionProjection {
+  threadId: number;
+  lastReadSeq: number;
+  unreadCount: number;
+  mentionUnread: Array<'all' | 'me'>;
+  lastMessagePreview: string | null;
+  lastMessageAt: number | null;
+  lastMessageSenderAccount: string | null;
+  lastMessageSenderNamespaceId: number | null;
+}
+
 export class WebdbStorage {
   private readonly workerFailed = new Subject<void>();
   readonly workerFailed$ = this.workerFailed.asObservable();
@@ -608,6 +630,12 @@ export class WebdbStorage {
     states: LocalThreadAttention[];
   }>();
   readonly threadFeedCommitted$ = this.threadFeedCommitted.asObservable();
+  protected readonly threadAttentionProjectionCommitted = new Subject<{
+    userId: number;
+    projection: ThreadAttentionProjection;
+  }>();
+  readonly threadAttentionProjectionCommitted$ =
+    this.threadAttentionProjectionCommitted.asObservable();
   /** Emitted by the database worker after a per-thread Group Meta drain
    *  commits, so member-profile views re-read the cache for those groups. */
   protected readonly groupMetaCommitted = new Subject<{
@@ -1924,10 +1952,91 @@ export class WebdbStorage {
     await tx.done;
   }
 
-  async putThread(item: ConversationItem): Promise<void> {
-    return this.runAccountOperation(() =>
-      this.putThreadInternal(this.normalizeThreadSubject(item)),
+  async projectThreadAttention(
+    threadId: number,
+    self: MessageCreator,
+  ): Promise<ThreadAttentionProjection> {
+    const result = await this.runAccountOperation(() =>
+      this.projectThreadAttentionInternal(threadId, self),
     );
+    this.threadAttentionProjectionCommitted.next({
+      userId: Number(this.currentUserId),
+      projection: result,
+    });
+    return result;
+  }
+
+  private async projectThreadAttentionInternal(
+    threadId: number,
+    self: MessageCreator,
+  ): Promise<ThreadAttentionProjection> {
+    if (
+      !Number.isSafeInteger(threadId) ||
+      threadId < 1 ||
+      !self.account ||
+      !Number.isSafeInteger(self.namespaceId) ||
+      self.namespaceId < 0
+    )
+      throw new Error('invalid thread attention projection');
+    if (isTauri() && this.currentUserId != null)
+      return tauriInvoke<ThreadAttentionProjection>(
+        'native_db_project_thread_attention',
+        {
+          userId: Number(this.currentUserId),
+          threadId,
+          owner: self,
+        },
+      );
+    const core = await this.db();
+    const stored = await core.get('threads', threadId);
+    if (!stored)
+      throw new Error('cannot reproject thread attention before state exists');
+    const preview = await core.get('threadPreviews', threadId);
+    const state = withStoredPreview(stored, preview);
+    const range = attentionCountRange(state);
+    const count = await this.countUnreadMessageSlots(
+      threadId,
+      range.afterSeq,
+      range.throughSeq,
+      self,
+    );
+    const projection = projectThreadAttention(state, count);
+    const previewText = preview
+      ? preview.status === 'LIVE'
+        ? (preview.text ?? '')
+        : preview.status === 'USER_RETRACTION'
+          ? '[Message retracted]'
+          : '[Message removed by administrator]'
+      : null;
+    const result: ThreadAttentionProjection = {
+      threadId,
+      lastReadSeq: projection.lastReadSeq,
+      unreadCount: projection.unreadCount,
+      mentionUnread: projection.hasUnreadMention ? ['me'] : [],
+      lastMessagePreview: previewText,
+      lastMessageAt: preview ? Date.parse(preview.createdAt) : null,
+      lastMessageSenderAccount: preview?.senderAccount ?? null,
+      lastMessageSenderNamespaceId: preview?.senderProfileNamespaceId ?? null,
+    };
+    const current = await core.get('threads', threadId);
+    if (!current)
+      throw new Error('cannot persist thread projection before state exists');
+    await core.put('threads', {
+      ...current,
+      localReadSeq: current.localReadSeq,
+      projectedUnreadCount: result.unreadCount,
+      mentionMe: result.mentionUnread.includes('me'),
+      mentionAll: result.mentionUnread.includes('all'),
+      lastMessagePreview: result.lastMessagePreview,
+      lastMessageAt: result.lastMessageAt,
+      lastMessageSenderAccount: result.lastMessageSenderAccount,
+      lastMessageSenderNamespaceId: result.lastMessageSenderNamespaceId,
+    });
+    return result;
+  }
+
+  async putThread(item: ConversationItem): Promise<void> {
+    return this.runAccountOperation(() => this.putThreadInternal(item));
   }
 
   private async putThreadInternal(item: ConversationItem): Promise<void> {
