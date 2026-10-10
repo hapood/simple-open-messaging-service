@@ -35,8 +35,25 @@ describe('conversation-avatar util', () => {
     },
   } as unknown as ConversationItem;
 
-  it('keeps a profile lookup for thread projections without disclosure evidence', () => {
-    const request = conversationAvatarEvidence({ ...p2p, profileRev: 7 });
+  it('sends an authorized demand while the conversation is active', () => {
+    const request = conversationAvatarEvidence({
+      ...p2p,
+      profileRev: 7,
+      conversationState: 'ACTIVE',
+    });
+    expect(request).toEqual({
+      publisherNamespaceId: 0,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 0, account: 'alice', rev: 7 },
+    });
+  });
+
+  it('falls back to a cache-only lookup for a severed conversation', () => {
+    const request = conversationAvatarEvidence({
+      ...p2p,
+      profileRev: 7,
+      conversationState: 'READ_ONLY',
+    });
     expect(request).toEqual({
       evidence: null,
       demand: {
@@ -60,12 +77,55 @@ describe('conversation-avatar util', () => {
         isDeleted: false,
       },
       profileRev: 3,
+      conversationState: 'READ_ONLY',
     } as ConversationItem);
-    expect(request?.demand).toEqual({
+    expect(request && 'demand' in request ? request.demand : request).toEqual({
       publisherNamespaceId: 7,
       lookup: 'ACCOUNT_PROFILE',
       target: { profileNamespaceId: 0, account: 'alice', rev: 3 },
     });
+  });
+
+  it('returns a reference-stable request while the coordinates hold', () => {
+    const first = conversationAvatarEvidence({
+      ...p2p,
+      profileRev: 7,
+      conversationState: 'ACTIVE',
+    });
+    const second = conversationAvatarEvidence({
+      ...p2p,
+      profileRev: 7,
+      conversationState: 'ACTIVE',
+    });
+    expect(first).toBe(second);
+    // A different conversation form or revision is a different demand object.
+    expect(
+      conversationAvatarEvidence({
+        ...p2p,
+        profileRev: 7,
+        conversationState: 'READ_ONLY',
+      }),
+    ).not.toBe(first);
+    expect(
+      conversationAvatarEvidence({
+        ...p2p,
+        profileRev: 8,
+        conversationState: 'ACTIVE',
+      }),
+    ).not.toBe(first);
+    // The cache keys the form too: the severed request is stable on its own.
+    const severed = conversationAvatarEvidence({
+      ...p2p,
+      profileRev: 7,
+      conversationState: 'READ_ONLY',
+    });
+    expect(
+      conversationAvatarEvidence({
+        ...p2p,
+        profileRev: 7,
+        conversationState: 'READ_ONLY',
+      }),
+    ).toBe(severed);
   });
 
   it('maps P2P → OTHER and GROUP → GROUP', () => {

@@ -117,7 +117,7 @@ describe('ProfileRepository resolution scheduler', () => {
     expect(getProfileAvatarBlob).toHaveBeenCalledOnce();
   });
 
-  it('performs an unevidenced one-shot lookup without registering a pending entry', async () => {
+  it('serves an unevidenced lookup through the shared demand machinery', async () => {
     const demand: ProfileDemand = {
       publisherNamespaceId: 4,
       lookup: 'ACCOUNT_PROFILE',
@@ -144,6 +144,12 @@ describe('ProfileRepository resolution scheduler', () => {
       { evidence: null },
     );
     expect(repository['resolutions'].size).toBe(0);
+    // The committed READY result is cached like an authorized one: a second
+    // unevidenced resolve hits the main-thread LRU without another lookup.
+    await expect(
+      firstValueFrom(repository.resolve({ demand, evidence: null })),
+    ).resolves.toMatchObject({ name: 'Alice' });
+    expect(resolveProfileEvidence).toHaveBeenCalledTimes(1);
     profileWake.next({
       event: 'PROFILE_AVAILABLE',
       key: {
@@ -156,7 +162,52 @@ describe('ProfileRepository resolution scheduler', () => {
     expect(resolveProfileEvidence).toHaveBeenCalledTimes(1);
   });
 
-  it('does not let an unevidenced cache miss fail an evidenced resolution', async () => {
+  it('attaches an unevidenced request to an in-flight evidenced resolution', async () => {
+    const demand: ProfileDemand = {
+      publisherNamespaceId: 4,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 4, account: 'alice', rev: 7 },
+    };
+    const snapshot: ProfileSnapshot = {
+      account: 'alice',
+      publisherNamespaceId: 4,
+      profileNamespaceId: 4,
+      profileRev: 7,
+      name: 'Alice',
+      avatarDigest: null,
+      bio: '',
+    };
+    resolveProfileEvidence.mockImplementation(async (_demand, options) => {
+      if (options?.evidence === null)
+        throw new Error('profile revision is not cached');
+      return {
+        status: 'PENDING',
+        key: { publisherNamespaceId: 4, ...demand.target },
+      };
+    });
+    const evidenced = repository.resolve(demand).subscribe();
+    const unevidenced = firstValueFrom(
+      repository.resolve({ demand, evidence: null }),
+    );
+    // The unevidenced request dedups onto the pending authorized entry instead
+    // of starting its own cache-only attempt, so no second lookup runs.
+    expect(repository['resolutions'].size).toBe(1);
+    resolveProfileEvidence.mockResolvedValue({ status: 'READY', profile: snapshot });
+    profileWake.next({
+      event: 'PROFILE_AVAILABLE',
+      key: {
+        publisherNamespaceId: 4,
+        profileNamespaceId: 4,
+        account: 'alice',
+        rev: 7,
+      },
+    });
+    await expect(unevidenced).resolves.toMatchObject({ name: 'Alice' });
+    expect(resolveProfileEvidence).toHaveBeenCalledTimes(2);
+    evidenced.unsubscribe();
+  });
+
+  it('does not let an unevidenced cache miss fail a later evidenced resolution', async () => {
     const demand: ProfileDemand = {
       publisherNamespaceId: 4,
       lookup: 'ACCOUNT_PROFILE',
@@ -170,14 +221,17 @@ describe('ProfileRepository resolution scheduler', () => {
         key: { publisherNamespaceId: 4, ...demand.target },
       };
     });
-    const subscription = repository.resolve(demand).subscribe();
     await expect(
-      firstValueFrom(repository.resolveWithoutEvidence(demand)),
+      firstValueFrom(repository.resolve({ demand, evidence: null })),
     ).rejects.toThrow('profile revision is not cached');
-    expect(repository['resolutions'].size).toBe(1);
-    expect([...repository['resolutions'].keys()]).toEqual([
-      JSON.stringify(demand),
-    ]);
+    // The errored cache-only entry is gone, so an authorized attempt starts
+    // fresh through the evidenced strategy.
+    expect(repository['resolutions'].size).toBe(0);
+    const subscription = repository.resolve(demand).subscribe();
+    expect(resolveProfileEvidence).toHaveBeenCalledTimes(2);
+    expect(resolveProfileEvidence).toHaveBeenLastCalledWith(
+      { ...demand, target: { ...demand.target, account: 'alice' } },
+    );
     subscription.unsubscribe();
   });
 

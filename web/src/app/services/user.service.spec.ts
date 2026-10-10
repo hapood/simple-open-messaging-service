@@ -208,6 +208,7 @@ describe('UserService profile refresh', () => {
 
     vi.mocked(TestBed.inject(ProfileRepository).resolve).mockReturnValue(
       of({
+        publisherNamespaceId: 0,
         namespaceId: 0,
         account: 'alice',
         domain: 'local',
@@ -231,6 +232,7 @@ describe('UserService profile refresh', () => {
     const result = firstValueFrom(svc.ensureProfile());
     vi.mocked(TestBed.inject(ProfileRepository).resolve).mockReturnValue(
       of({
+        publisherNamespaceId: 0,
         namespaceId: 0,
         account: 'alice',
         domain: 'local',

@@ -8,6 +8,7 @@ import {
 import { UserIdentityLabelComponent } from './user-identity-label.component';
 
 const profile: ResolvedProfile = {
+  publisherNamespaceId: 0,
   namespaceId: 0,
   account: 'alice',
   rev: 7,

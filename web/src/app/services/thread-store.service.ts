@@ -7,13 +7,18 @@ import {
   DestroyRef,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { filter, map, Subject, Subscription } from 'rxjs';
+import { filter, firstValueFrom, map, Subject, Subscription } from 'rxjs';
 import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
 import { WebdbService } from './webdb.service';
 import type { ThreadAttentionProjection } from './webdb-storage';
 import type { GroupMetaCommitPatch } from './group-meta-model';
 import { preserveThreadProfile } from './thread-profile-projection';
 import { homeProfileDemand } from './profile-demand';
+import {
+  unevidencedProfileDemand,
+  type ProfileRequest,
+} from '../../../../shared/profile-demand';
+import { ProfileRepository } from './profile-store.service';
 import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
 import { MessageRepository } from './message-repository.service';
@@ -74,6 +79,7 @@ export type ConversationLoadStatus =
 @Injectable({ providedIn: 'root' })
 export class ThreadRepository {
   private readonly webdb = inject(WebdbService);
+  private readonly profiles = inject(ProfileRepository);
   private readonly userService = inject(UserService);
   private readonly ws = inject(WebsocketService);
   private readonly messageRepo = inject(MessageRepository);
@@ -304,22 +310,28 @@ export class ThreadRepository {
     });
   }
 
-  /** Both query results and local worker wakes refresh the selected immutable snapshot. */
+  /** Both query results and local worker wakes refresh the selected immutable
+   * snapshot. The request routes through the shared profile demand machinery
+   * (dedup + READY cache), so the row's name and the row's label/avatar
+   * components resolve through one entry: an active conversation authorizes a
+   * remote refresh, a severed one reads caches only. An authorized demand that
+   * comes back PENDING simply stays subscribed until its wake delivers. */
   private async resolveThreadProfile(item: ConversationItem): Promise<void> {
     const reference = threadProfileReference(item);
     if (reference.profileRev < 1) return;
     const epoch = this.sessionEpoch;
+    const demand = homeProfileDemand(
+      reference.account,
+      reference.namespaceId,
+      reference.profileRev,
+    );
+    const request: ProfileRequest =
+      item.conversationState === 'ACTIVE'
+        ? demand
+        : unevidencedProfileDemand(demand);
     try {
-      const result = await this.webdb.resolveProfileDemand(
-        homeProfileDemand(
-          reference.account,
-          reference.namespaceId,
-          reference.profileRev,
-        ),
-        { evidence: null },
-      );
-      if (epoch !== this.sessionEpoch || result.status === 'PENDING') return;
-      const profile = result.profile;
+      const profile = await firstValueFrom(this.profiles.resolve(request));
+      if (epoch !== this.sessionEpoch) return;
       this._items.update((items) =>
         items.map((current) => {
           if (
@@ -327,7 +339,7 @@ export class ThreadRepository {
             JSON.stringify([
               profile.publisherNamespaceId,
               profile.account,
-              profile.profileRev,
+              profile.rev,
             ])
           )
             return current;

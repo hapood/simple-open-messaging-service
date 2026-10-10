@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { defer, Observable, ReplaySubject } from 'rxjs';
+import { Observable, ReplaySubject } from 'rxjs';
 import type {
   ProfileDemand,
   UnevidencedProfileDemand,
@@ -17,6 +17,9 @@ import {
 import { SessionLifecycleService } from './session-lifecycle.service';
 
 export interface ResolvedProfile {
+  /** Home publisher of the resolved identity — the demand's
+   * `publisherNamespaceId`. */
+  publisherNamespaceId: number;
   namespaceId: number;
   account: string;
   rev: number;
@@ -34,6 +37,13 @@ const PENDING_TTL_MS = 30_000;
 interface ResolutionEntry {
   demandKey: string;
   demand: ProfileDemand;
+  /** Executor strategy fixed by whichever request form created the entry.
+   * Cache-only (unevidenced form) resolves from local + server caches, never
+   * schedules remote work, and errors on a miss. A request of the other form
+   * attaches to a live entry of the same demand — cross-form dedup never
+   * causes new remote work, and an errored cache-only entry is removed, so a
+   * later authorized attempt always starts fresh. */
+  cacheOnly: boolean;
   subject: ReplaySubject<ResolvedProfile>;
   observable: Observable<ResolvedProfile>;
   running: boolean;
@@ -72,32 +82,24 @@ export class ProfileRepository {
       });
   }
 
-  /** Resolve one demand through the platform database executor. The main thread performs no HTTP. */
+  /** Resolve one demand through the platform database executor. The main
+   * thread performs no HTTP. Both request forms share one dedup/LRU
+   * machinery (live entries, the READY cache, replayed results); the form
+   * only selects the executor strategy: an authorized demand may return
+   * PENDING and is retried by wakes, an unevidenced demand resolves from
+   * caches only and errors on a miss. */
   resolve(
     demand: ProfileDemand | UnevidencedProfileDemand,
   ): Observable<ResolvedProfile> {
     return 'demand' in demand
-      ? this.resolveWithoutEvidence(demand.demand)
-      : this.startResolution(demand);
+      ? this.startResolution(demand.demand, true)
+      : this.startResolution(demand, false);
   }
 
-  /** Resolve from caches only: client IndexedDB, then the server durable
-   *  cache. A cache miss ends in an error (callers fall back to the
-   *  account/address identity); the server never remote-fetches. */
-  resolveWithoutEvidence(demand: ProfileDemand): Observable<ResolvedProfile> {
-    demand = normalizeDemand(demand);
-    // A one-shot lookup has no pending entry and never subscribes to wakes.
-    return defer(async () => {
-      const result = await this.webdb.resolveProfileDemand(demand, {
-        evidence: null,
-      });
-      if (result.status !== 'READY')
-        throw new Error('unevidenced profile lookup must not return PENDING');
-      return this.readResolvedProfile(result.profile);
-    });
-  }
-
-  private startResolution(demand: ProfileDemand): Observable<ResolvedProfile> {
+  private startResolution(
+    demand: ProfileDemand,
+    cacheOnly: boolean,
+  ): Observable<ResolvedProfile> {
     demand = normalizeDemand(demand);
     const demandKey = JSON.stringify(demand);
     const existing = this.resolutions.get(demandKey);
@@ -125,6 +127,7 @@ export class ProfileRepository {
     const entry: ResolutionEntry = {
       demandKey,
       demand,
+      cacheOnly,
       subject,
       observable: undefined as unknown as Observable<ResolvedProfile>,
       running: false,
@@ -157,8 +160,21 @@ export class ProfileRepository {
     }
     entry.running = true;
     entry.rerun = false;
-    void this.webdb
-      .resolveProfileDemand(entry.demand)
+    // Cache-only attempts carry an explicit null evidence so the server serves
+    // durable-cache snapshots without authorizing remote resolution; they can
+    // never return PENDING, so the wake machinery below stays evidenced-only.
+    const attempt = entry.cacheOnly
+      ? this.webdb
+          .resolveProfileDemand(entry.demand, { evidence: null })
+          .then((result) => {
+            if (result.status !== 'READY')
+              throw new Error(
+                'unevidenced profile lookup must not return PENDING',
+              );
+            return result;
+          })
+      : this.webdb.resolveProfileDemand(entry.demand);
+    void attempt
       .then(async (result) => {
         if (result.status === 'PENDING') {
           entry.pending = {
@@ -193,6 +209,7 @@ export class ProfileRepository {
     if (snapshot.avatarDigest && !avatarBlob)
       throw new Error('resolved profile avatar bytes are missing');
     return {
+      publisherNamespaceId: snapshot.publisherNamespaceId,
       namespaceId: snapshot.profileNamespaceId,
       account: snapshot.account,
       rev: snapshot.profileRev,

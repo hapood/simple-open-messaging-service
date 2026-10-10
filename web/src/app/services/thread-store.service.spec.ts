@@ -30,8 +30,13 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
             profileWake$: new Subject(),
             workerFailed$: new Subject(),
             threadFeedCommitted$: new Subject(),
+            threadAttentionProjectionCommitted$: new Subject(),
             groupMetaCommitted$: new Subject(),
             stateFeedCommitted$: new Subject(),
+            resolveProfileDemand: vi
+              .fn()
+              .mockRejectedValue(new Error('no profile in this fixture')),
+            getProfileAvatarBlob: vi.fn().mockResolvedValue(null),
           },
         },
         {
