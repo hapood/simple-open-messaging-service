@@ -183,7 +183,7 @@ describe('group creation', () => {
           eq(accountThreadState.threadId, created.threadId),
         ),
       }),
-    ).toMatchObject({ lastReadSeq: 1, unreadCount: 0 });
+    ).toMatchObject({ lastReadSeq: 1, unreadCount: 0, threadProfileRev: 1 });
     expect(
       await database.db.transaction((tx) =>
         readThreadHeadSnapshotInTx(tx, created.threadId),

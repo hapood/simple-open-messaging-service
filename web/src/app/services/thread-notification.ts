@@ -3,6 +3,7 @@ import type { ThreadFeedSnapshot } from '../../../../shared/thread-attention';
 import type { NotificationDescriptor } from './notification-descriptor.model';
 import type { WebdbStorage } from './webdb-storage';
 import { avatarBlobDataUrl } from './profile-avatar-bytes';
+import { homeProfileDemand } from './profile-demand';
 
 export async function threadNotificationIcon(
   storage: Pick<WebdbStorage, 'getProfile' | 'getProfileAvatarBlob'>,
@@ -10,15 +11,9 @@ export async function threadNotificationIcon(
 ): Promise<string> {
   const subject = item.type === 'GROUP' ? item.group : item.peerUser;
   if (item.profileRev < 1) return '/icons/icon-192.png';
-  const profile = await storage.getProfile({
-    publisherNamespaceId: subject.namespaceId,
-    lookup: 'ACCOUNT_PROFILE',
-    target: {
-      profileNamespaceId: subject.namespaceId,
-      account: subject.account,
-      rev: item.profileRev,
-    },
-  });
+  const profile = await storage.getProfile(
+    homeProfileDemand(subject.account, subject.namespaceId, item.profileRev),
+  );
   const blob = profile?.avatarDigest
     ? await storage.getProfileAvatarBlob(profile.avatarDigest)
     : undefined;

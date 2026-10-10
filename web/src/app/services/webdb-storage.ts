@@ -3340,7 +3340,7 @@ export class WebdbStorage {
           .objectStore('profiles')
           .get([
             state.publisherNamespaceId,
-            state.publisherNamespaceId,
+            0,
             state.profileAccount,
             state.profileRev,
           ]);
@@ -3457,7 +3457,7 @@ export class WebdbStorage {
       }
       await this.writeSnapshot(tx.objectStore('profiles'), {
         publisherNamespaceId: reference.namespaceId,
-        profileNamespaceId: reference.namespaceId,
+        profileNamespaceId: 0,
         account: reference.account,
         profileRev: reference.rev,
         name: profile.name,

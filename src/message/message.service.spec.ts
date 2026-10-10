@@ -114,7 +114,7 @@ const url = (d: string): string =>
   `/uploads/msg-assets/${d.slice(0, 2)}/${d.slice(2, 4)}/${d}`;
 
 describe('stripMessageId author projection namespace', () => {
-  it('uses namespace zero for a local author returned through a remote stream', () => {
+  it('addresses a publisher-owned remote author by the publisher namespace', () => {
     const result = stripMessageId(
       mk({
         id: 1n,
@@ -125,7 +125,34 @@ describe('stripMessageId author projection namespace', () => {
       }),
     );
 
+    expect(result.creator?.namespaceId).toBe(7);
+    expect(result.namespaceId).toBe(7);
+  });
+
+  it('uses namespace zero for a local publisher and author', () => {
+    const result = stripMessageId(
+      mk({
+        id: 1n,
+        seq: 1,
+        content: '{}',
+        profileNamespaceId: 0,
+        publisherNamespaceId: 0,
+      }),
+    );
     expect(result.creator?.namespaceId).toBe(0);
+  });
+
+  it('rejects a row without an author instead of emitting a nullable creator', () => {
+    expect(() =>
+      stripMessageId(
+        mk({
+          id: 1n,
+          seq: 1,
+          content: '{}',
+          creatorAccount: null,
+        }),
+      ),
+    ).toThrow('message has no author');
   });
 
   it('uses the stored subject namespace independently of the message source', () => {

@@ -227,12 +227,11 @@ export class MessageResponseDto {
 
   @ApiProperty({
     type: MessageAuthorAddressResponseDto,
-    example: { account: 'alice', domain: 'example.com' },
-    nullable: true,
+    example: { account: 'alice', namespaceId: 0 },
     description:
-      'Sender address snapshot; SYSTEM notifications use $system at namespace 0; domain is the configured local identity domain.',
+      'Sender address snapshot; SYSTEM notifications use $system at namespace 0.',
   })
-  creator!: MessageAuthorAddressResponseDto | null;
+  creator!: MessageAuthorAddressResponseDto;
 
   @ApiProperty({ example: 1_700_000_000_000 })
   createdAt!: number;

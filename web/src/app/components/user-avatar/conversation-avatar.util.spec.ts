@@ -27,7 +27,12 @@ describe('conversation-avatar util', () => {
   const group = {
     type: 'GROUP',
     peerUser: { avatar: '' },
-    group: { id: 12, account: '!group-12', namespaceId: 7, avatar: '/uploads/g12.png' },
+    group: {
+      id: 12,
+      account: '!group-12',
+      namespaceId: 7,
+      avatar: '/uploads/g12.png',
+    },
   } as unknown as ConversationItem;
 
   it('keeps a profile lookup for thread projections without disclosure evidence', () => {
@@ -39,6 +44,27 @@ describe('conversation-avatar util', () => {
         lookup: 'ACCOUNT_PROFILE',
         target: { profileNamespaceId: 0, account: 'alice', rev: 7 },
       },
+    });
+  });
+
+  it('uses the publisher home namespace but subject namespace zero for foreign peers', () => {
+    const request = conversationAvatarEvidence({
+      ...p2p,
+      peerUser: {
+        account: 'alice',
+        namespaceId: 7,
+        name: 'Alice',
+        avatar: '',
+        bio: '',
+        isGroup: false,
+        isDeleted: false,
+      },
+      profileRev: 3,
+    } as ConversationItem);
+    expect(request?.demand).toEqual({
+      publisherNamespaceId: 7,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 0, account: 'alice', rev: 3 },
     });
   });
 

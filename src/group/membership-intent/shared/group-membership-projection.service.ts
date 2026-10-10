@@ -130,6 +130,9 @@ export class GroupMembershipProjectionService {
       const groupMetaFeedEndId = params.hostedLocally
         ? sql<number>`(SELECT ${groupMeta.metaEndId} FROM ${groupMeta} WHERE ${groupMeta.threadId} = ${params.threadId})`
         : undefined;
+      // Local creation has already committed the group profile to the meta
+      // head. Mirrored groups may not have received that head yet.
+      const groupProfileRev = sql<number>`(SELECT ${groupMeta.profileRev} FROM ${groupMeta} WHERE ${groupMeta.threadId} = ${params.threadId})`;
       const initialManagerProjection = initialGroupManagerProjection(
         role,
         projectionHead,
@@ -146,6 +149,7 @@ export class GroupMembershipProjectionService {
           accountId: localAccount.id,
           threadId: params.threadId,
           role,
+          threadProfileRev: groupProfileRev,
           ...(groupMetaFeedEndId !== undefined ? { groupMetaFeedEndId } : {}),
           ...initialManagerProjection,
           updatedAt: new Date(),

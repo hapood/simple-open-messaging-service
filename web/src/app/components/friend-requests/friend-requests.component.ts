@@ -22,6 +22,7 @@ import { MatTabsModule } from '@angular/material/tabs';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
+import { homeProfileDemand } from '../../services/profile-demand';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
 import { FormsModule } from '@angular/forms';
@@ -832,15 +833,11 @@ export class FriendRequestsComponent implements OnDestroy {
 
   profileEvidence(request: PendingReq): ProfileDemand | undefined {
     return request.account && request.profileRev
-      ? {
-          publisherNamespaceId: request.namespaceId,
-          lookup: 'ACCOUNT_PROFILE',
-          target: {
-            profileNamespaceId: request.namespaceId,
-            account: request.account,
-            rev: request.profileRev,
-          },
-        }
+      ? homeProfileDemand(
+          request.account,
+          request.namespaceId,
+          request.profileRev,
+        )
       : undefined;
   }
 

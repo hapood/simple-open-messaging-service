@@ -38,6 +38,7 @@ import {
 import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
+import { messageAuthorProfileDemand } from '../../services/profile-demand';
 import { MemberProfileRepository } from '../../services/member-profile-store.service';
 import { MsgService } from '../../services/message.service';
 import {
@@ -984,8 +985,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     );
   }
 
-  private creatorKey(creator: Message['creator']): string | null {
-    if (creator === null) return null;
+  private creatorKey(creator: Message['creator']): string {
     return messageCreatorKey(creator);
   }
 
@@ -1011,7 +1011,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         createdAtMs: m.createdAt,
       };
     }
-    if (m.creator === null) throw new Error('authored message has no creator');
     const creatorKey = this.creatorKey(m.creator)!;
     const creatorIdentity = parseUserIdentityKey(creatorKey);
     if (!creatorIdentity) throw new Error('invalid profile identity key');
@@ -1043,18 +1042,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         type: 'namespace',
         namespaceId: creatorIdentity.namespaceId,
       },
-      ...(m.creator && m.profileRev > 0
-        ? {
-            profileEvidence: {
-              publisherNamespaceId: creatorIdentity.namespaceId,
-              lookup: 'ACCOUNT_PROFILE' as const,
-              target: {
-                profileNamespaceId: creatorIdentity.namespaceId,
-                account: creatorIdentity.account,
-                rev: m.profileRev,
-              },
-            },
-          }
+      ...(m.profileRev > 0
+        ? { profileEvidence: messageAuthorProfileDemand(m) }
         : {}),
       // Non-text cards keep their wire content in `text` as well. In particular, FORWARD content is
       // the JSON card descriptor consumed by parseForwardCard; dropping it here makes every valid
@@ -1080,8 +1069,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (this.conv.type === 'GROUP' && this.memberProfiles) {
       await Promise.all(
         msgs.flatMap((message) => {
-          if (message.contentType === 'SYSTEM' || message.creator === null)
-            return [];
+          if (message.contentType === 'SYSTEM') return [];
           const identity = parseUserIdentityKey(
             this.creatorKey(message.creator)!,
           );
@@ -1100,22 +1088,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
     await Promise.all(
       msgs.map(async (message) => {
-        if (message.contentType === 'SYSTEM' || message.creator === null)
-          return;
+        if (message.contentType === 'SYSTEM') return;
         const key = this.creatorKey(message.creator)!;
         const identity = parseUserIdentityKey(key);
         if (!identity) throw new Error('invalid profile identity key');
         const cached = await (this.profileRepo
           ? firstValueFrom(
-              this.profileRepo.resolve({
-                publisherNamespaceId: identity.namespaceId,
-                lookup: 'ACCOUNT_PROFILE',
-                target: {
-                  profileNamespaceId: identity.namespaceId,
-                  account: identity.account,
-                  rev: message.profileRev,
-                },
-              }),
+              this.profileRepo.resolve(messageAuthorProfileDemand(message)!),
             )
           : Promise.resolve(undefined));
         const presentation = {

@@ -50,6 +50,7 @@ import {
 import { ContactCardShareService } from '../../services/contact-card-share.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
 import type { ProfileDemand } from '../../../../../shared/profile-demand';
+import { homeProfileDemand } from '../../services/profile-demand';
 import {
   currentGroupAnnouncement,
   isGroupMetaCurrent,
@@ -112,15 +113,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     const threadId = this.threadId();
     const rev = this.userMsgTrd()?.profileRev;
     return group && threadId !== undefined && rev && rev > 0
-      ? {
-          publisherNamespaceId: group.namespaceId,
-          lookup: 'ACCOUNT_PROFILE',
-          target: {
-            profileNamespaceId: group.namespaceId,
-            account: group.account,
-            rev,
-          },
-        }
+      ? homeProfileDemand(group.account, group.namespaceId, rev)
       : undefined;
   }
 

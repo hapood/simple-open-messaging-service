@@ -18,6 +18,7 @@ import {
 } from '../user-avatar/user-avatar.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
 import type { ProfileDemand } from '../../../../../shared/profile-demand';
+import { homeProfileDemand } from '../../services/profile-demand';
 import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 
 export interface FriendRequestCardModel {
@@ -63,15 +64,11 @@ export class FriendRequestCardComponent {
   profileEvidence(): ProfileDemand | undefined {
     const request = this.requestItem();
     return request.account && request.profileRev
-      ? {
-          publisherNamespaceId: request.namespaceId,
-          lookup: 'ACCOUNT_PROFILE',
-          target: {
-            profileNamespaceId: request.namespaceId,
-            account: request.account,
-            rev: request.profileRev,
-          },
-        }
+      ? homeProfileDemand(
+          request.account,
+          request.namespaceId,
+          request.profileRev,
+        )
       : undefined;
   }
 

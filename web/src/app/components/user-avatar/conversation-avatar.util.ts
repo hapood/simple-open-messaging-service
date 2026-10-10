@@ -4,6 +4,7 @@ import {
   type UnevidencedProfileDemand,
 } from '../../../../../shared/profile-demand';
 import { UserAvatarType } from './model';
+import { homeProfileDemand } from '../../services/profile-demand';
 
 /**
  * Derive `<app-user-avatar>` inputs from a {@link ConversationItem}. The single source of truth shared by
@@ -41,13 +42,7 @@ export function conversationAvatarEvidence(
 ): UnevidencedProfileDemand | undefined {
   if (t.profileRev < 1) return undefined;
   const subject = t.type === 'P2P' ? t.peerUser : t.group;
-  return unevidencedProfileDemand({
-    publisherNamespaceId: subject.namespaceId,
-    lookup: 'ACCOUNT_PROFILE',
-    target: {
-      profileNamespaceId: subject.namespaceId,
-      account: subject.account,
-      rev: t.profileRev,
-    },
-  });
+  return unevidencedProfileDemand(
+    homeProfileDemand(subject.account, subject.namespaceId, t.profileRev),
+  );
 }

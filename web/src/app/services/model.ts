@@ -49,7 +49,7 @@ export type Message = Omit<
   /** Immutable author profile selected when this message was committed. */
   profileRev: number;
   /** Sender identity selected by this message. Domain is presentation metadata and may be absent on history rows. */
-  creator: MessageCreator | null;
+  creator: MessageCreator;
   /** Local-only corrections to participant revisions in a SYSTEM row, keyed by [namespaceId, account].
    * The server content remains immutable; cache merges preserve corrections for the same content. */
   localSystemProfileRevs?: Record<string, number>;
@@ -103,14 +103,8 @@ export interface UserRef {
   domain?: string;
 }
 
-export function messageCreatorKey(creator: MessageCreator): string;
-export function messageCreatorKey(creator: null): null;
-export function messageCreatorKey(
-  creator: MessageCreator | null,
-): string | null {
-  return creator === null
-    ? null
-    : JSON.stringify([creator.namespaceId, creator.account]);
+export function messageCreatorKey(creator: MessageCreator): string {
+  return JSON.stringify([creator.namespaceId, creator.account]);
 }
 
 /** Message sender keys identify the immutable subject selected by a message row.

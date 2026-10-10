@@ -116,7 +116,9 @@ async function clientInviteUser(
               profileTable.publisherNamespaceId,
               value.namespaceId === 0 ? 0 : value.namespaceId,
             ),
-            eq(profileTable.profileNamespaceId, value.namespaceId),
+            // A peer's own profile is subject namespace 0 at its publisher,
+            // even when its home namespace is foreign on this server.
+            eq(profileTable.profileNamespaceId, 0),
             eq(profileTable.profileRev, rev),
           ),
         })

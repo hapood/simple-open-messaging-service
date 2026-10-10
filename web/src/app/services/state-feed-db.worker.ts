@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { WebdbStorage } from './webdb-storage';
+import { homeProfileDemand } from './profile-demand';
 import { BusinessCode } from './biz-code';
 import { coalesceThreadFeedWakes } from './thread-feed-sync';
 import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
@@ -309,15 +310,11 @@ const resolveGroupMetaProfile = async (
 ) => {
   const demand: ProfileDemand =
     reference.type === 'GROUP'
-      ? {
-          publisherNamespaceId: reference.namespaceId,
-          lookup: 'ACCOUNT_PROFILE',
-          target: {
-            profileNamespaceId: reference.namespaceId,
-            account: reference.account,
-            rev: reference.rev,
-          },
-        }
+      ? homeProfileDemand(
+          reference.account,
+          reference.namespaceId,
+          reference.rev,
+        )
       : {
           publisherNamespaceId: reference.namespaceId,
           lookup: 'GROUP_MEMBER_PROFILE',

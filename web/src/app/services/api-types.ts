@@ -1868,6 +1868,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/uploads/resumable/{uploadId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel an uncommitted resumable upload */
+        post: operations["UploadController_cancelResumable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads/resumable/batch/{clientMessageId}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel all uncommitted files in a media batch */
+        post: operations["UploadController_cancelResumableBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/uploads/resumable/batch/{clientMessageId}/send-completed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send completed files and discard unfinished files */
+        post: operations["UploadController_sendCompletedResumableBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/upload": {
         parameters: {
             query?: never;
@@ -3868,13 +3919,13 @@ export interface components {
              */
             threadId: number;
             /**
-             * @description Sender address snapshot; SYSTEM notifications use $system at namespace 0; domain is the configured local identity domain.
+             * @description Sender address snapshot; SYSTEM notifications use $system at namespace 0.
              * @example {
              *       "account": "alice",
-             *       "domain": "example.com"
+             *       "namespaceId": 0
              *     }
              */
-            creator: components["schemas"]["MessageAuthorAddressResponseDto"] | null;
+            creator: components["schemas"]["MessageAuthorAddressResponseDto"];
             /** @example 1700000000000 */
             createdAt: number;
             /** @example 1700000000000 */
@@ -4033,13 +4084,13 @@ export interface components {
              */
             threadId: number;
             /**
-             * @description Sender address snapshot; SYSTEM notifications use $system at namespace 0; domain is the configured local identity domain.
+             * @description Sender address snapshot; SYSTEM notifications use $system at namespace 0.
              * @example {
              *       "account": "alice",
-             *       "domain": "example.com"
+             *       "namespaceId": 0
              *     }
              */
-            creator: components["schemas"]["MessageAuthorAddressResponseDto"] | null;
+            creator: components["schemas"]["MessageAuthorAddressResponseDto"];
             /** @example 1700000000000 */
             createdAt: number;
             /** @example 1700000000000 */
@@ -7884,6 +7935,63 @@ export interface operations {
             header?: never;
             path: {
                 uploadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UploadController_cancelResumable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                uploadId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UploadController_cancelResumableBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                clientMessageId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UploadController_sendCompletedResumableBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                clientMessageId: string;
             };
             cookie?: never;
         };

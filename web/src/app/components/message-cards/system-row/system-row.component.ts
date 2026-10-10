@@ -3,6 +3,7 @@ import {
   type SystemEventAddress,
 } from '../../../../../../shared/system-message-content';
 import { firstValueFrom } from 'rxjs';
+import { homeProfileDemand } from '../../../services/profile-demand';
 import { MemberProfileRepository } from '../../../services/member-profile-store.service';
 import { ProfileRepository } from '../../../services/profile-store.service';
 import { WebdbService } from '../../../services/webdb.service';
@@ -135,15 +136,13 @@ export class SystemRowComponent {
       if (!revision) return;
       void firstValueFrom(
         this.profiles.resolve(
-          unevidencedProfileDemand({
-            publisherNamespaceId: identity.profileNamespaceId,
-            lookup: 'ACCOUNT_PROFILE',
-            target: {
-              profileNamespaceId: identity.profileNamespaceId,
-              account: identity.account,
-              rev: revision,
-            },
-          }),
+          unevidencedProfileDemand(
+            homeProfileDemand(
+              identity.account,
+              identity.profileNamespaceId,
+              revision,
+            ),
+          ),
         ),
       )
         .then((profile) => {
@@ -187,22 +186,18 @@ export class SystemRowComponent {
           })(),
         };
       else if (event.type === 'FRIEND_ADDED')
-        evidence = {
-          publisherNamespaceId: identity.profileNamespaceId,
-          lookup: 'ACCOUNT_PROFILE',
-          target: {
-            profileNamespaceId: identity.profileNamespaceId,
-            account: identity.account,
-            rev: revision,
-          },
-        };
+        evidence = homeProfileDemand(
+          identity.account,
+          identity.profileNamespaceId,
+          revision,
+        );
     }
     const profileSubscription = evidence
       ? this.profiles.resolve(evidence).subscribe({
           next: (profile) => {
             if (cancelled) return;
             if (
-              profile.namespaceId !== identity.profileNamespaceId ||
+              profile.namespaceId !== evidence.target.profileNamespaceId ||
               profile.account !== identity.account
             )
               return;

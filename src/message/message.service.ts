@@ -114,7 +114,7 @@ export type PublicMessage<T extends Message = Message> = Omit<
   T,
   'id' | 'creatorAccount' | 'profileNamespaceId'
 > & {
-  creator: MessageAuthorAddress | null;
+  creator: MessageAuthorAddress;
 };
 export interface MessageQueryParams {
   skip?: number;
@@ -147,8 +147,15 @@ export interface ClientMessageHistoryGap {
   recoverable: boolean;
 }
 
-function authorNamespaceId(message: { profileNamespaceId: number }): number {
-  return message.profileNamespaceId;
+function authorNamespaceId(message: {
+  publisherNamespaceId: number;
+  profileNamespaceId: number;
+}): number {
+  // The publisher's own subject is namespace 0 on its server, but clients
+  // address that author by the publisher's namespace on this server.
+  return message.profileNamespaceId === 0
+    ? message.publisherNamespaceId
+    : message.profileNamespaceId;
 }
 
 /**
@@ -170,20 +177,19 @@ export function stripMessageId<
   msg: T,
 ): Omit<T, 'id' | 'creatorAccount' | 'profileNamespaceId'> & {
   namespaceId: number;
-  creator: MessageAuthorAddress | null;
+  creator: MessageAuthorAddress;
 } {
   const { id, creatorAccount, profileNamespaceId, ...rest } =
     projectClientMessageContent(msg);
+  // The database constraint requires an author even for system messages.
+  if (creatorAccount === null) throw new Error('message has no author');
   return {
     ...rest,
     namespaceId: authorNamespaceId(msg),
-    creator:
-      creatorAccount === null
-        ? null
-        : {
-            account: creatorAccount,
-            namespaceId: authorNamespaceId(msg),
-          },
+    creator: {
+      account: creatorAccount,
+      namespaceId: authorNamespaceId(msg),
+    },
   };
 }
 

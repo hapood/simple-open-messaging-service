@@ -13,6 +13,7 @@ import { WebdbService } from './webdb.service';
 import type { ThreadAttentionProjection } from './webdb-storage';
 import type { GroupMetaCommitPatch } from './group-meta-model';
 import { preserveThreadProfile } from './thread-profile-projection';
+import { homeProfileDemand } from './profile-demand';
 import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
 import { MessageRepository } from './message-repository.service';
@@ -310,15 +311,11 @@ export class ThreadRepository {
     const epoch = this.sessionEpoch;
     try {
       const result = await this.webdb.resolveProfileDemand(
-        {
-          publisherNamespaceId: reference.namespaceId,
-          lookup: 'ACCOUNT_PROFILE',
-          target: {
-            profileNamespaceId: reference.namespaceId,
-            account: reference.account,
-            rev: reference.profileRev,
-          },
-        },
+        homeProfileDemand(
+          reference.account,
+          reference.namespaceId,
+          reference.profileRev,
+        ),
         { evidence: null },
       );
       if (epoch !== this.sessionEpoch || result.status === 'PENDING') return;
@@ -328,7 +325,7 @@ export class ThreadRepository {
           if (
             threadProfileKey(threadProfileReference(current)) !==
             JSON.stringify([
-              profile.profileNamespaceId,
+              profile.publisherNamespaceId,
               profile.account,
               profile.profileRev,
             ])
