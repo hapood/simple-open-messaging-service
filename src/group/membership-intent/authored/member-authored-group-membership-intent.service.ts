@@ -174,8 +174,8 @@ export class MemberAuthoredGroupMembershipIntentService {
           SELECT ns.domain
           FROM "IdentityNamespace" ns
           WHERE ns.id = ${namespaceId}
-            AND ns.active = true
             AND ns."retiredAt" IS NULL
+            AND (ns.id = 0 OR ns.active = true)
         `)
       ).rows[0]?.domain;
       if (!storedDomain)
