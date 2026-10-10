@@ -25,13 +25,11 @@ import { SystemRowComponent } from './system-row.component';
 describe('SystemRowComponent', () => {
   const me = {
     account: 'me',
-    domain: 'chat.example.test',
     profileNamespaceId: 0,
     profileRev: 0,
   };
   const alice = {
     account: 'alice',
-    domain: 'peer.test',
     profileNamespaceId: 12,
     profileRev: 0,
   };
@@ -70,7 +68,7 @@ describe('SystemRowComponent', () => {
     resolveProfile.mockReset().mockReturnValue(
       of({
         account: 'alice',
-        domain: 'peer.test',
+        publisherNamespaceId: 12,
         namespaceId: 12,
         rev: 3,
         name: '',
@@ -87,7 +85,6 @@ describe('SystemRowComponent', () => {
           useValue: {
             sessionProfile: signal({
               account: 'me',
-              domain: 'chat.example.test',
               namespaceId: 0,
               profileRev: 0,
             }),
@@ -101,11 +98,12 @@ describe('SystemRowComponent', () => {
         {
           provide: ProfileNamespaceRepository,
           useValue: {
-            resolve: () =>
+            resolve: ({ profileNamespaceId }: { profileNamespaceId: number }) =>
               of({
                 publisherNamespaceId: 0,
-                profileNamespaceId: 0,
-                domain: 'chat.example.test',
+                profileNamespaceId,
+                domain: profileNamespaceId === 0 ? null : 'peer.test',
+                status: 'ACTIVE',
               }),
           },
         },
@@ -145,7 +143,6 @@ describe('SystemRowComponent', () => {
         type: 'GROUP_ADMIN_GRANTED',
         member: {
           account: 'bob',
-          domain: 'chat.example.test',
           profileNamespaceId: 0,
           profileRev: 0,
         },
@@ -165,7 +162,6 @@ describe('SystemRowComponent', () => {
         type: 'FRIEND_REMOVED',
         initiator: {
           account: '$system',
-          domain: 'chat.example.test',
           profileNamespaceId: 0,
           profileRev: 0,
         },
@@ -200,7 +196,7 @@ describe('SystemRowComponent', () => {
       resolveProfile.mockReturnValue(
         of({
           account: 'alice',
-          domain: 'peer.test',
+          publisherNamespaceId: 12,
           namespaceId: 12,
           rev: 3,
           name: 'Alice Profile',
@@ -221,7 +217,7 @@ describe('SystemRowComponent', () => {
         demand: {
           publisherNamespaceId: 12,
           lookup: 'ACCOUNT_PROFILE',
-          target: { profileNamespaceId: 12, account: 'alice', rev: 3 },
+          target: { profileNamespaceId: 0, account: 'alice', rev: 3 },
         },
       });
     },
@@ -241,7 +237,7 @@ describe('SystemRowComponent', () => {
       .mockReturnValueOnce(
         of({
           account: 'alice',
-          domain: 'peer.test',
+          publisherNamespaceId: 12,
           namespaceId: 12,
           rev: 3,
           name: '',
@@ -250,7 +246,7 @@ describe('SystemRowComponent', () => {
       .mockReturnValue(
         of({
           account: 'alice',
-          domain: 'peer.test',
+          publisherNamespaceId: 12,
           namespaceId: 12,
           rev: 3,
           name: 'Alice Profile',
@@ -294,7 +290,6 @@ describe('SystemRowComponent', () => {
       of({
         name: 'Alice after',
         account: alice.account,
-        domain: alice.domain,
         namespaceId: 12,
         rev: 4,
       }),
@@ -322,7 +317,7 @@ describe('SystemRowComponent', () => {
     resolveProfile.mockReturnValue(
       of({
         account: 'alice',
-        domain: 'peer.test',
+        publisherNamespaceId: 12,
         namespaceId: 12,
         rev: 4,
         name: 'Alice cached',
@@ -356,7 +351,7 @@ describe('SystemRowComponent', () => {
     resolveProfile.mockReturnValue(
       of({
         account: 'alice',
-        domain: 'peer.test',
+        publisherNamespaceId: 12,
         namespaceId: 12,
         rev: 4,
         name: 'Alice cached',
@@ -379,7 +374,7 @@ describe('SystemRowComponent', () => {
           publisherNamespaceId: 12,
           lookup: 'ACCOUNT_PROFILE',
           target: {
-            profileNamespaceId: 12,
+            profileNamespaceId: 0,
             account: 'alice',
             rev: 4,
           },
@@ -394,7 +389,7 @@ describe('SystemRowComponent', () => {
     resolveProfile.mockReturnValue(
       of({
         account: 'alice',
-        domain: 'peer.test',
+        publisherNamespaceId: 12,
         namespaceId: 12,
         rev: 3,
         name: 'Alice Profile',
@@ -411,7 +406,7 @@ describe('SystemRowComponent', () => {
           publisherNamespaceId: 12,
           lookup: 'ACCOUNT_PROFILE',
           target: {
-            profileNamespaceId: 12,
+            profileNamespaceId: 0,
             account: 'alice',
             rev: 3,
           },

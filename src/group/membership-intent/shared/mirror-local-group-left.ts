@@ -6,7 +6,6 @@ import {
   type ThreadContentLock,
 } from '../../../common/locks/thread-content-lock.js';
 import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fanout-admission-sql.js';
-import { localIdentityDomain } from '../../../common/local-identity.js';
 
 /** Announce an active-to-inactive local mirror relationship in the same
  * transaction that consumed or authored its REVOKED intent. The caller holds
@@ -30,7 +29,6 @@ export async function writeMirrorLocalGroupLeftInTx(
     type: 'GROUP_LEFT',
     member: {
       account: input.memberAccount,
-      domain: await localIdentityDomain(tx),
       profileNamespaceId: 0,
       profileRev: member.defaultProfileRev,
     },

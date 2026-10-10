@@ -478,7 +478,6 @@ export class GroupService {
             type: SystemMessageType.GROUP_CREATED,
             creator: {
               account: owner.account,
-              domain: await localIdentityDomain(tx),
               profileNamespaceId: 0,
               profileRev: owner.defaultProfileRev,
             },

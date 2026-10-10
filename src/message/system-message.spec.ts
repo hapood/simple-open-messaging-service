@@ -7,19 +7,16 @@ import {
 
 const me = {
   account: 'alice',
-  domain: 'local',
   profileNamespaceId: 0,
   profileRev: 2,
 };
 const peer = {
   account: 'bob',
-  domain: 'peer.test',
   profileNamespaceId: 12,
   profileRev: 3,
 };
 const system = {
   account: '$system',
-  domain: 'local',
   profileNamespaceId: 0,
   profileRev: 0,
 };
@@ -58,21 +55,30 @@ describe('system message content', () => {
     }
   });
 
+  it('accepts address keys outside the wire contract such as domain', () => {
+    expect(
+      parseSystemMessageContent(
+        JSON.stringify({
+          type: SystemMessageType.GROUP_LEFT,
+          member: { ...peer, domain: 'peer.test' },
+        }),
+      ),
+    ).toMatchObject({ type: SystemMessageType.GROUP_LEFT, member: peer });
+  });
+
   it.each([
     { type: 'DELETE_MEMBER' },
     { type: 'FRIEND_ADDED' },
     { type: 'FRIEND_REMOVED', initiator: me },
     { type: 'FRIEND_REMOVED', initiator: system, participants: [me] },
-    { type: 'GROUP_LEFT', member: { account: 'bob', domain: 'peer.test' } },
-    { type: 'GROUP_LEFT', member: { ...peer, publisherNamespaceId: 0 } },
-    { type: 'GROUP_LEFT', member: { ...peer, namespaceId: 12 } },
+    { type: 'GROUP_LEFT', member: { account: 'bob' } },
     { type: 'GROUP_LEFT', member: { ...peer, profileRev: -1 } },
     { type: 'GROUP_LEFT', member: peer, action: true },
     { type: 'GROUP_CREATED', member: me },
     { type: 'GROUP_OWNER_TRANSFERRED', newOwner: peer },
     null,
     [],
-  ])('rejects missing, legacy, or malformed fields: %j', (body) => {
+  ])('rejects missing or malformed fields: %j', (body) => {
     expect(parseSystemMessageContent(JSON.stringify(body))).toBeNull();
   });
 });

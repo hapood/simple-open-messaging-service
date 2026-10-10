@@ -14,13 +14,11 @@ const snapshot: CallHistorySnapshot = {
     callId: 'test-call',
     caller: {
       account: 'alice',
-      domain: 'a.test',
       profileNamespaceId: 1,
       profileRev: 0,
     },
     callee: {
       account: 'bob',
-      domain: 'b.test',
       profileNamespaceId: 2,
       profileRev: 0,
     },

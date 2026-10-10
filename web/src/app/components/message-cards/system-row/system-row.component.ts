@@ -2,12 +2,14 @@ import {
   parseSystemMessageContent,
   type SystemEventAddress,
 } from '../../../../../../shared/system-message-content';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, of } from 'rxjs';
 import { homeProfileDemand } from '../../../services/profile-demand';
 import { MemberProfileRepository } from '../../../services/member-profile-store.service';
 import { ProfileRepository } from '../../../services/profile-store.service';
 import { WebdbService } from '../../../services/webdb.service';
 import { ConversationListService } from '../../../services/conversation-list.service';
+import { ProfileNamespaceRepository } from '../../../services/profile-namespace-store.service';
+import { namespaceDisplayDomain } from '../../../services/profile-namespace-domain';
 
 import {
   unevidencedProfileDemand,
@@ -80,8 +82,10 @@ export class SystemRowComponent {
   private readonly profiles = inject(ProfileRepository);
   private readonly webdb = inject(WebdbService);
   private readonly conversations = inject(ConversationListService);
+  private readonly namespaces = inject(ProfileNamespaceRepository);
   private readonly users = inject(UserService);
   private readonly profileName = signal('');
+  private readonly namespaceDomain = signal<string | null>(null);
   private readonly event = computed(() =>
     parseSystemMessageContent(this.data().text),
   );
@@ -109,9 +113,28 @@ export class SystemRowComponent {
       const data = this.data();
       const identity = this.displayIdentity();
       this.profileName.set('');
+      this.namespaceDomain.set(null);
       if (!identity || !data.threadId) return;
+      this.resolveIdentityDomain(identity, onCleanup);
       this.resolveProfiledParticipant(data, identity, onCleanup);
     });
+  }
+
+  private resolveIdentityDomain(
+    identity: SystemEventAddress,
+    onCleanup: (callback: () => void) => void,
+  ): void {
+    const subscription = this.namespaces
+      .resolve({
+        publisherNamespaceId: 0,
+        profileNamespaceId: identity.profileNamespaceId,
+      })
+      .subscribe({
+        next: (binding) =>
+          this.namespaceDomain.set(namespaceDisplayDomain(binding)),
+        error: () => this.namespaceDomain.set(null),
+      });
+    onCleanup(() => subscription.unsubscribe());
   }
 
   /** Resolve an exact profile key without ever deriving a member namespace from the group. */
@@ -286,7 +309,17 @@ export class SystemRowComponent {
             ?.alias?.trim() ?? '')
         : '';
       const name =
-        alias || this.profileName() || displayUserAccount(identity ?? {});
+        alias ||
+        this.profileName() ||
+        displayUserAccount(
+          identity
+            ? {
+                account: identity.account,
+                profileNamespaceId: identity.profileNamespaceId,
+                domain: this.namespaceDomain(),
+              }
+            : {},
+        );
       const translate = (key: string) =>
         this.transloco.translate(`chat.systemMessage.${key}`, { name });
       switch (body.type) {

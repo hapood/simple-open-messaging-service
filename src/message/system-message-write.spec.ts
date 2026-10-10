@@ -33,7 +33,6 @@ describe('MessageService local system messages', () => {
         type: SystemMessageType.GROUP_JOINED,
         member: {
           account: 'alice',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 2,
         },
@@ -74,7 +73,7 @@ describe('MessageService local system messages', () => {
         account: {
           findFirst: vi
             .fn()
-            .mockResolvedValue({ account: 'alice', domain: 'local.test' }),
+            .mockResolvedValue({ account: 'alice' }),
         },
       },
       update,
@@ -85,7 +84,6 @@ describe('MessageService local system messages', () => {
       type: SystemMessageType.GROUP_JOINED,
       member: {
         account: 'alice',
-        domain: 'local',
         profileNamespaceId: 0,
         profileRev: 2,
       },
@@ -106,7 +104,6 @@ describe('MessageService local system messages', () => {
       type: 'GROUP_JOINED',
       member: {
         account: 'alice',
-        domain: 'local',
         profileNamespaceId: 0,
         profileRev: 2,
       },
@@ -127,7 +124,6 @@ describe('MessageService local system messages', () => {
         type: SystemMessageType.GROUP_JOINED,
         member: {
           account: 'alice',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 2,
         },
@@ -153,20 +149,17 @@ describe('MessageService local system messages', () => {
         type: SystemMessageType.FRIEND_REMOVED,
         initiator: {
           account: 'bob',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 1,
         },
         participants: [
           {
             account: 'bob',
-            domain: 'local',
             profileNamespaceId: 0,
             profileRev: 1,
           },
           {
             account: 'alice',
-            domain: 'local',
             profileNamespaceId: 0,
             profileRev: 2,
           },
@@ -192,7 +185,7 @@ describe('MessageService local system messages', () => {
         account: {
           findFirst: vi
             .fn()
-            .mockResolvedValue({ account: 'bob', domain: 'local' }),
+            .mockResolvedValue({ account: 'bob' }),
         },
       },
       update: vi.fn(() => query),
@@ -204,20 +197,17 @@ describe('MessageService local system messages', () => {
       type: SystemMessageType.FRIEND_REMOVED,
       initiator: {
         account: 'bob',
-        domain: 'local',
         profileNamespaceId: 0,
         profileRev: 1,
       },
       participants: [
         {
           account: 'bob',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 1,
         },
         {
           account: 'alice',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 2,
         },

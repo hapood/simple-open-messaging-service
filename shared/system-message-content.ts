@@ -54,43 +54,65 @@ export function parseSystemMessageContent(
     const address = (
       v: unknown,
       allowSystem = false,
-    ): v is SystemEventAddress =>
-      isProfiledAddress(v) && (v.account !== '$system' || allowSystem);
-    const participants = (value: unknown) =>
-      Array.isArray(value) &&
-      value.length === 2 &&
-      value.every((entry) => address(entry));
-    let valid = false;
+    ): SystemEventAddress | null =>
+      isProfiledAddress(v) && (v.account !== '$system' || allowSystem)
+        ? {
+            account: v.account,
+            profileNamespaceId: v.profileNamespaceId,
+            profileRev: v.profileRev,
+          }
+        : null;
+    const participants = (value: unknown): [SystemEventAddress, SystemEventAddress] | null => {
+      if (!Array.isArray(value) || value.length !== 2) return null;
+      const first = address(value[0]);
+      const second = address(value[1]);
+      return first && second ? [first, second] : null;
+    };
     switch (body['type']) {
-      case 'FRIEND_ADDED':
-        valid = keys('participants') && participants(body['participants']);
-        break;
-      case 'FRIEND_REMOVED':
-        valid =
-          keys('initiator', 'participants') &&
-          participants(body['participants']) &&
-          address(body['initiator'], true);
-        break;
-      case 'GROUP_CREATED':
-        valid = keys('creator') && address(body['creator']);
-        break;
+      case 'FRIEND_ADDED': {
+        if (!keys('participants')) return null;
+        const parsedParticipants = participants(body['participants']);
+        return parsedParticipants
+          ? { type: 'FRIEND_ADDED', participants: parsedParticipants }
+          : null;
+      }
+      case 'FRIEND_REMOVED': {
+        if (!keys('initiator', 'participants')) return null;
+        const initiator = address(body['initiator'], true);
+        const parsedParticipants = participants(body['participants']);
+        return initiator && parsedParticipants
+          ? {
+              type: 'FRIEND_REMOVED',
+              initiator,
+              participants: parsedParticipants,
+            }
+          : null;
+      }
+      case 'GROUP_CREATED': {
+        if (!keys('creator')) return null;
+        const creator = address(body['creator']);
+        return creator ? { type: 'GROUP_CREATED', creator } : null;
+      }
       case 'GROUP_JOINED':
       case 'GROUP_LEFT':
       case 'GROUP_ADMIN_GRANTED':
-      case 'GROUP_ADMIN_REVOKED':
-        valid = keys('member') && address(body['member']);
-        break;
+      case 'GROUP_ADMIN_REVOKED': {
+        if (!keys('member')) return null;
+        const member = address(body['member']);
+        return member ? { type: body['type'], member } : null;
+      }
       case 'GROUP_DISSOLVED':
-        valid = keys();
-        break;
-      case 'GROUP_OWNER_TRANSFERRED':
-        valid =
-          keys('previousOwner', 'newOwner') &&
-          address(body['previousOwner']) &&
-          address(body['newOwner']);
-        break;
+        return keys() ? { type: 'GROUP_DISSOLVED' } : null;
+      case 'GROUP_OWNER_TRANSFERRED': {
+        if (!keys('previousOwner', 'newOwner')) return null;
+        const previousOwner = address(body['previousOwner']);
+        const newOwner = address(body['newOwner']);
+        return previousOwner && newOwner
+          ? { type: 'GROUP_OWNER_TRANSFERRED', previousOwner, newOwner }
+          : null;
+      }
     }
-    return valid ? (body as unknown as OrdinarySystemMessageContent) : null;
+    return null;
   } catch {
     return null;
   }

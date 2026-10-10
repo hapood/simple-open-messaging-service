@@ -4,9 +4,9 @@ import { sql, type SQL } from 'drizzle-orm';
  * intent's write is invisible to sibling CTEs in the base-table snapshot, so
  * its revision must come from the materialized authored state instead — the
  * actorState CTE returns the author coordinates so its row can be matched to
- * the direction being rendered. The local endpoint (side A) has namespace zero;
- * a remote endpoint's display domain resolves through IdentityNamespace. The
- * enclosing message supplies the publisher namespace. */
+ * the direction being rendered. The local endpoint (side A) has namespace zero.
+ * The enclosing message supplies the publisher namespace; the display domain
+ * is not part of the wire contract. */
 export function userIntentSystemParticipantsSql(input: {
   pairId: bigint;
   actorState: 'accepted' | 'revocation';
@@ -26,7 +26,7 @@ export function userIntentSystemParticipantsSql(input: {
         LIMIT 1
     ), 0)`;
   return sql`(SELECT jsonb_build_array(
-      jsonb_build_object('account', p."endpointAAccount", 'domain', na.domain,
+      jsonb_build_object('account', p."endpointAAccount",
         'profileNamespaceId', p."endpointANamespaceId",
         'profileRev', ${revision({
           author: sql`p."endpointAAccount"`,
@@ -34,7 +34,7 @@ export function userIntentSystemParticipantsSql(input: {
           receiver: sql`p."endpointBAccount"`,
           receiverNamespace: sql`p."endpointBNamespaceId"`,
         })}),
-      jsonb_build_object('account', p."endpointBAccount", 'domain', nb.domain,
+      jsonb_build_object('account', p."endpointBAccount",
         'profileNamespaceId', p."endpointBNamespaceId",
         'profileRev', ${revision({
           author: sql`p."endpointBAccount"`,
@@ -43,7 +43,5 @@ export function userIntentSystemParticipantsSql(input: {
           receiverNamespace: sql`p."endpointANamespaceId"`,
         })}))
     FROM "RelationshipPair" p
-    LEFT JOIN "IdentityNamespace" na ON na.id = p."endpointANamespaceId"
-    LEFT JOIN "IdentityNamespace" nb ON nb.id = p."endpointBNamespaceId"
     WHERE p.id = ${input.pairId})`;
 }

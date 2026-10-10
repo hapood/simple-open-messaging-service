@@ -50,14 +50,22 @@ export function parseCallEndedContent(
       return null;
     const time = (x: unknown): x is number =>
       Number.isSafeInteger(x) && (x as number) >= 0;
-    const address = (x: unknown): x is ProfiledAddress =>
-      isProfiledAddress(x) && x.account !== '$system' && x.profileRev === 0;
+    const address = (x: unknown): ProfiledAddress | null =>
+      isProfiledAddress(x) && x.account !== '$system' && x.profileRev === 0
+        ? {
+            account: x.account,
+            profileNamespaceId: x.profileNamespaceId,
+            profileRev: x.profileRev,
+          }
+        : null;
+    const caller = address(v['caller']);
+    const callee = address(v['callee']);
     if (
       v['type'] !== 'CALL_ENDED' ||
       typeof v['callId'] !== 'string' ||
       !v['callId'] ||
-      !address(v['caller']) ||
-      !address(v['callee']) ||
+      !caller ||
+      !callee ||
       !['AUDIO', 'VIDEO'].includes(v['mediaType'] as string) ||
       !CALL_OUTCOMES.includes(v['outcome'] as CallOutcome) ||
       !time(v['endedAt'])
@@ -78,7 +86,19 @@ export function parseCallEndedContent(
       v['connectedAt'] !== undefined
     )
       return null;
-    return v as unknown as CallEndedContent;
+    return {
+      type: 'CALL_ENDED',
+      callId: v['callId'],
+      caller,
+      callee,
+      mediaType: v['mediaType'] as CallMediaType,
+      outcome: v['outcome'] as CallOutcome,
+      initiatedAt: v['initiatedAt'],
+      ...(v['connectedAt'] === undefined
+        ? {}
+        : { connectedAt: v['connectedAt'] }),
+      endedAt: v['endedAt'],
+    };
   } catch {
     return null;
   }

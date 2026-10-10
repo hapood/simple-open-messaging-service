@@ -12,6 +12,7 @@ import {
 import { admitGroupMembershipProjectionFanoutInTx } from '../membership-intent/shared/group-membership-projection-fanout.js';
 import { enqueueCurrentThreadFanoutsInTx } from '../../message/thread-fanout-task.js';
 import { GroupRole } from '../../database/enums.js';
+import type { ProfiledAddress } from '../../../shared/profiled-address.js';
 import { accountThreadState } from '../../database/schema.js';
 import { BusinessCode } from '../../common/business-code.js';
 import { normalizeAccount } from '../../common/account.js';
@@ -87,29 +88,14 @@ interface ValidatedRosterRole {
   readonly systemMessage:
     | {
         type: typeof SystemMessageType.GROUP_OWNER_TRANSFERRED;
-        previousOwner: {
-          account: string;
-          domain: string;
-          profileNamespaceId: number;
-          profileRev: number;
-        };
-        newOwner: {
-          account: string;
-          domain: string;
-          profileNamespaceId: number;
-          profileRev: number;
-        };
+        previousOwner: ProfiledAddress;
+        newOwner: ProfiledAddress;
       }
     | {
         type:
           | typeof SystemMessageType.GROUP_ADMIN_GRANTED
           | typeof SystemMessageType.GROUP_ADMIN_REVOKED;
-        member: {
-          account: string;
-          domain: string;
-          profileNamespaceId: number;
-          profileRev: number;
-        };
+        member: ProfiledAddress;
       };
 }
 
@@ -269,13 +255,11 @@ export class GroupRosterRoleService {
           type: SystemMessageType.GROUP_OWNER_TRANSFERRED,
           previousOwner: {
             account: operator.account,
-            domain: operator.domain,
             profileNamespaceId: 0,
             profileRev: 0,
           },
           newOwner: {
             account: newOwner.account,
-            domain: newOwner.domain,
             profileNamespaceId: 0,
             profileRev: 0,
           },
@@ -323,7 +307,6 @@ export class GroupRosterRoleService {
             : SystemMessageType.GROUP_ADMIN_REVOKED,
         member: {
           account: change.account,
-          domain: change.domain,
           profileNamespaceId: 0,
           profileRev: 0,
         },

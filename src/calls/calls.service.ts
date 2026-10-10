@@ -1331,7 +1331,6 @@ export class CallsService implements OnModuleDestroy {
         if (id === null)
           return {
             account: call.peerAccount!,
-            domain: call.peerDomain!,
             profileNamespaceId: 0,
             profileRev: 0,
           };
@@ -1342,7 +1341,6 @@ export class CallsService implements OnModuleDestroy {
         if (!local) throw new Error('call participant no longer exists');
         return {
           account: local.account,
-          domain: await localIdentityDomain(this.database.db),
           profileNamespaceId: 0,
           profileRev: 0,
         };

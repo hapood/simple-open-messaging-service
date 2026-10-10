@@ -61,7 +61,6 @@ import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS, type MediaStatus } from '../common/media-status.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { localIdentityDomain } from '../common/local-identity.js';
 import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
 import {
   parseMessageEntities,
@@ -316,7 +315,6 @@ export class MessageService {
 
   private async localAuthor(userId: number): Promise<{
     account: string;
-    domain: string;
     namespaceId: number;
   }> {
     const author = await this.database.db.query.account.findFirst({
@@ -324,10 +322,7 @@ export class MessageService {
       columns: { account: true, namespaceId: true },
     });
     if (!author) throw new Error('message author does not exist');
-    return {
-      ...author,
-      domain: await localIdentityDomain(this.database.db),
-    };
+    return author;
   }
 
   async isAuthoredBy(
