@@ -230,6 +230,28 @@ describe('MessageRepository', () => {
     });
   });
 
+  it('uses the locally persisted message head for the first browser page', async () => {
+    await webdb.commitBrowserMessagePage({
+      threadId: 42,
+      scan: { left: 0, right: 10 },
+      messages: [msg(42, 9), msg(42, 10)],
+      gaps: [],
+      knownNewestSeq: 10,
+    });
+
+    const result = await repo.queryBrowserMessageHistory(42, {
+      kind: 'latest',
+      count: 20,
+    });
+
+    expect(result.failed).toBe(false);
+    expect(result.items).toEqual([
+      { kind: 'message', message: msg(42, 9) },
+      { kind: 'message', message: msg(42, 10) },
+    ]);
+    expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
+  });
+
   it('bootstraps the first browser page when the local cache is empty', async () => {
     queryMessageHistoryPageSpy
       .mockReturnValueOnce(
@@ -376,8 +398,7 @@ describe('MessageRepository', () => {
           : `${item.left}-${item.right}`,
       ),
     ).toEqual([10, '19-30', 40]);
-    expect(queryMessageHistoryPageSpy).toHaveBeenCalledTimes(1);
-    expect(queryMessageHistoryPageSpy).toHaveBeenCalledWith({ threadId: 42 });
+    expect(queryMessageHistoryPageSpy).not.toHaveBeenCalled();
   });
 
   it('uses an identity-only live ceiling to walk newer history without bootstrapping', async () => {

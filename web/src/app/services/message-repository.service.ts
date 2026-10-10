@@ -25,7 +25,6 @@ export type NativeMessageHistoryDemand =
   | {
       kind: 'latest';
       count: number;
-      knownNewestSeq?: number;
       target?: MessageHistoryTarget;
     }
   | {
@@ -33,7 +32,6 @@ export type NativeMessageHistoryDemand =
       anchor: number;
       olderCount: number;
       newerCount: number;
-      knownNewestSeq?: number;
       target?: MessageHistoryTarget;
     }
   | {
@@ -185,12 +183,10 @@ export class MessageRepository {
     try {
       switch (demand.kind) {
         case 'latest': {
-          const upperHint = this.knownNewestSeqHint(demand.knownNewestSeq);
-          const [serverLower, upper] =
-            upperHint === null
-              ? await this.bootstrapMessageBounds(threadId)
-              : [lowerHint, upperHint];
-          const lower = serverLower;
+          const [lower, upper] = await this.initialMessageBounds(
+            threadId,
+            lowerHint,
+          );
           const page = await this.walkBrowserMessageHistory(
             threadId,
             'older',
@@ -209,12 +205,10 @@ export class MessageRepository {
           };
         }
         case 'around': {
-          const upperHint = this.knownNewestSeqHint(demand.knownNewestSeq);
-          const [serverLower, upper] =
-            upperHint === null
-              ? await this.bootstrapMessageBounds(threadId)
-              : [lowerHint, upperHint];
-          const lower = serverLower;
+          const [lower, upper] = await this.initialMessageBounds(
+            threadId,
+            lowerHint,
+          );
           const older = await this.walkBrowserMessageHistory(
             threadId,
             'older',
@@ -303,10 +297,19 @@ export class MessageRepository {
     }
   }
 
-  private knownNewestSeqHint(seq: number | undefined): number | null {
-    return seq !== undefined && Number.isSafeInteger(seq) && seq >= 0
-      ? seq
-      : null;
+  private async initialMessageBounds(
+    threadId: number,
+    lowerHint: number,
+  ): Promise<[number, number]> {
+    const persistedHead = await this.webdb.getMessageHead(threadId);
+    const liveHead = Math.max(
+      this.maxSeenSeq.get(threadId) ?? -1,
+      this.newerTruncateSeq.get(threadId) ?? -1,
+    );
+    const knownHead = Math.max(persistedHead ?? -1, liveHead);
+    return knownHead >= 0
+      ? [lowerHint, knownHead]
+      : this.bootstrapMessageBounds(threadId);
   }
 
   private async bootstrapMessageBounds(
