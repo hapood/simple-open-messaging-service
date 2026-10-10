@@ -16,6 +16,7 @@ import {
   federationThreadHistoryGap,
   profileTable,
   accountThreadState,
+  relationshipPair,
   account as user,
 } from '../database/schema.js';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -54,7 +55,6 @@ import { isUniqueViolation } from '../database/database-error.js';
 import {
   assembleOutboundContent,
   extractDigests,
-  familyToFileSyncKind,
   type OutboundFilePayload,
 } from '../upload/file-content.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
@@ -357,9 +357,13 @@ export class MessageService {
    * seq is allocated atomically from MessageThread.curSeq (`curSeq = curSeq + 1`, read back) inside the
    * tx — Postgres row-locks the MessageThread row until commit, so concurrent sends to the SAME thread
    * serialize (a brief wait, never an error) and each gets a distinct, gapless-modulo-rollback value.
-   * No MAX() aggregate and no retry loop: the row lock IS the allocation authority. A local message
-   * starts with originSeq equal to its local seq. A self-authored message-feed receipt may later replace
-   * that provisional coordinate with the direct remote publisher's coordinate.
+   * No MAX() aggregate and no retry loop: the row lock IS the allocation authority. A message in a
+   * locally authoritative thread starts with originSeq = seq. A message which must be accepted into
+   * a remote P2P authority starts with NULL: the unique
+   * (threadId, publisherNamespaceId, originSeq) index reserves origin coordinates for confirmed
+   * values, and a provisional local seq could collide with another row's confirmed coordinate. A
+   * self-authored message-feed receipt writes the remote publisher's coordinate and
+   * originServerTime later.
    */
   async writeMsgToThread(
     userId: number,
@@ -400,8 +404,10 @@ export class MessageService {
           const [writeAccess] = await tx
             .select({
               type: messageThread.type,
+              authorityNamespaceId: messageThread.authorityNamespaceId,
               creatorAccount: user.account,
               profileRev: user.defaultProfileRev,
+              remoteNamespaceId: relationshipPair.endpointBNamespaceId,
             })
             .from(messageThread)
             .innerJoin(
@@ -412,6 +418,13 @@ export class MessageService {
               ),
             )
             .innerJoin(user, eq(user.id, userId))
+            .leftJoin(
+              relationshipPair,
+              and(
+                eq(relationshipPair.threadId, messageThread.id),
+                eq(relationshipPair.kind, 'P2P'),
+              ),
+            )
             .where(eq(messageThread.id, threadId))
             .limit(1);
           if (
@@ -523,7 +536,12 @@ export class MessageService {
               profileRev: writeAccess.profileRev,
               clientMessageId,
               seq,
-              originSeq: seq,
+              originSeq:
+                writeAccess.authorityNamespaceId > 0 ||
+                (writeAccess.type === MessageThreadType.P2P &&
+                  (writeAccess.remoteNamespaceId ?? 0) > 0)
+                  ? null
+                  : seq,
               payloadDigest: wirePayloadDigest(
                 type,
                 storedContent,
@@ -694,8 +712,8 @@ export class MessageService {
   /**
    * Stage a LOCAL media send BEFORE any file is uploaded (Phase 7): create a PendingMedia(pending) row
    * carrying the message-level contentType + the batch's `fileCnt` (1 for single-file types, N for
-   * GALLERY). No Message, no seq, no fan-out — the message is invisible until the barrier promote
-   * ({@link promoteOutboundBatchIfReady}) runs after every file in the batch has landed. Per-file
+   * GALLERY). No Message, no seq, no fan-out — the message is invisible until the batch commit
+   * ({@link commitOutboundBatch}) runs after every file of the batch has landed. Per-file
    * display metadata (w/h, duration) is NOT staged here — it rides with each upload part.
    *
    * Creating the staging row FIRST (before any file write) is the orphan-safety guarantee: a crash
@@ -804,7 +822,6 @@ export class MessageService {
         .set({
           status: 'pending',
           failReason: null,
-          digest: null,
           content: JSON.stringify(
             quoteTargetSeq === undefined
               ? {}
@@ -872,114 +889,23 @@ export class MessageService {
     });
   }
 
-  /** Abandon a local outbound media stage that has not promoted to a Message. */
-  async abandonMediaStage(
+  /** Delete an uncommitted outbound stage owned by the caller. Idempotent. */
+  async discardStaged(
     userId: number,
-    threadId: number,
     clientMessageId: string,
-  ): Promise<{ abandoned: boolean }> {
+  ): Promise<boolean> {
     const author = await this.localAuthor(userId);
     const rows = await this.database.db
       .delete(pendingMedia)
       .where(
         and(
-          eq(pendingMedia.threadId, threadId),
           eq(pendingMedia.clientMessageId, clientMessageId),
           eq(pendingMedia.creatorAccount, author.account),
           eq(pendingMedia.publisherNamespaceId, author.namespaceId),
         ),
       )
       .returning({ id: pendingMedia.id });
-    return { abandoned: rows.length > 0 };
-  }
-
-  /**
-   * Record one uploaded file of an outbound batch as SUCCEEDED (Phase 7 type-agnostic upload, design
-   * doc §12.3). Each upload part upserts a FileSyncProgress(OUTBOUND, SUCCEEDED) row keyed by
-   * (batchId, digest) carrying the server-authored per-file payload. The barrier promote
-   * ({@link promoteOutboundBatchIfReady}) assembles message content from these payloads once `fileCnt`
-   * files have landed. This replaces the old single-file linkStagedDigest + promoteStaged pair: a
-   * multi-file (GALLERY) batch is N independent upserts whose Nth upload triggers the promote.
-   *
-   * `overrideContentType` handles the IMAGE→FILE fallback (HEIC/AVIF bytes that cannot inline-render):
-   * when set, the stage's contentType is updated before the barrier check so the promote assembles FILE
-   * content. Only valid for single-file (N=1) batches, where there is no concurrent race.
-   *
-   * Returns the promote result (the committed Message + whether THIS call newly committed it, so the
-   * caller fires fan-out exactly once), or null while the barrier is not yet met / the stage is gone.
-   */
-  async markOutboundFileSucceeded(
-    clientMessageId: string,
-    partId: string,
-    position: number,
-    digest: string,
-    payload: OutboundFilePayload,
-    userId: number,
-    overrideContentType?: ContentType,
-  ): Promise<{
-    message: PublicMessage;
-    newlyPromoted: boolean;
-  } | null> {
-    const author = await this.localAuthor(userId);
-    const stage = await this.database.db.query.pendingMedia.findFirst({
-      where: and(
-        eq(pendingMedia.clientMessageId, clientMessageId),
-        eq(pendingMedia.creatorAccount, author.account),
-        eq(pendingMedia.publisherNamespaceId, author.namespaceId),
-      ),
-      columns: {
-        id: true,
-        batchId: true,
-        status: true,
-        contentType: true,
-        fileCnt: true,
-      },
-    });
-    // Already promoted (stage gone) or no stage / not pending → nothing to record for this caller.
-    if (!stage || stage.status !== 'pending') return null;
-    if (
-      !Number.isInteger(position) ||
-      position < 0 ||
-      position >= stage.fileCnt
-    ) {
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'invalid upload part position',
-      );
-    }
-    if (
-      overrideContentType !== undefined &&
-      overrideContentType !== stage.contentType
-    ) {
-      await this.database.db
-        .update(pendingMedia)
-        .set({ contentType: overrideContentType, updatedAt: new Date() })
-        .where(
-          and(
-            eq(pendingMedia.id, stage.id),
-            eq(pendingMedia.status, 'pending'),
-          ),
-        );
-    }
-    await this.database.db
-      .insert(fileSyncProgress)
-      .values({
-        batchId: stage.batchId,
-        partId,
-        position,
-        digest,
-        direction: 'OUTBOUND',
-        kind: familyToFileSyncKind(payload.family),
-        status: 'SUCCEEDED',
-        bytesTotal: BigInt(payload.size),
-        bytesReceived: BigInt(payload.size),
-        publisherNamespaceId: author.namespaceId,
-        payload: payload as unknown as Record<string, unknown>,
-        updatedAt: new Date(),
-      })
-      // Same digest in the same batch is byte-identical → idempotent re-upload is a no-op.
-      .onConflictDoNothing();
-    return this.promoteOutboundBatchIfReady(clientMessageId, userId);
+    return rows.length > 0;
   }
 
   /** The staged message-level contentType for a pending outbound batch (the upload `intent`), or null
@@ -1002,78 +928,89 @@ export class MessageService {
     return stage.contentType;
   }
 
-  /**
-   * Promote a staged outbound batch to a real Message once every expected file has landed (Phase 7
-   * barrier model). Atomically allocates the seq, checks membership, and stores the Message
-   * with its messageAsset rows, then deletes the PendingMedia row and the batch's
-   * FileSyncProgress rows. Materializing an outbound message does not advance read.
-   *
-   * Concurrency: the win-guard is `DELETE FROM pendingMedia WHERE id = stage.id AND status = 'pending'
-   * RETURNING` inside the transaction — only one of N racing uploads wins (returns a row); losers get
-   * 0 rows and return null without touching the Message. Idempotent on retry: if clientMessageId
-   * already committed a Message, it is returned with `newlyPromoted: false` (no re-fan-out). Returns
-   * null while the barrier is not yet met (fewer than `fileCnt` SUCCEEDED files) or when this caller
-   * lost the promote race.
-   */
-  async promoteOutboundBatchIfReady(
+  /** Apply the IMAGE→FILE family fallback (HEIC/AVIF bytes that cannot inline-render) to a
+   * single-file staged batch before the batch commit. Valid only for N=1, where no sibling part
+   * can race the contentType swap. */
+  async updateStagedContentType(
     clientMessageId: string,
-    userId?: number,
-  ): Promise<{
-    message: PublicMessage;
-    newlyPromoted: boolean;
-  } | null> {
-    const committed = await this.findByClientMessageId(clientMessageId);
-    if (committed) return { message: committed, newlyPromoted: false };
-    const stageRow = await this.database.db.query.pendingMedia.findFirst({
-      where: eq(pendingMedia.clientMessageId, clientMessageId),
+    userId: number,
+    contentType: ContentType,
+  ): Promise<void> {
+    const author = await this.localAuthor(userId);
+    const stage = await this.database.db.query.pendingMedia.findFirst({
+      where: and(
+        eq(pendingMedia.clientMessageId, clientMessageId),
+        eq(pendingMedia.creatorAccount, author.account),
+        eq(pendingMedia.publisherNamespaceId, author.namespaceId),
+      ),
+      columns: { id: true, fileCnt: true, contentType: true, status: true },
     });
-    const stage = stageRow ? requireOutboundPendingMedia(stageRow) : undefined;
     if (
       !stage ||
       stage.status !== 'pending' ||
-      (userId !== undefined &&
-        !(await this.localAuthor(userId).then(
-          (author) =>
-            author.account === stage.creatorAccount &&
-            author.namespaceId === stage.publisherNamespaceId,
-        )))
+      stage.fileCnt !== 1 ||
+      contentType === stage.contentType
     ) {
-      return null;
+      return;
     }
-    const files = await this.database.db.query.fileSyncProgress.findMany({
-      where: eq(fileSyncProgress.batchId, stage.batchId),
-      columns: {
-        digest: true,
-        payload: true,
-        status: true,
-        partId: true,
-        position: true,
-      },
+    await this.database.db
+      .update(pendingMedia)
+      .set({ contentType, updatedAt: new Date() })
+      .where(
+        and(
+          eq(pendingMedia.id, stage.id),
+          eq(pendingMedia.status, 'pending'),
+        ),
+      );
+  }
+
+  /**
+   * Batch-commit model for the resumable path (replaces the per-file FSP barrier): the caller (the
+   * upload domain) has verified every staged part, moved the bytes into the CAS shard tree, and
+   * passes the per-file payloads ordered by position. This method owns the single database
+   * transaction that turns the staged message into a real Message: win-guarded stage deletion,
+   * membership check, seq allocation, Message + messageAsset rows, the MediaAsset liveness claims,
+   * and the fan-out enqueue. Idempotent: a retry that finds the Message already committed returns
+   * it with newlyPromoted=false; a caller that lost the win-guard race gets null.
+   */
+  async commitOutboundBatch(
+    clientMessageId: string,
+    userId: number | undefined,
+    items: Array<{ digest: string; payload: OutboundFilePayload }>,
+  ): Promise<{ message: PublicMessage; newlyPromoted: boolean } | null> {
+    const committed = await this.findByClientMessageId(clientMessageId);
+    if (committed) return { message: committed, newlyPromoted: false };
+    // Ownership is part of the lookup predicate: a guessed clientMessageId can never commit another
+    // user's stage. Without a user context (internal recovery) the stage is taken as-is.
+    const author = userId !== undefined ? await this.localAuthor(userId) : null;
+    const stageRow = await this.database.db.query.pendingMedia.findFirst({
+      where: author
+        ? and(
+            eq(pendingMedia.clientMessageId, clientMessageId),
+            eq(pendingMedia.creatorAccount, author.account),
+            eq(pendingMedia.publisherNamespaceId, author.namespaceId),
+          )
+        : eq(pendingMedia.clientMessageId, clientMessageId),
     });
-    const succeeded = files.filter((f) => f.status === 'SUCCEEDED');
-    if (succeeded.length < stage.fileCnt) return null; // barrier not yet met
-    if (succeeded.length !== stage.fileCnt) return null;
-    const positions = new Set(succeeded.map((file) => file.position));
-    if (
-      positions.size !== stage.fileCnt ||
-      [...positions].some(
-        (position) =>
-          position === null || position < 0 || position >= stage.fileCnt,
-      )
-    ) {
-      return null;
+    const stage = stageRow ? requireOutboundPendingMedia(stageRow) : undefined;
+    if (!stage || stage.status !== 'pending') return null;
+    if (items.length !== stage.fileCnt) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'batch does not match the staged file count',
+      );
     }
-    const payloads = succeeded
-      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-      .map((f) => f.payload as unknown as OutboundFilePayload);
-    const unboundContent = assembleOutboundContent(stage.contentType, payloads);
+    const unboundContent = assembleOutboundContent(
+      stage.contentType,
+      items.map((item) => item.payload),
+    );
     let created: PublicMessage | null = null;
     try {
       created = await this.previews.commitMessage(
         stage.threadId,
         async (tx) => {
-          // Win-guard: only the caller that deletes the still-pending stage promotes. A concurrent winner
-          // already deleted it → RETURNING is empty → this caller returns null (no-op, no double insert).
+          // Win-guard: only the caller that deletes the still-pending stage commits. A concurrent
+          // winner already deleted it → RETURNING is empty → this caller returns null.
           const [winner] = await tx
             .delete(pendingMedia)
             .where(
@@ -1097,7 +1034,9 @@ export class MessageService {
           const [participant] = await tx
             .select({
               type: messageThread.type,
+              authorityNamespaceId: messageThread.authorityNamespaceId,
               dissolvedAt: groupStateFields.dissolvedAt,
+              remoteNamespaceId: relationshipPair.endpointBNamespaceId,
             })
             .from(accountThreadState)
             .innerJoin(
@@ -1105,6 +1044,13 @@ export class MessageService {
               eq(messageThread.id, accountThreadState.threadId),
             )
             .leftJoin(group, eq(group.id, messageThread.id))
+            .leftJoin(
+              relationshipPair,
+              and(
+                eq(relationshipPair.threadId, messageThread.id),
+                eq(relationshipPair.kind, 'P2P'),
+              ),
+            )
             .where(
               and(
                 eq(accountThreadState.accountId, creatorUserId),
@@ -1198,12 +1144,31 @@ export class MessageService {
               digest: quoteDigest,
             });
           }
-          const stagedAssets = succeeded.map((file) => ({
-            digest: file.digest,
-            bytes: Number(
-              (file.payload as unknown as OutboundFilePayload).size,
-            ),
+          const stagedAssets = items.map((item) => ({
+            digest: item.digest,
+            bytes: Number(item.payload.size),
           }));
+          // Durable liveness claim, asserted in the SAME transaction as the Message: the bytes are
+          // already in the shard tree (the caller's idempotent move phase landed them), so the row
+          // may only be written here — never before the message it serves exists. Mirrors
+          // MediaAssetService.publishReady (idempotent upsert with dedup resurrection).
+          for (const asset of stagedAssets) {
+            await tx
+              .insert(mediaAsset)
+              .values({
+                digest: asset.digest,
+                bytes: BigInt(asset.bytes),
+                isDeleted: false,
+              })
+              .onConflictDoUpdate({
+                target: mediaAsset.digest,
+                set: {
+                  bytes: BigInt(asset.bytes),
+                  isDeleted: false,
+                  createdAt: sql`CURRENT_TIMESTAMP`,
+                },
+              });
+          }
           const [msg] = await tx
             .insert(message)
             .values({
@@ -1220,7 +1185,12 @@ export class MessageService {
             )`,
               clientMessageId,
               seq,
-              originSeq: seq,
+              originSeq:
+                participant.authorityNamespaceId > 0 ||
+                (participant.type === MessageThreadType.P2P &&
+                  (participant.remoteNamespaceId ?? 0) > 0)
+                  ? null
+                  : seq,
               payloadDigest: wirePayloadDigest(
                 stage.contentType,
                 content,
@@ -1238,8 +1208,8 @@ export class MessageService {
               updatedAt: new Date(),
             })
             .where(eq(messageThread.id, stage.threadId));
-          // Insert EVERY referenced digest (1 for single-file, N for GALLERY) — the old promoteStaged
-          // path only inserted the first, which silently dropped authz rows for multi-digest content.
+          // Insert EVERY referenced digest (1 for single-file, N for GALLERY) — the authz rows must
+          // cover each digest referenced by the assembled content.
           const digests = extractDigests(content);
           if (digests.length) {
             await tx.insert(messageAsset).values(
@@ -1250,9 +1220,6 @@ export class MessageService {
               })),
             );
           }
-          await tx
-            .delete(fileSyncProgress)
-            .where(eq(fileSyncProgress.batchId, stage.batchId));
           return stripMessageId(msg);
         },
       );
@@ -1264,7 +1231,7 @@ export class MessageService {
       }
       throw e;
     }
-    if (created === null) return null; // lost the promote race
+    if (created === null) return null; // lost the commit race
     await this.publishCommittedProfileWork(created);
     return { message: created, newlyPromoted: true };
   }

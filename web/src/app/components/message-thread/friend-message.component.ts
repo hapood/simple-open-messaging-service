@@ -1346,8 +1346,7 @@ export class MessageThreadComponent implements OnDestroy {
         this.onMessageInteraction(event, selectedItem, pointer, memberId),
       (bundleId) => this.route.popupDlg(PopupType.FORWARD_DETAIL, { bundleId }),
       async (anchor) => {
-        if (!(await this.jumpToHistoryAnchor(anchor)))
-          this.toast.warn(this.transloco.translate('chat.messageNotFound'));
+        await this.jumpToQuoteAnchor(anchor);
       },
       (userId, anchor) => void this.openSenderProfile(userId, anchor),
     );
@@ -2355,6 +2354,9 @@ export class MessageThreadComponent implements OnDestroy {
     });
     this.transfers.registerCancel(cid, () => {
       this.nativeUploads.cancel(file.uploadId);
+      void firstValueFrom(this.threadAdapter.cancelUploadBatch(cid)).catch(
+        () => undefined,
+      );
     });
     return this.enqueueAttachmentUpload(cid, () =>
       this.uploadAndSendNative(cid, partId, file, item, retry),
@@ -2652,6 +2654,11 @@ export class MessageThreadComponent implements OnDestroy {
     this.transfers.registerRetry(clientMessageId, () => {
       void retry();
     });
+    this.transfers.registerCancel(clientMessageId, () => {
+      void firstValueFrom(
+        this.threadAdapter.cancelUploadBatch(clientMessageId),
+      ).catch(() => undefined);
+    });
   }
 
   private async rejectOversizedUpload(
@@ -2690,7 +2697,7 @@ export class MessageThreadComponent implements OnDestroy {
     const threadId = this.sendOutbox.discardPending(clientMessageId);
     if (threadId !== undefined)
       void firstValueFrom(
-        this.threadAdapter.abandonMediaStage(threadId, clientMessageId),
+        this.threadAdapter.cancelUploadBatch(clientMessageId),
       ).catch(() => undefined);
   }
 
@@ -2931,6 +2938,33 @@ export class MessageThreadComponent implements OnDestroy {
     if (seq === null || source !== this.source || scroller !== this.scroller)
       return false;
     return (await jumpToMessage(scroller, seq)) !== false;
+  }
+
+  /** Quote navigation entry: only an unresolvable coordinate is a user-visible
+   * "not found". A session switch during resolution stays silent, and resolution
+   * errors surface as their own notice instead of an unhandled rejection. */
+  private async jumpToQuoteAnchor(anchor: HistoryAnchor): Promise<void> {
+    const source = this.source;
+    if (!source) return;
+    let seq: number | null;
+    try {
+      seq = source.resolveHistoryAnchor
+        ? await source.resolveHistoryAnchor(anchor)
+        : anchor.kind === 'local'
+          ? anchor.seq
+          : null;
+    } catch {
+      this.toast.warn(this.transloco.translate('chat.messageJumpFailed'));
+      return;
+    }
+    if (seq === null) {
+      this.toast.warn(this.transloco.translate('chat.messageNotFound'));
+      return;
+    }
+    if (source !== this.source) return;
+    const scroller = this.scroller;
+    if (!scroller) return;
+    await jumpToMessage(scroller, seq);
   }
 
   /** Recreate the injected source while keeping the production chatbox shell mounted. */

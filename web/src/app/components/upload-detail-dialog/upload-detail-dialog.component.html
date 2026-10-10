@@ -112,6 +112,19 @@
                       </svg>
                     </button>
                   } @else if (task.status === 'uploading') {
+                    @if (task.supportsSendCompleted) {
+                      <button
+                        type="button"
+                        class="ud-action ud-action--send-done"
+                        (click)="sendCompleted(task)"
+                        [attr.aria-label]="'transfer.sendCompleted' | transloco"
+                      >
+                        <svg viewBox="0 0 24 24">
+                          <path d="M5 12h10" />
+                          <path d="M11 6l6 6-6 6" />
+                        </svg>
+                      </button>
+                    }
                     <button
                       type="button"
                       class="ud-action"

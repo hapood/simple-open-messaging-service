@@ -299,10 +299,10 @@ export function parseFileContent(content: string): FileContent | null {
  *  kind, and — for a GALLERY bundle — each item's self-describing `kind`. */
 export type OutboundFileFamily = 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE';
 
-/** Per-file payload produced by the type-agnostic upload and stored on the batch's
- *  FileSyncProgress(OUTBOUND, SUCCEEDED) row. The barrier-promote assembles message content from these
- *  payloads without re-deriving display metadata from CAS. `url` is the canonical CAS shard URL
- *  (/uploads/msg-assets/<shard>); message coordinates are not stored in attachment content. */
+/** Per-file payload produced by staged upload inspection and stored on the pending upload session.
+ * Batch commit assembles message content from these payloads without re-deriving display metadata from
+ * CAS. `url` is the canonical CAS shard URL (/uploads/msg-assets/<shard>); message coordinates are not
+ * stored in attachment content. */
 export interface OutboundFilePayload {
   digest: string;
   url: string;
@@ -320,16 +320,6 @@ export interface OutboundFilePayload {
   duration?: number;
 }
 
-/** Map a detected file family to the FileSyncProgress kind value. GALLERY bundles use per-item kinds
- *  on their FileSyncProgress rows; the BUNDLE kind is reserved for inbound federation only. */
-export function familyToFileSyncKind(
-  family: OutboundFileFamily,
-): 'FILE' | 'IMAGE' | 'VIDEO' | 'AUDIO' {
-  return family;
-}
-
-/** One element of a GALLERY message's `items` array. `kind` self-describes so the renderer picks the
- *  right row component — a GALLERY may mix image/video/file/audio items. */
 interface GalleryItem {
   kind: OutboundFileFamily;
   url: string;

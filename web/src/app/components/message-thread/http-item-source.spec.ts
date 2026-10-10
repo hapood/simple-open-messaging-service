@@ -315,11 +315,11 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         .fn()
         .mockName('queryMediaStages')
         .mockReturnValue(of(stageResponse)),
-      abandonMediaStage: vi
+      cancelUploadBatch: vi
         .fn()
-        .mockName('abandonMediaStage')
+        .mockName('cancelUploadBatch')
         .mockReturnValue(
-          of({ code: 0, message: 'ok', data: { abandoned: true } }),
+          of({ code: 0, message: 'ok', data: { cancelled: 0 } }),
         ),
     };
     const profileRepo = {
@@ -1234,8 +1234,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     await src.init(-1, 50, 0);
 
     expect(src.discardPending('cid-stage-discard')).toBe(true);
-    expect(messages.abandonMediaStage).toHaveBeenCalledWith(
-      42,
+    expect(messages.cancelUploadBatch).toHaveBeenCalledWith(
       'cid-stage-discard',
     );
   });

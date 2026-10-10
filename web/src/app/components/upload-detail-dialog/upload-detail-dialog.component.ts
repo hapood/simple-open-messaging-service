@@ -69,6 +69,11 @@ export class UploadDetailDialogComponent {
     this.transfers.discard(task.clientMessageId);
   }
 
+  sendCompleted(task: MediaTransferTask): void {
+    if (!task.supportsSendCompleted) return;
+    this.transfers.sendCompleted(task.clientMessageId);
+  }
+
   retry(task: MediaTransferTask): void {
     this.transfers.retry(task.clientMessageId);
   }

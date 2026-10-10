@@ -176,10 +176,19 @@ export abstract class MessageThreadAdapter {
     threadId: number,
   ): Observable<StandardResponse<MediaStageState[]>>;
 
-  abstract abandonMediaStage(
-    threadId: number,
+  abstract cancelUploadBatch(
     clientMessageId: string,
-  ): Observable<StandardResponse<{ abandoned: boolean }>>;
+  ): Observable<StandardResponse<{ clientMessageId: string; cancelled: number }>>;
+
+  abstract sendCompletedUploadBatch(
+    clientMessageId: string,
+  ): Observable<
+    StandardResponse<{
+      clientMessageId: string;
+      sent: boolean;
+      completed: number;
+    }>
+  >;
 
   abstract uploadPart<T>(
     file: File,
@@ -311,8 +320,12 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
     return this.messages.queryMediaStages(threadId);
   }
 
-  override abandonMediaStage(threadId: number, clientMessageId: string) {
-    return this.messages.abandonMediaStage(threadId, clientMessageId);
+  override cancelUploadBatch(clientMessageId: string) {
+    return this.messages.cancelUploadBatch(clientMessageId);
+  }
+
+  override sendCompletedUploadBatch(clientMessageId: string) {
+    return this.messages.sendCompletedUploadBatch(clientMessageId);
   }
 
   override uploadPart<T>(

@@ -1305,7 +1305,6 @@ export const pendingMedia = pgTable(
     creatorAccount: varchar({ length: 31 }),
     contentType: contentType(),
     content: text(),
-    digest: varchar({ length: 64 }),
     clientMessageId: varchar({ length: 36 }),
     status: varchar({ length: 12 }).default('pending').notNull(),
     createdAt: timestamp({ precision: 3, withTimezone: true, mode: 'date' })
@@ -1421,9 +1420,6 @@ export const uploadSession = pgTable(
     originalName: varchar({ length: 100 }).notNull(),
     mimeType: varchar({ length: 255 }).notNull(),
     totalBytes: bigint({ mode: 'bigint' }).notNull(),
-    receivedBytes: bigint({ mode: 'bigint' })
-      .default(sql`0`)
-      .notNull(),
     status: uploadSessionStatus().default('UPLOADING').notNull(),
     tmpKey: uuid().defaultRandom().notNull(),
     digest: varchar({ length: 64 }),
@@ -1464,7 +1460,6 @@ export const uploadSession = pgTable(
       table.status,
       table.updatedAt,
     ),
-    index('UploadSession_digest_idx').on(table.digest),
     foreignKey({
       columns: [table.creatorId],
       foreignColumns: [account.id],
@@ -1476,21 +1471,17 @@ export const uploadSession = pgTable(
 );
 
 /**
- * Per-file localization task shared by outbound upload and inbound download, keyed by (batchId, digest).
- * Holds the in-flight state (PENDING/DOWNLOADING/SUCCEEDED/FAILED) that previously lived on MediaAsset;
- * MediaAsset now stores only verified blobs. See federation design doc §12.
+ * Per-file INBOUND localization task keyed by (batchId, digest). The outbound upload path no
+ * longer uses this table — its batch barrier reads UploadSession directly (batch-commit model).
+ * Holds the in-flight state (PENDING/DOWNLOADING/SUCCEEDED/FAILED) that previously lived on
+ * MediaAsset; MediaAsset now stores only verified blobs. See federation design doc §12.
  */
 export const fileSyncProgress = pgTable(
   'FileSyncProgress',
   {
     id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     batchId: uuid().notNull(),
-    // Outbound logical identity. Nullable for inbound federation rows, whose source message payload
-    // already owns item identity. A repeated digest may therefore occupy multiple outbound positions.
-    partId: uuid(),
-    position: integer(),
     digest: varchar({ length: 64 }).notNull(),
-    direction: fileSyncDirection().notNull(),
     kind: fileSyncKind().notNull(),
     status: fileSyncStatus().default('PENDING').notNull(),
     bytesTotal: bigint({ mode: 'bigint' })
@@ -1516,12 +1507,6 @@ export const fileSyncProgress = pgTable(
     payload: jsonb(),
   },
   (table) => [
-    uniqueIndex('FileSyncProgress_batchId_partId_key')
-      .on(table.batchId, table.partId)
-      .where(sql`${table.partId} IS NOT NULL`),
-    uniqueIndex('FileSyncProgress_batchId_position_key')
-      .on(table.batchId, table.position)
-      .where(sql`${table.position} IS NOT NULL`),
     index('FileSyncProgress_batchId_digest_idx').on(
       table.batchId,
       table.digest,
@@ -1536,14 +1521,6 @@ export const fileSyncProgress = pgTable(
       foreignColumns: [identityNamespace.id],
       name: 'FileSyncProgress_publisherNamespaceId_fkey',
     }).onDelete('restrict'),
-    check(
-      'FileSyncProgress_position_check',
-      sql`${table.position} IS NULL OR ${table.position} BETWEEN 0 AND 9`,
-    ),
-    check(
-      'FileSyncProgress_outbound_part_check',
-      sql`${table.direction} <> 'OUTBOUND' OR (${table.partId} IS NOT NULL AND ${table.position} IS NOT NULL)`,
-    ),
   ],
 );
 

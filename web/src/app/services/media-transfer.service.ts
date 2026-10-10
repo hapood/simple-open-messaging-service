@@ -17,6 +17,7 @@ export interface MediaTransferTask {
   previewUrl: string | null;
   errorReason?: string;
   retryable?: boolean;
+  supportsSendCompleted?: boolean;
   completedAt?: number;
 }
 
@@ -49,6 +50,7 @@ export class MediaTransferService {
   private readonly retryActions = new Map<string, () => void>();
   private readonly cancelActions = new Map<string, () => void>();
   private readonly discardActions = new Map<string, () => void>();
+  private readonly sendCompletedActions = new Map<string, () => void>();
   private readonly taskMap = signal<ReadonlyMap<string, MediaTransferTask>>(
     new Map(),
   );
@@ -118,6 +120,7 @@ export class MediaTransferService {
     name?: string;
     size?: number;
     previewUrl?: string | null;
+    supportsSendCompleted?: boolean;
   }): void {
     const name = params.file?.name ?? params.name ?? 'attachment';
     const size = params.file?.size ?? params.size ?? 0;
@@ -139,6 +142,9 @@ export class MediaTransferService {
           : null),
       errorReason: undefined,
       retryable: true,
+      supportsSendCompleted:
+        params.supportsSendCompleted === true ||
+        previous?.supportsSendCompleted === true,
       completedAt: undefined,
     });
     this.cancelSignals.get(params.clientMessageId)?.complete();
@@ -226,6 +232,26 @@ export class MediaTransferService {
     this.discardActions.set(clientMessageId, discard);
   }
 
+  registerSendCompleted(clientMessageId: string, sendCompleted: () => void): void {
+    this.sendCompletedActions.set(clientMessageId, sendCompleted);
+  }
+
+  sendCompleted(clientMessageId: string): void {
+    const current = this.taskMap().get(clientMessageId);
+    if (!current || current.status !== 'uploading') return;
+    const subject = this.cancelSignals.get(clientMessageId);
+    subject?.next();
+    subject?.complete();
+    this.cancelSignals.delete(clientMessageId);
+    this.cancelActions.get(clientMessageId)?.();
+    if (isTauri()) {
+      void tauriInvoke('cancel_upload', { clientMessageId }).catch(
+        () => undefined,
+      );
+    }
+    this.sendCompletedActions.get(clientMessageId)?.();
+  }
+
   retry(clientMessageId: string): void {
     const task = this.taskMap().get(clientMessageId);
     if (!task || task.status !== 'failed' || task.retryable === false) return;
@@ -302,5 +328,6 @@ export class MediaTransferService {
     this.retryActions.delete(clientMessageId);
     this.cancelActions.delete(clientMessageId);
     this.discardActions.delete(clientMessageId);
+    this.sendCompletedActions.delete(clientMessageId);
   }
 }

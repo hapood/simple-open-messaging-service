@@ -673,7 +673,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       return false;
     this.outbox.discardPending(clientMessageId);
     void firstValueFrom(
-      this.messages.abandonMediaStage(this.conv.threadId, clientMessageId),
+      this.messages.cancelUploadBatch(clientMessageId),
     ).catch(() => undefined);
     return true;
   }

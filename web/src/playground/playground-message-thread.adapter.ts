@@ -211,11 +211,15 @@ export class PlaygroundMessageThreadAdapter extends MessageThreadAdapter {
     return of({ code: 0, message: 'ok', data: [] });
   }
 
-  override abandonMediaStage(_threadId: number, _clientMessageId: string) {
+  override cancelUploadBatch(clientMessageId: string) {
+    return of({ code: 0, message: 'ok', data: { clientMessageId, cancelled: 1 } });
+  }
+
+  override sendCompletedUploadBatch(clientMessageId: string) {
     return of({
       code: 0,
       message: 'ok',
-      data: { abandoned: true },
+      data: { clientMessageId, sent: true, completed: 1 },
     });
   }
 

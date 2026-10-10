@@ -86,9 +86,29 @@ export class ThreadAttachmentUploadController {
       threadId,
       kind: 'file',
       file: parts[0].file,
+      supportsSendCompleted: true,
     });
     this.transfers.registerRetry(cid, () => {
       void this.uploadWebGallery(cid, parts, item, true);
+    });
+    this.transfers.registerCancel(cid, () => {
+      void firstValueFrom(this.adapter.cancelUploadBatch(cid)).catch(
+        () => undefined,
+      );
+    });
+    this.transfers.registerDiscard(cid, () => {
+      void firstValueFrom(this.adapter.cancelUploadBatch(cid)).catch(
+        () => undefined,
+      );
+    });
+    this.transfers.registerSendCompleted(cid, () => {
+      void firstValueFrom(this.adapter.sendCompletedUploadBatch(cid))
+        .then(async (response) => {
+          if (response.code !== 0) throw this.businessError(response);
+          this.transfers.complete(cid);
+          await this.host.markAccepted(item);
+        })
+        .catch((error) => void this.rejectError(cid, item, error));
     });
     try {
       const staged = await firstValueFrom(
@@ -158,9 +178,35 @@ export class ThreadAttachmentUploadController {
       name: parts[0].selection.name,
       size: total,
       previewUrl: parts[0].selection.preview,
+      supportsSendCompleted: true,
     });
     this.transfers.registerRetry(cid, () => {
       void this.uploadNativeGallery(cid, parts, item, true);
+    });
+    this.transfers.registerCancel(cid, () => {
+      for (const part of parts)
+        this.nativeUploads.cancel(part.selection.uploadId);
+      void firstValueFrom(this.adapter.cancelUploadBatch(cid)).catch(
+        () => undefined,
+      );
+    });
+    this.transfers.registerDiscard(cid, () => {
+      for (const part of parts)
+        this.nativeUploads.cancel(part.selection.uploadId);
+      void firstValueFrom(this.adapter.cancelUploadBatch(cid)).catch(
+        () => undefined,
+      );
+    });
+    this.transfers.registerSendCompleted(cid, () => {
+      for (const part of parts)
+        this.nativeUploads.cancel(part.selection.uploadId);
+      void firstValueFrom(this.adapter.sendCompletedUploadBatch(cid))
+        .then(async (response) => {
+          if (response.code !== 0) throw this.businessError(response);
+          this.transfers.complete(cid);
+          await this.host.markAccepted(item);
+        })
+        .catch((error) => void this.rejectError(cid, item, error));
     });
     try {
       const staged = await firstValueFrom(

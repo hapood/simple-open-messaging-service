@@ -162,6 +162,26 @@ describe('MediaTransferService', () => {
     expect(retry).toHaveBeenCalledTimes(1);
   });
 
+  it('sends completed files through the registered action and stops the local stream', () => {
+    const sendCompleted = vi.fn();
+    let cancelled = 0;
+    service.start({
+      clientMessageId: 'gallery',
+      threadId: 10,
+      kind: 'file',
+      name: 'gallery-item',
+      size: 10,
+    });
+    service.registerSendCompleted('gallery', sendCompleted);
+    service.cancelled('gallery').subscribe(() => cancelled++);
+
+    service.sendCompleted('gallery');
+
+    expect(cancelled).toBe(1);
+    expect(sendCompleted).toHaveBeenCalledOnce();
+    expect(service.tasks()[0].status).toBe('uploading');
+  });
+
   it('does not retry a permanent validation failure', () => {
     const retry = vi.fn().mockName('retry');
     service.start({

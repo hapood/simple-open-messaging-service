@@ -4,7 +4,7 @@ import { wirePayloadDigest } from '../federation/federated-message-content.js';
 import { MessageService } from './message.service.js';
 import type { OutboundFilePayload } from '../upload/file-content.js';
 import {
-  fileSyncProgress,
+  mediaAsset,
   message,
   messageAsset,
   pendingMedia,
@@ -44,7 +44,6 @@ function stageRow(content: string) {
     fileCnt: 1,
     status: 'pending',
     failReason: null,
-    digest: null,
     originDomain: null,
     expectedAuthorizationEpoch: null,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -108,13 +107,10 @@ function harness(options: {
   ]);
   const tx = {
     delete: vi.fn((table: unknown) => {
-      if (table === pendingMedia) {
-        return {
-          where: () => ({ returning: () => thenable([{ id: 1n }]) }),
-        };
-      }
-      expect(table).toBe(fileSyncProgress);
-      return { where: () => thenable(undefined) };
+      expect(table).toBe(pendingMedia);
+      return {
+        where: () => ({ returning: () => thenable([{ id: 1n }]) }),
+      };
     }),
     select: vi.fn().mockImplementationOnce(() => {
       const promise = Promise.resolve([{ type: 'P2P', dissolvedAt: null }]);
@@ -147,11 +143,17 @@ function harness(options: {
           },
         };
       }
-      expect(table).toBe(messageAsset);
+      expect([mediaAsset, messageAsset]).toContain(table);
       return {
         values: (values: unknown) => {
           inserts.push({ table, values });
-          return thenable(undefined);
+          return {
+            thenable,
+            onConflictDoUpdate: () => ({
+              set: () => thenable(undefined),
+            }),
+            then: (resolve: () => unknown) => resolve(),
+          };
         },
       };
     }),
@@ -189,17 +191,6 @@ function harness(options: {
               .fn()
               .mockResolvedValue(stageRow(options.stageContent)),
           },
-          fileSyncProgress: {
-            findMany: vi.fn().mockResolvedValue([
-              {
-                digest: FILE_DIGEST,
-                payload: payload(),
-                status: 'SUCCEEDED',
-                partId: '1',
-                position: 0,
-              },
-            ]),
-          },
         },
       },
     } as never,
@@ -216,7 +207,7 @@ function harness(options: {
   return { svc, inserts, messageReturning };
 }
 
-describe('MessageService.promoteOutboundBatchIfReady staged quote', () => {
+describe('MessageService.commitOutboundBatch staged quote', () => {
   const clientMessageId = '00000000-0000-4000-8000-000000000001';
 
   beforeEach(() => {
@@ -228,7 +219,7 @@ describe('MessageService.promoteOutboundBatchIfReady staged quote', () => {
       stageContent: JSON.stringify({ _quoteTargetSeq: 4 }),
       quoteTarget: quoteTargetRow(),
     });
-    const result = await svc.promoteOutboundBatchIfReady(clientMessageId);
+    const result = await svc.commitOutboundBatch(clientMessageId, undefined, [{ digest: FILE_DIGEST, payload: payload() }]);
     expect(result?.newlyPromoted).toBe(true);
     const content = JSON.parse(result!.message.content as string);
     expect(content).toMatchObject({
@@ -247,7 +238,7 @@ describe('MessageService.promoteOutboundBatchIfReady staged quote', () => {
       stageContent: JSON.stringify({ _quoteTargetSeq: 4 }),
       quoteTarget: quoteTargetRow(),
     });
-    const result = await svc.promoteOutboundBatchIfReady(clientMessageId);
+    const result = await svc.commitOutboundBatch(clientMessageId, undefined, [{ digest: FILE_DIGEST, payload: payload() }]);
     const content = ((await messageReturning())[0] as { content: string })
       .content;
     expect(result!.message.payloadDigest).toBe(
@@ -274,7 +265,7 @@ describe('MessageService.promoteOutboundBatchIfReady staged quote', () => {
       quoteTarget: target,
     });
     await expect(
-      svc.promoteOutboundBatchIfReady(clientMessageId),
+      svc.commitOutboundBatch(clientMessageId, undefined, [{ digest: FILE_DIGEST, payload: payload() }]),
     ).rejects.toThrow('quoted message not found');
   });
 
@@ -285,18 +276,20 @@ describe('MessageService.promoteOutboundBatchIfReady staged quote', () => {
       clearedSeq: 4,
     });
     await expect(
-      svc.promoteOutboundBatchIfReady(clientMessageId),
+      svc.commitOutboundBatch(clientMessageId, undefined, [{ digest: FILE_DIGEST, payload: payload() }]),
     ).rejects.toThrow('quoted message not found');
   });
 
   it('promotes without a quote lookup when no quote was staged', async () => {
     const { svc, inserts } = harness({ stageContent: '{}' });
-    const result = await svc.promoteOutboundBatchIfReady(clientMessageId);
+    const result = await svc.commitOutboundBatch(clientMessageId, undefined, [{ digest: FILE_DIGEST, payload: payload() }]);
     expect(result?.newlyPromoted).toBe(true);
     const content = JSON.parse(result!.message.content as string);
     expect(content.quote).toBeUndefined();
-    expect(inserts).toHaveLength(1);
-    expect((inserts[0].values as Array<{ digest: string }>)[0].digest).toBe(
+    expect(inserts).toHaveLength(2);
+    expect(inserts[0].table).toBe(mediaAsset);
+    expect((inserts[0].values as { digest: string }).digest).toBe(FILE_DIGEST);
+    expect((inserts[1].values as Array<{ digest: string }>)[0].digest).toBe(
       FILE_DIGEST,
     );
   });

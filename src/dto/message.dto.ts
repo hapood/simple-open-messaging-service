@@ -335,15 +335,6 @@ export class QueryMediaStagesDto {
   threadId!: number;
 }
 
-/** Abandon one uncommitted local media send in a conversation. */
-export class AbandonMediaStageDto extends QueryMediaStagesDto {
-  @ApiProperty({
-    description: 'Client-generated UUID identifying the staged send.',
-  })
-  @IsUUID()
-  clientMessageId!: string;
-}
-
 export class QueryMessagesDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
   @Type(() => Number)

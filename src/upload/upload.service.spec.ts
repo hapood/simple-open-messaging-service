@@ -17,17 +17,18 @@ const OGG = Buffer.from([0x4f, 0x67, 0x67, 0x53]);
 const ONE_PIXEL_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlS8AAAAASUVORK5CYII=';
 
+const metadataProbe = async (_target: unknown, family: string) =>
+  family === 'IMAGE'
+    ? { w: 10, h: 20 }
+    : family === 'AUDIO'
+      ? { duration: 3 }
+      : family === 'VIDEO'
+        ? { w: 640, h: 360, duration: 4 }
+        : {};
+
 const mediaMetadata = {
-  fromBuffer: vi.fn(async (_buf: Buffer, intent: string) =>
-    intent === 'IMAGE'
-      ? { w: 10, h: 20 }
-      : intent === 'AUDIO'
-        ? { duration: 3 }
-        : intent === 'VIDEO'
-          ? { w: 640, h: 360, duration: 4 }
-          : {},
-  ),
-  fromFile: vi.fn(),
+  fromBuffer: vi.fn(metadataProbe),
+  fromFile: vi.fn(metadataProbe),
 };
 
 /**
@@ -61,28 +62,6 @@ function fakeReq(
     },
   };
 }
-
-describe('UploadService.detectFamily — magic-byte family resolution', () => {
-  const svc = new UploadService({} as never, mediaMetadata as never);
-
-  it('maps PNG magic bytes to IMAGE', () => {
-    expect(svc.detectFamily(PNG)).toBe('IMAGE');
-  });
-
-  it('maps EBML/webm to VIDEO (free detection; an AUDIO intent re-maps it via savePart)', () => {
-    expect(svc.detectFamily(EBML)).toBe('VIDEO');
-  });
-
-  it('maps OggS to AUDIO', () => {
-    expect(svc.detectFamily(OGG)).toBe('AUDIO');
-  });
-
-  it('falls back to FILE for unrecognized bytes', () => {
-    expect(svc.detectFamily(Buffer.from([0x00, 0x00, 0x00, 0x00]))).toBe(
-      'FILE',
-    );
-  });
-});
 
 describe('UploadService.saveAvatarFromWire — strict wire validation', () => {
   function target() {
@@ -218,29 +197,33 @@ describe('UploadService.saveAvatar — byte-preserving storage', () => {
   });
 });
 
-describe('UploadService.savePart — family gating by staged intent', () => {
+describe('UploadService.resolveStagedPart — family gating by staged intent', () => {
   let root: string | undefined;
-  const mediaAsset = { publishReady: vi.fn().mockResolvedValue(undefined) };
-  const svc = new UploadService(mediaAsset as never, mediaMetadata as never);
+  const svc = new UploadService({} as never, mediaMetadata as never);
+  let seq = 0;
 
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), 'soms-savepart-'));
-    // saveCas writes the shard under casDir + a publish tmp under casTmpDir; redirect both to the
-    // test root so no real data/cas is touched.
-    Object.defineProperty(svc, 'casDir', { value: root });
-    Object.defineProperty(svc, 'casTmpDir', { value: join(root, 'tmp') });
-    mediaAsset.publishReady.mockClear();
+    root = await mkdtemp(join(tmpdir(), 'soms-resolve-'));
+    mediaMetadata.fromFile.mockClear();
+    seq = 0;
   });
   afterEach(async () => {
     if (root) await rm(root, { recursive: true, force: true });
     root = undefined;
   });
 
+  const stage = async (buf: Buffer) => {
+    const path = join(root!, `part-${seq++}.part`);
+    await writeFile(path, buf);
+    return path;
+  };
+
   it('accepts a PNG under an IMAGE intent as IMAGE (no override)', async () => {
-    const { payload, overrideContentType } = await svc.savePart(
-      PNG,
+    const { payload, overrideContentType } = await svc.resolveStagedPart(
+      await stage(PNG),
       ContentType.IMAGE,
-      { filename: 'photo.png', declaredMime: 'image/png' },
+      'photo.png',
+      'image/png',
     );
     expect(payload.family).toBe('IMAGE');
     expect(payload.size).toBe(PNG.length);
@@ -248,19 +231,19 @@ describe('UploadService.savePart — family gating by staged intent', () => {
     expect(payload.h).toBe(20);
     expect(payload.mimeType).toBeUndefined();
     expect(payload.name).toBe('photo.png');
+    expect(payload.digest).toBe(
+      createHash('sha256').update(PNG).digest('hex'),
+    );
     expect(overrideContentType).toBeUndefined();
-    expect(mediaAsset.publishReady).toHaveBeenCalledOnce();
   });
 
   it('falls an unsupported IMAGE intent back to a downloadable FILE', async () => {
     const heic = Buffer.from('unsupported-image-bytes');
-    const { payload, overrideContentType } = await svc.savePart(
-      heic,
+    const { payload, overrideContentType } = await svc.resolveStagedPart(
+      await stage(heic),
       ContentType.IMAGE,
-      {
-        filename: 'phone.heic',
-        declaredMime: 'image/heic',
-      },
+      'phone.heic',
+      'image/heic',
     );
     expect(payload).toMatchObject({
       family: 'FILE',
@@ -271,10 +254,12 @@ describe('UploadService.savePart — family gating by staged intent', () => {
   });
 
   it('accepts EBML/webm under an AUDIO intent as audio/webm (recorder-emitted container)', async () => {
-    const { payload } = await svc.savePart(EBML, ContentType.AUDIO, {
-      filename: 'voice.webm',
-      declaredMime: 'audio/webm',
-    });
+    const { payload } = await svc.resolveStagedPart(
+      await stage(EBML),
+      ContentType.AUDIO,
+      'voice.webm',
+      'audio/webm',
+    );
     expect(payload.family).toBe('AUDIO');
     expect(payload.mimeType).toBe('audio/webm');
     expect(payload.duration).toBe(3);
@@ -282,16 +267,63 @@ describe('UploadService.savePart — family gating by staged intent', () => {
 
   it('rejects a non-video buffer under a VIDEO intent', async () => {
     await expect(
-      svc.savePart(OGG, ContentType.VIDEO, { filename: 'clip.ogg' }),
+      svc.resolveStagedPart(
+        await stage(OGG),
+        ContentType.VIDEO,
+        'clip.ogg',
+        'video/ogg',
+      ),
     ).rejects.toThrow('invalid video');
   });
 
   it('detects freely under a GALLERY intent (a webm is VIDEO by signature)', async () => {
-    const { payload } = await svc.savePart(EBML, ContentType.GALLERY, {
-      filename: 'clip.webm',
-    });
+    const { payload } = await svc.resolveStagedPart(
+      await stage(EBML),
+      ContentType.GALLERY,
+      'clip.webm',
+      'video/webm',
+    );
     expect(payload.family).toBe('VIDEO');
     expect(payload.mimeType).toBe('video/webm');
+  });
+});
+
+describe('UploadService.landStagedPart — idempotent CAS landing', () => {
+  let root: string | undefined;
+  const mediaAsset = { publishReady: vi.fn().mockResolvedValue(undefined) };
+  const svc = new UploadService(mediaAsset as never, mediaMetadata as never);
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'soms-land-'));
+    Object.defineProperty(svc, 'casDir', { value: root });
+  });
+  afterEach(async () => {
+    if (root) await rm(root, { recursive: true, force: true });
+    root = undefined;
+  });
+
+  const body = Buffer.from('landed staged body');
+  const digest = createHash('sha256').update(body).digest('hex');
+
+  it('lands via rename, reports dedup on repeat, and never rewrites existing shards', async () => {
+    const src = join(root!, 'staged.part');
+    await writeFile(src, body);
+    expect(await svc.landStagedPart(src, digest)).toBe('landed');
+    expect(svc.casShardExists(digest)).toBe(true);
+    expect(
+      await readFile(join(root!, digest.slice(0, 2), digest.slice(2, 4), digest)),
+    ).toEqual(body);
+
+    // A second landing of the identical digest is a no-op dedup.
+    await writeFile(src, body);
+    expect(await svc.landStagedPart(src, digest)).toBe('dedup');
+  });
+
+  it("throws 'staged part lost' when neither source nor shard exists", async () => {
+    const ghost = join(root!, 'ghost.part');
+    await expect(svc.landStagedPart(ghost, digest)).rejects.toThrow(
+      'staged part lost',
+    );
   });
 });
 

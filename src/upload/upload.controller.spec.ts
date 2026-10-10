@@ -5,6 +5,15 @@ import { BusinessException } from '../common/business.exception.js';
 import { ContentType } from '../database/enums.js';
 import { UploadController } from './upload.controller.js';
 
+const PAYLOAD = {
+  digest: 'd'.repeat(64),
+  url: '/uploads/msg-assets/dd/dd/' + 'd'.repeat(64),
+  size: 9,
+  family: 'IMAGE',
+  w: 10,
+  h: 20,
+};
+
 function setup({
   clientMessageId = 'stage-1',
   intent = ContentType.IMAGE,
@@ -20,98 +29,55 @@ function setup({
     position: '0',
     intent: 'IMAGE',
   },
+  ingestResult = { status: 'COMPLETED', result: PAYLOAD },
 }: {
   clientMessageId?: string | undefined;
   intent?: ContentType | null;
   files?: Array<{ mimetype: string; buffer: Buffer; filename?: string }>;
   fields?: Record<string, string>;
+  ingestResult?: { status: string; result?: typeof PAYLOAD };
 } = {}) {
   const uploadService = {
     consumeParts: vi.fn().mockResolvedValue({ kind: 'ok', files, fields }),
-    savePart: vi.fn().mockResolvedValue({
-      payload: {
-        digest: 'd'.repeat(64),
-        url: '/uploads/msg-assets/dd/dd/' + 'd'.repeat(64),
-        size: 9,
-        family: 'IMAGE',
-        w: 10,
-        h: 20,
-      },
-    }),
   };
   const messageService = {
     getStagedIntent: vi.fn().mockResolvedValue(intent),
-    markOutboundFileSucceeded: vi.fn().mockResolvedValue(null),
     failStaged: vi.fn().mockResolvedValue(undefined),
   };
-  const userQuota = {
-    assertCanSend: vi.fn().mockResolvedValue(undefined),
-    preCheckFile: vi.fn().mockResolvedValue(undefined),
-    tickLax: vi.fn().mockResolvedValue(undefined),
-    tickFileBytes: vi.fn().mockResolvedValue(undefined),
+  const resumable = {
+    ingestBuffered: vi.fn().mockResolvedValue(ingestResult),
   };
   const controller = new UploadController(
     uploadService as never,
     messageService as never,
-    userQuota as never,
-    {} as never,
+    resumable as never,
   );
   const req = {
     user: { userId: 7 },
     headers: clientMessageId ? { 'x-client-message-id': clientMessageId } : {},
   } as unknown as FastifyRequest;
-  return {
-    controller,
-    uploadService,
-    messageService,
-    userQuota,
-    req,
-  };
+  return { controller, uploadService, messageService, resumable, req };
 }
 
-describe('UploadController type-agnostic upload (Phase 7)', () => {
-  it('charges file cnt + bytes at admission before saving, then promotes at the barrier', async () => {
-    const { controller, uploadService, userQuota, messageService, req } =
-      setup();
+describe('UploadController type-agnostic upload (batch-commit model)', () => {
+  it('ingests each part onto the shared session state machine and returns its payload', async () => {
+    const { controller, resumable, req } = setup();
 
-    await controller.upload(req);
+    const result = await controller.upload(req);
 
-    // Quota BEFORE save: breaker gate + strict-before file claim + cnt/byte tick, type-agnostic.
-    expect(userQuota.assertCanSend).toHaveBeenCalledWith(7);
-    expect(userQuota.preCheckFile).toHaveBeenCalledWith(7, 1, 9n);
-    expect(userQuota.tickLax).toHaveBeenCalledWith(7, 'files');
-    expect(userQuota.tickFileBytes).toHaveBeenCalledWith(7, 9n);
-    expect(userQuota.tickFileBytes.mock.invocationCallOrder[0]).toBeLessThan(
-      uploadService.savePart.mock.invocationCallOrder[0],
-    );
-    expect(uploadService.savePart).toHaveBeenCalledOnce();
-    expect(messageService.markOutboundFileSucceeded).toHaveBeenCalledWith(
-      'stage-1',
-      '11111111-1111-4111-8111-111111111111',
-      0,
-      'd'.repeat(64),
-      expect.objectContaining({ family: 'IMAGE' }),
+    expect(result).toEqual(PAYLOAD);
+    expect(resumable.ingestBuffered).toHaveBeenCalledWith(
       7,
-      undefined,
+      {
+        clientMessageId: 'stage-1',
+        partId: '11111111-1111-4111-8111-111111111111',
+        position: 0,
+        intent: 'IMAGE',
+        originalName: 'a.png',
+        mimeType: 'image/png',
+      },
+      Buffer.from('png bytes'),
     );
-  });
-
-  it('uses shared message promotion when the batch completes', async () => {
-    const { controller, messageService, req } = setup();
-    messageService.markOutboundFileSucceeded.mockResolvedValue({
-      message: { seq: 5 },
-      newlyPromoted: true,
-    });
-
-    await controller.upload(req);
-    expect(messageService.markOutboundFileSucceeded).toHaveBeenCalledOnce();
-  });
-
-  it('accepts an uploaded part while the message barrier is not yet met', async () => {
-    const { controller, messageService, req } = setup();
-    // markOutboundFileSucceeded resolves null while fileCnt is not yet reached.
-    await controller.upload(req);
-    expect(messageService.markOutboundFileSucceeded).toHaveBeenCalledOnce();
   });
 
   it('rejects without an x-client-message-id header', async () => {
@@ -122,9 +88,8 @@ describe('UploadController type-agnostic upload (Phase 7)', () => {
   });
 
   it('fails the stage when there is no pending send for the clientMessageId', async () => {
-    const { controller, messageService, uploadService, req } = setup({
-      intent: null,
-    });
+    const { controller, messageService, uploadService, resumable, req } =
+      setup({ intent: null });
     await expect(controller.upload(req)).rejects.toMatchObject({
       bizCode: BusinessCode.VALIDATION_FAILED,
     });
@@ -133,13 +98,13 @@ describe('UploadController type-agnostic upload (Phase 7)', () => {
       'stage-1',
       'media send is not pending',
     );
-    expect(uploadService.savePart).not.toHaveBeenCalled();
+    expect(resumable.ingestBuffered).not.toHaveBeenCalled();
+    expect(uploadService.consumeParts).not.toHaveBeenCalled();
   });
 
-  it('marks the stage failed and skips save when quota rejects the file claim', async () => {
-    const { controller, messageService, uploadService, userQuota, req } =
-      setup();
-    userQuota.preCheckFile.mockRejectedValue(
+  it('marks the stage failed when the ingest rejects with a business error (e.g. quota)', async () => {
+    const { controller, messageService, resumable, req } = setup();
+    resumable.ingestBuffered.mockRejectedValue(
       new BusinessException(BusinessCode.QUOTA_EXCEEDED, 'quota exceeded'),
     );
 
@@ -152,6 +117,34 @@ describe('UploadController type-agnostic upload (Phase 7)', () => {
       'stage-1',
       'quota exceeded',
     );
-    expect(uploadService.savePart).not.toHaveBeenCalled();
+  });
+
+  it('marks the stage failed when media validation inside the ingest rejects the bytes', async () => {
+    const { controller, messageService, resumable, req } = setup();
+    resumable.ingestBuffered.mockRejectedValue(new Error('invalid video'));
+
+    await expect(controller.upload(req)).rejects.toMatchObject({
+      bizCode: BusinessCode.VALIDATION_FAILED,
+    });
+
+    expect(messageService.failStaged).toHaveBeenCalledWith(
+      7,
+      'stage-1',
+      'invalid video',
+    );
+  });
+
+  it('rejects when the ingest yields no payload', async () => {
+    const { controller, messageService, req } = setup({
+      ingestResult: { status: 'COMPLETING' },
+    });
+    await expect(controller.upload(req)).rejects.toMatchObject({
+      bizCode: BusinessCode.VALIDATION_FAILED,
+    });
+    expect(messageService.failStaged).toHaveBeenCalledWith(
+      7,
+      'stage-1',
+      'upload produced no result',
+    );
   });
 });

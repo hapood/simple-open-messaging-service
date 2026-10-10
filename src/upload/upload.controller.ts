@@ -24,7 +24,6 @@ import { BusinessException } from '../common/business.exception.js';
 import { UploadService } from './upload.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MAX_VIDEO_BYTES } from './file-content.js';
-import { UserQuotaService } from '../quota/user-quota.service.js';
 import { InitResumableUploadDto } from '../dto/resumable-upload.dto.js';
 import {
   RESUMABLE_CHUNK_SIZE,
@@ -39,11 +38,12 @@ import { ContentType } from '../database/enums.js';
  * staged contentType (`x-client-message-id`) supplies the upload `intent` for family gating
  * (IMAGE→FILE HEIC fallback, VIDEO/AUDIO container checks); GALLERY detects freely.
  *
- * The route doubles as the PROMOTE step of a staged media send: each part upserts a
- * FileSyncProgress(OUTBOUND, SUCCEEDED) row for the batch, and the part that completes the barrier
- * (`fileCnt` files) promotes the staged PendingMedia into a real Message via the win-guard
- * transaction, then fires the unified fan-out. `/upload/avatar` never carries a client-message-id →
- * never promotes; it stays a separate sharp-pipeline route.
+ * The buffered route ingests each part onto the SAME UploadSession state machine as the resumable
+ * transport (batch-commit model): the part that completes the batch barrier (`fileCnt` files)
+ * idempotently lands every staged part into the CAS shard tree and commits the staged PendingMedia
+ * into a real Message via the win-guard transaction, then fires the unified fan-out.
+ * `/upload/avatar` never carries a client-message-id → never commits; it stays a separate
+ * sharp-pipeline route.
  *
  * Handlers return raw data; the global SerializeInterceptor wraps the ApiResult envelope. Validation /
  * handled failures throw BusinessException (after persisting a staged failure, via failUpload); the
@@ -55,7 +55,6 @@ export class UploadController {
   constructor(
     private readonly uploadService: UploadService,
     private readonly messageService: MessageService,
-    private readonly userQuota: UserQuotaService,
     private readonly resumable: ResumableUploadService,
   ) {}
 
@@ -110,6 +109,39 @@ export class UploadController {
     @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
   ) {
     return this.resumable.complete(req.user.userId, uploadId);
+  }
+
+  @ApiBearerAuth()
+  @Post('uploads/resumable/:uploadId/cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Cancel an uncommitted resumable upload' })
+  cancelResumable(
+    @Request() req: FastifyRequest,
+    @Param('uploadId', new ParseUUIDPipe()) uploadId: string,
+  ) {
+    return this.resumable.cancel(req.user.userId, uploadId);
+  }
+
+  @ApiBearerAuth()
+  @Post('uploads/resumable/batch/:clientMessageId/cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Cancel all uncommitted files in a media batch' })
+  cancelResumableBatch(
+    @Request() req: FastifyRequest,
+    @Param('clientMessageId', new ParseUUIDPipe()) clientMessageId: string,
+  ) {
+    return this.resumable.cancelBatch(req.user.userId, clientMessageId);
+  }
+
+  @ApiBearerAuth()
+  @Post('uploads/resumable/batch/:clientMessageId/send-completed')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Send completed files and discard unfinished files' })
+  sendCompletedResumableBatch(
+    @Request() req: FastifyRequest,
+    @Param('clientMessageId', new ParseUUIDPipe()) clientMessageId: string,
+  ) {
+    return this.resumable.sendCompleted(req.user.userId, clientMessageId);
   }
 
   /**
@@ -175,28 +207,44 @@ export class UploadController {
     }
     const payloads = [];
     for (const file of consumed.files) {
-      // Quota BEFORE saveCas: charge file cnt + total bytes at admission (the real byte size is known
-      // here), so a quota failure leaves no orphan file on disk. Type-agnostic — media family no longer
-      // affects quota (savePart detects family from the staged intent for storage, not for quota).
-      await this.admitUpload(req, file.buffer.length);
-      const saved = await this.withStageFailure(req, () =>
-        this.uploadService.savePart(file.buffer, part.intent, {
-          filename: file.filename,
-          declaredMime: file.mimetype,
-        }),
-      );
-      await this.withStageFailure(req, () =>
-        this.messageService.markOutboundFileSucceeded(
-          clientMessageId,
-          part.partId,
-          part.position,
-          saved.payload.digest,
-          saved.payload,
-          req.user.userId,
-          saved.overrideContentType,
-        ),
-      );
-      payloads.push(saved.payload);
+      // Ingest onto the shared UploadSession state machine: quota admission (session insert only,
+      // retries free), record-first digest/result, then the batch commit when this part completes
+      // the barrier. A quota failure leaves no file on disk; handled failures persist a staged
+      // failure via withStageFailure / the BusinessException branch below.
+      try {
+        const view = await this.withStageFailure(req, () =>
+          this.resumable.ingestBuffered(
+            req.user.userId,
+            {
+              clientMessageId,
+              partId: part.partId,
+              position: part.position,
+              intent: part.intent,
+              originalName: file.filename ?? 'attachment',
+              mimeType: file.mimetype,
+            },
+            file.buffer,
+          ),
+        );
+        if (!view.result) {
+          return this.failUpload(
+            req,
+            BusinessCode.VALIDATION_FAILED,
+            'upload produced no result',
+          );
+        }
+        payloads.push(view.result);
+      } catch (error) {
+        if (error instanceof BusinessException) {
+          return this.failUpload(
+            req,
+            error.bizCode,
+            error.message,
+            error.data,
+          );
+        }
+        throw error;
+      }
     }
     return payloads.length === 1 ? payloads[0] : { items: payloads };
   }
@@ -325,21 +373,6 @@ export class UploadController {
    * breaker; preCheckFile refuses a claim that would exceed; tickLax + tickFileBytes record it. A quota
    * failure persists a staged failure (failUpload) and aborts the send, leaving no orphan file on disk.
    */
-  private async admitUpload(req: FastifyRequest, bytes: number): Promise<void> {
-    try {
-      const userId = req.user.userId;
-      await this.userQuota.assertCanSend(userId);
-      await this.userQuota.preCheckFile(userId, 1, BigInt(bytes));
-      await this.userQuota.tickLax(userId, 'files');
-      await this.userQuota.tickFileBytes(userId, BigInt(bytes));
-    } catch (error) {
-      if (error instanceof BusinessException) {
-        return this.failUpload(req, error.bizCode, error.message, error.data);
-      }
-      throw error;
-    }
-  }
-
   private uploadPartFields(
     fields: Record<string, string>,
     stagedType: ContentType,

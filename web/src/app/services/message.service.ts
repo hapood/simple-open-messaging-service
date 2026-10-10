@@ -213,10 +213,27 @@ export class MsgService {
     >(`${apiPrefix()}/query-media-stages`, { threadId });
   }
 
-  abandonMediaStage(threadId: number, clientMessageId: string) {
-    return this.http.post<StandardResponse<{ abandoned: boolean }>>(
-      `${apiPrefix()}/abandon-media-stage`,
-      { threadId, clientMessageId },
+  cancelUploadBatch(clientMessageId: string) {
+    return this.http.post<
+      StandardResponse<{ clientMessageId: string; cancelled: number }>
+    >(
+      `${apiPrefix()}/uploads/resumable/batch/${encodeURIComponent(clientMessageId)}/cancel`,
+      {},
+      { context: new HttpContext().set(REPLAY_SAFE, true) },
+    );
+  }
+
+  sendCompletedUploadBatch(clientMessageId: string) {
+    return this.http.post<
+      StandardResponse<{
+        clientMessageId: string;
+        sent: boolean;
+        completed: number;
+      }>
+    >(
+      `${apiPrefix()}/uploads/resumable/batch/${encodeURIComponent(clientMessageId)}/send-completed`,
+      {},
+      { context: new HttpContext().set(REPLAY_SAFE, true) },
     );
   }
 

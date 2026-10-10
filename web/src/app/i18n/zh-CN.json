@@ -15,6 +15,7 @@
     "anyFailedCount": "{{count}} 项传输失败",
     "completed": "发送完成",
     "cancel": "取消发送",
+    "sendCompleted": "发送已完成文件",
     "retry": "重试发送",
     "downloadingProgress": "正在下载 {{count}} 项 · {{progress}}%",
     "downloadFailed": "下载失败",
@@ -541,6 +542,7 @@
   "chat": {
     "linkCardAction": "生成链接卡片",
     "messageNotFound": "消息不存在",
+    "messageJumpFailed": "无法打开这条消息",
     "messageRetracted": "消息已撤回",
     "messageRemovedByAdmin": "消息已被管理员删除",
     "quoteNotFetched": "点击查看引用",

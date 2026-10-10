@@ -262,7 +262,7 @@ export class FederationInboundMessageStoreService {
               and(
                 eq(tables.message.publisherNamespaceId, namespaceId),
                 eq(tables.message.originSeq, peerSeq),
-                eq(tables.message.originServerTime, sourceTime),
+                sql`${tables.message.originServerTime} IS NOT DISTINCT FROM ${sourceTime}`,
               ),
             ),
           ),
@@ -417,7 +417,6 @@ export class FederationInboundMessageStoreService {
           .values({
             batchId,
             digest,
-            direction: 'INBOUND',
             kind: federationFileSyncKind(incoming.contentType as ContentType),
             status: 'PENDING',
             bytesTotal: BigInt(assetBytes?.get(digest) ?? size ?? 0),

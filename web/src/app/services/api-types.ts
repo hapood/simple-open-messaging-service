@@ -157,23 +157,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/abandon-media-stage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Abandon one uncommitted local media-send stage */
-        post: operations["MessageController_abandonMediaStage"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/query-messages": {
         parameters: {
             query?: never;
@@ -4033,15 +4016,6 @@ export interface components {
              */
             threadId: number;
         };
-        AbandonMediaStageDto: {
-            /**
-             * @description Conversation (MessageThread) id
-             * @example 12
-             */
-            threadId: number;
-            /** @description Client-generated UUID identifying the staged send. */
-            clientMessageId: string;
-        };
         MessageTombResponseDto: {
             /**
              * @description Per-thread local sequence. This is the client cache and timeline coordinate.
@@ -5683,27 +5657,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["QueryMediaStagesDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MessageController_abandonMediaStage: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AbandonMediaStageDto"];
             };
         };
         responses: {

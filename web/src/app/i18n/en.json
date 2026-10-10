@@ -15,6 +15,7 @@
     "anyFailedCount": "{{count}} transfers failed",
     "completed": "Sent",
     "cancel": "Cancel sending",
+    "sendCompleted": "Send completed files",
     "retry": "Retry sending",
     "downloadingProgress": "Downloading {{count}} · {{progress}}%",
     "downloadFailed": "Download failed",
@@ -541,6 +542,7 @@
   "chat": {
     "linkCardAction": "Create link card",
     "messageNotFound": "Message not found",
+    "messageJumpFailed": "Cannot open this message",
     "messageRetracted": "Message retracted",
     "messageRemovedByAdmin": "Message removed by administrator",
     "quoteNotFetched": "Click to view quoted message",

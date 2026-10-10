@@ -119,7 +119,9 @@ export class FederationMediaLocalizationService {
       await this.resolveMediaContext(
         msg.threadId,
         msg.creatorAccount,
-        msg.profileNamespaceId,
+        msg.profileNamespaceId === 0 && msg.publisherNamespaceId !== 0
+          ? msg.publisherNamespaceId
+          : msg.profileNamespaceId,
         await localIdentityDomain(this.database.db),
       );
     const peerDomain = sourcePeerDomain ?? threadPeerDomain;
@@ -186,7 +188,9 @@ export class FederationMediaLocalizationService {
     const { toAccount, peerDomain } = await this.resolveMediaContext(
       msg.threadId,
       msg.creatorAccount,
-      msg.profileNamespaceId,
+      msg.profileNamespaceId === 0 && msg.publisherNamespaceId !== 0
+        ? msg.publisherNamespaceId
+        : msg.profileNamespaceId,
       await localIdentityDomain(this.database.db),
     );
     return {
@@ -353,7 +357,6 @@ export class FederationMediaLocalizationService {
         await tx.insert(tables.fileSyncProgress).values({
           batchId,
           digest,
-          direction: 'INBOUND',
           kind: federationFileSyncKind(msg.contentType),
           status: 'PENDING',
           bytesTotal: BigInt(size ?? 0),

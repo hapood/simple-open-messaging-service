@@ -23,10 +23,10 @@ import { seedAcceptedRelationship } from './seed';
 import { createTestApp } from './support/app';
 
 /**
- * Local media send staging (Phase 7 barrier model): a media message is NOT committed as a Message until
- * every file in its batch has landed. Exercises MessageService.stageMedia (message-level intent +
- * fileCnt) + markOutboundFileSucceeded / promoteOutboundBatchIfReady (the FileSyncProgress barrier +
- * DELETE win-guard) directly against the real DB.
+ * Local media send staging (Phase 7 batch-commit model): a media message is NOT committed as a
+ * Message until every file in its batch has landed. Exercises MessageService.stageMedia (message-level
+ * intent + fileCnt) + commitOutboundBatch (the session-fed batch commit + DELETE win-guard) directly
+ * against the real DB.
  *
  * Federated stage→localize→commit is covered by federation.e2e-spec.ts; the orphan/stale-pending GC
  * cleanup is owned by the corresponding transfer lifecycle.
@@ -202,14 +202,9 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     await messages.failStaged(userId + 1, cid, 'not mine');
     const digest = 'e'.repeat(64);
     expect(
-      await messages.markOutboundFileSucceeded(
-        cid,
-        randomUUID(),
-        0,
-        digest,
-        filePayload(digest),
-        userId + 1,
-      ),
+      await messages.commitOutboundBatch(cid, userId + 1, [
+        { digest, payload: filePayload(digest) },
+      ]),
     ).toBeNull();
     const [stage] = await database.db
       .select()
@@ -222,20 +217,15 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       .where(eq(pendingMedia.clientMessageId, cid));
   });
 
-  it('markOutboundFileSucceeded commits a Message + messageAsset and deletes the stage; re-promote is idempotent', async () => {
+  it('commitOutboundBatch commits a Message + messageAsset and deletes the stage; re-commit is idempotent', async () => {
     const cid = randomUUID();
     const partId = randomUUID();
     const digest = 'a'.repeat(64);
     await messages.stageMedia(userId, threadId, ContentType.FILE, cid);
 
-    const result = await messages.markOutboundFileSucceeded(
-      cid,
-      partId,
-      0,
-      digest,
-      filePayload(digest),
-      userId,
-    );
+    const result = await messages.commitOutboundBatch(cid, userId, [
+      { digest, payload: filePayload(digest) },
+    ]);
     expect(result?.newlyPromoted).toBe(true);
     expect(result?.message.contentType).toBe('FILE');
     expect(result?.message.threadId).toBe(threadId);
@@ -269,17 +259,13 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     expect(mediaMsg).toBeDefined();
     expect(mediaMsg!.digest).toBe(digest);
 
-    // Re-marking the same file after the stage is promoted+deleted is a no-op (returns null) — no
-    // duplicate Message, no error.
-    const again = await messages.markOutboundFileSucceeded(
-      cid,
-      partId,
-      0,
-      digest,
-      filePayload(digest),
-      userId,
-    );
-    expect(again).toBeNull();
+    // Re-committing after the stage is consumed is idempotent: the committed message is returned
+    // with newlyPromoted=false — no duplicate Message, no error.
+    const again = await messages.commitOutboundBatch(cid, userId, [
+      { digest, payload: filePayload(digest) },
+    ]);
+    expect(again?.newlyPromoted).toBe(false);
+    expect(again?.message.seq).toBe(result!.message.seq);
     const [{ value }] = await database.db
       .select({ value: count() })
       .from(message)
@@ -305,15 +291,10 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
       name: 'photo.heic',
       mimeType: 'image/heic',
     };
-    const result = await messages.markOutboundFileSucceeded(
-      cid,
-      randomUUID(),
-      0,
-      digest,
-      heic,
-      userId,
-      ContentType.FILE,
-    );
+    await messages.updateStagedContentType(cid, userId, ContentType.FILE);
+    const result = await messages.commitOutboundBatch(cid, userId, [
+      { digest, payload: heic },
+    ]);
     expect(result?.message.contentType).toBe('FILE');
   });
 
@@ -323,26 +304,19 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     const d1 = '1'.repeat(64);
     const d2 = '2'.repeat(64);
 
-    // First file: barrier not yet met → no promote.
-    const r1 = await messages.markOutboundFileSucceeded(
-      cid,
-      randomUUID(),
-      0,
-      d1,
-      filePayload(d1),
-      userId,
-    );
-    expect(r1).toBeNull();
+    // A partial batch is rejected — the barrier is the caller's (upload domain) responsibility and a
+    // short batch must never commit.
+    await expect(
+      messages.commitOutboundBatch(cid, userId, [
+        { digest: d1, payload: filePayload(d1) },
+      ]),
+    ).rejects.toThrow('batch does not match the staged file count');
 
-    // Second file: barrier met → promote. Content is the digest-sorted GALLERY items.
-    const r2 = await messages.markOutboundFileSucceeded(
-      cid,
-      randomUUID(),
-      1,
-      d2,
-      filePayload(d2),
-      userId,
-    );
+    // Full batch: barrier met → commit. Content is the digest-sorted GALLERY items.
+    const r2 = await messages.commitOutboundBatch(cid, userId, [
+      { digest: d1, payload: filePayload(d1) },
+      { digest: d2, payload: filePayload(d2) },
+    ]);
     expect(r2?.newlyPromoted).toBe(true);
     expect(r2?.message.contentType).toBe('GALLERY');
     const items = (JSON.parse(r2!.message.content) as { items: unknown[] })
@@ -379,24 +353,15 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     const digest = '3'.repeat(64);
     await messages.stageMedia(userId, threadId, ContentType.GALLERY, cid, 2);
 
-    expect(
-      await messages.markOutboundFileSucceeded(
-        cid,
-        randomUUID(),
-        0,
-        digest,
-        filePayload(digest),
-        userId,
-      ),
-    ).toBeNull();
-    const result = await messages.markOutboundFileSucceeded(
-      cid,
-      randomUUID(),
-      1,
-      digest,
-      filePayload(digest),
-      userId,
-    );
+    await expect(
+      messages.commitOutboundBatch(cid, userId, [
+        { digest, payload: filePayload(digest) },
+      ]),
+    ).rejects.toThrow('batch does not match the staged file count');
+    const result = await messages.commitOutboundBatch(cid, userId, [
+      { digest, payload: filePayload(digest) },
+      { digest, payload: filePayload(digest) },
+    ]);
     const items = (JSON.parse(result!.message.content) as { items: unknown[] })
       .items;
     expect(items).toHaveLength(2);

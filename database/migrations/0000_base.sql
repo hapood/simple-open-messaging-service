@@ -1086,10 +1086,7 @@ CREATE TABLE public."FederationThreadSyncState" (
 CREATE TABLE public."FileSyncProgress" (
     id bigint NOT NULL,
     "batchId" uuid NOT NULL,
-    "partId" uuid,
-    "position" integer,
     digest character varying(64) NOT NULL,
-    direction public."FileSyncDirection" NOT NULL,
     kind public."FileSyncKind" NOT NULL,
     status public."FileSyncStatus" DEFAULT 'PENDING'::public."FileSyncStatus" NOT NULL,
     "bytesTotal" bigint DEFAULT 0 NOT NULL,
@@ -1100,9 +1097,7 @@ CREATE TABLE public."FileSyncProgress" (
     "quotaCounted" boolean DEFAULT false NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    payload jsonb,
-    CONSTRAINT "FileSyncProgress_outbound_part_check" CHECK (((direction <> 'OUTBOUND'::public."FileSyncDirection") OR (("partId" IS NOT NULL) AND ("position" IS NOT NULL)))),
-    CONSTRAINT "FileSyncProgress_position_check" CHECK ((("position" IS NULL) OR (("position" >= 0) AND ("position" <= 9))))
+    payload jsonb
 );
 
 
@@ -1595,7 +1590,6 @@ CREATE TABLE public."PendingMedia" (
     "creatorAccount" character varying(31),
     "contentType" public."ContentType",
     content text,
-    digest character varying(64),
     "clientMessageId" character varying(36),
     status character varying(12) DEFAULT 'pending'::character varying NOT NULL,
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -2010,7 +2004,6 @@ CREATE TABLE public."UploadSession" (
     "originalName" character varying(100) NOT NULL,
     "mimeType" character varying(255) NOT NULL,
     "totalBytes" bigint NOT NULL,
-    "receivedBytes" bigint DEFAULT 0 NOT NULL,
     status public."UploadSessionStatus" DEFAULT 'UPLOADING'::public."UploadSessionStatus" NOT NULL,
     "tmpKey" uuid DEFAULT gen_random_uuid() NOT NULL,
     digest character varying(64),
@@ -3032,20 +3025,6 @@ CREATE INDEX "FileSyncProgress_batchId_digest_idx" ON public."FileSyncProgress" 
 
 
 --
--- Name: FileSyncProgress_batchId_partId_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "FileSyncProgress_batchId_partId_key" ON public."FileSyncProgress" USING btree ("batchId", "partId") WHERE ("partId" IS NOT NULL);
-
-
---
--- Name: FileSyncProgress_batchId_position_key; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX "FileSyncProgress_batchId_position_key" ON public."FileSyncProgress" USING btree ("batchId", "position") WHERE ("position" IS NOT NULL);
-
-
---
 -- Name: FileSyncProgress_digest_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3472,13 +3451,6 @@ CREATE UNIQUE INDEX "UploadSession_clientMessageId_position_key" ON public."Uplo
 --
 
 CREATE INDEX "UploadSession_creatorId_status_idx" ON public."UploadSession" USING btree ("creatorId", status);
-
-
---
--- Name: UploadSession_digest_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX "UploadSession_digest_idx" ON public."UploadSession" USING btree (digest);
 
 
 --

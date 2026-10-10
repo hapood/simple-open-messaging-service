@@ -10,12 +10,11 @@ import {
   createReadStream,
   unlink,
   stat,
-  copyFile,
   appendFile,
   truncate,
 } from 'fs';
 import { basename, dirname, join } from 'path';
-import { createHash, randomBytes } from 'crypto';
+import { createHash } from 'crypto';
 import { promisify } from 'util';
 import sharp from 'sharp';
 import type { FastifyRequest } from 'fastify';
@@ -41,7 +40,6 @@ const renameAsync = promisify(rename);
 const mkdirAsync = promisify(mkdir);
 const unlinkAsync = promisify(unlink);
 const statAsync = promisify(stat);
-const copyFileAsync = promisify(copyFile);
 const appendFileAsync = promisify(appendFile);
 const truncateAsync = promisify(truncate);
 
@@ -431,9 +429,8 @@ export class UploadService {
   /**
    * Type-agnostic multi-file multipart consumer (Phase 7). Iterates req.parts(), buffering each file
    * part up to the global per-part cap and collecting the companion form fields ({name, mimeType, w,
-   * h, duration}) that describe it. Supersedes consumeChatImage/consumeFile/consumeVideo/consumeAudio:
-   * the upload transport no longer branches on media family — {@link savePart} detects family from the
-   * bytes.
+   * h, duration}) that describe it. The upload transport no longer branches on media family; staged
+   * inspection detects the family from the bytes.
    *
    * Backpressure: every file part is drained inside the loop (toBuffer before the iterator advances) —
    * the same invariant consumeSingle owns. Deferring the drain stalls the parts() iterator once a file
@@ -471,76 +468,8 @@ export class UploadService {
   }
 
   /**
-   * Detect the outbound file family from magic bytes WITHOUT persisting (Phase 7). Used by the upload
-   * route to enforce per-category byte/count quota BEFORE saveCas lands the file, so a quota failure
-   * leaves no orphan on disk. Mirrors the detection inside {@link savePart}.
-   */
-  detectFamily(buf: Buffer): OutboundFilePayload['family'] {
-    const detected = detectMedia(buf);
-    if (detected?.family === 'image') return 'IMAGE';
-    if (detected?.family === 'video') return 'VIDEO';
-    if (detected?.family === 'audio') return 'AUDIO';
-    return 'FILE';
-  }
-
-  /**
-   * Type-agnostic content-addressed save for one uploaded file (Phase 7). Detects the file family from
-   * the bytes (image/video/audio via magic-byte signatures, else FILE), derives the trusted on-disk
-   * extension, saves through the shared CAS pipeline, and returns the per-file payload the barrier-
-   * promote assembles message content from.
-   *
-   * `intent` is the staged message-level contentType (NOT a transport concern) and is used only to gate
-   * family mismatches according to the declared upload intent: an IMAGE intent whose bytes are not an
-   * inline-renderable image (HEIC/AVIF/…) is stored as a downloadable FILE and signals an
-   * `overrideContentType: FILE` so the message lands as FILE; a VIDEO/AUDIO intent rejects a
-   * non-matching container; AUDIO accepts the recorder-shared webm/mp4 containers (mapped to audio);
-   * GALLERY detects freely (a webm in a bundle is VIDEO by signature — an accepted limitation).
-   *
-   * Provides one type-agnostic writer for all upload kinds.
-   */
-  async savePart(
-    buf: Buffer,
-    intent: ContentType,
-    opts: {
-      filename?: string;
-      declaredMime?: string;
-    },
-  ): Promise<{
-    payload: OutboundFilePayload;
-    overrideContentType?: ContentType;
-  }> {
-    if (buf.length === 0) {
-      throw new Error('empty upload part');
-    }
-    const resolved = this.resolveOutboundFile(
-      detectMedia(buf),
-      intent,
-      opts.filename ?? '',
-      opts.declaredMime ?? '',
-    );
-    const metadata = await this.mediaMetadata.fromBuffer(buf, resolved.family);
-    const { url, digest, size } = await this.saveCas(resolved.ext, buf);
-    const payload: OutboundFilePayload = {
-      digest,
-      url,
-      size,
-      family: resolved.family,
-      name: resolved.name,
-      ...(resolved.mime !== undefined ? { mimeType: resolved.mime } : {}),
-      ...metadata,
-    };
-    return {
-      payload,
-      ...(resolved.overrideContentType
-        ? { overrideContentType: resolved.overrideContentType }
-        : {}),
-    };
-  }
-
-  /**
-   * Shared family/ext/mime/name resolution for one outbound file (Phase 7). Used by both
-   * {@link savePart} (in-memory buffer) and {@link publishResumable} (streamed tmp file) so the two
-   * paths gate identically on the staged `intent`:
+   * Shared family/ext/mime/name resolution for one outbound file (Phase 7). Used by
+   * {@link resolveStagedPart} so both transports gate identically on the staged `intent`:
    *   - IMAGE intent whose bytes are not an inline-renderable image (HEIC/AVIF/…) → downloadable FILE,
    *     signaling `overrideContentType: FILE`;
    *   - VIDEO/AUDIO intent rejects a non-matching container (AUDIO accepts the recorder-shared
@@ -700,19 +629,21 @@ export class UploadService {
   }
 
   /**
-   * Publish a completed resumable-upload temporary file without materializing it in memory (Phase 7
-   * type-agnostic). Streams the tmp file once to SHA-256 it + capture the leading magic bytes, resolves
-   * the outbound family/ext/mime/name through the SAME {@link resolveOutboundFile} path as
-   * {@link savePart} (so buffered and resumable uploads gate identically on the staged `intent`),
-   * publishes the blob through the CAS tmp-then-rename path, and returns the per-file payload the
-   * barrier-promote assembles message content from. `companion` carries the client-probed w/h/duration.
+   * Resolve a completed resumable-upload temporary file WITHOUT publishing it (batch-commit model).
+   * Streams the tmp file once to SHA-256 it + capture the leading magic bytes, resolves the outbound
+   * family/ext/mime/name through the shared resolver (so buffered and resumable uploads gate identically
+   * on the staged `intent`), and returns the per-file
+   * payload the batch commit assembles message content from. The bytes stay in the resumable staging
+   * directory; landing into the CAS shard tree happens later, idempotently, at the batch barrier via
+   * {@link landStagedPart}.
    */
-  async publishResumable(
+  async resolveStagedPart(
     tmpPath: string,
     intent: ContentType,
     originalName: string,
     declaredMime: string,
   ): Promise<{
+    digest: string;
     payload: OutboundFilePayload;
     overrideContentType?: ContentType;
   }> {
@@ -741,28 +672,9 @@ export class UploadService {
       resolved.family,
     );
     const digest = hash.digest('hex');
-    const { abs, url } = this.casShardPath(digest);
-    await mkdirAsync(dirname(abs), { recursive: true });
-    await mkdirAsync(this.casTmpDir, { recursive: true });
-    // Keep the resumable source until UploadSession has durably recorded the result. Publishing through
-    // a unique CAS tmp path preserves atomic rename (same filesystem) while making a DB failure safely
-    // retryable. File-first, like saveCas — the row is written only after the shard lands.
-    const publishTmp = join(
-      this.casTmpDir,
-      `${digest}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`,
-    );
-    let renamed = false;
-    try {
-      await copyFileAsync(tmpPath, publishTmp);
-      await renameAsync(publishTmp, abs);
-      renamed = true;
-      await this.mediaAsset.publishReady(digest, BigInt(info.size));
-    } finally {
-      if (!renamed) await unlinkAsync(publishTmp).catch(() => {});
-    }
     const payload: OutboundFilePayload = {
       digest,
-      url,
+      url: this.casShardPath(digest).url,
       size: info.size,
       family: resolved.family,
       name: resolved.name,
@@ -770,11 +682,48 @@ export class UploadService {
       ...metadata,
     };
     return {
+      digest,
       payload,
       ...(resolved.overrideContentType
         ? { overrideContentType: resolved.overrideContentType }
         : {}),
     };
+  }
+
+  /** Shard-tree destination for a digest. Public read-only view for the batch-commit orchestrator. */
+  casTarget(digest: string): { abs: string; url: string } {
+    return this.casShardPath(digest);
+  }
+
+  /** True iff the formal CAS shard tree already holds this digest (dedup / prior landing). */
+  casShardExists(digest: string): boolean {
+    return existsSync(this.casShardPath(digest).abs);
+  }
+
+  /**
+   * Land a staged temporary file into its CAS shard, idempotently. Same-filesystem rename keeps the
+   * landing atomic; a concurrent or repeat landing of the identical digest is a harmless no-op
+   * (content addressing makes last-writer-wins byte-identical). Returns 'dedup' when the shard
+   * already exists, 'landed' after a successful rename. Throws 'staged part lost' when neither the
+   * source nor the destination exists — the caller must fail that part (never commit a DB claim for
+   * bytes that are not on disk; the MediaAsset row is the durable liveness claim).
+   */
+  async landStagedPart(
+    tmpPath: string,
+    digest: string,
+  ): Promise<'landed' | 'dedup'> {
+    const { abs } = this.casShardPath(digest);
+    await mkdirAsync(dirname(abs), { recursive: true });
+    if (existsSync(abs)) return 'dedup';
+    try {
+      await renameAsync(tmpPath, abs);
+      return 'landed';
+    } catch (error) {
+      if (existsSync(abs)) return 'dedup'; // lost the rename race to an identical digest
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+        throw new Error('staged part lost');
+      throw error;
+    }
   }
 
   /**
