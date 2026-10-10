@@ -333,20 +333,33 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return this.repo.resolveHistoryAnchor(this.conv.threadId, anchor);
   }
 
+  private knownNewestSeqHint(): number | undefined {
+    const seq = this.conv.lastMessageSeq;
+    return Number.isSafeInteger(seq) && seq !== null && seq >= 0
+      ? seq
+      : undefined;
+  }
+
   async init(
     anchorId: number,
     olderCount: number,
     newerCount: number,
     _opts?: CbSourceInitOpts,
   ): Promise<CbItem<ChatItemData>[]> {
+    const knownNewestSeq = this.knownNewestSeqHint();
     const result = await this.queryHistory(
       anchorId === -1
-        ? { kind: 'latest', count: Math.min(olderCount, MAX_PAGE) }
+        ? {
+            kind: 'latest',
+            count: Math.min(olderCount, MAX_PAGE),
+            knownNewestSeq,
+          }
         : {
             kind: 'around',
             anchor: anchorId,
             olderCount: Math.min(olderCount, MAX_PAGE),
             newerCount: Math.min(newerCount, MAX_PAGE),
+            knownNewestSeq,
           },
     );
     if (result.failed) throw new MessagePageLoadError();

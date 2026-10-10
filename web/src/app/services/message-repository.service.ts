@@ -22,12 +22,18 @@ export interface MessageHistoryTarget {
 }
 
 export type NativeMessageHistoryDemand =
-  | { kind: 'latest'; count: number; target?: MessageHistoryTarget }
+  | {
+      kind: 'latest';
+      count: number;
+      knownNewestSeq?: number;
+      target?: MessageHistoryTarget;
+    }
   | {
       kind: 'around';
       anchor: number;
       olderCount: number;
       newerCount: number;
+      knownNewestSeq?: number;
       target?: MessageHistoryTarget;
     }
   | {
@@ -179,8 +185,11 @@ export class MessageRepository {
     try {
       switch (demand.kind) {
         case 'latest': {
+          const upperHint = this.knownNewestSeqHint(demand.knownNewestSeq);
           const [serverLower, upper] =
-            await this.bootstrapMessageBounds(threadId);
+            upperHint === null
+              ? await this.bootstrapMessageBounds(threadId)
+              : [lowerHint, upperHint];
           const lower = serverLower;
           const page = await this.walkBrowserMessageHistory(
             threadId,
@@ -200,8 +209,11 @@ export class MessageRepository {
           };
         }
         case 'around': {
+          const upperHint = this.knownNewestSeqHint(demand.knownNewestSeq);
           const [serverLower, upper] =
-            await this.bootstrapMessageBounds(threadId);
+            upperHint === null
+              ? await this.bootstrapMessageBounds(threadId)
+              : [lowerHint, upperHint];
           const lower = serverLower;
           const older = await this.walkBrowserMessageHistory(
             threadId,
@@ -289,6 +301,12 @@ export class MessageRepository {
     } catch {
       return { items: [], hasOlder: true, hasNewer: true, failed: true };
     }
+  }
+
+  private knownNewestSeqHint(seq: number | undefined): number | null {
+    return seq !== undefined && Number.isSafeInteger(seq) && seq >= 0
+      ? seq
+      : null;
   }
 
   private async bootstrapMessageBounds(

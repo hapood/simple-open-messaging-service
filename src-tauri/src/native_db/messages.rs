@@ -620,11 +620,13 @@ pub(crate) struct CommittedMessagePage {
 pub(crate) enum NativeHistoryDemand {
     Latest {
         count: i64,
+        known_newest_seq: Option<i64>,
     },
     Around {
         anchor: i64,
         older_count: i64,
         newer_count: i64,
+        known_newest_seq: Option<i64>,
     },
     Older {
         before: i64,
@@ -1486,9 +1488,16 @@ pub(crate) async fn native_message_history_get(
         }
     };
     let result = match demand {
-        NativeHistoryDemand::Latest { count } => {
+        NativeHistoryDemand::Latest {
+            count,
+            known_newest_seq,
+        } => {
             let count = validate_count(count)?;
-            let (server_lower, upper) = bootstrap_message_bounds(&app, &proxy, thread_id).await?;
+            let (server_lower, upper) = match known_newest_seq {
+                Some(seq) if seq >= 0 => (lower, seq),
+                Some(_) => return Err("native latest demand has an invalid newest hint".to_string()),
+                None => bootstrap_message_bounds(&app, &proxy, thread_id).await?,
+            };
             let lower = lower.max(server_lower);
             let mut page = walk_native_history(
                 &app,
@@ -1516,13 +1525,18 @@ pub(crate) async fn native_message_history_get(
             anchor,
             older_count,
             newer_count,
+            known_newest_seq,
         } => {
             if anchor <= 0 {
                 return Err("native around demand has an invalid anchor".to_string());
             }
             let older_count = validate_count(older_count)?;
             let newer_count = validate_count(newer_count)?;
-            let (server_lower, upper) = bootstrap_message_bounds(&app, &proxy, thread_id).await?;
+            let (server_lower, upper) = match known_newest_seq {
+                Some(seq) if seq >= 0 => (lower, seq),
+                Some(_) => return Err("native around demand has an invalid newest hint".to_string()),
+                None => bootstrap_message_bounds(&app, &proxy, thread_id).await?,
+            };
             let lower = lower.max(server_lower);
             let mut older = walk_native_history(
                 &app,
