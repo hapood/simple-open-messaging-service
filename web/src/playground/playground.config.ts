@@ -33,7 +33,10 @@ import { PlaygroundConversationList } from './playground-conversation-list.mock'
 import { GroupService } from '../app/services/group.service';
 import { of, Subject } from 'rxjs';
 import { MemberProfileRepository } from '../app/services/member-profile-store.service';
+import { ProfileNamespaceRepository } from '../app/services/profile-namespace-store.service';
 import { UserService } from '../app/services/user.service';
+import { WebdbService, WebdbStorage } from '../app/services/webdb.service';
+import { SessionLifecycleService } from '../app/services/session-lifecycle.service';
 
 /** Mock media is embedded as data/blob URLs, so this standalone entry never applies the production
  * remote-download size gate. The production app keeps its normal user-configurable service. */
@@ -81,6 +84,20 @@ const playgroundMemberProfiles = {
         playgroundMemberProfiles.resolve(threadId, member),
       ),
     ),
+};
+
+const playgroundNamespaceRepository = {
+  resolve: (pair: { publisherNamespaceId: number; profileNamespaceId: number }) =>
+    of({
+      ...pair,
+      domain: 'chat.example.test',
+      rootPublicKey: null,
+      updateFeedId: 1,
+      changeSeq: 1,
+      expired: false,
+      status: 'ACTIVE' as const,
+      refreshedAt: Date.now(),
+    }),
 };
 
 const playgroundRelationshipRequestRevision = signal(0);
@@ -139,6 +156,12 @@ export const playgroundConfig: ApplicationConfig = {
     { provide: CSP_NONCE, useValue: readCspNonce() },
     provideZonelessChangeDetection(),
     provideHttpClient(withFetch()),
+    {
+      provide: WebdbService,
+      useFactory: (lifecycle: SessionLifecycleService) =>
+        new WebdbStorage(() => null, lifecycle),
+      deps: [SessionLifecycleService],
+    },
     provideRouter([]),
     provideAnimationsAsync(),
     {
@@ -168,6 +191,10 @@ export const playgroundConfig: ApplicationConfig = {
     {
       provide: ConversationListService,
       useExisting: PlaygroundConversationList,
+    },
+    {
+      provide: ProfileNamespaceRepository,
+      useValue: playgroundNamespaceRepository,
     },
     { provide: GroupService, useValue: playgroundGroupService },
     {
