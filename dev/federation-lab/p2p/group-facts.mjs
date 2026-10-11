@@ -235,10 +235,9 @@ function normalizeNode(node, rows, p2pNode) {
     if (!group) continue;
     group.messages.push({
       ...message,
-      creatorAddress: normalizeAddress(
-        message.creatorAccount,
-        message.creatorDomain,
-      ),
+      creatorAddress: message.creatorDomain
+        ? normalizeAddress(message.creatorAccount, message.creatorDomain)
+        : null,
       sourceNamespaceId: message.publisherNamespaceId,
       sourceDomain: message.sourceDomain,
     });

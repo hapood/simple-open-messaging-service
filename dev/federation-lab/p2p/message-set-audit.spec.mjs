@@ -29,7 +29,7 @@ function fixture() {
             curSeq: 7,
             deletedSeqs: new Set(),
             messages: [
-              message('alice', 'alpha.test', 2, 2, 'before removing friend'),
+              message('alice', 'alpha.test', 2, 1, 'before removing friend'),
               message('bob', 'bravo.test', 7, 4, 'after re-adding friend'),
             ],
           },
@@ -43,7 +43,7 @@ function fixture() {
             deletedSeqs: new Set(),
             messages: [
               message('alice', 'alpha.test', 1, 2, 'before removing friend'),
-              message('bob', 'bravo.test', 4, 4, 'after re-adding friend'),
+              message('bob', 'bravo.test', 4, 7, 'after re-adding friend'),
             ],
           },
         ],
@@ -53,6 +53,35 @@ function fixture() {
 }
 test('compares all current authors across different local seq spaces, including retained history', () => {
   assert.deepEqual(compareCurrentMemberMessages(fixture()).failures, []);
+});
+
+test('accepts simultaneous P2P sends whose peer receipt seq differs from both author seqs', () => {
+  const value = fixture();
+  value.messages.alpha.get(threadKey).messages = [
+    message('alice', 'alpha.test', 2, 3, 'alice send'),
+    message('bob', 'bravo.test', 3, 2, 'bob send'),
+  ];
+  value.messages.bravo.get(threadKey).messages = [
+    message('bob', 'bravo.test', 2, 3, 'bob send'),
+    message('alice', 'alpha.test', 3, 2, 'alice send'),
+  ];
+  assert.deepEqual(compareCurrentMemberMessages(value).failures, []);
+  value.messages.bravo.get(threadKey).messages[1].originSeq = 4;
+  assert.ok(
+    compareCurrentMemberMessages(value).failures.some(
+      ({ kind }) => kind === 'AUTHOR_ORIGIN_SEQ',
+    ),
+  );
+});
+
+test('rejects a P2P receipt that incorrectly confirms the author local seq', () => {
+  const value = fixture();
+  value.messages.alpha.get(threadKey).messages[0].originSeq = 2;
+  assert.ok(
+    compareCurrentMemberMessages(value).failures.some(
+      ({ kind }) => kind === 'AUTHOR_ORIGIN_SEQ',
+    ),
+  );
 });
 
 test('validates a group submission, authority copy, and third-node mirror after confirmation', () => {

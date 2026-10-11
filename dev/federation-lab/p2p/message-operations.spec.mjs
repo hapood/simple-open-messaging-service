@@ -43,6 +43,37 @@ test('retries one immutable request without creating a second logical send', asy
   }
 });
 
+test('captures a complete quote author reference before its profile binding arrives', async () => {
+  const result = await admitMessageOperation(
+    {
+      type: 'SEND_QUOTE',
+      id: 'op-unresolved',
+      groupThreadId: 31,
+      target: {
+        seq: 10,
+        creatorAccount: 'carol',
+        creatorDomain: null,
+        creatorAddress: null,
+        publisherNamespaceId: 1,
+        profileNamespaceId: 2,
+      },
+    },
+    {
+      async post() {
+        return { seq: 18 };
+      },
+    },
+  );
+  assert.deepEqual(result.expected.quote, {
+    seq: 10,
+    authorRef: {
+      account: 'carol',
+      publisherNamespaceId: 1,
+      profileNamespaceId: 2,
+    },
+  });
+});
+
 test('rejects duplicate submissions returning different business identities', async () => {
   let id = 0;
   await assert.rejects(

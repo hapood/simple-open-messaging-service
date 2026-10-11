@@ -349,6 +349,81 @@ test('compares three-node group messages and quotes after the author origin coor
   );
 });
 
+test('resolves a captured quote author reference after delayed binding arrival without weakening identity checks', () => {
+  const value = fixture();
+  value.validateProfiles = false;
+  for (const [node, seq, originSeq] of [
+    ['alpha', 10, 8],
+    ['bravo', 8, 10],
+  ]) {
+    const thread = value.messages[node].get(groupAddress);
+    thread.curSeq = seq;
+    thread.messages[0].contentType = 'PURE_TEXT';
+    thread.messages[0].content = { text: 'reply', quote: { seq } };
+    thread.messages.push({
+      id: '2',
+      seq,
+      originSeq,
+      creatorAccount: 'bob',
+      creatorDomain: 'bravo.test',
+      publisherNamespaceId: node === 'alpha' ? 1 : 0,
+      profileNamespaceId: 0,
+      contentType: 'PURE_TEXT',
+      content: { text: 'source' },
+      isDeleted: false,
+      localState: 'READY',
+      profileRev: 1,
+    });
+  }
+  const quote = {
+    seq: 10,
+    authorRef: {
+      account: 'bob',
+      publisherNamespaceId: 1,
+      profileNamespaceId: 0,
+    },
+  };
+  value.log.operations[0].expected = { quote };
+  value.log.operations.push({
+    id: 'op-2',
+    type: 'SEND_GROUP_MESSAGE',
+    group: groupAddress,
+    actor: bob,
+    status: 'SUCCEEDED',
+    request: { body: { clientMessageId: 'bob-request' } },
+    result: { seq: 8, originSeq: 10 },
+    expected: { text: 'source' },
+  });
+  assert.deepEqual(compareFederationSnapshot(value).failures, []);
+  for (const [field, wrong] of [
+    ['account', 'carol'],
+    ['publisherNamespaceId', 2],
+    ['profileNamespaceId', 2],
+  ]) {
+    const saved = quote.authorRef[field];
+    quote.authorRef[field] = wrong;
+    assert.ok(
+      compareFederationSnapshot(value).failures.some(
+        ({ kind }) => kind === 'MESSAGE_QUOTE_TARGET',
+      ),
+    );
+    quote.authorRef[field] = saved;
+  }
+  quote.actor = 'carol@charlie.test';
+  assert.ok(
+    compareFederationSnapshot(value).failures.some(
+      ({ kind }) => kind === 'MESSAGE_QUOTE_TARGET',
+    ),
+  );
+  delete quote.actor;
+  value.messages.alpha.get(groupAddress).messages[1].creatorDomain = null;
+  assert.ok(
+    compareFederationSnapshot(value).failures.some(
+      ({ kind }) => kind === 'MESSAGE_QUOTE_TARGET',
+    ),
+  );
+});
+
 test('matches federated messages without copying the sender clientMessageId', () => {
   const value = fixture();
   value.messages.alpha.set(

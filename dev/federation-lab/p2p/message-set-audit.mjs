@@ -49,7 +49,18 @@ export function compareCurrentMemberMessages({
           member,
           originSeq: message.originSeq,
         });
-      const authority = groupAuthority ?? node;
+      // A P2P processing receipt confirms the counterpart's local timeline,
+      // not the author's own sequence. Same-server P2P still shares one timeline.
+      const counterpart =
+        !groupAuthority &&
+        federationLabNodes.find(
+          (peer) =>
+            peer.name !== node.name &&
+            groupAddress
+              .split('|')
+              .some((address) => address.endsWith(`@${peer.domain}`)),
+        );
+      const authority = groupAuthority ?? counterpart ?? node;
       const authorityCopy =
         authority?.name === node.name
           ? message
@@ -64,8 +75,22 @@ export function compareCurrentMemberMessages({
         message.isDeleted &&
         message.originSeq === message.seq &&
         message.sourceDomain == null;
+      const absentP2pWithdrawal =
+        !groupAuthority &&
+        !authorityCopy &&
+        counterpart &&
+        messages[counterpart.name]?.get(groupAddress) &&
+        permitsAbsentWithdrawal({
+          nodeName: counterpart.name,
+          thread: messages[counterpart.name]?.get(groupAddress),
+          messages,
+          key: groupAddress,
+          actor: member,
+          authorSeq: message.seq,
+        });
       if (
         !unconfirmedWithdrawal &&
+        !absentP2pWithdrawal &&
         (!authorityCopy || message.originSeq !== authorityCopy.seq)
       )
         fail('AUTHOR_ORIGIN_SEQ', node.name, {

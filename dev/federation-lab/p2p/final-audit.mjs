@@ -1040,10 +1040,27 @@ export function compareFederationSnapshot({
                   actor: sent.expected.quote.actor,
                   seq: sent.expected.quote.originSeq,
                 };
+          // The author's display domain may not have been resolved when the
+          // operation was admitted. Validate its captured publisher-scoped
+          // reference against the same immutable observer row before resolving
+          // the final author identity; never treat an unresolved address as truth.
+          const authorRef = sent.expected.quote.authorRef;
+          const referenceMatches = authorRef
+            ? observedTarget &&
+              observedTarget.creatorAccount === authorRef.account &&
+              observedTarget.publisherNamespaceId ===
+                authorRef.publisherNamespaceId &&
+              observedTarget.profileNamespaceId === authorRef.profileNamespaceId
+            : sent.expected.quote.actor !== undefined;
           if (
             !target ||
             !expectedTarget ||
-            expectedTarget.actor !== sent.expected.quote.actor ||
+            !referenceMatches ||
+            !expectedTarget.actor ||
+            expectedTarget.actor.endsWith('@null') ||
+            expectedTarget.actor.endsWith('@undefined') ||
+            (sent.expected.quote.actor !== undefined &&
+              expectedTarget.actor !== sent.expected.quote.actor) ||
             messageIdentity(planned.address, target.actor, target.seq) !==
               messageIdentity(
                 planned.address,

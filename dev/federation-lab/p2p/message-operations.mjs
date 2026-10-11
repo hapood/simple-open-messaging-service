@@ -145,8 +145,23 @@ export async function admitMessageOperation(operation, actor) {
       ...(operation.type === 'SEND_QUOTE'
         ? {
             quote: {
-              actor: operation.target.creatorAddress,
               seq: operation.target.seq,
+              ...(operation.target.creatorDomain
+                ? { actor: operation.target.creatorAddress }
+                : {}),
+              ...(Number.isSafeInteger(operation.target.publisherNamespaceId) &&
+              Number.isSafeInteger(operation.target.profileNamespaceId)
+                ? {
+                    authorRef: {
+                      account: operation.target.creatorAccount,
+                      publisherNamespaceId:
+                        operation.target.publisherNamespaceId,
+                      profileNamespaceId: operation.target.profileNamespaceId,
+                    },
+                  }
+                : operation.target.creatorAddress
+                  ? { actor: operation.target.creatorAddress }
+                  : {}),
             },
           }
         : {}),
