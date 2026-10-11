@@ -45,6 +45,32 @@ missing build records as `building`. Run a real rebuild and wait for fresh Web
 and Admin success statuses before testing; an old build is never inferred from
 HTTP 200. Check live processes before starting another `npm run dev:fe`.
 
+### Driver lifetime across tool calls
+
+The canonical client is the `browser_driver` extension loaded by
+`npm run pi:webtest`; it keeps the driver as a direct child process with pipes
+and matches replies by id. Plain shells and one-shot agent tool calls cannot
+hold a child process between calls: run `node test/browser-e2e/driver.mjs`
+behind a persistent tty when the harness supports it, otherwise a detached
+named-pipe setup is required. Do not add a second tracked client for this;
+re-derive it from the operational edges below when needed:
+
+- Start the driver with `setsid`, not just `nohup`. An outer tool-call timeout
+  kills the caller's whole process group, and an undetached driver dies with
+  it.
+- Keep a holder process (for example `setsid bash -c 'exec sleep infinity > fifo'`)
+  holding the FIFO write-end open so the driver never sees EOF between
+  commands, and guard the command write with its own timeout: a FIFO write with
+  no reader blocks forever.
+- Exactly one driver per profile set. Guard liveness with pidfiles, not
+  `pgrep -f`: a `> fifo` redirection never appears in a process cmdline, so the
+  pattern never matches and every check spawns another holder.
+- OTP codes live in driver process memory and die with it. Issue OTP and
+  `userLogin` back-to-back in the same driver lifetime.
+- Cold starts are slow: a fresh Chromium profile plus the first Angular Vite
+  compile can exceed two minutes. Budget login commands generously instead of
+  retrying into a lost OTP.
+
 ### Lab health and migration-drift triage
 
 An edge page returning HTTP 200 proves only that Caddy and the frontend are
@@ -127,7 +153,7 @@ pipe that code from memory directly into `android-webview-flow.mjs otp-login
 --account ACCOUNT --code-stdin`. The issuer must suppress child stdout/stderr on
 failure unless output is explicitly redacted. Never pass OTPs as CLI arguments,
 save them to artifacts, or log them. An OTP attempt that stays on `/auth/otp`
-is not a PASS: issue a *new* code before retrying and require an authenticated
+is not a PASS: issue a _new_ code before retrying and require an authenticated
 home shell as the result. For case 11.1, separately confirm the saved
 `api_origin`, the responding `/client/compat` identity, and the visible profile
 account against that node's admin user listing; do not infer the logged-in

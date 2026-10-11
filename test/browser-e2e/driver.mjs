@@ -23,14 +23,17 @@ const NODES = {
   alpha: {
     edge: 'http://localhost:3101/',
     admin: 'http://localhost:3101/admin/',
+    domain: 'alpha.test',
   },
   bravo: {
     edge: 'http://localhost:3102/',
     admin: 'http://localhost:3102/admin/',
+    domain: 'bravo.test',
   },
   charlie: {
     edge: 'http://localhost:3103/',
     admin: 'http://localhost:3103/admin/',
+    domain: 'charlie.test',
   },
 };
 const SHOTS = process.env.BROWSER_ARTIFACT_DIR || '/tmp/soms-browser-e2e';
@@ -53,7 +56,15 @@ const env = Object.fromEntries(
     .filter((l) => l && !l.startsWith('#') && l.includes('='))
     .map((l) => {
       const i = l.indexOf('=');
-      return [l.slice(0, i).trim(), l.slice(i + 1).trim()];
+      // Dotenv-compatible values: strip one pair of matching surrounding quotes.
+      let value = l.slice(i + 1).trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      return [l.slice(0, i).trim(), value];
     }),
 );
 // Temporary lab credential override lives in tmpfs (memory-backed), never in the repo.
@@ -249,8 +260,10 @@ async function issueOtp(node, account, profile) {
     }
     total = users.data.total;
     matches.push(
+      // Local accounts carry their node's own home domain (e.g. alpha.test);
+      // federated stubs carry a peer domain and must never match.
       ...users.data.list.filter(
-        (user) => user.account === account && user.domain === 'local',
+        (user) => user.account === account && user.domain === NODES[node].domain,
       ),
     );
     skip += take;

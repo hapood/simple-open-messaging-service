@@ -352,6 +352,11 @@ display name alone is insufficient when checking local/federated identity.
 
 ## Test Schedule
 
+Chapters 0–10 are the shared business chapters that also apply on Android.
+Chapter 11 is owned by the Android platform supplement in
+[android-e2e-test-plan.md](./android-e2e-test-plan.md); browser runs never
+record `11.x` results. Chapter 12 covers group announcements on the browser.
+
 ### 0. Environment and account setup
 
 - **0.1** Open all required edge URLs and verify that each page renders the
@@ -417,9 +422,11 @@ Run the following matrix for both `Alice ↔ Bob` (local) and
 - Refresh, logout/login, SSE reconnect, and multi-tab-in-one-account checks:
   no duplicate request card, thread, system event, unread badge, or domain
   label.
-- Local identity must remain `@local`/local presentation; federated identity
-  must retain the source domain at search, request, thread, message, profile,
-  preview, system event, and error surfaces.
+- Local identity must present the account's real home domain (for example
+  `alice.w1007@alpha.test`); federated identity must retain the source domain
+  at search, request, thread, message, profile, preview, system event, and
+  error surfaces. No user-facing surface may render the retired `local`
+  sentinel.
 
 - **2.x.cancel.federated**: Alpha sends a request to Bravo, then withdraws
   it while Bravo retains the incoming-list snapshot. Verify the sender shows
@@ -514,6 +521,7 @@ invitation/accept/reject/revoke, invitee reject, accepted-invite update,
 application apply/approve/reject/cancel, duplicate suppression, re-application
 after rejection/leaving/being kicked, and the federated application round trip)
 are recorded in `browser-e2e-progress.md`.
+
 - Roster cardinality, role, account/domain labels, group thread count/order,
   composer write permission, and lifecycle system-message uniqueness.
 
@@ -523,7 +531,8 @@ Run each case in a local-only group and a mixed local/federated group. The
 sender, mentioned user, non-mentioned member, and observing browser must be
 separate contexts where applicable.
 
-- Single local mention: `@Bob@local` semantics and Bob's mention unread.
+- Single local mention: namespace-0 mention semantics
+  (`somfp://user/0/bob`, displayed as @Bob) and Bob's mention unread.
 - Single federated mention: `@Charlie@bravo.test` semantics, source domain,
   and Charlie's mention unread on Bravo.
 - Multiple mentions across local and federated members in one message.
@@ -857,21 +866,77 @@ permissions granted only to the test origins.
 - **10.8** Test permission denial and device absence. The UI must provide a
   recoverable error, not a frozen overlay or an unusable page.
 
+### 12. Group announcements
+
+Run 12.1–12.5 in a local Alpha group and 12.6–12.8 across the Alpha/Bravo
+federation with an origin group and a remote mirror member. Use isolated test
+accounts, record the observed Group Meta feed coordinates in the result
+entries, and never paste announcement content containing private information
+into logs.
+
+- **12.1** Create a group as a local owner. Open its chat on desktop and
+  narrow/mobile viewports. An initially cleared announcement shows neither a
+  loudspeaker nor an automatic popup. An ordinary member cannot access the
+  editor; the local owner and a local admin can find **Group announcement**
+  under the chat More → group-info panel.
+- **12.2** Publish a multiline announcement including emoji and literal
+  `<b>not markup</b>`. Check the loudspeaker beside the group name, the
+  chatbox-scoped popup (over both message list and composer), plain-text
+  rendering and line wrapping, focus/keyboard-back/backdrop dismissal, and
+  that the message history/scroll position does not move. Close it, leave and
+  reopen the chat: it must not reopen automatically. Click the loudspeaker: it
+  should still open manually.
+- **12.3** Edit the text as an admin: it must get a new Group Meta `feedId`,
+  not a message sequence, and auto-open once again. Change it rapidly twice
+  while one client is offline: after reconnect only the newest compacted text
+  may be shown, not intermediate edits. A stale acknowledgement of an older
+  displayed popup must not suppress the newest edit.
+- **12.4** Try empty text, 4097 Unicode code points, double submit,
+  unauthorized member edit, and a dissolved/read-only group. The UI should
+  prevent invalid submissions and the server should reject unauthorized
+  writes. Clearing requires confirmation. Clear and revisit: the loudspeaker
+  and automatic popup disappear; the known `text: null` projection must not be
+  confused with an unknown/unfetched announcement.
+- **12.5** Open the same group on two devices/sessions of one account. View
+  the popup on device A. Device B should obtain the new per-account read
+  watermark through the existing `THREAD_FEED_UPDATED` cursor pull and must
+  not auto-open that announcement after convergence; a later edit should
+  auto-open on each device once. No new SSE event type or announcement text
+  should appear in SSE payloads.
+- **12.6** Have a remote member join an origin group. Publish/edit/clear as an
+  origin-local owner/admin. The remote mirror should receive the current
+  announcement through Group Meta and display it with the same loudspeaker and
+  popup behavior. A remote admin cannot publish an announcement on the mirror.
+  Other group/profile/roster updates must not cause an already read
+  announcement to reappear.
+- **12.7** With the remote client offline, advance and compact the announcement
+  several times, including an explicit clear; reconnect and check that the
+  latest current projection wins. Force a bounded full recovery with multiple
+  pages: while recovery is incomplete the cached announcement must not be
+  displayed. When complete, a returned announcement from an earlier page
+  should be retained even if the last page contains no announcement; a full
+  drain containing none makes it unknown rather than a known clear. Subsequent
+  delta catches up when the origin replaced it above the fixed full boundary.
+- **12.8** Revoke the remote relationship and attempt further reads: no more
+  announcement data should be served. Reauthorize, recover the current
+  projection, and verify that a stale cached copy is never displayed as
+  current before the new Group Meta head is reached.
+
 ## Cross-Domain Coverage Matrix
 
 The words "local" and "federated" are test dimensions, not labels that can be
 substituted after the fact. Every applicable small item below requires two
 separate browser records:
 
-| Dimension  | Local execution                          | Federated execution                                                        |
-| ---------- | ---------------------------------------- | -------------------------------------------------------------------------- |
-| Accounts   | Alice/Bob on Alpha                       | Alice Alpha + Charlie Bravo, and Diana Charlie where relevant              |
-| Web edges  | Alpha for both contexts                  | Each user uses its home-node edge                                          |
-| Identity   | `account@local`/Alpha-local presentation | full `account@alpha.test`, `account@bravo.test`, or `account@charlie.test` |
-| Transport  | Alpha HTTP/SSE/state feed                | S2S delivery, mirror projection, remote HTTP/SSE                           |
-| Assertions | local thread, role, unread, system event | same assertions plus origin domain, mirror sequence, convergence           |
-| Recovery   | browser refresh/reconnect                | browser refresh, remote-node reconnect, delayed/duplicate federation event |
-| UI         | 1440x1000 and 390x844                    | 1440x1000 and 390x844 on both home edges                                   |
+| Dimension  | Local execution                                    | Federated execution                                                         |
+| ---------- | -------------------------------------------------- | --------------------------------------------------------------------------- |
+| Accounts   | Alice/Bob on Alpha                                 | Alice Alpha + Charlie Bravo, and Diana Charlie where relevant               |
+| Web edges  | Alpha for both contexts                            | Each user uses its home-node edge                                           |
+| Identity   | full `account@alpha.test` home-domain presentation | full `account@bravo.test` / `account@charlie.test` peer-domain presentation |
+| Transport  | Alpha HTTP/SSE/state feed                          | S2S delivery, mirror projection, remote HTTP/SSE                            |
+| Assertions | local thread, role, unread, system event           | same assertions plus origin domain, mirror sequence, convergence            |
+| Recovery   | browser refresh/reconnect                          | browser refresh, remote-node reconnect, delayed/duplicate federation event  |
+| UI         | 1440x1000 and 390x844                              | 1440x1000 and 390x844 on both home edges                                    |
 
 Never mark a federated case PASS because its local analogue passed. The result
 log must use suffixes such as `2.4-local` and `3.4-federated` and include the

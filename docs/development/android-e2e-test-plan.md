@@ -1,12 +1,13 @@
 # Android E2E Test Plan
 
 Companion to the [Web browser E2E test plan](./browser-e2e-test-plan.md). The
-shared numbered business cases (chapters 0-10 there) also apply on Android; this
-document holds the Android platform rules and the Android-only execution
-checks. Case IDs `11.x` are retained from the shared plan for continuity with
-recorded evidence. Backend API calls may be used only to prepare fixtures or
-verify a result after a visible client action; an API-only result is not an
-E2E pass.
+shared numbered business cases (chapters 0–10 and 12 there) also apply on
+Android; this document holds the Android platform rules and the Android-only
+execution checks. Case IDs `11.x` are Android-only and are retained from an
+earlier shared numbering for continuity with recorded evidence; the shared
+announcement chapter is `12.x`. Backend API calls may be used only to prepare
+fixtures or verify a result after a visible client action; an API-only result
+is not an E2E pass.
 
 ## Platform coverage
 
@@ -116,6 +117,12 @@ runner session cannot establish multi-participant delivery.
   notification. Verify previous-account data is not displayed to the new account
   and subscriptions/session state follow the active identity. Preserve other
   participants' sessions while observing the transition.
+- **11.9** Repeat the announcement popup, backend acknowledgement,
+  offline/online full recovery, and hardware-back steps from the shared
+  chapter 12 in the Android app. Restart between pages of a multi-page full
+  recovery and verify that native SQLite resumes the candidate projection
+  without displaying an uncommitted announcement. The UI is the shared Angular
+  chatbox; there is no independent native announcement popup.
 
 ## Result Template
 
