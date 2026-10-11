@@ -6,10 +6,20 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { once } from 'node:events';
 import {
+  acquireSessionLock,
   forwardWarnings,
   startProcess,
   workloadArguments,
 } from './session.mjs';
+
+test('the session lock refuses a second holder on the same port', async () => {
+  const lock = await acquireSessionLock(0);
+  const port = lock.address().port;
+  await assert.rejects(acquireSessionLock(port), (error) => error.code === 'EADDRINUSE');
+  await new Promise((release) => lock.close(release));
+  const rebound = await acquireSessionLock(port);
+  await new Promise((release) => rebound.close(release));
+});
 
 test('resolves random seeds for replay and preserves package workload settings', () => {
   const args = ['--seed=random', '--operations=600', '--prefix=p2p'];

@@ -93,7 +93,9 @@ npm run build:be
 npm run federation:test
 ```
 
-`federation:test` resets the three lab databases and runtime state, starts the built
+`federation:test` allows one session at a time: startup purges all leftover artifacts from previous
+diagnostic sessions — every `soms_fed_diag_*` database and the whole diagnostic output directory —
+without touching the interactive dev lab, then creates fresh per-session databases and starts the built
 backends with process and database diagnostics, runs the workload, and stops the owned
 processes. Each backend uses a single database connection (`DATABASE_POOL_MAX=1`)
 to expose transaction code that incorrectly requests another pool connection while
@@ -102,7 +104,7 @@ All workload settings are explicit in the `package.json` script: 600 random
 decisions, five users and groups per node, 10 admissions per
 second, concurrency 12, round size 10, task timeout 120000 ms, progress every 25 decisions,
 and convergence timeout/interval/samples of 300000 ms / 1000 ms / 3. The account prefix
-is `p2p`; a clean reset makes it reusable.
+is `p2p`; fresh per-session databases keep it reusable.
 
 The script uses `--seed=random`. The launcher resolves and records the actual integer
 seed in `session.json`, and the workload records it in its artifacts. Replay selection
@@ -253,8 +255,9 @@ node dev/federation-lab/p2p/audit-run.mjs path/to/operations.json
 
 This diagnostic does not exercise lazy profile APIs or claim complete workload coverage.
 The default baseline uses three nodes with 5 users and 5 groups each. `federation:test`
-resets data before each workload and stops its backends afterward. Workload artifacts
-remain available until the next reset; preserve a failed run before starting another. Smaller diagnostic runs may be used while developing the harness, but do
+builds fresh databases before each workload and stops its backends afterward. Workload artifacts
+remain available until the next `federation:test` starts (its startup purge removes them);
+preserve a failed run before starting another. Smaller diagnostic runs may be used while developing the harness, but do
 not replace the 3-by-5-user/5-group acceptance run.
 
 ### Logs and timing diagnostics
@@ -313,7 +316,8 @@ npm run federation:test
 ```
 
 Build the backend first with `npm run build:be`. The command checks build outputs,
-resets the lab databases and runtime, starts three instrumented backends and the database
+purges leftover diagnostic artifacts from previous sessions, starts three instrumented backends on
+freshly allocated ports with their own `soms_fed_diag_*` databases and the database
 collector, waits for readiness, and runs the instrumented workload. Workload parameters
 are defined in `package.json`, with a random seed resolved separately on every invocation.
 To reuse a recorded seed:
@@ -322,9 +326,11 @@ To reuse a recorded seed:
 npm run federation:test -- --seed=2874283404
 ```
 
-The command stops its own backends and collector after success, failure, or Ctrl+C. It does not
-stop an existing lab: if a backend already responds, startup fails with instructions to stop it.
-A missing build output or a failed reset, collector, backend, or workload makes the command fail. Graceful shutdown can take
+The command stops its own backends and collector after success, failure, or Ctrl+C. It never stops or
+touches an existing dev lab: every session uses its own ports and databases, so federation:test can
+run while the lab is up. A kernel-held session lock allows only one federation:test at a time;
+starting a second one fails immediately with instructions.
+A missing build output or a failed collector, backend, or workload makes the command fail. Graceful shutdown can take
 up to 65 seconds. This launcher uses POSIX process groups and is intended for the Linux lab.
 
 Backend warnings, errors, and fatal records are mirrored to the terminal in real time,
@@ -333,8 +339,9 @@ collector errors remain visible. Complete stdout/stderr logs are still saved, an
 progress continues to print normally.
 
 All diagnostic files go into the printed `dev/federation-lab/diagnostic-runs/<timestamp>/` directory:
-`backend.log`, `collector.log`, `workload.log`, `reset.log`, `session.json`, and the process/database
-JSONL samples. This directory survives `dev:reset`; the usual workload reports and `progress.jsonl`
+`backend.log`, `collector.log`, `workload.log`, `session.json`, and the process/database
+JSONL samples. This directory survives `dev:reset`; each new `federation:test` startup purges it
+together with every leftover `soms_fed_diag_*` database. The usual workload reports and `progress.jsonl`
 still live under `runtime/p2p-runs/` and must be preserved before resetting. Set `SOMS_DIAGNOSTICS_DIR`
 only when a custom output directory is needed.
 

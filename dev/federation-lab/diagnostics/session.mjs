@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { createServer } from 'node:net';
 import { stripVTControlCharacters } from 'node:util';
+import { formatMegabytes, purgeDiagnosticArtifacts } from './artifacts.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -30,6 +31,23 @@ async function allocateBackendPorts(count = 3) {
       ),
     );
   }
+}
+
+/**
+ * Ports 3101-3103 are the lab's fixed edge ports; 3100 sits just below them
+ * and outside the ephemeral range, so allocateBackendPorts can never hand it
+ * out. Holding it for the whole session lets the kernel enforce a single
+ * concurrent federation:test and release the lock even after a crash.
+ */
+const diagnosticSessionLockPort = 3100;
+
+export async function acquireSessionLock(port = diagnosticSessionLockPort) {
+  const server = createServer();
+  await new Promise((resolveListen, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', resolveListen);
+  });
+  return server;
 }
 
 export function workloadArguments(args) {
@@ -178,10 +196,21 @@ async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help')) {
     console.log(
-      'Usage: npm run federation:test -- [--seed=<integer|random>]\nRequires npm run build:be first. Resets lab databases and runtime, starts three built backends with diagnostics, runs the workload, then stops owned processes. Stop existing lab backends first. Workload parameters are configured in package.json.',
+      'Usage: npm run federation:test -- [--seed=<integer|random>]\nRequires npm run build:be first. Allows one session at a time: startup purges leftover diagnostic databases and run directories from previous sessions without touching the interactive dev lab, then starts three built backends with diagnostics, runs the workload, and stops owned processes. Workload parameters are configured in package.json.',
     );
     return;
   }
+  let lock;
+  try {
+    lock = await acquireSessionLock(diagnosticSessionLockPort);
+  } catch (error) {
+    if (error?.code === 'EADDRINUSE')
+      throw new Error(
+        `another federation:test session is already running; stop it before starting a new one (session lock port ${diagnosticSessionLockPort})`,
+      );
+    throw error;
+  }
+  lock.unref();
   const directory = resolve(
     process.env.SOMS_DIAGNOSTICS_DIR ||
       join(
@@ -190,16 +219,7 @@ async function main() {
         new Date().toISOString().replaceAll(/[-:.TZ]/g, ''),
       ),
   );
-  await mkdir(directory, { recursive: true, mode: 0o700 });
   const controlDirectory = join(directory, 'lab-control');
-  await mkdir(join(controlDirectory, 'requests'), {
-    recursive: true,
-    mode: 0o700,
-  });
-  await mkdir(join(controlDirectory, 'responses'), {
-    recursive: true,
-    mode: 0o700,
-  });
   const databasePrefix = `soms_fed_diag_${new Date()
     .toISOString()
     .replaceAll(/[-:.TZ]/g, '')}`;
@@ -216,6 +236,28 @@ async function main() {
   process.env.FED_LAB_BACKEND_PORTS = env.FED_LAB_BACKEND_PORTS;
   process.env.FED_LAB_DATABASE_PREFIX = env.FED_LAB_DATABASE_PREFIX;
   const { federationLabNodes } = await import('../topology.mjs');
+  console.log(
+    '[diagnostics] purging leftover artifacts from previous diagnostic sessions',
+  );
+  const purged = await purgeDiagnosticArtifacts({
+    baseDatabaseUrl: process.env.DATABASE_URL,
+    nodeNames: federationLabNodes.map((node) => node.name),
+  });
+  console.log(
+    `[diagnostics] dropped ${purged.dropped} leftover diagnostic database(s), freeing ${formatMegabytes(purged.freedBytes)}` +
+      (purged.kept > 0
+        ? `; kept ${purged.kept} similarly named database(s) with an unexpected name shape`
+        : ''),
+  );
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await mkdir(join(controlDirectory, 'requests'), {
+    recursive: true,
+    mode: 0o700,
+  });
+  await mkdir(join(controlDirectory, 'responses'), {
+    recursive: true,
+    mode: 0o700,
+  });
   const owned = [];
   const controller = new AbortController();
   const interrupted = new Promise((_, reject) =>
@@ -285,12 +327,6 @@ async function main() {
         throw new Error(`${output} is missing; run npm run build:be first`);
       });
     }
-    console.log('[diagnostics] resetting lab databases and runtime');
-    const reset = await guard(
-      launch('reset', process.execPath, ['dev/federation-lab/reset.mjs']).done,
-    );
-    if (reset.code !== 0)
-      throw new Error('lab reset failed; inspect reset.log');
     console.log('[diagnostics] starting database collector and three backends');
     const collector = launch('collector', process.execPath, [
       'dev/federation-lab/diagnostics/collect.mjs',
@@ -344,6 +380,7 @@ async function main() {
       '[diagnostics] stopping owned processes; graceful shutdown may take up to 65 seconds',
     );
     await Promise.all(owned.reverse().map((child) => child.stop()));
+    await new Promise((releaseLock) => lock.close(releaseLock));
     manifest.finishedAt = new Date().toISOString();
     await save();
     process.removeListener('SIGINT', onSignal);
