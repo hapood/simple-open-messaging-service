@@ -57,6 +57,64 @@ function nodeActors(actors) {
   );
 }
 
+/** Random operations and relay chains do not guarantee direct recognition of every pair. */
+export async function prepareIdentityTransitionPeers({
+  actors,
+  domains,
+  timeoutMs,
+  onProgress = console.log,
+}) {
+  const byName = nodeActors(actors);
+  for (const [sourceName, sourceDomain] of domains) {
+    const source = byName.get(sourceName);
+    if (!source) throw new Error(`missing actor node ${sourceName}`);
+    for (const [peerName, peerDomain] of domains) {
+      if (sourceName === peerName) continue;
+      if (!byName.has(peerName))
+        throw new Error(`missing actor node ${peerName}`);
+      onProgress(
+        `[p2p][identity-transition prerequisite] ${sourceDomain} recognizing ${peerDomain}`,
+      );
+      await source.admin.post(
+        `/admin/federation/peers/${encodeURIComponent(peerDomain)}/recognize`,
+        {},
+        `establish pre-transition identity for ${peerDomain}`,
+      );
+    }
+  }
+  // Inspect after both directions have recognized, before changing any identity.
+  const pinnedPeers = [];
+  for (const [sourceName, sourceDomain] of domains) {
+    const source = byName.get(sourceName);
+    for (const [peerName, peerDomain] of domains) {
+      if (sourceName === peerName) continue;
+      const detail = await waitFor(
+        async () => {
+          const peer = await source.admin.post(
+            `/admin/federation/peers/${encodeURIComponent(peerDomain)}`,
+            {},
+            `read pre-transition identity for ${peerDomain}`,
+          );
+          return peer?.active &&
+            peer.rootPublicKey &&
+            peer.identityPinnedAt &&
+            peer.trustLevel === 'available'
+            ? peer
+            : undefined;
+        },
+        `${peerDomain} to be pinned and available on ${sourceDomain} before identity transitions`,
+        timeoutMs,
+      );
+      pinnedPeers.push({
+        observer: sourceDomain,
+        peer: peerDomain,
+        rootPublicKey: detail.rootPublicKey,
+      });
+    }
+  }
+  return pinnedPeers;
+}
+
 async function pendingReview(admin, kind, nextDomain) {
   const reviews = await admin.post(
     '/admin/federation/identity-reviews',
@@ -207,6 +265,13 @@ export async function executeIdentityTransitionCheckpoint({
   log.identityTransitions = report;
   await onLog(log);
   try {
+    report.pinnedPeers = await prepareIdentityTransitionPeers({
+      actors,
+      domains,
+      timeoutMs,
+      onProgress,
+    });
+    await onLog(log);
     report.certificateOnly = await rotateRoot({
       actors,
       node: alpha,
