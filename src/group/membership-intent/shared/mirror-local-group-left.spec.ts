@@ -48,7 +48,6 @@ describe('writeMirrorLocalGroupLeftInTx', () => {
         type: 'GROUP_LEFT',
         member: {
           account: 'alice',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 4,
         },

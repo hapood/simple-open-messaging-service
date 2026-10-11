@@ -372,16 +372,13 @@ describe('FederationProfileService resource path', () => {
     Object.assign(peerHttp, { get: getSigned });
     Object.assign(profiles, {
       profileNamespace: {
-        resolveOne: vi.fn(async () => ({
-          status: 'READY',
-          entry: {
-            publisherNamespaceId: 12,
-            profileNamespaceId: 5,
-            domain: 'peer.test',
-            rootPublicKey: VOUCHED_ROOT,
-            updateFeedId: '4',
-            expired: false,
-          },
+        readOne: vi.fn(async () => ({
+          publisherNamespaceId: 12,
+          profileNamespaceId: 5,
+          domain: 'peer.test',
+          rootPublicKey: VOUCHED_ROOT,
+          updateFeedId: '4',
+          expired: false,
         })),
       },
     });
@@ -399,16 +396,13 @@ describe('FederationProfileService resource path', () => {
     Object.assign(peerHttp, { get: getSigned });
     Object.assign(profiles, {
       profileNamespace: {
-        resolveOne: vi.fn(async () => ({
-          status: 'READY',
-          entry: {
-            publisherNamespaceId: 12,
-            profileNamespaceId: 5,
-            domain: null,
-            rootPublicKey: null,
-            updateFeedId: '0',
-            expired: true,
-          },
+        readOne: vi.fn(async () => ({
+          publisherNamespaceId: 12,
+          profileNamespaceId: 5,
+          domain: null,
+          rootPublicKey: null,
+          updateFeedId: '0',
+          expired: true,
         })),
       },
     });
@@ -756,14 +750,18 @@ function makeStubs() {
     ed25519.getPublicKey(Uint8Array.from(Buffer.alloc(32, 1))),
   ).toString('base64');
   const profileNamespace = {
+    readOne: vi.fn(async () => undefined),
     resolveBatch: vi.fn(async () => ({ entries: [], pendingRefreshes: [] })),
+  };
+  const refresh = {
+    fetch: vi.fn(async () => undefined),
   };
   const profiles = new FederationProfileService(
     database as never,
     upload as never,
     peerHttp,
     profileNamespace as never,
-    {} as never,
+    refresh as never,
   );
   const inboundMessageStore = new FederationInboundMessageStoreService(
     threadAccess,
@@ -1285,7 +1283,7 @@ describe('FederationInboundMessageRouteService global missed transport', () => {
       toAccount: 'alice',
       authority: 'PEER',
       creatorAccount: 'bob',
-      profileNamespaceId: 44,
+      profileNamespaceId: 0,
       recipients: [1],
     });
     expect(findUser).not.toHaveBeenCalled();

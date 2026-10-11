@@ -52,7 +52,7 @@ describe('query-denied authored membership revocation', () => {
       {
         expectedAuthorization: {
           epoch: 8,
-          group: { account: '!group', domain: 'chat.example', namespaceId: 0 },
+          group: { account: '!group', namespaceId: 0 },
         },
       },
     );
@@ -78,7 +78,7 @@ describe('query-denied authored membership revocation', () => {
         threadId: 12,
         group: {
           account: '!group',
-                    namespaceId: 5,
+          namespaceId: 5,
         },
         memberUserId: 7,
         expectedAuthorizationEpoch: 8,
@@ -101,7 +101,7 @@ describe('query-denied authored membership revocation', () => {
           epoch: 8,
           group: {
             account: '!group',
-                        namespaceId: 5,
+            namespaceId: 5,
           },
         },
       },

@@ -100,7 +100,10 @@ export class ProfileResolutionCoordinatorService {
     const keyString = profileKeyString(key);
     const cached = await this.readCached(key);
     if (cached) return { status: 'READY', profile: cached };
-    if (key.publisherNamespaceId === 0) {
+    if (
+      key.publisherNamespaceId === 0 &&
+      demand.lookup !== ProfileLookup.GROUP_MEMBER_PROFILE
+    ) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'local profile revision is unavailable',
@@ -424,6 +427,8 @@ export class ProfileResolutionCoordinatorService {
     expected: ProfileKey,
     demand: ProfileResolutionDemand,
   ): Promise<ResolvedClientProfile> {
+    if (expected.publisherNamespaceId === 0)
+      return this.fetchLocalGroupMemberProfile(expected, demand);
     const profile = await this.fetchExactProfile(expected, demand);
     if (!profile.profile) {
       throw new BusinessException(
@@ -450,6 +455,40 @@ export class ProfileResolutionCoordinatorService {
     }
     this.touch(profileKeyString(expected), materialized);
     return materialized;
+  }
+
+  /** Origin-side group member profiles: this node is the group's authority,
+   * so the member's home snapshot is already durable locally at
+   * (member home publisher, subject 0). The demand was authorized against
+   * the group's member-feed evidence; answer from the local snapshot without
+   * a federation round trip or a second materialization. */
+  private async fetchLocalGroupMemberProfile(
+    expected: ProfileKey,
+    demand: ProfileResolutionDemand,
+  ): Promise<ResolvedClientProfile> {
+    if (demand.lookup !== ProfileLookup.GROUP_MEMBER_PROFILE) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'local profile revision is unavailable',
+      );
+    }
+    const stored = await this.profiles.getStoredProfile(
+      demand.target.profileNamespaceId,
+      demand.target.account,
+      0,
+      demand.target.rev,
+    );
+    if (!stored) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'profile revision is unavailable',
+      );
+    }
+    return this.clientProfile(
+      { ...stored, namespaceId: demand.target.profileNamespaceId },
+      expected.publisherNamespaceId,
+      expected.profileNamespaceId,
+    );
   }
 
   private async fetchExactProfile(

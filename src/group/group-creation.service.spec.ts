@@ -114,7 +114,6 @@ describe('GroupService creation', () => {
       type: 'GROUP_CREATED',
       creator: {
         account: 'owner',
-        domain: 'local.example',
         profileNamespaceId: 0,
         profileRev: 2,
       },

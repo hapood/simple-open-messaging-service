@@ -475,6 +475,65 @@ describe('ProfileResolutionCoordinatorService', () => {
     expect(subject['pending'].size).toBe(1);
   });
 
+  it('serves origin-side group member demands from the local member-home snapshot', async () => {
+    const { subject, profiles, sse } = createSubject();
+    const memberHomeProfile = {
+      namespaceId: 0,
+      account: 'alice',
+      displayName: 'Alice',
+      bio: 'Biography',
+      avatar: null,
+      profileRev: 4,
+    };
+    // The demand-key durable slot stays empty (publisher 0 has no mirrored
+    // copy); the member-home snapshot lives at (member NS, subject 0).
+    profiles.getStoredProfile.mockImplementation(
+      async (publisher: number, account: string, ns: number, rev: number) =>
+        publisher === 12 && account === 'alice' && ns === 0 && rev === 4
+          ? memberHomeProfile
+          : null,
+    );
+    vi.spyOn(subject as any, 'authorizeDemand').mockResolvedValue(undefined);
+    const localMemberDemand = {
+      publisherNamespaceId: 0,
+      lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
+      groupAccount: '!group',
+      target: { profileNamespaceId: 12, account: 'alice', rev: 4 },
+    } as const;
+
+    await expect(
+      subject.start(3, 41, localMemberDemand),
+    ).resolves.toMatchObject({ status: 'PENDING' });
+    await vi.waitFor(() =>
+      expect(sse.onProfileAvailable).toHaveBeenCalledTimes(1),
+    );
+    expect(profiles.getStoredProfile).toHaveBeenCalledWith(12, 'alice', 0, 4);
+    expect(profiles.fetchExactGroupMemberProfile).not.toHaveBeenCalled();
+    expect(profiles.materializeExactForeignProfile).not.toHaveBeenCalled();
+    expect(sse.onProfileAvailable).toHaveBeenCalledWith(41, {
+      publisherNamespaceId: 0,
+      profileNamespaceId: 12,
+      account: 'alice',
+      rev: 4,
+    });
+  });
+
+  it('keeps namespace-zero ACCOUNT_PROFILE work unavailable', async () => {
+    const { subject, profiles } = createSubject();
+    vi.spyOn(subject as any, 'authorizeDemand').mockResolvedValue(undefined);
+
+    await expect(
+      subject.start(3, 41, {
+        ...accountDemand,
+        publisherNamespaceId: 0,
+        target: { ...accountDemand.target, profileNamespaceId: 0 },
+      }),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
+    expect(subject['pending'].size).toBe(0);
+    expect(profiles.fetchExactAccountProfile).not.toHaveBeenCalled();
+    expect(profiles.materializeExactForeignProfile).not.toHaveBeenCalled();
+  });
+
   it('touches the profile LRU after successful durable materialization', async () => {
     const { subject, profiles } = createSubject();
     profiles.fetchExactAccountProfile.mockResolvedValue(wireProfile);

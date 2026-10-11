@@ -135,7 +135,6 @@ describe('relationship client profile references', () => {
       expect(event.body.peer).toMatchObject({
         account: 'bob',
         profileRev: 7,
-        name: 'Selected 7',
         avatar: 'avatar-7',
       });
     }
@@ -144,8 +143,8 @@ describe('relationship client profile references', () => {
         ([arg]) => new PgDialect().sqlToQuery(arg.where).params,
       ),
     ).toEqual([
-      ['bob', 4, 4, 7],
-      ['bob', 4, 4, 7],
+      ['bob', 4, 0, 7],
+      ['bob', 4, 0, 7],
     ]);
   });
 
@@ -157,7 +156,6 @@ describe('relationship client profile references', () => {
     });
     expect(writeInTx.mock.calls[0][1].body.peer).toMatchObject({
       profileRev: 7,
-      name: 'bob',
       avatar: '',
       bio: '',
     });
@@ -171,7 +169,6 @@ describe('relationship client profile references', () => {
     });
     expect(writeInTx.mock.calls[0][1].body.peer).toMatchObject({
       profileRev: 0,
-      name: 'bob',
       avatar: '',
     });
   });

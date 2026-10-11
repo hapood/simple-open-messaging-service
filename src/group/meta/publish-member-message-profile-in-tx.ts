@@ -81,6 +81,7 @@ export async function publishMemberMessageProfileInTx(
     SELECT 1 FROM "Message" m
     WHERE m."threadId" = ${groupId} AND m.seq = ${messageSeq}
       AND m."creatorAccount" = ${account}
+      AND m."publisherNamespaceId" = ${publisherNamespaceId}
       AND m."profileNamespaceId" = ${namespaceId}
       AND m."profileRev" = ${profileRev}
       AND m."contentType" <> 'SYSTEM' AND m."localState" = 'READY'
@@ -96,7 +97,9 @@ export async function publishMemberMessageProfileInTx(
         SELECT 1 FROM "Message" newer
         WHERE newer."threadId" = m."threadId" AND newer.seq > m.seq
           AND newer."creatorAccount" = m."creatorAccount"
+          AND newer."publisherNamespaceId" = m."publisherNamespaceId"
           AND newer."profileNamespaceId" = m."profileNamespaceId"
+          AND newer."profileRev" = m."profileRev"
           AND newer."contentType" <> 'SYSTEM'
           AND newer."localState" = 'READY'
       )

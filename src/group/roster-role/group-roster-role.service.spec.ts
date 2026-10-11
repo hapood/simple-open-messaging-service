@@ -159,13 +159,11 @@ describe('GroupRosterRoleService', () => {
         type: SystemMessageType.GROUP_OWNER_TRANSFERRED,
         previousOwner: {
           account: 'owner',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 0,
         },
         newOwner: {
           account: 'member',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 0,
         },
