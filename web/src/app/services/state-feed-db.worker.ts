@@ -1,11 +1,10 @@
 /// <reference lib="webworker" />
 
 import { WebdbStorage } from './webdb-storage';
-import { homeProfileDemand } from './profile-demand';
 import { BusinessCode } from './biz-code';
 import { coalesceThreadFeedWakes } from './thread-feed-sync';
 import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
-import { syncGroupMetaThread } from './group-meta-sync';
+import { GroupMetaSyncError, syncGroupMetaThread } from './group-meta-sync';
 import { syncTombstoneThread } from './tombstone-sync';
 import { synchronizeStateFeed } from './worker-state-feed-sync';
 import { syncPushThreads, type PushThreadResult } from './push-thread-sync';
@@ -13,7 +12,6 @@ import { PreferenceStorage } from './preference-storage';
 import { apiPrefix } from './constants';
 import en from '../i18n/en.json';
 import zh from '../i18n/zh-CN.json';
-import type { GroupMetaProfileReference } from './group-meta-model';
 import type { DeletedMessageItem } from './model';
 import {
   type ProfileDemand,
@@ -133,8 +131,6 @@ async function synchronizeNotifications(
       retracted: '[' + locale.chat.messageRetracted + ']',
       removed: '[' + locale.chat.messageRemovedByAdmin + ']',
     },
-    requestGroupMeta,
-    resolveGroupMetaProfile,
   );
   if (result.notifications.length && openedUserId === userId) {
     const feedIds = new Map(
@@ -303,29 +299,6 @@ const requestTombstone = async (input: {
   });
   if (!response.ok) throw new Error(`tombstone query HTTP ${response.status}`);
   return response.json();
-};
-
-const resolveGroupMetaProfile = async (
-  reference: GroupMetaProfileReference,
-) => {
-  const demand: ProfileDemand =
-    reference.type === 'GROUP'
-      ? homeProfileDemand(
-          reference.account,
-          reference.namespaceId,
-          reference.rev,
-        )
-      : {
-          publisherNamespaceId: reference.namespaceId,
-          lookup: 'GROUP_MEMBER_PROFILE',
-          target: {
-            profileNamespaceId: reference.namespaceId,
-            account: reference.account,
-            rev: reference.rev,
-          },
-          groupAccount: await storage.groupAccountForThread(reference.threadId),
-        };
-  return (await requestProfile(demand)).status === 'READY';
 };
 
 type Request =
@@ -506,7 +479,6 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                   const committed = await syncGroupMetaThread(
                     storage,
                     requestGroupMeta,
-                    resolveGroupMetaProfile,
                     threadId,
                     target,
                     guard,
@@ -519,6 +491,18 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                       patches: committed.patches,
                     });
                 } catch (error) {
+                  // Earlier pages are durable even if a later page failed.
+                  // Deliver their facts before leaving retry pressure to the next wake.
+                  if (
+                    error instanceof GroupMetaSyncError &&
+                    error.threadIds.length
+                  )
+                    postMessage({
+                      type: 'group-meta-committed',
+                      userId: Number(data.userId),
+                      threadIds: error.threadIds,
+                      patches: error.patches,
+                    });
                   console.warn(
                     '[group-meta] per-thread drain failed; next wake retries',
                     error,

@@ -361,10 +361,6 @@ describe('Push Service Worker entry', () => {
         retracted: '[Retracted]',
         removed: '[Removed]',
       },
-      async () => {
-        throw new Error('unexpected group meta');
-      },
-      async () => false,
     );
     expect(pageResult.notifications).toHaveLength(1);
     fetchSpy.mockClear();

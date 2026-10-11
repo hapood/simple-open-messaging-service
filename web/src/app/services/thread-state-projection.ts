@@ -33,7 +33,6 @@ export function applyThreadStateSnapshot(
       ? createP2PConversation(snapshot.threadId, identity)
       : createGroupConversation(snapshot.threadId, {
           ...identity,
-          domain: '',
           id: snapshot.threadId,
         }));
   const next = {

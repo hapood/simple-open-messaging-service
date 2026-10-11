@@ -221,6 +221,7 @@ export class ThreadRepository {
       .subscribe((data) => {
         if (data.userId !== this.userService.sessionUserId()) return;
         this.applyGroupMetaPatches(data.patches);
+        this.prefetchGroupProfiles(data.threadIds);
         this.memberProfiles.notifyChanged(
           data.threadIds.filter((threadId) =>
             this._items().some(
@@ -598,7 +599,10 @@ export class ThreadRepository {
 
   /** Replace a P2P item's peerUser (avatar/name/bio) after a federated profile sync. No-op for groups /
    *  absent items. (Via the facade from peer-profile / chat-open.) */
-  updatePeerUser(threadId: number, user: ThreadPeerUser & Pick<User, 'id' | 'profileRev'>): void {
+  updatePeerUser(
+    threadId: number,
+    user: ThreadPeerUser & Pick<User, 'id' | 'profileRev'>,
+  ): void {
     user = localSubjectIdentity(user);
     let changed: P2PConversationItem | undefined;
     this._items.update((list) => {
@@ -917,6 +921,18 @@ export class ThreadRepository {
     // The HELLO wake reaches the worker/Rust independently. A concurrent completion also
     // delivers thread-feed-committed after the cursor and Group Meta pages commit.
     await this.refreshCommittedThreadFeed();
+    if (epoch !== this.sessionEpoch) return;
+    // Cold/warm boots with an already-caught-up Group Meta cursor produce no
+    // committed pages, so boot also warms once over the active groups; the
+    // demand machinery dedups against any concurrent commits.
+    this.prefetchGroupProfiles(
+      this._items()
+        .filter(
+          (item) =>
+            item.type === 'GROUP' && item.conversationState === 'ACTIVE',
+        )
+        .map((item) => item.threadId),
+    );
   }
 
   private async refreshCommittedStateFeed(): Promise<void> {
@@ -995,6 +1011,9 @@ export class ThreadRepository {
           snapshot.threadFeedId,
           snapshot.profileRev,
         );
+        // The worker has already committed the snapshot. Keep permission UI
+        // aligned with its role without creating another durable writer.
+        this.applyThreadRole(snapshot.threadId, snapshot.role);
         this.applyGroupProjectionHeads(snapshot);
         this.serverLastReadSeq.set(state.threadId, snapshot.lastReadSeq);
         this.messageRepo.applyThreadContentHead(
@@ -1066,6 +1085,74 @@ export class ThreadRepository {
    *  The payload was produced inside the committing transaction, so memory and
    *  the durable row agree without a database re-read; isGroupMetaCurrent() and
    *  the group-info member reload react to the advanced cursor immediately. */
+  /** Warming is optional and runs only after committed facts reach the UI. */
+  private prefetchGroupProfiles(threadIds: number[]): void {
+    const epoch = this.sessionEpoch;
+    const selected = new Set(threadIds);
+    void this.webdb
+      .getUnresolvedGroupMetaProfiles()
+      .then((references) => {
+        if (epoch !== this.sessionEpoch) return;
+        for (const reference of references) {
+          if (!selected.has(reference.threadId)) continue;
+          const thread = this._items().find(
+            (item) => item.threadId === reference.threadId,
+          );
+          if (thread?.type !== 'GROUP' || thread.conversationState !== 'ACTIVE')
+            continue;
+          if (reference.type === 'GROUP') {
+            this.profiles.prefetch(
+              homeProfileDemand(
+                reference.account,
+                reference.namespaceId,
+                reference.rev,
+              ),
+            );
+            continue;
+          }
+          // The roster reads member snapshots at the member-home key
+          // [namespaceId, namespaceId], while a GROUP_MEMBER_PROFILE demand
+          // is authorized by — and echoes — the group's publisher namespace.
+          // Land the resolved profile through the reference contract so the
+          // member row converges instead of re-issuing forever.
+          this.profiles.prefetch(
+            {
+              publisherNamespaceId: thread.publisherNamespaceId,
+              lookup: 'GROUP_MEMBER_PROFILE',
+              groupAccount: thread.group.account,
+              target: {
+                profileNamespaceId: reference.namespaceId,
+                account: reference.account,
+                rev: reference.rev,
+              },
+            },
+            (profile) => {
+              void this.webdb
+                .commitResolvedGroupMetaProfile(reference, {
+                  namespaceId: reference.namespaceId,
+                  account: reference.account,
+                  domain: reference.domain,
+                  rev: reference.rev,
+                  name: profile.name,
+                  bio: profile.bio,
+                  avatarBase64: null,
+                })
+                .then((committed) => {
+                  if (committed)
+                    this.memberProfiles.notifyChanged([reference.threadId]);
+                })
+                .catch((error) =>
+                  console.warn('[profile] group member landing failed', error),
+                );
+            },
+          );
+        }
+      })
+      .catch((error) =>
+        console.warn('[profile] group prefetch discovery failed', error),
+      );
+  }
+
   private applyGroupMetaPatches(patches: GroupMetaCommitPatch[]): void {
     if (!patches.length) return;
     const byThread = new Map(
@@ -1126,6 +1213,19 @@ export class ThreadRepository {
     );
     this._items.update(sortThreadItems);
     return projected;
+  }
+
+  private applyThreadRole(
+    threadId: number,
+    role: ThreadFeedSnapshot['role'],
+  ): void {
+    this._items.update((items) =>
+      items.map((item) =>
+        item.threadId === threadId && item.role !== role
+          ? { ...item, role }
+          : item,
+      ),
+    );
   }
 
   private applyThreadFeedOrder(

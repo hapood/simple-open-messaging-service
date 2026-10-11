@@ -10,7 +10,6 @@ describe('PlaygroundConversationList', () => {
         account: '!playground',
         name: 'Playground Team',
         description: 'Before',
-        domain: 'chat.example.test',
         namespaceId: 0,
       }),
     );

@@ -1888,35 +1888,15 @@ export class WebdbStorage {
         alias: thread.alias,
       }));
     }
-    const tx = (await this.db()).transaction(
-      ['threads', 'profileNamespaces'],
-      'readonly',
-    );
+    const tx = (await this.db()).transaction('threads', 'readonly');
     const threads = await tx.objectStore('threads').getAll();
-    const bindings = new Map<string, ProfileNamespaceBinding>();
-    for (const thread of threads) {
-      // A thread's subject pair is (publisherNamespaceId, publisherNamespaceId):
-      // the feed's authority namespace owns the subject's profile namespace.
-      const binding = await tx
-        .objectStore('profileNamespaces')
-        .get([thread.publisherNamespaceId, thread.publisherNamespaceId]);
-      if (binding)
-        bindings.set(
-          `${thread.publisherNamespaceId}:${thread.publisherNamespaceId}`,
-          binding,
-        );
-    }
     await tx.done;
     return threads
-      .map((thread) => {
-        const binding = bindings.get(
-          `${thread.publisherNamespaceId}:${thread.publisherNamespaceId}`,
-        );
-        return restoreThread(thread, {
-          domain: binding?.domain ?? '',
+      .map((thread) =>
+        restoreThread(thread, {
           namespaceId: thread.publisherNamespaceId,
-        });
-      })
+        }),
+      )
       .map((thread) => ({
         ...this.normalizeThreadSubject(thread),
         alias: thread.alias,
@@ -2590,10 +2570,6 @@ export class WebdbStorage {
       }
 
       for (const update of groupMeta) {
-        if (!update.sourceServer)
-          throw new Error(
-            'group-meta sourceServer must be canonical and non-empty',
-          );
         const members = tx.objectStore('members');
         const currentThread = await tx
           .objectStore('threads')
@@ -2894,13 +2870,15 @@ export class WebdbStorage {
   /** Applies one change-feed page: every item either expires a cached row or
    *  plants a tomb for a pair this device has not cached yet (feed pulled,
    *  cache not — the tomb marks the pair known-but-unresolved). Returns the
-   *  pairs touched, for the caller's resolve round. */
+   *  pairs touched, for optional repository prefetch. A supplied checkpoint
+   *  commits atomically with expiry facts. */
   async applyProfileNamespaceChanges(
     items: ReadonlyArray<{
       publisherNamespaceId: number;
       profileNamespaceId: number;
       changeId: number;
     }>,
+    checkpoint?: number,
   ): Promise<ProfileNamespacePairKey[]> {
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null) {
@@ -2910,7 +2888,10 @@ export class WebdbStorage {
         );
       }
       const db = await this.db();
-      const tx = db.transaction('profileNamespaces', 'readwrite');
+      const tx = db.transaction(
+        ['profileNamespaces', 'syncState'],
+        'readwrite',
+      );
       const store = tx.objectStore('profileNamespaces');
       const touched: ProfileNamespacePairKey[] = [];
       for (const item of items) {
@@ -2938,6 +2919,12 @@ export class WebdbStorage {
               },
         );
         touched.push(key);
+      }
+      if (checkpoint !== undefined) {
+        await tx.objectStore('syncState').put({
+          key: 'profileNamespaceChangeEndId',
+          value: checkpoint,
+        });
       }
       await tx.done;
       return touched;
@@ -3003,37 +2990,20 @@ export class WebdbStorage {
       if (envelope.code !== 0 || !envelope.data)
         throw new Error('profile-namespace change feed failed');
       const page = envelope.data;
-      const touched = await this.applyProfileNamespaceChanges(page.items);
-      if (touched.length) {
-        // Wake①: the expiry is committed — consumers mirror the expired
-        // state into their caches (DB write first, cache second) and the UI
-        // may already restyle before convergence.
-        this.profileNamespaceWake.next(touched);
-        const { failed } = await this.resolveProfileNamespacePairs(
-          touched,
-          page.scannedThrough,
-        );
-        if (failed.length)
-          throw new Error('profile-namespace resolve failed mid-page');
-        // Wake②: fresh answers are committed — consumers re-read the cache.
-        this.profileNamespaceWake.next(touched);
-      }
-      const writeSyncState = db.transaction('syncState', 'readwrite');
-      await writeSyncState.store.put({
-        key: 'profileNamespaceChangeEndId',
-        value: page.scannedThrough,
-      });
-      await writeSyncState.done;
+      const touched = await this.applyProfileNamespaceChanges(
+        page.items,
+        page.scannedThrough,
+      );
+      // Facts (expiry + cursor) are committed before optional repository work.
+      // Namespace convergence must never hold up the change-feed drain.
+      if (touched.length) this.profileNamespaceWake.next(touched);
       if (!page.hasMore) return;
       after = page.scannedThrough;
     }
   }
 
-  /** Resolves pairs through the server cache (demand rounds and the
-   *  change-feed drain both use this path). A failure leaves the expired
-   *  rows in place; the next wake or demand retries. */
-  /** Resolves pairs through the server cache (demand rounds and the
-   *  change-feed drain both use this path). Each pair is a single POST:
+  /** Resolves pairs through the server cache for demanded resolution and
+   *  optional repository prefetch. Each pair is a single POST:
    *  READY answers are committed; PENDING answers (server planted a tomb,
    *  refresh scheduled) are skipped — a later wake re-resolves them. A
    *  failure leaves the expired row in place; the next wake retries. */
@@ -3045,11 +3015,18 @@ export class WebdbStorage {
     failed: ProfileNamespacePairKey[];
     unrecoverable: ProfileNamespacePairKey[];
   }> {
+    const epoch = this.cacheEpoch;
+    const userId = this.currentUserId;
+    const assertCurrentAccount = () => {
+      if (epoch !== this.cacheEpoch || userId !== this.currentUserId)
+        throw new Error('namespace resolve account lifetime expired');
+    };
     const pending: ProfileNamespacePairKey[] = [];
     const failed: ProfileNamespacePairKey[] = [];
     const unrecoverable: ProfileNamespacePairKey[] = [];
     for (const pair of pairs) {
       try {
+        assertCurrentAccount();
         const response = await fetch(
           `${apiPrefix()}/profile-namespaces/resolve`,
           {
@@ -3078,8 +3055,12 @@ export class WebdbStorage {
               }
             | { status: 'PENDING' };
         };
+        assertCurrentAccount();
         if (envelope.code === BusinessCode.FEDERATION_NAMESPACE_UNRECOVERABLE) {
-          await this.writeProfileNamespaceTomb(pair);
+          await this.runAccountOperation(async () => {
+            assertCurrentAccount();
+            await this.writeProfileNamespaceTomb(pair);
+          });
           unrecoverable.push(pair);
           continue;
         }
@@ -3089,14 +3070,15 @@ export class WebdbStorage {
           pending.push(pair);
           continue;
         }
-        await this.commitProfileNamespaceBindings(
-          [envelope.data.entry],
-          roundEnd,
-        );
+        const entry = envelope.data.entry;
+        await this.runAccountOperation(async () => {
+          assertCurrentAccount();
+          await this.commitProfileNamespaceBindings([entry], roundEnd);
+        });
       } catch (error) {
         // A failed request is not PENDING — the server never acknowledged
-        // it. The caller decides whether to retry (demand round) or hold
-        // the cursor (change-feed drain); failed pairs are reported back
+        // it. The repository can retry on the next demand or wake;
+        // failed pairs are reported back
         // instead of being silently swallowed.
         console.warn(
           '[profile-namespace] resolve failed for pair',
@@ -3319,7 +3301,7 @@ export class WebdbStorage {
   }
 
   async getUnresolvedGroupMetaProfiles(): Promise<
-    import('./group-meta-sync').GroupMetaProfileReference[]
+    import('./group-meta-model').GroupMetaProfileReference[]
   > {
     return this.runAccountOperation(async () => {
       if (isTauri()) return [];
@@ -3327,7 +3309,7 @@ export class WebdbStorage {
         ['threads', 'members', 'profiles', 'profileNamespaces'],
         'readonly',
       );
-      const references: import('./group-meta-sync').GroupMetaProfileReference[] =
+      const references: import('./group-meta-model').GroupMetaProfileReference[] =
         [];
       for (const state of await tx.objectStore('threads').getAll()) {
         if (

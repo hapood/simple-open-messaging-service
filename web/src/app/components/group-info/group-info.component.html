@@ -28,7 +28,10 @@
               [type]="UserAvatarType.GROUP"
               [name]="identity.name"
               [account]="identity.account"
-              [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
+              [domainSource]="{
+                type: 'namespace',
+                namespaceId: identity.namespaceId,
+              }"
               [profileEvidence]="groupProfileEvidence()"
             />
           }
@@ -36,7 +39,10 @@
       </div>
       <mat-card appearance="outlined" class="group-profile-card">
         <div class="profile-meta">
-          {{ group()?.account }}&#64;{{ displayDomain() }}
+          {{ group()?.account }}
+          @if (displayDomain()) {
+            &#64;{{ displayDomain() }}
+          }
         </div>
         <button
           class="group-profile-row"
@@ -341,7 +347,10 @@
               [name]="nameEdit()"
               [account]="identity.account"
               [src]="avatarUrl()"
-              [domainSource]="{ type: 'snapshot', domain: identity.domain }"
+              [domainSource]="{
+                type: 'namespace',
+                namespaceId: identity.namespaceId,
+              }"
             />
           }
           <span class="avatar-hint">{{

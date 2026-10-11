@@ -11,7 +11,6 @@ describe('group announcement visibility', () => {
       id: 7,
       account: '!room',
       name: 'Room',
-      domain: 'chat.example.test',
       namespaceId: 0,
     });
 

@@ -11,8 +11,19 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { toObservable, toSignal } from '@angular/core/rxjs-interop';
+import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
+import { namespaceDisplayDomain } from '../../services/profile-namespace-domain';
 import { NavStateMachineService } from '../../services/nav-state.service';
-import { Subscription, firstValueFrom } from 'rxjs';
+import {
+  Subscription,
+  firstValueFrom,
+  catchError,
+  map,
+  of,
+  startWith,
+  switchMap,
+} from 'rxjs';
 import { RouteService, PopupType } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { MatButtonModule } from '@angular/material/button';
@@ -115,17 +126,20 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       : undefined;
   }
 
-  memberProfileEvidence(member: ResolvedMemberProfile): ProfileDemand {
-    const group = this.group();
+  memberProfileEvidence(
+    member: ResolvedMemberProfile,
+  ): ProfileDemand | undefined {
+    const thread = this.userMsgTrd();
+    if (thread?.type !== 'GROUP') return undefined;
     return {
-      publisherNamespaceId: member.namespaceId,
+      publisherNamespaceId: thread.publisherNamespaceId,
       lookup: 'GROUP_MEMBER_PROFILE',
       target: {
         profileNamespaceId: member.namespaceId,
         account: member.account,
         rev: member.profileRev,
       },
-      groupAccount: group?.account ?? '',
+      groupAccount: thread.group.account,
     };
   }
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
@@ -286,7 +300,26 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   }
 
   readonly group = computed(() => this.userMsgTrd()?.group);
-  readonly displayDomain = computed(() => this.group()?.domain ?? '');
+  private readonly namespaces = inject(ProfileNamespaceRepository);
+  readonly displayDomain = toSignal(
+    toObservable(this.group).pipe(
+      switchMap((group) =>
+        group
+          ? this.namespaces
+              .resolve({
+                publisherNamespaceId: 0,
+                profileNamespaceId: group.namespaceId,
+              })
+              .pipe(
+                map((binding) => namespaceDisplayDomain(binding) ?? ''),
+                startWith(''),
+                catchError(() => of('')),
+              )
+          : of(''),
+      ),
+    ),
+    { initialValue: '' },
+  );
   readonly dissolved = computed(() => this.group()?.dissolvedAt != null);
   readonly readOnly = computed(
     () =>

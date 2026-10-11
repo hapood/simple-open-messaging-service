@@ -67,7 +67,6 @@ describe('group-meta drain vs renderer write-through (bug repro)', () => {
         id: 15,
         account: '!four-one-alpha',
         name: '',
-        domain: 'local',
         namespaceId: 0,
         profileRev: 1,
       },
@@ -79,7 +78,6 @@ describe('group-meta drain vs renderer write-through (bug repro)', () => {
     await webdb.applyGroupMetaPage({
       threadId: 15,
       namespaceId: 0,
-      sourceServer: 'local',
       page: {
         account: '!four-one-alpha',
         mode: 'full',

@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { LocalThreadAttention } from '../../../../shared/thread-attention';
-import { syncGroupMeta, type GroupMetaSyncStorage } from './group-meta-sync';
+import {
+  syncGroupMeta,
+  syncGroupMetaThread,
+  type GroupMetaSyncStorage,
+} from './group-meta-sync';
 import { createGroupConversation } from './model';
 import { threadStructure } from './thread-feed.test-helper';
 
@@ -8,7 +12,6 @@ function fixture() {
   const thread = createGroupConversation(12, {
     id: 21,
     account: 'room',
-    domain: 'remote.test',
     namespaceId: 7,
     name: 'Room',
     avatar: '',
@@ -38,18 +41,9 @@ function fixture() {
     unreadCount: 0,
     lastMentionSeq: null,
   };
-  const unresolved = {
-    type: 'GROUP' as const,
-    threadId: 12,
-    account: 'room',
-    domain: 'remote.test',
-    namespaceId: 7,
-    rev: 1,
-  };
   const storage: GroupMetaSyncStorage = {
     getThreads: vi.fn(async () => [structuredClone(thread)]),
     getThreadStates: vi.fn(async () => [state]),
-    getUnresolvedGroupMetaProfiles: vi.fn(async () => [unresolved]),
     beginGroupMetaRecovery: vi.fn(async (_threadId, through) => {
       thread.group.groupMetaFeedId = '0';
       thread.groupMetaRecoveryThrough = through;
@@ -57,10 +51,17 @@ function fixture() {
     applyGroupMetaPage: vi.fn(async ({ page }) => {
       thread.group.groupMetaFeedId = page.scannedThrough;
       thread.groupMetaRecoveryThrough = page.hasMore ? '3' : null;
-      return null;
+      return {
+        threadId: thread.threadId,
+        memberCount: thread.group.memberCount,
+        groupMetaFeedId: page.scannedThrough,
+        announcement: null,
+        groupMetaRecoveryThrough: thread.groupMetaRecoveryThrough,
+        groupMetaRecoveryAnnouncement: null,
+      };
     }),
   };
-  return { storage, thread, state, unresolved };
+  return { storage, thread, state };
 }
 
 function page(scannedThrough: string, hasMore: boolean) {
@@ -79,17 +80,16 @@ function page(scannedThrough: string, hasMore: boolean) {
 
 describe('Group Meta background synchronization', () => {
   it('commits each full-recovery page and resumes from the durable cursor', async () => {
-    const { storage, thread, unresolved } = fixture();
+    const { storage, thread } = fixture();
     const firstRun = vi
       .fn()
       .mockResolvedValueOnce(page('1', true))
       .mockRejectedValueOnce(new Error('offline'));
 
-    await expect(
-      syncGroupMeta(storage, firstRun, vi.fn()),
-    ).rejects.toMatchObject({
-      message: 'group room@remote.test: offline',
+    await expect(syncGroupMeta(storage, firstRun)).rejects.toMatchObject({
+      message: 'group room (namespace 7, thread 12): offline',
       threadIds: [12],
+      patches: [{ threadId: 12, groupMetaFeedId: '1' }],
     });
     expect(thread.group.groupMetaFeedId).toBe('1');
     expect(thread.groupMetaRecoveryThrough).toBe('3');
@@ -98,17 +98,13 @@ describe('Group Meta background synchronization', () => {
       .fn()
       .mockResolvedValueOnce(page('2', true))
       .mockResolvedValueOnce(page('3', false));
-    const resolve = vi.fn(async () => false);
-    await expect(syncGroupMeta(storage, request, resolve)).resolves.toEqual([
-      12,
-    ]);
+    await expect(syncGroupMeta(storage, request)).resolves.toEqual([12]);
     expect(request.mock.calls.map(([input]) => input.after)).toEqual([
       '1',
       '2',
     ]);
     expect(storage.beginGroupMetaRecovery).toHaveBeenCalledTimes(1);
     expect(thread.groupMetaRecoveryThrough).toBeNull();
-    expect(resolve).toHaveBeenCalledWith(unresolved);
   });
 
   it('opens one replacement full window when the server rejects the cursor', async () => {
@@ -134,11 +130,7 @@ describe('Group Meta background synchronization', () => {
         },
       });
 
-    await syncGroupMeta(
-      storage,
-      request,
-      vi.fn(async () => false),
-    );
+    await syncGroupMeta(storage, request);
     expect(storage.beginGroupMetaRecovery).toHaveBeenNthCalledWith(1, 12, '3');
     expect(storage.beginGroupMetaRecovery).toHaveBeenNthCalledWith(2, 12, '2');
     expect(request.mock.calls.map(([input]) => input.through)).toEqual([
@@ -148,23 +140,17 @@ describe('Group Meta background synchronization', () => {
     ]);
   });
 
-  it('reports a profile-only commit after the meta cursor is already current', async () => {
+  it('does no work when the fact cursor is already current', async () => {
     const { storage, thread } = fixture();
     thread.group.groupMetaFeedId = '3';
     const request = vi.fn();
-
-    await expect(
-      syncGroupMeta(
-        storage,
-        request,
-        vi.fn(async () => true),
-      ),
-    ).resolves.toEqual([12]);
+    await expect(syncGroupMeta(storage, request)).resolves.toEqual([]);
     expect(request).not.toHaveBeenCalled();
+    expect(storage.applyGroupMetaPage).not.toHaveBeenCalled();
   });
 
-  it('resolves a newly created local group profile after the empty thread shell is committed', async () => {
-    const { storage, thread, unresolved } = fixture();
+  it('commits group profile facts without resolving presentation', async () => {
+    const { storage, thread } = fixture();
     thread.group.name = '';
     thread.group.description = '';
     thread.group.groupMetaFeedId = '0';
@@ -198,18 +184,10 @@ describe('Group Meta background synchronization', () => {
           hasMore: false,
         },
       });
-    const resolve = vi.fn(async (reference) => {
-      expect(reference).toEqual(unresolved);
-      thread.group.name = 'Created local group';
-      thread.group.description = 'Created from Web';
-      return true;
-    });
-
-    await expect(syncGroupMeta(storage, request, resolve)).resolves.toEqual([
-      12,
-    ]);
-    expect(resolve).toHaveBeenCalledOnce();
-    expect(thread.group.name).toBe('Created local group');
+    await expect(syncGroupMeta(storage, request)).resolves.toEqual([12]);
+    expect(thread.group.name).toBe('');
+    expect(thread.group.description).toBe('');
+    expect(thread.group.groupMetaFeedId).toBe('3');
   });
 
   it('continues with delta after finishing an older persisted recovery window', async () => {
@@ -233,11 +211,7 @@ describe('Group Meta background synchronization', () => {
         },
       });
 
-    await syncGroupMeta(
-      storage,
-      request,
-      vi.fn(async () => false),
-    );
+    await syncGroupMeta(storage, request);
     expect(
       request.mock.calls.map(([input]) => [
         input.mode,
@@ -248,6 +222,51 @@ describe('Group Meta background synchronization', () => {
       ['full', '1', '2'],
       ['delta', '2', '3'],
     ]);
+  });
+});
+
+describe('Group Meta per-thread fact delivery', () => {
+  it('keeps the latest committed patch when a later fact page fails', async () => {
+    const { storage, thread } = fixture();
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(page('1', true))
+      .mockResolvedValueOnce(page('2', true))
+      .mockRejectedValueOnce(new Error('offline'));
+    await expect(
+      syncGroupMetaThread(storage, request, 12, '3'),
+    ).rejects.toMatchObject({
+      threadIds: [12],
+      patches: [
+        { threadId: 12, groupMetaFeedId: '2', groupMetaRecoveryThrough: '3' },
+      ],
+      message: 'group room (namespace 7, thread 12): offline',
+    });
+    expect(thread.group.groupMetaFeedId).toBe('2');
+    const resumed = vi.fn().mockResolvedValueOnce(page('3', false));
+    await expect(
+      syncGroupMetaThread(storage, resumed, 12, '3'),
+    ).resolves.toMatchObject({
+      threadIds: [12],
+      patches: [{ groupMetaFeedId: '3', groupMetaRecoveryThrough: null }],
+    });
+    expect(resumed.mock.calls[0][0].after).toBe('2');
+  });
+
+  it('delivers a committed page when the open-thread guard stops the drain', async () => {
+    const { storage } = fixture();
+    let active = true;
+    const request = vi.fn(async () => {
+      active = false;
+      return page('1', true);
+    });
+    await expect(
+      syncGroupMetaThread(storage, request, 12, '3', () => active),
+    ).resolves.toMatchObject({
+      threadIds: [12],
+      patches: [{ groupMetaFeedId: '1' }],
+    });
+    expect(request).toHaveBeenCalledOnce();
   });
 });
 
@@ -265,9 +284,6 @@ describe('Group Meta failure isolation', () => {
       structuredClone(state),
       { ...structuredClone(state), threadId: 13 },
     ]);
-    (
-      storage.getUnresolvedGroupMetaProfiles as ReturnType<typeof vi.fn>
-    ).mockResolvedValue([]);
     // The fixture closures write to the original thread; route by threadId.
     (
       storage.beginGroupMetaRecovery as ReturnType<typeof vi.fn>
@@ -304,8 +320,8 @@ describe('Group Meta failure isolation', () => {
           hasMore: false,
         },
       });
-    await expect(syncGroupMeta(storage, request, vi.fn())).rejects.toThrow(
-      'group room@remote.test: offline',
+    await expect(syncGroupMeta(storage, request)).rejects.toThrow(
+      'group room (namespace 7, thread 12): offline',
     );
     expect(healthy.group.groupMetaFeedId).toBe('3');
   });
@@ -313,7 +329,7 @@ describe('Group Meta failure isolation', () => {
   it('surfaces the business code of a rejected page', async () => {
     const { storage } = fixture();
     const request = vi.fn().mockResolvedValueOnce({ code: 30001 });
-    await expect(syncGroupMeta(storage, request, vi.fn())).rejects.toThrow(
+    await expect(syncGroupMeta(storage, request)).rejects.toThrow(
       'group-meta pull failed (code 30001)',
     );
   });

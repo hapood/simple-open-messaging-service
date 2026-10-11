@@ -81,6 +81,57 @@ describe('ProfileRepository resolution scheduler', () => {
     repository = TestBed.inject(ProfileRepository);
   });
 
+  it('prefetch returns immediately and shares the pending demand with rendering', async () => {
+    let ready!: (value: unknown) => void;
+    resolveProfileEvidence.mockReturnValue(
+      new Promise((resolve) => {
+        ready = resolve;
+      }),
+    );
+    const demand: ProfileDemand = {
+      publisherNamespaceId: 0,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 1, account: 'alice', rev: 7 },
+    };
+    expect(repository.prefetch(demand)).toBeUndefined();
+    const rendered = firstValueFrom(repository.resolve(demand));
+    expect(resolveProfileEvidence).toHaveBeenCalledTimes(1);
+    ready({
+      status: 'READY',
+      profile: {
+        publisherNamespaceId: 0,
+        profileNamespaceId: 1,
+        account: 'alice',
+        profileRev: 7,
+        name: 'Alice',
+        bio: '',
+        avatarDigest: null,
+      },
+    });
+    expect(await rendered).toMatchObject({ name: 'Alice' });
+    expect(await firstValueFrom(repository.resolve(demand))).toMatchObject({
+      name: 'Alice',
+    });
+    expect(resolveProfileEvidence).toHaveBeenCalledTimes(1);
+  });
+
+  it('contains optional prefetch errors without failing the caller', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      resolveProfileEvidence.mockRejectedValue(new Error('unavailable'));
+      expect(
+        repository.prefetch({
+          publisherNamespaceId: 0,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { profileNamespaceId: 1, account: 'alice', rev: 7 },
+        }),
+      ).toBeUndefined();
+      await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('reuses a committed exact profile key from the main-thread LRU', async () => {
     const snapshot: ProfileSnapshot = {
       account: 'alice',
@@ -192,7 +243,10 @@ describe('ProfileRepository resolution scheduler', () => {
     // The unevidenced request dedups onto the pending authorized entry instead
     // of starting its own cache-only attempt, so no second lookup runs.
     expect(repository['resolutions'].size).toBe(1);
-    resolveProfileEvidence.mockResolvedValue({ status: 'READY', profile: snapshot });
+    resolveProfileEvidence.mockResolvedValue({
+      status: 'READY',
+      profile: snapshot,
+    });
     profileWake.next({
       event: 'PROFILE_AVAILABLE',
       key: {
@@ -229,9 +283,10 @@ describe('ProfileRepository resolution scheduler', () => {
     expect(repository['resolutions'].size).toBe(0);
     const subscription = repository.resolve(demand).subscribe();
     expect(resolveProfileEvidence).toHaveBeenCalledTimes(2);
-    expect(resolveProfileEvidence).toHaveBeenLastCalledWith(
-      { ...demand, target: { ...demand.target, account: 'alice' } },
-    );
+    expect(resolveProfileEvidence).toHaveBeenLastCalledWith({
+      ...demand,
+      target: { ...demand.target, account: 'alice' },
+    });
     subscription.unsubscribe();
   });
 

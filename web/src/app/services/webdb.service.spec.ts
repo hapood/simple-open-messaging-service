@@ -238,13 +238,13 @@ describe('WebdbService', () => {
       await webdb.mergeThreadStates([{ ...snapshot, lastReadSeq: 130 }]);
       expect((await webdb.getThreadStates())[0]).toEqual({
         ...snapshot,
-        localReadSeq: 105,
+        localReadSeq: 110,
       });
       const rolledBack = { ...snapshot, threadFeedId: 11, lastReadSeq: 95 };
       await webdb.mergeThreadStates([rolledBack]);
       expect(await webdb.advanceThreadRead(7, 104)).toEqual({
         ...rolledBack,
-        localReadSeq: 105,
+        localReadSeq: 110,
       });
       expect(await webdb.getSyncState('threadFeedCursor')).toBe(10);
     });
@@ -351,13 +351,11 @@ describe('WebdbService', () => {
           id: 90,
           name: 'Mirror',
           account: '!mirror',
-          domain: 'authority.test',
           namespaceId: 7,
         }),
       );
       await webdb.applyGroupMetaPage({
         threadId: 90,
-        sourceServer: 'authority.test',
         namespaceId: 7,
         page: {
           account: '!mirror',
@@ -529,7 +527,6 @@ describe('WebdbService', () => {
           id: 90,
           name: 'Team',
           account: '!team',
-          domain: 'chat.example.test',
           namespaceId: 0,
         }),
       );
@@ -546,7 +543,6 @@ describe('WebdbService', () => {
       await expect(
         webdb.applyGroupMetaPage({
           threadId: 90,
-          sourceServer: 'local',
           namespaceId: 0,
           page: {
             account: '!team',
@@ -2108,7 +2104,6 @@ describe('WebdbService', () => {
         createGroupConversation(9, {
           id: 9,
           account: '!team',
-          domain: 'chat.example.test',
           namespaceId: 0,
           name: 'Old group name',
         }),
@@ -2116,7 +2111,6 @@ describe('WebdbService', () => {
       await webdb.applyGroupMetaPage({
         threadId: 9,
         namespaceId: 0,
-        sourceServer: 'local',
         page: {
           account: '!team',
           mode: 'full',
@@ -2187,7 +2181,6 @@ describe('WebdbService', () => {
         createGroupConversation(9, {
           id: 9,
           account: '!team',
-          domain: 'chat.example.test',
           namespaceId: 0,
           name: 'Team',
         }),
@@ -2203,7 +2196,6 @@ describe('WebdbService', () => {
       ) => ({
         threadId: 9,
         namespaceId: 0,
-        sourceServer: 'local',
         page: {
           account: '!team',
           mode,
@@ -2250,7 +2242,6 @@ describe('WebdbService', () => {
         createGroupConversation(9, {
           id: 9,
           account: '!team',
-          domain: 'chat.example.test',
           namespaceId: 0,
           name: 'Team',
         }),
@@ -2259,7 +2250,6 @@ describe('WebdbService', () => {
       await webdb.applyGroupMetaPage({
         threadId: 9,
         namespaceId: 0,
-        sourceServer: 'local',
         page: {
           account: '!team',
           mode: 'full',
@@ -2279,7 +2269,6 @@ describe('WebdbService', () => {
       await webdb.applyGroupMetaPage({
         threadId: 9,
         namespaceId: 0,
-        sourceServer: 'local',
         page: {
           account: '!team',
           mode: 'full',
@@ -2304,7 +2293,6 @@ describe('WebdbService', () => {
         type: 'GROUP',
         group: {
           account: '!team',
-          domain: 'local',
           namespaceId: 0,
           memberCount: 0,
           groupMetaFeedId: '0',
@@ -2334,7 +2322,6 @@ describe('WebdbService', () => {
       await webdb.applyGroupMetaPage({
         threadId: 9,
         namespaceId: 0,
-        sourceServer: 'local',
         page: {
           account: '!team',
           mode: 'full',
@@ -2450,7 +2437,6 @@ describe('WebdbService', () => {
       await webdb.applyGroupMetaPage({
         threadId: 9,
         namespaceId: 0,
-        sourceServer: 'local',
         page: {
           account: '!team',
           mode: 'delta',
@@ -2476,7 +2462,6 @@ describe('WebdbService', () => {
       await webdb.applyGroupMetaPage({
         threadId: 9,
         namespaceId: 0,
-        sourceServer: 'local',
         page: {
           account: '!team',
           mode: 'delta',
@@ -2518,7 +2503,6 @@ describe('WebdbService', () => {
       await webdb.applyGroupMetaPage({
         threadId: 9,
         namespaceId: 0,
-        sourceServer: 'local',
         page: {
           account: '!team',
           mode: 'delta',
@@ -2557,7 +2541,6 @@ describe('WebdbService', () => {
       await webdb.applyGroupMetaPage({
         threadId: 9,
         namespaceId: 0,
-        sourceServer: 'local',
         page: {
           account: '!team',
           mode: 'delta',
@@ -2665,7 +2648,6 @@ describe('WebdbService', () => {
       await webdb.applyGroupMetaPage({
         threadId: 12,
         namespaceId: 0,
-        sourceServer: 'local',
         page: {
           account: '!dev',
           mode: 'full',

@@ -1,7 +1,11 @@
 import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { createGroupConversation, createP2PConversation, type ConversationItem } from './model';
+import {
+  createGroupConversation,
+  createP2PConversation,
+  type ConversationItem,
+} from './model';
 import { threadFeedSnapshot } from './thread-feed.test-helper';
 
 describe('resolved thread profile identity', () => {
@@ -13,14 +17,13 @@ describe('resolved thread profile identity', () => {
   });
   afterEach(async () => storage.closeAndDelete(userId));
 
-  function group(domain = 'local', namespaceId = 0, profileRev = 1, threadId = 91) {
+  function group(namespaceId = 0, profileRev = 1, threadId = 91) {
     return createGroupConversation(
       threadId,
       {
         id: threadId,
         account: '!group',
         name: '',
-        domain,
         namespaceId,
         profileRev,
       },
@@ -31,14 +34,16 @@ describe('resolved thread profile identity', () => {
   async function seedThread(item: ConversationItem) {
     const subject = item.type === 'GROUP' ? item.group : item.peerUser;
     const feedId = item.threadFeedId ?? 1;
-    await storage.mergeThreadStates([threadFeedSnapshot(item.threadId, {
-      threadFeedId: feedId,
-      type: item.type,
-      role: item.role,
-      publisherNamespaceId: item.publisherNamespaceId,
-      profileAccount: subject.account,
-      profileRev: item.profileRev,
-    })]);
+    await storage.mergeThreadStates([
+      threadFeedSnapshot(item.threadId, {
+        threadFeedId: feedId,
+        type: item.type,
+        role: item.role,
+        publisherNamespaceId: item.publisherNamespaceId,
+        profileAccount: subject.account,
+        profileRev: item.profileRev,
+      }),
+    ]);
     await storage.putThread({ ...item, threadFeedId: feedId });
   }
 
@@ -58,12 +63,21 @@ describe('resolved thread profile identity', () => {
     expect(profile.avatarDigest).toBe(
       'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
     );
-    expect(await (await storage.getProfileAvatarBlob(profile.avatarDigest!))?.text()).toBe('abc');
+    expect(
+      await (await storage.getProfileAvatarBlob(profile.avatarDigest!))?.text(),
+    ).toBe('abc');
     expect(wake).toHaveBeenCalledWith({
       event: 'PROFILE_AVAILABLE',
-      key: { publisherNamespaceId: 0, profileNamespaceId: 0, account: '!group', rev: 1 },
+      key: {
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
+        account: '!group',
+        rev: 1,
+      },
     });
-    expect(await storage.getThreads()).toEqual([
+    const restored = await storage.getThreads();
+    expect(restored[0].group).not.toHaveProperty('domain');
+    expect(restored).toEqual([
       expect.objectContaining({
         group: expect.objectContaining({
           name: 'Created group',
@@ -141,15 +155,18 @@ describe('resolved thread profile identity', () => {
       bio: '',
       avatarBase64: null,
     };
-    await seedThread(group('bravo.test', 4));
+    await seedThread(group(4));
     await storage.commitResolvedProfile(profile);
     expect((await storage.getThreads())[0]).toMatchObject({
       group: { name: '' },
     });
-    await seedThread(group('local', 0, 2, 92));
+    await seedThread(group(0, 2, 92));
     await storage.commitResolvedProfile(profile);
-    expect((await storage.getThreads()).find((item) => item.threadId === 92)).toMatchObject({
-      group: { name: '' }, profileRev: 2,
+    expect(
+      (await storage.getThreads()).find((item) => item.threadId === 92),
+    ).toMatchObject({
+      group: { name: '' },
+      profileRev: 2,
     });
   });
 });

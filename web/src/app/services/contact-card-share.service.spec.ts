@@ -64,7 +64,6 @@ describe('ContactCardShareService', () => {
     const group = createGroupConversation(11, {
       id: 11,
       account: '!group12',
-      domain: 'bravo.test',
       namespaceId: 4,
       profileRev: 6,
       name: 'Group',

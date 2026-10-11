@@ -70,9 +70,9 @@ export function isRenderableMessageTomb(
 
 /** Identity coordinates are already canonical. Locality is determined only by namespace zero;
  * the domain always remains the real federation domain supplied by the server. */
-export function localSubjectIdentity<
-  T extends { namespaceId: number },
->(identity: T): T {
+export function localSubjectIdentity<T extends { namespaceId: number }>(
+  identity: T,
+): T {
   return identity;
 }
 
@@ -137,7 +137,6 @@ interface Group {
   avatar: string;
   profileRev: number;
   description: string;
-  domain: string;
   namespaceId: number;
   threadId: number;
   dissolvedAt?: number | null;
@@ -262,11 +261,8 @@ export function createP2PConversation(
   };
 }
 
-type GroupInput = Pick<
-  Group,
-  'id' | 'account' | 'name' | 'domain' | 'namespaceId'
-> &
-  Partial<Omit<Group, 'id' | 'account' | 'name' | 'domain' | 'namespaceId'>>;
+type GroupInput = Pick<Group, 'id' | 'account' | 'name' | 'namespaceId'> &
+  Partial<Omit<Group, 'id' | 'account' | 'name' | 'namespaceId'>>;
 
 /** Construct the canonical local projection for an empty group thread. */
 export function createGroupConversation(
@@ -312,11 +308,11 @@ export function createGroupConversation(
 }
 
 /** A conversation label prefers the remark and cached profile name. A cache
- * miss still has an identity: display the account/address rather than a blank label. */
+ * miss still has an identity: display the account rather than a blank label. */
 export function displayThreadName(t: ConversationItem): string {
   if (t.alias) return t.alias;
   const subject = t.type === 'P2P' ? t.peerUser : t.group;
-  return subject.name?.trim() || displayUserAccount(subject);
+  return subject.name?.trim() || subject.account;
 }
 
 export function displayUserName(u: { name?: string | null }): string {

@@ -82,7 +82,6 @@ describe('thread notification presentation', () => {
         id: 7,
         account: '!group',
         name: 'Group profile',
-        domain: '',
         namespaceId: 0,
       },
       { alias: 'Stale group label' },

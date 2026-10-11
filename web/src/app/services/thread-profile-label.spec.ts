@@ -24,16 +24,15 @@ describe('thread profile label fallback', () => {
     expect(displayThreadName(thread('', 12))).toBe('bob');
   });
 
-  it('renders a group address on a cache miss', () => {
+  it('renders a group account on a cache miss without a duplicated domain', () => {
     const group = {
       type: 'GROUP',
       group: {
         name: '',
         account: '!team',
-        domain: 'peer.test',
         namespaceId: 12,
       },
     } as ConversationItem;
-    expect(displayThreadName(group)).toBe('!team@peer.test');
+    expect(displayThreadName(group)).toBe('!team');
   });
 });

@@ -39,7 +39,6 @@ export interface ClientGroupMetaFeedPage {
 
 export interface ClientGroupMetaApply {
   threadId: number;
-  sourceServer: string;
   namespaceId: number;
   page: ClientGroupMetaFeedPage;
 }

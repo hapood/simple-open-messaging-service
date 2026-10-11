@@ -14,10 +14,6 @@ import {
 } from './thread-notification';
 import type { User } from './model';
 import type { NotificationDescriptor } from './notification-descriptor.model';
-import type {
-  GroupMetaProfileResolver,
-  GroupMetaRequester,
-} from './group-meta-sync';
 
 export interface PushThreadResult extends ThreadFeedSyncResult {
   userId: number;
@@ -34,8 +30,6 @@ export async function syncPushThreads(
   request: Parameters<typeof syncThreadFeed>[2],
   preferences: Pick<PreferenceStorage, 'get'>,
   copy: Parameters<typeof threadNotificationDescriptor>[2],
-  requestGroupMeta: GroupMetaRequester,
-  resolveGroupMetaProfile: GroupMetaProfileResolver,
 ): Promise<PushThreadResult> {
   const previous = new Map(
     (await storage.getThreadStates()).map((state) => [
@@ -47,8 +41,6 @@ export async function syncPushThreads(
     storage,
     target,
     request,
-    requestGroupMeta,
-    resolveGroupMetaProfile,
   );
   const notifications: NotificationDescriptor[] = [];
   if (!result.states.length)

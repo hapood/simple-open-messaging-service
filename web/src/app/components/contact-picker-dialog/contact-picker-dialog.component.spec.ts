@@ -47,7 +47,6 @@ describe('ContactPickerDialogComponent', () => {
       id: 8,
       account: '!group12',
       name: 'Group',
-      domain: 'bravo.test',
       namespaceId: 4,
       profileRev: 6,
     });

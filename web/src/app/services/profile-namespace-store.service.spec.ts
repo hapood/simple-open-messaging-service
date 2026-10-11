@@ -119,6 +119,128 @@ function seedRow(
 }
 
 describe('ProfileNamespaceRepository', () => {
+  it('skips native prefetch rather than subscribing to a no-emission resolver', () => {
+    const { repo, webdb } = setUp();
+    const previous = Object.getOwnPropertyDescriptor(
+      window,
+      '__TAURI_INTERNALS__',
+    );
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      configurable: true,
+      value: {},
+    });
+    try {
+      repo.prefetch(PAIR_A);
+      webdb.emitWake([PAIR_A]);
+      expect((repo as any).background.size).toBe(0);
+      expect((repo as any).resolutions.size).toBe(0);
+      expect(webdb.resolveCalls).toEqual([]);
+    } finally {
+      if (previous)
+        Object.defineProperty(window, '__TAURI_INTERNALS__', previous);
+      else delete window.__TAURI_INTERNALS__;
+    }
+  });
+
+  it('prefetches undemanded changed pairs and shares in-flight demand', async () => {
+    const { repo, webdb } = setUp();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    webdb.setResolveImpl(async () => {
+      await gate;
+      seedRow(webdb, PAIR_A, { domain: 'prefetched.test' });
+    });
+    webdb.emitWake([PAIR_A]);
+    repo.prefetch(PAIR_A);
+    const demanded = firstValueFrom(repo.resolve(PAIR_A));
+    await vi.waitFor(() => expect(webdb.resolveCalls).toHaveLength(1));
+    release();
+    expect(await demanded).toMatchObject({ domain: 'prefetched.test' });
+    expect((repo as any).background.size).toBe(0);
+    expect((repo as any).lru.get(pairKey(PAIR_A)).domain).toBe(
+      'prefetched.test',
+    );
+  });
+
+  it('handles optional errors explicitly and allows a later retry', async () => {
+    const { repo, webdb } = setUp();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      webdb.setResolveImpl(async () => {
+        throw new Error('offline');
+      });
+      repo.prefetch(PAIR_A);
+      await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+      expect((repo as any).background.size).toBe(0);
+      webdb.setResolveImpl(async () => {
+        seedRow(webdb, PAIR_A, {});
+      });
+      expect(await firstValueFrom(repo.resolve(PAIR_A))).toMatchObject({
+        domain: 'seed.test',
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('reports failed resolution instead of emitting an expired binding as success', async () => {
+    const { repo, webdb } = setUp();
+    seedRow(webdb, PAIR_A, { expired: true });
+    vi.spyOn(webdb, 'resolveProfileNamespacePairs').mockResolvedValue({
+      pending: [],
+      failed: [PAIR_A],
+      unrecoverable: [],
+    });
+    await expect(firstValueFrom(repo.resolve(PAIR_A))).rejects.toThrow(
+      'namespace resolve failed',
+    );
+    expect((repo as any).lru.size).toBe(0);
+  });
+
+  it('bounds no-emission prefetch subscriptions', async () => {
+    const { repo, webdb } = setUp();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      webdb.setResolveImpl(async () => {});
+      repo.prefetch(PAIR_A);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(warn).toHaveBeenCalled();
+      expect((repo as any).background.size).toBe(0);
+      expect((repo as any).resolutions.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
+  it('discards old-session completion without polluting new cache or entries', async () => {
+    const { repo, webdb, ended } = setUp();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    webdb.setResolveImpl(async () => {
+      await gate;
+    });
+    repo.prefetch(PAIR_A);
+    await vi.waitFor(() => expect(webdb.resolveCalls).toHaveLength(1));
+    ended.next();
+    expect((repo as any).background.size).toBe(0);
+    seedRow(webdb, PAIR_A, { domain: 'new-session.test' });
+    const subscription = repo.resolve(PAIR_A).subscribe();
+    await vi.waitFor(() => expect((repo as any).lru.size).toBe(1));
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect((repo as any).lru.get(pairKey(PAIR_A)).domain).toBe(
+      'new-session.test',
+    );
+    expect((repo as any).resolutions.size).toBe(1);
+    subscription.unsubscribe();
+  });
+
   it('resolve emits a fresh IDB row without hitting the server', async () => {
     const { repo, webdb } = setUp();
     seedRow(webdb, PAIR_A, { domain: 'fresh.test' });
@@ -143,16 +265,19 @@ describe('ProfileNamespaceRepository', () => {
     seedRow(webdb, PAIR_A, { domain: 'after.test', expired: false });
     webdb.emitWake([PAIR_A]);
     await vi.waitFor(() => expect(emissions.length).toBe(2));
-    expect(emissions[1]).toMatchObject({ domain: 'after.test', expired: false });
+    expect(emissions[1]).toMatchObject({
+      domain: 'after.test',
+      expired: false,
+    });
   });
 
   it('guards cache writes on both coordinates', async () => {
     const { repo, webdb } = setUp();
     seedRow(webdb, PAIR_A, { changeSeq: 5, updateFeedId: 7, expired: false });
     const emissions: ProfileNamespaceBinding[] = [];
-    const subscription = repo.resolve(PAIR_A).subscribe((binding) =>
-      emissions.push(binding),
-    );
+    const subscription = repo
+      .resolve(PAIR_A)
+      .subscribe((binding) => emissions.push(binding));
     await vi.waitFor(() => expect(emissions.length).toBe(1));
     expect(emissions.at(-1)).toMatchObject({
       changeSeq: 5,
@@ -200,7 +325,11 @@ describe('ProfileNamespaceRepository', () => {
   it('bounds the LRU at 100 entries', async () => {
     const { repo, webdb } = setUp();
     for (let i = 0; i < 100; i += 1)
-      seedRow(webdb, { publisherNamespaceId: i + 1, profileNamespaceId: 0 }, {});
+      seedRow(
+        webdb,
+        { publisherNamespaceId: i + 1, profileNamespaceId: 0 },
+        {},
+      );
     // Resolve 100 pairs to fill the LRU.
     await Promise.all(
       Array.from({ length: 100 }, (_, i) =>
@@ -214,9 +343,11 @@ describe('ProfileNamespaceRepository', () => {
     await firstValueFrom(
       repo.resolve({ publisherNamespaceId: 101, profileNamespaceId: 0 }),
     );
-    const lru = (repo as unknown as {
-      lru: Map<string, ProfileNamespaceBinding>;
-    }).lru;
+    const lru = (
+      repo as unknown as {
+        lru: Map<string, ProfileNamespaceBinding>;
+      }
+    ).lru;
     expect(lru.size).toBe(100);
     expect(lru.has('1:0')).toBe(false);
     expect(lru.has('101:0')).toBe(true);

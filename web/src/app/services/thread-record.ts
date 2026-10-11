@@ -84,12 +84,10 @@ export function storeThreadPresentation(
 }
 
 export interface RestoredThreadSubject {
-  domain: string;
   namespaceId: number;
 }
 
-/** Restore a stored row into a presentation object. The subject identity is supplied by the
- * profile-namespace join; the stored row intentionally contains no mutable domain. */
+/** Restore a stored row into a presentation object without mutable display domains. */
 export function restoreThread(
   row: StoredThread,
   subject: RestoredThreadSubject,
@@ -159,7 +157,6 @@ export function restoreThread(
     group: {
       id: row.subjectId,
       account: row.profileAccount,
-      domain: subject.domain,
       namespaceId: subject.namespaceId,
       name: row.subjectName,
       avatar: row.subjectAvatar,
@@ -192,5 +189,5 @@ export function restoreThread(
 export function restoreThreadForStorageMutation(
   row: StoredThread,
 ): ConversationItem {
-  return restoreThread(row, { domain: '', namespaceId: 0 });
+  return restoreThread(row, { namespaceId: 0 });
 }

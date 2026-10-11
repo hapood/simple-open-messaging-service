@@ -39,7 +39,6 @@ const DEMO_GROUP_CONVERSATION = createGroupConversation(
     name: 'Playground Team',
     description: 'Alice · Maya · Noah · You',
     memberCount: 5,
-    domain: 'chat.example.test',
     namespaceId: 0,
   },
   {

@@ -1,6 +1,13 @@
 import { Injectable, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Observable, ReplaySubject } from 'rxjs';
+import {
+  Observable,
+  ReplaySubject,
+  Subscription,
+  finalize,
+  take,
+  timeout,
+} from 'rxjs';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { WebdbService } from './webdb.service';
 import type {
@@ -39,7 +46,7 @@ interface ResolutionEntry {
 
 /** Client-side profile-namespace binding cache.
  *
- *  Single API: `resolve(pair)` returns a shared Observable that emits the
+ *  `resolve(pair)` returns a shared Observable that emits the
  *  current binding and stays open — namespace bindings are mutable (expired
  *  flips, domain rebinds, status transitions), so a wake re-reads the IDB
  *  row and re-emits without completing the subject. There is no read-only
@@ -57,6 +64,7 @@ export class ProfileNamespaceRepository {
   private readonly webdb = inject(WebdbService);
   private readonly resolutions = new Map<string, ResolutionEntry>();
   private readonly lru = new Map<string, ProfileNamespaceBinding>();
+  private readonly background = new Set<Subscription>();
 
   constructor() {
     this.webdb.profileNamespaceWake$
@@ -65,6 +73,8 @@ export class ProfileNamespaceRepository {
     inject(SessionLifecycleService)
       .ended$.pipe(takeUntilDestroyed())
       .subscribe(() => {
+        for (const subscription of this.background) subscription.unsubscribe();
+        this.background.clear();
         for (const entry of this.resolutions.values()) entry.subject.complete();
         this.resolutions.clear();
         this.lru.clear();
@@ -117,6 +127,26 @@ export class ProfileNamespaceRepository {
     return entry.observable;
   }
 
+  /** Best-effort warmup through the same shared demand machinery. Native
+   *  has no resolver executor yet, so do not retain a no-emission stream. */
+  prefetch(pair: ProfileNamespacePairKey): void {
+    if (isTauri()) return;
+    const subscription = new Subscription();
+    this.background.add(subscription);
+    subscription.add(
+      this.resolve(pair)
+        .pipe(
+          take(1),
+          timeout({ first: PENDING_TTL_MS }),
+          finalize(() => this.background.delete(subscription)),
+        )
+        .subscribe({
+          error: (error) =>
+            console.warn('[profile-namespace] prefetch failed', pair, error),
+        }),
+    );
+  }
+
   private run(entry: ResolutionEntry): void {
     if (isTauri()) return; // native: no executor wired yet — degrade
     if (entry.running) {
@@ -128,6 +158,7 @@ export class ProfileNamespaceRepository {
     void this.webdb
       .getProfileNamespaceBindings([entry.pair])
       .then(async (rows) => {
+        if (this.resolutions.get(entry.pairKey) !== entry) return;
         const row = rows[0];
         if (row && !row.expired) {
           this.commitReady(entry, row);
@@ -142,30 +173,35 @@ export class ProfileNamespaceRepository {
           [entry.pair],
           roundEnd,
         );
+        if (this.resolutions.get(entry.pairKey) !== entry) return;
         if (result.unrecoverable.length > 0) {
           // Tomb already written by webdb — the binding is permanently lost.
-          entry.subject.error(new Error('namespace binding unrecoverable'));
           this.resolutions.delete(entry.pairKey);
+          entry.subject.error(new Error('namespace binding unrecoverable'));
           return;
         }
         if (result.pending.length > 0) {
           entry.pending = { deadline: Date.now() + PENDING_TTL_MS };
           return;
         }
+        if (result.failed.length > 0) {
+          this.resolutions.delete(entry.pairKey);
+          entry.subject.error(new Error('namespace resolve failed'));
+          return;
+        }
         // READY — re-read the committed row.
         const committed = await this.webdb.getProfileNamespaceBindings([
           entry.pair,
         ]);
+        if (this.resolutions.get(entry.pairKey) !== entry) return;
         if (committed[0]) {
           this.commitReady(entry, committed[0]);
-        } else if (result.failed.length > 0) {
-          entry.subject.error(new Error('namespace resolve failed'));
-          this.resolutions.delete(entry.pairKey);
         }
       })
       .catch((error) => {
-        entry.subject.error(error);
+        if (this.resolutions.get(entry.pairKey) !== entry) return;
         this.resolutions.delete(entry.pairKey);
+        entry.subject.error(error);
       })
       .finally(() => {
         entry.running = false;
@@ -180,6 +216,7 @@ export class ProfileNamespaceRepository {
     entry: ResolutionEntry,
     binding: ProfileNamespaceBinding,
   ): void {
+    if (this.resolutions.get(entry.pairKey) !== entry) return;
     const key = entry.pairKey;
     const cached = this.lru.get(key);
     if (
@@ -192,20 +229,21 @@ export class ProfileNamespaceRepository {
     this.lru.set(key, binding);
     while (this.lru.size > LRU_CAPACITY)
       this.lru.delete(this.lru.keys().next().value!);
-    if (this.resolutions.get(entry.pairKey) !== entry) return;
     entry.subject.next(binding);
   }
 
   /** Wake handler: the change-feed drain already committed the DB rows —
-   *  re-run each touched pair's resolution so it re-reads the updated row
-   *  and re-emits to subscribers. */
+   *  re-run demanded pairs and optionally prefetch undemanded pairs through
+   *  the same resolution entries. No work is awaited by the fact drain. */
   private onWake(pairs: readonly ProfileNamespacePairKey[]): void {
     if (pairs.length === 0) return;
-    const touched = new Set(pairs.map(pairKey));
-    for (const entry of this.resolutions.values()) {
-      if (touched.has(entry.pairKey)) {
+    for (const pair of pairs) {
+      const entry = this.resolutions.get(pairKey(pair));
+      if (entry && entry.subscribers > 0) {
         entry.pending = undefined;
         this.run(entry);
+      } else {
+        this.prefetch(pair);
       }
     }
   }

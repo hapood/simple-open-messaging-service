@@ -222,16 +222,13 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                 async (body) => {
                   if (!(await current()))
                     throw new Error('notification account expired');
-                  const response = await fetch(
-                    API_PREFIX + '/thread-feed',
-                    {
-                      method: 'POST',
-                      credentials: 'same-origin',
-                      headers: { 'content-type': 'application/json' },
-                      body: JSON.stringify(body),
-                      signal: AbortSignal.timeout(20000),
-                    },
-                  );
+                  const response = await fetch(API_PREFIX + '/thread-feed', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify(body),
+                    signal: AbortSignal.timeout(20000),
+                  });
                   if (!response.ok)
                     throw new Error(`thread feed HTTP ${response.status}`);
                   if (!(await current()))
@@ -244,73 +241,6 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                   privateBody: locale.settings.notifNewMessage,
                   retracted: '[' + locale.chat.messageRetracted + ']',
                   removed: '[' + locale.chat.messageRemovedByAdmin + ']',
-                },
-                async (input) => {
-                  if (!(await current()))
-                    throw new Error('notification account expired');
-                  const query = new URLSearchParams({
-                    threadId: String(input.threadId),
-                    mode: input.mode,
-                    after: input.after,
-                    through: input.through,
-                    take: String(input.take),
-                  });
-                  const response = await fetch(
-                    API_PREFIX + '/user/group-meta?' + query.toString(),
-                    {
-                      credentials: 'same-origin',
-                      signal: AbortSignal.timeout(20000),
-                    },
-                  );
-                  if (!response.ok)
-                    throw new Error(`group-meta HTTP ${response.status}`);
-                  if (!(await current()))
-                    throw new Error('notification account expired');
-                  return response.json();
-                },
-                async (reference) => {
-                  if (!(await current()))
-                    throw new Error('notification account expired');
-                  const selector =
-                    reference.type === 'GROUP'
-                      ? {
-                          type: 'GROUP_META',
-                          threadId: reference.threadId,
-                          profileRev: reference.rev,
-                          subject: { type: 'GROUP' },
-                        }
-                      : {
-                          type: 'GROUP_META',
-                          threadId: reference.threadId,
-                          profileRev: reference.rev,
-                          subject: {
-                            type: 'MEMBER',
-                            account: reference.account,
-                            domain: reference.domain,
-                          },
-                        };
-                  const response = await fetch(
-                    API_PREFIX + '/user/profile-resolution',
-                    {
-                      method: 'POST',
-                      credentials: 'same-origin',
-                      headers: { 'content-type': 'application/json' },
-                      body: JSON.stringify(selector),
-                      signal: AbortSignal.timeout(20000),
-                    },
-                  );
-                  if (!response.ok)
-                    throw new Error(
-                      `profile-resolution HTTP ${response.status}`,
-                    );
-                  const envelope = await response.json();
-                  if (envelope?.code !== 0 || !envelope.data)
-                    throw new Error('profile resolution failed');
-                  if (envelope.data.status === 'READY')
-                    return !!(await storage.commitResolvedProfile(
-                      envelope.data.profile,
-                    ));
-                  return false;
                 },
               );
               if (!(await current())) return;

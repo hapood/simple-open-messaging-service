@@ -20,10 +20,6 @@ describe('Push thread-feed synchronization', () => {
     removed: '[Removed]',
   };
   const preferences = { get: async <T>(): Promise<T | undefined> => undefined };
-  const groupMetaRequest = vi.fn(async () => {
-    throw new Error('unexpected group-meta request');
-  });
-  const profileResolver = vi.fn(async () => false);
   function snapshot(feed = 1): ThreadFeedSnapshot {
     return {
       ...threadStructure(7, {
@@ -89,32 +85,14 @@ describe('Push thread-feed synchronization', () => {
 
   it('does not invent a counterpart when the local conversation was removed', async () => {
     vi.spyOn(storage, 'getThreads').mockResolvedValue([]);
-    const result = await syncPushThreads(
-      storage,
-      userId,
-      1,
-      async () => page(),
-      preferences,
-      copy,
-      groupMetaRequest,
-      profileResolver,
-    );
+    const result = await syncPushThreads(storage, userId, 1, async () => page(), preferences, copy);
     expect(result.cursor).toBe(1);
     expect(result.notifications).toEqual([]);
   });
 
   it('requests three previews, keeps one in the database, and never repeats a consumed target', async () => {
     const request = vi.fn().mockResolvedValue(page());
-    const result = await syncPushThreads(
-      storage,
-      userId,
-      1,
-      request,
-      preferences,
-      copy,
-      groupMetaRequest,
-      profileResolver,
-    );
+    const result = await syncPushThreads(storage, userId, 1, request, preferences, copy);
     expect(request).toHaveBeenCalledWith({
       after: 0,
       through: 1,
@@ -133,31 +111,13 @@ describe('Push thread-feed synchronization', () => {
     ).toEqual([7]);
     request.mockClear();
     expect(
-      await syncPushThreads(
-        storage,
-        userId,
-        1,
-        request,
-        preferences,
-        copy,
-        groupMetaRequest,
-        profileResolver,
-      ),
+      await syncPushThreads(storage, userId, 1, request, preferences, copy),
     ).toMatchObject({ consumed: false, notifications: [] });
     expect(request).not.toHaveBeenCalled();
   });
 
   it('continues after a service-worker push when the page worker starts', async () => {
-    await syncPushThreads(
-      storage,
-      userId,
-      1,
-      async () => page(),
-      preferences,
-      copy,
-      groupMetaRequest,
-      profileResolver,
-    );
+    await syncPushThreads(storage, userId, 1, async () => page(), preferences, copy);
     await storage.close();
     storage = new WebdbStorage(() => null, new SessionLifecycleService());
     await storage.openExistingForUser(String(userId));
@@ -176,16 +136,7 @@ describe('Push thread-feed synchronization', () => {
       ],
     };
     const request = vi.fn().mockResolvedValue(page(next));
-    const result = await syncPushThreads(
-      storage,
-      userId,
-      2,
-      request,
-      preferences,
-      copy,
-      groupMetaRequest,
-      profileResolver,
-    );
+    const result = await syncPushThreads(storage, userId, 2, request, preferences, copy);
     expect(request).toHaveBeenCalledWith({
       after: 1,
       through: 2,
@@ -197,16 +148,7 @@ describe('Push thread-feed synchronization', () => {
     const repeated = vi.fn();
     expect(
       (
-        await syncPushThreads(
-          storage,
-          userId,
-          2,
-          repeated,
-          preferences,
-          copy,
-          groupMetaRequest,
-          profileResolver,
-        )
+        await syncPushThreads(storage, userId, 2, repeated, preferences, copy)
       ).notifications,
     ).toEqual([]);
     expect(repeated).not.toHaveBeenCalled();
@@ -216,28 +158,10 @@ describe('Push thread-feed synchronization', () => {
     const request = vi
       .fn()
       .mockResolvedValue(page({ ...snapshot(), alias: 'Offline label' }));
-    const first = await syncPushThreads(
-      storage,
-      userId,
-      1,
-      request,
-      preferences,
-      copy,
-      groupMetaRequest,
-      profileResolver,
-    );
+    const first = await syncPushThreads(storage, userId, 1, request, preferences, copy);
     expect(first.notifications[0].title).toBe('Offline label');
     request.mockResolvedValue(page({ ...snapshot(2), alias: null }));
-    const cleared = await syncPushThreads(
-      storage,
-      userId,
-      2,
-      request,
-      preferences,
-      copy,
-      groupMetaRequest,
-      profileResolver,
-    );
+    const cleared = await syncPushThreads(storage, userId, 2, request, preferences, copy);
     expect(cleared.cursor).toBe(2);
     expect(cleared.notifications).toEqual([]);
     expect((await storage.getThreads())[0].alias).toBeNull();
@@ -290,16 +214,7 @@ describe('Push thread-feed synchronization', () => {
       },
     ]);
     await storage.advanceThreadRead(7, 2);
-    const result = await syncPushThreads(
-      storage,
-      userId,
-      2,
-      async () => page(snapshot(2)),
-      preferences,
-      copy,
-      groupMetaRequest,
-      profileResolver,
-    );
+    const result = await syncPushThreads(storage, userId, 2, async () => page(snapshot(2)), preferences, copy);
     expect(result.error).toBeUndefined();
     expect(result.states).toHaveLength(1);
     expect(result.notifications[0]).toMatchObject({
@@ -314,25 +229,10 @@ describe('Push thread-feed synchronization', () => {
   });
 
   it('does not notify when ordinary synchronization already consumed the target', async () => {
-    await syncThreadFeed(
-      storage,
-      1,
-      async () => page(),
-      groupMetaRequest,
-      profileResolver,
-    );
+    await syncThreadFeed(storage, 1, async () => page());
     const request = vi.fn();
     expect(
-      await syncPushThreads(
-        storage,
-        userId,
-        1,
-        request,
-        preferences,
-        copy,
-        groupMetaRequest,
-        profileResolver,
-      ),
+      await syncPushThreads(storage, userId, 1, request, preferences, copy),
     ).toMatchObject({ consumed: false, notifications: [] });
     expect(request).not.toHaveBeenCalled();
   });
@@ -342,16 +242,7 @@ describe('Push thread-feed synchronization', () => {
       .fn()
       .mockResolvedValueOnce(page(snapshot(), 2))
       .mockRejectedValueOnce(new Error('offline'));
-    const result = await syncPushThreads(
-      storage,
-      userId,
-      2,
-      request,
-      preferences,
-      copy,
-      groupMetaRequest,
-      profileResolver,
-    );
+    const result = await syncPushThreads(storage, userId, 2, request, preferences, copy);
     expect(result).toMatchObject({
       cursor: 1,
       consumed: true,

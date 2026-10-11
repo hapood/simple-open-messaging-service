@@ -10,10 +10,6 @@ import { threadFeedSnapshot, threadStructure } from './thread-feed.test-helper';
 describe('shared background storage', () => {
   const userId = '9107';
   let storage: WebdbStorage;
-  const groupMetaRequest = vi.fn(async () => {
-    throw new Error('unexpected group-meta request');
-  });
-  const profileResolver = vi.fn(async () => false);
 
   beforeEach(() => {
     storage = new WebdbStorage(() => null, new SessionLifecycleService());
@@ -24,30 +20,24 @@ describe('shared background storage', () => {
 
   it('runs feed synchronization without an Angular injector or a nested worker', async () => {
     await storage.openForUser(userId);
-    const result = await syncThreadFeed(
-      storage,
-      1,
-      async () => ({
-        code: 0,
-        data: {
-          items: [
-            threadFeedSnapshot(7, {
-              profileAccount: 'peer',
-              publisherNamespaceId: 0,
-              profileRev: 0,
-              messageEndSeq: 2,
-              unreadCount: 2,
-            }),
-          ],
-          scannedThrough: 1,
-          through: 1,
-          threadFeedEndId: 1,
-          hasMore: false,
-        },
-      }),
-      groupMetaRequest,
-      profileResolver,
-    );
+    const result = await syncThreadFeed(storage, 1, async () => ({
+      code: 0,
+      data: {
+        items: [
+          threadFeedSnapshot(7, {
+            profileAccount: 'peer',
+            publisherNamespaceId: 0,
+            profileRev: 0,
+            messageEndSeq: 2,
+            unreadCount: 2,
+          }),
+        ],
+        scannedThrough: 1,
+        through: 1,
+        threadFeedEndId: 1,
+        hasMore: false,
+      },
+    }));
     expect(result.cursor).toBe(1);
     expect(
       result.states[0].threadFeedId === null
@@ -430,7 +420,10 @@ describe('shared background storage', () => {
 
   it('serializes cursor consumption across two account database owners', async () => {
     await storage.openForUser(userId);
-    const background = new WebdbStorage(() => null, new SessionLifecycleService());
+    const background = new WebdbStorage(
+      () => null,
+      new SessionLifecycleService(),
+    );
     await background.openExistingForUser(userId);
     const previous = Object.getOwnPropertyDescriptor(navigator, 'locks');
     let tail: Promise<unknown> = Promise.resolve();
@@ -455,14 +448,8 @@ describe('shared background storage', () => {
     });
     try {
       await Promise.all([
-        syncThreadFeed(storage, 1, request, groupMetaRequest, profileResolver),
-        syncThreadFeed(
-          background,
-          1,
-          request,
-          groupMetaRequest,
-          profileResolver,
-        ),
+        syncThreadFeed(storage, 1, request),
+        syncThreadFeed(background, 1, request),
       ]);
       expect(request).toHaveBeenCalledOnce();
       expect(lock.mock.calls.map((call) => call[0])).toEqual([
@@ -487,25 +474,22 @@ describe('shared background storage', () => {
 
   it('closes the background handle when another context deletes the cache and rejects a late response', async () => {
     await storage.openForUser(userId);
-    const background = new WebdbStorage(() => null, new SessionLifecycleService());
+    const background = new WebdbStorage(
+      () => null,
+      new SessionLifecycleService(),
+    );
     await background.openExistingForUser(userId);
     let respond!: (value: unknown) => void;
     let started!: () => void;
     const requested = new Promise<void>((resolve) => {
       started = resolve;
     });
-    const sync = syncThreadFeed(
-      background,
-      1,
-      () => {
-        started();
-        return new Promise((resolve) => {
-          respond = resolve;
-        });
-      },
-      groupMetaRequest,
-      profileResolver,
-    );
+    const sync = syncThreadFeed(background, 1, () => {
+      started();
+      return new Promise((resolve) => {
+        respond = resolve;
+      });
+    });
     await requested;
     await storage.closeAndDelete(userId);
     expect(background.ready()).toBe(false);
@@ -575,7 +559,7 @@ describe('profile-namespace change feed consumption', () => {
       expired: true,
       changeSeq: 7,
       updateFeedId: 4,
-          status: 'ACTIVE',
+      status: 'ACTIVE',
     });
     // Feed pulled, cache not: the pair is a visible tomb.
     expect(rows[1]).toMatchObject({
@@ -683,7 +667,7 @@ describe('profile-namespace change feed consumption', () => {
       expired: true,
       changeSeq: 5,
       updateFeedId: 3,
-          status: 'ACTIVE',
+      status: 'ACTIVE',
     });
     // A converged answer at the same round clears the flag.
     await storage.commitProfileNamespaceBindings(
@@ -707,11 +691,11 @@ describe('profile-namespace change feed consumption', () => {
       domain: 'fresh.test',
       expired: false,
       updateFeedId: 6,
-          status: 'ACTIVE',
+      status: 'ACTIVE',
     });
   });
 
-  it('emits the expiry wake before a failing resolve, keeps the cursor, and does not re-emit on retry', async () => {
+  it('commits the cursor before wake and never waits for optional namespace resolution', async () => {
     await storage.openForUser(userId);
     const wakes: Array<
       Array<{ publisherNamespaceId: number; profileNamespaceId: number }>
@@ -746,24 +730,34 @@ describe('profile-namespace change feed consumption', () => {
           data: {
             status: 'READY',
             entry: {
-                publisherNamespaceId: 12,
-                profileNamespaceId: 0,
-                domain: 'peer.test',
-                rootPublicKey: 'r'.repeat(44),
-                updateFeedId: 4,
-          status: 'ACTIVE',
-                expired: false,
-              },
-
+              publisherNamespaceId: 12,
+              profileNamespaceId: 0,
+              domain: 'peer.test',
+              rootPublicKey: 'r'.repeat(44),
+              updateFeedId: 4,
+              status: 'ACTIVE',
+              expired: false,
+            },
           },
         }),
       } as unknown as Response;
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(storage.pullProfileNamespaceChanges()).rejects.toThrow();
-    // Wake① fired although the resolve round failed; the expiry is applied
-    // and consumers already learned it. The cursor did not move.
+    const cursorAtWake: unknown[] = [];
+    storage.profileNamespaceWake$.subscribe(() => {
+      cursorAtWake.push(
+        storage
+          .db()
+          .then((db) => db.get('syncState', 'profileNamespaceChangeEndId')),
+      );
+    });
+    await storage.pullProfileNamespaceChanges();
+    expect(await Promise.all(cursorAtWake)).toEqual([
+      { key: 'profileNamespaceChangeEndId', value: 3 },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Optional resolver errors cannot prevent fact progress.
     expect(wakes).toEqual([
       [{ publisherNamespaceId: 12, profileNamespaceId: 0 }],
     ]);
@@ -786,7 +780,7 @@ describe('profile-namespace change feed consumption', () => {
     vi.unstubAllGlobals();
   });
 
-  it('drains the change feed, resolves touched pairs, and advances the cursor', async () => {
+  it('drains the change feed without resolving touched pairs and advances the cursor', async () => {
     await storage.openForUser(userId);
     const pages = [
       {
@@ -852,30 +846,20 @@ describe('profile-namespace change feed consumption', () => {
     storage.profileNamespaceWake$.subscribe((pairs) => wakes.push(pairs));
 
     await storage.pullProfileNamespaceChanges(5);
-    expect(fetchMock).toHaveBeenCalledTimes(5); // 2 feed pages + 3 single-pair resolves
-    // Double wake per page: expiry committed (①) then fresh answers
-    // committed (②), each carrying that page's touched pairs.
+    expect(fetchMock).toHaveBeenCalledTimes(2); // feed pages only
+    // One wake per page, after expiry and cursor commit.
     expect(wakes).toEqual([
       [
         { publisherNamespaceId: 12, profileNamespaceId: 0 },
         { publisherNamespaceId: 15, profileNamespaceId: 2 },
       ],
-      [
-        { publisherNamespaceId: 12, profileNamespaceId: 0 },
-        { publisherNamespaceId: 15, profileNamespaceId: 2 },
-      ],
-      [{ publisherNamespaceId: 16, profileNamespaceId: 0 }],
       [{ publisherNamespaceId: 16, profileNamespaceId: 0 }],
     ]);
-    expect(resolveBodies).toEqual([
-      { publisherNamespaceId: 12, profileNamespaceId: 0 },
-      { publisherNamespaceId: 15, profileNamespaceId: 2 },
-      { publisherNamespaceId: 16, profileNamespaceId: 0 },
-    ]);
+    expect(resolveBodies).toEqual([]);
     const [converged] = await storage.getProfileNamespaceBindings([
       { publisherNamespaceId: 12, profileNamespaceId: 0 },
     ]);
-    expect(converged).toMatchObject({ domain: '12-0.test', expired: false });
+    expect(converged).toMatchObject({ domain: null, expired: true });
     // The skip fast path: an anchor equal to the persisted cursor makes no
     // network call at all.
     const calls = fetchMock.mock.calls.length;
@@ -883,6 +867,96 @@ describe('profile-namespace change feed consumption', () => {
     expect(fetchMock.mock.calls.length).toBe(calls);
     vi.unstubAllGlobals();
   });
+
+  it('finishes fact drain while wake-triggered optional resolution is stalled', async () => {
+    await storage.openForUser(userId);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          code: 0,
+          data: {
+            items: [
+              { publisherNamespaceId: 12, profileNamespaceId: 0, changeId: 3 },
+            ],
+            scannedThrough: 3,
+            endId: 3,
+            hasMore: false,
+          },
+        }),
+      })),
+    );
+    const resolve = vi
+      .spyOn(storage, 'resolveProfileNamespacePairs')
+      .mockImplementation(() => new Promise(() => {}));
+    const subscription = storage.profileNamespaceWake$.subscribe((pairs) => {
+      void storage.resolveProfileNamespacePairs(pairs, 3);
+    });
+    try {
+      await storage.pullProfileNamespaceChanges();
+      expect(resolve).toHaveBeenCalledTimes(1);
+      expect(
+        await (
+          await storage.db()
+        ).get('syncState', 'profileNamespaceChangeEndId'),
+      ).toMatchObject({ value: 3 });
+    } finally {
+      subscription.unsubscribe();
+      resolve.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([0, 50032])(
+    'rejects old-account namespace answers before binding/tomb commit (code %s)',
+    async (code) => {
+      await storage.openForUser(userId);
+      let release!: (response: Response) => void;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          () =>
+            new Promise<Response>((resolve) => {
+              release = resolve;
+            }),
+        ),
+      );
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const pair = { publisherNamespaceId: 12, profileNamespaceId: 0 };
+      const otherUser = `${userId}-other`;
+      try {
+        const resolution = storage.resolveProfileNamespacePairs([pair], 3);
+        await storage.closeAndDelete(userId);
+        await storage.openForUser(otherUser);
+        release({
+          ok: true,
+          json: async () => ({
+            code,
+            data: {
+              status: 'READY',
+              entry: {
+                ...pair,
+                domain: 'old-account.test',
+                rootPublicKey: null,
+                updateFeedId: 4,
+                expired: false,
+                status: 'ACTIVE',
+              },
+            },
+          }),
+        } as Response);
+        expect((await resolution).failed).toEqual([pair]);
+        const db = await storage.db();
+        expect(await db.get('profileNamespaces', [12, 0])).toBeUndefined();
+        expect(await db.get('profileNamespaceTombs', [12, 0])).toBeUndefined();
+      } finally {
+        await storage.closeAndDelete(otherUser);
+        warn.mockRestore();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it('writes a namespace tomb on FEDERATION_NAMESPACE_UNRECOVERABLE and does not mark pending', async () => {
     await storage.openForUser(userId);
@@ -895,7 +969,11 @@ describe('profile-namespace change feed consumption', () => {
             code: 0,
             data: {
               items: [
-                { publisherNamespaceId: 42, profileNamespaceId: 7, changeId: 1 },
+                {
+                  publisherNamespaceId: 42,
+                  profileNamespaceId: 7,
+                  changeId: 1,
+                },
               ],
               scannedThrough: 1,
               endId: 1,
@@ -914,11 +992,21 @@ describe('profile-namespace change feed consumption', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await storage.pullProfileNamespaceChanges();
+    const result = await storage.resolveProfileNamespacePairs(
+      [{ publisherNamespaceId: 42, profileNamespaceId: 7 }],
+      1,
+    );
+    expect(result.unrecoverable).toEqual([
+      { publisherNamespaceId: 42, profileNamespaceId: 7 },
+    ]);
+    expect(result.pending).toEqual([]);
 
     // A tomb row is persisted in the dedicated store.
-    const db = (await (storage as unknown as {
-      db: () => Promise<IDBDatabase>;
-    }).db());
+    const db = await (
+      storage as unknown as {
+        db: () => Promise<IDBDatabase>;
+      }
+    ).db();
     const tx = db.transaction(
       ['profileNamespaceTombs', 'profileNamespaces'],
       'readonly',
@@ -1010,15 +1098,14 @@ describe('profile-namespace pull single-flight', () => {
           data: {
             status: 'READY',
             entry: {
-                publisherNamespaceId: 12,
-                profileNamespaceId: 0,
-                domain: 'peer.test',
-                rootPublicKey: 'r'.repeat(44),
-                updateFeedId: 4,
-          status: 'ACTIVE',
-                expired: false,
-              },
-
+              publisherNamespaceId: 12,
+              profileNamespaceId: 0,
+              domain: 'peer.test',
+              rootPublicKey: 'r'.repeat(44),
+              updateFeedId: 4,
+              status: 'ACTIVE',
+              expired: false,
+            },
           },
         }),
       } as unknown as Response;
@@ -1037,7 +1124,7 @@ describe('profile-namespace pull single-flight', () => {
     // more feed fetch; the join never duplicated the drain.
     expect(feedCalls).toBe(2);
     expect(feedUrls[1]).toContain('after=1');
-    expect(resolveCalls.count).toBe(1);
+    expect(resolveCalls.count).toBe(0);
     // The cursor ended at 2: the fast path now skips with anchor 2.
     const before = fetchMock.mock.calls.length;
     await storage.pullProfileNamespaceChanges(2);

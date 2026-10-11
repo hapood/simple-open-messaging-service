@@ -8,6 +8,9 @@ import { WebsocketService } from './websocket.service';
 import { MessageRepository } from './message-repository.service';
 import { MemberProfileRepository } from './member-profile-store.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { createGroupConversation } from './model';
+import { threadFeedSnapshot } from './thread-feed.test-helper';
+import { ProfileRepository } from './profile-store.service';
 
 /**
  * The open-thread UI state is persisted fire-and-forget, so the account cache
@@ -54,7 +57,10 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
             disconnect: vi.fn(),
           },
         },
-        { provide: MessageRepository, useValue: { slotsChanged$: new Subject() } },
+        {
+          provide: MessageRepository,
+          useValue: { slotsChanged$: new Subject() },
+        },
         {
           provide: MemberProfileRepository,
           useValue: { notifyChanged: vi.fn() },
@@ -83,6 +89,196 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     const repo = TestBed.inject(ThreadRepository);
     await expect(repo.setOpenThread(7)).resolves.toBeUndefined();
     expect(drainThreadMisc).toHaveBeenCalledWith(7, '0', 0);
+  });
+
+  it('updates an existing conversation role in both directions from committed feed snapshots', async () => {
+    const webdb = TestBed.inject(WebdbService);
+    const user = TestBed.inject(UserService);
+    user.sessionUserId.set(1);
+    Object.assign(user, { sessionProfile: signal(null) });
+    const group = createGroupConversation(
+      9,
+      {
+        id: 9,
+        account: 'room',
+        name: 'Room',
+        namespaceId: 0,
+      },
+      { role: 'MEMBER', threadFeedId: 1 },
+    );
+    Object.assign(webdb, {
+      getThreads: vi.fn().mockResolvedValue([group]),
+      putThread: vi.fn().mockResolvedValue(undefined),
+      projectThreadAttention: vi.fn().mockResolvedValue(null),
+    });
+    Object.assign(TestBed.inject(MessageRepository), {
+      applyThreadContentHead: vi.fn(),
+    });
+    const repo = TestBed.inject(ThreadRepository);
+    TestBed.tick();
+    const committed = webdb.threadFeedCommitted$ as Subject<{
+      userId: number;
+      states: Array<
+        ReturnType<typeof threadFeedSnapshot> & { localReadSeq: number }
+      >;
+    }>;
+    for (const [threadFeedId, role] of [
+      [2, 'ADMIN'],
+      [3, 'MEMBER'],
+    ] as const) {
+      committed.next({
+        userId: 1,
+        states: [
+          {
+            ...threadFeedSnapshot(9, {
+              type: 'GROUP',
+              publisherNamespaceId: 0,
+              profileAccount: 'room',
+              profileRev: 0,
+              threadFeedId,
+              role,
+            }),
+            localReadSeq: 0,
+          },
+        ],
+      });
+      await vi.waitFor(() =>
+        expect(repo.items().find((item) => item.threadId === 9)?.role).toBe(
+          role,
+        ),
+      );
+    }
+  });
+
+  it('lands warmed cross-namespace member profiles at the roster key once', async () => {
+    const webdb = TestBed.inject(WebdbService);
+    const user = TestBed.inject(UserService);
+    user.sessionUserId.set(1);
+    Object.assign(user, { sessionProfile: signal(null) });
+    const group = createGroupConversation(
+      9,
+      { id: 9, account: 'room', name: 'Room', namespaceId: 0 },
+      { role: 'MEMBER', threadFeedId: 1 },
+    );
+    const reference = {
+      type: 'GROUP_MEMBER',
+      threadId: 9,
+      account: 'charlie',
+      domain: 'bravo.test',
+      namespaceId: 1,
+      rev: 1,
+    } as const;
+    const resolveProfileDemand = vi.fn().mockResolvedValue({
+      status: 'READY',
+      profile: {
+        publisherNamespaceId: 0,
+        profileNamespaceId: 1,
+        account: 'charlie',
+        profileRev: 1,
+        name: 'Charlie Bravo',
+        bio: 'bio',
+        avatarDigest: null,
+      },
+    });
+    const commitResolvedGroupMetaProfile = vi.fn().mockResolvedValue(true);
+    let discovered: unknown[] = [reference];
+    Object.assign(webdb, {
+      getThreads: vi.fn().mockResolvedValue([group]),
+      putThread: vi.fn().mockResolvedValue(undefined),
+      projectThreadAttention: vi.fn().mockResolvedValue(null),
+      resolveProfileDemand,
+      commitResolvedGroupMetaProfile,
+      getUnresolvedGroupMetaProfiles: vi
+        .fn()
+        .mockImplementation(() => Promise.resolve(discovered)),
+    });
+    Object.assign(TestBed.inject(MessageRepository), {
+      applyThreadContentHead: vi.fn(),
+    });
+    const repo = TestBed.inject(ThreadRepository);
+    TestBed.tick();
+    const committed = webdb.threadFeedCommitted$ as Subject<{
+      userId: number;
+      states: Array<
+        ReturnType<typeof threadFeedSnapshot> & { localReadSeq: number }
+      >;
+    }>;
+    committed.next({
+      userId: 1,
+      states: [
+        {
+          ...threadFeedSnapshot(9, {
+            type: 'GROUP',
+            publisherNamespaceId: 0,
+            profileAccount: 'room',
+            profileRev: 0,
+            threadFeedId: 2,
+            role: 'MEMBER',
+          }),
+          localReadSeq: 0,
+        },
+      ],
+    });
+    await vi.waitFor(() =>
+      expect(repo.items().some((item) => item.threadId === 9)).toBe(true),
+    );
+    const meta = webdb.groupMetaCommitted$ as Subject<{
+      userId: number;
+      threadIds: number[];
+      patches: Array<{
+        threadId: number;
+        groupMetaFeedId: string;
+        memberCount: number;
+        announcement: null;
+        groupMetaRecoveryThrough: null;
+      }>;
+    }>;
+    const metaEvent = {
+      userId: 1,
+      threadIds: [9],
+      patches: [
+        {
+          threadId: 9,
+          groupMetaFeedId: '24',
+          memberCount: 3,
+          announcement: null,
+          groupMetaRecoveryThrough: null,
+        },
+      ],
+    };
+    meta.next(metaEvent);
+    await vi.waitFor(() =>
+      expect(commitResolvedGroupMetaProfile).toHaveBeenCalledTimes(1),
+    );
+    expect(commitResolvedGroupMetaProfile).toHaveBeenCalledWith(
+      reference,
+      expect.objectContaining({
+        namespaceId: 1,
+        account: 'charlie',
+        domain: 'bravo.test',
+        rev: 1,
+        name: 'Charlie Bravo',
+        avatarBase64: null,
+      }),
+    );
+    expect(resolveProfileDemand).toHaveBeenCalledTimes(1);
+    expect(resolveProfileDemand.mock.calls[0][0]).toMatchObject({
+      publisherNamespaceId: 0,
+      lookup: 'GROUP_MEMBER_PROFILE',
+      groupAccount: 'room',
+      target: { profileNamespaceId: 1, account: 'charlie', rev: 1 },
+    });
+    // Once the reference converges, repeat commits must not re-issue work.
+    discovered = [];
+    meta.next(metaEvent);
+    await vi.waitFor(() =>
+      expect(
+        (webdb.getUnresolvedGroupMetaProfiles as ReturnType<typeof vi.fn>)
+          .mock.calls.length,
+      ).toBeGreaterThanOrEqual(2),
+    );
+    expect(resolveProfileDemand).toHaveBeenCalledTimes(1);
+    expect(commitResolvedGroupMetaProfile).toHaveBeenCalledTimes(1);
   });
 
   it('propagates storage failures that are not cache teardown', async () => {

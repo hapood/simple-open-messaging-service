@@ -34,8 +34,6 @@ export async function syncThreadFeed(
     take: number;
     previewCount: number;
   }) => Promise<unknown>,
-  _requestGroupMeta?: unknown,
-  _resolveGroupMetaProfile?: unknown,
 ): Promise<ThreadFeedSyncResult> {
   const run = () => syncThreadFeedUnlocked(storage, target, request);
   return storage.withThreadFeedLock ? storage.withThreadFeedLock(run) : run();
@@ -45,8 +43,6 @@ async function syncThreadFeedUnlocked(
   storage: ThreadFeedSyncStorage,
   target: number,
   request: Parameters<typeof syncThreadFeed>[2],
-  _requestGroupMeta?: unknown,
-  _resolveGroupMetaProfile?: unknown,
 ): Promise<ThreadFeedSyncResult> {
   const initial = (await storage.getSyncState('threadFeedCursor')) ?? 0;
   if (

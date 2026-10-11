@@ -172,7 +172,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       id: 80,
       account: 'group-80',
       name: 'Group 80',
-      domain: 'chat.example.test',
       namespaceId: 0,
     });
     fixture.componentRef.setInput('userMsgTrd', chat);
@@ -189,7 +188,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
         id: 80,
         account: 'group-80',
         name: 'Group 80',
-        domain: 'chat.example.test',
         namespaceId: 0,
       },
       { role: 'ADMIN' },
@@ -205,7 +203,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       id: 80,
       account: 'group-80',
       name: 'Group 80',
-      domain: 'chat.example.test',
       namespaceId: 0,
     });
     const chat = {
@@ -227,7 +224,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       id: 80,
       account: 'group-80',
       name: 'Group 80',
-      domain: 'chat.example.test',
       namespaceId: 0,
     });
     const chat = {

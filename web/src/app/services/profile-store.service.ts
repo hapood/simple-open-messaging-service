@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Observable, ReplaySubject } from 'rxjs';
+import { Observable, ReplaySubject, take, timeout } from 'rxjs';
 import type {
   ProfileDemand,
   UnevidencedProfileDemand,
@@ -94,6 +94,22 @@ export class ProfileRepository {
     return 'demand' in demand
       ? this.startResolution(demand.demand, true)
       : this.startResolution(demand, false);
+  }
+
+  /** Optional warming uses the same demand deduplication and READY cache as
+   * rendering. PENDING work stays subscribed for a bounded wake window; errors
+   * never escape into the caller's fact-processing flow. `onReady` observes
+   * the resolved profile without opening a second demand round. */
+  prefetch(
+    demand: ProfileDemand | UnevidencedProfileDemand,
+    onReady?: (profile: ResolvedProfile) => void,
+  ): void {
+    this.resolve(demand)
+      .pipe(take(1), timeout(PENDING_TTL_MS))
+      .subscribe({
+        next: onReady,
+        error: (error) => console.warn('[profile] prefetch failed', error),
+      });
   }
 
   private startResolution(
@@ -225,6 +241,9 @@ export class ProfileRepository {
     snapshot: ProfileSnapshot,
   ): Promise<void> {
     const profile = await this.readResolvedProfile(snapshot);
+    // An avatar read can outlive its subscription or account session. Check
+    // ownership before populating either shared cache, not only before delivery.
+    if (this.resolutions.get(entry.demandKey) !== entry) return;
     const key = profileKey({
       publisherNamespaceId: snapshot.publisherNamespaceId,
       profileNamespaceId: profile.namespaceId,
