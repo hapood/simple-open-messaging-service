@@ -10,6 +10,6 @@ export abstract class NotificationAdapter {
   /** Dismiss a card for the chat now open in the foreground, without removing other chats' cards. */
   abstract clearThread(threadId: number): Promise<void>;
 
-  /** Dismiss all cards on account invalidation or service teardown. */
+  /** Dismiss all cards on explicit session invalidation, never on app exit. */
   abstract clear(): Promise<void>;
 }

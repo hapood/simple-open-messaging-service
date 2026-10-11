@@ -480,6 +480,9 @@ export class AuthService {
             );
             await resetNotificationSince();
           }
+          await clearSessionNotifications().catch((error) =>
+            console.warn('[notification] logout cleanup failed', error),
+          );
         },
       );
     } catch (error) {

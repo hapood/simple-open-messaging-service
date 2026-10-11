@@ -14,6 +14,7 @@ import {
 
 describe('Push Service Worker entry', () => {
   const userId = 9407;
+  const sessionId = 72;
   const preferences = new PreferenceStorage();
   let storage: WebdbStorage;
   let handlers: Map<string, (event: unknown) => void>;
@@ -30,6 +31,7 @@ describe('Push Service Worker entry', () => {
     await storage.openForUser(String(userId));
     await storage.putMeta('selfProfile', { id: userId, account: 'me' });
     await preferences.set('device', 'soms.lastUserId', userId);
+    await preferences.set('device', 'push-registration:/api/v1', { sessionId, phase: 'prepared' });
     handlers = new Map();
     show = vi.fn().mockResolvedValue(undefined);
     focus = vi.fn().mockResolvedValue(undefined);
@@ -178,7 +180,7 @@ describe('Push Service Worker entry', () => {
     ).toBe(3);
     expect(show).toHaveBeenCalledWith(
       'peer@test',
-      expect.objectContaining({ body: 'Hello', data: { threadId: 7, seq: 1 } }),
+      expect.objectContaining({ body: 'Hello', data: { threadId: 7, seq: 1, sessionId } }),
     );
     expect(await storage.getSyncState('threadFeedCursor')).toBe(1);
     expect(post).toHaveBeenCalledWith({
@@ -393,14 +395,40 @@ describe('Push Service Worker entry', () => {
     expect(show).not.toHaveBeenCalled();
     expect(await readNotificationSince()).toBe(0);
   });
+  it('carries the required notification session to an existing page', async () => {
+    await dispatch('notificationclick', {
+      notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
+    });
+    expect(post).toHaveBeenCalledWith({ type: SOMS_NOTIF_MSG.OPEN, threadId: 7, sessionId });
+  });
+
+  it('does not navigate a notification belonging to a previous session on the same account', async () => {
+    await dispatch('notificationclick', {
+      notification: { data: { threadId: 7, sessionId: sessionId + 1 }, close: vi.fn() },
+    });
+    expect(post).not.toHaveBeenCalled();
+    expect(openWindow).not.toHaveBeenCalled();
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  it('rejects legacy thread/account receipts and absent registration metadata', async () => {
+    for (const data of [{ threadId: 7 }, { threadId: 7, userId }, { threadId: 7, sessionId: 0 }]) {
+      await dispatch('notificationclick', { notification: { data, close: vi.fn() } });
+    }
+    await preferences.remove('device', 'push-registration:/api/v1');
+    await dispatch('notificationclick', { notification: { data: { threadId: 7, sessionId }, close: vi.fn() } });
+    expect(post).not.toHaveBeenCalled(); expect(openWindow).not.toHaveBeenCalled();
+  });
+
   it('routes a body tap without an action request', async () => {
     const close = vi.fn();
     await dispatch('notificationclick', {
-      notification: { data: { threadId: 7 }, close },
+      notification: { data: { threadId: 7, sessionId }, close },
     });
     expect(post).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.OPEN,
       threadId: 7,
+      sessionId,
     });
     expect(focus).toHaveBeenCalled();
     expect(openWindow).not.toHaveBeenCalled();
@@ -443,12 +471,13 @@ describe('Push Service Worker entry', () => {
     installPushWorker(scope);
 
     await dispatch('notificationclick', {
-      notification: { data: { threadId: 7 }, close: vi.fn() },
+      notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
     });
 
     expect(post).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.OPEN,
       threadId: 7,
+      sessionId,
     });
     expect(focus).toHaveBeenCalled();
     expect(openWindow).not.toHaveBeenCalled();
@@ -507,7 +536,7 @@ describe('Push Service Worker entry', () => {
     installPushWorker(scope);
 
     await dispatch('notificationclick', {
-      notification: { data: { threadId: 7 }, close: vi.fn() },
+      notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
     });
 
     expect(adminPost).not.toHaveBeenCalled();
@@ -515,6 +544,7 @@ describe('Push Service Worker entry', () => {
     expect(chatPost).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.OPEN,
       threadId: 7,
+      sessionId,
     });
     expect(chatFocus).toHaveBeenCalled();
     expect(openWindow).not.toHaveBeenCalled();
@@ -549,10 +579,10 @@ describe('Push Service Worker entry', () => {
     installPushWorker(scope);
 
     await dispatch('notificationclick', {
-      notification: { data: { threadId: 7 }, close: vi.fn() },
+      notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
     });
 
-    expect(openWindow).toHaveBeenCalledWith('/chat/7');
+    expect(openWindow).toHaveBeenCalledWith('/chat/7?notificationSessionId=' + sessionId);
     expect(adminPost).not.toHaveBeenCalled();
     expect(adminFocus).not.toHaveBeenCalled();
   });

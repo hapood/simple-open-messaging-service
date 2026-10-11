@@ -10,7 +10,11 @@ import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { WebdbService } from './webdb.service';
 import { ProfileNamespaceRepository } from './profile-namespace-store.service';
+import { UserService } from './user.service';
+import { apiOrigin } from './runtime';
+import { BrowserNotificationAdapter } from './browser-notification.adapter';
 import { WebPushService } from './web-push.service';
+import { ThreadNavigationIntentService } from './thread-navigation-intent.service';
 import type {
   BrowserNotificationBatch,
   NotificationDescriptor,
@@ -19,6 +23,7 @@ import type {
 import 'fake-indexeddb/auto';
 
 describe('UnreadAttentionService browser worker bridge', () => {
+  const offer = vi.fn();
   const openChat = vi.fn();
   const setTopSection = vi.fn();
   const postMessage = vi.fn();
@@ -30,6 +35,8 @@ describe('UnreadAttentionService browser worker bridge', () => {
   let updates: Subject<unknown[]>;
 
   beforeEach(() => {
+    apiOrigin.set('https://primary');
+    offer.mockClear();
     openChat.mockClear();
     setTopSection.mockClear();
     postMessage.mockClear();
@@ -42,6 +49,11 @@ describe('UnreadAttentionService browser worker bridge', () => {
       providers: [
         provideZonelessChangeDetection(),
         UnreadAttentionService,
+        {
+          provide: UserService,
+          useValue: { sessionUserId: signal(11), sessionId: signal(11) },
+        },
+        { provide: ThreadNavigationIntentService, useValue: { offer } },
         {
           provide: WebdbService,
           useValue: { browserNotifications$: browserNotifications },
@@ -85,16 +97,111 @@ describe('UnreadAttentionService browser worker bridge', () => {
   afterEach(() => {
     TestBed.resetTestingModule();
     vi.restoreAllMocks();
+    apiOrigin.set('');
+    delete window.__TAURI_INTERNALS__;
+    delete window.__TAURI__;
   });
 
-  it('routes a notification tap to the existing chat shell', () => {
+  it('preserves system notifications when the app renderer is destroyed', () => {
+    const clear = vi
+      .spyOn(BrowserNotificationAdapter.prototype, 'clear')
+      .mockResolvedValue();
+    TestBed.resetTestingModule();
+    expect(clear).not.toHaveBeenCalled();
+  });
+
+  it('clears notifications on explicit session invalidation, not again on renderer exit', () => {
+    const clear = vi
+      .spyOn(BrowserNotificationAdapter.prototype, 'clear')
+      .mockResolvedValue();
+    TestBed.inject(SessionLifecycleService).invalidateSession();
+    expect(clear).toHaveBeenCalledTimes(1);
+    TestBed.resetTestingModule();
+    expect(clear).toHaveBeenCalledTimes(1);
+  });
+
+  it('submits a notification tap to the shared coordinator rather than opening raw navigation', () => {
     navigator.serviceWorker.dispatchEvent(
       new MessageEvent('message', {
-        data: { type: SOMS_NOTIF_MSG.OPEN, threadId: 42 },
+        data: { type: SOMS_NOTIF_MSG.OPEN, threadId: 42, sessionId: 11 },
       }),
     );
-    expect(setTopSection).toHaveBeenCalledWith('chats');
-    expect(openChat).toHaveBeenCalledWith(42);
+    expect(offer).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'web', threadId: 42, sessionId: 11 }),
+    );
+    expect(setTopSection).not.toHaveBeenCalled();
+    expect(openChat).not.toHaveBeenCalled();
+  });
+
+  it('offers exact desktop session scope and rejects unscoped receipts', async () => {
+    let pending: unknown = {
+      id: 'tap-1',
+      threadId: 7,
+      sessionId: 11,
+      origin: 'https://primary',
+    };
+    let wake!: () => void;
+    const invoke = vi.fn(async (command: string) =>
+      command === 'desktop_notification_pending' ? pending : undefined,
+    );
+    window.__TAURI_INTERNALS__ = {};
+    window.__TAURI__ = {
+      core: { invoke },
+      event: {
+        emit: vi.fn(),
+        listen: vi.fn(async (_event, handler) => {
+          wake = () => handler({ payload: undefined });
+          return vi.fn();
+        }),
+      },
+    };
+    TestBed.runInInjectionContext(() => new UnreadAttentionService());
+    await vi.waitFor(() =>
+      expect(offer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'desktop',
+          id: 'tap-1',
+          threadId: 7,
+          sessionId: 11,
+        }),
+        expect.any(Number),
+      ),
+    );
+    const intent = offer.mock.calls[0][0];
+    expect(invoke).not.toHaveBeenCalledWith(
+      'desktop_notification_acknowledge',
+      expect.anything(),
+    );
+    pending = {
+      id: 'tap-2',
+      threadId: 7,
+      sessionId: 12,
+      origin: 'https://primary',
+    };
+    await intent.acknowledge();
+    expect(invoke).toHaveBeenCalledWith('desktop_notification_acknowledge', {
+      id: 'tap-1',
+      threadId: 7,
+      sessionId: 11,
+      origin: 'https://primary',
+    });
+    offer.mockClear();
+    for (const value of [
+      '7',
+      { id: 'legacy', threadId: 7 },
+      { id: 'bad', threadId: 7, sessionId: 0 },
+      {
+        id: 'wrong-origin',
+        threadId: 7,
+        sessionId: 11,
+        origin: 'https://other',
+      },
+    ]) {
+      pending = value;
+      wake();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(offer).not.toHaveBeenCalled();
   });
 
   it('answers the worker with the active chat', async () => {

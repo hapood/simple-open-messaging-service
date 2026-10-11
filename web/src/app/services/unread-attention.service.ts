@@ -12,7 +12,13 @@ import { firstValueFrom } from 'rxjs';
 import { ProfileNamespaceRepository } from './profile-namespace-store.service';
 import { namespaceDisplayDomain } from './profile-namespace-domain';
 import { ConversationListService } from './conversation-list.service';
-import { isAndroidNative, isTauri, listenEvent, tauriInvoke } from './runtime';
+import {
+  apiOrigin,
+  isAndroidNative,
+  isTauri,
+  listenEvent,
+  tauriInvoke,
+} from './runtime';
 import { NotificationPrefsService } from './notification-prefs.service';
 import { NotificationAdapter } from './notification-adapter';
 import { BrowserNotificationAdapter } from './browser-notification.adapter';
@@ -26,6 +32,8 @@ import {
 } from './thread-notification';
 import { WebdbService } from './webdb.service';
 import { WebPushService } from './web-push.service';
+import { ThreadNavigationIntentService } from './thread-navigation-intent.service';
+import { uuid } from '../lib/uuid';
 
 /** Browser: bridge worker-projected updates to the push service worker, and answer active-chat
  * queries. Android sends only the selected chat to native; Rust projects its notifications. */
@@ -34,6 +42,7 @@ export class UnreadAttentionService {
   private readonly convList = inject(ConversationListService);
   private readonly prefs = inject(NotificationPrefsService);
   private readonly nav = inject(NavStateMachineService);
+  private readonly navigation = inject(ThreadNavigationIntentService);
   private readonly lifecycle = inject(SessionLifecycleService);
   private readonly i18n = inject(TranslocoService);
   private readonly destroyRef = inject(DestroyRef);
@@ -51,7 +60,7 @@ export class UnreadAttentionService {
   private desktopSince = 0;
   private navigationQueue: Promise<void> = Promise.resolve();
   private readonly adapter!: BrowserNotificationAdapter | NotificationAdapter;
-  private readonly nativeAdapter?: NotificationAdapter;
+  private readonly nativeAdapter?: TauriNotificationAdapter;
 
   constructor() {
     if (typeof document === 'undefined') return;
@@ -86,7 +95,10 @@ export class UnreadAttentionService {
       window.removeEventListener('focus', focus);
       document.removeEventListener('visibilitychange', visibility);
       navigator.serviceWorker?.removeEventListener('message', message);
-      this.dismissActive();
+      // Closing the app is not logout. Stop pending page work, but leave
+      // system notifications and their activation receipts available.
+      this.generation++;
+      this.nativeAdapter?.dispose();
     });
     effect(() => {
       const threadId =
@@ -153,11 +165,36 @@ export class UnreadAttentionService {
         .then(async () => {
           if (destroyed || !this.lifecycle.isCurrent(epoch)) return;
           const tap = await tauriInvoke<{
+            id: string;
             threadId: number;
+            sessionId: number;
+            origin: string;
           } | null>('desktop_notification_pending');
-          if (!tap || destroyed || !this.lifecycle.isCurrent(epoch)) return;
-          this.openNotificationChat(tap.threadId);
-          await tauriInvoke<void>('desktop_notification_acknowledge', tap);
+          if (
+            !tap ||
+            destroyed ||
+            !this.lifecycle.isCurrent(epoch) ||
+            typeof tap.id !== 'string' ||
+            !tap.id.trim() ||
+            !Number.isSafeInteger(tap.threadId) ||
+            tap.threadId <= 0 ||
+            !Number.isSafeInteger(tap.sessionId) ||
+            tap.sessionId <= 0 ||
+            !tap.origin ||
+            tap.origin !== apiOrigin()
+          )
+            return;
+          this.navigation.offer(
+            {
+              source: 'desktop',
+              id: tap.id,
+              threadId: tap.threadId,
+              sessionId: tap.sessionId,
+              acknowledge: () =>
+                tauriInvoke<void>('desktop_notification_acknowledge', tap),
+            },
+            epoch,
+          );
         })
         .catch((error) =>
           console.warn('[notification] desktop navigation failed', error),
@@ -214,13 +251,13 @@ export class UnreadAttentionService {
       typeof data.threadId === 'number'
     ) {
       window.focus();
-      this.openNotificationChat(data.threadId);
+      this.navigation.offer({
+        source: 'web',
+        id: uuid(),
+        threadId: data.threadId,
+        sessionId: data.sessionId,
+      });
     }
-  }
-
-  private openNotificationChat(threadId: number): void {
-    this.nav.setTopSection('chats');
-    this.nav.openChat(threadId);
   }
 
   private async present(
@@ -248,13 +285,18 @@ export class UnreadAttentionService {
           this.nav.chatThreadId() === activeChat
         )
           continue;
-        const subject = update.item.type === 'GROUP'
-          ? update.item.group : update.item.peerUser;
-        const binding = await firstValueFrom(this.namespaces.resolve({
-          publisherNamespaceId: 0,
-          profileNamespaceId: subject.namespaceId,
-        }));
-        if (generation !== this.generation || !this.lifecycle.isCurrent(epoch)) break;
+        const subject =
+          update.item.type === 'GROUP'
+            ? update.item.group
+            : update.item.peerUser;
+        const binding = await firstValueFrom(
+          this.namespaces.resolve({
+            publisherNamespaceId: 0,
+            profileNamespaceId: subject.namespaceId,
+          }),
+        );
+        if (generation !== this.generation || !this.lifecycle.isCurrent(epoch))
+          break;
         const descriptor = threadNotificationDescriptor(
           update,
           this.prefs.previewMode(),

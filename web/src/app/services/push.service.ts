@@ -1,7 +1,6 @@
-import { Injectable, inject, isDevMode } from '@angular/core';
-import { isAndroidNative, isTauri } from './runtime';
-import { NavStateMachineService } from './nav-state.service';
-import { consumePendingThreadNavigation } from './pending-thread-navigation';
+import { Injectable, Injector, inject, isDevMode } from '@angular/core';
+import { apiOrigin, isAndroidNative, isTauri } from './runtime';
+import { ThreadNavigationIntentService } from './thread-navigation-intent.service';
 import {
   PushRegistrationService,
   type PushRegistration,
@@ -21,7 +20,10 @@ export type FirebaseClientConfigPayload = {
 
 @Injectable({ providedIn: 'root' })
 export class PushService {
-  private readonly nav = inject(NavStateMachineService);
+  // AuthService creates this adapter during session bootstrap. Resolve the
+  // navigation coordinator only when the root installs tap handling, after
+  // authentication initialization, so it cannot eagerly create the chat data layer.
+  private readonly injector = inject(Injector);
   private readonly registration = inject(PushRegistrationService);
 
   /** One-shot guard so the POST_NOTIFICATIONS prompt is asked at most once. Seeded from the persisted
@@ -169,9 +171,21 @@ export class PushService {
   /** Open the tapped thread via the nav state machine (the URL mirror updates `/chat/:id`; ChatPane renders
    *  from ConversationListService.openThreadId which the home shell syncs from the state machine). */
   private openPendingThread() {
-    consumePendingThreadNavigation(window.SomsFcm, (threadId) => {
-      this.nav.setTopSection('chats');
-      this.nav.openChat(threadId);
-    });
+    const bridge = window.SomsFcm;
+    const pending = bridge?.getPendingThreadId();
+    if (!pending) return;
+    try {
+      const tap = JSON.parse(pending) as { id: string; threadId: number; sessionId: number; origin: string } | null;
+      if (!tap || typeof tap.id !== 'string' || !tap.id.trim() ||
+          !Number.isSafeInteger(tap.threadId) || tap.threadId <= 0 ||
+          !Number.isSafeInteger(tap.sessionId) || tap.sessionId <= 0 ||
+          !tap.origin || tap.origin !== apiOrigin()) return;
+      this.injector.get(ThreadNavigationIntentService).offer({
+        source: 'android', id: tap.id, threadId: tap.threadId, sessionId: tap.sessionId,
+        acknowledge: () => bridge!.acknowledgeThreadId(pending),
+      });
+    } catch {
+      // Malformed/old bridge payloads must not become unfenced raw navigation.
+    }
   }
 }

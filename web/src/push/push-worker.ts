@@ -68,6 +68,8 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
             !Array.isArray(data.entries)
           )
             return;
+          const postingSessionId = await sessionId();
+          if (postingSessionId === null) return;
           const since = await readNotificationSince();
           const pages = await scope.clients.matchAll({
             type: 'window',
@@ -76,7 +78,7 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
           const { known, threadId: activeChat } = await visibleChat(pages);
           let end = since;
           for (const entry of data.entries) {
-            if (data.userId !== (await accountId())) return;
+            if (data.userId !== (await accountId()) || postingSessionId !== await sessionId()) return;
             if (
               !Number.isInteger(entry.feedId) ||
               entry.feedId <= since ||
@@ -96,14 +98,14 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                 {
                   body: entry.descriptor.body,
                   tag: entry.descriptor.tag,
-                  data: entry.descriptor.data,
+                  data: { ...entry.descriptor.data, sessionId: postingSessionId },
                   icon: entry.descriptor.icon ?? undefined,
                   lang: entry.descriptor.lang,
                   silent: entry.descriptor.silent,
                   renotify: entry.descriptor.renotify,
                 } as NotificationOptions & { renotify: boolean },
               );
-              if (data.userId !== (await accountId())) {
+              if (data.userId !== (await accountId()) || postingSessionId !== await sessionId()) {
                 await closeCard(entry.descriptor.tag);
                 return;
               }
@@ -133,6 +135,15 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
   async function accountId(): Promise<number | null> {
     const value = await preferences.get<number>('device', 'soms.lastUserId');
     return Number.isInteger(value) && Number(value) > 0 ? Number(value) : null;
+  }
+
+  // Registration recovery already durably records the HELLO session in the shared device store.
+  async function sessionId(): Promise<number | null> {
+    const saved = await preferences.get<{ sessionId: number; phase: string }>(
+      'device', `push-registration:${API_PREFIX}`,
+    );
+    const id = saved?.sessionId;
+    return saved?.phase === 'prepared' && Number.isInteger(id) && Number(id) > 0 && Number(id) <= 2147483647 ? Number(id) : null;
   }
 
   async function closeCard(tag: string): Promise<void> {
@@ -204,12 +215,13 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
           'soms-notification-projection',
           async () => {
             const userId = await accountId();
-            if (userId === null) return;
+            const postingSessionId = await sessionId();
+            if (userId === null || postingSessionId === null) return;
             const storage = new WebdbStorage();
             try {
               await storage.openExistingForUser(String(userId));
               const current = async () =>
-                (await accountId()) === userId && storage.ready();
+                (await accountId()) === userId && (await sessionId()) === postingSessionId && storage.ready();
               if (!(await current())) return;
               const language =
                 (await preferences.get<string>('global', 'language')) ??
@@ -257,7 +269,7 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                   const options: NotificationOptions & { renotify: boolean } = {
                     body: descriptor.body,
                     tag: descriptor.tag,
-                    data: descriptor.data,
+                    data: { ...descriptor.data, sessionId: postingSessionId },
                     icon: descriptor.icon ?? undefined,
                     lang: descriptor.lang,
                     silent: descriptor.silent,
@@ -296,10 +308,12 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
 
   scope.addEventListener('notificationclick', (event) => {
     const threadId = event.notification.data?.threadId;
+    const tapSessionId = event.notification.data?.sessionId;
     event.notification.close();
     event.waitUntil(
       (async () => {
-        if (!Number.isInteger(threadId) || threadId <= 0) return;
+        if (!Number.isInteger(threadId) || threadId <= 0 || threadId > 2147483647) return;
+        if (!Number.isInteger(tapSessionId) || tapSessionId <= 0 || tapSessionId > 2147483647 || tapSessionId !== await sessionId()) return;
         const activeId = scope.navigator.locks
           ? await activePageClientId(scope.navigator.locks)
           : undefined;
@@ -322,6 +336,7 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
             (candidate) => candidate.visibilityState === 'visible',
           ) ??
           appWindows[0];
+        if (tapSessionId !== await sessionId()) return;
         if (page) {
           if (!activePage)
             console.warn(
@@ -335,11 +350,14 @@ export function installPushWorker(scope: ServiceWorkerGlobalScope): void {
                 })),
               },
             );
-          page.postMessage({ type: SOMS_NOTIF_MSG.OPEN, threadId });
+          page.postMessage({
+            type: SOMS_NOTIF_MSG.OPEN, threadId,
+            sessionId: tapSessionId,
+          });
           await page.focus();
           return;
         }
-        await scope.clients.openWindow('/chat/' + threadId);
+        await scope.clients.openWindow('/chat/' + threadId + '?notificationSessionId=' + tapSessionId);
       })(),
     );
   });

@@ -241,9 +241,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         password: 'pw',
       }),
     );
-    (
-      await loginRequest()
-    ).flush({ code: 0, message: 'ok', data: { session_token: token } });
+    (await loginRequest()).flush({
+      code: 0,
+      message: 'ok',
+      data: { session_token: token },
+    });
     await done;
   }
 
@@ -302,9 +304,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
           password: 'pw',
         }),
       );
-      (
-        await loginRequest()
-      ).flush({ code: 0, message: 'ok', data: { session_token: 'st-keep' } });
+      (await loginRequest()).flush({
+        code: 0,
+        message: 'ok',
+        data: { session_token: 'st-keep' },
+      });
       await done;
       expect(svc.loggedIn()).toBe(true);
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
@@ -335,11 +339,19 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     it('logout detaches the native token with begin_logout and does not issue a JS HTTP revoke', async () => {
       desktopGlobals();
       await passwordLogin('st-logout');
+      invokeSpy.mockClear();
 
       // logout() emits only after clearSession resolves; its tap (native teardown) has then run.
       await firstValueFrom(svc.logout());
 
       expect(svc.loggedIn()).toBe(false);
+      expect(invokeSpy).toHaveBeenCalledWith('desktop_notifications_clear', {
+        resetNavigation: true,
+      });
+      const commands = invokeSpy.mock.calls.map(([command]) => command);
+      expect(commands.indexOf('desktop_notifications_clear')).toBeLessThan(
+        commands.indexOf('begin_logout'),
+      );
       expect(invokeSpy).toHaveBeenCalledWith('begin_logout', {
         origin: '',
       });
@@ -356,9 +368,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
           password: 'pw',
         }),
       );
-      (
-        await loginRequest()
-      ).flush({ code: 0, message: 'ok', data: { session_token: 'st-keep' } });
+      (await loginRequest()).flush({
+        code: 0,
+        message: 'ok',
+        data: { session_token: 'st-keep' },
+      });
       // The rejecting keyring write is caught inside activateSession (warn → toast), so login
       // still emits — `done` covers the whole failure-handling path too.
       await done;

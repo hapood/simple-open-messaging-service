@@ -7,7 +7,7 @@ export const SOMS_NOTIF_MSG = {
 } as const;
 
 export type SwNotifMessage =
-  | { type: typeof SOMS_NOTIF_MSG.OPEN; threadId: number }
+  | { type: typeof SOMS_NOTIF_MSG.OPEN; threadId: number; sessionId: number }
   | { type: typeof SOMS_NOTIF_MSG.COMMITTED; userId: number; cursor: number };
 
 const coordinate = (value: unknown, minimum: number): value is number =>
@@ -21,9 +21,13 @@ export function parseSwNotifMessage(value: unknown): SwNotifMessage | null {
   const message = value as Record<string, unknown>;
   if (
     message['type'] === SOMS_NOTIF_MSG.OPEN &&
-    coordinate(message['threadId'], 1)
+    coordinate(message['threadId'], 1) &&
+    coordinate(message['sessionId'], 1)
   )
-    return { type: SOMS_NOTIF_MSG.OPEN, threadId: message['threadId'] };
+    return {
+      type: SOMS_NOTIF_MSG.OPEN, threadId: message['threadId'],
+      sessionId: message['sessionId'],
+    };
   if (
     message['type'] === SOMS_NOTIF_MSG.COMMITTED &&
     coordinate(message['userId'], 1) &&
