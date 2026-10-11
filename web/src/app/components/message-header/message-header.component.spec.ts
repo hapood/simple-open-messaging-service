@@ -20,7 +20,6 @@ import { RouteService } from '../../services/route.service';
 import { CallAdapterService } from '../../services/call-adapter';
 import { CallEventService } from '../../services/call-event.service';
 import { IDLE_CALL } from '../../services/call-adapter';
-import { ChatContextService } from '../message-thread/chat-context.service';
 import {
   ConversationItem,
   createGroupConversation,
@@ -42,7 +41,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
   let asideTop: ReturnType<
     typeof signal<{ panel: 'profile' | 'group-info' } | undefined>
   >;
-  let canAdministerGroup: ReturnType<typeof signal<boolean>>;
 
   /** Minimal ConversationItem — only threadId + unreadCount are exercised by the badge sum. */
   function item(threadId: number, unreadCount: number): ConversationItem {
@@ -65,7 +63,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
     asideTop = signal<{ panel: 'profile' | 'group-info' } | undefined>(
       undefined,
     );
-    canAdministerGroup = signal(false);
 
     TestBed.configureTestingModule({
       imports: [MessageHeaderComponent],
@@ -106,7 +103,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
             sessionProfile: signal({ id: 1 }),
           },
         },
-        { provide: ChatContextService, useValue: { canAdministerGroup } },
         { provide: GroupService, useValue: {} },
         { provide: RouteService, useValue: {} },
         { provide: CallAdapterService, useValue: {} },
@@ -198,7 +194,6 @@ describe('MessageHeaderComponent — back-button unread badge', () => {
       },
       { role: 'ADMIN' },
     );
-    canAdministerGroup.set(true);
     fixture.componentRef.setInput('userMsgTrd', chat);
     asideTop.set({ panel: 'group-info' });
 

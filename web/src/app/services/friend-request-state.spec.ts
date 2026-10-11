@@ -267,3 +267,60 @@ describe('request projection effects', () => {
     ).toEqual(renewed);
   });
 });
+
+describe('friend key derivation over wire-contract coordinates', () => {
+  // Server contract for one federated pair: every RELATIONSHIP_INTENT item
+  // carries the pair namespace in namespaceId, subjectNamespaceId is the
+  // subject endpoint's home namespace, and the local user is always
+  // namespace 0 — so the author's home namespace only appears on the wire
+  // (as namespaceId) when the author is the remote peer.
+  const sendEcho = {
+    namespaceId: 12,
+    account: 'bravo',
+    subjectAccount: 'admin',
+    subjectNamespaceId: 12,
+    direction: 'OUTGOING' as const,
+  };
+  const peerRequest = {
+    namespaceId: 12,
+    account: 'admin',
+    subjectAccount: 'bravo',
+    subjectNamespaceId: 0,
+    direction: 'INCOMING' as const,
+  };
+  const peerAccept = { ...peerRequest, status: 'ACCEPTED' as const };
+  const myRejection = {
+    namespaceId: 12,
+    account: 'bravo',
+    subjectAccount: 'admin',
+    subjectNamespaceId: 12,
+    direction: 'OUTGOING' as const,
+  };
+
+  it('addresses the sent card identically from the send echo and the peer accept', () => {
+    expect(friendRequestKey(sendEcho, 'OUTGOING')).toBe(
+      friendRequestKey(peerAccept, projectionDirectionForFact(peerAccept)!),
+    );
+  });
+
+  it('addresses the received card identically from the peer request and my rejection', () => {
+    expect(friendRequestKey(peerRequest, 'INCOMING')).toBe(
+      friendRequestKey(myRejection, 'INCOMING'),
+    );
+  });
+
+  it('keeps local-pair keys on the all-zero namespace shape', () => {
+    expect(
+      friendRequestKey(
+        {
+          namespaceId: 0,
+          account: 'alice',
+          subjectAccount: 'bob',
+          subjectNamespaceId: 0,
+          direction: 'OUTGOING',
+        },
+        'OUTGOING',
+      ),
+    ).toBe('["friend",0,"alice",0,"bob"]');
+  });
+});

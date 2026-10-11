@@ -87,6 +87,17 @@ export function projectionDirectionForFact(input: {
   return input.direction;
 }
 
+/** Canonical projection key for one friend-intent pair direction.
+ *
+ * Client state feed recipients are always namespace-0 local accounts, so a
+ * RELATIONSHIP_INTENT item never carries the author's home namespace
+ * directly: its namespaceId is the pair namespace (the remote peer's home
+ * namespace) and subjectNamespaceId is the subject endpoint's home namespace.
+ * The author's home namespace is therefore the item namespaceId when the
+ * subject is the local user, and 0 when the subject is the remote peer. This
+ * keeps a self-authored send echo and the peer-authored terminal fact
+ * (accept/reject) on one key for federated pairs; local pairs collapse to
+ * all-zero namespace slots either way. */
 export function friendRequestKey(
   input: {
     namespaceId: number;
@@ -97,12 +108,14 @@ export function friendRequestKey(
   },
   targetDirection: FriendRequestDirection,
 ): string {
+  const authorNamespaceId =
+    input.subjectNamespaceId === 0 ? input.namespaceId : 0;
   const sameAuthoredDirection = input.direction === targetDirection;
   return JSON.stringify(
     sameAuthoredDirection
       ? [
           'friend',
-          input.namespaceId,
+          authorNamespaceId,
           input.account,
           input.subjectNamespaceId,
           input.subjectAccount,
@@ -111,7 +124,7 @@ export function friendRequestKey(
           'friend',
           input.subjectNamespaceId,
           input.subjectAccount,
-          input.namespaceId,
+          authorNamespaceId,
           input.account,
         ],
   );

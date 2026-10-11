@@ -67,9 +67,8 @@ export function UserDetailPage() {
   };
 
   const u = data?.user;
-  const handle = u
-    ? `${u.account}${u.domain && u.domain !== 'local' ? `@${u.domain}` : ''}`
-    : '';
+  // Local users always carry their home domain in the detail payload.
+  const handle = u ? `${u.account}@${u.domain}` : '';
   const appSessionCount = data
     ? data.sessions.filter((s) => s.client === 'app').length
     : 0;
@@ -111,7 +110,7 @@ export function UserDetailPage() {
               </span>
             </div>
             <div className="flex items-center gap-2">
-              {canManage && u.domain === 'local' && !u.isGroup ? (
+              {canManage && u.namespaceId === 0 ? (
                 <>
                   {u.isDeleted ? (
                     <Button
@@ -180,7 +179,7 @@ export function UserDetailPage() {
               />
               <Field
                 label={t('userDetail.field.foreigner')}
-                value={u.domain !== 'local' ? t('common.yes') : t('common.no')}
+                value={u.namespaceId !== 0 ? t('common.yes') : t('common.no')}
               />
               <Field
                 label={t('userDetail.field.createdAt')}
@@ -199,7 +198,7 @@ export function UserDetailPage() {
             </CardContent>
           </Card>
 
-          {u.domain === 'local' && !u.isGroup && userId !== null ? (
+          {u.namespaceId === 0 && userId !== null ? (
             <UserQuotaPanel userId={userId} canManage={canManage} />
           ) : null}
 
@@ -329,7 +328,7 @@ export function UserDetailPage() {
             </CardContent>
           </Card>
 
-          {u.domain === 'local' && !u.isGroup && userId !== null ? (
+          {u.namespaceId === 0 && userId !== null ? (
             <LoginCodesSection userId={userId} />
           ) : null}
 

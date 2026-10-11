@@ -100,8 +100,10 @@ export function UsersPage() {
     setSelected(new Set());
   }, [search, page]);
 
+  // Local persons live in namespace 0; federated guests must never receive
+  // local-account actions, so selection, badges, and actions gate on nsid.
   const listIds = (data?.list ?? [])
-    .filter((u) => u.domain === 'local')
+    .filter((u) => u.namespaceId === 0)
     .map((u) => u.id);
   const allSelected =
     listIds.length > 0 && listIds.every((id) => selected.has(id));
@@ -235,7 +237,7 @@ export function UsersPage() {
                       aria-label={t('users.selectRow', { name: u.account })}
                       checked={selected.has(u.id)}
                       onChange={() => toggle(u.id)}
-                      disabled={u.domain !== 'local'}
+                      disabled={u.namespaceId !== 0}
                       className="size-4"
                     />
                   </TableCell>
@@ -251,7 +253,7 @@ export function UsersPage() {
                     {u.domain ?? '—'}
                   </TableCell>
                   <TableCell>
-                    {u.domain !== 'local' ? t('common.yes') : t('common.no')}
+                    {u.namespaceId !== 0 ? t('common.yes') : t('common.no')}
                   </TableCell>
                   <TableCell>
                     {u.isDeleted ? (
@@ -295,7 +297,7 @@ export function UsersPage() {
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center justify-end gap-1">
-                      {canManage && u.domain === 'local' && !u.isDeleted ? (
+                      {canManage && u.namespaceId === 0 && !u.isDeleted ? (
                         <Button
                           variant="outline"
                           size="sm"
@@ -317,7 +319,7 @@ export function UsersPage() {
                           <MoreHorizontal className="size-4" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          {u.domain === 'local' && u.isDeleted ? (
+                          {u.namespaceId === 0 && u.isDeleted ? (
                             <DropdownMenuItem
                               onClick={() =>
                                 onAction(
@@ -329,7 +331,7 @@ export function UsersPage() {
                             >
                               {t('users.action.unban')}
                             </DropdownMenuItem>
-                          ) : u.domain === 'local' ? (
+                          ) : u.namespaceId === 0 ? (
                             <DropdownMenuItem
                               variant="destructive"
                               onClick={() =>
@@ -339,7 +341,7 @@ export function UsersPage() {
                               {t('users.action.ban')}
                             </DropdownMenuItem>
                           ) : null}
-                          {u.domain === 'local' ? (
+                          {u.namespaceId === 0 ? (
                             <DropdownMenuItem
                               onClick={() =>
                                 onAction(
@@ -355,14 +357,12 @@ export function UsersPage() {
                           <DropdownMenuItem onClick={() => setSessionsUser(u)}>
                             {t('users.action.viewSessions')}
                           </DropdownMenuItem>
-                          {canManage && u.domain === 'local' ? (
-                            <>
-                              <DropdownMenuItem
-                                onClick={() => setGenPwdUser(u)}
-                              >
-                                {t('users.action.generateInitialPassword')}
-                              </DropdownMenuItem>
-                            </>
+                          {canManage && u.namespaceId === 0 ? (
+                            <DropdownMenuItem
+                              onClick={() => setGenPwdUser(u)}
+                            >
+                              {t('users.action.generateInitialPassword')}
+                            </DropdownMenuItem>
                           ) : null}
                         </DropdownMenuContent>
                       </DropdownMenu>

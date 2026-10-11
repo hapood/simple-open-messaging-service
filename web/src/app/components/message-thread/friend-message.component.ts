@@ -132,7 +132,6 @@ import {
   MemberProfileRepository,
   type ResolvedMemberProfile,
 } from '../../services/member-profile-store.service';
-import { ChatContextService } from './chat-context.service';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
 import { ALL_MENTION_ID, escapePlainText } from '../../lib/message-entity';
 import type { ChatMember } from '../chat-editor/chat-editor.component';
@@ -246,7 +245,13 @@ export class MessageThreadComponent implements OnDestroy {
   readonly displayUserAccount = displayUserAccount;
   readonly threadId = input<number>();
   readonly userMsgTrd = input<ConversationItem>();
-  private readonly chatContext = inject(ChatContextService);
+  readonly canAdministerGroup = computed(() => {
+    const thread = this.userMsgTrd();
+    return (
+      thread?.type === 'GROUP' &&
+      (thread.role === 'OWNER' || thread.role === 'ADMIN')
+    );
+  });
   /** The A/B host keeps two threads mounted; only the foreground layer may own the one native composer. */
   readonly nativeComposerActive = input(false);
   private readonly chatInput = viewChild(ChatInputComponent);
@@ -482,7 +487,7 @@ export class MessageThreadComponent implements OnDestroy {
         avatarUrl: assetUrl(avatarUrl(member.avatar)),
       }));
     if (
-      this.chatContext.canAdministerGroup() &&
+      this.canAdministerGroup() &&
       this.transloco
         .translate('chat.mentionAll')
         .toLocaleLowerCase()

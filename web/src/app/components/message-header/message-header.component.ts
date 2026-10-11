@@ -20,7 +20,6 @@ import { NavStateMachineService } from '../../services/nav-state.service';
 import { CallAdapterService } from '../../services/call-adapter';
 import { CallEventService } from '../../services/call-event.service';
 import { uuid } from '../../lib/uuid';
-import { ChatContextService } from '../message-thread/chat-context.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
 import { RouteService, PopupType } from '../../services/route.service';
 import { currentGroupAnnouncement } from '../../services/group-announcement';
@@ -73,7 +72,6 @@ export class MessageHeaderComponent {
   readonly callActive = computed(
     () => this.callEvents.callState().phase !== 'idle',
   );
-  private readonly chatContext = inject(ChatContextService);
   private readonly route = inject(RouteService);
   readonly announcement = computed(() =>
     currentGroupAnnouncement(this.userMsgTrd()),
@@ -125,8 +123,7 @@ export class MessageHeaderComponent {
    *  of being a second chat-header entry point. Mints a client-side callSid (the call's idempotency
    *  key + signaling address — a UUIDv4, accepted by CALL_SID_RE) and hands it to the native call layer, which
    *  POSTs /calls/initiate + creates the offer. Android resolves the peer presentation directly from native
-   *  SQLite by account + domain; the renderer neither
-   *  reads avatar bytes nor serializes them across the JS bridge. */
+   *  SQLite by account + domain; the renderer neither reads avatar bytes nor serializes them across the JS bridge. */
   placeCall(): void {
     if (this.callActive()) return;
     const thread = this.userMsgTrd();
@@ -224,8 +221,8 @@ export class MessageHeaderComponent {
 
   /** Mobile back arrow: delegate to the nav stack's `back`, which peels layers in priority order
    *  (panes → aside → search → chat). This unifies the UI back arrow with the Android hardware-back path
-   *  (which also calls `nav.back()` via the `__SOMS_BACK__` bridge), so search is always exited before the
-   *  thread closes. */
+   *  (which also calls `nav.back()` via the `__SOMS_BACK__` bridge), so search is always exited before leaving
+   *  the thread. */
   goBack(): void {
     this.nav.back();
   }

@@ -42,7 +42,6 @@ import {
   type ResolvedMemberProfile,
 } from '../../services/member-profile-store.service';
 import { PageHeaderComponent } from '../page-header/page-header.component';
-import { ChatContextService } from '../message-thread/chat-context.service';
 import {
   limitUnicodeCodePoints,
   unicodeCodePointLength,
@@ -102,7 +101,6 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
   private readonly threadAdapter = inject(MESSAGE_THREAD_ADAPTER);
-  private readonly chatContext = inject(ChatContextService);
   private readonly contactCardShare = inject(ContactCardShareService);
 
   /** The open thread id (template-bound for the alias editor). */
@@ -185,8 +183,11 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly sessionAccount = computed(
     () => this.userService.sessionProfile()?.account,
   );
-  /** Caller's role comes from the chatbox context initialized when this chat was opened. */
-  readonly myRole = this.chatContext.groupRole;
+  /** The caller's role is the current user's thread-feed projection. */
+  readonly myRole = computed<Role | null>(() => {
+    const thread = this.userMsgTrd();
+    return thread?.type === 'GROUP' ? thread.role : null;
+  });
   readonly isOwner = computed(() => this.myRole() === 'OWNER');
   readonly isAdmin = computed(
     () => this.myRole() === 'OWNER' || this.myRole() === 'ADMIN',

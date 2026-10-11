@@ -153,6 +153,7 @@ describe('RouteService adaptive account surfaces', () => {
         identity: {
           account: 'alice',
           domain: 'local',
+          namespaceId: 0,
           name: 'Alice',
           bio: '',
         },
