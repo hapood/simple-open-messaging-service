@@ -128,7 +128,6 @@ export class S2sController {
         ? undefined
         : this.parseCursorSafeInteger(throughParam, 'through');
     return this.groupMeta.serve(
-      this.signerDomain(req),
       req.peer!.namespaceId,
       normalizedAccount,
       mode,
@@ -242,7 +241,6 @@ export class S2sController {
       'maxMessageSeq',
     ]);
     const selector = this.parseThreadQuery(account, peerAccount);
-    const peerDomain = this.signerDomain(req);
     if (
       includeSelfParam !== undefined &&
       includeSelfParam !== 'true' &&
@@ -267,7 +265,6 @@ export class S2sController {
         );
       }
       return this.tombstoneFeed.rejectMissingQueryAfter(
-        peerDomain,
         req.peer!.namespaceId,
         selector,
       );
@@ -300,7 +297,6 @@ export class S2sController {
       );
     }
     return this.tombstoneFeed.query(
-      peerDomain,
       req.peer!.namespaceId,
       selector,
       after,
@@ -332,7 +328,6 @@ export class S2sController {
       'includeSelf',
     ]);
     const selector = this.parseThreadQuery(account, peerAccount);
-    const peerDomain = this.signerDomain(req);
     if (
       includeSelfParam !== undefined &&
       includeSelfParam !== 'true' &&
@@ -361,7 +356,6 @@ export class S2sController {
         );
       }
       return this.messageFeed.rejectMissingQueryAfter(
-        peerDomain,
         req.peer!.namespaceId,
         selector,
       );
@@ -383,7 +377,6 @@ export class S2sController {
         ? undefined
         : this.parseThreadSequence(throughParam, 'through');
     return this.messageFeed.query(
-      peerDomain,
       req.peer!.namespaceId,
       selector,
       after,
@@ -535,7 +528,6 @@ export class S2sController {
         account,
         profileNamespaceId,
         rev,
-        this.signerDomain(req),
         req.peer!.namespaceId,
       ),
     );
@@ -584,7 +576,6 @@ export class S2sController {
         memberAccount,
         profileNamespaceId,
         rev,
-        this.signerDomain(req),
         req.peer!.namespaceId,
       ),
     );

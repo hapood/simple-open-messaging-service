@@ -47,6 +47,28 @@ export class ProfileNamespaceRefreshService {
     private readonly sse: SseService,
   ) {}
 
+  /** Create or join fetch work for a client demand. Repeated demands join an
+   * active prefetch without queuing redundant trailing rounds. The observed
+   * publisher cursor bounds a new fetch even if an earlier prefetch was lost. */
+  async fetch(pair: ProfileNamespacePair): Promise<void> {
+    const key = this.pairKey(pair);
+    if (this.refreshFlights.get(key)?.running) return;
+    const [publisher] = await this.database.db
+      .select({
+        pulledThrough: identityNamespace.profileNamespaceFeedPulledThrough,
+      })
+      .from(identityNamespace)
+      .where(eq(identityNamespace.id, pair.publisherNamespaceId))
+      .limit(1);
+    if (!publisher)
+      throw new Error(
+        `publisher namespace ${pair.publisherNamespaceId} is unknown`,
+      );
+    // Another demand or prefetch may have started while the cursor was read.
+    if (this.refreshFlights.get(key)?.running) return;
+    this.scheduleRefresh(pair, publisher.pulledThrough);
+  }
+
   /** Refreshes one cached pair. Direct rows (nsid 0) rewrite from the local
    *  authoritative IdentityNamespace row; third-party rows pull the
    *  publisher's bindings query with the stale-response guard. Fire-and-forget

@@ -43,67 +43,13 @@ const IMAGE_CACHE_MAX_AGE_SECONDS = 3 * 24 * 60 * 60;
 const VIDEO_AUDIO_CACHE_MAX_AGE_SECONDS = 24 * 60 * 60;
 const FILE_CACHE_MAX_AGE_SECONDS = 14 * 24 * 60 * 60;
 
-/** Routes that must remain outside the client-facing /api/v1 prefix. Keep this implementation
- * manifest aligned with the decorated federation controllers; route-manifest tests enforce it. */
+/** Federation owns its entire protocol namespace outside the client prefix.
+ * New S2S controllers inherit this boundary without duplicating their routes here. */
 export const GLOBAL_PREFIX_EXCLUSIONS = [
   { path: FEDERATION_WELL_KNOWN_PATH, method: RequestMethod.GET },
   {
-    path: `${FEDERATION_API_PREFIX}/recognize`,
-    method: RequestMethod.POST,
-  },
-  { path: `${FEDERATION_API_PREFIX}/health`, method: RequestMethod.GET },
-  {
-    path: `${FEDERATION_API_PREFIX}/feed-heads`,
-    method: RequestMethod.POST,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/state-feed`,
-    method: RequestMethod.GET,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/profile-namespace-feed`,
-    method: RequestMethod.GET,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/profile-namespaces/:nsid`,
-    method: RequestMethod.GET,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/group-meta`,
-    method: RequestMethod.GET,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/messages`,
-    method: RequestMethod.GET,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/message-tombstones`,
-    method: RequestMethod.GET,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/message-provenance`,
-    method: RequestMethod.POST,
-  },
-  { path: `${FEDERATION_API_PREFIX}/call`, method: RequestMethod.POST },
-  {
-    path: `${FEDERATION_API_PREFIX}/accounts/:account`,
-    method: RequestMethod.GET,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/account-profiles/:namespaceId/:account/:profileRev`,
-    method: RequestMethod.GET,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev`,
-    method: RequestMethod.GET,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/media/:digest`,
-    method: RequestMethod.GET,
-  },
-  {
-    path: `${FEDERATION_API_PREFIX}/forward-bundles/:bundleId`,
-    method: RequestMethod.GET,
+    path: `${FEDERATION_API_PREFIX}/{*path}`,
+    method: RequestMethod.ALL,
   },
 ] as const;
 

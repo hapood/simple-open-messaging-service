@@ -159,7 +159,7 @@ describe('FederationMessageFeedService thread query', () => {
   it('uses 0 as the message-query bootstrap', async () => {
     const { namespaceId } = await seed();
     await expect(
-      service.rejectMissingQueryAfter(peerDomain, namespaceId, {
+      service.rejectMissingQueryAfter(namespaceId, {
         type: 'P2P',
         account: 'alice',
         peerAccount: 'bob',
@@ -233,7 +233,6 @@ describe('FederationMessageFeedService thread query', () => {
         let cursor = forward ? 0 : 6;
         for (let index = 0; index < Math.max(1, ordered.length); index++) {
           const page = await service.query(
-            peerDomain,
             namespaceId,
             selector,
             forward ? cursor : undefined,
@@ -264,7 +263,6 @@ describe('FederationMessageFeedService thread query', () => {
     await append(thread.id, alice, 1, namespaceId);
 
     const page = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
@@ -284,7 +282,6 @@ describe('FederationMessageFeedService thread query', () => {
 
     await expect(
       service.query(
-        peerDomain,
         namespaceId,
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
@@ -314,7 +311,6 @@ describe('FederationMessageFeedService thread query', () => {
 
     await expect(
       service.query(
-        peerDomain,
         namespaceId,
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         99,
@@ -331,7 +327,6 @@ describe('FederationMessageFeedService thread query', () => {
     await append(thread.id, alice, 2, namespaceId);
 
     const first = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       undefined,
@@ -347,7 +342,6 @@ describe('FederationMessageFeedService thread query', () => {
     });
 
     const second = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       undefined,
@@ -409,7 +403,6 @@ describe('FederationMessageFeedService thread query', () => {
     });
 
     const page = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
@@ -436,7 +429,6 @@ describe('FederationMessageFeedService thread query', () => {
 
     await expect(
       service.query(
-        peerDomain,
         namespaceId,
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
@@ -467,7 +459,6 @@ describe('FederationMessageFeedService thread query', () => {
 
     await expect(
       service.query(
-        peerDomain,
         namespaceId,
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
@@ -480,7 +471,6 @@ describe('FederationMessageFeedService thread query', () => {
 
     await append(thread.id, alice, 2, namespaceId);
     const page = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       1,

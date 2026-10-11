@@ -205,7 +205,6 @@ describe('canonical Group Meta feed', () => {
           groupAccount,
           0,
           1,
-          peerDomain,
           peerNamespaceId,
         ),
       ).resolves.toBeNull();
@@ -214,7 +213,6 @@ describe('canonical Group Meta feed', () => {
           groupAccount,
           0,
           2,
-          peerDomain,
           peerNamespaceId,
         ),
       ).resolves.toMatchObject({ profileRev: 2 });
@@ -223,7 +221,6 @@ describe('canonical Group Meta feed', () => {
           groupAccount,
           0,
           3,
-          peerDomain,
           peerNamespaceId,
         ),
       ).resolves.toBeNull();
@@ -232,7 +229,6 @@ describe('canonical Group Meta feed', () => {
           groupAccount,
           0,
           2,
-          otherPeerDomain,
           otherPeerNamespaceId,
         ),
       ).resolves.toMatchObject({ profileRev: 2 });
@@ -450,7 +446,6 @@ describe('canonical Group Meta feed', () => {
     await database.db.transaction((tx) => reconcileDesired(tx, [owner()]));
 
     const full = await publisher.serve(
-      peerDomain,
       peerNamespaceId,
       groupAccount,
       'full',
@@ -481,7 +476,6 @@ describe('canonical Group Meta feed', () => {
     ]);
 
     const delta = await publisher.serve(
-      peerDomain,
       peerNamespaceId,
       groupAccount,
       'delta',
@@ -508,7 +502,6 @@ describe('canonical Group Meta feed', () => {
     );
 
     const first = await publisher.serve(
-      peerDomain,
       peerNamespaceId,
       groupAccount,
       'delta',
@@ -520,7 +513,6 @@ describe('canonical Group Meta feed', () => {
     expect(first.items.map((item) => item.feedId)).toEqual([1]);
 
     const second = await publisher.serve(
-      peerDomain,
       peerNamespaceId,
       groupAccount,
       'delta',
@@ -532,7 +524,6 @@ describe('canonical Group Meta feed', () => {
     expect(second.items.map((item) => item.feedId)).toEqual([2]);
 
     const third = await publisher.serve(
-      peerDomain,
       peerNamespaceId,
       groupAccount,
       'delta',
@@ -550,13 +541,7 @@ describe('canonical Group Meta feed', () => {
     );
 
     await expect(
-      publisher.serve(
-        peerDomain,
-        peerNamespaceId,
-        groupAccount,
-        'full',
-        undefined,
-      ),
+      publisher.serve(peerNamespaceId, groupAccount, 'full', undefined),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       status: 200,
@@ -569,7 +554,6 @@ describe('canonical Group Meta feed', () => {
       reconcileDesired(tx, [owner(), member()]),
     );
     const first = await publisher.serve(
-      peerDomain,
       peerNamespaceId,
       groupAccount,
       'full',
@@ -590,7 +574,6 @@ describe('canonical Group Meta feed', () => {
       }),
     );
     const continued = await publisher.serve(
-      peerDomain,
       peerNamespaceId,
       groupAccount,
       'full',
@@ -604,7 +587,6 @@ describe('canonical Group Meta feed', () => {
       ),
     ).toBe(false);
     const retried = await publisher.serve(
-      peerDomain,
       peerNamespaceId,
       groupAccount,
       'full',
@@ -614,7 +596,6 @@ describe('canonical Group Meta feed', () => {
     );
     expect(retried.items.length).toBeLessThan(3);
     const delta = await publisher.serve(
-      peerDomain,
       peerNamespaceId,
       groupAccount,
       'delta',
@@ -644,7 +625,6 @@ describe('canonical Group Meta feed', () => {
     );
 
     const delta = await publisher.serve(
-      peerDomain,
       peerNamespaceId,
       groupAccount,
       'delta',
@@ -671,14 +651,8 @@ describe('canonical Group Meta feed', () => {
     );
 
     const [first, second] = await Promise.all([
-      publisher.serve(peerDomain, peerNamespaceId, groupAccount, 'full', 0),
-      publisher.serve(
-        otherPeerDomain,
-        otherPeerNamespaceId,
-        groupAccount,
-        'full',
-        0,
-      ),
+      publisher.serve(peerNamespaceId, groupAccount, 'full', 0),
+      publisher.serve(otherPeerNamespaceId, groupAccount, 'full', 0),
     ]);
     expect(second).toEqual(first);
   });

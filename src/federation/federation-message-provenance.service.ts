@@ -155,6 +155,8 @@ export class FederationMessageProvenanceService {
     // carries only the account, so matching by account is the contract.
     if ('peerAccount' in queryThread) {
       if (thread.type !== 'P2P') return false;
+      // A retained pair identifies the historical thread even after revocation.
+      // This digest confirmation does not authorize reading message content.
       const [pair] = await this.database.db
         .select({ threadId: relationshipPair.threadId })
         .from(relationshipPair)
@@ -167,7 +169,6 @@ export class FederationMessageProvenanceService {
             eq(relationshipPair.endpointANamespaceId, 0),
             eq(relationshipPair.endpointBType, 'USER'),
             eq(relationshipPair.endpointBAccount, queryThread.peerAccount),
-            eq(relationshipPair.active, true),
           ),
         )
         .limit(1);

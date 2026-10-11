@@ -4,12 +4,15 @@ import { DatabaseService } from '../src/database/database.service.js';
 import {
   account,
   groupAccount,
+  groupMeta,
+  groupMetaMemberFeed,
   messageThread,
   profileTable,
   relationshipIntent,
   relationshipPair,
 } from '../src/database/schema.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
+import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 
 describe('exact directed intent account-profile disclosure', () => {
@@ -83,12 +86,23 @@ describe('exact directed intent account-profile disclosure', () => {
       .values({
         type: 'GROUP',
         groupAccount: groupName,
-        groupDomain: 'local',
+        groupDomain: loadFederationConfig().domain,
         groupAccountId: groupId,
         updatedAt: new Date(),
       })
       .returning({ id: messageThread.id });
     threadId = thread.id;
+    await database.db
+      .insert(groupMeta)
+      .values({ threadId, profileRev: 3, metaEndId: 1 });
+    await database.db.insert(groupMetaMemberFeed).values({
+      threadId,
+      feedId: 1,
+      memberAccount: '',
+      profileNamespaceId: 0,
+      operation: 'GROUP_PROFILE',
+      body: { profileNamespaceId: 0, profileRev: 3 },
+    });
     await database.db.insert(relationshipPair).values([
       {
         kind: 'P2P',
@@ -172,35 +186,17 @@ describe('exact directed intent account-profile disclosure', () => {
 
   it('serves only the authored exact user intent through account profile lookup', async () => {
     expect(
-      await profiles.getAuthorizedAccountProfile(
-        localUser,
-        0,
-        1,
-        remoteDomain,
-        namespaceId,
-      ),
+      await profiles.getAuthorizedAccountProfile(localUser, 0, 1, namespaceId),
     ).toMatchObject({
       account: localUser,
       profileRev: 1,
       displayName: 'First',
     });
     expect(
-      await profiles.getAuthorizedAccountProfile(
-        localUser,
-        0,
-        2,
-        remoteDomain,
-        namespaceId,
-      ),
+      await profiles.getAuthorizedAccountProfile(localUser, 0, 2, namespaceId),
     ).toBeNull();
     expect(
-      await profiles.getAuthorizedAccountProfile(
-        localUser,
-        0,
-        1,
-        remoteDomain,
-        0,
-      ),
+      await profiles.getAuthorizedAccountProfile(localUser, 0, 1, 0),
     ).toBeNull();
     await database.db
       .update(relationshipIntent)
@@ -214,25 +210,13 @@ describe('exact directed intent account-profile disclosure', () => {
         ),
       );
     expect(
-      await profiles.getAuthorizedAccountProfile(
-        localUser,
-        0,
-        1,
-        remoteDomain,
-        namespaceId,
-      ),
+      await profiles.getAuthorizedAccountProfile(localUser, 0, 1, namespaceId),
     ).toBeNull();
   });
 
-  it('also serves a group-authored intent to its exact member counterpart', async () => {
+  it('serves the current group Meta profile to its authorized member counterpart', async () => {
     expect(
-      await profiles.getAuthorizedAccountProfile(
-        groupName,
-        0,
-        3,
-        remoteDomain,
-        namespaceId,
-      ),
+      await profiles.getAuthorizedAccountProfile(groupName, 0, 3, namespaceId),
     ).toMatchObject({
       account: groupName,
       profileRev: 3,

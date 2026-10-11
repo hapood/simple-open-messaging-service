@@ -405,6 +405,14 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       const rootPublicKey = ed25519.getPublicKey(rootPrivateKey);
       const rootPublicKeyB64 = b64(rootPublicKey);
       const rootNotAfter = now + this.config.rootKey.lifetimeMs;
+      // Release the previous epoch's claim before inserting the replacement:
+      // the partial unique index LocalFederationRoot_one_claimable_key allows at
+      // most one claimable root per domain, and both statements share this
+      // transaction, so committed state always has exactly one claimable epoch.
+      await tx
+        .update(localFederationRoot)
+        .set({ claimable: false })
+        .where(eq(localFederationRoot.id, previous.id));
       const [insertedRoot] = await tx
         .insert(localFederationRoot)
         .values({
@@ -424,10 +432,6 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
         Math.min(now + this.config.signingKey.lifetimeMs, rootNotAfter),
       );
       await this.insertSigningKey(tx, initial);
-      await tx
-        .update(localFederationRoot)
-        .set({ claimable: false })
-        .where(eq(localFederationRoot.id, previous.id));
       await tx
         .update(localFederationSigningState)
         .set({

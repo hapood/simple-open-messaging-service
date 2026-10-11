@@ -53,7 +53,6 @@ export class FederationGroupMetaFeedService {
   constructor(private readonly database: DatabaseService) {}
 
   async serve(
-    peerDomain: string,
     namespaceId: number,
     account: string,
     mode: 'full' | 'delta',
@@ -65,7 +64,6 @@ export class FederationGroupMetaFeedService {
       async (tx) => {
         const authorized = await resolveAuthorizedFederationThreadInTx(
           tx,
-          peerDomain,
           namespaceId,
           { type: 'GROUP', account },
         );

@@ -7,6 +7,7 @@ import { RevokeForbiddenGroupTaskHandler } from '../src/group/revoke-forbidden-g
 import { DisbandGroupTaskHandler } from '../src/group/disband-group-task.handler.js';
 import { ForceRevokeGroupMemberTaskHandler } from '../src/group/force-revoke-group-member-task.handler.js';
 import { GroupRevokeFanoutService } from '../src/group/group-revoke-fanout.service.js';
+import { GroupDisbandMembershipRevocationService } from '../src/group/disband/group-disband-membership-revocation.service.js';
 import { DurableTaskQueueService } from '../src/durable-task/durable-task-queue.service.js';
 import { FederationThreadSourceService } from '../src/federation/federation-thread-source.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
@@ -29,6 +30,9 @@ import {
   message,
   accountThreadState,
   durableTask,
+  peerStateFeed,
+  relationshipIntent,
+  groupAccount,
 } from '../src/database/schema.js';
 import { GroupService } from '../src/group/group.service.js';
 import { MessageService } from '../src/message/message.service.js';
@@ -175,7 +179,7 @@ describe('departure system message paths', () => {
     await activate(groupId, threadId, member.id, true);
     return { owner, member, threadId, groupId };
   }
-  async function mirror() {
+  async function mirror(groupAddress = mintGroupAccount()) {
     const member = await identity(),
       observer = await identity();
     const peerDomain = 'departure-origin.test';
@@ -183,7 +187,6 @@ describe('departure system message paths', () => {
       database.db,
       peerDomain,
     );
-    const groupAddress = mintGroupAccount();
     const [thread] = await database.db
       .insert(messageThread)
       .values({
@@ -423,6 +426,155 @@ describe('departure system message paths', () => {
     expect(
       (await boundary(h.threadId, h.member.id))!.messageVisibleThroughSeq,
     ).toBe(dissolveSeq);
+  });
+
+  it('refreshes the disband intent revision and publishes a publisher-local revoke that deactivates the mirror', async () => {
+    const authority = await hosted();
+    const authorityThread = await database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, authority.threadId),
+    });
+    const receiver = await mirror(authorityThread!.groupAccount!);
+    const remoteMember = {
+      account: receiver.member.account,
+      namespaceId: receiver.namespaceId,
+    };
+    await activate(authority.groupId, authority.threadId, remoteMember, true);
+    const intentKey = and(
+      eq(relationshipIntent.authorAccount, receiver.parent.account),
+      eq(relationshipIntent.authorNamespaceId, 0),
+      eq(relationshipIntent.receiverAccount, remoteMember.account),
+      eq(relationshipIntent.receiverNamespaceId, remoteMember.namespaceId),
+    );
+    const before = await database.db.query.relationshipIntent.findFirst({
+      where: intentKey,
+    });
+    await groups.updateGroup({
+      threadId: authority.threadId,
+      operatorUserId: authority.owner.id,
+      name: 'Updated before disband',
+    });
+    const latest = (await readGroupState(
+      database.db,
+      eq(group.id, authority.threadId),
+    ))!;
+    expect(latest.profileRev).toBeGreaterThan(before!.profileRev);
+    // Updating the profile alone must not rewrite or republish the intent.
+    expect(
+      (
+        await database.db.query.relationshipIntent.findFirst({
+          where: intentKey,
+        })
+      )?.profileRev,
+    ).toBe(before!.profileRev);
+    await database.db
+      .update(groupAccount)
+      .set({ dissolvedAt: new Date() })
+      .where(eq(groupAccount.id, authorityThread!.groupAccountId!));
+
+    expect(
+      await app.get(GroupDisbandMembershipRevocationService).execute({
+        threadId: authority.threadId,
+        memberAddress: remoteMember,
+      }),
+    ).toEqual({ status: 'APPLIED', transitioned: true });
+    const revoke = await database.db.query.peerStateFeed.findFirst({
+      where: and(
+        eq(peerStateFeed.namespaceId, receiver.namespaceId),
+        eq(peerStateFeed.account, receiver.parent.account),
+        eq(peerStateFeed.subjectAccount, receiver.member.account),
+        eq(peerStateFeed.eventType, 'RELATIONSHIP_INTENT'),
+      ),
+    });
+    expect(revoke?.body).toMatchObject({
+      status: 'REVOKED',
+      namespaceId: 0,
+      profileRev: latest.profileRev,
+    });
+    expect(
+      await database.db.query.relationshipIntent.findFirst({
+        where: intentKey,
+      }),
+    ).toMatchObject({
+      status: 'REVOKED',
+      profileNamespaceId: 0,
+      profileRev: latest.profileRev,
+    });
+    // Keep the emitted body intact: a hand-built revoke would conceal missing
+    // fields in the authority's publication. Both node views live in this
+    // isolated test database under distinct group namespace coordinates.
+    await database.db.transaction((tx) =>
+      consumer.applyPageInTx(tx, receiver.peerDomain, receiver.namespaceId, {
+        items: [
+          {
+            account: revoke!.account,
+            peerAccount: revoke!.subjectAccount,
+            eventType: 'RELATIONSHIP_INTENT',
+            feedId: revoke!.feedId.toString(),
+            body: revoke!.body,
+          },
+        ],
+        scannedThrough: revoke!.feedId.toString(),
+        stateFeedEndId: revoke!.feedId.toString(),
+        hasMore: false,
+      }),
+    );
+    expect(
+      (
+        await findGroupRelationship(
+          database.db,
+          receiver.groupId,
+          receiver.member.id,
+        )
+      ).pair?.active,
+    ).toBe(false);
+    expect(
+      (
+        await findGroupRelationship(
+          database.db,
+          authority.groupId,
+          remoteMember,
+        )
+      ).pair?.active,
+    ).toBe(false);
+    expect(await notices(authority.threadId, 'GROUP_LEFT')).toHaveLength(0);
+  });
+
+  it('keeps an ordinary kick on its existing intent revision after a group profile update', async () => {
+    const h = await hosted();
+    const thread = await database.db.query.messageThread.findFirst({
+      where: eq(messageThread.id, h.threadId),
+    });
+    const intentKey = and(
+      eq(relationshipIntent.authorAccount, thread!.groupAccount!),
+      eq(relationshipIntent.authorNamespaceId, 0),
+      eq(relationshipIntent.receiverAccount, h.member.account),
+      eq(relationshipIntent.receiverNamespaceId, 0),
+    );
+    const before = await database.db.query.relationshipIntent.findFirst({
+      where: intentKey,
+    });
+    await groups.updateGroup({
+      threadId: h.threadId,
+      operatorUserId: h.owner.id,
+      name: 'Updated before kick',
+    });
+    const latest = (await readGroupState(
+      database.db,
+      eq(group.id, h.threadId),
+    ))!;
+    expect(latest.profileRev).toBeGreaterThan(before!.profileRev);
+    await groupIntents.execute({
+      threadId: h.threadId,
+      managerUserId: h.owner.id,
+      decision: 'REVOKED',
+      target: { account: h.member.account, namespaceId: 0 },
+      scope: 'MEMBER',
+    });
+    expect(
+      await database.db.query.relationshipIntent.findFirst({
+        where: intentKey,
+      }),
+    ).toMatchObject({ status: 'REVOKED', profileRev: before!.profileRev });
   });
 
   it('does not call a pending request withdrawal a group departure', async () => {

@@ -117,8 +117,7 @@ export class FederationInboundMessageValidatorService {
       item,
       [
         'thread',
-        isGroup ? 'author' : 'authorRef',
-        'namespaceId',
+        'author',
         'seq',
         'profileRev',
         'originSeq',
@@ -141,10 +140,11 @@ export class FederationInboundMessageValidatorService {
         HttpStatus.BAD_REQUEST,
       );
     }
+    const authorNamespaceId = item.author?.namespaceId;
     if (
-      !Number.isSafeInteger(item.namespaceId) ||
-      item.namespaceId < 0 ||
-      item.namespaceId > 2_147_483_647 ||
+      !Number.isSafeInteger(authorNamespaceId) ||
+      authorNamespaceId < 0 ||
+      authorNamespaceId > 2_147_483_647 ||
       !Number.isSafeInteger(item.profileRev) ||
       item.profileRev < 0 ||
       item.profileRev > 2_147_483_647
@@ -175,16 +175,10 @@ export class FederationInboundMessageValidatorService {
       );
     }
     if (isGroup) {
-      const author = assertFields(
-        (item as Extract<FederationMessageFeedMessage, { author: unknown }>)
-          .author,
-        ['account', 'domain'],
-      );
+      const author = assertFields(item.author, ['account', 'namespaceId']);
       if (
         typeof author['account'] !== 'string' ||
-        !isValidSomfpUserAccount(author['account']) ||
-        typeof author['domain'] !== 'string' ||
-        author['domain'].trim().length === 0
+        !isValidSomfpUserAccount(author['account'])
       ) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
@@ -192,16 +186,18 @@ export class FederationInboundMessageValidatorService {
           HttpStatus.BAD_REQUEST,
         );
       }
-    } else if (
-      !['THREAD_ACCOUNT', 'THREAD_PEER_ACCOUNT'].includes(
-        (item as { authorRef?: string }).authorRef ?? '',
-      )
-    ) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'federated message has an invalid P2P author reference',
-        HttpStatus.BAD_REQUEST,
-      );
+    } else {
+      const author = assertFields(item.author, ['ref', 'namespaceId']);
+      if (
+        author['ref'] !== 'THREAD_ACCOUNT' &&
+        author['ref'] !== 'THREAD_PEER_ACCOUNT'
+      ) {
+        throw new BusinessException(
+          BusinessCode.FEDERATION_MALFORMED,
+          'federated message has an invalid P2P author reference',
+          HttpStatus.BAD_REQUEST,
+        );
+      }
     }
     if (typeof item.content !== 'string' || !Array.isArray(item.assets)) {
       throw new BusinessException(

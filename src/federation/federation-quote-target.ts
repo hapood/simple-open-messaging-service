@@ -45,13 +45,13 @@ export function publishFederationQuote(
 ): FederationQuoteTarget {
   if (coordinate.seq === 0) return { seq: 0 };
   if (target) {
-    if (groupAuthority || target.profileNamespaceId === 0)
-      return { seq: target.seq };
+    if (groupAuthority) return { seq: target.seq };
     if (
       target.publisherNamespaceId === peerNamespaceId &&
       target.originSeq !== null
     )
       return { originSeq: target.originSeq };
+    if (target.profileNamespaceId === 0) return { seq: target.seq };
   } else if (coordinate.seq > 0) {
     if (groupAuthority && coordinate.namespaceId === 0)
       return { seq: coordinate.seq };

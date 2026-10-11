@@ -32,6 +32,7 @@ describe('exact account profile by current account evidence', () => {
   let database: DatabaseService;
   let profiles: FederationProfileService;
   let ns: number;
+  let outsiderNamespaceId: number;
   let userId: number;
   let groupId: number;
   let p2pThreadId: number;
@@ -39,10 +40,10 @@ describe('exact account profile by current account evidence', () => {
   let originThreadId: number;
   let pairIds: bigint[];
 
-  const userProfile = (rev: number, domain = signer) =>
-    profiles.getAuthorizedAccountProfile(localUser, 0, rev, domain, ns);
-  const groupProfile = (rev: number, domain = signer) =>
-    profiles.getAuthorizedAccountProfile(localGroup, 0, rev, domain, ns);
+  const userProfile = (rev: number) =>
+    profiles.getAuthorizedAccountProfile(localUser, 0, rev, ns);
+  const groupProfile = (rev: number, signerNamespaceId = ns) =>
+    profiles.getAuthorizedAccountProfile(localGroup, 0, rev, signerNamespaceId);
   const setPublishedEnd = (headAccount: string, end: number) =>
     database.db
       .update(peerStateFeed)
@@ -61,6 +62,10 @@ describe('exact account profile by current account evidence', () => {
     database = new DatabaseService();
     profiles = new FederationProfileService(database, {} as never, {} as never);
     ns = await seedFederatedPeerNamespace(database.db, signer);
+    outsiderNamespaceId = await seedFederatedPeerNamespace(
+      database.db,
+      `outsider-${suffix}.test`,
+    );
     const [user] = await database.db
       .insert(account)
       .values({ account: localUser })
@@ -471,7 +476,7 @@ describe('exact account profile by current account evidence', () => {
       displayName: 'Group revision',
     });
     expect(await groupProfile(5)).toBeNull();
-    expect(await groupProfile(3, `other-${suffix}.test`)).toBeNull();
+    expect(await groupProfile(3, outsiderNamespaceId)).toBeNull();
     await database.db
       .update(relationshipIntent)
       .set({ status: 'REVOKED' })

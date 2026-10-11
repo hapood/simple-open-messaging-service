@@ -513,8 +513,13 @@ export class ForwardBundleService {
         resolvedQuote && resolvedQuote.seq > 0
           ? selectedIndex.get(`${message.threadId}:${resolvedQuote.seq}`)
           : undefined;
+      // A zero profile namespace means the author's profile lives in the
+      // publisher's namespace: local rows resolve to the local domain and
+      // mirrored rows to the publishing peer. A non-zero profile namespace is
+      // the author's own home namespace (remote members published through a
+      // group authority), so it wins over the publisher.
       const authorDomain = await this.domainForNamespace(
-        message.profileNamespaceId,
+        authorHomeNamespaceId(message),
       );
       const publicRootKey = await this.publicRootKeyForNamespace(
         message.publisherNamespaceId,
@@ -1558,6 +1563,20 @@ export class ForwardBundleService {
       HttpStatus.BAD_REQUEST,
     );
   }
+}
+
+/** The namespace whose domain names a forward-snapshot author. A zero profile
+ * namespace means the author's profile lives in the publisher's namespace: local
+ * rows resolve to the local namespace and mirrored rows to the publishing peer.
+ * A non-zero profile namespace is the author's own home namespace (remote group
+ * members published through an authority) and wins over the publisher. */
+export function authorHomeNamespaceId(message: {
+  profileNamespaceId: number;
+  publisherNamespaceId: number;
+}): number {
+  return message.profileNamespaceId === 0
+    ? message.publisherNamespaceId
+    : message.profileNamespaceId;
 }
 
 function truncateGraphemes(value: string, max: number): string {

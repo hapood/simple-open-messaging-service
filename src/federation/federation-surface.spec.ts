@@ -6,6 +6,8 @@ import { S2sController } from './s2s.controller.js';
 import { S2sRecognitionController } from './s2s-recognition.controller.js';
 import { WellKnownController } from './well-known.controller.js';
 import { GLOBAL_PREFIX_EXCLUSIONS } from '../bootstrap.js';
+import { S2sVerifyController } from './s2s-verify.controller.js';
+import { pathToRegexp } from 'path-to-regexp';
 import {
   FEDERATION_API_PREFIX,
   FEDERATION_PROTOCOL_VERSION,
@@ -46,7 +48,12 @@ describe('Federation v1 surface', () => {
 
   it('matches the complete mandatory route manifest', () => {
     expect(
-      [S2sController, S2sRecognitionController, WellKnownController]
+      [
+        S2sController,
+        S2sRecognitionController,
+        S2sVerifyController,
+        WellKnownController,
+      ]
         .flatMap(routes)
         .sort(),
     ).toEqual(
@@ -68,6 +75,7 @@ describe('Federation v1 surface', () => {
         'POST /s2s/v1/message-provenance',
         'GET /s2s/v1/health',
         'POST /s2s/v1/recognize',
+        'POST /s2s/v1/verify',
       ].sort(),
     );
   });
@@ -76,15 +84,23 @@ describe('Federation v1 surface', () => {
     const declaredRoutes = [
       S2sController,
       S2sRecognitionController,
+      S2sVerifyController,
       WellKnownController,
     ]
       .flatMap(routes)
       .sort();
-    const excludedRoutes = GLOBAL_PREFIX_EXCLUSIONS.map(
-      ({ method, path }) => `${RequestMethod[method]} /${path}`,
-    ).sort();
-
-    expect(excludedRoutes).toEqual(declaredRoutes);
+    for (const route of declaredRoutes) {
+      const [verb, path] = route.split(' ');
+      expect(
+        GLOBAL_PREFIX_EXCLUSIONS.some(
+          (exclusion) =>
+            (exclusion.method === RequestMethod.ALL ||
+              RequestMethod[exclusion.method] === verb) &&
+            pathToRegexp(`/${exclusion.path}`).regexp.test(path),
+        ),
+        route,
+      ).toBe(true);
+    }
   });
 
   it('keeps cross-version bootstrap on the fixed well-known surface', () => {

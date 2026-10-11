@@ -7,6 +7,7 @@ import {
   forwardBundleDependency,
 } from '../database/schema.js';
 import {
+  authorHomeNamespaceId,
   FORWARD_MAX_WIRE_JSON_BYTES,
   forwardBundleDigest,
   ForwardBundleService,
@@ -689,6 +690,27 @@ describe('ForwardBundleService', () => {
     expect(prepared.messages[0]).toMatchObject({ id: 1 });
     expect(prepared.messages[0].quoteTargetId).toBe(0);
     expect(JSON.parse(prepared.messages[0].content)).toEqual({ text: 'reply' });
+  });
+
+  it('derives the author home namespace from the publisher for mirrored authors', () => {
+    // Mirrored rows carry the remote author's profile inside the publisher's
+    // namespace (profileNamespaceId 0); their home domain must come from the
+    // publisher namespace, not from the local namespace 0.
+    expect(
+      authorHomeNamespaceId({ profileNamespaceId: 0, publisherNamespaceId: 9 }),
+    ).toBe(9);
+    expect(
+      authorHomeNamespaceId({ profileNamespaceId: 0, publisherNamespaceId: 0 }),
+    ).toBe(0);
+  });
+
+  it('keeps the profile namespace as the author home for authority-published members', () => {
+    // A remote group member published through a local authority keeps their
+    // own home namespace in profileNamespaceId; the publisher (the local
+    // authority) must not win the author domain.
+    expect(
+      authorHomeNamespaceId({ profileNamespaceId: 3, publisherNamespaceId: 0 }),
+    ).toBe(3);
   });
 
   it('uses the creator account as display name when the exact revision is unavailable', async () => {

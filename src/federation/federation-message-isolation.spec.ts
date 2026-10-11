@@ -26,14 +26,13 @@ const item = (
   sequence: string,
 ): Extract<
   FederationMessageFeedMessage,
-  { authorRef: 'THREAD_ACCOUNT' | 'THREAD_PEER_ACCOUNT' }
+  { thread: { peerAccount: string } }
 > => ({
   thread: {
     account: 'alice',
     peerAccount: 'bob',
   },
-  authorRef: 'THREAD_PEER_ACCOUNT',
-  namespaceId: 12,
+  author: { ref: 'THREAD_PEER_ACCOUNT', namespaceId: 12 },
   seq: Number(sequence),
   profileRev: 3,
   originSeq: Number(sequence),
@@ -133,10 +132,9 @@ describe('federation message context isolation', () => {
       bad.contentType = contentType;
       bad.content =
         contentType === 'FORWARD' ? 'invalid-json' : '{"items":null}';
-      const good = {
+      const good: FederationMessageFeedMessage = {
         ...item('70'),
-        authorRef: 'THREAD_ACCOUNT' as const,
-        namespaceId: 0,
+        author: { ref: 'THREAD_ACCOUNT', namespaceId: 0 },
         originSeq: null,
         originCreatedAt: null,
       };
@@ -682,8 +680,8 @@ describe('federation message context isolation', () => {
     const service = createMessagePageService();
     const incoming = item('70');
     incoming.createdAt = 1_700_000_001_000;
-    incoming.authorRef = 'THREAD_ACCOUNT';
-    incoming.namespaceId = 0;
+    incoming.author.ref = 'THREAD_ACCOUNT';
+    incoming.author.namespaceId = 0;
     incoming.originSeq = null;
     incoming.originCreatedAt = null;
     const findFirst = vi.fn().mockResolvedValue({
@@ -730,10 +728,9 @@ describe('federation message context isolation', () => {
   it('rejects conflicting immutable fields at an existing origin coordinate', async () => {
     const service = createMessagePageService();
     const warn = vi.fn();
-    const incoming = {
+    const incoming: FederationMessageFeedMessage = {
       ...item('70'),
-      authorRef: 'THREAD_ACCOUNT' as const,
-      namespaceId: 0,
+      author: { ref: 'THREAD_ACCOUNT', namespaceId: 0 },
       originSeq: null,
       originCreatedAt: null,
     };
@@ -944,10 +941,8 @@ describe('federation message context isolation', () => {
     const localAuthorItem = {
       ...item('1'),
       thread: { account: '!group' },
-      namespaceId: 0,
-      author: { account: 'alice', domain: 'peer.test' },
-    } as FederationMessageFeedMessage;
-    delete (localAuthorItem as { authorRef?: unknown }).authorRef;
+      author: { account: 'alice', namespaceId: 0 },
+    } satisfies FederationMessageFeedMessage;
     const author = (
       service as unknown as {
         federatedMessageAuthor(
@@ -974,7 +969,7 @@ describe('federation message context isolation', () => {
     malformed.content = JSON.stringify({
       text: 'secret-message-body-that-must-not-be-logged',
     });
-    malformed.authorRef = 'attacker\nforged-log-line' as 'THREAD_ACCOUNT';
+    malformed.author.ref = 'attacker\nforged-log-line' as 'THREAD_ACCOUNT';
     const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
 
     await expect(

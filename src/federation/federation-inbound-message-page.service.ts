@@ -278,6 +278,11 @@ export class FederationInboundMessagePageService {
             domain,
             item,
             error,
+            {
+              tokenNamespaceId: token.namespaceId,
+              tokenPeerAssignedLocalNamespaceId:
+                token.peerAssignedLocalNamespaceId,
+            },
           )}`,
         );
       }
@@ -330,6 +335,15 @@ export class FederationInboundMessagePageService {
                 domain,
                 item,
                 'SOURCE_COORDINATES_MISSING',
+                {
+                  processId: process.pid,
+                  namespaceId: token.namespaceId,
+                  peerAssignedLocalNamespaceId:
+                    token.peerAssignedLocalNamespaceId,
+                  threadId: route.threadId,
+                  originSeq: item.originSeq,
+                  originCreatedAt: item.originCreatedAt,
+                },
               )}`,
             );
             continue;
@@ -346,6 +360,8 @@ export class FederationInboundMessagePageService {
             originSeq: item.originSeq,
             originCreatedAt: item.originCreatedAt,
             isP2PThread: 'peerAccount' in item.thread,
+            publishedProfileNamespaceId:
+              'account' in item.author ? item.author.namespaceId : undefined,
             logContext: federatedMessageLogContext(
               domain,
               item,

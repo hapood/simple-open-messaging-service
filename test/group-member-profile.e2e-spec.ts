@@ -34,19 +34,24 @@ describe('exact group-member profile disclosure', () => {
   let threadId: number;
   let pairIds: bigint[];
 
-  const lookup = (rev: number, domain = signerDomain, namespace = signerNs) =>
+  const lookup = (rev: number, namespace = signerNs) =>
     service.getAuthorizedGroupMemberProfile(
       groupName,
       memberAccount,
       memberNs,
       rev,
-      domain,
       namespace,
     );
 
   beforeAll(async () => {
     database = new DatabaseService();
-    service = new FederationProfileService(database, {} as never, {} as never);
+    service = new FederationProfileService(
+      database,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
     signerNs = await seedFederatedPeerNamespace(database.db, signerDomain);
     memberNs = await seedFederatedPeerNamespace(database.db, memberDomain);
     const [group] = await database.db
@@ -62,7 +67,7 @@ describe('exact group-member profile disclosure', () => {
       .values({
         type: 'GROUP',
         groupAccount: groupName,
-        groupDomain: 'local',
+        groupDomain: localDomain,
         groupAccountId: groupId,
         updatedAt: new Date(),
       })
@@ -87,7 +92,7 @@ describe('exact group-member profile disclosure', () => {
         account: memberAccount,
         domain: memberDomain,
         publisherNamespaceId: memberNs,
-        profileNamespaceId: memberNs,
+        profileNamespaceId: 0,
         profileRev: 4,
         displayName: 'Old snapshot',
       },
@@ -95,7 +100,7 @@ describe('exact group-member profile disclosure', () => {
         account: memberAccount,
         domain: memberDomain,
         publisherNamespaceId: memberNs,
-        profileNamespaceId: memberNs,
+        profileNamespaceId: 0,
         profileRev: 7,
         displayName: 'Message snapshot',
       },
@@ -186,12 +191,7 @@ describe('exact group-member profile disclosure', () => {
     await database.db.delete(groupAccount).where(eq(groupAccount.id, groupId));
     await database.db
       .delete(profileTable)
-      .where(
-        and(
-          eq(profileTable.account, memberAccount),
-          eq(profileTable.profileNamespaceId, memberNs),
-        ),
-      );
+      .where(eq(profileTable.account, memberAccount));
     await database.onApplicationShutdown();
   });
 
@@ -204,7 +204,7 @@ describe('exact group-member profile disclosure', () => {
     });
     expect(await lookup(7)).toBeNull();
     expect(await lookup(0)).toBeNull();
-    expect(await lookup(4, memberDomain, memberNs)).toBeNull();
+    expect(await lookup(4, memberNs)).toBeNull();
   });
 
   it('serves a distinct message revision only inside the published interval', async () => {
@@ -214,8 +214,9 @@ describe('exact group-member profile disclosure', () => {
         seq: 1,
         profileRev: 7,
         creatorAccount: memberAccount,
-
-        profileNamespaceId: memberNs,
+        publisherNamespaceId: memberNs,
+        originSeq: 1,
+        profileNamespaceId: 0,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'hello' }),
         updatedAt: new Date(),
@@ -258,6 +259,15 @@ describe('exact group-member profile disclosure', () => {
       .set({ isDeleted: false })
       .where(eq(message.threadId, threadId));
     await database.db
+      .update(message)
+      .set({ localState: 'STUB' })
+      .where(eq(message.threadId, threadId));
+    expect(await lookup(7)).toMatchObject({ profileRev: 7 });
+    await database.db
+      .update(message)
+      .set({ localState: 'READY' })
+      .where(eq(message.threadId, threadId));
+    await database.db
       .update(groupMetaMemberFeed)
       .set({
         feedId: 2,
@@ -281,6 +291,110 @@ describe('exact group-member profile disclosure', () => {
     expect(await lookup(7)).toMatchObject({ profileRev: 7 });
   });
 
+  it('maps the origin-published member namespace to the exact retained home snapshot', async () => {
+    const revision = 11;
+    const snapshot = {
+      account: memberAccount,
+      publisherNamespaceId: memberNs,
+      profileNamespaceId: 0,
+      profileRev: revision,
+      displayName: 'Exact source snapshot',
+    };
+    await database.db.insert(profileTable).values([
+      snapshot,
+      {
+        ...snapshot,
+        publisherNamespaceId: 0,
+        displayName: 'Unrelated local snapshot',
+      },
+      {
+        ...snapshot,
+        publisherNamespaceId: signerNs,
+        displayName: 'Unrelated peer snapshot',
+      },
+    ]);
+    await database.db.insert(message).values(
+      withMessageDigest({
+        threadId,
+        seq: 2,
+        originSeq: 2,
+        creatorAccount: memberAccount,
+        publisherNamespaceId: memberNs,
+        profileNamespaceId: 0,
+        profileRev: revision,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'publisher-scoped author' }),
+        updatedAt: new Date(),
+      }),
+    );
+    const exact = () =>
+      service.getAuthorizedGroupMemberProfile(
+        groupName,
+        memberAccount,
+        memberNs,
+        revision,
+        signerNs,
+      );
+    const head = and(
+      eq(peerStateFeed.namespaceId, signerNs),
+      eq(peerStateFeed.account, groupName),
+    );
+    expect(await exact()).toBeNull();
+    await database.db
+      .update(peerStateFeed)
+      .set({ body: { messageEndSeq: 2 } })
+      .where(head);
+    expect(
+      await service.getAuthorizedGroupMemberProfile(
+        groupName,
+        memberAccount,
+        0,
+        revision,
+        signerNs,
+      ),
+    ).toBeNull();
+    expect(await exact()).toMatchObject({
+      namespaceId: memberNs,
+      account: memberAccount,
+      profileRev: revision,
+      displayName: snapshot.displayName,
+    });
+    await database.db.insert(threadAudience).values({
+      threadId,
+      targetDomain: signerDomain,
+      targetNamespaceId: signerNs,
+      messageAccessAfterSeq: 2,
+    });
+    expect(await exact()).toBeNull();
+    await database.db
+      .delete(threadAudience)
+      .where(eq(threadAudience.threadId, threadId));
+    await database.db
+      .delete(profileTable)
+      .where(
+        and(
+          eq(profileTable.publisherNamespaceId, memberNs),
+          eq(profileTable.profileNamespaceId, 0),
+          eq(profileTable.account, memberAccount),
+          eq(profileTable.profileRev, revision),
+        ),
+      );
+    // Cached snapshots with identical subject coordinates from other publishers
+    // are not substitutes for the snapshot named by the authorized message.
+    expect(await exact()).toBeNull();
+    await database.db.insert(profileTable).values(snapshot);
+    await database.db
+      .update(message)
+      .set({ isDeleted: true })
+      .where(and(eq(message.threadId, threadId), eq(message.seq, 2)));
+    expect(await exact()).toBeNull();
+    await database.db
+      .update(message)
+      .set({ isDeleted: false })
+      .where(and(eq(message.threadId, threadId), eq(message.seq, 2)));
+    expect(await exact()).toMatchObject({ displayName: snapshot.displayName });
+  });
+
   it('withdraws both proofs on revocation and does not substitute another revision', async () => {
     await database.db
       .update(relationshipIntent)
@@ -296,5 +410,14 @@ describe('exact group-member profile disclosure', () => {
     expect(await lookup(4)).toBeNull();
     expect(await lookup(7)).toBeNull();
     expect(await lookup(8)).toBeNull();
+    expect(
+      await service.getAuthorizedGroupMemberProfile(
+        groupName,
+        memberAccount,
+        memberNs,
+        11,
+        signerNs,
+      ),
+    ).toBeNull();
   });
 });

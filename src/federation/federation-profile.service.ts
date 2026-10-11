@@ -183,7 +183,6 @@ export class FederationProfileService {
     account: string,
     profileNamespaceId: number,
     rev: number,
-    peerDomain: string,
     namespaceId: number,
   ): Promise<S2SProfile | null> {
     if (
@@ -194,10 +193,7 @@ export class FederationProfileService {
     )
       return null;
     const namespace = await this.database.db.query.identityNamespace.findFirst({
-      where: and(
-        eq(tables.identityNamespace.id, namespaceId),
-        eq(tables.identityNamespace.domain, peerDomain),
-      ),
+      where: eq(tables.identityNamespace.id, namespaceId),
       columns: { id: true },
     });
     if (!namespace) return null;
@@ -209,7 +205,6 @@ export class FederationProfileService {
           async (tx) => {
             const authorized = await resolveAuthorizedFederationThreadInTx(
               tx,
-              peerDomain,
               namespaceId,
               { type: 'GROUP', account: owner },
             );
@@ -353,7 +348,6 @@ export class FederationProfileService {
               )
               OR
               (thread.type = 'GROUP' AND pair.kind = 'GROUP_MEMBER'
-                AND thread."groupDomain" = ${peerDomain}
                 AND thread."authorityNamespaceId" = ${namespaceId}
                 AND thread."groupAccountId" IS NULL
                 AND pair."endpointBType" = 'GROUP'
@@ -403,7 +397,6 @@ export class FederationProfileService {
     memberAccount: string,
     profileNamespaceId: number,
     rev: number,
-    peerDomain: string,
     namespaceId: number,
   ): Promise<S2SProfile | null> {
     if (
@@ -419,7 +412,6 @@ export class FederationProfileService {
         async (tx) => {
           const authorized = await resolveAuthorizedFederationThreadInTx(
             tx,
-            peerDomain,
             namespaceId,
             { type: 'GROUP', account: normalizeAccount(groupAccount) },
           );
@@ -457,6 +449,9 @@ export class FederationProfileService {
           SELECT profile.account, profile."displayName", profile.avatar,
             profile.bio, profile."profileNamespaceId", profile."profileRev"
           FROM "Profile" profile
+          -- The origin's published member namespace names the member home.
+          -- Its retained native snapshot is (that captured publisher, subject 0).
+          JOIN "IdentityNamespace" member_home ON member_home.id = ${profileNamespaceId}
           JOIN "MessageThread" thread ON thread.id = ${authorized.threadId}
           JOIN "GroupAccount" group_account ON group_account.id = thread."groupAccountId"
             AND group_account."dissolvedAt" IS NULL
@@ -464,15 +459,15 @@ export class FederationProfileService {
             AND thread."authorityNamespaceId" = 0
             AND thread."groupAccount" = ${normalizeAccount(groupAccount)}
             AND profile.account = ${normalizeAccount(memberAccount)}
-            AND profile."publisherNamespaceId" = CASE WHEN ${profileNamespaceId} = 0 THEN 0 ELSE ${profileNamespaceId} END
-            AND profile."profileNamespaceId" = ${profileNamespaceId}
+            AND profile."publisherNamespaceId" = member_home.id
+            AND profile."profileNamespaceId" = 0
             AND profile."profileRev" = ${rev}
             AND (
               EXISTS (
                 SELECT 1 FROM "GroupMetaMemberFeed" fact
                 WHERE fact."threadId" = thread.id
                   AND fact."memberAccount" = profile.account
-                  AND (fact.body ->> 'profileNamespaceId')::integer = profile."profileNamespaceId"
+                  AND (fact.body ->> 'profileNamespaceId')::integer = member_home.id
                   AND fact.operation = 'MEMBER_UPSERT'
                   AND fact."feedId" = (
                     SELECT MAX(current_fact."feedId")
@@ -483,13 +478,15 @@ export class FederationProfileService {
                   )
                   AND (fact.body ->> 'profileNamespaceId')::integer = ${profileNamespaceId}
                   AND (fact.body ->> 'profileRev')::integer = ${rev}
-                  AND (profile."profileNamespaceId" = 0 OR EXISTS (
+                  AND ((member_home.id = 0
+                    AND profile."publisherNamespaceId" = thread."authorityNamespaceId") OR EXISTS (
                     SELECT 1 FROM "RelationshipPair" pair
                     WHERE pair.kind = 'GROUP_MEMBER' AND pair."threadId" = thread.id
                       AND pair.active
                       AND pair."endpointBType" = 'USER'
                       AND pair."endpointBAccount" = profile.account
                       AND pair."endpointBNamespaceId" = ${profileNamespaceId}
+                      AND profile."publisherNamespaceId" = pair."endpointBNamespaceId"
                   ))
               )
               OR EXISTS (
@@ -498,12 +495,11 @@ export class FederationProfileService {
                   AND message.seq > ${authorized.messageAccessAfterSeq}
                   AND message.seq <= ${messageEnd}
                   AND message."creatorAccount" = profile.account
+                  AND message."publisherNamespaceId" = profile."publisherNamespaceId"
                   AND message."profileNamespaceId" = profile."profileNamespaceId"
-                  AND message."profileNamespaceId" = ${profileNamespaceId}
                   AND message."profileRev" = ${rev}
                   AND message."contentType" <> 'SYSTEM'
                   AND message."isDeleted" = false
-                  AND message."localState" = 'READY'
               )
             )
           LIMIT 1
@@ -522,7 +518,8 @@ export class FederationProfileService {
     }
     return row
       ? this.toS2SProfile({
-          profileNamespaceId: row.profileNamespaceId,
+          // Return the origin-published coordinate, not the retained home coordinate.
+          profileNamespaceId,
           account: row.account,
           name: row.displayName,
           avatar: row.avatar,
@@ -649,19 +646,13 @@ export class FederationProfileService {
         );
       return row.rootPublicKey;
     }
-    const result = await this.profileNamespace.resolveOne({
+    const pair = {
       publisherNamespaceId: possession.publisherNamespaceId,
       profileNamespaceId: possession.profileNamespaceId,
-    });
-    if (result.status === 'PENDING')
-      this.refresh.scheduleRefresh(
-        {
-          publisherNamespaceId: possession.publisherNamespaceId,
-          profileNamespaceId: possession.profileNamespaceId,
-        },
-        0n,
-      );
-    const entry = result.status === 'READY' ? result.entry : undefined;
+    };
+    const entry = await this.profileNamespace.readOne(pair);
+    if ((!entry || entry.expired) && pair.publisherNamespaceId > 0)
+      await this.refresh.fetch(pair);
     if (
       !entry ||
       entry.expired ||

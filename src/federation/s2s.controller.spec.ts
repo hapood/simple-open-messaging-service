@@ -213,7 +213,6 @@ describe('S2sController account profiles', () => {
       'alice',
       0,
       4,
-      'a.example',
       7,
     );
   });
@@ -254,7 +253,6 @@ describe('S2sController group member profiles', () => {
       'alice',
       0,
       4,
-      'a.example',
       7,
     );
   });
@@ -338,7 +336,6 @@ describe('S2sController reverse thread queries', () => {
 
     await controller.queryMessages(req, 'alice', 'bob', undefined, '3');
     expect(messageFeed.query).toHaveBeenCalledWith(
-      'a.example',
       7,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       undefined,
@@ -372,7 +369,6 @@ describe('S2sController reverse thread queries', () => {
       '9007199254740991',
     );
     expect(messageFeed.query).toHaveBeenLastCalledWith(
-      'a.example',
       7,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       undefined,
@@ -458,7 +454,6 @@ describe('S2sController reverse thread queries', () => {
       'false',
     );
     expect(tombstoneFeed.query).toHaveBeenCalledWith(
-      'a.example',
       7,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       1,
@@ -497,7 +492,6 @@ describe('S2sController reverse thread queries', () => {
       '42',
     );
     expect(tombstoneFeed.query).toHaveBeenCalledWith(
-      'a.example',
       7,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       1,
@@ -551,7 +545,6 @@ describe('S2sController group-meta modes', () => {
       '40',
     );
     expect(groupMeta.serve).toHaveBeenLastCalledWith(
-      'a.example',
       undefined,
       '!01arz3ndektsv4rrffq69g5fav',
       'full',
@@ -575,7 +568,6 @@ describe('S2sController group-meta modes', () => {
       '7',
     );
     expect(groupMeta.serve).toHaveBeenLastCalledWith(
-      'a.example',
       undefined,
       '!01arz3ndektsv4rrffq69g5fav',
       'delta',
@@ -597,7 +589,6 @@ describe('S2sController group-meta modes', () => {
 
     await controller.getGroupMeta(req, '!01arz3ndektsv4rrffq69g5fav', 'full');
     expect(groupMeta.serve).toHaveBeenLastCalledWith(
-      'a.example',
       undefined,
       '!01arz3ndektsv4rrffq69g5fav',
       'full',

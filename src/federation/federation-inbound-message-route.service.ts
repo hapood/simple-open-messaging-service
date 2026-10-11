@@ -57,39 +57,54 @@ export class FederationInboundMessageRouteService {
     sourceDomain: string,
     peerAssignedLocalNamespaceId: number,
   ): ResolvedInboundAuthor {
-    if ('authorRef' in item) {
-      const expectedNamespaceId =
-        item.authorRef === 'THREAD_ACCOUNT' ? 0 : peerAssignedLocalNamespaceId;
-      if (item.namespaceId !== expectedNamespaceId) {
+    if ('ref' in item.author) {
+      if (!('peerAccount' in item.thread))
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
-          'P2P author reference conflicts with namespaceId',
+          'P2P author reference requires a P2P thread',
           HttpStatus.BAD_REQUEST,
         );
+      const account =
+        item.author.ref === 'THREAD_ACCOUNT'
+          ? item.thread.account
+          : item.thread.peerAccount;
+      if (
+        item.author.namespaceId === 0 &&
+        item.author.ref === 'THREAD_ACCOUNT'
+      ) {
+        return {
+          account,
+          namespaceId: 0,
+          publisherLocal: true,
+          receiverLocal: false,
+        };
       }
-      return item.authorRef === 'THREAD_ACCOUNT'
-        ? {
-            account: item.thread.account,
-            namespaceId: 0,
-            publisherLocal: true,
-            receiverLocal: false,
-          }
-        : {
-            account: item.thread.peerAccount,
-            namespaceId: 0,
-            publisherLocal: false,
-            receiverLocal: true,
-          };
+      if (
+        item.author.namespaceId > 0 &&
+        item.author.ref === 'THREAD_PEER_ACCOUNT'
+      ) {
+        return {
+          account,
+          namespaceId: 0,
+          publisherLocal: false,
+          receiverLocal: true,
+        };
+      }
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'P2P author reference conflicts with namespaceId',
+        HttpStatus.BAD_REQUEST,
+      );
     }
-    if (item.namespaceId === 0) {
+    if (item.author.namespaceId === 0) {
       return {
         account: item.author.account,
-        namespaceId: item.namespaceId,
+        namespaceId: item.author.namespaceId,
         publisherLocal: true,
         receiverLocal: false,
       };
     }
-    if (item.namespaceId === peerAssignedLocalNamespaceId) {
+    if (item.author.namespaceId === peerAssignedLocalNamespaceId) {
       return {
         account: item.author.account,
         namespaceId: 0,
@@ -99,7 +114,7 @@ export class FederationInboundMessageRouteService {
     }
     return {
       account: item.author.account,
-      namespaceId: item.namespaceId,
+      namespaceId: item.author.namespaceId,
       publisherLocal: false,
       receiverLocal: false,
     };
@@ -330,8 +345,7 @@ export class FederationInboundMessageRouteService {
         tx,
         {
           thread,
-          authorRef: 'THREAD_ACCOUNT',
-          namespaceId: 0,
+          author: { ref: 'THREAD_ACCOUNT', namespaceId: 0 },
         } as FederationMessageFeedMessage,
         sourceDomain,
         namespaceId,
@@ -390,8 +404,7 @@ export class FederationInboundMessageRouteService {
           tx,
           {
             thread,
-            namespaceId: 0,
-            author: { account: target.account, domain: sourceDomain },
+            author: { account: target.account, namespaceId: 0 },
           } as FederationMessageFeedMessage,
           sourceDomain,
           namespaceId,

@@ -262,7 +262,6 @@ describe('account-owned THREAD_STATE and default profiles', () => {
             await tx.execute(sql`SET LOCAL lock_timeout = '1000ms'`);
             const authorized = await resolveAuthorizedFederationThreadInTx(
               tx,
-              f.domain,
               f.namespaceId,
               { type: 'P2P', account: f.owner.account, peerAccount: f.target },
             );
@@ -271,7 +270,6 @@ describe('account-owned THREAD_STATE and default profiles', () => {
             // A page keeps one authorization/data snapshot even after the writer commits.
             const samePage = await resolveAuthorizedFederationThreadInTx(
               tx,
-              f.domain,
               f.namespaceId,
               { type: 'P2P', account: f.owner.account, peerAccount: f.target },
             );
@@ -282,16 +280,11 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         await expect(
           database.db.transaction(
             (tx) =>
-              resolveAuthorizedFederationThreadInTx(
-                tx,
-                f.domain,
-                f.namespaceId,
-                {
-                  type: 'P2P',
-                  account: f.owner.account,
-                  peerAccount: f.target,
-                },
-              ),
+              resolveAuthorizedFederationThreadInTx(tx, f.namespaceId, {
+                type: 'P2P',
+                account: f.owner.account,
+                peerAccount: f.target,
+              }),
             { isolationLevel: 'repeatable read', accessMode: 'read only' },
           ),
         ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });

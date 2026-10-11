@@ -37,6 +37,7 @@ import { ProfileNamespaceFeedConsumerService } from './profile-namespace-feed-co
 import { ProfileNamespaceFeedPullService } from './profile-namespace-feed-pull.service.js';
 import { ProfileNamespaceService } from './profile-namespace.service.js';
 import { ProfileNamespaceRefreshService } from './profile-namespace-refresh.service.js';
+import { ProfileNamespaceResolutionService } from './profile-namespace-resolution.service.js';
 import { FederationProfileNamespacePullService } from './federation-profile-namespace-pull.service.js';
 import { PeerStateFeedPullService } from './peer-state-feed-pull.service.js';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
@@ -311,6 +312,7 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
     ProfileNamespaceFeedPullService,
     ProfileNamespaceService,
     ProfileNamespaceRefreshService,
+    ProfileNamespaceResolutionService,
     FederationProfileNamespacePullService,
     FederationStateFeedConsumerService,
     MessageProfileWorkDispatcherService,
@@ -360,6 +362,7 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
     ProfileNamespaceFeedService,
     ProfileNamespaceService,
     ProfileNamespaceRefreshService,
+    ProfileNamespaceResolutionService,
   ],
 })
 export class FederationModule {}

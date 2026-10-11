@@ -89,8 +89,7 @@ describe('GroupRelationshipMutationService', () => {
             {
               id: 9,
               account: '!remote-group',
-              domain: 'peer.example',
-              namespaceId: 12,
+                            namespaceId: 12,
               name: 'Remote group',
               avatar: '',
               description: '',
@@ -102,8 +101,7 @@ describe('GroupRelationshipMutationService', () => {
         account: {
           findFirst: vi.fn().mockResolvedValue({
             account: 'local-user',
-            domain: 'local',
-            namespaceId: 0,
+                        namespaceId: 0,
           }),
         },
       },
@@ -203,8 +201,7 @@ describe('GroupRelationshipMutationService', () => {
             {
               id: 9,
               account: '!remote-group',
-              domain: 'peer.example',
-              namespaceId: 12,
+                            namespaceId: 12,
               name: 'Remote group',
               avatar: '',
               description: '',
@@ -216,8 +213,7 @@ describe('GroupRelationshipMutationService', () => {
         account: {
           findFirst: vi.fn().mockResolvedValue({
             account: 'local-user',
-            domain: 'local',
-            namespaceId: 0,
+                        namespaceId: 0,
           }),
         },
       },
@@ -294,8 +290,7 @@ describe('GroupRelationshipMutationService', () => {
             {
               id: 9,
               account: '!group',
-              domain: 'peer.test',
-              namespaceId: 5,
+                            namespaceId: 5,
             },
           ]),
         ),
@@ -303,8 +298,7 @@ describe('GroupRelationshipMutationService', () => {
         account: {
           findFirst: vi.fn().mockResolvedValue({
             account: 'member',
-            domain: 'local',
-            namespaceId: 0,
+                        namespaceId: 0,
           }),
         },
       },
@@ -338,8 +332,7 @@ describe('GroupRelationshipMutationService', () => {
             epoch: 9,
             group: {
               account: '!group',
-              domain: 'peer.test',
-              namespaceId: 5,
+                            namespaceId: 5,
             },
           },
         },
@@ -394,7 +387,7 @@ describe('GroupRelationshipMutationService', () => {
         {
           expectedAuthorization: {
             epoch: 9,
-            group: { account: '!group', domain: 'local', namespaceId: 0 },
+            group: { account: '!group', namespaceId: 0 },
           },
         },
       ),

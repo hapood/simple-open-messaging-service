@@ -572,6 +572,7 @@ export class FederationRecognitionService {
         isNull(tables.identityNamespace.retiredAt),
       ),
       columns: {
+        id: true,
         peerAssignedLocalNamespaceId: true,
         peerAcceptanceConfirmed: true,
         localServiceAvailable: true,
@@ -587,7 +588,8 @@ export class FederationRecognitionService {
       : {
           ok: true,
           status: 'recognized',
-          peerAssignedLocalNamespaceId: peer.peerAssignedLocalNamespaceId,
+          // Tell the sender how this receiver numbers it, not the reverse coordinate.
+          peerAssignedLocalNamespaceId: peer.id,
         };
   }
 

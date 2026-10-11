@@ -2,20 +2,13 @@ import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import { ApiBody, ApiOkResponse } from '@nestjs/swagger';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
-import { ProfileNamespaceService } from '../federation/profile-namespace.service.js';
-import { ProfileNamespaceRefreshService } from '../federation/profile-namespace-refresh.service.js';
+import { ProfileNamespaceResolutionService } from '../federation/profile-namespace-resolution.service.js';
 
-/** Client-side namespace-bindings resolution. Single-pair POST: the client
- *  demands one (publisher, nsid) pair at a time, mirroring profile
- *  resolution. The server answers READY (with the binding, possibly expired)
- *  or PENDING (a tomb was planted; the client waits for a wake with a 30s
- *  re-request timeout). */
+/** Resolve one client-demanded publisher-scoped namespace binding.
+ * PENDING means fetch work was created or joined, not that a cache row exists. */
 @Controller('profile-namespaces')
 export class ProfileNamespaceController {
-  constructor(
-    private readonly namespaceInfo: ProfileNamespaceService,
-    private readonly refresh: ProfileNamespaceRefreshService,
-  ) {}
+  constructor(private readonly resolution: ProfileNamespaceResolutionService) {}
 
   @Post('resolve')
   @HttpCode(HttpStatus.OK)
@@ -32,7 +25,7 @@ export class ProfileNamespaceController {
   })
   @ApiOkResponse({
     description:
-      'READY carries the binding (possibly an expired placeholder); PENDING means no local row exists — a tomb was planted and a background refresh was scheduled.',
+      'READY carries a usable binding or an authoritative local answer; PENDING means in-memory fetch work was created or joined.',
   })
   async resolve(@Body() dto: unknown) {
     const pair = dto as {
@@ -52,18 +45,9 @@ export class ProfileNamespaceController {
         'body must be a single namespace pair',
         HttpStatus.BAD_REQUEST,
       );
-    const result = await this.namespaceInfo.resolveOne({
+    return this.resolution.resolveOne({
       publisherNamespaceId: pair.publisherNamespaceId,
       profileNamespaceId: pair.profileNamespaceId,
     });
-    if (result.status === 'PENDING')
-      this.refresh.scheduleRefresh(
-        {
-          publisherNamespaceId: pair.publisherNamespaceId,
-          profileNamespaceId: pair.profileNamespaceId,
-        },
-        0n,
-      );
-    return result;
   }
 }

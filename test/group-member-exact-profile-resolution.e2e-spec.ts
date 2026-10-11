@@ -21,6 +21,7 @@ describe('exact profile completion for a federated group member', () => {
   let outsiderId: number;
   let threadId: number;
   let namespaceId: number;
+  let unrelatedPublisherNamespaceId: number;
   const domain = 'member-profile-origin.test';
   const account = 'exact-profile-member';
   const viewer = 'exact-profile-viewer';
@@ -38,6 +39,10 @@ describe('exact profile completion for a federated group member', () => {
     }).compile();
     database = mod.get(DatabaseService);
     namespaceId = await seedFederatedPeerNamespace(database.db, domain);
+    unrelatedPublisherNamespaceId = await seedFederatedPeerNamespace(
+      database.db,
+      'unrelated-profile-origin.test',
+    );
     const users = await database.db
       .insert(tables.account)
       .values([
@@ -51,6 +56,7 @@ describe('exact profile completion for a federated group member', () => {
       .insert(tables.messageThread)
       .values({
         type: 'GROUP',
+        curSeq: 1,
         groupAccount: '!exact-profile-group',
         groupDomain: domain,
         authorityNamespaceId: namespaceId,
@@ -62,6 +68,7 @@ describe('exact profile completion for a federated group member', () => {
       kind: 'GROUP_MEMBER',
       threadId,
       active: true,
+      established: true,
       endpointAType: 'USER',
       endpointAAccount: viewer,
       endpointANamespaceId: 0,
@@ -184,6 +191,123 @@ describe('exact profile completion for a federated group member', () => {
         .update(tables.relationshipPair)
         .set({ active: true })
         .where(eq(tables.relationshipPair.threadId, threadId));
+    }
+  });
+
+  it('authorizes a current Meta reference without requiring matching messages', async () => {
+    const demand = { ...selector(), target: { ...selector().target, rev: 3 } };
+    const authorize = (userId = viewerId) =>
+      subject['authorizeGroupMemberDemand'](userId, demand);
+    await database.db
+      .update(tables.groupMetaMemberFeed)
+      .set({
+        body: { role: 'OWNER', profileNamespaceId: namespaceId, profileRev: 3 },
+      })
+      .where(eq(tables.groupMetaMemberFeed.threadId, threadId));
+    try {
+      // The only message names revision 2, not the requested current revision 3.
+      await expect(authorize()).resolves.toBeUndefined();
+      await expect(authorize(outsiderId)).rejects.toMatchObject({
+        bizCode: BusinessCode.NOT_FOUND,
+      });
+      await database.db
+        .update(tables.relationshipPair)
+        .set({ active: false })
+        .where(eq(tables.relationshipPair.threadId, threadId));
+      await expect(authorize()).rejects.toMatchObject({
+        bizCode: BusinessCode.NOT_FOUND,
+      });
+    } finally {
+      await database.db
+        .update(tables.relationshipPair)
+        .set({ active: true })
+        .where(eq(tables.relationshipPair.threadId, threadId));
+      await database.db
+        .update(tables.groupMetaMemberFeed)
+        .set({
+          body: {
+            role: 'OWNER',
+            profileNamespaceId: namespaceId,
+            profileRev: 2,
+          },
+        })
+        .where(eq(tables.groupMetaMemberFeed.threadId, threadId));
+    }
+  });
+
+  it('authorizes message evidence independently of current Meta within the viewer range', async () => {
+    const demand = { ...selector(), target: { ...selector().target, rev: 4 } };
+    const authorize = (request = demand) =>
+      subject['authorizeGroupMemberDemand'](viewerId, request);
+    await database.db.insert(tables.message).values({
+      threadId,
+      seq: 2,
+      originSeq: 2,
+      originServerTime: new Date(),
+      publisherNamespaceId: namespaceId,
+      creatorAccount: account,
+      profileNamespaceId: namespaceId,
+      profileRev: 4,
+      contentType: 'PURE_TEXT',
+      content: JSON.stringify({ text: 'historical proof' }),
+      payloadDigest: 'historical-proof',
+      updatedAt: new Date(),
+    });
+    await database.db
+      .update(tables.accountThreadState)
+      .set({ messageEndSeq: 2 })
+      .where(eq(tables.accountThreadState.threadId, threadId));
+    await database.db
+      .update(tables.groupMetaMemberFeed)
+      .set({ operation: 'MEMBER_DEPART' })
+      .where(eq(tables.groupMetaMemberFeed.threadId, threadId));
+    try {
+      await expect(authorize()).resolves.toBeUndefined();
+      await expect(
+        authorize({
+          ...demand,
+          publisherNamespaceId: unrelatedPublisherNamespaceId,
+        }),
+      ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
+      await expect(
+        authorize({ ...demand, target: { ...demand.target, rev: 5 } }),
+      ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
+      await database.db
+        .update(tables.accountThreadState)
+        .set({ messageEndSeq: 1 })
+        .where(eq(tables.accountThreadState.threadId, threadId));
+      await expect(authorize()).rejects.toMatchObject({
+        bizCode: BusinessCode.NOT_FOUND,
+      });
+      await database.db
+        .update(tables.accountThreadState)
+        .set({ messageEndSeq: 2 })
+        .where(eq(tables.accountThreadState.threadId, threadId));
+      await database.db
+        .update(tables.messageThread)
+        .set({ curSeq: 2, clearedSeq: 2 })
+        .where(eq(tables.messageThread.id, threadId));
+      await expect(authorize()).rejects.toMatchObject({
+        bizCode: BusinessCode.NOT_FOUND,
+      });
+    } finally {
+      await database.db
+        .update(tables.messageThread)
+        .set({ curSeq: 1, clearedSeq: null })
+        .where(eq(tables.messageThread.id, threadId));
+      await database.db
+        .update(tables.accountThreadState)
+        .set({ messageEndSeq: 1 })
+        .where(eq(tables.accountThreadState.threadId, threadId));
+      await database.db
+        .update(tables.groupMetaMemberFeed)
+        .set({ operation: 'MEMBER_UPSERT' })
+        .where(eq(tables.groupMetaMemberFeed.threadId, threadId));
+      await database.db
+        .delete(tables.message)
+        .where(
+          and(eq(tables.message.threadId, threadId), eq(tables.message.seq, 2)),
+        );
     }
   });
 

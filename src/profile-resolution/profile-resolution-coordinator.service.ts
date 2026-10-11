@@ -141,7 +141,7 @@ export class ProfileResolutionCoordinatorService {
   ): Promise<void> {
     const namespace = await this.database.db.query.identityNamespace.findFirst({
       where: eq(tables.identityNamespace.id, demand.publisherNamespaceId),
-      columns: { domain: true },
+      columns: { id: true },
     });
     if (!namespace)
       throw new BusinessException(
@@ -150,7 +150,7 @@ export class ProfileResolutionCoordinatorService {
       );
 
     if (demand.lookup === ProfileLookup.GROUP_MEMBER_PROFILE) {
-      await this.authorizeGroupMemberDemand(userId, demand, namespace.domain);
+      await this.authorizeGroupMemberDemand(userId, demand);
       return;
     }
     await this.authorizeAccountDemand(userId, demand);
@@ -162,7 +162,6 @@ export class ProfileResolutionCoordinatorService {
       ProfileResolutionDemand,
       { lookup: ProfileLookup.GROUP_MEMBER_PROFILE }
     >,
-    publisherDomain: string,
   ): Promise<void> {
     const rows = await this.database.db.execute(sql`
       SELECT 1
@@ -170,23 +169,10 @@ export class ProfileResolutionCoordinatorService {
       JOIN "AccountThreadState" state ON state."accountId" = viewer.id
       JOIN "MessageThread" thread ON thread.id = state."threadId"
       JOIN ${groupStateSql} group_state ON group_state.id = thread.id
-      JOIN LATERAL (
-        SELECT fact.operation, fact.body
-        FROM "GroupMetaMemberFeed" fact
-        WHERE fact."threadId" = group_state.id
-          AND fact."memberAccount" = ${normalizeAccount(demand.target.account)}
-          AND (fact.body ->> 'profileNamespaceId')::integer = ${demand.target.profileNamespaceId}
-        ORDER BY fact."feedId" DESC
-        LIMIT 1
-      ) latest ON true
       WHERE viewer.id = ${userId}
         AND thread.type = 'GROUP'
         AND group_state.account = ${normalizeAccount(demand.groupAccount)}
-        AND group_state.domain = ${publisherDomain}
         AND group_state."namespaceId" = ${demand.publisherNamespaceId}
-        AND latest.operation = 'MEMBER_UPSERT'
-        AND (latest.body ->> 'profileNamespaceId')::integer = ${demand.target.profileNamespaceId}
-        AND (latest.body ->> 'profileRev')::integer = ${demand.target.rev}
         AND EXISTS (
           SELECT 1 FROM "RelationshipPair" pair
           WHERE pair."threadId" = thread.id
@@ -203,17 +189,32 @@ export class ProfileResolutionCoordinatorService {
                 AND pair."endpointBNamespaceId" = 0)
             )
         )
-        AND EXISTS (
-          SELECT 1 FROM "Message" message
-          WHERE message."threadId" = thread.id
-            AND message.seq > COALESCE(thread."clearedSeq", 0)
-            AND message.seq <= state."messageEndSeq"
-            AND message."creatorAccount" = ${normalizeAccount(demand.target.account)}
-            AND message."publisherNamespaceId" = ${demand.publisherNamespaceId}
-            AND message."profileNamespaceId" = ${demand.target.profileNamespaceId}
-            AND message."profileRev" = ${demand.target.rev}
-            AND message."contentType" <> 'SYSTEM'
-            AND message."localState" = 'READY'
+        AND (
+          EXISTS (
+            SELECT 1 FROM LATERAL (
+              SELECT fact.operation, fact.body
+              FROM "GroupMetaMemberFeed" fact
+              WHERE fact."threadId" = group_state.id
+                AND fact."memberAccount" = ${normalizeAccount(demand.target.account)}
+                AND (fact.body ->> 'profileNamespaceId')::integer = ${demand.target.profileNamespaceId}
+              ORDER BY fact."feedId" DESC
+              LIMIT 1
+            ) latest
+            WHERE latest.operation = 'MEMBER_UPSERT'
+              AND (latest.body ->> 'profileNamespaceId')::integer = ${demand.target.profileNamespaceId}
+              AND (latest.body ->> 'profileRev')::integer = ${demand.target.rev}
+          ) OR EXISTS (
+            SELECT 1 FROM "Message" message
+            WHERE message."threadId" = thread.id
+              AND message.seq > COALESCE(thread."clearedSeq", 0)
+              AND message.seq <= state."messageEndSeq"
+              AND message."creatorAccount" = ${normalizeAccount(demand.target.account)}
+              AND message."publisherNamespaceId" = ${demand.publisherNamespaceId}
+              AND message."profileNamespaceId" = ${demand.target.profileNamespaceId}
+              AND message."profileRev" = ${demand.target.rev}
+              AND message."contentType" <> 'SYSTEM'
+              AND message."localState" = 'READY'
+          )
         )
       LIMIT 1
     `);

@@ -151,6 +151,33 @@ describe('FederationRecognitionService atomic commit', () => {
     });
   });
 
+  it('returns the receiver-assigned peer id when the two namespace spaces differ', async () => {
+    const otherPeer = await seedActiveNamespace({
+      domain: 'atomic-recognition-other.test',
+      rootPublicKey: Buffer.alloc(32, 9).toString('base64'),
+    });
+    try {
+      const peerAssignedLocalNamespaceId = 1;
+      const peer = await seedActiveNamespace({ peerAssignedLocalNamespaceId });
+      expect(peer.id).not.toBe(peerAssignedLocalNamespaceId);
+      expect(
+        await service()['readRecognizedInbound'](domain, rootPublicKey),
+      ).toEqual({
+        ok: true,
+        status: 'recognized',
+        peerAssignedLocalNamespaceId: peer.id,
+      });
+      expect(await activeNamespace()).toMatchObject({
+        id: peer.id,
+        peerAssignedLocalNamespaceId,
+      });
+    } finally {
+      await database.db
+        .delete(identityNamespace)
+        .where(eq(identityNamespace.id, otherPeer.id));
+    }
+  });
+
   it('rejects a conflicting sender-assigned local namespace on an existing recognition', async () => {
     await seedActiveNamespace({
       peerAssignedLocalNamespaceId: 900,

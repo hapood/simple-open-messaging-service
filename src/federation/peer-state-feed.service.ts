@@ -377,8 +377,6 @@ export class PeerStateFeedService {
 
   async rejectMissingAfter(namespaceId: number): Promise<never> {
     const feedEndId = await this.readFeedEndId(namespaceId);
-    if (feedEndId === 0n)
-      throw new Error(`namespace ${namespaceId} has no state feed`);
     throw new BusinessException(
       BusinessCode.FEDERATION_FEED_CURSOR_UNAVAILABLE,
       'after is required; initialize the state feed cursor',

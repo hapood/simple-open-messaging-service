@@ -13,6 +13,7 @@ import { dataDirectory } from '../common/data-directory.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { MessageThreadType } from '../database/enums.js';
+import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
 import * as tables from '../database/schema.js';
 import { ForwardBundleService } from '../forward/forward-bundle.service.js';
 
@@ -95,6 +96,15 @@ export class FederationPeerResourceService {
     digest: string,
     sourceSeq: number,
   ): Promise<{ absPath: string; bytes: number }> {
+    if (toAccount.startsWith('!')) {
+      return this.resolveGroupMediaFile(
+        fromAccount,
+        toAccount,
+        signerNamespaceId,
+        sourceSeq,
+        digest,
+      );
+    }
     const candidates = await this.database.db
       .select({
         messageId: tables.message.id,
@@ -157,19 +167,93 @@ export class FederationPeerResourceService {
         BusinessCode.FORBIDDEN,
         'message was not historically delivered to peer',
       );
-    const binding = await this.database.db.query.messageAsset.findFirst({
+    return this.resolveMessageMedia(sourceMessage.id, digest);
+  }
+
+  private async resolveGroupMediaFile(
+    fromAccount: string,
+    groupAccount: string,
+    signerNamespaceId: number,
+    sourceSeq: number,
+    digest: string,
+  ): Promise<{ absPath: string; bytes: number }> {
+    return this.database.db.transaction(
+      async (tx) => {
+        const authorized = await resolveAuthorizedFederationThreadInTx(
+          tx,
+          signerNamespaceId,
+          { type: 'GROUP', account: normalizeAccount(groupAccount) },
+        );
+        const group = await readGroupState(
+          tx,
+          eq(groupStateTable.id, authorized.threadId),
+        );
+        if (!group || group.dissolvedAt !== null)
+          throw new BusinessException(
+            BusinessCode.FORBIDDEN,
+            'group is unavailable',
+          );
+        // The signer is the reader, not necessarily the message author. An origin
+        // serves its authorized group audience; a mirror serves only its own local
+        // submissions back to that group's origin, never third-party copies.
+        const originDistribution =
+          authorized.groupQueryDirection === 'ORIGIN_DISTRIBUTION';
+        const [source] = await tx
+          .select({ id: tables.message.id })
+          .from(tables.message)
+          .where(
+            and(
+              eq(tables.message.threadId, authorized.threadId),
+              eq(tables.message.creatorAccount, normalizeAccount(fromAccount)),
+              eq(tables.message.seq, sourceSeq),
+              eq(tables.message.isDeleted, false),
+              eq(tables.message.localState, 'READY'),
+              sql`${tables.message.seq} > ${authorized.messageAccessAfterSeq}`,
+              originDistribution
+                ? sql`EXISTS (
+                SELECT 1 FROM "PeerStateFeed" head
+                WHERE head."namespaceId" = ${signerNamespaceId}
+                  AND head.account = ${normalizeAccount(groupAccount)}
+                  AND head."eventType" = 'THREAD_CONTENT_HEAD'
+                  AND head."subjectAccount" = '' AND head."subjectNamespaceId" = 0
+                  AND ${tables.message.seq} <= CASE
+                    WHEN (head.body ->> 'messageEndSeq') ~ '^[0-9]{1,10}$'
+                    THEN (head.body ->> 'messageEndSeq')::numeric ELSE 0 END
+              )`
+                : and(
+                    eq(tables.message.publisherNamespaceId, 0),
+                    eq(tables.message.profileNamespaceId, 0),
+                  ),
+            ),
+          );
+        if (!source)
+          throw new BusinessException(
+            BusinessCode.FORBIDDEN,
+            'message is not readable by peer',
+          );
+        return this.resolveMessageMedia(source.id, digest, tx);
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
+  }
+
+  private async resolveMessageMedia(
+    messageId: bigint,
+    digest: string,
+    store: Pick<DatabaseService['db'], 'query'> = this.database.db,
+  ) {
+    const binding = await store.query.messageAsset.findFirst({
       where: and(
-        eq(tables.messageAsset.messageId, sourceMessage.id),
+        eq(tables.messageAsset.messageId, messageId),
         eq(tables.messageAsset.digest, digest),
       ),
       columns: { messageId: true },
     });
     if (binding) return this.resolveCasFile(digest);
-    const forwardBinding =
-      await this.database.db.query.forwardMessage.findFirst({
-        where: eq(tables.forwardMessage.messageId, sourceMessage.id),
-        columns: { bundleId: true },
-      });
+    const forwardBinding = await store.query.forwardMessage.findFirst({
+      where: eq(tables.forwardMessage.messageId, messageId),
+      columns: { bundleId: true },
+    });
     if (!forwardBinding)
       throw new BusinessException(
         BusinessCode.NOT_FOUND,

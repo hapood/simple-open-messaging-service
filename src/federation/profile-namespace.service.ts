@@ -42,14 +42,6 @@ export interface ProfileNamespaceResolvedEntry {
 
 export type NamespaceStatus = 'ACTIVE' | 'ARCHIVED';
 
-/** Single-pair resolution result. READY carries the cached/authoritative
- *  binding (including an expired placeholder); PENDING means no local row
- *  exists — a tomb was planted and the caller must schedule a refresh,
- *  the client should wait for a wake (with a 30s re-request timeout). */
-export type ProfileNamespaceResolution =
-  | { status: 'READY'; entry: ProfileNamespaceResolvedEntry }
-  | { status: 'PENDING' };
-
 /** Local ProfileNamespace cache: single-pair resolution for clients and
  *  demand fills with tombstones. Answers from local rows only — the outbound
  *  refresh engine lives in ProfileNamespaceRefreshService, which keeps this
@@ -61,18 +53,13 @@ export class ProfileNamespaceService {
     private readonly keypair: KeypairService,
   ) {}
 
-  /** Resolves one pair. A profileNamespaceId is meaningful only inside its
-   *  publisher's namespace space, so the routing splits on the publisher:
-   *  publisher 0 is this server itself — the pair (0, nsid) answers
-   *  synchronously and authoritatively ((0, 0) from the keypair snapshot,
-   *  positive nsids from our IdentityNamespace registry) and can never be
-   *  PENDING. Any other publisher answers the ProfileNamespace cache when
-   *  present (READY, even if expired) and answers PENDING when absent — the
-   *  caller plants a tomb and schedules a refresh against the publisher so a
-   *  client re-resolves on the next wake. */
-  async resolveOne(
+  /** Read one publisher-scoped binding without scheduling network work.
+   * Publisher 0 answers authoritatively; foreign publishers read their cache.
+   * A missing foreign pair plants a tomb for feed invalidation and returns null.
+   * An existing row may be expired. Neither case represents scheduler state. */
+  async readOne(
     pair: ProfileNamespacePair,
-  ): Promise<ProfileNamespaceResolution> {
+  ): Promise<ProfileNamespaceResolvedEntry | null> {
     if (
       !Number.isSafeInteger(pair.publisherNamespaceId) ||
       pair.publisherNamespaceId < 0 ||
@@ -84,10 +71,7 @@ export class ProfileNamespaceService {
         'namespace pair must be non-negative safe integers',
       );
     if (pair.publisherNamespaceId === 0)
-      return {
-        status: 'READY',
-        entry: await this.resolveLocalRow(pair.profileNamespaceId),
-      };
+      return this.resolveLocalRow(pair.profileNamespaceId);
     const rows = await this.database.db
       .select({
         publisherNamespaceId: profileNamespace.publisherNamespaceId,
@@ -107,7 +91,7 @@ export class ProfileNamespaceService {
       )
       .limit(1);
     const cached = rows[0];
-    if (cached) return { status: 'READY', entry: this.entryOf(cached) };
+    if (cached) return this.entryOf(cached);
     // Demand fill: insert the tomb first so the pair is visible to the
     // expiry matcher while the fetch is in flight.
     await this.database.db
@@ -121,7 +105,7 @@ export class ProfileNamespaceService {
         expired: true,
       })
       .onConflictDoNothing();
-    return { status: 'PENDING' };
+    return null;
   }
 
   /** Seeds the handshake row for a freshly activated peer epoch: the

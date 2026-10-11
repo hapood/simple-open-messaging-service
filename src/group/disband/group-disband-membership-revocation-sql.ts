@@ -114,6 +114,7 @@ export function groupDisbandMembershipRevocationSql(
     }authored AS (
       ${authoredIntentWriteSql({
         author: { account: input.groupAccount, namespaceId: 0 },
+        profileRev: input.groupProfileRev,
         receiver: {
           account: input.memberAccount,
           namespaceId: input.profileNamespaceId,
@@ -215,7 +216,8 @@ function localRecipients(input: GroupDisbandMembershipRevocationInput): SQL {
 function peerRecipient(input: GroupDisbandMembershipRevocationInput): SQL {
   return sql`
     peer_write AS MATERIALIZED (
-      SELECT jsonb_build_object('status', v.status, 'profileRev', v."profileRev", 'note', v.note,
+      SELECT jsonb_build_object('status', v.status, 'namespaceId', 0,
+          'profileRev', v."profileRev", 'note', v.note,
           'requestedAt', floor(extract(epoch FROM v."requestedAt") * 1000)::bigint,
           'expiresAt', CASE WHEN v."expiresAt" IS NULL THEN NULL
             ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END) AS body

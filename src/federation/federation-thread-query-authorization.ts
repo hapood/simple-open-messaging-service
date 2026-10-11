@@ -33,7 +33,6 @@ export interface AuthorizedFederationThread {
  */
 export async function resolveAuthorizedFederationThreadInTx(
   tx: DatabaseTransaction,
-  peerDomain: string,
   namespaceId: number,
   selector: FederationThreadQuery,
 ): Promise<AuthorizedFederationThread> {
@@ -63,7 +62,6 @@ export async function resolveAuthorizedFederationThreadInTx(
        AND intent."receiverNamespaceId" = pair."endpointBNamespaceId"
       LEFT JOIN "ThreadAudience" audience
         ON audience."threadId" = thread.id
-       AND audience."targetNamespaceId" = ${namespaceId}
        AND audience."targetNamespaceId" = ${namespaceId}
        AND audience."localUserId" IS NULL
       WHERE thread.type = 'GROUP'
@@ -115,7 +113,6 @@ export async function resolveAuthorizedFederationThreadInTx(
        AND intent."receiverNamespaceId" = pair."endpointANamespaceId"
       WHERE thread.type = 'GROUP'
         AND group_state.account = ${selector.account}
-        AND group_state.domain = ${peerDomain}
         AND group_state."namespaceId" = ${namespaceId}
         AND (
           intent.status = 'ACCEPTED'
@@ -162,11 +159,12 @@ export async function resolveAuthorizedFederationThreadInTx(
           LEFT JOIN "ThreadAudience" audience
             ON audience."threadId" = thread.id
            AND audience."targetNamespaceId" = ${namespaceId}
-           AND audience."targetNamespaceId" = ${namespaceId}
            AND audience."localUserId" IS NULL
           WHERE pair.kind = 'P2P'
             AND pair.active = true
             AND thread.type = 'P2P'
+            AND pair."endpointAType" = 'USER'
+            AND pair."endpointAAccount" = ${selector.account}
             AND pair."endpointANamespaceId" = 0
         AND pair."endpointBType" = 'USER'
         AND pair."endpointBAccount" = ${selector.peerAccount}

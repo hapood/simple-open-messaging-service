@@ -6,9 +6,8 @@ interface MessageFeedInternals {
   serializeMessagesInTx(
     tx: DatabaseTransaction,
     rows: Array<Record<string, unknown>>,
-    peerDomain: string,
     peerNamespaceId: number,
-    threadAddress: { account: string },
+    threadAddress: { account: string; peerAccount?: string },
   ): Promise<Array<Record<string, unknown>>>;
 }
 
@@ -23,21 +22,13 @@ function service(): MessageFeedInternals {
   return instance;
 }
 
-function transaction(targets: unknown[] = []): DatabaseTransaction & {
+function transaction(
+  targets: unknown[] = [],
+  assetRows: unknown[] = [],
+): DatabaseTransaction & {
   select: ReturnType<typeof vi.fn>;
 } {
-  const results: unknown[][] = [
-    [],
-    [
-      { id: 0, domain: 'member.test' },
-      { id: 8, domain: 'old-origin.test' },
-      { id: 9, domain: 'origin.test' },
-      { id: 11, domain: 'alpha.test' },
-      { id: 12, domain: 'member.test' },
-      { id: 13, domain: 'other-member.test' },
-      { id: 19, domain: 'bravo.test' },
-    ],
-  ];
+  const results: unknown[][] = [assetRows];
   const select = vi.fn(() => {
     const rows = results.shift() ?? [];
     const query = {
@@ -73,9 +64,7 @@ function groupRow(overrides: Record<string, unknown> = {}) {
     federationEnvelopeDigest: null,
     forwardBundleSourceId: null,
     createdAt: new Date('2026-09-04T00:00:00.000Z'),
-    clientMessageId: null,
     threadType: 'GROUP',
-    groupId: 5,
     authorityNamespaceId: 9,
     authorAccount: 'member',
     profileNamespaceId: 0,
@@ -84,6 +73,26 @@ function groupRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe('FederationMessageFeedService group origin coordinates', () => {
+  it('uses message byte descriptors even when physical storage metadata differs', async () => {
+    const digest = 'd'.repeat(64);
+    const [receipt] = await service().serializeMessagesInTx(
+      transaction([], [{ messageId: 1n, digest, bytes: 999n }]),
+      [
+        groupRow({
+          contentType: 'FILE',
+          content: JSON.stringify({
+            url: `/uploads/msg-assets/dd/dd/${digest}`,
+            name: 'asset.bin',
+            mimeType: 'application/octet-stream',
+            size: 20,
+          }),
+        }),
+      ],
+      9,
+      { account: '!group' },
+    );
+    expect(receipt.assets).toEqual([{ digest, bytes: 20 }]);
+  });
   it('returns the direct origin coordinate for a mirror copy', async () => {
     const originTime = new Date('2026-09-03T00:00:00.000Z');
     const [receipt] = await service().serializeMessagesInTx(
@@ -97,7 +106,6 @@ describe('FederationMessageFeedService group origin coordinates', () => {
           profileNamespaceId: 12,
         }),
       ],
-      'origin.test',
       9,
       { account: '!group' },
     );
@@ -121,14 +129,12 @@ describe('FederationMessageFeedService group origin coordinates', () => {
     const [receipt] = await publisher.serializeMessagesInTx(
       transaction(),
       [row],
-      'member.test',
       12,
       { account: '!group' },
     );
     const [distribution] = await publisher.serializeMessagesInTx(
       transaction(),
       [row],
-      'other.test',
       19,
       { account: '!group' },
     );
@@ -152,10 +158,10 @@ describe('FederationMessageFeedService group origin coordinates', () => {
       expected: { seq: 8 },
     },
     {
-      name: 'own target after confirmation',
+      name: 'receiver authority target from local mirror author',
       profileNamespaceId: 0,
       publisherNamespaceId: 9,
-      expected: { seq: 8 },
+      expected: { originSeq: 21 },
     },
     {
       name: 'authority target',
@@ -190,7 +196,6 @@ describe('FederationMessageFeedService group origin coordinates', () => {
             }),
           }),
         ],
-        'origin.test',
         9,
         { account: '!group' },
       );
@@ -230,7 +235,6 @@ describe('FederationMessageFeedService group origin coordinates', () => {
           }),
         }),
       ],
-      'bravo.test',
       19,
       { account: '!group' },
     );
@@ -249,7 +253,6 @@ describe('FederationMessageFeedService group origin coordinates', () => {
           }),
         }),
       ],
-      'bravo.test',
       19,
       { account: '!group' },
     );
@@ -270,7 +273,6 @@ describe('FederationMessageFeedService group origin coordinates', () => {
             }),
           }),
         ],
-        'bravo.test',
         19,
         { account: '!group' },
       ),
@@ -281,15 +283,13 @@ describe('FederationMessageFeedService group origin coordinates', () => {
     const messages = await service().serializeMessagesInTx(
       transaction(),
       [groupRow()],
-      'origin.test',
       9,
       { account: '!group' },
     );
 
     expect(messages).toMatchObject([
       {
-        namespaceId: 0,
-        author: { account: 'member', domain: 'member.test' },
+        author: { account: 'member', namespaceId: 0 },
         originSeq: null,
         originCreatedAt: null,
       },
@@ -309,19 +309,60 @@ describe('FederationMessageFeedService group origin coordinates', () => {
           profileNamespaceId: 0,
         }),
       ],
-      'origin.test',
       9,
       { account: '!group' },
     );
 
     expect(messages).toMatchObject([
       {
-        namespaceId: 9,
-        author: { account: 'owner', domain: 'origin.test' },
+        author: { account: 'owner', namespaceId: 0 },
         originSeq: 1,
         originCreatedAt: originTime.getTime(),
       },
     ]);
+  });
+
+  it('publishes a foreign native author in the authority namespace space without domain or duplicate nsid', async () => {
+    const [message] = await service().serializeMessagesInTx(
+      transaction(),
+      [
+        groupRow({
+          publisherNamespaceId: 1,
+          profileNamespaceId: 0,
+          authorityNamespaceId: 0,
+        }),
+      ],
+      2,
+      { account: '!group' },
+    );
+    expect(message.author).toEqual({ account: 'member', namespaceId: 1 });
+    expect(message).not.toHaveProperty('namespaceId');
+    expect(message.author).not.toHaveProperty('domain');
+  });
+
+  it('distinguishes same-name P2P endpoints by author namespace and keeps one nested address', async () => {
+    for (const publisherNamespaceId of [0, 9]) {
+      const [message] = await service().serializeMessagesInTx(
+        transaction(),
+        [
+          groupRow({
+            threadType: 'P2P',
+            authorAccount: 'same',
+            publisherNamespaceId,
+            profileNamespaceId: 0,
+          }),
+        ],
+        9,
+        { account: 'same', peerAccount: 'same' },
+      );
+      expect(message.author).toEqual({
+        ref:
+          publisherNamespaceId === 0 ? 'THREAD_ACCOUNT' : 'THREAD_PEER_ACCOUNT',
+        namespaceId: publisherNamespaceId,
+      });
+      expect(message).not.toHaveProperty('authorRef');
+      expect(message).not.toHaveProperty('namespaceId');
+    }
   });
 
   it('does not expose an old namespace coordinate to a replacement namespace', async () => {
@@ -336,7 +377,6 @@ describe('FederationMessageFeedService group origin coordinates', () => {
           profileNamespaceId: 0,
         }),
       ],
-      'origin.test',
       9,
       { account: '!group' },
     );

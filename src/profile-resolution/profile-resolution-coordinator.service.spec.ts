@@ -319,16 +319,12 @@ describe('ProfileResolutionCoordinatorService', () => {
   it('requires exact namespace/revision matches for local disclosure proofs', async () => {
     const { subject, database } = createSubject();
 
-    await subject['authorizeGroupMemberDemand'](
-      3,
-      {
-        publisherNamespaceId: 7,
-        lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
-        target: accountDemand.target,
-        groupAccount: '!team',
-      },
-      'publisher.test',
-    );
+    await subject['authorizeGroupMemberDemand'](3, {
+      publisherNamespaceId: 7,
+      lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
+      target: accountDemand.target,
+      groupAccount: '!team',
+    });
     let query = new PgDialect().sqlToQuery(
       database.db.execute.mock.calls.at(-1)![0] as SQL,
     ).sql;

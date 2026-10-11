@@ -17,10 +17,10 @@ import {
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { ContentType } from '../database/enums.js';
+import { extractDigestEntries } from '../upload/file-content.js';
 import type { DatabaseTransaction } from '../database/database.service.js';
 import { DatabaseService } from '../database/database.service.js';
 import {
-  identityNamespace,
   mediaAsset,
   message,
   messageAsset,
@@ -66,7 +66,6 @@ type FederationMessageFeedAsset = FederationByteDescriptor;
 
 interface FederationMessageFeedMessageBase
   extends FederatedMessagePayload<string> {
-  namespaceId: number;
   seq: number;
   profileRev: number;
   originSeq: number | null;
@@ -80,7 +79,10 @@ interface FederationMessageFeedMessageBase
 export type FederationMessageFeedMessage =
   | (FederationMessageFeedMessageBase & {
       thread: { account: string; peerAccount: string };
-      authorRef: 'THREAD_ACCOUNT' | 'THREAD_PEER_ACCOUNT';
+      author: {
+        ref: 'THREAD_ACCOUNT' | 'THREAD_PEER_ACCOUNT';
+        namespaceId: number;
+      };
     })
   | (FederationMessageFeedMessageBase & {
       thread: { account: string };
@@ -100,7 +102,6 @@ export class FederationMessageFeedService {
   constructor(private readonly database: DatabaseService) {}
 
   async rejectMissingQueryAfter(
-    peerDomain: string,
     namespaceId: number,
     selector: FederationThreadQuery,
   ): Promise<never> {
@@ -109,19 +110,13 @@ export class FederationMessageFeedService {
         async (tx) => {
           const authorized = await resolveAuthorizedFederationThreadInTx(
             tx,
-            peerDomain,
             namespaceId,
             selector,
           );
           return {
             messageAccessAfterSeq: authorized.messageAccessAfterSeq,
             currentEnd: Math.max(
-              await this.readAdvertisedMessageEnd(
-                tx,
-                peerDomain,
-                namespaceId,
-                selector,
-              ),
+              await this.readAdvertisedMessageEnd(tx, namespaceId, selector),
               authorized.messageAccessAfterSeq,
             ),
           };
@@ -140,7 +135,6 @@ export class FederationMessageFeedService {
   }
 
   async query(
-    peerDomain: string,
     namespaceId: number,
     selector: FederationThreadQuery,
     after: number | undefined,
@@ -150,7 +144,6 @@ export class FederationMessageFeedService {
     before?: number,
   ): Promise<FederationMessageQueryPage> {
     const { page } = await this.readPage(
-      peerDomain,
       namespaceId,
       selector,
       after,
@@ -163,7 +156,6 @@ export class FederationMessageFeedService {
   }
 
   private async readPage(
-    peerDomain: string,
     namespaceId: number,
     selector: FederationThreadQuery,
     after: number | undefined,
@@ -189,17 +181,11 @@ export class FederationMessageFeedService {
           groupQueryDirection,
         } = await resolveAuthorizedFederationThreadInTx(
           tx,
-          peerDomain,
           namespaceId,
           selector,
         );
         const currentEnd = Math.max(
-          await this.readAdvertisedMessageEnd(
-            tx,
-            peerDomain,
-            namespaceId,
-            selector,
-          ),
+          await this.readAdvertisedMessageEnd(tx, namespaceId, selector),
           messageAccessAfterSeq,
         );
         const resumeAfter = messageAccessAfterSeq;
@@ -241,9 +227,7 @@ export class FederationMessageFeedService {
                 content: message.content,
                 payloadDigest: message.payloadDigest,
                 createdAt: message.createdAt,
-                clientMessageId: message.clientMessageId,
                 threadType: messageThread.type,
-                groupId: messageThread.id,
                 authorityNamespaceId: messageThread.authorityNamespaceId,
                 authorAccount: sql<string>`${message.creatorAccount}`,
                 profileNamespaceId: message.profileNamespaceId,
@@ -269,7 +253,7 @@ export class FederationMessageFeedService {
                     ? lte(message.seq, queryEnd)
                     : lt(message.seq, queryBefore),
                   eq(message.isDeleted, false),
-                  eq(message.localState, 'READY'),
+                  // Client localization state does not govern publication or receipts.
                   ne(message.contentType, ContentType.SYSTEM),
                   groupQueryDirection === 'MIRROR_TO_ORIGIN'
                     ? or(
@@ -298,7 +282,6 @@ export class FederationMessageFeedService {
         const messages = await this.serializeMessagesInTx(
           tx,
           selected,
-          peerDomain,
           namespaceId,
           address,
         );
@@ -360,15 +343,12 @@ export class FederationMessageFeedService {
       content: string;
       payloadDigest: string | null;
       createdAt: Date;
-      clientMessageId: string | null;
       threadType: 'P2P' | 'GROUP';
-      groupId: number | null;
       authorityNamespaceId: number;
       authorAccount: string;
       profileNamespaceId: number;
       forwardBundleSourceId: string | null;
     }>,
-    peerDomain: string,
     peerNamespaceId: number,
     threadAddress: FederationThreadAddress,
   ): Promise<FederationMessageFeedMessage[]> {
@@ -397,47 +377,24 @@ export class FederationMessageFeedService {
       tx,
       rows.map((row) => ({ ...row, id: row.messageId })),
     );
-    const profileNamespaceIds = [
-      ...new Set(
-        rows.map((row) =>
-          row.publisherNamespaceId === peerNamespaceId &&
-          row.profileNamespaceId === 0
-            ? peerNamespaceId
-            : row.profileNamespaceId,
-        ),
-      ),
-    ];
-    const namespaceRows =
-      profileNamespaceIds.length === 0
-        ? []
-        : await tx
-            .select({
-              id: identityNamespace.id,
-              domain: identityNamespace.domain,
-            })
-            .from(identityNamespace)
-            .where(inArray(identityNamespace.id, profileNamespaceIds));
-    const namespaceDomains = new Map(
-      namespaceRows.map((namespace) => [namespace.id, namespace.domain]),
-    );
-
     const result: FederationMessageFeedMessage[] = [];
     for (const row of rows) {
       const thread = threadAddress;
-      const authorNamespaceId =
+      // A mirror returning an authority's copy preserves that authority's
+      // author coordinate. Other native subjects are published in this server's space.
+      const returningGroupCopy =
+        row.threadType === 'GROUP' &&
+        row.authorityNamespaceId !== 0 &&
         row.publisherNamespaceId === peerNamespaceId &&
-        row.profileNamespaceId === 0
-          ? peerNamespaceId
+        row.authorityNamespaceId === peerNamespaceId;
+      const authorNamespaceId = returningGroupCopy
+        ? row.profileNamespaceId
+        : row.profileNamespaceId === 0
+          ? row.publisherNamespaceId
           : row.profileNamespaceId;
-      const authorDomain = namespaceDomains.get(authorNamespaceId);
-      if (authorDomain === undefined) {
-        throw new Error(
-          `message author namespace ${authorNamespaceId} has no retained domain`,
-        );
-      }
       const author = {
         account: row.authorAccount,
-        domain: authorDomain,
+        namespaceId: authorNamespaceId,
       };
       const quote = parseMessageContentQuote(row.content);
       const target = quoteTargets.get(row.messageId);
@@ -504,7 +461,16 @@ export class FederationMessageFeedService {
         );
         continue;
       }
-      const candidateAssets = assets.get(row.messageId) ?? [];
+      const descriptors = new Map(
+        (assets.get(row.messageId) ?? []).map((asset) => [asset.digest, asset]),
+      );
+      // Accepted media content retains its complete byte descriptors. Receipts
+      // and publication must not wait for the receiver's files to reach CAS.
+      for (const { digest, size } of extractDigestEntries(row.content)) {
+        if (size !== undefined && payloadDigests.has(digest))
+          descriptors.set(digest, { digest, bytes: size });
+      }
+      const candidateAssets = [...descriptors.values()];
       if (
         row.contentType !== ContentType.SYSTEM &&
         row.payloadDigest === null
@@ -525,7 +491,6 @@ export class FederationMessageFeedService {
         row.originServerTime !== null &&
         row.publisherNamespaceId === peerNamespaceId;
       const envelope = {
-        namespaceId: authorNamespaceId,
         seq: row.seq,
         profileRev: row.profileRev,
         originSeq: isProcessingReceipt ? row.originSeq : null,
@@ -543,8 +508,10 @@ export class FederationMessageFeedService {
       };
       let item: FederationMessageFeedMessage;
       if ('peerAccount' in thread) {
-        const sourceAuthored = author.account === thread.account;
-        const peerAuthored = author.account === thread.peerAccount;
+        const sourceAuthored =
+          author.namespaceId === 0 && author.account === thread.account;
+        const peerAuthored =
+          author.namespaceId > 0 && author.account === thread.peerAccount;
         if (!sourceAuthored && !peerAuthored) {
           throw new Error(
             `P2P message author is not one of the addressed participants (thread ${row.threadId}, seq ${row.seq})`,
@@ -553,7 +520,10 @@ export class FederationMessageFeedService {
         item = {
           ...envelope,
           thread,
-          authorRef: peerAuthored ? 'THREAD_PEER_ACCOUNT' : 'THREAD_ACCOUNT',
+          author: {
+            ref: peerAuthored ? 'THREAD_PEER_ACCOUNT' : 'THREAD_ACCOUNT',
+            namespaceId: authorNamespaceId,
+          },
         };
       } else {
         item = { ...envelope, thread, author };
@@ -565,7 +535,6 @@ export class FederationMessageFeedService {
 
   private async readAdvertisedMessageEnd(
     tx: DatabaseTransaction,
-    peerDomain: string,
     namespaceId: number,
     selector: FederationThreadQuery,
   ): Promise<number> {

@@ -1273,8 +1273,7 @@ describe('FederationInboundMessageRouteService global missed transport', () => {
         tx,
         {
           thread: { account: 'bob', peerAccount: 'alice' },
-          authorRef: 'THREAD_ACCOUNT',
-          namespaceId: 0,
+          author: { ref: 'THREAD_ACCOUNT', namespaceId: 0 },
         },
         'peer.test',
         7,

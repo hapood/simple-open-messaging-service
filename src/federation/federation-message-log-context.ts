@@ -9,6 +9,7 @@ export function federatedMessageLogContext(
   peerDomain: string,
   item: unknown,
   error: unknown,
+  context?: Record<string, unknown>,
 ): string {
   const record = logRecord(item);
   const content =
@@ -31,6 +32,7 @@ export function federatedMessageLogContext(
         }),
     ...(author === undefined ? {} : { author }),
     ...(thread === undefined ? {} : { thread }),
+    ...(context === undefined ? {} : { context: logContext(context) }),
     reason,
   });
 }
@@ -45,7 +47,9 @@ function logAddress(value: unknown): Record<string, string> | undefined {
   const record = logRecord(value);
   if (!record) return undefined;
   return {
-    account: safeLogText(record['account'], 128),
+    ...(record['ref'] === undefined
+      ? { account: safeLogText(record['account'], 128) }
+      : { ref: safeLogText(record['ref'], 32) }),
     namespaceId: safeLogText(record['namespaceId'], 32),
   };
 }
@@ -68,9 +72,24 @@ function logThread(value: unknown): Record<string, unknown> | undefined {
           .map(logAddress)
           .filter((address) => address !== undefined)
       : [];
-    return { type, participants };
+    return {
+      type,
+      account: safeLogText(record['account'], 128),
+      peerAccount: safeLogText(record['peerAccount'], 128),
+      participants,
+    };
   }
-  return { type };
+  return {
+    type,
+    account: safeLogText(record['account'], 128),
+    peerAccount: safeLogText(record['peerAccount'], 128),
+  };
+}
+
+function logContext(value: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [key, safeLogText(entry, 128)]),
+  );
 }
 
 function safeLogText(value: unknown, maxLength: number): string {

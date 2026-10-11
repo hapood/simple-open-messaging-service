@@ -255,6 +255,85 @@ describe('ProfileNamespaceRefreshService.scheduleRefresh coalescing', () => {
   });
 });
 
+describe('ProfileNamespaceRefreshService client fetch', () => {
+  it('joins an active prefetch without adding trailing rounds for repeated client demands', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { service, peerHttp, upserts } = harness({
+      directRow: { domain: 'peer.test', pulledThrough: 5n },
+      parkFirstGet: gate,
+      bindings: [
+        {
+          domain: 'subject.test',
+          rootPublicKey: 'root',
+          profileNamespaceFeedEndId: '5',
+          status: 'ACTIVE',
+        },
+      ],
+    });
+    const pair = { publisherNamespaceId: 12, profileNamespaceId: 9 };
+    service.scheduleRefresh(pair, 5n);
+    await vi.waitFor(() => expect(peerHttp.get).toHaveBeenCalledOnce());
+    await service.fetch(pair);
+    await service.fetch(pair);
+    release();
+    await vi.waitFor(() => expect(upserts).toHaveLength(1));
+    expect(peerHttp.get).toHaveBeenCalledOnce();
+  });
+
+  it('allows client demand to fetch again after a failed prefetch', async () => {
+    const { service, peerHttp, upserts } = harness({
+      directRow: { domain: 'peer.test', pulledThrough: 5n },
+      bindings: [
+        { profileNamespaceFeedEndId: '5', status: 'INVALID' },
+        {
+          domain: 'subject.test',
+          rootPublicKey: 'root',
+          profileNamespaceFeedEndId: '5',
+          status: 'ACTIVE',
+        },
+      ],
+    });
+    const pair = { publisherNamespaceId: 12, profileNamespaceId: 9 };
+    service.scheduleRefresh(pair, 5n);
+    await vi.waitFor(() => expect(peerHttp.get).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(upserts).toHaveLength(0);
+    await service.fetch(pair);
+    await vi.waitFor(() => expect(upserts).toHaveLength(1));
+    expect(peerHttp.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the observed publisher cursor to reject stale answers after prefetch work was lost', async () => {
+    const { service, peerHttp, upserts } = harness({
+      directRow: { domain: 'peer.test', pulledThrough: 5n },
+      bindings: [
+        {
+          domain: 'old.test',
+          rootPublicKey: 'root',
+          profileNamespaceFeedEndId: '4',
+          status: 'ACTIVE',
+        },
+        {
+          domain: 'subject.test',
+          rootPublicKey: 'root',
+          profileNamespaceFeedEndId: '5',
+          status: 'ACTIVE',
+        },
+      ],
+    });
+    await service.fetch({ publisherNamespaceId: 12, profileNamespaceId: 9 });
+    await vi.waitFor(() => expect(upserts).toHaveLength(1));
+    expect(upserts[0]).toMatchObject({
+      domain: 'subject.test',
+      updateFeedId: 5n,
+    });
+    expect(peerHttp.get).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('ProfileNamespaceRefreshService lifecycle status', () => {
   it('persists the publisher-disclosed ARCHIVED status instead of assuming ACTIVE', async () => {
     const { service, upserts } = harness({

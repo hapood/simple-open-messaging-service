@@ -16,8 +16,7 @@ function service() {
 function groupMessage(authorNamespaceId = 0): FederationMessageFeedMessage {
   return {
     thread: { account: '!group' },
-    namespaceId: authorNamespaceId,
-    author: { account: 'alice', domain: 'peer.test' },
+    author: { account: 'alice', namespaceId: authorNamespaceId },
     seq: 7,
     profileRev: 1,
     originSeq: null,
@@ -38,6 +37,48 @@ function groupReceipt(): FederationMessageFeedMessage {
 }
 
 describe('FederationInboundMessageRouteService', () => {
+  it('accepts a P2P processing receipt for the local thread peer account mirrored by the peer', () => {
+    const message: FederationMessageFeedMessage = {
+      ...groupMessage(2),
+      thread: { account: 'bob', peerAccount: 'carol' },
+      author: { ref: 'THREAD_PEER_ACCOUNT', namespaceId: 2 },
+      originSeq: 2,
+      originCreatedAt: 1_700_000_000_000,
+    };
+
+    expect(service().messageAuthor(message, 'peer.test', 1)).toEqual({
+      account: 'carol',
+      namespaceId: 0,
+    });
+  });
+
+  it('rejects the obsolete P2P receipt shape that marks the thread account as receiver-local', () => {
+    const message: FederationMessageFeedMessage = {
+      ...groupMessage(12),
+      thread: { account: 'carol', peerAccount: 'bob' },
+      author: { ref: 'THREAD_ACCOUNT', namespaceId: 12 },
+      originSeq: 2,
+      originCreatedAt: 1_700_000_000_000,
+    };
+
+    expect(() => service().messageAuthor(message, 'peer.test', 12)).toThrow(
+      'P2P author reference conflicts with namespaceId',
+    );
+  });
+
+  it('keeps a publisher-local P2P author in profile namespace zero', () => {
+    const message: FederationMessageFeedMessage = {
+      ...groupMessage(0),
+      thread: { account: 'bob', peerAccount: 'alice' },
+      author: { ref: 'THREAD_ACCOUNT', namespaceId: 0 },
+    };
+
+    expect(service().messageAuthor(message, 'peer.test', 12)).toEqual({
+      account: 'bob',
+      namespaceId: 0,
+    });
+  });
+
   it('classifies P2P tombstones as author-home facts, not local submissions', async () => {
     const routes = service();
     const resolveMessage = vi
@@ -95,8 +136,7 @@ describe('FederationInboundMessageRouteService', () => {
       expect.anything(),
       {
         thread: { account: '!group' },
-        namespaceId: 0,
-        author: { account: 'alice', domain: 'peer.test' },
+        author: { account: 'alice', namespaceId: 0 },
       },
       'peer.test',
       9,
@@ -197,7 +237,7 @@ describe('FederationInboundMessageRouteService', () => {
           { execute } as unknown as DatabaseTransaction,
           {
             ...groupReceipt(),
-            namespaceId: authorNamespaceId,
+            author: { account: 'alice', namespaceId: authorNamespaceId },
           },
           'group.test',
           9,

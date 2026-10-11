@@ -34,24 +34,13 @@ export class FederationMessageTombstoneFeedService {
   constructor(private readonly database: DatabaseService) {}
 
   async rejectMissingQueryAfter(
-    peerDomain: string,
     namespaceId: number,
     selector: FederationThreadQuery,
   ): Promise<never> {
     const currentEnd = await this.database.db.transaction(
       async (tx) => {
-        const _authorized = await resolveAuthorizedFederationThreadInTx(
-          tx,
-          peerDomain,
-          namespaceId,
-          selector,
-        );
-        return this.readAdvertisedDeletionEnd(
-          tx,
-          peerDomain,
-          namespaceId,
-          selector,
-        );
+        await resolveAuthorizedFederationThreadInTx(tx, namespaceId, selector);
+        return this.readAdvertisedDeletionEnd(tx, namespaceId, selector);
       },
       { isolationLevel: 'repeatable read', accessMode: 'read only' },
     );
@@ -64,7 +53,6 @@ export class FederationMessageTombstoneFeedService {
   }
 
   async query(
-    peerDomain: string,
     namespaceId: number,
     selector: FederationThreadQuery,
     after: number,
@@ -80,13 +68,11 @@ export class FederationMessageTombstoneFeedService {
         const { threadId, address, groupQueryDirection } =
           await resolveAuthorizedFederationThreadInTx(
             tx,
-            peerDomain,
             namespaceId,
             selector,
           );
         const currentEnd = await this.readAdvertisedDeletionEnd(
           tx,
-          peerDomain,
           namespaceId,
           selector,
         );
@@ -169,7 +155,6 @@ export class FederationMessageTombstoneFeedService {
 
   private async readAdvertisedDeletionEnd(
     tx: DatabaseTransaction,
-    peerDomain: string,
     namespaceId: number,
     selector: FederationThreadQuery,
   ): Promise<number> {

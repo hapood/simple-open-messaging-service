@@ -131,6 +131,8 @@ export class FederationInboundMessageStoreService {
       logContext: string;
       /** `new Date(item.createdAt)` — the peer's acceptance time. */
       sourceTime: Date;
+      /** Group authority coordinate carried by a returning copy. */
+      publishedProfileNamespaceId?: number;
       /** Digest over the canonical message payload of the receipt. */
       payloadDigest: string;
       contentType: string;
@@ -162,7 +164,18 @@ export class FederationInboundMessageStoreService {
         eq(tables.message.threadId, threadId),
         eq(tables.message.seq, originSeq),
         eq(tables.message.creatorAccount, creatorAccount),
-        eq(tables.message.profileNamespaceId, profileNamespaceId),
+        !isP2PThread && params.publishedProfileNamespaceId !== undefined
+          ? sql`CASE WHEN EXISTS (
+              SELECT 1 FROM "MessageThread" receipt_thread
+              WHERE receipt_thread.id = ${threadId}
+                AND receipt_thread."authorityNamespaceId" = 0
+            ) THEN
+              (CASE WHEN ${tables.message.profileNamespaceId} = 0
+                THEN ${tables.message.publisherNamespaceId}
+                ELSE ${tables.message.profileNamespaceId} END)
+                = ${params.publishedProfileNamespaceId}
+            ELSE ${tables.message.profileNamespaceId} = ${profileNamespaceId} END`
+          : eq(tables.message.profileNamespaceId, profileNamespaceId),
       ),
       columns: {
         id: true,

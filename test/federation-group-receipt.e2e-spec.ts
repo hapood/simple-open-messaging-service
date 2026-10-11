@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
 import { ContentType } from '../src/database/enums.js';
+import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
@@ -80,7 +81,7 @@ describe('third-party group message processing receipts', () => {
       .values({
         type: 'GROUP',
         groupAccount,
-        groupDomain: 'local',
+        groupDomain: loadFederationConfig().domain,
         groupAccountId: group.id,
         curSeq: 42,
         updatedAt: createdAt,
@@ -107,9 +108,9 @@ describe('third-party group message processing receipts', () => {
         seq: 42,
         originSeq: 7,
         originServerTime: new Date(createdAt.getTime() - 1000),
-        sourceNamespaceId: authorNamespace,
+        publisherNamespaceId: authorNamespace,
         creatorAccount: 'alice',
-        profileNamespaceId: authorNamespace,
+        profileNamespaceId: 0,
         profileRev: 3,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'from Alice' }),
@@ -124,11 +125,13 @@ describe('third-party group message processing receipts', () => {
     messageId = message.id;
   });
 
-  function receipt(): FederationMessageFeedMessage {
+  function receipt(): Extract<
+    FederationMessageFeedMessage,
+    { author: { account: string } }
+  > {
     return {
       thread: { account: groupAccount },
-      namespaceId: authorNamespace,
-      author: { account: 'alice', domain: authorDomain },
+      author: { account: 'alice', namespaceId: authorNamespace },
       seq: 99,
       originSeq: 42,
       originCreatedAt: createdAt.getTime(),
@@ -172,7 +175,8 @@ describe('third-party group message processing receipts', () => {
       seq: 42,
       originSeq: 7,
       creatorAccount: 'alice',
-      profileNamespaceId: authorNamespace,
+      publisherNamespaceId: authorNamespace,
+      profileNamespaceId: 0,
       content: JSON.stringify({ text: 'from Alice' }),
       updatedAt: createdAt,
     });

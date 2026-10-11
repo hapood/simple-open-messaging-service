@@ -14,7 +14,7 @@ import { FederationTransportConfigService } from '../federation/federation-trans
 import { ProfileNamespaceFeedService } from '../federation/profile-namespace-feed.service.js';
 import { ProfileNamespaceRefreshService } from '../federation/profile-namespace-refresh.service.js';
 import { SseService } from '../gateway/sse.service.js';
-import { ed25519PublicKeyToX25519, sealBox } from '../federation/sealed-box.js';
+import { sealBox } from '../federation/sealed-box.js';
 
 export interface AdminIdentityReviewView extends Record<string, unknown> {
   id: number;
@@ -172,9 +172,7 @@ export class FederationNamespaceAdminService {
     const nonce = randomBytes(32).toString('base64');
     const sealed = sealBox(
       Uint8Array.from(Buffer.from(nonce, 'utf8')),
-      ed25519PublicKeyToX25519(
-        Uint8Array.from(Buffer.from(checkedRoot, 'base64')),
-      ),
+      Uint8Array.from(Buffer.from(checkedRoot, 'base64')),
     );
     const body = JSON.stringify({
       publicKey: checkedRoot,
@@ -201,7 +199,7 @@ export class FederationNamespaceAdminService {
       });
       const response = await this.discovery.request(url, {
         method: 'POST',
-        headers,
+        headers: { 'content-type': 'application/json', ...headers },
         body,
         signal: AbortSignal.timeout(
           this.transportConfig.get().callTimeoutSec * 1000,

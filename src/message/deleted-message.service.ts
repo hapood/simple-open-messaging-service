@@ -532,7 +532,7 @@ export class DeletedMessageService {
     if (
       target &&
       params.authority === 'P2P_HOME' &&
-      target.profileNamespaceId !== params.publisherNamespaceId
+      messageAuthorHomeNamespaceId(target) !== params.publisherNamespaceId
     )
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
@@ -665,4 +665,18 @@ export class DeletedMessageService {
         }
       : null;
   }
+}
+
+/** The namespace whose server is allowed to publish author-home tombstones for a
+ * message. Namespace zero in stored profile coordinates means "the publisher's
+ * local profile", so a federated mirror row with profile namespace zero belongs
+ * to the peer publisher, not to this server. Non-zero profile namespaces name an
+ * explicit remote author home and take precedence over the publisher. */
+export function messageAuthorHomeNamespaceId(row: {
+  profileNamespaceId: number;
+  publisherNamespaceId: number;
+}): number {
+  return row.profileNamespaceId === 0
+    ? row.publisherNamespaceId
+    : row.profileNamespaceId;
 }

@@ -37,7 +37,7 @@ describe('resolveAuthorizedFederationThreadInTx', () => {
     ]);
 
     await expect(
-      resolveAuthorizedFederationThreadInTx(tx, 'peer.test', 9, {
+      resolveAuthorizedFederationThreadInTx(tx, 9, {
         type: 'P2P',
         account: 'alice',
         peerAccount: 'bob',
@@ -53,6 +53,11 @@ describe('resolveAuthorizedFederationThreadInTx', () => {
     const query = executed.sql;
     expect(query).toContain('FROM "RelationshipPair" pair');
     expect(query).toContain('JOIN "RelationshipIntent" intent');
+    // The selector's local account must pin the pair's local endpoint. Without
+    // this predicate any active local pair with the same remote endpoint could
+    // satisfy LIMIT 1 and resolve the query to another user's thread.
+    expect(query).toContain('pair."endpointAAccount" = $');
+    expect(executed.params).toContain('alice');
     expect(query).toContain("intent.status = 'REQUESTED'");
     expect(query).toContain('intent."expiresAt" > CURRENT_TIMESTAMP');
     expect(query).toContain('pair.active = true');
@@ -72,7 +77,7 @@ describe('resolveAuthorizedFederationThreadInTx', () => {
     ]);
 
     await expect(
-      resolveAuthorizedFederationThreadInTx(tx, 'peer.test', 9, {
+      resolveAuthorizedFederationThreadInTx(tx, 9, {
         type: 'GROUP',
         account: '!group',
       }),
@@ -114,7 +119,7 @@ describe('resolveAuthorizedFederationThreadInTx', () => {
     const tx = { execute } as unknown as DatabaseTransaction;
 
     await expect(
-      resolveAuthorizedFederationThreadInTx(tx, 'origin.test', 9, {
+      resolveAuthorizedFederationThreadInTx(tx, 9, {
         type: 'GROUP',
         account: '!group',
       }),
@@ -129,7 +134,8 @@ describe('resolveAuthorizedFederationThreadInTx', () => {
       execute.mock.calls[1]![0] as SQL,
     ).sql;
     expect(mirrorQuery).toContain("'MIRROR_TO_ORIGIN' AS");
-    expect(mirrorQuery).toMatch(/group_state\.domain = \$\d+/);
+    expect(mirrorQuery).not.toContain('group_state.domain =');
+    expect(mirrorQuery).toContain('group_state."namespaceId" =');
     expect(mirrorQuery).toContain('JOIN "AccountThreadState" local_state');
     expect(mirrorQuery).toContain('JOIN "RelationshipIntent" intent');
     expect(mirrorQuery).not.toContain('pair.active = true');
@@ -140,7 +146,7 @@ describe('resolveAuthorizedFederationThreadInTx', () => {
   it('returns FORBIDDEN when the locked authorization fact is absent', async () => {
     const { tx } = transactionWith([]);
     await expect(
-      resolveAuthorizedFederationThreadInTx(tx, 'peer.test', 9, {
+      resolveAuthorizedFederationThreadInTx(tx, 9, {
         type: 'P2P',
         account: 'alice',
         peerAccount: 'bob',
