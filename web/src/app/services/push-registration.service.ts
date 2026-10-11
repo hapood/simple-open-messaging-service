@@ -49,6 +49,11 @@ export class PushRegistrationService {
       this.dirty = false;
       this.failures = 0;
       clearTimeout(this.retry);
+      const key = `push-registration:${apiOrigin()}${apiPrefix()}`;
+      const clear = () => this.preferences.remove('device', key);
+      if (typeof navigator !== 'undefined' && navigator.locks)
+        void navigator.locks.request('soms-push-registration', clear);
+      else void clear();
     });
   }
 

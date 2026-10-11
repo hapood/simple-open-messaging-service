@@ -19,6 +19,7 @@ describe('NavStateMachineService', () => {
   let sessionUserId: ReturnType<typeof signal<number | null>>;
 
   beforeEach(() => {
+    history.replaceState(null, '', '/');
     sessionUserId = signal<number | null>(null);
     TestBed.configureTestingModule({
       providers: [
@@ -28,6 +29,76 @@ describe('NavStateMachineService', () => {
       ],
     });
     svc = TestBed.inject(NavStateMachineService);
+  });
+
+  afterEach(() => history.replaceState(null, '', '/'));
+
+  it('captures a cold URL before initializer effects flush, without waiting for HELLO', () => {
+    TestBed.resetTestingModule();
+    history.replaceState(null, '', '/chat/5');
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: { sessionUserId } },
+      ],
+    });
+    const nav = TestBed.inject(NavStateMachineService);
+    // Simulate asynchronous session restoration before the root is constructed.
+    TestBed.inject(ApplicationRef).tick();
+    expect(nav.chatThreadId()).toBe(5);
+    expect(location.pathname).toBe('/chat/5');
+    sessionUserId.set(4);
+    TestBed.inject(ApplicationRef).tick();
+    expect(nav.chatThreadId()).toBe(5);
+    // A newer explicit intent replaces bootstrap, never re-seeds from the URL.
+    nav.openChat(8);
+    TestBed.inject(ApplicationRef).tick();
+    expect(location.pathname).toBe('/chat/8');
+    TestBed.inject(SessionLifecycleService).endSession();
+    TestBed.inject(ApplicationRef).tick();
+    expect(nav.chatThreadId()).toBeUndefined();
+    expect(location.pathname).toBe('/');
+  });
+
+  it('captures a scoped notification URL without opening it before session validation', () => {
+    TestBed.resetTestingModule();
+    history.replaceState(null, '', '/chat/5?notificationSessionId=31');
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: { sessionUserId } },
+      ],
+    });
+    const nav = TestBed.inject(NavStateMachineService);
+    expect(nav.chatThreadId()).toBeUndefined();
+    expect(nav.bootstrapNotificationIntent).toEqual({
+      source: 'web',
+      id: 'bootstrap:31:5',
+      threadId: 5,
+      sessionId: 31,
+    });
+    TestBed.inject(ApplicationRef).tick();
+    expect(location.pathname).toBe('/');
+    expect(nav.bootstrapNotificationIntent?.sessionId).toBe(31);
+  });
+
+  it.each([
+    '/chat/0',
+    '/chat/5/extra',
+    '/chat/9007199254740992',
+    '/chat/5?notificationSessionId=',
+  ])('does not seed an invalid cold thread URL %s', (path) => {
+    TestBed.resetTestingModule();
+    history.replaceState(null, '', path);
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        { provide: UserService, useValue: { sessionUserId } },
+      ],
+    });
+    expect(
+      TestBed.inject(NavStateMachineService).chatThreadId(),
+    ).toBeUndefined();
   });
 
   // ── back() layering: pane → aside → search → settingsCategoryStack → topSection → chat → exit ──
@@ -235,6 +306,37 @@ describe('NavStateMachineService', () => {
     expect(svc.settingsCategoryStack()).toEqual([]);
     expect(svc.paneStack()).toEqual([]);
     expect(svc.topSection()).toBe('chats');
+  });
+
+  it('external navigation reveals Chats and preserves only the target thread layers', () => {
+    svc.openChat(1);
+    svc.openAside('group-info');
+    svc.openSearch();
+    svc.pushPane({ kind: 'dialog' });
+    svc.setTopSection('settings');
+    const revision = svc.navigationRevision();
+    expect(svc.openExternalChat(5)).toBe(true);
+    expect(svc.topSection()).toBe('chats');
+    expect(svc.chatThreadId()).toBe(5);
+    expect(svc.navigationRevision()).toBeGreaterThan(revision);
+    expect(svc.aside()).toEqual([]);
+    expect(svc.paneStack()).toEqual([]);
+    expect(svc.searchOpen()).toBe(false);
+  });
+
+  it('manual open, close and non-chat sections advance navigation revision', () => {
+    let revision = svc.navigationRevision();
+    svc.openChat(1);
+    expect(svc.navigationRevision()).toBeGreaterThan(revision);
+    revision = svc.navigationRevision();
+    svc.closeChat();
+    expect(svc.navigationRevision()).toBeGreaterThan(revision);
+    revision = svc.navigationRevision();
+    svc.setTopSection('profile');
+    expect(svc.navigationRevision()).toBeGreaterThan(revision);
+    revision = svc.navigationRevision();
+    svc.setTopSection('chats');
+    expect(svc.navigationRevision()).toBe(revision);
   });
 
   it('does not reset on login or when the same id is re-emitted (reconnect HELLO)', () => {

@@ -428,7 +428,8 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('establishSession opens the per-user IDB on userId + sets sessionUserId + persists lastUserId', async () => {
-    await svc.establishSession(1, 0);
+    await svc.establishSession(1, 0, 11);
+    expect(svc.sessionId()).toBe(11);
     expect(webdb.openExistingForUser).toHaveBeenCalledWith('1');
     expect(svc.sessionUserId()).toBe(1);
     expect(
@@ -450,7 +451,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
         : undefined,
     );
 
-    await svc.establishSession(1, 0);
+    await svc.establishSession(1, 0, 11);
     // The cleanup is fire-and-forget inside establishSession; its completion is marked by the
     // persisted timestamp (written only after the cleanup resolves) — wait on that, not on a sleep.
     await vi.waitFor(() =>
@@ -483,7 +484,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
       return undefined;
     });
 
-    await svc.establishSession(1, 0);
+    await svc.establishSession(1, 0, 11);
     // No wait needed: the skip-vs-run branch is evaluated inside establishSession, so once the
     // await above resolves the decision is already final.
 
@@ -506,7 +507,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
       return undefined;
     });
 
-    await svc.establishSession(1, 0);
+    await svc.establishSession(1, 0, 11);
     await vi.waitFor(() =>
       expect(webdb.putSyncState).toHaveBeenCalledWith(
         'relationshipRequestCleanupAt',
@@ -532,7 +533,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
       };
     });
 
-    await svc.establishSession(1, 0);
+    await svc.establishSession(1, 0, 11);
 
     expect(svc.relationshipRequestStateRevision()).toBe(12);
     expect(svc.relationshipRequestReadThroughFeedId()).toBe(9);
@@ -547,7 +548,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
           rejectOpen = reject;
         }),
     );
-    const opening = svc.establishSession(1, 0);
+    const opening = svc.establishSession(1, 0, 11);
     const rejected = expect(opening).rejects.toThrow(
       'account session expired during HELLO',
     );
@@ -561,7 +562,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   it('fresh login drops and initializes the cache before strictly opening it', async () => {
     svc.prepareFreshCache();
 
-    await svc.establishSession(1, 0);
+    await svc.establishSession(1, 0, 11);
 
     expect(webdb.recreateForUser).toHaveBeenCalledTimes(1);
 
@@ -573,7 +574,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   it('rebuilds an unreadable cache discovered when HELLO establishes the session', async () => {
     webdb.openExistingForUser.mockRejectedValue(new Error('unreadable cache'));
 
-    await expect(svc.establishSession(1, 0)).resolves.not.toThrow();
+    await expect(svc.establishSession(1, 0, 11)).resolves.not.toThrow();
 
     expect(webdb.recreateForUser).toHaveBeenCalledTimes(1);
 
@@ -581,20 +582,21 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('establishSession is idempotent for the same user on reconnect', async () => {
-    await svc.establishSession(1, 0);
+    await svc.establishSession(1, 0, 11);
     webdb.openExistingForUser.mockClear();
-    await svc.establishSession(1, 0);
+    await svc.establishSession(1, 0, 12);
+    expect(svc.sessionId()).toBe(12);
     expect(webdb.openExistingForUser).not.toHaveBeenCalled();
     expect(svc.sessionUserId()).toBe(1);
   });
 
   it('establishSession on an account switch closes the previous DB + opens the new one', async () => {
-    await svc.establishSession(1, 0);
+    await svc.establishSession(1, 0, 11);
     webdb.closeAndDelete.mockClear();
     webdb.openExistingForUser.mockClear();
 
     // Switch to user 2: gateSelfProfile cache-misses (cached id:1 ≠ 2) → flush its my-profile fetch.
-    const done = svc.establishSession(2, 0);
+    const done = svc.establishSession(2, 0, 12);
     (await vi.waitFor(() => httpMock.expectOne(isMyProfile))).flush(
       profile({ id: 2 }),
     );
@@ -609,10 +611,11 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('clearSession closes the DB + clears sessionUserId + clears lastUserId', async () => {
-    await svc.establishSession(1, 0);
+    await svc.establishSession(1, 0, 11);
     webdb.closeAndDelete.mockClear();
 
     await svc.clearSession();
+    expect(svc.sessionId()).toBeNull();
     expect(webdb.closeAndDelete).toHaveBeenCalledWith('1');
     expect(svc.sessionUserId()).toBeNull();
     // clearSession awaits the preference removal before it resolves — no drain needed.
@@ -652,7 +655,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('keeps the session retryable when durable cache deletion fails', async () => {
-    await svc.establishSession(1, 0);
+    await svc.establishSession(1, 0, 11);
     const ended = vi.fn();
     const subscription = TestBed.inject(
       SessionLifecycleService,
@@ -742,7 +745,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     const preferences = TestBed.inject(PreferenceStore);
     await preferences.set('account:1', 'soms.cacheRebuild', 'attempted');
     svc.prepareFreshCache();
-    await svc.establishSession(1, 0);
+    await svc.establishSession(1, 0, 11);
     expect(
       await preferences.get('account:1', 'soms.cacheRebuild'),
     ).toBeUndefined();
@@ -760,7 +763,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     const failure = new Error('database still unavailable');
     webdb.openExistingForUser.mockRejectedValue(failure);
     await svc.restoreWebdb();
-    await expect(svc.establishSession(7, 0)).rejects.toBe(failure);
+    await expect(svc.establishSession(7, 0, 17)).rejects.toBe(failure);
     expect(webdb.recreateForUser).not.toHaveBeenCalled();
     expect(svc.sessionUserId()).toBeNull();
   });

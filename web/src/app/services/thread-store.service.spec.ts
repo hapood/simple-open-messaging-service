@@ -91,6 +91,60 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     expect(drainThreadMisc).toHaveBeenCalledWith(7, '0', 0);
   });
 
+  it('requires HELLO sessionId and passes its authoritative identity to UserService', async () => {
+    const user = TestBed.inject(UserService);
+    const stop = new Error('stop after session establishment');
+    const establishSession = vi.fn().mockRejectedValue(stop);
+    Object.assign(user, { establishSession });
+    const repo = TestBed.inject(ThreadRepository) as unknown as { onHello: (value: unknown) => Promise<void> };
+    const hello = { userId: 1, stateFeedEndId: 0, threadFeedEndId: 0, profileRev: 4 };
+    for (const sessionId of [undefined, null, 0, -1, '11', 1.5]) {
+      await repo.onHello({ ...hello, sessionId });
+    }
+    expect(establishSession).not.toHaveBeenCalled();
+    await expect(repo.onHello({ ...hello, sessionId: 11 })).rejects.toBe(stop);
+    expect(establishSession).toHaveBeenCalledExactlyOnceWith(1, 4, 11);
+  });
+
+  it('does not treat partially restored list rows as navigation-ready', async () => {
+    const webdb = TestBed.inject(WebdbService);
+    const user = TestBed.inject(UserService);
+    user.sessionUserId.set(1);
+    Object.assign(user, { sessionProfile: signal(null) });
+    const group = createGroupConversation(
+      9,
+      {
+        id: 9,
+        account: 'room',
+        name: 'Room',
+        namespaceId: 0,
+      },
+      { role: 'MEMBER', threadFeedId: 1 },
+    );
+    let finish!: (states: []) => void;
+    const hydration = new Promise<[]>((resolve) => {
+      finish = resolve;
+    });
+    Object.assign(webdb, {
+      getThreads: vi.fn().mockResolvedValue([group]),
+      getThreadStates: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockReturnValueOnce(hydration),
+    });
+    const repo = TestBed.inject(ThreadRepository);
+    TestBed.tick();
+    const loaded = repo.load();
+    await vi.waitFor(() => expect(repo.items()).toHaveLength(1));
+    expect(repo.status()).toBe('READY');
+    expect(repo.navigationReady()).toBe(false);
+    finish([]);
+    await loaded;
+    expect(repo.navigationReady()).toBe(true);
+    (TestBed.inject(SessionLifecycleService).ended$ as Subject<void>).next();
+    expect(repo.navigationReady()).toBe(false);
+  });
+
   it('updates an existing conversation role in both directions from committed feed snapshots', async () => {
     const webdb = TestBed.inject(WebdbService);
     const user = TestBed.inject(UserService);
@@ -273,8 +327,8 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     meta.next(metaEvent);
     await vi.waitFor(() =>
       expect(
-        (webdb.getUnresolvedGroupMetaProfiles as ReturnType<typeof vi.fn>)
-          .mock.calls.length,
+        (webdb.getUnresolvedGroupMetaProfiles as ReturnType<typeof vi.fn>).mock
+          .calls.length,
       ).toBeGreaterThanOrEqual(2),
     );
     expect(resolveProfileDemand).toHaveBeenCalledTimes(1);

@@ -325,8 +325,6 @@ export class ChatPaneComponent implements OnDestroy {
    *  finish, so nothing outlives its purpose to reassert over a live foreground. */
   private animA?: Animation;
   private animB?: Animation;
-  /** At most one list reload per missing thread (deep-link / just-joined resolve). */
-  private loadAttemptedFor?: number;
   private readonly reducedMotion = prefersReducedMotion();
 
   constructor() {
@@ -348,7 +346,6 @@ export class ChatPaneComponent implements OnDestroy {
         untracked(() =>
           (fgKey === 'A' ? this.threadA() : this.threadB())?.teardownKernel(),
         );
-        this.loadAttemptedFor = undefined;
         return;
       }
       if (fgTid === target) {
@@ -394,18 +391,10 @@ export class ChatPaneComponent implements OnDestroy {
       }
 
       const item = this.convList.items().find((t) => t.threadId === target);
-      if (!item) {
-        // Deep-link / just-joined thread not yet in the list: one reload, then bail if still absent.
-        if (this.convList.status() !== 'READY') return;
-        if (this.loadAttemptedFor !== target) {
-          this.loadAttemptedFor = target;
-          this.convList.load();
-        } else {
-          this.nav.closeChat();
-        }
-        return;
-      }
-      this.loadAttemptedFor = target;
+      // The shell owns navigation validation after durable restoration. A
+      // missing intermediate row is not grounds for this renderer to cancel
+      // the requested thread or trigger another cache load.
+      if (!item) return;
 
       // Fresh bind: assign target to the background slot. The slot value (and thus the bound
       // ConversationItem) changes, so the always-mounted pane's input-keyed init effect re-fires — it tears

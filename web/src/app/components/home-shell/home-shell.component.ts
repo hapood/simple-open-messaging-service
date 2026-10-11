@@ -198,7 +198,7 @@ export class HomeShellComponent {
       const tid = this.navState.chatThreadId();
       if (tid !== undefined) {
         if (
-          this.convList.status() === 'READY' &&
+          this.convList.navigationReady() &&
           !this.convList.items().some((item) => item.threadId === tid)
         ) {
           this.toast.warn(

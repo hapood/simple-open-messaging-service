@@ -32,7 +32,7 @@ import {
  *
  * The coordinator (the constructor effect in chat-pane.component.ts) routes an open-thread target to one of:
  *   close (teardownKernel fg) · fg-resident (reset fg) · bg-resident (reset bg → promote) ·
- *   fresh bind (slot.set bg → await ready → promote) · missing (reload once, else closeChat).
+ *   fresh bind (slot.set bg → await ready → promote) · missing (wait for the shell projection).
  *
  * The load-bearing invariant under test: panes are NEVER destroyed on a switch — only reset in place — so
  * re-selecting a thread already bound to a (possibly idled) pane must drive that pane's `reset()`, never a
@@ -376,31 +376,15 @@ describe('ChatPaneComponent A/B coordinator', () => {
 
   // ----------------------------- missing thread -----------------------------
 
-  it('missing thread, list READY, first attempt → reload the list once (no pane, no close)', async () => {
-    await open(99); // 99 absent from items
-    expect(loadSpy).toHaveBeenCalledTimes(1);
-    expect(closeChatSpy).not.toHaveBeenCalled();
-    expect(pane(99)).toBeUndefined();
-  });
-
-  it('missing thread persists after the reload → closeChat (give up)', async () => {
+  it('does not cancel or reload a target absent from an intermediate projection', async () => {
     await open(99);
-    expect(loadSpy).toHaveBeenCalledTimes(1);
-    // Simulate the reload completing with 99 STILL absent (new array ref → effect re-runs):
+    expect(pane(99)).toBeUndefined();
     items.set([item(1, 'alice'), item(2, 'bob')]);
     await settle();
-    expect(closeChatSpy).toHaveBeenCalledTimes(1);
-    expect(loadSpy).toHaveBeenCalledTimes(1); // not reloaded a second time
-  });
-
-  it('missing thread while the list is LOADING → waits; reloads once it becomes READY', async () => {
-    status.set('LOADING');
-    await open(99);
-    expect(loadSpy).not.toHaveBeenCalled();
     expect(closeChatSpy).not.toHaveBeenCalled();
-
-    status.set('READY');
+    expect(loadSpy).not.toHaveBeenCalled();
+    items.set([...items(), item(99, 'retained')]);
     await settle();
-    expect(loadSpy).toHaveBeenCalledTimes(1);
+    expect(pane(99)).toBeDefined();
   });
 });

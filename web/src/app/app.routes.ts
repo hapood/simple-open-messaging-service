@@ -17,7 +17,7 @@ export const routes: Routes = [
   // router-outlets in the shell (ChatPane is always-mounted; the aside is a @switch on nav.aside()). Both
   // `/` and `/chat/:threadId` render the same shell so cold-load / refresh / deep-link match a route
   // (otherwise they'd fall through to `**` → 404); the state machine reads the URL once at boot
-  // (initFromUrl) and mirrors it back via replaceState. The aside panel is session-state, not routed.
+  // during navigation-service construction and mirrors it back via replaceState. The aside panel is session-state, not routed.
   { path: '', component: HomeComponent, canActivate: [authGuard] },
   {
     path: 'chat/:threadId',

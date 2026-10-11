@@ -50,6 +50,7 @@ export class ConversationListService {
     return this.repo.latestSeq(threadId);
   }
   readonly status = this.repo.status;
+  readonly navigationReady = this.repo.navigationReady;
   readonly error = this.repo.error;
   readonly openThreadId = this.repo.openThreadId;
 
@@ -77,12 +78,19 @@ export class ConversationListService {
 
   /** A non-mutating read for last-read positioning before the first mount. The
    * divider itself is captured and applied only once the pane has mounted. */
-  previewUnreadEntryBoundary(threadId: number): UnreadEntryBoundary | undefined {
-    return this.unreadEntryBoundaries.get(threadId) ?? this.computeUnreadEntryBoundary(threadId);
+  previewUnreadEntryBoundary(
+    threadId: number,
+  ): UnreadEntryBoundary | undefined {
+    return (
+      this.unreadEntryBoundaries.get(threadId) ??
+      this.computeUnreadEntryBoundary(threadId)
+    );
   }
 
   /** Freeze the first boundary for this open session after mount, or replace it on reactivation. */
-  captureUnreadEntryBoundary(threadId: number): UnreadEntryBoundary | undefined {
+  captureUnreadEntryBoundary(
+    threadId: number,
+  ): UnreadEntryBoundary | undefined {
     const existing = this.unreadEntryBoundaries.get(threadId);
     if (existing) return existing;
     const boundary = this.computeUnreadEntryBoundary(threadId);
@@ -90,7 +98,9 @@ export class ConversationListService {
     return boundary;
   }
 
-  private computeUnreadEntryBoundary(threadId: number): UnreadEntryBoundary | undefined {
+  private computeUnreadEntryBoundary(
+    threadId: number,
+  ): UnreadEntryBoundary | undefined {
     const item = this.repo.items().find((t) => t.threadId === threadId);
     const latestSeq = item?.lastMessageSeq;
     const unreadCount = item?.unreadCount ?? 0;
@@ -174,7 +184,10 @@ export class ConversationListService {
   }
 
   /** Replace a P2P item's peerUser (avatar/name/bio) after a profile sync. */
-  updatePeerUser(threadId: number, user: ThreadPeerUser & Pick<User, 'id' | 'profileRev'>): void {
+  updatePeerUser(
+    threadId: number,
+    user: ThreadPeerUser & Pick<User, 'id' | 'profileRev'>,
+  ): void {
     this.repo.updatePeerUser(threadId, user);
   }
 

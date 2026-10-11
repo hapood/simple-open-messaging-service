@@ -99,6 +99,11 @@ export class ThreadRepository {
   private readonly _status = signal<ConversationLoadStatus>('LOADING');
   readonly status = this._status.asReadonly();
 
+  // List rows may become visible one at a time during restoration. Absence is
+  // meaningful for navigation only after a complete durable projection read.
+  private readonly _navigationReady = signal(false);
+  readonly navigationReady = this._navigationReady.asReadonly();
+
   private readonly _error = signal('');
   readonly error = this._error.asReadonly();
 
@@ -390,6 +395,7 @@ export class ThreadRepository {
     this.projectionTokens.clear();
     this._items.set([]);
     this._status.set('LOADING');
+    this._navigationReady.set(false);
     this._error.set('');
     this._openThreadId.set(undefined);
     this.lastSeenSeq.clear();
@@ -441,6 +447,8 @@ export class ThreadRepository {
         const states = await this.webdb.getThreadStates();
         if (epoch !== this.sessionEpoch) return;
         await this.applyThreadStates(states, false);
+        if (epoch !== this.sessionEpoch) return;
+        this._navigationReady.set(true);
       } else if (this._items().length === 0 && this._status() !== 'READY') {
         this._status.set('LOADING'); // cold start, no cache → await HELLO's delta
       }
@@ -869,7 +877,8 @@ export class ThreadRepository {
   private async onHello(d: HelloPayload | undefined): Promise<void> {
     if (
       !d ||
-      typeof d.userId !== 'number' ||
+      !Number.isSafeInteger(d.userId) || d.userId <= 0 ||
+      !Number.isSafeInteger(d.sessionId) || d.sessionId <= 0 ||
       !Number.isSafeInteger(d.stateFeedEndId) ||
       d.stateFeedEndId < 0 ||
       !Number.isSafeInteger(d.threadFeedEndId) ||
@@ -880,7 +889,7 @@ export class ThreadRepository {
     //    start: already opened by restoreSession's restoreWebdb, idempotent here). The profile fetch is
     //    gated async inside establishSession. The cache-paint is NOT repeated here — load() already eager-
     //    painted from the IDB cache (and on a cold start the cache is empty, so the delta below populates).
-    await this.userService.establishSession(d.userId, d.profileRev ?? 0);
+    await this.userService.establishSession(d.userId, d.profileRev ?? 0, d.sessionId);
     const epoch = this.sessionEpoch;
     // Profile-namespace change sync: the HELLO anchor skips the pull when the
     // persisted cursor already matches (fresh caches simply start at 0).
@@ -922,6 +931,7 @@ export class ThreadRepository {
     // delivers thread-feed-committed after the cursor and Group Meta pages commit.
     await this.refreshCommittedThreadFeed();
     if (epoch !== this.sessionEpoch) return;
+    this._navigationReady.set(true);
     // Cold/warm boots with an already-caught-up Group Meta cursor produce no
     // committed pages, so boot also warms once over the active groups; the
     // demand machinery dedups against any concurrent commits.
@@ -1387,8 +1397,9 @@ export class ThreadRepository {
 /** HELLO (SSE connect handshake) payload — pushed once per connect, the sole boot-critical state the
  *  client cannot derive locally: the caller's userId (opens the per-user IDB), the current state-feed end,
  *  and the self-profile version (which gates the /user/my-profile fetch). */
-interface HelloPayload {
-  userId?: number;
+export interface HelloPayload {
+  userId: number;
+  sessionId: number;
   stateFeedEndId: number;
   threadFeedEndId: number;
   profileRev?: number;

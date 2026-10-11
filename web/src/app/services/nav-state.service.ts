@@ -9,6 +9,10 @@ import {
 import { UserService } from './user.service';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import {
+  validThreadNavigationId,
+  type ThreadNavigationIntent,
+} from './thread-navigation-intent';
 
 /** The chat-scoped aside overlay kinds — peer-profile / group-info, opened from within a chat. */
 export type AsidePanel =
@@ -102,6 +106,12 @@ export class NavStateMachineService {
 
   /** The open chat thread id, or `undefined` at the conversation list (home). */
   readonly chatThreadId = signal<number | undefined>(undefined);
+  private readonly _navigationRevision = signal(0);
+  readonly navigationRevision = this._navigationRevision.asReadonly();
+  /** A notification cold URL is scoped, unlike an ordinary user-entered deep link.
+   * Capture it before mirroring strips the query; the coordinator validates the
+   * session before selecting its thread. */
+  readonly bootstrapNotificationIntent: ThreadNavigationIntent | null;
   private readonly pendingChatTransition = signal<
     { readonly threadId: number; readonly kind: ChatOpenTransition } | undefined
   >(undefined);
@@ -141,6 +151,31 @@ export class NavStateMachineService {
   );
 
   constructor() {
+    // Capture the cold-load target before any asynchronous session initializer
+    // can flush the URL mirror. This service can exist before AppComponent.
+    this.bootstrapNotificationIntent = null;
+    if (typeof location !== 'undefined') {
+      const match = location.pathname.match(/^\/chat\/([1-9]\d*)$/);
+      const threadId = match ? Number(match[1]) : undefined;
+      const query = new URLSearchParams(location.search);
+      if (query.has('notificationSessionId')) {
+        const raw = query.get('notificationSessionId')!;
+        const sessionId = /^[1-9]\d*$/.test(raw) ? Number(raw) : undefined;
+        if (
+          validThreadNavigationId(threadId) &&
+          validThreadNavigationId(sessionId)
+        )
+          this.bootstrapNotificationIntent = {
+            source: 'web',
+            id: `bootstrap:${sessionId}:${threadId}`,
+            sessionId,
+            threadId,
+          };
+      } else if (validThreadNavigationId(threadId)) {
+        this.chatThreadId.set(threadId);
+      }
+    }
+
     // URL mirror — one-way (state → URL), `replaceState` only (never `push`), so the history stays a
     // single entry and browser-back exits on desktop/PWA. `/chat/N`, or `/` at the list. Gated to the app
     // shell only: page routes (playground, auth, config, forbidden) own their URLs — mirroring here would
@@ -182,12 +217,20 @@ export class NavStateMachineService {
     threadId: number,
     transition: ChatOpenTransition = 'standard',
   ): void {
+    this._navigationRevision.update((value) => value + 1);
     this.closeAllPanes();
     if (this.chatThreadId() !== threadId) this.aside.set([]);
     this.searchOpen.set(false);
     this.pendingChatTransition.set({ threadId, kind: transition });
     this.chatThreadId.set(threadId);
   }
+  /** External taps reveal Chats even when Settings/Profile currently covers it. */
+  openExternalChat(threadId: number): boolean {
+    this.setTopSection('chats');
+    this.openChat(threadId);
+    return this.chatThreadId() === threadId;
+  }
+
   /** Consume the transition intent exactly once when ChatPane is ready to reveal the requested thread. */
   consumeChatTransition(threadId: number): ChatOpenTransition {
     const pending = this.pendingChatTransition();
@@ -197,6 +240,7 @@ export class NavStateMachineService {
   }
   /** Leave the chat → home. Also closes the aside + search and clears the pane stack. */
   closeChat(): void {
+    this._navigationRevision.update((value) => value + 1);
     this.closeAllPanes();
     this.pendingChatTransition.set(undefined);
     this.chatThreadId.set(undefined);
@@ -220,10 +264,7 @@ export class NavStateMachineService {
   }
   /** Drill into a child of the current aside so Back can restore its parent. */
   pushAside(panel: AsidePanel): void {
-    this.aside.update((stack) => [
-      ...stack,
-      { id: nextAsideId++, panel },
-    ]);
+    this.aside.update((stack) => [...stack, { id: nextAsideId++, panel }]);
   }
   /** Close the aside (bound to the desktop scrim click). */
   closeAside(): void {
@@ -253,6 +294,8 @@ export class NavStateMachineService {
   /** Switch the active mobile section. Clears the aside + settings drill-down so each section starts
    *  clean. */
   setTopSection(section: TopSection): void {
+    if (section !== 'chats')
+      this._navigationRevision.update((value) => value + 1);
     this.topSection.set(section);
     this.aside.set([]);
     this.settingsCategoryStack.set([]);
@@ -356,12 +399,5 @@ export class NavStateMachineService {
       return true;
     }
     return false;
-  }
-
-  /** Cold-load: seed the chat from the URL once at boot (HomeShell wires the call). Idempotent. */
-  initFromUrl(): void {
-    if (typeof location === 'undefined') return;
-    const chatMatch = location.pathname.match(/^\/chat\/(\d+)/);
-    if (chatMatch) this.openChat(Number(chatMatch[1]));
   }
 }

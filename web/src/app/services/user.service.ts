@@ -232,6 +232,8 @@ export class UserService {
    *  where the webdb opened on the profile fetch's sessionProfile().id (which made the fetch un-skippable).
    *  SessionLifecycleService separately announces logout even when this id is still null. */
   readonly sessionUserId = signal<number | null>(null);
+  /** Authoritative authenticated session identity; never restored from the account cache. */
+  readonly sessionId = signal<number | null>(null);
 
   /** The client's applied state-feed cursor — seeded from HELLO and advanced after
    *  each STATE_FEED_UPDATED signal is applied. Lives here so ConversationListService (which injects this
@@ -297,7 +299,9 @@ export class UserService {
     }
   }
 
-  constructor(private http: HttpClient) {}
+  constructor(private http: HttpClient) {
+    this.sessionLifecycle.invalidated$.subscribe(() => this.sessionId.set(null));
+  }
 
   /** Mark the next HELLO-established user partition for drop + clean v1 initialization. */
   prepareFreshCache(): void {
@@ -317,6 +321,7 @@ export class UserService {
     this.webdbUserKey = null;
     this.freshCachePending = false;
     this.cacheRebuildRequest = undefined;
+    this.sessionId.set(null);
     this.sessionUserId.set(null);
     this.sessionProfile.set(undefined);
     this._stateFeedCursor.set(undefined);
@@ -334,7 +339,8 @@ export class UserService {
    *  matches HELLO's, the cached profile is fresh and the fetch is skipped; otherwise (first boot / stale)
    *  the full profile is fetched + cached. Friend-request notification state is restored from this device's
    *  per-account database and subsequently advanced by the unified state delta. */
-  async establishSession(userId: number, profileRev: number): Promise<void> {
+  async establishSession(userId: number, profileRev: number, sessionId: number): Promise<void> {
+    if (!Number.isSafeInteger(sessionId) || sessionId <= 0) throw new Error('invalid HELLO sessionId');
     const epoch = this.sessionLifecycle.accountEpoch;
     const checkSession = () => {
       if (!this.sessionLifecycle.isCurrent(epoch))
@@ -350,6 +356,7 @@ export class UserService {
       this.webdbUserKey = null;
     }
     if (this.sessionUserId() === userId) {
+      this.sessionId.set(sessionId);
       return;
     }
     // Account switch without a logout (defensive): tear down the previous user's DB first.
@@ -383,6 +390,7 @@ export class UserService {
     ]);
     checkSession();
     this.sessionUserId.set(userId);
+    this.sessionId.set(sessionId);
     this.relationshipRequestStateRevision.set(
       typeof latest === 'number' && latest >= 0 ? latest : 0,
     );

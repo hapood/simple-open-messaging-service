@@ -88,9 +88,8 @@ export class AppComponent {
   // so the stored preference (read from Kotlin SomsSecureStore via the bridge) is reflected into the
   // signal + re-applied to the WorkManager schedule at every boot. A no-op off-Android.
   private readonly bgSync = inject(BackgroundSyncService);
-  // NavStateMachineService: eagerly constructed so its URL-mirror effect is live, and so initFromUrl()
-  // runs here (synchronously, before the effect's first async tick) to seed the chat from a cold URL
-  // like `/chat/2` before the mirror's first replaceState.
+  // Navigation captures the cold-load URL during service construction, before
+  // its mirror runs, even when session initialization creates it before this root.
   private readonly nav = inject(NavStateMachineService);
   // Read-only client bootstrap probe for an already configured app.
   // Eagerly constructed; its check() is fired after the first paint below.
@@ -116,7 +115,6 @@ export class AppComponent {
   private incompatiblePromptShown = false;
   private nativeShareDialogId: string | null = null;
   constructor() {
-    this.nav.initFromUrl();
     // App-shell fallback below temporary AppBackDispatcher handlers: minimize a foreground call, peel one
     // nav layer, then finish the Activity at the app root. Predictive commit reaches the same fixed entry.
     if (isTauri() && isAndroid()) {
