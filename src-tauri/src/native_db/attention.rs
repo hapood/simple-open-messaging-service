@@ -76,9 +76,9 @@ pub(crate) async fn native_db_drain_thread_misc(
                 epoch,
             )
             .await;
-            if let Some(error) = error {
-                warn!("group-meta per-thread drain failed; next wake retries: {error}");
-            } else if !changed.is_empty() {
+            // Deliver committed pages even when a later page or profile
+            // reference failed; the persisted cursor already advanced.
+            if !changed.is_empty() {
                 let _ = group_meta_app.emit(
                     "soms-sse-event",
                     LocalEventPayload {
@@ -92,6 +92,9 @@ pub(crate) async fn native_db_drain_thread_misc(
                         }),
                     },
                 );
+            }
+            if let Some(error) = error {
+                warn!("group-meta per-thread drain failed; next wake retries: {error}");
             }
         }
     });
@@ -500,7 +503,6 @@ pub(crate) async fn materialize_profile_event(
 struct GroupMetaPlan {
     thread_id: i64,
     account: String,
-    source_server: String,
     namespace_id: i64,
     target: String,
     processed_through: String,
@@ -523,10 +525,11 @@ fn commit_group_meta_profile(
     profile: &Value,
 ) -> Result<(), String> {
     if profile.get("account").and_then(Value::as_str) != Some(reference.account.as_str())
-        || profile.get("publisherNamespaceId").and_then(Value::as_i64)
-            != Some(reference.namespace_id)
         || profile.get("profileNamespaceId").and_then(Value::as_i64) != Some(reference.namespace_id)
         || profile.get("rev").and_then(Value::as_i64) != Some(reference.rev)
+        || (reference.is_group
+            && profile.get("publisherNamespaceId").and_then(Value::as_i64)
+                != Some(reference.namespace_id))
     {
         return Err("resolved profile revision does not match Group Meta".into());
     }
@@ -564,6 +567,21 @@ fn commit_group_meta_profile(
     if !current {
         return Ok(());
     }
+    // A GROUP_MEMBER_PROFILE echo is authorized by (and carries) the group's
+    // publisher namespace; the roster reads the member-home key
+    // [namespaceId, namespaceId], so re-key before the shared commit.
+    let owned;
+    let profile = if reference.is_group {
+        profile
+    } else {
+        owned = {
+            let mut rekeyed = profile.clone();
+            rekeyed["publisherNamespaceId"] =
+                serde_json::json!(reference.namespace_id);
+            rekeyed
+        };
+        &owned
+    };
     commit_resolved_profile(conn, user_id, profile)?;
     if reference.is_group {
         conn.execute(
@@ -607,15 +625,22 @@ async fn resolve_group_meta_profile(
         })
     } else {
         let thread_id = reference.thread_id;
-        let group_account: String = super::lifetime::spawn_at(Ok(epoch), move || {
-            open()?.query_row(
-                "SELECT subject_account FROM threads WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'",
-                params![user_id, thread_id],
-                |row| row.get(0),
-            ).map_err(|e| format!("read group account for profile demand: {e}"))
-        }).await.map_err(|e| format!("join group account lookup: {e}"))??;
+        let (group_account, authority_namespace_id): (String, i64) =
+            super::lifetime::spawn_at(Ok(epoch), move || {
+                open()?.query_row(
+                    "SELECT subject_account, authority_namespace_id FROM threads WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'",
+                    params![user_id, thread_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|e| format!("read group account for profile demand: {e}"))
+            })
+            .await
+            .map_err(|e| format!("join group account lookup: {e}"))??;
+        // The server pins a GROUP_MEMBER_PROFILE demand to the group's
+        // authority namespace, while the roster reads the member-home key
+        // [namespaceId, namespaceId]; commit_group_meta_profile re-keys.
         serde_json::json!({
-            "publisherNamespaceId": reference.namespace_id,
+            "publisherNamespaceId": authority_namespace_id,
             "lookup": "GROUP_MEMBER_PROFILE",
             "target": target,
             "groupAccount": group_account,
@@ -753,10 +778,6 @@ fn group_meta_plans(conn: &Connection, user_id: i64) -> Result<Vec<GroupMetaPlan
             .as_str()
             .filter(|value| !value.is_empty())
             .ok_or("group-meta plan has no group account")?;
-        let source_server = group["domain"]
-            .as_str()
-            .filter(|value| !value.is_empty())
-            .ok_or("group-meta plan has no source server")?;
         let namespace_id = group["namespaceId"]
             .as_i64()
             .filter(|value| *value >= 0)
@@ -778,7 +799,6 @@ fn group_meta_plans(conn: &Connection, user_id: i64) -> Result<Vec<GroupMetaPlan
         plans.push(GroupMetaPlan {
             thread_id,
             account: account.to_owned(),
-            source_server: source_server.to_owned(),
             namespace_id,
             target,
             processed_through: processed_through.to_owned(),
@@ -950,7 +970,6 @@ async fn sync_group_meta_thread_unchecked(
             let has_more = page.has_more;
             let update = ClientGroupMetaApply {
                 thread_id: plan.thread_id,
-                source_server: plan.source_server.clone(),
                 namespace_id: plan.namespace_id,
                 page,
             };
@@ -985,8 +1004,14 @@ async fn sync_group_meta_thread_unchecked(
         .filter(|reference| reference.thread_id == thread_id)
     {
         let changed_thread_id = reference.thread_id;
-        if resolve_group_meta_profile(app, proxy, user_id, epoch, reference).await? {
-            changed.push(changed_thread_id);
+        // Profile warming is optional: one failed reference must not discard
+        // the already-committed Group Meta pages of this drain.
+        match resolve_group_meta_profile(app, proxy, user_id, epoch, reference).await {
+            Ok(true) => changed.push(changed_thread_id),
+            Ok(false) => {}
+            Err(error) => warn!(
+                "group-meta profile reference failed; next wake retries: {error}"
+            ),
         }
     }
     Ok(())

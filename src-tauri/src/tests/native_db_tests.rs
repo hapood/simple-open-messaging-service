@@ -716,7 +716,7 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         serde_json::from_value(serde_json::json!({"threadId":90,"server":body,"localReadSeq":0}))
             .unwrap();
     super::attention::write_state(&conn, 1, &local).unwrap();
-    let page = serde_json::json!([{"threadId":90,"sourceServer":"authority.test","namespaceId":7,"page":{
+    let page = serde_json::json!([{"threadId":90,"namespaceId":7,"page":{
     "mode":"full","scannedThrough":"3","items":[
         {"feedId":"1","operation":"MEMBER_UPSERT","account":"me","domain":"own.test","namespaceId":0,"body":{"role":"ADMIN","profileRev":2}},
         {"feedId":"2","operation":"MEMBER_UPSERT","account":"other","domain":"authority.test","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
@@ -781,7 +781,7 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         [],
     )
     .unwrap();
-    let delta = serde_json::json!([{"threadId":90,"sourceServer":"authority.test","namespaceId":7,"page":{
+    let delta = serde_json::json!([{"threadId":90,"namespaceId":7,"page":{
     "mode":"delta","scannedThrough":"4","items":[
         {"feedId":"4","operation":"MEMBER_UPSERT","account":"other","domain":"authority.test","namespaceId":7,
          "body":{"role":"ADMIN","profileRev":2}}

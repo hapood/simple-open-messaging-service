@@ -51,7 +51,6 @@ pub(crate) struct ClientStateFeedItem {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientGroupMetaApply {
     pub(super) thread_id: i64,
-    pub(super) source_server: String,
     pub(super) namespace_id: i64,
     pub(super) page: ClientGroupMetaPage,
 }
@@ -685,21 +684,12 @@ pub(super) fn apply_state_feed_page_with_resume(
     }
     let mut patches: Vec<GroupMetaCommitPatch> = Vec::new();
     for update in group_meta {
-        if update.source_server.is_empty() {
-            return Err("group-meta sourceServer must be canonical and non-empty".into());
-        }
         if update.namespace_id < 0 {
             return Err("group-meta publisher namespace must be non-negative".into());
         }
         if update.page.mode != "full" && update.page.mode != "delta" {
             return Err("group-meta mode must be full or delta".into());
         }
-        super::contacts::register_namespace(
-            &tx,
-            user_id,
-            update.namespace_id,
-            &update.source_server,
-        )?;
         let mut thread = super::thread_store::read(&tx, user_id, update.thread_id)?;
         let lifecycle: Option<String> = tx
             .query_row(
@@ -764,12 +754,7 @@ pub(super) fn apply_state_feed_page_with_resume(
             if item.namespace_id < 0 {
                 return Err("group-meta member namespace must be non-negative".into());
             }
-            let source = if item.namespace_id == update.namespace_id {
-                &update.source_server
-            } else {
-                &item.domain
-            };
-            super::contacts::register_namespace(&tx, user_id, item.namespace_id, source)?;
+            super::contacts::register_namespace(&tx, user_id, item.namespace_id, &item.domain)?;
             if item.operation == "MEMBER_DEPART" {
                 tx.execute(
                     "UPDATE members SET left_state=1

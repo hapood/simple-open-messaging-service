@@ -1,4 +1,7 @@
-import { isThreadStateSnapshot, type ThreadStateSnapshot } from './thread-state.js';
+import {
+  isThreadStateSnapshot,
+  type ThreadStateSnapshot,
+} from './thread-state.js';
 
 /** One complete conversation snapshot. Its account-scoped ID orders visible thread-list items. */
 export interface ThreadFeedSnapshot extends ThreadStateSnapshot {
@@ -36,7 +39,9 @@ export interface ThreadFeedSnapshot extends ThreadStateSnapshot {
 }
 
 /** A committed feed snapshot plus the independent local read position. */
-export type LocalThreadAttention = ThreadFeedSnapshot & { localReadSeq: number };
+export type LocalThreadAttention = ThreadFeedSnapshot & {
+  localReadSeq: number;
+};
 
 /** Extract the wire snapshot only when needed for notification comparison. */
 export function attentionSnapshot(
@@ -85,11 +90,16 @@ export function mergeThreadAttention(
     coordinate(incoming.lastMentionSeq, 'mention position', 1);
   if (current && current.threadId !== incoming.threadId)
     throw new Error('Attention snapshot belongs to another thread');
-  if (current && incoming.threadFeedId <= current.threadFeedId)
-    return current;
+  if (current && incoming.threadFeedId <= current.threadFeedId) return current;
   return {
     ...incoming,
-    localReadSeq: current?.localReadSeq ?? incoming.lastReadSeq,
+    // A newer server read position is authoritative and catches the local
+    // viewport up. A locally advanced viewport remains ahead until the
+    // server catches up; neither position is capped here.
+    localReadSeq: Math.max(
+      current?.localReadSeq ?? incoming.lastReadSeq,
+      incoming.lastReadSeq,
+    ),
   };
 }
 
@@ -99,25 +109,38 @@ export function advanceLocalAttentionRead(
   seq: number,
 ): LocalThreadAttention {
   coordinate(seq, 'local read position');
-  if (seq <= current.localReadSeq)
-    return current;
+  if (seq <= current.localReadSeq) return current;
   return {
     ...current,
     localReadSeq: seq,
   };
 }
 
+/** A position may lead the current message head locally; only range
+ * calculations clamp it because deletion facts are known only through that
+ * head. */
+function boundedReadSeq(position: number, messageEndSeq: number): number {
+  return Math.min(position, messageEndSeq);
+}
+
+function effectiveReadSeq(current: LocalThreadAttention): number {
+  return Math.max(current.lastReadSeq, current.localReadSeq);
+}
+
 /** Count known eligible message slots between server and local read positions. */
 export function attentionCountRange(current: LocalThreadAttention) {
-  const effectiveReadSeq = Math.min(
+  const serverReadSeq = boundedReadSeq(
+    current.lastReadSeq,
     current.messageEndSeq,
-    Math.max(current.lastReadSeq, current.localReadSeq),
   );
-  const serverReadSeq = Math.min(current.messageEndSeq, current.lastReadSeq);
+  const localReadSeq = boundedReadSeq(
+    current.localReadSeq,
+    current.messageEndSeq,
+  );
   return {
     threadId: current.threadId,
-    afterSeq: Math.min(serverReadSeq, effectiveReadSeq),
-    throughSeq: Math.max(serverReadSeq, effectiveReadSeq),
+    afterSeq: Math.min(serverReadSeq, localReadSeq),
+    throughSeq: Math.max(serverReadSeq, localReadSeq),
   };
 }
 
@@ -133,24 +156,23 @@ export function projectThreadAttention(
     intervalCount > range.throughSeq - range.afterSeq
   )
     throw new Error('Invalid attention interval count');
-  const effectiveReadSeq = Math.min(
-    current.messageEndSeq,
-    Math.max(current.lastReadSeq, current.localReadSeq),
-  );
-  const unreadCount = Math.max(
-    0,
-    effectiveReadSeq > Math.min(current.messageEndSeq, current.lastReadSeq)
-      ? current.unreadCount - intervalCount
-      : current.unreadCount,
-  );
+  const serverReadSeq = current.lastReadSeq;
+  const localReadSeq = current.localReadSeq;
+  const unreadDelta =
+    localReadSeq > serverReadSeq
+      ? -intervalCount
+      : serverReadSeq > localReadSeq
+        ? intervalCount
+        : 0;
+  const unreadCount = Math.max(0, current.unreadCount + unreadDelta);
+  const readSeq = effectiveReadSeq(current);
   return {
     threadId: current.threadId,
     threadFeedId: current.threadFeedId,
-    lastReadSeq: effectiveReadSeq,
+    lastReadSeq: readSeq,
     unreadCount,
     hasUnreadMention:
-      current.lastMentionSeq !== null &&
-      current.lastMentionSeq > effectiveReadSeq,
+      current.lastMentionSeq !== null && current.lastMentionSeq > readSeq,
   };
 }
 

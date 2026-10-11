@@ -29,15 +29,15 @@ const snapshot: ThreadFeedSnapshot = {
   unreadCount: 8,
   lastMentionSeq: 104,
 };
-const initial = () =>
-  mergeThreadAttention(undefined, snapshot);
+const initial = () => mergeThreadAttention(undefined, snapshot);
 
 describe('shared attention reconciliation', () => {
   it('rejects missing announcement coordinates', () => {
     const missing = { ...snapshot } as Record<string, unknown>;
     delete missing['announcementReadFeedId'];
-    expect(() => mergeThreadAttention(undefined, missing as unknown as ThreadFeedSnapshot))
-      .toThrow('announcement read position');
+    expect(() =>
+      mergeThreadAttention(undefined, missing as unknown as ThreadFeedSnapshot),
+    ).toThrow('announcement read position');
   });
   it('bounds corrections by the published message head, even when local history is newer', () => {
     const state = advanceLocalAttentionRead(initial(), 250);
@@ -110,10 +110,10 @@ describe('shared attention reconciliation', () => {
       unreadCount: 2,
       lastMentionSeq: 108,
     });
-    expect(next.localReadSeq).toBe(105);
-    expect(projectThreadAttention(next, 3)).toMatchObject({
-      unreadCount: 5,
-      hasUnreadMention: true,
+    expect(next.localReadSeq).toBe(110);
+    expect(projectThreadAttention(next, 0)).toMatchObject({
+      unreadCount: 2,
+      hasUnreadMention: false,
     });
   });
   it('accepts a server rollback by feed ID, not by read seq', () => {
@@ -143,8 +143,9 @@ describe('shared attention reconciliation', () => {
     expect(state.localReadSeq).toBe(105);
   });
   it('requires a positive server feed ID before creating local state', () => {
-    expect(() => mergeThreadAttention(undefined, { ...snapshot, threadFeedId: 0 }))
-      .toThrow('feed ID');
+    expect(() =>
+      mergeThreadAttention(undefined, { ...snapshot, threadFeedId: 0 }),
+    ).toThrow('feed ID');
   });
   it('advances local progress independently of the server position and never regresses it', () => {
     const state = mergeThreadAttention(initial(), {
@@ -156,13 +157,11 @@ describe('shared attention reconciliation', () => {
       groupMetaFeedEndId: null,
       lastReadSeq: 110,
     });
+    expect(state.localReadSeq).toBe(110);
     const next = advanceLocalAttentionRead(state, 105);
-    expect(next).toEqual({
-      ...state,
-      localReadSeq: 105,
-    });
-    expect(advanceLocalAttentionRead(next, 105)).toBe(next);
-    expect(advanceLocalAttentionRead(next, 104)).toBe(next);
+    expect(next).toBe(state);
+    expect(advanceLocalAttentionRead(state, 110)).toBe(state);
+    expect(advanceLocalAttentionRead(state, 104)).toBe(state);
   });
   it('clamps only the lower bound and never applies the old 1000 cap', () => {
     const state = mergeThreadAttention(initial(), {
