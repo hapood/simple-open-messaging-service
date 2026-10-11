@@ -226,9 +226,7 @@ class MainActivity : TauriActivity() {
         })
         // Capture the cold-start deep link (notification tap that launched the process) before the
         // webview exists; onWebViewCreate will deliver it to JS.
-        intent?.getStringExtra(SomsMessagingService.EXTRA_THREAD_ID)?.let {
-            SomsBridge.DeepLink.offer(it)
-        }
+        intent?.let { offerNotificationTap(it) }
         // Cold-start answer: the user tapped Answer on the incoming-call notification (the FCM wake-up rang
         // the phone; CallController is already seeded incoming). Accept natively now — the webview boots and
         // shows the connecting UI from the snapshot.
@@ -965,7 +963,9 @@ class MainActivity : TauriActivity() {
         captureSharedText(intent)
         // Warm start: app already running, user tapped a notification. Route straight to the live
         // webview. (setIntent is unnecessary — singleTask + CLEAR_TOP keeps the back stack sane.)
-        intent.getStringExtra(SomsMessagingService.EXTRA_THREAD_ID)?.let { openThread(it) }
+        if (offerNotificationTap(intent)) {
+            SomsBridge.eval("window.__SOMS_DEEP_LINK__ && window.__SOMS_DEEP_LINK__();")
+        }
         // Warm-start answer: the app was already running when the user tapped Answer on the ringing notif.
         if (intent.action == CallService.ACTION_ANSWER) {
             intent.getStringExtra(CallService.EXTRA_SID)?.let { handleCallAnswer(it) }
@@ -1343,10 +1343,13 @@ class MainActivity : TauriActivity() {
 
     /** Navigate the web app to a thread. Calls window.__SOMS_DEEP_LINK__ if registered; the web app
      *  installs that handler at boot (PushService.init), so warm-start routing lands immediately. */
-    private fun openThread(threadId: String) {
-        SomsBridge.DeepLink.offer(threadId)
-        SomsBridge.eval("window.__SOMS_DEEP_LINK__ && window.__SOMS_DEEP_LINK__();")
-    }
+    private fun offerNotificationTap(intent: Intent): Boolean = SomsBridge.DeepLink.offer(
+        intent.getStringExtra(SomsMessagingService.EXTRA_THREAD_ID),
+        intent.getIntExtra(SomsMessagingService.EXTRA_SESSION_ID, -1),
+        intent.getStringExtra(SomsMessagingService.EXTRA_API_ORIGIN),
+        SomsSecureStore.getSessionId(this),
+        SomsSecureStore.getApiOrigin(this),
+    )
 
     /** Fetch the current FCM registration token asynchronously and stash it for the JS bridge. Delegates to
      *  [SomsFirebase] — under the dynamic-config model FirebaseApp is initialized from the server-fetched
@@ -1573,11 +1576,13 @@ class MainActivity : TauriActivity() {
             a.runOnUiThread { a.requestNotificationPermission() }
         }
 
+        // Historical bridge names; the value is an opaque {id, threadId, sessionId} JSON receipt.
+        // Echo the exact receipt only after JS accepts selection, not merely on reading the tap.
         @JavascriptInterface
         fun getPendingThreadId(): String? = SomsBridge.DeepLink.peek()
 
         @JavascriptInterface
-        fun acknowledgeThreadId(threadId: String) = SomsBridge.DeepLink.acknowledge(threadId)
+        fun acknowledgeThreadId(receipt: String) = SomsBridge.DeepLink.acknowledge(receipt)
 
         @JavascriptInterface
         fun clearMessageNotifications() {
@@ -1608,6 +1613,7 @@ class MainActivity : TauriActivity() {
             // A login may race the activity leaving the screen. Start/promote only while visible;
             // otherwise FCM / WorkManager cover the background until the next onResume.
             if (token.isNullOrEmpty()) {
+                SomsBridge.DeepLink.clear()
                 a.stopService(Intent(a, RealtimeService::class.java))
             } else if (SomsMessagingService.appInForeground) {
                 try {

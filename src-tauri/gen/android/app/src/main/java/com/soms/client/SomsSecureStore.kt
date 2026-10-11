@@ -81,9 +81,14 @@ object SomsSecureStore {
      *  (FGS / FCM / WorkManager). Supersedes the scoped 30-day notification token; revocation-only (no
      *  client-side expiry), mirroring Telegram's auth_key model. JS pushes it via SomsFcm.setSessionToken
      *  on login and clears it on logout. */
-    fun setSessionToken(ctx: Context, token: String?) {
+    @Synchronized fun setSessionToken(ctx: Context, token: String?) {
         RustRuntimeBridge.setSessionToken(token)
         val ed = prefs(ctx).edit()
+        val changed = token.isNullOrEmpty() || token != getSessionToken(ctx)
+        if (changed) {
+            ed.remove("session_id")
+            ed.remove(KEY_CURRENT_USER_ID)
+        }
         if (token.isNullOrEmpty()) {
             ed.remove(KEY_SESSION_TOKEN)
             ed.remove(KEY_CURRENT_USER_ID)
@@ -91,12 +96,21 @@ object SomsSecureStore {
             ed.putString(KEY_SESSION_TOKEN, token)
         }
         ed.apply()
-        if (token.isNullOrEmpty()) {
+        if (changed) {
+            RealtimeService.clearCachedHello()
             SomsMessagingService.clearSessionMessageNotifs(ctx)
         }
     }
 
     fun getSessionToken(ctx: Context): String? = prefs(ctx).getString(KEY_SESSION_TOKEN, null)
+
+    @Synchronized fun setHelloIdentity(ctx: Context, token: String?, sessionId: Int, userId: Int): Boolean {
+        if (token.isNullOrEmpty() || token != getSessionToken(ctx) || sessionId <= 0 || userId <= 0) return false
+        prefs(ctx).edit().putInt("session_id", sessionId).putInt(KEY_CURRENT_USER_ID, userId).apply()
+        return true
+    }
+
+    fun getSessionId(ctx: Context): Int? = prefs(ctx).getInt("session_id", 0).takeIf { it > 0 }
 
     /** Numeric owner of the current device cache. This is storage partitioning only; peer identity remains
      * the canonical account+domain pair. Populated from the authenticated SSE HELLO. */

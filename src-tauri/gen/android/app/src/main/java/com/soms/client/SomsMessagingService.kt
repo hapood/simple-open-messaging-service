@@ -93,6 +93,8 @@ class SomsMessagingService : FirebaseMessagingService() {
         const val CHANNEL_BACKGROUND = "background_sync_v2"
         const val CHANNEL_DIAGNOSTICS = "diagnostics"
         const val EXTRA_THREAD_ID = "soms_thread_id"
+        const val EXTRA_SESSION_ID = "soms_session_id"
+        const val EXTRA_API_ORIGIN = "soms_api_origin"
 
         /** Stable id for the coalesced away-notification — `notify(sameId, …)` replaces, never stacks. */
         const val AWAY_NOTIF_ID = 0x5
@@ -253,11 +255,17 @@ class SomsMessagingService : FirebaseMessagingService() {
             allowAlert: Boolean,
             onlyAlertOnce: Boolean,
         ) {
+            val sessionId = SomsSecureStore.getSessionId(ctx) ?: return
+            val origin = SomsSecureStore.getApiOrigin(ctx) ?: return
             val avatarImages = NotificationAvatars.resolve(ctx, d.messages)
             val tid = d.data.optInt("threadId", -1)
             val intent = Intent(ctx, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 if (tid > 0) putExtra(EXTRA_THREAD_ID, tid.toString())
+                putExtra(EXTRA_SESSION_ID, sessionId)
+                putExtra(EXTRA_API_ORIGIN, origin)
+                // Account-specific identity keeps a later account's card from rewriting this tap.
+                data = android.net.Uri.parse("soms-notification://session/$sessionId/thread/$tid?origin=${android.net.Uri.encode(origin)}")
             }
             val pendingIntent = PendingIntent.getActivity(
                 ctx, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,

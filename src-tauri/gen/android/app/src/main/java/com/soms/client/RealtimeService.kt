@@ -404,6 +404,8 @@ class RealtimeService : Service() {
         }
 
         override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
+            val frameToken = eventSource.request().header("Authorization")?.removePrefix("Bearer ")
+            if (frameToken.isNullOrEmpty() || frameToken != SomsSecureStore.getSessionToken(this@RealtimeService)) return
             attempt = 0 // any real frame resets the reconnect backoff
             if (type == "THREAD_FEED_UPDATED" && this@RealtimeService.eventSource === eventSource) {
                 val receipt = runCatching {
@@ -417,7 +419,7 @@ class RealtimeService : Service() {
             // Cache HELLO + merge incremental revision frames (runs in fg AND bg, so the cache stays fresh
             // while the WebView is suspended). SomsFcm.replayHello hands a re-attached WebView this merged
             // HELLO — a retained open stream does not re-push HELLO on its own.
-            cacheHelloFrame(type, data)
+            cacheHelloFrame(type, data, frameToken)
             if (type == "HELLO") reconcileActiveCall(data)
             // THE diagnostic line: `appInFg` here is the ground-truth branch selector. If a backgrounded
             // device shows appInFg=true, the foreground branch runs on a suspended WebView (frame vanishes,
@@ -558,13 +560,18 @@ class RealtimeService : Service() {
      *  [HelloMerger] (JVM-testable); runs in foreground AND background (called from onEvent before the fg/bg
      *  forwarding branch) so the cache stays fresh while the WebView is suspended. [synchronized][helloLock]
      *  against [replayCachedHello] so a concurrent replay never sees a mid-mutation toString. */
-    private fun cacheHelloFrame(type: String?, data: String) {
+    private fun cacheHelloFrame(type: String?, data: String, frameToken: String) {
         val t = type ?: return
+        if (frameToken != SomsSecureStore.getSessionToken(this)) return
         if (t == "HELLO") {
             val userId = try { JSONObject(data).optInt("userId", 0) } catch (_: Exception) { 0 }
-            if (userId > 0) SomsSecureStore.setCurrentUserId(this, userId)
+            val sessionId = try { JSONObject(data).optInt("sessionId", 0) } catch (_: Exception) { 0 }
+            if (!SomsSecureStore.setHelloIdentity(this, frameToken, sessionId, userId)) return
         }
-        synchronized(helloLock) { cachedHello = HelloMerger.merge(cachedHello, t, data) }
+        synchronized(helloLock) {
+            if (frameToken == SomsSecureStore.getSessionToken(this))
+                cachedHello = HelloMerger.merge(cachedHello, t, data)
+        }
     }
 
     /** HELLO activeCall recovery: a reconnecting / freshly-booted callee that MISSED the CALL_EVENT{incoming}
@@ -730,6 +737,8 @@ class RealtimeService : Service() {
         /** Serializes [cacheHelloFrame]'s in-place JSONObject mutations against [replayCachedHello]'s
          *  toString, so a concurrent replay never observes a mid-mutation (torn) JSON. */
         private val helloLock = Any()
+
+        fun clearCachedHello() { synchronized(helloLock) { cachedHello = null } }
 
         /** Serialize the cached HELLO once (at replay time), under [helloLock] so a concurrent SSE-frame
          *  merge can't tear it. Null when no HELLO has been cached yet (the caller then no-ops + the facade's

@@ -106,6 +106,11 @@ describe('framework SSE streams', () => {
       pushSubscriptionRev: 3,
       profileNamespaceChangeEndId: 5,
     });
+    await vi.waitFor(() => expect(eventsOf(b, 'HELLO')).toHaveLength(1));
+    expect(eventsOf(b, 'HELLO')[0].data).toMatchObject({
+      userId: 7,
+      sessionId: 22,
+    });
     a.subscription.unsubscribe();
     expect(svc.isSessionOnline(7, 11)).toBe(false);
     expect(svc.snapshot().total).toBe(1);
