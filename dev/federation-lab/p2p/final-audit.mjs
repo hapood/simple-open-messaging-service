@@ -1148,9 +1148,9 @@ export function compareFederationSnapshot({
         const originNode = nodeForAddress(group.address);
         const canonical = groups[originNode.name].groups.get(group.address);
         const canResolve =
-          node.name === originNode.name ||
-          (canonical &&
-            !canonical.dissolved &&
+          canonical &&
+          !canonical.dissolved &&
+          (node.name === originNode.name ||
             canonical.roster.some(
               ({ address }) => nodeForAddress(address).name === node.name,
             ));

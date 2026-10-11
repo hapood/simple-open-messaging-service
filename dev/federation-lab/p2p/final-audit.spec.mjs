@@ -648,6 +648,29 @@ test('requires origin dissolution and revoked memberships while retaining histor
   value.messages.bravo.get(groupAddress).messages = [];
   assert.equal(compareFederationSnapshot(value).passed, true);
 
+  // The origin also retains foreign historical authors after dissolution;
+  // the resolver cannot demand these previously unmaterialized profiles.
+  value.groups.alpha.groups.get(groupAddress).messages.push({
+    seq: 14,
+    profileRev: 4,
+    creatorAddress: bob,
+    creatorNamespaceId: 1,
+    localState: 'READY',
+    isDeleted: false,
+  });
+  value.profiles.bravo.versions.set(`${bob}#4`, profile(bob, 4));
+  assert.equal(compareFederationSnapshot(value).passed, true);
+  value.profiles.alpha.versions.set(`${bob}#4@1`, {
+    ...profile(bob, 4),
+    displayName: 'corrupt cached author',
+  });
+  assert.ok(
+    compareFederationSnapshot(value).failures.some(
+      ({ kind }) => kind === 'PROFILE_CONTENT',
+    ),
+  );
+  value.profiles.alpha.versions.delete(`${bob}#4@1`);
+
   // The resolver skips dissolved groups. Their historical references need not
   // have been fetched, but corrupt snapshots must not escape validation.
   const cached = value.profiles.bravo.versions.get(`${groupAddress}#1`);
