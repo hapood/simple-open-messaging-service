@@ -7,6 +7,9 @@ import { prepareLabConfig } from './local-config.mjs';
 import { federationLabNodes } from './topology.mjs';
 
 const labDir = dirname(fileURLToPath(import.meta.url));
+const runtimeDir = resolve(
+  process.env.FED_LAB_RUNTIME_DIR || join(labDir, 'runtime'),
+);
 const baseDatabaseUrl = process.env.DATABASE_URL?.trim();
 if (!baseDatabaseUrl)
   throw new Error('DATABASE_URL is required in the repository .env');
@@ -31,5 +34,5 @@ try {
 } finally {
   await client.end();
 }
-rmSync(resolve(labDir, 'runtime'), { recursive: true, force: true });
-console.log(`removed ${join(labDir, 'runtime')}`);
+rmSync(runtimeDir, { recursive: true, force: true });
+console.log(`removed ${runtimeDir}`);

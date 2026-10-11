@@ -1,19 +1,18 @@
 import { federationLabNodes } from '../topology.mjs';
 import { parseContent } from './message-operations.mjs';
 
-function messageAuthor(node, message) {
+function messageAuthor(message) {
   return (
     message.creatorAddress ??
-    `${message.creatorAccount}@${message.creatorDomain === 'local' ? node.domain : message.creatorDomain}`
+    `${message.creatorAccount}@${message.creatorDomain}`
   );
 }
 
 // Message identity uses the author's immutable local seq, never a provisional originSeq.
 export function authorIdentity(node, message, messages, key) {
-  const actor = messageAuthor(node, message);
+  const actor = messageAuthor(message);
   let seq = message.originSeq;
-  if (actor.endsWith(`@${node.domain}`)) seq = message.seq;
-  else if (key?.startsWith('!') && !key.endsWith(`@${node.domain}`)) {
+  if (key?.startsWith('!') && !key.endsWith(`@${node.domain}`)) {
     const authority = federationLabNodes.find(({ domain }) =>
       key.endsWith(`@${domain}`),
     );
@@ -22,14 +21,14 @@ export function authorIdentity(node, message, messages, key) {
       ?.messages.find(
         (row) =>
           row.seq === message.originSeq &&
-          messageAuthor(authority, row) === actor,
+          row.creatorAccount === message.creatorAccount,
       );
-    seq = original
-      ? actor.endsWith(`@${authority.domain}`)
-        ? original.seq
-        : original.originSeq
-      : null;
-  }
+    // The mirror's originSeq is the authority's publication coordinate. Use
+    // that exact row to identify its author; the mirror's display-domain join
+    // is not evidence about the authority's upstream publisher coordinates.
+    if (original) return authorIdentity(authority, original, messages, key);
+    seq = null;
+  } else if (actor.endsWith(`@${node.domain}`)) seq = message.seq;
   return {
     actor,
     seq,

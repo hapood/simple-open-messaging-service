@@ -130,7 +130,20 @@ test('reference scenario uses remote local coordinates, retries one send, and ve
           const row = snapshot.groups[node].groups
             .get(address)
             .messages.find(({ seq }) => seq === body.before - 1);
-          return { messages: [row] };
+          // The client API projects stored quotes to origin coordinates only.
+          const projected = row?.content?.quote
+            ? {
+                ...row,
+                content: {
+                  ...row.content,
+                  quote: {
+                    namespaceId: 0,
+                    originSeq: row.content.quote.seq,
+                  },
+                },
+              }
+            : row;
+          return { messages: [projected] };
         },
         async forwardBundle() {
           return { messages: [{ content: { text: 'source' } }] };
@@ -200,4 +213,113 @@ test('reference scenario uses remote local coordinates, retries one send, and ve
   assert.equal(decisions[1].retryMode, 'AFTER_SUCCESS');
   assert.equal(log.referenceScenario.status, 'SUCCEEDED');
   assert.equal(log.referenceScenario.checks.length, 6);
+});
+
+test('reference scenario creates a cross-node member when random coverage has none', async () => {
+  const { log, snapshot } = fixture();
+  for (const node of ['alpha', 'bravo']) {
+    const group = snapshot.groups[node].groups.get(address);
+    group.roster = group.roster.filter((member) => member.address !== bob);
+    group.relationships.delete(bob);
+  }
+  const decisions = [];
+  const actors = {
+    user(viewer) {
+      return {
+        async post(_path, body) {
+          const node = viewer.endsWith('alpha.test') ? 'alpha' : 'bravo';
+          const row = snapshot.groups[node].groups
+            .get(address)
+            .messages.find(({ seq }) => seq === body.before - 1);
+          // The client API projects stored quotes to origin coordinates only.
+          const projected = row?.content?.quote
+            ? {
+                ...row,
+                content: {
+                  ...row.content,
+                  quote: {
+                    namespaceId: 0,
+                    originSeq: row.content.quote.seq,
+                  },
+                },
+              }
+            : row;
+          return { messages: [projected] };
+        },
+        async forwardBundle() {
+          return { messages: [{ content: { text: 'source' } }] };
+        },
+      };
+    },
+  };
+  await executeReferenceWithdrawalScenario({
+    log,
+    snapshot,
+    actors,
+    async execute(operation) {
+      decisions.push(operation);
+      if (operation.type === 'INVITE_GROUP_MEMBER') {
+        snapshot.groups.bravo.groups.get(address).relationships.set(bob, {
+          active: false,
+          groupIntent: 'REQUESTED',
+          userIntent: null,
+        });
+      } else if (operation.type === 'ACCEPT_GROUP_INVITATION') {
+        for (const node of ['alpha', 'bravo']) {
+          const group = snapshot.groups[node].groups.get(address);
+          group.roster.push({ address: bob, role: 'MEMBER' });
+          group.relationships.set(bob, {
+            active: true,
+            groupIntent: 'ACCEPTED',
+            userIntent: 'ACCEPTED',
+          });
+        }
+      } else if (operation.type === 'WITHDRAW_GROUP_MESSAGE') {
+        for (const node of ['alpha', 'bravo'])
+          snapshot.groups[node].groups.get(address).messages[0].isDeleted =
+            true;
+      } else {
+        const index = decisions.length;
+        for (const node of ['alpha', 'bravo']) {
+          const content =
+            operation.type === 'SEND_QUOTE'
+              ? { text: 'reply', quote: { seq: node === 'alpha' ? 1 : 101 } }
+              : operation.type === 'FORWARD_HISTORY'
+                ? { bundleId: 'bundle' }
+                : { text: 'source' };
+          snapshot.groups[node].groups.get(address).messages.push({
+            id: String(index),
+            seq: index + (node === 'bravo' ? 100 : 0),
+            originSeq:
+              node === 'alpha' && operation.actor.endsWith('bravo.test')
+                ? index + 100
+                : index,
+            creatorAddress: operation.actor,
+            content,
+            localState: 'READY',
+            isDeleted: false,
+          });
+        }
+      }
+      log.operations.push({
+        ...operation,
+        id: `op-${decisions.length}`,
+        status: 'SUCCEEDED',
+        request: { body: { clientMessageId: `key-${decisions.length}` } },
+        result: {
+          seq:
+            decisions.length +
+            (operation.actor.endsWith('bravo.test') ? 100 : 0),
+          originSeq: decisions.length,
+        },
+        expected: { text: 'source' },
+      });
+      return snapshot;
+    },
+  });
+  assert.deepEqual(
+    decisions.slice(0, 2).map(({ type }) => type),
+    ['INVITE_GROUP_MEMBER', 'ACCEPT_GROUP_INVITATION'],
+  );
+  assert.equal(log.referenceScenario.status, 'SUCCEEDED');
 });

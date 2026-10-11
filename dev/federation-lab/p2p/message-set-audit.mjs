@@ -4,8 +4,8 @@ import {
   permitsAbsentWithdrawal,
 } from './message-evidence.mjs';
 
-function author(node, message) {
-  return `${message.creatorAccount}@${message.creatorDomain === 'local' ? node.domain : message.creatorDomain}`;
+function author(message) {
+  return `${message.creatorAccount}@${message.creatorDomain}`;
 }
 
 function identity(node, message, messages, groupAddress) {
@@ -24,6 +24,11 @@ export function compareCurrentMemberMessages({
   const failures = [];
   const source = new Map();
   const memberSet = new Set(members);
+  const groupAuthority = groupAddress.startsWith('!')
+    ? federationLabNodes.find(({ domain }) =>
+        groupAddress.endsWith(`@${domain}`),
+      )
+    : null;
   const fail = (kind, node, details = {}) =>
     failures.push({ kind, group: groupAddress, node, ...details });
   for (const member of members) {
@@ -36,7 +41,7 @@ export function compareCurrentMemberMessages({
       continue;
     }
     for (const message of thread.messages) {
-      if (message.contentType === 'SYSTEM' || author(node, message) !== member)
+      if (message.contentType === 'SYSTEM' || author(message) !== member)
         continue;
       const key = identity(node, message, messages, groupAddress);
       if (source.has(key))
@@ -44,11 +49,7 @@ export function compareCurrentMemberMessages({
           member,
           originSeq: message.originSeq,
         });
-      const authority = groupAddress.startsWith('!')
-        ? federationLabNodes.find(({ domain }) =>
-            groupAddress.endsWith(`@${domain}`),
-          )
-        : node;
+      const authority = groupAuthority ?? node;
       const authorityCopy =
         authority?.name === node.name
           ? message
@@ -56,21 +57,16 @@ export function compareCurrentMemberMessages({
               ?.get(groupAddress)
               ?.messages.find(
                 (row) =>
-                  author(authority, row) === member &&
-                  row.originSeq === message.seq,
+                  author(row) === member && row.originSeq === message.seq,
               );
       // Withdrawal can precede confirmation; a deleted submission is no longer returned by the feed.
       const unconfirmedWithdrawal =
         message.isDeleted &&
         message.originSeq === message.seq &&
-        (message.sourceDomain == null || message.sourceDomain === 'local');
+        message.sourceDomain == null;
       if (
         !unconfirmedWithdrawal &&
-        (!authorityCopy ||
-          message.originSeq !== authorityCopy.seq ||
-          (authority?.name !== node.name &&
-            message.sourceDomain != null &&
-            message.sourceDomain !== authority.domain))
+        (!authorityCopy || message.originSeq !== authorityCopy.seq)
       )
         fail('AUTHOR_ORIGIN_SEQ', node.name, {
           member,
@@ -92,7 +88,9 @@ export function compareCurrentMemberMessages({
     const selected = thread.messages.filter(
       (message) =>
         message.contentType !== 'SYSTEM' &&
-        memberSet.has(author(node, message)),
+        memberSet.has(
+          authorIdentity(node, message, messages, groupAddress).actor,
+        ),
     );
     counts[nodeName] = selected.length;
     const seen = new Set();
@@ -121,23 +119,15 @@ export function compareCurrentMemberMessages({
         fail('MESSAGE_NOT_AT_AUTHOR', nodeName, { key });
         continue;
       }
+      // Receipts retain the author's local publisher. The authority imports
+      // that submission from its author, then publishes it to other mirrors.
       const publisher =
-        groupAddress.startsWith('!') &&
-        !groupAddress.endsWith(`@${node.domain}`)
-          ? groupAddress.slice(groupAddress.lastIndexOf('@') + 1)
+        groupAuthority &&
+        nodeName !== original.node.name &&
+        nodeName !== groupAuthority.name
+          ? groupAuthority.domain
           : original.node.domain;
-      const ownUnconfirmedWithdrawal =
-        original.node.name === nodeName &&
-        message.isDeleted &&
-        message.originSeq === message.seq &&
-        message.sourceDomain === 'local';
-      if (
-        message.sourceDomain != null &&
-        !ownUnconfirmedWithdrawal &&
-        (message.sourceDomain === 'local'
-          ? node.domain
-          : message.sourceDomain) !== publisher
-      )
+      if (message.sourceDomain != null && message.sourceDomain !== publisher)
         fail('MESSAGE_SOURCE', nodeName, {
           key,
           expected: publisher,
@@ -168,7 +158,7 @@ export function compareCurrentMemberMessages({
             thread,
             messages,
             key: groupAddress,
-            actor: author(original.node, original.message),
+            actor: author(original.message),
             authorSeq: original.message.seq,
           })
         )

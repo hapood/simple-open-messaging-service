@@ -120,7 +120,6 @@ test('wait helpers use incoming state-feed and resolved profile observations', a
           account: 'alice',
           domain: 'alpha.test',
           subjectAccount: 'bob',
-          subjectDomain: 'local',
           body: {
             direction: 'INCOMING',
             status: 'REQUESTED',
@@ -168,7 +167,6 @@ test('waitForIncoming reads a same-node request from the client state feed', asy
           account: 'alice',
           domain: 'local',
           subjectAccount: 'bob',
-          subjectDomain: 'local',
           body: {
             direction: 'INCOMING',
             status: 'REQUESTED',

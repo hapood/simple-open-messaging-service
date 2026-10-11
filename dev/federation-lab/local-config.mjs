@@ -13,13 +13,14 @@ const persistentFiles = [
 
 /** Import legacy credentials once; local configuration is authoritative thereafter. */
 export function prepareLabConfig(labDir, nodeName) {
+  const runtimeDir = process.env.FED_LAB_RUNTIME_DIR || join(labDir, 'runtime');
   const directory = join(labDir, 'local', nodeName);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   for (const filename of persistentFiles) {
     const target = join(directory, filename);
     try {
       copyFileSync(
-        join(labDir, 'runtime', nodeName, 'data', filename),
+        join(runtimeDir, nodeName, 'data', filename),
         target,
         constants.COPYFILE_EXCL,
       );

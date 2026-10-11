@@ -424,8 +424,8 @@ async function waitForJoinRequest({
   }
 }
 
-/** The GROUP_JOINED system message carrying the applicant as its member. The member domain is
- *  'local' in the member's home namespace and the origin domain on remote mirrors. */
+/** The GROUP_JOINED system message carrying the applicant as its member. The authority's
+ *  acceptance writes no member domain; remote mirrors carry the member's real domain. */
 function findJoinSystemMessage(messages, applicantAccount, applicantDomain) {
   for (const message of messages ?? []) {
     if (message.contentType !== 'SYSTEM' || typeof message.content !== 'string')
@@ -440,7 +440,7 @@ function findJoinSystemMessage(messages, applicantAccount, applicantDomain) {
     const member = content.member;
     if (
       member?.account === applicantAccount &&
-      (member.domain === 'local' || member.domain === applicantDomain)
+      (member.domain == null || member.domain === applicantDomain)
     ) {
       return message;
     }

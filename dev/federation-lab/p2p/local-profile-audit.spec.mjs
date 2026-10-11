@@ -6,23 +6,29 @@ test('uses only native versions for locally authoritative accounts, never foreig
   const rows = [
     {
       account: 'self',
-      domain: 'local',
+      domain: 'bravo.test',
+      namespaceId: 0,
+      publisherNamespaceId: 0,
       profileRev: 1,
-      displayName: 'Historical local',
+      displayName: 'Native exact',
       bio: '',
       avatar: '',
     },
     {
       account: 'self',
       domain: 'bravo.test',
+      namespaceId: 0,
+      publisherNamespaceId: 1,
       profileRev: 1,
-      displayName: 'Wrong foreign copy',
+      displayName: 'Wrong foreign self copy',
       bio: '',
       avatar: '',
     },
     {
       account: 'self',
       domain: 'bravo.test',
+      namespaceId: 0,
+      publisherNamespaceId: 1,
       profileRev: 3,
       displayName: 'Foreign-only revision',
       bio: '',
@@ -31,6 +37,8 @@ test('uses only native versions for locally authoritative accounts, never foreig
     {
       account: 'other',
       domain: 'charlie.test',
+      namespaceId: 1,
+      publisherNamespaceId: 1,
       profileRev: 1,
       displayName: 'Remote',
       bio: '',
@@ -48,11 +56,11 @@ test('uses only native versions for locally authoritative accounts, never foreig
   });
   assert.equal(
     result.versions.get('self@bravo.test#1').displayName,
-    'Historical local',
+    'Native exact',
   );
   assert.equal(result.versions.has('self@bravo.test#3'), false);
   assert.equal(
-    result.versions.get('other@charlie.test#1').displayName,
+    result.versions.get('other@charlie.test#1@1').displayName,
     'Remote',
   );
 });

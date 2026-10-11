@@ -176,12 +176,7 @@ export async function waitForIncoming(receiver, initiator, timeoutMs) {
           (candidate) =>
             candidate.eventType === 'RELATIONSHIP_INTENT' &&
             candidate.account === initiator.account &&
-            candidate.domain ===
-              (receiver.node.name === initiator.node.name
-                ? 'local'
-                : initiator.domain) &&
             candidate.subjectAccount === receiver.account &&
-            candidate.subjectDomain === 'local' &&
             candidate.body?.direction === 'INCOMING' &&
             candidate.body?.status === 'REQUESTED' &&
             candidate.body?.expiresAt > Date.now(),

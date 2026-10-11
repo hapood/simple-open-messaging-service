@@ -2,6 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { admitOperation } from './operations.mjs';
 
+const fakeAdmin = {
+  peerNamespaceId: async () => 1,
+};
+
+function actors(actor) {
+  return {
+    user: () => actor,
+    node: () => ({ name: 'charlie', admin: fakeAdmin }),
+  };
+}
+
 test('group invitations submit public addresses even when a snapshot contains a different mirror user id', async () => {
   const requests = [];
   const actor = {
@@ -25,11 +36,11 @@ test('group invitations submit public addresses even when a snapshot contains a 
       target: {
         id: 76,
         account: 'friend',
-        domain: 'bravo.test',
+        namespaceId: 1,
         address: 'friend@bravo.test',
       },
     },
-    { user: () => actor },
+    actors(actor),
     1000,
   );
   assert.deepEqual(requests, [
@@ -37,8 +48,36 @@ test('group invitations submit public addresses even when a snapshot contains a 
       endpoint: '/group/invite',
       body: {
         groupId: 2,
-        users: [{ account: 'friend', domain: 'bravo.test' }],
+        users: [{ account: 'friend', namespaceId: 1 }],
       },
+    },
+  ]);
+});
+
+test('group invitation acceptance uses the member-authored group endpoint', async () => {
+  const requests = [];
+  const actor = {
+    node: { name: 'bravo', domain: 'bravo.test' },
+    async post(endpoint, body) {
+      requests.push({ endpoint, body });
+      return { taskId: 'task-1' };
+    },
+  };
+  await admitOperation(
+    {
+      id: 'op-505',
+      type: 'ACCEPT_GROUP_INVITATION',
+      actor: 'friend@bravo.test',
+      group: '!group@charlie.test',
+      groupThreadId: 9,
+    },
+    actors(actor),
+    1000,
+  );
+  assert.deepEqual(requests, [
+    {
+      endpoint: '/group/join-request',
+      body: { groupId: 9 },
     },
   ]);
 });
@@ -66,15 +105,16 @@ test('group request decisions submit the projection member address', async () =>
         memberAddress: 'friend@bravo.test',
         memberAccount: 'friend',
         memberDomain: 'bravo.test',
+        memberNamespaceId: 1,
       },
     },
-    { user: () => actor },
+    actors(actor),
     1000,
   );
   assert.deepEqual(requests, [
     {
       endpoint: '/group/join-request/reject',
-      body: { groupId: 2, account: 'friend', domain: 'bravo.test' },
+      body: { groupId: 2, account: 'friend', namespaceId: 1 },
     },
   ]);
 });

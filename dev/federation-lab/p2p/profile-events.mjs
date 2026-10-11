@@ -50,10 +50,13 @@ export async function openProfileEvents(actor, timeoutMs, fetchImpl = fetch) {
     );
     const key = data;
     if (
-      !Number.isSafeInteger(key?.namespaceId) ||
+      !Number.isSafeInteger(key?.publisherNamespaceId) ||
+      key.publisherNamespaceId < 0 ||
+      !Number.isSafeInteger(key?.profileNamespaceId) ||
+      key.profileNamespaceId < 0 ||
       typeof key?.account !== 'string' ||
-      typeof key?.domain !== 'string' ||
-      !Number.isSafeInteger(key?.rev)
+      !Number.isSafeInteger(key?.rev) ||
+      key.rev < 1
     )
       throw new Error('profile SSE has no profile key');
     const result = { event, key, reason: data.reason };

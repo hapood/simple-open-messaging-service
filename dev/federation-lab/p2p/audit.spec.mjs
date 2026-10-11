@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { compareFinalP2pFriends, normalizeNodePairRows } from './audit.mjs';
 
-const alpha = { name: 'alpha', domain: 'alpha.test' };
 const users = ['alice@alpha.test', 'amy@alpha.test', 'bob@bravo.test'];
 const crossPair = 'alice@alpha.test|bob@bravo.test';
 
@@ -36,25 +35,24 @@ function snapshot({ alpha: alphaValue, bravo, charlie } = {}) {
   };
 }
 
-test('normalizes local domains and scopes rows to the run cohort', () => {
+test('normalizes namespace domains and scopes rows to the run cohort', () => {
   const normalized = normalizeNodePairRows(
-    alpha,
     [
       row(
         '1',
-        { account: 'alice', domain: 'local' },
+        { account: 'alice', domain: 'alpha.test' },
         { account: 'bob', domain: 'bravo.test' },
         true,
       ),
       row(
         '2',
-        { account: 'alice', domain: 'local' },
-        { account: 'amy', domain: 'local' },
+        { account: 'alice', domain: 'alpha.test' },
+        { account: 'amy', domain: 'alpha.test' },
         false,
       ),
       row(
         '3',
-        { account: 'alice', domain: 'local' },
+        { account: 'alice', domain: 'alpha.test' },
         { account: 'outside', domain: 'bravo.test' },
         true,
       ),

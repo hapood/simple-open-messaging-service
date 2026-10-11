@@ -1,8 +1,12 @@
-import { federationLabNodes } from '../topology.mjs';
+import {
+  federationLabNodeForDomain,
+  federationLabNodes,
+} from '../topology.mjs';
 import { pairKey } from './scenario.mjs';
+import { profileSubjectIdentityJoins } from './profile-subject-identity.mjs';
 
-function normalizeAddress(node, account, domain) {
-  return `${account}@${domain === 'local' ? node.domain : domain}`;
+function normalizeAddress(account, domain) {
+  return `${account}@${domain}`;
 }
 
 function addressParts(address) {
@@ -10,14 +14,6 @@ function addressParts(address) {
   return {
     account: address.slice(0, separator),
     domain: address.slice(separator + 1),
-  };
-}
-
-function apiAddress(node, address) {
-  const value = addressParts(address);
-  return {
-    account: value.account,
-    domain: value.domain === node.domain ? 'local' : value.domain,
   };
 }
 
@@ -38,19 +34,37 @@ async function readNodeGroupRows(client) {
         LEFT JOIN "GroupMeta" meta ON meta."threadId" = thread."id"
         LEFT JOIN "Profile" profile ON profile."account" = thread."groupAccount"
           AND profile."publisherNamespaceId" = thread."authorityNamespaceId"
-          AND profile."profileNamespaceId" = thread."authorityNamespaceId"
+          AND profile."profileNamespaceId" = 0
           AND profile."profileRev" = COALESCE(account."defaultProfileRev", meta."profileRev", 0)
         WHERE thread."type" = 'GROUP'
         ORDER BY thread."id"
       `);
   const roster = await client.query(`
         SELECT fact."threadId", fact."memberAccount" AS "account",
-          ns."domain" AS "domain",
-          fact."profileNamespaceId" AS "namespaceId",
+          CASE
+            WHEN fact."profileNamespaceId" = 0 THEN authority_ns."domain"
+            WHEN fact."profileNamespaceId" = authority_ns."peerAssignedLocalNamespaceId"
+              THEN local_ns."domain"
+            WHEN thread."authorityNamespaceId" = 0 THEN identity_ns."domain"
+            ELSE profile_identity.domain
+          END AS "domain",
+          CASE
+            WHEN fact."profileNamespaceId" = 0 THEN thread."authorityNamespaceId"
+            WHEN fact."profileNamespaceId" = authority_ns."peerAssignedLocalNamespaceId"
+              THEN 0
+            ELSE profile_identity.id
+          END AS "namespaceId",
+          fact."profileNamespaceId" AS "profileNamespaceId",
           fact."body" ->> 'role' AS "role",
           (fact."body" ->> 'profileRev')::integer AS "profileRev"
         FROM "GroupMetaMemberFeed" fact
-        LEFT JOIN "IdentityNamespace" ns ON ns."id" = fact."profileNamespaceId"
+        INNER JOIN "MessageThread" thread ON thread."id" = fact."threadId"
+        INNER JOIN "IdentityNamespace" authority_ns
+          ON authority_ns."id" = thread."authorityNamespaceId"
+        INNER JOIN "IdentityNamespace" local_ns ON local_ns."id" = 0
+        LEFT JOIN "IdentityNamespace" identity_ns
+          ON identity_ns."id" = fact."profileNamespaceId"
+        ${profileSubjectIdentityJoins('thread."authorityNamespaceId"', 'fact."profileNamespaceId"', 'profile_identity')}
         WHERE fact."operation" = 'MEMBER_UPSERT'
       `);
   const relationships = await client.query(`
@@ -82,7 +96,8 @@ async function readNodeGroupRows(client) {
   const requests = await client.query(`
         SELECT projection."threadId", projection."direction", projection."feedId",
                projection."status", projection."expiresAt",
-               projection."memberAccount", ns."domain" AS "memberDomain"
+               projection."memberAccount", projection."profileNamespaceId" AS "memberNamespaceId",
+               ns."domain" AS "memberDomain"
         FROM "GroupRequestProjection" projection
         LEFT JOIN "IdentityNamespace" ns ON ns."id" = projection."profileNamespaceId"
         ORDER BY projection."threadId", projection."direction", projection."feedId"
@@ -112,11 +127,13 @@ async function readNodeGroupRows(client) {
         SELECT msg."id"::text, msg."threadId", msg."seq", msg."originSeq", msg."profileRev",
                msg."contentType", msg."content", msg."clientMessageId",
                msg."creatorAccount", creator_ns."domain" AS "creatorDomain",
-               msg."profileNamespaceId" AS "creatorNamespaceId", msg."profileNamespaceId",
+               creator_ns."id" AS "creatorNamespaceId", msg."profileNamespaceId",
+               msg."publisherNamespaceId", publisher_ns."domain" AS "sourceDomain",
                msg."isDeleted", msg."localState"
         FROM "Message" msg
         INNER JOIN "MessageThread" thread ON thread."id" = msg."threadId"
-        LEFT JOIN "IdentityNamespace" creator_ns ON creator_ns."id" = msg."profileNamespaceId"
+        LEFT JOIN "IdentityNamespace" publisher_ns ON publisher_ns."id" = msg."publisherNamespaceId"
+        ${profileSubjectIdentityJoins('msg."publisherNamespaceId"', 'msg."profileNamespaceId"', 'creator_ns')}
         WHERE thread."type" = 'GROUP'
         ORDER BY msg."threadId", msg."seq"
       `);
@@ -133,7 +150,7 @@ async function readNodeGroupRows(client) {
 function normalizeNode(node, rows, p2pNode) {
   const groups = new Map(
     rows.groups.map((group) => {
-      const address = normalizeAddress(node, group.account, group.domain);
+      const address = normalizeAddress(group.account, group.domain);
       return [
         address,
         {
@@ -162,25 +179,24 @@ function normalizeNode(node, rows, p2pNode) {
   );
   for (const member of rows.roster) {
     const group = groupByThread.get(member.threadId);
-    if (!group) continue;
-    const address = normalizeAddress(node, member.account, member.domain);
+    if (!group || member.domain === null) continue;
+    const address = normalizeAddress(member.account, member.domain);
     group.roster.push({
       address,
       role: member.role,
       profileRev: member.profileRev,
       namespaceId: member.namespaceId,
-      ...apiAddress(node, address),
+      profileNamespaceId: member.profileNamespaceId,
+      ...addressParts(address),
     });
   }
   for (const row of rows.relationships) {
     const groupOnA = row.endpointAType === 'GROUP';
     const groupAddress = normalizeAddress(
-      node,
       groupOnA ? row.endpointAAccount : row.endpointBAccount,
       groupOnA ? row.endpointADomain : row.endpointBDomain,
     );
     const memberAddress = normalizeAddress(
-      node,
       groupOnA ? row.endpointBAccount : row.endpointAAccount,
       groupOnA ? row.endpointBDomain : row.endpointADomain,
     );
@@ -205,10 +221,10 @@ function normalizeNode(node, rows, p2pNode) {
       feedId: request.feedId,
       memberAccount: request.memberAccount,
       memberDomain: request.memberDomain,
+      memberNamespaceId: request.memberNamespaceId ?? 0,
       status: request.status,
       expiresAt: request.expiresAt,
       memberAddress: normalizeAddress(
-        node,
         request.memberAccount,
         request.memberDomain,
       ),
@@ -220,16 +236,17 @@ function normalizeNode(node, rows, p2pNode) {
     group.messages.push({
       ...message,
       creatorAddress: normalizeAddress(
-        node,
         message.creatorAccount,
         message.creatorDomain,
       ),
+      sourceNamespaceId: message.publisherNamespaceId,
+      sourceDomain: message.sourceDomain,
     });
   }
   const users = new Map(
     rows.users.map((user) => {
-      const address = normalizeAddress(node, user.account, user.domain);
-      return [address, { id: user.id, address, ...apiAddress(node, address) }];
+      const address = normalizeAddress(user.account, user.domain);
+      return [address, { id: user.id, address, ...addressParts(address) }];
     }),
   );
   return { node, groups, users, activeP2p: new Set(p2pNode.pairs.active) };
@@ -372,5 +389,5 @@ export function attachCreatedGroups(snapshot, creations) {
 
 export function groupHomeNode(address) {
   const { domain } = addressParts(address);
-  return federationLabNodes.find((node) => node.domain === domain);
+  return federationLabNodeForDomain(domain);
 }

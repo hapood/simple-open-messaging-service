@@ -9,9 +9,9 @@ const actor = {
   node: { backendBaseUrl: 'http://bravo.test' },
 };
 const key = {
-  namespaceId: 2,
+  publisherNamespaceId: 2,
+  profileNamespaceId: 0,
   account: 'alice',
-  domain: 'alpha.test',
   rev: 7,
 };
 
@@ -83,12 +83,16 @@ test('reports PROFILE_UNAVAILABLE without creating another request', async () =>
     await assert.rejects(
       resolveUntilReady(
         user,
-        { type: 'MESSAGE_AUTHOR', threadId: 19, messageSeq: 5, rev: 7 },
+        {
+          publisherNamespaceId: 2,
+          lookup: 'ACCOUNT_PROFILE',
+          target: { profileNamespaceId: 0, account: 'alice', rev: 7 },
+        },
         7,
         1000,
         s.events,
       ),
-      /threadId.*19.*messageSeq.*5.*NOT_FOUND/,
+      /publisherNamespaceId.*2.*alice.*NOT_FOUND/,
     );
     assert.equal(calls, 1);
   } finally {

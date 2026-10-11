@@ -250,7 +250,6 @@ test('final consistency permits business rejections while preserving results and
         log: journal,
         actors: { nodes: new Map([['alpha', {}]]) },
         label: 'final workload',
-        verifyMode: 'final',
         drain: true,
         onProgress() {},
         onLog: async () => {},
@@ -267,13 +266,8 @@ test('final consistency permits business rejections while preserving results and
   }
 });
 
-test('settlement retains strict round outcomes and final execution failure checks', async () => {
-  for (const [verifyMode, status] of [
-    ['round', 'REJECTED'],
-    ['final', 'FAILED'],
-    ['final', 'PROCESSING'],
-    ['final', 'ADMISSION_FAILED'],
-  ]) {
+test('final settlement rejects execution failures and unfinished operations', async () => {
+  for (const status of ['FAILED', 'PROCESSING', 'ADMISSION_FAILED']) {
     const journal = { operations: [{ id: 'op-1', status }] };
     await assert.rejects(
       settleWorkloadOperations({
@@ -281,7 +275,6 @@ test('settlement retains strict round outcomes and final execution failure check
         log: journal,
         actors: {},
         label: 'validation',
-        verifyMode,
         onProgress() {},
         onLog: async () => {},
       }),
@@ -475,7 +468,14 @@ test('random request rejection does not wait for an incoming projection', async 
   };
   const result = await admitOperation(
     { type: 'REJECT_REQUEST', requestSubject: bob, requestAuthor: alice },
-    { user: (address) => (address === bob ? receiver : sender) },
+    {
+      user: (address) => (address === bob ? receiver : sender),
+      node: () => ({
+        admin: {
+          peerNamespaceId: async () => 7,
+        },
+      }),
+    },
     1,
   );
   assert.equal(result.status, 'ADMITTED');
@@ -872,7 +872,17 @@ test('admits a remote group application with the observed group profile', async 
         },
       },
     },
-    { user: () => actor },
+    {
+      user: () => actor,
+      node: () => ({
+        admin: {
+          peerNamespaceId: async (domain) => {
+            calls.push({ endpoint: '/admin/federation/peer-namespace', domain });
+            return 7;
+          },
+        },
+      }),
+    },
     1_000,
   );
   assert.equal(admitted.status, 'ADMITTED');
@@ -882,11 +892,12 @@ test('admits a remote group application with the observed group profile', async 
       account: '!group',
       domain: 'bravo.test',
     },
+    { endpoint: '/admin/federation/peer-namespace', domain: 'bravo.test' },
     {
       endpoint: '/relationship/request',
       body: {
         account: '!group',
-        domain: 'bravo.test',
+        namespaceId: 7,
         note: 'op-1',
         displayName: 'Resolved remote group',
       },

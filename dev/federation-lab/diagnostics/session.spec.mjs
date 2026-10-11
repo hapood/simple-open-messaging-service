@@ -59,6 +59,25 @@ test('waits for readiness across chunks, preserves stdout/stderr, and stops the 
   }
 });
 
+test('retains an early readiness marker across verbose startup output', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'lab-session-'));
+  const child = startProcess(
+    process.execPath,
+    [
+      '-e',
+      "console.log('READY'); process.stdout.write('x'.repeat(64 * 1024)); setInterval(() => {}, 1000)",
+    ],
+    { cwd: directory, env: process.env, logPath: join(directory, 'child.log') },
+  );
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await child.ready('READY', 3000);
+  } finally {
+    await child.stop(1000);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('reports startup failure and force-stops an unresponsive owned process', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'lab-session-'));
   const failed = startProcess(process.execPath, ['-e', 'process.exit(7)'], {

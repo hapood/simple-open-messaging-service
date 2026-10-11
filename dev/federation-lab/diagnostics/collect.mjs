@@ -3,10 +3,15 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { join } from 'node:path';
 import pg from 'pg';
+import { federationLabNodes } from '../topology.mjs';
 
 const directory = process.env.SOMS_DIAGNOSTICS_DIR;
 if (!directory) throw new Error('SOMS_DIAGNOSTICS_DIR is required');
 await mkdir(directory, { recursive: true });
+const databases = federationLabNodes.map(({ database }) => database);
+const databasePlaceholders = databases
+  .map((_, index) => `$${index + 1}`)
+  .join(', ');
 const output = createWriteStream(
   join(directory, `database-${process.pid}.jsonl`),
 );
@@ -40,11 +45,14 @@ try {
       const { rows } =
         // Keep SQL beside its backend PID so lock waiters and the last statement
         // of an idle transaction can be identified from the same sample.
-        await client.query(`SELECT datname, pid, state, wait_event_type, wait_event, query,
+        await client.query(
+          `SELECT datname, pid, state, wait_event_type, wait_event, query,
         extract(epoch FROM (clock_timestamp() - xact_start)) * 1000 AS transaction_ms,
         extract(epoch FROM (clock_timestamp() - query_start)) * 1000 AS query_ms,
         pg_blocking_pids(pid) AS blockers
-        FROM pg_stat_activity WHERE datname IN ('soms_fed_lab_alpha','soms_fed_lab_bravo','soms_fed_lab_charlie')`);
+        FROM pg_stat_activity WHERE datname IN (${databasePlaceholders})`,
+          databases,
+        );
       const pressure = Object.fromEntries(
         await Promise.all(
           ['cpu', 'io', 'memory'].map(async (kind) => [

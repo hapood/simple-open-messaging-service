@@ -6,10 +6,31 @@ import { access, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
+import { createServer } from 'node:net';
 import { stripVTControlCharacters } from 'node:util';
-import { federationLabNodes } from '../topology.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+
+async function allocateBackendPorts(count = 3) {
+  const servers = [];
+  try {
+    for (let index = 0; index < count; index += 1) {
+      const server = createServer();
+      await new Promise((resolveListen, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', resolveListen);
+      });
+      servers.push(server);
+    }
+    return servers.map((server) => server.address().port);
+  } finally {
+    await Promise.all(
+      servers.map(
+        (server) => new Promise((resolveClose) => server.close(resolveClose)),
+      ),
+    );
+  }
+}
 
 export function workloadArguments(args) {
   // npm appends caller arguments after the package script; the last value wins.
@@ -81,7 +102,7 @@ export function startProcess(
       }
       tails.set(
         stream,
-        ((tails.get(stream) ?? '') + chunk.toString()).slice(-8192),
+        ((tails.get(stream) ?? '') + chunk.toString()).slice(-1024 * 1024),
       );
       for (const notify of listeners) notify();
     });
@@ -170,11 +191,31 @@ async function main() {
       ),
   );
   await mkdir(directory, { recursive: true, mode: 0o700 });
+  const controlDirectory = join(directory, 'lab-control');
+  await mkdir(join(controlDirectory, 'requests'), {
+    recursive: true,
+    mode: 0o700,
+  });
+  await mkdir(join(controlDirectory, 'responses'), {
+    recursive: true,
+    mode: 0o700,
+  });
+  const databasePrefix = `soms_fed_diag_${new Date()
+    .toISOString()
+    .replaceAll(/[-:.TZ]/g, '')}`;
+  const backendPorts = await allocateBackendPorts();
   const env = {
     ...process.env,
     SOMS_DIAGNOSTICS_DIR: directory,
+    FED_LAB_CONTROL_DIR: controlDirectory,
+    FED_LAB_BACKEND_PORTS: JSON.stringify(backendPorts),
+    FED_LAB_DATABASE_PREFIX: databasePrefix,
+    FED_LAB_RUNTIME_DIR: join(directory, 'runtime'),
     FED_LAB_LOG_LEVEL: process.env.FED_LAB_LOG_LEVEL ?? 'info',
   };
+  process.env.FED_LAB_BACKEND_PORTS = env.FED_LAB_BACKEND_PORTS;
+  process.env.FED_LAB_DATABASE_PREFIX = env.FED_LAB_DATABASE_PREFIX;
+  const { federationLabNodes } = await import('../topology.mjs');
   const owned = [];
   const controller = new AbortController();
   const interrupted = new Promise((_, reject) =>
@@ -203,6 +244,12 @@ async function main() {
   const manifest = {
     startedAt: new Date().toISOString(),
     arguments: workloadArguments(args),
+    databasePrefix,
+    databases: federationLabNodes.map(({ name, database }) => ({
+      node: name,
+      database,
+    })),
+    backendPorts,
     status: 'RUNNING',
     error: null,
   };
@@ -213,12 +260,18 @@ async function main() {
       { mode: 0o600 },
     );
   console.log(`[diagnostics] all diagnostic files: ${directory}`);
+  console.log(
+    `[diagnostics] allocated backend ports: ${backendPorts.join(', ')}`,
+  );
   await save();
   try {
     for (const node of federationLabNodes) {
-      const running = await fetch(`${node.backendBaseUrl}/api/v1/client/compat`, {
-        signal: AbortSignal.timeout(1000),
-      }).then(
+      const running = await fetch(
+        `${node.backendBaseUrl}/api/v1/client/compat`,
+        {
+          signal: AbortSignal.timeout(1000),
+        },
+      ).then(
         () => true,
         () => false,
       );

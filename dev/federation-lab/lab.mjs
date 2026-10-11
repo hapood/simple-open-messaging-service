@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
 import { prepareLabConfig } from './local-config.mjs';
@@ -23,7 +24,9 @@ import {
 
 const labDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(labDir, '..', '..');
-const runtimeDir = join(labDir, 'runtime');
+const runtimeDir = resolve(
+  process.env.FED_LAB_RUNTIME_DIR || join(labDir, 'runtime'),
+);
 const options = new Set(process.argv.slice(2));
 const devServer = options.delete('--dev-server');
 const backendOnly = options.delete('--backend-only');
@@ -43,6 +46,7 @@ const hmrLogDir = join(browserE2eRoot, 'logs');
 const hmrStatusDir = join(browserE2eRoot, 'status');
 const hmrSessionId = new Date().toISOString();
 let hmrRecoveryTimer;
+let controlTimer;
 
 function restoreHmrSessionMarker() {
   const marker = join(hmrStatusDir, 'session.json');
@@ -69,6 +73,9 @@ function databaseUrl(database) {
 }
 
 const children = [];
+const backendChildren = new Map();
+const controlledBackendStops = new WeakSet();
+let controlBusy = false;
 let stopping = false;
 let interrupted = false;
 let finish;
@@ -86,6 +93,7 @@ function stop(exitCode = 0) {
   process.exitCode = exitCode;
   shutdown.abort();
   if (hmrRecoveryTimer) clearInterval(hmrRecoveryTimer);
+  if (controlTimer) clearInterval(controlTimer);
   console.log(
     children.length
       ? '[lab] stopping children gracefully (up to 60s)'
@@ -331,6 +339,114 @@ function spawnChild(command, args, options = {}) {
   return child;
 }
 
+async function stopBackendChild(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  controlledBackendStops.add(child);
+  const exited = new Promise((resolvePromise) =>
+    child.once('exit', resolvePromise),
+  );
+  signalProcessGroup(child, 'SIGTERM');
+  const timer = setTimeout(() => signalProcessGroup(child, 'SIGKILL'), 60_000);
+  timer.unref();
+  await exited;
+  clearTimeout(timer);
+}
+
+function startBackendNode(node, domain = node.domain) {
+  const peerRoutes = { ...routes };
+  delete peerRoutes[node.domain];
+  delete peerRoutes[node.transitionDomain];
+  const diagnosticsArgs = process.env.SOMS_DIAGNOSTICS_DIR
+    ? [
+        '--import',
+        join(root, 'dev', 'federation-lab', 'diagnostics', 'preload.mjs'),
+      ]
+    : [];
+  const child = spawn(
+    'node',
+    [...diagnosticsArgs, join(root, 'dist', 'src', 'main.js')],
+    {
+      cwd: root,
+      stdio: ['inherit', 'pipe', 'inherit'],
+      env: labEnvironment({ ...node, domain }, peerRoutes),
+      detached: true,
+    },
+  );
+  const backendLog = createWriteStream(
+    join(runtimeDir, node.name, 'backend.log'),
+    { flags: 'a' },
+  );
+  child.stdout.pipe(backendLog);
+  child.stdout.pipe(process.stdout);
+  children.push(child);
+  backendChildren.set(node.name, child);
+  child.once('exit', (code, signal) => {
+    backendLog.end();
+    if (backendChildren.get(node.name) === child)
+      backendChildren.delete(node.name);
+    if (!stopping && !controlledBackendStops.has(child)) {
+      console.error(`[lab] ${domain} backend exited (${signal ?? code})`);
+      stop(1);
+    }
+  });
+  return child;
+}
+
+async function restartBackendNode(node, domain) {
+  const allowed = new Set([node.domain, node.transitionDomain]);
+  if (!allowed.has(domain)) throw new Error(`unsupported lab domain ${domain}`);
+  await stopBackendChild(backendChildren.get(node.name));
+  startBackendNode(node, domain);
+  await waitForUrl(
+    `http://127.0.0.1:${node.backendPort}/api/v1/client/compat`,
+    shutdown.signal,
+  );
+  console.log(`[lab] ${node.name} restarted as ${domain}`);
+}
+
+async function processControlRequests() {
+  const controlDir = process.env.FED_LAB_CONTROL_DIR;
+  if (!controlDir || controlBusy || stopping) return;
+  controlBusy = true;
+  try {
+    const requestDir = join(controlDir, 'requests');
+    const filenames = (await readdir(requestDir))
+      .filter((name) => name.endsWith('.json'))
+      .sort();
+    for (const filename of filenames) {
+      const requestPath = join(requestDir, filename);
+      const claimedPath = `${requestPath}.processing`;
+      try {
+        await rename(requestPath, claimedPath);
+      } catch (error) {
+        if (error?.code === 'ENOENT') continue;
+        throw error;
+      }
+      let response;
+      try {
+        const request = JSON.parse(await readFile(claimedPath, 'utf8'));
+        const node = nodes.find(({ name }) => name === request.nodeName);
+        if (!node)
+          throw new Error(`unknown federation lab node ${request.nodeName}`);
+        await restartBackendNode(node, request.domain);
+        response = { ok: true, nodeName: node.name, domain: request.domain };
+      } catch (error) {
+        response = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      await writeFile(
+        join(controlDir, 'responses', filename),
+        `${JSON.stringify(response)}\n`,
+        { mode: 0o600 },
+      );
+    }
+  } finally {
+    controlBusy = false;
+  }
+}
+
 function spawnLoggedChild(name, command, args, options = {}) {
   mkdirSync(hmrLogDir, { recursive: true, mode: 0o700 });
   const log = createWriteStream(join(hmrLogDir, `${name}.log`), {
@@ -419,40 +535,7 @@ try {
   if (runBackend && !stopping) {
     for (const node of nodes) {
       if (stopping) break;
-      const peerRoutes = { ...routes };
-      delete peerRoutes[node.domain];
-      const diagnosticsArgs = process.env.SOMS_DIAGNOSTICS_DIR
-        ? [
-            '--import',
-            join(root, 'dev', 'federation-lab', 'diagnostics', 'preload.mjs'),
-          ]
-        : [];
-      const child = spawn(
-        'node',
-        [...diagnosticsArgs, join(root, 'dist', 'src', 'main.js')],
-        {
-          cwd: root,
-          stdio: ['inherit', 'pipe', 'inherit'],
-          env: labEnvironment(node, peerRoutes),
-          detached: true,
-        },
-      );
-      // Mirror each backend's stdout to the terminal AND its per-node log.
-      const backendLog = createWriteStream(
-        join(runtimeDir, node.name, 'backend.log'),
-        { flags: 'a' },
-      );
-      child.stdout.pipe(backendLog);
-      child.stdout.pipe(process.stdout);
-      children.push(child);
-      child.once('exit', (code, signal) => {
-        if (!stopping) {
-          console.error(
-            `[lab] ${node.domain} backend exited (${signal ?? code})`,
-          );
-          stop(1);
-        }
-      });
+      startBackendNode(node);
     }
     const ready = await waitForServices(
       [
@@ -472,6 +555,14 @@ try {
       shutdown.signal,
     );
     if (ready) {
+      if (process.env.FED_LAB_CONTROL_DIR) {
+        controlTimer = setInterval(() => {
+          void processControlRequests().catch((error) => {
+            console.error('[lab] control request failed', error);
+            stop(1);
+          });
+        }, 100);
+      }
       console.log('\nThree-node federation backends are ready:');
       for (const node of nodes) {
         console.log(

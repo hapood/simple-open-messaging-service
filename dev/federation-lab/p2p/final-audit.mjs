@@ -3,12 +3,16 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { federationLabNodes } from '../topology.mjs';
+import {
+  federationLabNodeForDomain,
+  federationLabNodes,
+} from '../topology.mjs';
 import {
   compareFinalP2pFriends,
   readP2pConsistencySnapshot,
 } from './audit.mjs';
 import { readGroupWorkloadSnapshot } from './group-facts.mjs';
+import { profileSubjectIdentityJoins } from './profile-subject-identity.mjs';
 import { parseContent } from './message-operations.mjs';
 import { mediaContentEvidence } from './media-content.mjs';
 import { compareCurrentMemberMessages } from './message-set-audit.mjs';
@@ -20,11 +24,9 @@ import {
   permitsAbsentWithdrawal,
 } from './message-evidence.mjs';
 
-const labRuntimeDir = join(
-  dirname(fileURLToPath(import.meta.url)),
-  '..',
-  'runtime',
-);
+const labRuntimeDir =
+  process.env.FED_LAB_RUNTIME_DIR ??
+  join(dirname(fileURLToPath(import.meta.url)), '..', 'runtime');
 
 function sorted(value) {
   return [...value].sort();
@@ -52,11 +54,7 @@ function addressDomain(address) {
 }
 
 function nodeForAddress(address) {
-  const node = federationLabNodes.find(
-    ({ domain }) => domain === addressDomain(address),
-  );
-  if (!node) throw new Error(`no federation lab node owns ${address}`);
-  return node;
+  return federationLabNodeForDomain(addressDomain(address));
 }
 
 export async function readNodeMessageAudit(
@@ -68,7 +66,7 @@ export async function readNodeMessageAudit(
   const identityColumns =
     kind === 'GROUP'
       ? 'thread."groupAccount" AS "account", thread."groupDomain" AS "domain"'
-      : 'pair."endpointAAccount", COALESCE(ns_a."domain", \'local\') AS "endpointADomain", pair."endpointBAccount", COALESCE(ns_b."domain", \'local\') AS "endpointBDomain"';
+      : 'pair."endpointAAccount", ns_a."domain" AS "endpointADomain", pair."endpointBAccount", ns_b."domain" AS "endpointBDomain"';
   const identityJoin =
     kind === 'GROUP'
       ? ''
@@ -87,14 +85,15 @@ export async function readNodeMessageAudit(
       SELECT ${identityColumns}, msg."id"::text AS "id",
              msg."threadId", msg."seq", msg."originSeq", msg."profileRev",
              msg."contentType", msg."content", msg."clientMessageId", msg."isDeleted",
-             msg."localState", msg."creatorAccount", creator_ns."domain" AS "creatorDomain",
-             msg."profileNamespaceId" AS "creatorNamespaceId", msg."publisherNamespaceId" AS "sourceNamespaceId", namespace."domain" AS "sourceDomain",
+             msg."localState", msg."creatorAccount", msg."profileNamespaceId", msg."publisherNamespaceId",
+             creator_ns."domain" AS "creatorDomain",
+             creator_ns."id" AS "creatorNamespaceId", msg."publisherNamespaceId" AS "sourceNamespaceId", namespace."domain" AS "sourceDomain",
              quote_namespace."domain" AS "quoteSourceDomain",
              bundle."messages" AS "forwardMessages"
       FROM "Message" msg
       INNER JOIN "MessageThread" thread ON thread."id" = msg."threadId"
       ${identityJoin}
-      LEFT JOIN "IdentityNamespace" creator_ns ON creator_ns."id" = msg."profileNamespaceId"
+      ${profileSubjectIdentityJoins('msg."publisherNamespaceId"', 'msg."profileNamespaceId"', 'creator_ns')}
       LEFT JOIN "IdentityNamespace" namespace ON namespace."id" = msg."publisherNamespaceId"
       LEFT JOIN "IdentityNamespace" quote_namespace ON quote_namespace."id" =
         CASE WHEN msg."contentType" = 'PURE_TEXT'
@@ -124,10 +123,10 @@ export async function readNodeMessageAudit(
     `);
   const groupAddress = (row) =>
     kind === 'GROUP'
-      ? `${row.account}@${row.domain === 'local' ? node.domain : row.domain}`
+      ? `${row.account}@${row.domain}`
       : pairKey(
-          `${row.endpointAAccount}@${row.endpointADomain === 'local' ? node.domain : row.endpointADomain}`,
-          `${row.endpointBAccount}@${row.endpointBDomain === 'local' ? node.domain : row.endpointBDomain}`,
+          `${row.endpointAAccount}@${row.endpointADomain}`,
+          `${row.endpointBAccount}@${row.endpointBDomain}`,
         );
   const result = new Map();
   for (const row of threads.rows) {
@@ -233,11 +232,17 @@ async function avatarDigest(node, avatar) {
 }
 
 export async function readNodeProfileAudit(client, node) {
+  // Profile snapshots are publisher-scoped: `publisherNamespaceId` is the local
+  // namespace that disclosed the snapshot and `profileNamespaceId` is the
+  // subject namespace inside the publisher's coordinate space. Resolve the
+  // subject's public address domain from those coordinates, then map it back
+  // to this node's canonical namespace id so reference keys line up.
   const versions = await client.query(`
       SELECT version."profileRev", version."displayName", version."avatar", version."bio",
-             version."account", ns."domain" AS "domain", version."profileNamespaceId" AS "namespaceId"
+             version."account", version."publisherNamespaceId", version."profileNamespaceId",
+             subject_ns.domain, subject_ns.id AS "namespaceId"
       FROM "Profile" version
-      LEFT JOIN "IdentityNamespace" ns ON ns."id" = version."profileNamespaceId"
+      ${profileSubjectIdentityJoins('version."publisherNamespaceId"', 'version."profileNamespaceId"', 'subject_ns')}
     `);
   const intents = await client.query(`
       SELECT pair."endpointAAccount", ns_a."domain" AS "endpointADomain",
@@ -245,7 +250,8 @@ export async function readNodeProfileAudit(client, node) {
              pair."endpointBType", pair."endpointANamespaceId", pair."endpointBNamespaceId",
              CASE WHEN pair."endpointAAccount" = intent."authorAccount"
             AND pair."endpointANamespaceId" = intent."authorNamespaceId"
-            THEN 'A' ELSE 'B' END AS "authorSide", intent."status", intent."expiresAt", intent."profileRev"
+            THEN 'A' ELSE 'B' END AS "authorSide", intent."status", intent."expiresAt", intent."profileRev",
+             intent."profileNamespaceId"
       FROM "RelationshipIntent" intent
       INNER JOIN "RelationshipPair" pair
       ON pair."kind" = 'P2P'
@@ -263,12 +269,15 @@ export async function readNodeProfileAudit(client, node) {
       LEFT JOIN "IdentityNamespace" ns_b ON ns_b."id" = pair."endpointBNamespaceId"
       WHERE intent."profileRev" > 0
     `);
-  const normalized = (account, domain) =>
-    `${account}@${domain === 'local' ? node.domain : domain}`;
-  // A foreign group may retain a source-scoped shell for a native account.
-  // Local display uses the native exact version, never that foreign self copy.
+  const normalized = (account, domain) => `${account}@${domain}`;
+  // A foreign group may retain a source-scoped shell for a native account: a
+  // positive publisher resolving back to this node's own domain. Local display
+  // uses the native exact version (namespace 0), never that shell. Unresolved
+  // bindings have no addressable domain and are skipped.
   const authoritativeLocalRows = versions.rows.filter(
-    (row) => row.domain !== node.domain,
+    (row) =>
+      row.domain !== null &&
+      (row.domain !== node.domain || row.publisherNamespaceId === 0),
   );
   const entries = await mapConcurrent(
     authoritativeLocalRows,
@@ -314,6 +323,11 @@ export async function readNodeProfileAudit(client, node) {
         subjectType:
           row.authorSide === 'A' ? row.endpointBType : row.endpointAType,
         profileRev: row.profileRev,
+        profileNamespaceId: row.profileNamespaceId,
+        publisherNamespaceId:
+          row.authorSide === 'A'
+            ? row.endpointANamespaceId
+            : row.endpointBNamespaceId,
         source: 'RELATIONSHIP_INTENT',
       })),
   };
@@ -451,9 +465,8 @@ function compareMedia(node, thread, message, expected) {
   return errors;
 }
 
-function messageSignature(node, message, thread, resolveQuote) {
-  const creatorDomain =
-    message.creatorDomain === 'local' ? node.domain : message.creatorDomain;
+function rawMessageSignature(node, message, thread, resolveQuote, creator) {
+  const creatorDomain = message.creatorDomain;
   const { content } = mediaContentEvidence(message);
   if (thread && content?.quote) {
     const target = thread.messages.find(({ seq }) => seq === content.quote.seq);
@@ -461,7 +474,7 @@ function messageSignature(node, message, thread, resolveQuote) {
       ? resolveQuote(node, message, thread)
       : target
         ? {
-            actor: `${target.creatorAccount}@${target.creatorDomain === 'local' ? node.domain : target.creatorDomain}`,
+            actor: `${target.creatorAccount}@${target.creatorDomain}`,
             originSeq: target.originSeq,
           }
         : { missing: true };
@@ -473,7 +486,7 @@ function messageSignature(node, message, thread, resolveQuote) {
   return {
     contentType: message.contentType,
     content: content ?? message.content,
-    creator: `${message.creatorAccount}@${creatorDomain}`,
+    creator: creator ?? `${message.creatorAccount}@${creatorDomain}`,
   };
 }
 
@@ -483,11 +496,7 @@ function messageIdentity(group, creator, originSeq) {
 
 function storedMessageIdentity(node, group, message, messages) {
   const identity = authorIdentity(node, message, messages, group);
-  return messageIdentity(
-    group,
-    messageSignature(node, message).creator,
-    identity.seq,
-  );
+  return messageIdentity(group, identity.actor, identity.seq);
 }
 
 export function compareFederationSnapshot({
@@ -502,11 +511,22 @@ export function compareFederationSnapshot({
 }) {
   const failures = [];
   const contexts = new WeakMap();
+  const messageContexts = new WeakMap();
   for (const collection of [messages, p2pMessages]) {
     for (const nodeThreads of Object.values(collection ?? {}))
-      for (const [key, thread] of nodeThreads)
-        contexts.set(thread, { collection, key });
+      for (const [key, thread] of nodeThreads) {
+        const context = { collection, key };
+        contexts.set(thread, context);
+        for (const row of thread.messages) messageContexts.set(row, context);
+      }
   }
+  const messageSignature = (node, row, thread, resolveQuote) => {
+    const context = messageContexts.get(row);
+    const creator = context
+      ? authorIdentity(node, row, context.collection, context.key).actor
+      : undefined;
+    return rawMessageSignature(node, row, thread, resolveQuote, creator);
+  };
   const resolveQuote = (node, message, thread) => {
     const context = contexts.get(thread);
     return quoteIdentity(
@@ -1333,4 +1353,64 @@ export async function waitForFederationConvergence({
   error.snapshot = snapshot;
   error.comparison = comparison;
   throw error;
+}
+
+/** Final admin-level provenance sweep: for every federated message a node
+ * mirrors, ask the authoritative peer (through the dedicated admin
+ * verification endpoint) whether it still knows the message by digest. */
+export async function verifyFinalMessageProvenance({
+  snapshot,
+  actors,
+  concurrency = 6,
+  onProgress = console.log,
+}) {
+  const perNode = {};
+  for (const nodeName of Object.keys(snapshot.messages)) {
+    const admin = actors.node(nodeName).admin;
+    const federated = [];
+    for (const threadAudit of [
+      ...snapshot.messages[nodeName].values(),
+      ...snapshot.p2pMessages[nodeName].values(),
+    ]) {
+      for (const message of threadAudit.messages) {
+        if (
+          (message.sourceNamespaceId ?? 0) > 0 &&
+          message.originSeq !== null &&
+          message.localState === 'READY'
+        ) {
+          federated.push({ threadId: message.threadId, seq: message.seq });
+        }
+      }
+    }
+    const results = await mapConcurrent(federated, concurrency, (message) =>
+      admin
+        .verifyMessageProvenance(message.threadId, message.seq)
+        .then((known) => ({ ...message, known }))
+        .catch((error) => ({
+          ...message,
+          known: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        })),
+    );
+    const summary = {
+      checks: results.length,
+      yes: results.filter((result) => result.known === 'yes').length,
+      rejected: results.filter((result) => result.known !== 'yes'),
+    };
+    perNode[nodeName] = summary;
+    onProgress(
+      `[federation][provenance] ${nodeName}: verified=${summary.yes}/${summary.checks} with authoritative peers`,
+    );
+  }
+  const rejected = Object.values(perNode).flatMap(
+    (summary) => summary.rejected,
+  );
+  if (rejected.length > 0) {
+    const error = new Error(
+      `${rejected.length} federated messages were not confirmed by their authoritative peer: ${JSON.stringify(rejected.slice(0, 20))}`,
+    );
+    error.provenance = perNode;
+    throw error;
+  }
+  return perNode;
 }

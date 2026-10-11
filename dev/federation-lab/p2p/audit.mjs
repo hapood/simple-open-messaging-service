@@ -2,15 +2,15 @@ import { Client } from 'pg';
 import { federationLabDatabaseUrl, federationLabNodes } from '../topology.mjs';
 import { pairKey } from './scenario.mjs';
 
-function normalizeAddress(node, account, domain) {
-  return `${account}@${domain === 'local' ? node.domain : domain}`;
+function normalizeAddress(account, domain) {
+  return `${account}@${domain}`;
 }
 
 function directionKey(author, subject) {
   return `${author}->${subject}`;
 }
 
-export function normalizeNodePairRows(node, rows, users) {
+export function normalizeNodePairRows(rows, users) {
   const cohort = users instanceof Set ? users : new Set(users);
   const all = new Set();
   const active = new Set();
@@ -24,13 +24,8 @@ export function normalizeNodePairRows(node, rows, users) {
         invalid.push({ id: row.id, reason: 'P2P endpoint type is not USER' });
       continue;
     }
-    const left = normalizeAddress(
-      node,
-      row.endpointaaccount,
-      row.endpointadomain,
-    );
+    const left = normalizeAddress(row.endpointaaccount, row.endpointadomain);
     const right = normalizeAddress(
-      node,
       row.endpointbaccount,
       row.endpointbdomain,
     );
@@ -122,7 +117,7 @@ async function readNodeIntentRows(client) {
   return result.rows;
 }
 
-function normalizeNodeIntentRows(node, rows, users) {
+function normalizeNodeIntentRows(rows, users) {
   const cohort = users instanceof Set ? users : new Set(users);
   const directions = new Map();
   const duplicates = [];
@@ -140,12 +135,10 @@ function normalizeNodeIntentRows(node, rows, users) {
       continue;
     }
     const endpointA = normalizeAddress(
-      node,
       row.endpointaaccount,
       row.endpointadomain,
     );
     const endpointB = normalizeAddress(
-      node,
       row.endpointbaccount,
       row.endpointbdomain,
     );
@@ -217,8 +210,8 @@ export async function readP2pConsistencySnapshot(connections, users) {
       return [
         node.name,
         {
-          pairs: normalizeNodePairRows(node, pairRows, users),
-          intents: normalizeNodeIntentRows(node, intentRows, users),
+          pairs: normalizeNodePairRows(pairRows, users),
+          intents: normalizeNodeIntentRows(intentRows, users),
         },
       ];
     }),

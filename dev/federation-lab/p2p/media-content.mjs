@@ -1,6 +1,8 @@
 import { parseContent } from './message-operations.mjs';
 
-// Media URLs authorize a node-local carrier; only the CAS identity is portable.
+// Stored message content keeps canonical CAS identities. Contextual authorization
+// coordinates are added at client/rendering boundaries, not persisted in the
+// durable message body.
 export function mediaContentEvidence(message) {
   const content = parseContent(message.content);
   const errors = [];
@@ -18,33 +20,16 @@ export function mediaContentEvidence(message) {
     const match =
       typeof item?.url === 'string' &&
       item.url.match(
-        /^\/uploads\/msg-assets\/([0-9a-f]{2})\/([0-9a-f]{2})\/([0-9a-f]{64})\?([^#]+)$/,
+        /^\/uploads\/msg-assets\/([0-9a-f]{2})\/([0-9a-f]{2})\/([0-9a-f]{64})$/,
       );
     if (!match) {
-      errors.push(`${label}: invalid contextual CAS URL`);
+      errors.push(`${label}: invalid canonical CAS URL`);
       continue;
     }
-    const [, first, second, digest, query] = match;
-    const params = new URLSearchParams(query);
-    const coordinate = (key, expected) =>
-      Number.isSafeInteger(expected) &&
-      expected > 0 &&
-      params.getAll(key).length === 1 &&
-      params.get(key) === String(expected);
-    if (
-      first !== digest.slice(0, 2) ||
-      second !== digest.slice(2, 4) ||
-      [...params.keys()].length !== 2 ||
-      !coordinate('threadId', message.threadId) ||
-      !coordinate('seq', message.seq)
-    ) {
-      errors.push(
-        `${label}: CAS URL does not match local carrier or digest path`,
-      );
-      continue;
+    const [, first, second, digest] = match;
+    if (first !== digest.slice(0, 2) || second !== digest.slice(2, 4)) {
+      errors.push(`${label}: CAS URL does not match digest path`);
     }
-    // Preserve every metadata field and item order, including the digest in the path.
-    item.url = `/uploads/msg-assets/${first}/${second}/${digest}`;
   }
   return { content, errors };
 }

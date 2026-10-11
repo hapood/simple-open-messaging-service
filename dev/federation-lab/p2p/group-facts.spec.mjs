@@ -28,18 +28,21 @@ test('derives manager targets and retractable messages from one database observa
         role: 'OWNER',
         account: 'owner',
         domain: 'local',
+        namespaceId: 0,
       },
       {
         address: 'member@alpha.test',
         role: 'MEMBER',
         account: 'member',
         domain: 'local',
+        namespaceId: 0,
       },
       {
         address: 'remote@charlie.test',
         role: 'MEMBER',
         account: 'remote',
         domain: 'charlie.test',
+        namespaceId: 2,
       },
     ],
     // A locally-created owner is authoritative in the roster even when no
@@ -52,6 +55,7 @@ test('derives manager targets and retractable messages from one database observa
         feedId: 44,
         memberAccount: 'friend',
         memberDomain: 'bravo.test',
+        memberNamespaceId: 1,
         status: 'REQUESTED',
         expiresAt: new Date(Date.now() + 60_000),
       },
@@ -73,7 +77,13 @@ test('derives manager targets and retractable messages from one database observa
       users: new Map([
         [
           friend,
-          { id: 71, address: friend, account: 'friend', domain: 'bravo.test' },
+          {
+            id: 71,
+            address: friend,
+            account: 'friend',
+            domain: 'bravo.test',
+            namespaceId: 1,
+          },
         ],
       ]),
       activeP2p: new Set([`${friend}|${owner.address}`]),

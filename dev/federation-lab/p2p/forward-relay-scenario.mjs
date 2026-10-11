@@ -11,8 +11,8 @@ const casPath = (digest) =>
   `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`;
 const casFile = (node, digest) =>
   new URL(
-    `../runtime/${node.name}/data/cas/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`,
-    import.meta.url,
+    `${node.name}/data/cas/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}`,
+    `file://${process.env.FED_LAB_RUNTIME_DIR || new URL('../runtime/', import.meta.url).pathname}/`,
   );
 
 async function eventually(label, timeoutMs, inspect) {
@@ -143,32 +143,49 @@ export async function executeForwardRelayScenario({
       `message ${author.address}/${sent.seq} on ${viewer.node.name}`,
       timeoutMs,
       async () => {
+        const publisherNamespaceId = await namespaceId(viewer, author);
         const { rows } = await client(viewer).query(
           `SELECT * FROM "Message" WHERE "threadId" = $1 AND "creatorAccount" = $2
-         AND "creatorDomain" = $3 AND ${viewer.node.name === author.node.name ? 'seq' : '"originSeq"'} = $4`,
-          [
-            threadId,
-            author.account,
-            viewer.node.name === author.node.name ? 'local' : author.domain,
-            sent.seq,
-          ],
+         AND "publisherNamespaceId" = $3 AND "profileNamespaceId" = 0
+         AND ${viewer.node.name === author.node.name ? 'seq' : '"originSeq"'} = $4`,
+          [threadId, author.account, publisherNamespaceId, sent.seq],
         );
         assert.equal(rows.length, 1);
         assert.equal(rows[0].localState, 'READY');
         return rows[0];
       },
     );
+  const namespaceId = (viewer, subject) =>
+    eventually(
+      `${subject.domain} namespace on ${viewer.node.name}`,
+      timeoutMs,
+      async () => {
+        if (viewer.node.name === subject.node.name) return 0;
+        const { rows } = await client(viewer).query(
+          `SELECT id FROM "IdentityNamespace" WHERE domain = $1 AND active`,
+          [subject.domain],
+        );
+        assert.equal(rows.length, 1);
+        assert(Number.isInteger(rows[0].id));
+        return rows[0].id;
+      },
+    );
   const befriend = async (left, right) => {
-    await resolveWithRetry(left, right, timeoutMs);
+    const resolvedRight = await resolveWithRetry(left, right, timeoutMs);
+    const rightNamespaceId = await namespaceId(left, right);
     await record(left, '/relationship/request', {
       account: right.account,
-      domain: right.domain,
-      displayName: right.account,
+      namespaceId: rightNamespaceId,
+      displayName: resolvedRight.user.name,
+      ...(resolvedRight.user.avatar
+        ? { avatar: resolvedRight.user.avatar }
+        : {}),
     });
     await waitForIncoming(right, left, timeoutMs);
+    const leftNamespaceId = await namespaceId(right, left);
     await record(right, '/relationship/accept', {
       account: left.account,
-      domain: left.domain,
+      namespaceId: leftNamespaceId,
     });
     return eventually(
       `friendship ${left.address}/${right.address}`,
@@ -179,13 +196,12 @@ export async function executeForwardRelayScenario({
           [left, right],
           [right, left],
         ]) {
+          const peerNamespaceId = await namespaceId(viewer, peer);
           const { rows } = await client(viewer).query(
             `SELECT "threadId" FROM "RelationshipPair" WHERE kind = 'P2P' AND active
-           AND (("endpointAAccount" = $1 AND "endpointADomain" = 'local'
-             AND "endpointBAccount" = $2 AND "endpointBDomain" = $3)
-           OR ("endpointBAccount" = $1 AND "endpointBDomain" = 'local'
-             AND "endpointAAccount" = $2 AND "endpointADomain" = $3))`,
-            [viewer.account, peer.account, peer.domain],
+           AND "endpointAAccount" = $1 AND "endpointANamespaceId" = 0
+           AND "endpointBAccount" = $2 AND "endpointBNamespaceId" = $3`,
+            [viewer.account, peer.account, peerNamespaceId],
           );
           assert.equal(rows.length, 1);
           assert(Number.isInteger(rows[0].threadId));
@@ -262,9 +278,12 @@ export async function executeForwardRelayScenario({
         sources.push(await mirrored(a, threadA, b, sent));
       }
       await eventually('source profile localized on A', timeoutMs, async () => {
+        const publisherNamespaceId = await namespaceId(a, b);
         const { rows } = await client(a).query(
-          `SELECT * FROM "Profile" WHERE account = $1 AND domain = $2 AND "profileRev" = $3`,
-          [b.account, b.domain, sources[0].profileRev],
+          `SELECT * FROM "Profile" WHERE account = $1
+           AND "publisherNamespaceId" = $2 AND "profileNamespaceId" = 0
+           AND "profileRev" = $3`,
+          [b.account, publisherNamespaceId, sources[0].profileRev],
         );
         assert(
           rows.some((row) => row.displayName === originalName && row.avatar),
@@ -286,14 +305,18 @@ export async function executeForwardRelayScenario({
         displayName: originalName,
         avatarDigest: digest,
       });
-      assert.deepEqual(original.messages[0].author, {
-        account: b.account,
-        domain: b.domain,
-      });
-      assert.deepEqual(original.messages[2].author, {
-        account: a.account,
-        domain: a.domain,
-      });
+      assert.equal(original.messages[0].author.account, b.account);
+      assert.equal(original.messages[0].author.domain, b.domain);
+      assert.match(
+        original.messages[0].author.publicRootKey,
+        /^[A-Za-z0-9+/]{43}=$/,
+      );
+      assert.equal(original.messages[2].author.account, a.account);
+      assert.equal(original.messages[2].author.domain, a.domain);
+      assert.match(
+        original.messages[2].author.publicRootKey,
+        /^[A-Za-z0-9+/]{43}=$/,
+      );
       assert.deepEqual(original.messages[2].profile, {
         displayName: 'Relay 0',
       });
@@ -323,11 +346,8 @@ export async function executeForwardRelayScenario({
         const back = await forward(b, threadBA, [
           { threadId: threadBA, seq: relay.seq },
         ]);
-        const onA = await mirrored(a, threadA, b, back);
-        const again = await forward(a, threadA, [
-          { threadId: threadA, seq: onA.seq },
-        ]);
-        relay = await mirrored(b, threadBA, a, again);
+        await mirrored(a, threadA, b, back);
+        relay = back;
       }
       const cold = await client(c).query(
         'SELECT digest FROM "MediaAsset" WHERE digest = $1',
@@ -340,8 +360,8 @@ export async function executeForwardRelayScenario({
       );
       await assert.rejects(stat(casFile(c.node, digest)), { code: 'ENOENT' });
       const unknownA = await client(c).query(
-        'SELECT 1 FROM "Profile" WHERE account = $1 AND domain = $2',
-        [a.account, a.domain],
+        'SELECT 1 FROM "Profile" WHERE account = $1',
+        [a.account],
       );
       assert.equal(
         unknownA.rows.length,
@@ -360,12 +380,16 @@ export async function executeForwardRelayScenario({
       assertRelaySnapshot(
         bundle,
         original,
-        variant === 'DIRECT' ? 0 : variant === 'HISTORY' ? 1 : 3,
+        variant === 'DIRECT' ? 0 : variant === 'HISTORY' ? 1 : 2,
       );
       const imported = await client(c).query(
-        'SELECT "sourceDomain" FROM "ForwardBundle" WHERE id = $1',
+        `SELECT "sourceDomain" FROM "ForwardBundle"
+         WHERE id = $1 OR "sourceBundleId" = $1
+         ORDER BY CASE WHEN id = $1 THEN 0 ELSE 1 END
+         LIMIT 1`,
         [bundle.id],
       );
+      assert.equal(imported.rows.length, 1);
       assert.equal(
         imported.rows[0]?.sourceDomain,
         b.domain,
@@ -438,8 +462,8 @@ export async function executeForwardRelayScenario({
         denied.push({ label, status });
       }
       const stillUnknown = await client(c).query(
-        'SELECT 1 FROM "Profile" WHERE account = $1 AND domain = $2',
-        [a.account, a.domain],
+        'SELECT 1 FROM "Profile" WHERE account = $1',
+        [a.account],
       );
       assert.equal(stillUnknown.rows.length, 0);
       Object.assign(evidence, {

@@ -517,18 +517,16 @@ export class LabAdminActor {
   async durableTaskActivity() {
     const queryMs = {};
     const [pending, processing, failed] = await Promise.all(
-      ['PENDING', 'PROCESSING', 'FAILED'].map(
-        async (status) => {
-          const startedAt = performance.now();
-          const result = await this.durableTasks({
-            status,
-            take: status === 'PENDING' ? 1 : 200,
-          });
-          // Includes response decoding and any session renewal/retry.
-          queryMs[status] = Math.round(performance.now() - startedAt);
-          return result;
-        },
-      ),
+      ['PENDING', 'PROCESSING', 'FAILED'].map(async (status) => {
+        const startedAt = performance.now();
+        const result = await this.durableTasks({
+          status,
+          take: status === 'PENDING' ? 1 : 200,
+        });
+        // Includes response decoding and any session renewal/retry.
+        queryMs[status] = Math.round(performance.now() - startedAt);
+        return result;
+      }),
     );
     return {
       queryMs,
@@ -561,6 +559,54 @@ export class LabAdminActor {
       if (!page.list?.length || skip >= page.total) break;
     }
     return found;
+  }
+
+  /** Ask this node's authoritative peer, through the admin provenance
+   * endpoint, whether it still knows the federated message by digest. */
+  async verifyMessageProvenance(threadId, seq) {
+    const result = await this.post(
+      '/admin/federation/message-provenance/verify',
+      { threadId, seq },
+      `verify message provenance ${threadId}/${seq}`,
+    );
+    if (
+      result?.known !== 'yes' &&
+      result?.known !== 'no' &&
+      result?.known !== 'declined'
+    ) {
+      throw new LabApiError(
+        'message provenance verification returned an invalid verdict',
+        { node: this.node.domain, threadId, seq, data: result },
+      );
+    }
+    return result.known;
+  }
+
+  /** Read this node's currently active local namespace id for a federated peer
+   * domain. Client-facing resolve streams return transient display cards without
+   * namespace coordinates, so command DTOs use this admin view instead. */
+  async peerNamespaceId(domain, timeoutMs = 30_000) {
+    const deadline = Date.now() + timeoutMs;
+    let lastError = 'peer namespace list did not return namespaces';
+    while (Date.now() < deadline) {
+      const page = await this.post(
+        `/admin/federation/peers/${encodeURIComponent(domain)}/namespaces`,
+        {},
+        `read peer namespaces for ${domain}`,
+      );
+      const active = (page?.namespaces ?? []).filter(
+        (namespace) => namespace.active === true,
+      );
+      if (active.length === 1 && Number.isInteger(active[0].id)) {
+        return active[0].id;
+      }
+      lastError = `${active.length} active namespaces for ${domain} on ${this.node.domain}`;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw new LabApiError(lastError, {
+      node: this.node.domain,
+      domain,
+    });
   }
 }
 

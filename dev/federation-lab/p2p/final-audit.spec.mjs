@@ -4,6 +4,7 @@ import {
   compareFederationSnapshot,
   readNodeMessageAudit,
   readAssetBytes,
+  verifyFinalMessageProvenance,
 } from './final-audit.mjs';
 
 const alice = 'alice@alpha.test';
@@ -210,7 +211,7 @@ function galleryFixture() {
       contentType: 'GALLERY',
       content: {
         items: ['a', 'b'].map((hex) => ({
-          url: `/uploads/msg-assets/${hex.repeat(2)}/${hex.repeat(2)}/${hex.repeat(64)}?threadId=${threadId}&seq=${seq}`,
+          url: `/uploads/msg-assets/${hex.repeat(2)}/${hex.repeat(2)}/${hex.repeat(64)}`,
           kind: 'FILE',
           name: `${hex}.png`,
           size: 146,
@@ -243,8 +244,7 @@ for (const contentType of ['FILE', 'IMAGE', 'VIDEO', 'AUDIO']) {
     assert.deepEqual(compareFederationSnapshot(value).failures, []);
     assert.deepEqual(value.messages, before);
     const mirror = value.messages.bravo.get(groupAddress).messages[0];
-    mirror.content.url =
-      value.messages.alpha.get(groupAddress).messages[0].content.url;
+    mirror.content.url = `${mirror.content.url}?threadId=7&seq=9`;
     assert.ok(
       compareFederationSnapshot(value).failures.some(
         ({ kind }) => kind === 'MESSAGE_MEDIA_URL',
@@ -260,7 +260,7 @@ test('rejects identical gallery URLs when they authorize the wrong local message
     value.messages.bravo.get(groupAddress),
   ])
     for (const item of thread.messages[0].content.items)
-      item.url = item.url.replace(/\?.*$/, '?threadId=99&seq=99');
+      item.url = `${item.url}?threadId=99&seq=99`;
   const result = compareFederationSnapshot(value);
   assert.equal(result.passed, false);
   assert.equal(
@@ -299,7 +299,7 @@ test('compares three-node group messages and quotes after the author origin coor
   value.messages.charlie.set(groupAddress, messageThread());
   for (const [node, seq, originSeq, domain, sourceDomain] of [
     ['alpha', 10, 8, 'bravo.test', 'bravo.test'],
-    ['bravo', 8, 10, 'local', 'alpha.test'],
+    ['bravo', 8, 10, 'bravo.test', 'bravo.test'],
     ['charlie', 9, 10, 'bravo.test', 'alpha.test'],
   ]) {
     const projection = value.groups[node].groups.get(groupAddress);
@@ -373,7 +373,7 @@ test('reads the local message id used to associate media bindings', async () => 
           rows: [
             {
               account: '!group',
-              domain: 'local',
+              domain: 'alpha.test',
               threadId: 1,
               curSeq: 1,
               clearedSeq: null,
@@ -386,7 +386,7 @@ test('reads the local message id used to associate media bindings', async () => 
             {
               id: '27',
               account: '!group',
-              domain: 'local',
+              domain: 'alpha.test',
               threadId: 1,
             },
           ],
@@ -493,7 +493,7 @@ test('rejects a per-user message count attributed to the wrong sender', () => {
   const value = fixture();
   const [message] = value.messages.bravo.get(groupAddress).messages;
   message.creatorAccount = 'bob';
-  message.creatorDomain = 'local';
+  message.creatorDomain = 'bravo.test';
   const result = compareFederationSnapshot(value);
   assert.equal(result.passed, false);
   assert.equal(
@@ -906,4 +906,114 @@ test('requires the referenced publisher namespace even when another copy is cach
   value.profiles.bravo.versions.set(`${alice}#1@7`, cached);
   result = compareFederationSnapshot(value);
   assert.equal(result.passed, true);
+});
+
+test('admin provenance sweep verifies every mirrored federated message', async () => {
+  const verified = [];
+  const admin = {
+    async verifyMessageProvenance(threadId, seq) {
+      verified.push(`${threadId}/${seq}`);
+      return 'yes';
+    },
+  };
+  const snapshot = {
+    messages: {
+      bravo: new Map([
+        [
+          groupAddress,
+          {
+            messages: [
+              {
+                threadId: 6,
+                seq: 2,
+                sourceNamespaceId: 1,
+                originSeq: 2,
+                localState: 'READY',
+              },
+              {
+                threadId: 6,
+                seq: 3,
+                sourceNamespaceId: 0,
+                originSeq: null,
+                localState: 'READY',
+              },
+            ],
+          },
+        ],
+      ]),
+    },
+    p2pMessages: {
+      bravo: new Map([
+        [
+          'alice@alpha.test|bob@bravo.test',
+          {
+            messages: [
+              {
+                threadId: 7,
+                seq: 1,
+                sourceNamespaceId: 1,
+                originSeq: 1,
+                localState: 'READY',
+              },
+              {
+                threadId: 7,
+                seq: 2,
+                sourceNamespaceId: 1,
+                originSeq: 2,
+                localState: 'PENDING',
+              },
+            ],
+          },
+        ],
+      ]),
+    },
+  };
+  const progress = [];
+  const perNode = await verifyFinalMessageProvenance({
+    snapshot,
+    actors: { node: () => ({ admin }) },
+    onProgress: (line) => progress.push(line),
+  });
+  assert.deepEqual(verified.sort(), ['6/2', '7/1']);
+  assert.equal(perNode.bravo.checks, 2);
+  assert.equal(perNode.bravo.yes, 2);
+  assert.deepEqual(perNode.bravo.rejected, []);
+  assert.equal(progress.length, 1);
+});
+
+test('admin provenance sweep fails when an authoritative peer rejects a message', async () => {
+  const admin = {
+    async verifyMessageProvenance() {
+      return 'no';
+    },
+  };
+  const snapshot = {
+    messages: {
+      bravo: new Map([
+        [
+          groupAddress,
+          {
+            messages: [
+              {
+                threadId: 6,
+                seq: 2,
+                sourceNamespaceId: 1,
+                originSeq: 2,
+                localState: 'READY',
+              },
+            ],
+          },
+        ],
+      ]),
+    },
+    p2pMessages: { bravo: new Map() },
+  };
+  await assert.rejects(
+    verifyFinalMessageProvenance({
+      snapshot,
+      actors: { node: () => ({ admin }) },
+      onProgress: () => {},
+    }),
+    /were not confirmed by their authoritative peer/,
+  );
 });

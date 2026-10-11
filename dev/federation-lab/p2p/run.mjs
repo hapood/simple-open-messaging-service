@@ -3,7 +3,7 @@ import { createProgressLogger } from './progress-log.mjs';
 import '../diagnostics/preload.mjs';
 import { randomInt } from 'node:crypto';
 import { appendFile, mkdir, rename, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FederationLabActors } from './api-actors.mjs';
 import { federationLabNodes } from '../topology.mjs';
@@ -23,16 +23,20 @@ import {
   readGroupWorkloadSnapshot,
 } from './group-facts.mjs';
 import { waitForFederationConvergence } from './final-audit.mjs';
+import { verifyFinalMessageProvenance } from './final-audit.mjs';
 import { resolveWorkloadProfiles } from './profile-resolution.mjs';
+import { resolveWorkloadNamespaces } from './namespace-resolution.mjs';
 import { summarizeCoverage } from './coverage.mjs';
-import { assertVerificationMode } from './verification-mode.mjs';
 import {
   executeForwardRelayScenario,
   provisionForwardRelayUsers,
 } from './forward-relay-scenario.mjs';
 
 const p2pDir = dirname(fileURLToPath(import.meta.url));
-const runtimeDir = join(p2pDir, '..', 'runtime', 'p2p-runs');
+const runtimeDir = join(
+  resolve(process.env.FED_LAB_RUNTIME_DIR || join(p2pDir, '..', 'runtime')),
+  'p2p-runs',
+);
 
 function integerOption(name, fallback, minimum, maximum) {
   const prefix = `--${name}=`;
@@ -77,7 +81,6 @@ function assertKnownOptions() {
     '--convergence-timeout-ms=',
     '--convergence-interval-ms=',
     '--convergence-samples=',
-    '--verify-mode=',
   ];
   const unknown = process.argv
     .slice(2)
@@ -246,9 +249,6 @@ async function main() {
   );
   const maximumPairs = (plan.length * (plan.length - 1)) / 2;
   const operationCount = integerOption('operations', 600, 1, 100_000);
-  const verifyMode = assertVerificationMode(
-    stringOption('verify-mode', 'round'),
-  );
   const roundSize = integerOption(
     'round-size',
     Math.min(10, maximumPairs),
@@ -321,7 +321,6 @@ async function main() {
       prefix,
       seed,
       operationCount,
-      verifyMode,
       roundSize,
       taskTimeoutMs,
       progressEvery,
@@ -479,7 +478,6 @@ async function main() {
     schemaVersion: 1,
     phase: 'EXECUTE_OPERATIONS',
     runId,
-    verifyMode,
     status: 'RUNNING',
     startedAt: new Date().toISOString(),
     finishedAt: null,
@@ -565,7 +563,6 @@ async function main() {
       actors,
       connections: workloadConnections,
       operationCount,
-      verifyMode,
       roundSize,
       concurrency,
       timeoutMs: taskTimeoutMs,
@@ -623,11 +620,11 @@ async function main() {
     schemaVersion: 1,
     phase: 'AUDIT_FINAL_FEDERATION_STATE',
     runId,
-    verifyMode,
     status: 'RUNNING',
     startedAt: new Date().toISOString(),
     finishedAt: null,
     convergenceSamples: null,
+    provenance: null,
     snapshot: null,
     comparison: null,
     error: null,
@@ -639,6 +636,16 @@ async function main() {
     connections = await connectP2pAuditDatabases(baseDatabaseUrl);
     // Durable task completion does not include asynchronous peer-state pulls.
     // Resolve profiles only after their relationship authorization has converged.
+    const namespaceResolutions = await resolveWorkloadNamespaces({
+      connections,
+      actors,
+      timeoutMs: taskTimeoutMs,
+      onProgress: logProgress,
+    });
+    await writeJson(runDir, 'namespace-resolutions.json', {
+      schemaVersion: 1,
+      checks: namespaceResolutions,
+    });
     logProgress('[p2p] waiting for business state before resolving profiles');
     const { snapshot: profileSnapshot } = await waitForFederationConvergence({
       connections,
@@ -681,6 +688,11 @@ async function main() {
         `messages=${audit.comparison.liveMessages}, ` +
         `withdrawn=${audit.comparison.withdrawnMessages}`,
     );
+    audit.provenance = await verifyFinalMessageProvenance({
+      snapshot: converged.snapshot,
+      actors,
+      onProgress: logProgress,
+    });
   } catch (error) {
     audit.status = 'FAILED';
     audit.error = error instanceof Error ? error.message : String(error);
@@ -714,7 +726,7 @@ async function main() {
     throw new Error(audit.error ?? 'federation final consistency audit failed');
   }
   logProgress(
-    '[federation] final intents, rosters, messages, and media PASSED',
+    '[federation] final intents, rosters, messages, media, and admin message-provenance PASSED',
   );
 }
 

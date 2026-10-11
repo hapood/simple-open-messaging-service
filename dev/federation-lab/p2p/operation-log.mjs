@@ -1,4 +1,4 @@
-import { federationLabNodes } from '../topology.mjs';
+import { federationLabNodeForDomain, federationLabNodes } from '../topology.mjs';
 
 function directionKey(author, subject) {
   if (author === subject) throw new Error('an intent requires two users');
@@ -11,11 +11,7 @@ function addressDomain(address) {
 
 function nodeForAddress(address) {
   const domain = addressDomain(address);
-  const node = federationLabNodes.find(
-    (candidate) => candidate.domain === domain,
-  );
-  if (!node) throw new Error(`no federation lab node owns ${address}`);
-  return node;
+  return federationLabNodeForDomain(domain);
 }
 
 function effectiveRequest(intent, observedAt) {

@@ -5,10 +5,10 @@ import {
 import { LabApiError } from './api-actors.mjs';
 import { resolveWithRetry } from './execute.mjs';
 
-function relationshipAddress(actor, peer) {
+function relationshipAddress(actor, peer, namespaceId = 0) {
   return {
     account: peer.account,
-    domain: actor.node.name === peer.node.name ? 'local' : peer.domain,
+    namespaceId,
   };
 }
 
@@ -33,11 +33,16 @@ export function journalError(error) {
   };
 }
 
-async function sendRequest(actor, peer, timeoutMs) {
-  let resolved;
-  const body = relationshipAddress(actor, peer);
-  if (actor.node.name !== peer.node.name) {
-    resolved = await resolveWithRetry(actor, peer, timeoutMs);
+async function sendRequest(actor, peer, timeoutMs, actors) {
+  const remote = actor.node.name !== peer.node.name;
+  const resolved = remote
+    ? await resolveWithRetry(actor, peer, timeoutMs)
+    : undefined;
+  const namespaceId = remote
+    ? await peerNamespaceId(actors, actor, peer.domain, timeoutMs)
+    : 0;
+  const body = relationshipAddress(actor, peer, namespaceId);
+  if (resolved) {
     body.displayName = resolved.user.name;
     if (resolved.user.avatar) body.avatar = resolved.user.avatar;
   }
@@ -109,18 +114,29 @@ async function admitProfileOperation(operation, actors) {
   throw new Error(`unsupported profile operation ${operation.type}`);
 }
 
-function groupAddress(actor, address) {
-  const separator = address.lastIndexOf('@');
-  const domain = address.slice(separator + 1);
-  return {
-    account: address.slice(0, separator),
-    domain: domain === actor.domain ? 'local' : domain,
-  };
+/** Resolve the namespace coordinate a command DTO needs for `domain` as seen
+ * by `actor`'s node. Local domains are namespace 0; federated domains use the
+ * admin peer-namespace view because resolve streams return no coordinates. */
+function peerNamespaceId(actors, actor, domain, timeoutMs) {
+  return actors
+    .node(actor.node.name)
+    .admin.peerNamespaceId(domain, Math.min(timeoutMs, 30_000));
+}
+
+function actorNamespaceId(actor, address) {
+  return address.slice(address.lastIndexOf('@') + 1) === actor.domain
+    ? 0
+    : undefined;
 }
 
 async function admitGroupOperation(operation, actors, timeoutMs) {
   const actor = actors.user(operation.actor);
-  const address = groupAddress(actor, operation.group);
+  const separator = operation.group.lastIndexOf('@');
+  const groupDomain = operation.group.slice(separator + 1);
+  const address = {
+    account: operation.group.slice(0, separator),
+    namespaceId: 0,
+  };
   const threadId = operation.groupThreadId;
   let endpoint;
   let body;
@@ -129,10 +145,16 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
   if (operation.type === 'REQUEST_GROUP_JOIN') {
     endpoint = '/relationship/request';
     let displayName = operation.observedFacts.group.name;
-    if (address.domain !== 'local') {
+    if (groupDomain !== actor.node.domain) {
       const resolved = await resolveWithRetry(
         actor,
         operation.observedFacts.group,
+        timeoutMs,
+      );
+      address.namespaceId = await peerNamespaceId(
+        actors,
+        actor,
+        groupDomain,
         timeoutMs,
       );
       displayName = resolved.user.name;
@@ -142,7 +164,8 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
       };
     }
     body = {
-      ...address,
+      account: address.account,
+      namespaceId: address.namespaceId,
       note: operation.id,
       displayName,
     };
@@ -152,8 +175,8 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
       `request to join ${operation.group}`,
     );
   } else if (operation.type === 'ACCEPT_GROUP_INVITATION') {
-    endpoint = '/relationship/accept';
-    body = address;
+    endpoint = '/group/join-request';
+    body = { groupId: threadId };
     accepted = await actor.post(
       endpoint,
       body,
@@ -161,6 +184,14 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
     );
   } else if (operation.type === 'REVOKE_GROUP_APPLICATION') {
     endpoint = '/relationship/revoke';
+    if (groupDomain !== actor.node.domain) {
+      address.namespaceId = await peerNamespaceId(
+        actors,
+        actor,
+        groupDomain,
+        timeoutMs,
+      );
+    }
     body = address;
     accepted = await actor.post(
       endpoint,
@@ -177,10 +208,23 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
     accepted = await actor.post(endpoint, body, `dissolve ${operation.group}`);
   } else if (operation.type === 'INVITE_GROUP_MEMBER') {
     endpoint = '/group/invite';
+    const targetNamespaceId =
+      operation.target.namespaceId ??
+      (operation.target.domain === actor.node.domain
+        ? 0
+        : await peerNamespaceId(
+            actors,
+            actor,
+            operation.target.domain,
+            timeoutMs,
+          ));
     body = {
       groupId: threadId,
       users: [
-        { account: operation.target.account, domain: operation.target.domain },
+        {
+          account: operation.target.account,
+          namespaceId: targetNamespaceId,
+        },
       ],
     };
     const result = await actor.post(
@@ -207,7 +251,7 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
     body = {
       groupId: threadId,
       account: operation.target.memberAccount,
-      domain: operation.target.memberDomain,
+      namespaceId: operation.target.memberNamespaceId ?? 0,
     };
     accepted = await actor.post(
       endpoint,
@@ -229,7 +273,7 @@ async function admitGroupOperation(operation, actors, timeoutMs) {
     body = {
       groupId: threadId,
       account: operation.target.account,
-      domain: operation.target.domain,
+      namespaceId: operation.target.namespaceId,
       ...(operation.type === 'SET_GROUP_ADMIN'
         ? { role: 'ADMIN' }
         : operation.type === 'REMOVE_GROUP_ADMIN'
@@ -292,12 +336,14 @@ export async function admitOperation(operation, actors, timeoutMs) {
       actors.user(operation.actor),
       actors.user(operation.peer),
       timeoutMs,
+      actors,
     );
   } else if (operation.type === 'REVERSE_REQUEST') {
     admission = await sendRequest(
       actors.user(operation.requestSubject),
       actors.user(operation.requestAuthor),
       timeoutMs,
+      actors,
     );
   } else if (
     operation.type === 'ACCEPT_REQUEST' ||
@@ -309,7 +355,12 @@ export async function admitOperation(operation, actors, timeoutMs) {
       operation.type === 'ACCEPT_REQUEST'
         ? '/relationship/accept'
         : '/relationship/revoke';
-    const body = relationshipAddress(actor, initiator);
+    const body = relationshipAddress(
+      actor,
+      initiator,
+      actorNamespaceId(actor, initiator.address) ??
+        (await peerNamespaceId(actors, actor, initiator.domain, timeoutMs)),
+    );
     const accepted = await actor.post(
       endpoint,
       body,
@@ -323,7 +374,12 @@ export async function admitOperation(operation, actors, timeoutMs) {
   } else if (operation.type === 'REVOKE_RELATIONSHIP') {
     const actor = actors.user(operation.actor);
     const peer = actors.user(operation.peer);
-    const body = relationshipAddress(actor, peer);
+    const body = relationshipAddress(
+      actor,
+      peer,
+      actorNamespaceId(actor, peer.address) ??
+        (await peerNamespaceId(actors, actor, peer.domain, timeoutMs)),
+    );
     const accepted = await actor.post(
       '/relationship/revoke',
       body,

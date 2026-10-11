@@ -14,12 +14,6 @@ import { messageOperationTypes } from './message-operations.mjs';
 import { admitOperation, journalError } from './operations.mjs';
 import { recordMembershipCoverage } from './coverage.mjs';
 import {
-  finishWorkloadBatch,
-  assertVerificationMode,
-  verifyMidpointProfiles,
-  shouldSettleWorkloadBatch,
-} from './verification-mode.mjs';
-import {
   groupCandidateWeight,
   weightedOrder,
   workloadPolicy,
@@ -28,9 +22,9 @@ import {
   executeReferenceWithdrawalScenario,
   planMidpointDissolution,
 } from './fixed-scenarios.mjs';
-import { resolveWorkloadProfiles } from './profile-resolution.mjs';
 import { randomUUID } from 'node:crypto';
 import { readFederationAuditSnapshot } from './final-audit.mjs';
+import { executeIdentityTransitionCheckpoint } from './identity-transition.mjs';
 import { LabApiError } from './api-actors.mjs';
 import { mapConcurrent, waitForTaskQueueIdle } from './execute.mjs';
 
@@ -356,8 +350,7 @@ export function chooseRandomRound({
           ?.messages.filter(
             (message) =>
               message.creatorAccount === userRef(selectedAuthor).account &&
-              (message.creatorDomain === 'local' ||
-                message.creatorDomain === userRef(selectedAuthor).domain) &&
+              message.creatorNamespaceId === 0 &&
               message.clientMessageId &&
               !message.isDeleted &&
               message.localState === 'READY',
@@ -519,7 +512,6 @@ export async function executeBatch({
   operationsPerSecond,
   pace = createAdmissionPacer(operationsPerSecond),
   settle = true,
-  verifyMode = 'round',
   admit = admitOperation,
   confirmUnavailable = async () => false,
   confirmGroupUnavailable = async () => null,
@@ -605,7 +597,6 @@ export async function executeBatch({
   if (!settle) return;
   await settleWorkloadOperations({
     operations: admissionResults,
-    verifyMode,
     log,
     actors,
     label,
@@ -625,7 +616,6 @@ export async function settleWorkloadOperations(
     onProgress,
     onLog,
     drain = false,
-    verifyMode = 'round',
   },
   { waitForIdle = waitForTaskQueueIdle, finalize = finalizeTasks } = {},
 ) {
@@ -664,8 +654,7 @@ export async function settleWorkloadOperations(
     .map((operation) => replacements.get(operation.id) ?? operation)
     .filter(
       ({ status }) =>
-        !['SUCCEEDED', 'OBSERVED_UNAVAILABLE'].includes(status) &&
-        !(verifyMode === 'final' && status === 'REJECTED'),
+        !['SUCCEEDED', 'OBSERVED_UNAVAILABLE', 'REJECTED'].includes(status),
     );
   if (unsuccessful.length > 0) {
     throw new Error(
@@ -688,11 +677,9 @@ export async function executeRandomP2pWorkload({
   operationsPerSecond = 10,
   onProgress = console.log,
   onLog = async () => {},
-  verifyMode = 'round',
 }) {
-  assertVerificationMode(verifyMode);
   onProgress(
-    `[p2p] verification mode=${verifyMode}; ${verifyMode === 'final' ? 'round oracle disabled; final audit remains mandatory' : 'verify convergence after every batch'}`,
+    '[p2p] intermediate convergence checks disabled; final audit remains mandatory',
   );
   const random = new SeededRandom(log.seed);
   const eventRandom = new SeededRandom(log.seed ^ 0x3c6ef372);
@@ -700,7 +687,9 @@ export async function executeRandomP2pWorkload({
   let randomOperations = 0;
   let emptyRounds = 0;
   let snapshot;
+  let identityTransitionsDone = false;
   const pace = createAdmissionPacer(operationsPerSecond);
+
   const execute = async (decisions, label, { randomBatch = false } = {}) => {
     const batch = Array.isArray(decisions) ? decisions : [decisions];
     batch.forEach((operation, index) => {
@@ -720,8 +709,8 @@ export async function executeRandomP2pWorkload({
       totalLabel: '',
       operationsPerSecond,
       pace,
-      settle: shouldSettleWorkloadBatch(verifyMode, batch, { randomBatch }),
-      verifyMode,
+      settle:
+        !randomBatch && !batch.every(({ type }) => type === 'DISSOLVE_GROUP'),
       confirmGroupUnavailable: async (decision) => {
         if (!randomBatch) return null;
         const actor = userRef(decision.actor);
@@ -752,13 +741,8 @@ export async function executeRandomP2pWorkload({
         return observeDirectedPair(current, actor, peer).state === 'NONE';
       },
     });
-    snapshot = await finishWorkloadBatch({
-      verifyMode,
-      connections,
-      log,
-      batch,
-      timeoutMs,
-      onProgress,
+    snapshot = await readFederationAuditSnapshot(connections, log, {
+      readMediaBytes: false,
     });
     recordMembershipCoverage(log, snapshot.groups, snapshot.p2p);
     return snapshot;
@@ -769,44 +753,66 @@ export async function executeRandomP2pWorkload({
       snapshot,
       actors,
       execute: (operation) => execute(operation, 'reference-withdrawal'),
-      ...(verifyMode === 'final'
-        ? {
-            refreshSnapshot: () =>
-              readFederationAuditSnapshot(connections, log, {
-                readMediaBytes: false,
-              }),
-            timeoutMs,
-          }
-        : {}),
+      refreshSnapshot: () =>
+        readFederationAuditSnapshot(connections, log, {
+          readMediaBytes: false,
+        }),
+      timeoutMs,
     });
     if (ran) await onLog(log);
   };
   while (randomOperations < operationCount) {
-    if (verifyMode === 'final') {
-      // Observe completed commands without waiting or asserting their outcomes.
-      // Lifecycle policy (for example rejoining after leaving) needs these facts.
-      const pending = log.operations.filter(
-        ({ status }) => status === 'ADMITTED',
+    // Observe completed commands without waiting or asserting their outcomes.
+    // Lifecycle policy (for example rejoining after leaving) needs these facts.
+    const pending = log.operations.filter(
+      ({ status }) => status === 'ADMITTED',
+    );
+    if (pending.length) {
+      const observedTasks = await finalizeTasks(pending, actors);
+      const completed = new Map(
+        observedTasks
+          .filter(({ status }) =>
+            [
+              'SUCCEEDED',
+              'REJECTED',
+              'FAILED',
+              'OBSERVED_UNAVAILABLE',
+            ].includes(status),
+          )
+          .map((operation) => [operation.id, operation]),
       );
-      if (pending.length) {
-        const observedTasks = await finalizeTasks(pending, actors);
-        const completed = new Map(
-          observedTasks
-            .filter(({ status }) =>
-              [
-                'SUCCEEDED',
-                'REJECTED',
-                'FAILED',
-                'OBSERVED_UNAVAILABLE',
-              ].includes(status),
-            )
-            .map((operation) => [operation.id, operation]),
-        );
-        log.operations = log.operations.map(
-          (operation) => completed.get(operation.id) ?? operation,
-        );
-      }
+      log.operations = log.operations.map(
+        (operation) => completed.get(operation.id) ?? operation,
+      );
     }
+    if (
+      !identityTransitionsDone &&
+      randomOperations >= Math.ceil(operationCount / 2)
+    ) {
+      await settleWorkloadOperations({
+        operations: log.operations,
+        log,
+        actors,
+        label: 'identity-transition checkpoint',
+        drain: true,
+        timeoutMs,
+        onProgress,
+        onLog,
+      });
+      await executeIdentityTransitionCheckpoint({
+        actors,
+        log,
+        timeoutMs,
+        onProgress,
+        onLog,
+      });
+      identityTransitionsDone = true;
+      snapshot = await readFederationAuditSnapshot(connections, log, {
+        readMediaBytes: false,
+      });
+      recordMembershipCoverage(log, snapshot.groups, snapshot.p2p);
+    }
+
     const observed = await readP2pConsistencySnapshot(connections, log.users);
     const groups = await readGroupWorkloadSnapshot(connections, observed);
     if (round === 0) recordMembershipCoverage(log, groups, observed);
@@ -814,22 +820,17 @@ export async function executeRandomP2pWorkload({
       randomOperations >= Math.ceil(operationCount / 2) &&
       log.groups.some((group) => group.active)
     ) {
-      const dissolution = planMidpointDissolution(log, groups, eventRandom);
-      if (dissolution) {
-        // Only converged round snapshots can support strict midpoint checks.
-        if (snapshot)
-          await verifyMidpointProfiles(verifyMode, () =>
-            resolveWorkloadProfiles({
-              actors,
-              groups: snapshot.groups,
-              profiles: snapshot.profiles,
-              log,
-              timeoutMs,
-              onProgress,
-            }),
-          );
-        await execute(dissolution, 'midpoint-dissolution');
-        continue;
+      snapshot = await readFederationAuditSnapshot(connections, log, {
+        readMediaBytes: false,
+      });
+      await fixedScenario();
+      await onLog(log);
+      if (log.referenceScenario?.status === 'SUCCEEDED') {
+        const dissolution = planMidpointDissolution(log, groups, eventRandom);
+        if (dissolution) {
+          await execute(dissolution, 'midpoint-dissolution');
+          continue;
+        }
       }
     }
     const count = Math.min(
@@ -891,18 +892,15 @@ export async function executeRandomP2pWorkload({
     );
     if (dissolution) await execute(dissolution, 'midpoint-dissolution');
   }
-  if (verifyMode === 'final') {
-    await settleWorkloadOperations({
-      operations: log.operations,
-      log,
-      actors,
-      label: 'final workload',
-      verifyMode,
-      // Parent commands may already be observed complete while fanout children remain.
-      drain: true,
-      timeoutMs,
-      onProgress,
-      onLog,
-    });
-  }
+  await settleWorkloadOperations({
+    operations: log.operations,
+    log,
+    actors,
+    label: 'final workload',
+    // Parent commands may already be observed complete while fanout children remain.
+    drain: true,
+    timeoutMs,
+    onProgress,
+    onLog,
+  });
 }

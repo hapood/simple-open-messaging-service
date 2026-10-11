@@ -29,7 +29,7 @@ function fixture() {
             curSeq: 7,
             deletedSeqs: new Set(),
             messages: [
-              message('alice', 'local', 2, 2, 'before removing friend'),
+              message('alice', 'alpha.test', 2, 2, 'before removing friend'),
               message('bob', 'bravo.test', 7, 4, 'after re-adding friend'),
             ],
           },
@@ -43,7 +43,7 @@ function fixture() {
             deletedSeqs: new Set(),
             messages: [
               message('alice', 'alpha.test', 1, 2, 'before removing friend'),
-              message('bob', 'local', 4, 4, 'after re-adding friend'),
+              message('bob', 'bravo.test', 4, 4, 'after re-adding friend'),
             ],
           },
         ],
@@ -77,7 +77,9 @@ test('validates a group submission, authority copy, and third-node mirror after 
         [key, thread(row(10, 8, 'charlie.test', 'charlie.test'))],
       ]),
       bravo: new Map([[key, thread(row(9, 10, 'charlie.test', 'alpha.test'))]]),
-      charlie: new Map([[key, thread(row(8, 10, 'local', 'alpha.test'))]]),
+      charlie: new Map([
+        [key, thread(row(8, 10, 'charlie.test', 'charlie.test'))],
+      ]),
     },
   };
   assert.deepEqual(compareCurrentMemberMessages(value).failures, []);
@@ -89,7 +91,22 @@ test('validates a group submission, authority copy, and third-node mirror after 
     ),
   );
   source.originSeq = 10;
-  value.messages.bravo.get(key).messages[0].originSeq = 8;
+  const mirror = value.messages.bravo.get(key).messages[0];
+  mirror.sourceDomain = 'charlie.test';
+  assert.ok(
+    compareCurrentMemberMessages(value).failures.some(
+      ({ kind }) => kind === 'MESSAGE_SOURCE',
+    ),
+  );
+  mirror.sourceDomain = 'alpha.test';
+  // Publisher-local profile coordinates must not be mistaken for the
+  // upstream author's domain. The exact authority row identifies the author.
+  mirror.creatorDomain = 'alpha.test';
+  assert.deepEqual(compareCurrentMemberMessages(value).failures, []);
+  mirror.creatorAccount = 'different-account';
+  assert.ok(compareCurrentMemberMessages(value).failures.length > 0);
+  mirror.creatorAccount = 'carol';
+  mirror.originSeq = 8;
   assert.ok(compareCurrentMemberMessages(value).failures.length > 0);
 });
 test('detects a historical message lost after friendship is re-established', () => {

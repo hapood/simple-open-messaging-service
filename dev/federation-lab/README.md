@@ -98,8 +98,8 @@ backends with process and database diagnostics, runs the workload, and stops the
 processes. Each backend uses a single database connection (`DATABASE_POOL_MAX=1`)
 to expose transaction code that incorrectly requests another pool connection while
 holding its current one. This is a correctness workload, not a throughput benchmark.
-All workload settings are explicit in the `package.json` script: final
-verification, 600 random decisions, five users and groups per node, 10 admissions per
+All workload settings are explicit in the `package.json` script: 600 random
+decisions, five users and groups per node, 10 admissions per
 second, concurrency 12, round size 10, task timeout 120000 ms, progress every 25 decisions,
 and convergence timeout/interval/samples of 300000 ms / 1000 ms / 3. The account prefix
 is `p2p`; a clean reset makes it reusable.
@@ -162,59 +162,24 @@ Evidence and the dedicated operation journal are stored under `forwardRelayScena
 `operations.json` and `forwardRelay` in `coverage.json`; any case failure fails execution.
 
 Admissions are globally paced at 10 operation starts per second by default, with slow requests allowed
-to overlap. The runner polls the administrator task list for `PENDING` and `PROCESSING` work. After
-the durable-task barrier is idle, it polls the incremental Oracle until the round's federated state
-converges before observing the next state:
+to overlap. Random batches do not wait for the durable queue to drain or invoke the global convergence
+oracle. They observe current state and completed task outcomes only to select later operations; these
+observations are not intermediate assertions. Random relationship decisions use only the acting node's
+Pair and Intent view.
 
-`--verify-mode=round` is available in the workload runner: every batch waits for two stable oracle
-samples and verifies the batch's effects. The package script selects `--verify-mode=final`, which omits these
-intermediate assertions and convergence waits. Random batches do not wait for the
-durable queue to drain in final mode. They still observe current state and completed
-task outcomes for operation selection, without asserting those outcomes per round.
-Random relationship decisions use only the acting node's Pair and Intent view.
-An outgoing pending request can be cancelled by its sender; it does not schedule
-an accept/reject on the remote recipient. Accept/reject submits immediately,
-without waiting for an incoming request to reappear. A P2P admission rejection
-with `FRIEND_NOT_FOUND` is recorded as `OBSERVED_UNAVAILABLE` only when a fresh
-local observation confirms that the relationship is no longer available.
-An active relationship or unexpected error code is not reclassified as an expected
-race. Fixed-scenario coverage checks remain required.
-For random cancellation of an observed outgoing pending request, a task-level
-`REJECTED / INVITE_ALREADY_HANDLED` is also recorded as `OBSERVED_UNAVAILABLE`:
-acceptance may have completed before the queued cancellation runs. The original
-result code is retained; this never turns cancellation into ending a friendship
-and never suppresses a `FAILED` task.
-For a random rejection based on `INCOMING_PENDING`, `INVITE_ALREADY_HANDLED` is
-also expected unavailability when the request has already been handled or withdrawn.
-This applies at admission and task completion, preserves the original error code, and
-does not reclassify fixed-scenario failures, other error codes, or `FAILED` tasks.
-Group management excludes request generations already submitted or successfully handled
-by this run, even if a lagging projection still says `REQUESTED`. The key includes the
-group, request ID, direction, and expiration so a renewed application remains eligible.
-Unexpected group `NOT_FOUND` admission failures still fail the run.
+An outgoing pending request can be cancelled by its sender; it does not schedule an accept/reject on
+the remote recipient. Accept/reject submits immediately, without waiting for an incoming request to
+reappear. Expected races retain their original result codes, while admission failures, execution
+failures (`FAILED`), and unfinished tasks fail the run. Fixed scenarios retain narrow prerequisite waits
+when a quote, forward, or withdrawal cannot be submitted until its target is visible; these waits do not
+invoke the global convergence oracle.
 
-After all operations, the harness drains the queue. In final mode, task-level
-business rejections (`REJECTED`) retain their status and result code in the report
-but do not prevent the final consistency audit. Round mode still requires expected
-operation outcomes. Admission failures, execution failures (`FAILED`), and unfinished
-tasks still fail validation in either mode. Observational snapshots do not read/hash media bytes. The final audit
-still checks convergence, coverage, profiles, seq/originSeq, message content,
-tombstones, and actual media digests/lengths with the normal stable-sample policy.
-Final mode intentionally does not prove intermediate states that later operations
-overwrite, and failures are localized less precisely than in round mode.
-Final mode also skips the midpoint-wide lazy profile check: an observational
-snapshot may still select a viewer whose leave has already completed. Midpoint
-group dissolution still runs, and the final profile audit remains required.
-In final mode, midpoint dissolution only submits its command and observes the current state;
-it does not drain the queue or assert its outcome before subsequent random operations. The final
-workload barrier always drains all three queues, even if every parent command has already been
-observed complete, so member-revocation children must finish before final validation. Round mode
-retains the midpoint task barrier and convergence checks.
-
-Fixed reference-withdrawal scenarios retain their narrow prerequisite waits
-(the remote target must be visible before it can be quoted or forwarded) and
-public-read checks. These do not invoke the global oracle in final mode. The
-chosen mode is recorded in provisioning, execution, and final audit reports.
+After all operations, the harness drains all three durable-task queues, including child fanout work.
+Task-level business rejections (`REJECTED`) remain in the report but do not prevent the final consistency
+audit. The single final audit waits for stable convergence and checks coverage, profiles, seq/originSeq,
+message content, tombstones, and actual media digests and lengths. Intermediate states that later
+operations overwrite are intentionally not asserted. Midpoint dissolution is submitted without a queue
+barrier; the final profile audit remains mandatory.
 
 The default random batch size is 10 (capped by the available pair count), with a
 shared admission pacer limiting submission starts to 10 operations per second
@@ -324,14 +289,14 @@ processing tasks on any node. Each sample concurrently issues four status reques
 (twelve requests for the default topology), including a check for failed tasks, then waits 500 milliseconds before the next sample.
 The final idle sample returns without another sleep. Drain progress includes:
 
-| Field                          | Meaning                                                                                 |
-| ------------------------------ | --------------------------------------------------------------------------------------- |
-| `elapsed`                      | Total wall-clock time since this barrier began.                                         |
-| `sample`, `idleSamples`        | Sample number and consecutive idle samples out of two required.                         |
-| `sampleMs`                     | Wall-clock time for the current sample across all nodes.                                |
-| Per-node `queryMs`             | Wall-clock time for that node's concurrent status requests.                             |
-| Per-node `statusMs`            | Individual `PENDING`, `PROCESSING`, and `FAILED` request durations.                      |
-| `queryTotalMs`, `sleepTotalMs` | Cumulative sample time and actual polling sleep time.                                   |
+| Field                          | Meaning                                                             |
+| ------------------------------ | ------------------------------------------------------------------- |
+| `elapsed`                      | Total wall-clock time since this barrier began.                     |
+| `sample`, `idleSamples`        | Sample number and consecutive idle samples out of two required.     |
+| `sampleMs`                     | Wall-clock time for the current sample across all nodes.            |
+| Per-node `queryMs`             | Wall-clock time for that node's concurrent status requests.         |
+| Per-node `statusMs`            | Individual `PENDING`, `PROCESSING`, and `FAILED` request durations. |
+| `queryTotalMs`, `sleepTotalMs` | Cumulative sample time and actual polling sleep time.               |
 
 Concurrent request durations must not be added to estimate elapsed time. Request measurements
 include response decoding and any administrator session renewal/retry; they do not isolate SQL

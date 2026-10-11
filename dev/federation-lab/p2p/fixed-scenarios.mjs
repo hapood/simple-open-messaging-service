@@ -52,6 +52,43 @@ export function selectScenarioMembers(log, groups) {
   return undefined;
 }
 
+function selectScenarioAdmission(log, groups) {
+  for (const planned of log.groups.filter((group) => group.active)) {
+    const canonical = groups[planned.nodeName]?.groups.get(planned.address);
+    if (!canonical || canonical.dissolved) continue;
+    const approver = canonical.roster
+      .map(({ address, role }) => ({ ...userRef(address), role }))
+      .find(
+        (member) =>
+          ['OWNER', 'ADMIN'].includes(member.role) &&
+          observeUserGroup(groups, member, planned).membershipActive,
+      );
+    if (!approver) continue;
+    const applicantAddress = log.users.find((address) => {
+      const user = userRef(address);
+      if (user.nodeName === planned.nodeName) return false;
+      const projections = Object.values(groups)
+        .map((node) => node.groups.get(planned.address))
+        .filter(Boolean);
+      const hasExistingState = projections.some((projection) => {
+        const relationship = projection.relationships.get(address);
+        return (
+          relationship ||
+          projection.requests.some(
+            (request) => request.memberAddress === address,
+          )
+        );
+      });
+      if (hasExistingState) return false;
+      const projection = groups[user.nodeName]?.groups.get(planned.address);
+      return Boolean(projection);
+    });
+    if (applicantAddress)
+      return { planned, approver, applicant: userRef(applicantAddress) };
+  }
+  return undefined;
+}
+
 export function planMidpointDissolution(log, groups, random) {
   if (log.operations.some((operation) => operation.type === 'DISSOLVE_GROUP'))
     return undefined;
@@ -115,8 +152,91 @@ export async function executeReferenceWithdrawalScenario({
   timeoutMs,
 }) {
   if (log.referenceScenario?.status === 'SUCCEEDED') return false;
-  const selected = selectScenarioMembers(log, snapshot.groups);
-  if (!selected) return false;
+  let selected = selectScenarioMembers(log, snapshot.groups);
+  if (!selected) {
+    const admission = selectScenarioAdmission(log, snapshot.groups);
+    if (!admission) return false;
+    const { planned, approver, applicant } = admission;
+    const canonical = snapshot.groups[planned.nodeName].groups.get(
+      planned.address,
+    );
+    snapshot = await execute({
+      type: 'INVITE_GROUP_MEMBER',
+      actor: approver.address,
+      group: planned.address,
+      groupThreadId: canonical.threadId,
+      target: applicant,
+      scenario: 'REFERENCE_WITHDRAWAL_SETUP',
+    });
+    const invited = await waitForScenarioSnapshot({
+      snapshot,
+      refreshSnapshot,
+      timeoutMs,
+      check: (current) => {
+        const managerProjection = current.groups[approver.nodeName]?.groups.get(
+          planned.address,
+        );
+        const applicantProjection = current.groups[applicant.nodeName]?.groups.get(
+          planned.address,
+        );
+        const applicantRelationship = applicantProjection?.relationships.get(
+          applicant.address,
+        );
+        if (
+          !managerProjection ||
+          managerProjection.dissolved ||
+          !applicantProjection ||
+          applicantProjection.dissolved ||
+          applicantRelationship?.groupIntent !== 'REQUESTED'
+        )
+          throw new Error(
+            `reference setup invitation is not visible: manager=${Boolean(managerProjection)} applicant=${Boolean(applicantProjection)} intent=${applicantRelationship?.groupIntent ?? null}`,
+          );
+        return { projection: applicantProjection };
+      },
+    });
+    snapshot = await execute({
+      type: 'ACCEPT_GROUP_INVITATION',
+      actor: applicant.address,
+      group: planned.address,
+      groupThreadId: invited.value.projection.threadId,
+      scenario: 'REFERENCE_WITHDRAWAL_SETUP',
+    });
+    const joined = await waitForScenarioSnapshot({
+      snapshot,
+      refreshSnapshot,
+      timeoutMs,
+      check: (current) => {
+        const source = approver;
+        const reader = applicant;
+        const sourceActive = observeUserGroup(
+          current.groups,
+          source,
+          planned,
+        ).membershipActive;
+        const readerActive = observeUserGroup(
+          current.groups,
+          reader,
+          planned,
+        ).membershipActive;
+        const readerProjection = current.groups[reader.nodeName]?.groups.get(
+          planned.address,
+        );
+        if (
+          !sourceActive ||
+          !readerActive ||
+          !readerProjection ||
+          readerProjection.dissolved
+        )
+          throw new Error(
+            `reference setup projection is not ready yet: source=${sourceActive} reader=${readerActive} readerProjection=${Boolean(readerProjection)} readerDissolved=${readerProjection?.dissolved ?? null}`,
+          );
+        return { planned, source, reader };
+      },
+    });
+    snapshot = joined.snapshot;
+    selected = joined.value;
+  }
   const { planned, source, reader } = selected;
   log.referenceScenario = {
     status: 'RUNNING',
@@ -204,15 +324,16 @@ export async function executeReferenceWithdrawalScenario({
             throw new Error('reference not visible after source withdrawal');
           const content = parseContent(visible.content);
           if (operation.type === 'SEND_QUOTE') {
+            const quote = content?.quote;
             if (
-              !content?.quote ||
-              Object.keys(content.quote).some(
-                (key) => key !== 'seq' && key !== 'status',
-              ) ||
-              (content.quote.status !== undefined &&
-                content.quote.status !== 'NOT_FOUND')
+              !quote ||
+              Object.keys(quote).some(
+                (key) => key !== 'namespaceId' && key !== 'originSeq',
+              )
             )
-              throw new Error('withdrawn quote still exposes a source preview');
+              throw new Error(
+                'withdrawn quote still exposes a source preview',
+              );
           } else if (operation.type === 'FORWARD_DIRECT') {
             if (content?.text !== sent.expected.text)
               throw new Error('direct forward lost its copied text');
