@@ -78,9 +78,9 @@ fn sender_profile(
              JOIN profile_namespaces n ON n.user_id=m.user_id
                AND n.publisher_namespace_id=m.namespace_id
                AND n.profile_namespace_id=m.namespace_id
-             WHERE m.user_id=?1 AND m.thread_id=?2 AND m.member_account=?3 AND m.member_domain=?4
+             WHERE m.user_id=?1 AND m.thread_id=?2 AND m.member_account=?3
                AND n.status='ACTIVE' ORDER BY m.namespace_id DESC LIMIT 1",
-            params![user_id, thread_id, account, domain],
+            params![user_id, thread_id, account],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()

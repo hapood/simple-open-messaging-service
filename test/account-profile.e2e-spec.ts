@@ -151,10 +151,8 @@ describe('exact account profile by current account evidence', () => {
     await database.db.insert(groupMetaMemberFeed).values({
       threadId: originThreadId,
       feedId: 1,
-      memberAccount: localGroup,
-      profileNamespaceId: 0,
       operation: 'GROUP_PROFILE',
-      body: { profileNamespaceId: 0, profileRev: 3 },
+      body: { account: localGroup, namespaceId: 0, profileRev: 3 },
       updatedAt: new Date(),
     });
     // Local endpoints sit on side A at namespace 0; remote signers and the

@@ -676,9 +676,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (!this.pending.some((item) => item.clientMessageId === clientMessageId))
       return false;
     this.outbox.discardPending(clientMessageId);
-    void firstValueFrom(
-      this.messages.cancelUploadBatch(clientMessageId),
-    ).catch(() => undefined);
+    void firstValueFrom(this.messages.cancelUploadBatch(clientMessageId)).catch(
+      () => undefined,
+    );
     return true;
   }
 
@@ -1082,6 +1082,31 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         const key = this.creatorKey(message.creator)!;
         const identity = parseUserIdentityKey(key);
         if (!identity) throw new Error('invalid profile identity key');
+        if (this.conv.type === 'GROUP' && this.memberProfiles) {
+          await this.memberProfiles.recordMessageProfile(
+            this.conv.threadId,
+            identity,
+            message.profileRev,
+            message.seq,
+          );
+          const member = await this.memberProfiles.getByIdentity(
+            this.conv.threadId,
+            key,
+          );
+          const presentation = {
+            name: member?.profileResolved ? member.name : identity.account,
+            account: identity.account,
+            avatarIdentityId: JSON.stringify([
+              key,
+              'profile',
+              message.profileRev,
+            ]),
+            isSelf: this.isSelfAddress(identity.account, identity.namespaceId),
+          };
+          this.profilesBySeq.set(message.seq, presentation);
+          if (!this.profiles.has(key)) this.profiles.set(key, presentation);
+          return;
+        }
         const cached = await (this.profileRepo
           ? firstValueFrom(
               this.profileRepo.resolve(messageAuthorProfileDemand(message)!),

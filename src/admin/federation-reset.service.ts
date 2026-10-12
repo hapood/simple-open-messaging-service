@@ -71,7 +71,7 @@ export class FederationResetService {
           JOIN "MessageThread" group_thread
             ON group_thread.id = member_fact."threadId"
           WHERE group_thread."authorityNamespaceId" = ${namespaceId}
-            OR member_fact."profileNamespaceId" = ${normalized}
+            OR member_fact.body -> 'namespaceId' = to_jsonb(${normalized}::integer)
         ), affected_threads AS (
           SELECT pair."threadId"
           FROM "RelationshipPair" pair

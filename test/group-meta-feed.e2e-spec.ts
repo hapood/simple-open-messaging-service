@@ -247,21 +247,15 @@ describe('canonical Group Meta feed', () => {
   const owner = () => ({
     account: ownerAccount,
     profileNamespaceId: 0,
-    body: {
-      role: GroupRole.OWNER,
-      profileNamespaceId: 0,
-      profileRev: 1,
-    },
+    role: GroupRole.OWNER,
+    profileRev: 1,
   });
 
   const member = () => ({
     account: memberAccount,
     profileNamespaceId: peerNamespaceId,
-    body: {
-      role: GroupRole.MEMBER,
-      profileNamespaceId: peerNamespaceId,
-      profileRev: 1,
-    },
+    role: GroupRole.MEMBER,
+    profileRev: 1,
   });
 
   async function reconcileDesired(
@@ -269,7 +263,8 @@ describe('canonical Group Meta feed', () => {
     members: readonly {
       account: string;
       profileNamespaceId: number;
-      body: Record<string, unknown>;
+      role: GroupRole;
+      profileRev: number;
     }[],
   ): Promise<number> {
     await feed.reconcileMembersInTx(tx, groupId, [
@@ -277,9 +272,7 @@ describe('canonical Group Meta feed', () => {
       members.some((item) => item.account === memberAccount)
         ? { ...member(), operation: 'MEMBER_UPSERT' }
         : {
-            account: memberAccount,
-            profileNamespaceId: peerNamespaceId,
-            body: member().body,
+            ...member(),
             operation: 'MEMBER_DEPART',
           },
     ]);
@@ -409,25 +402,30 @@ describe('canonical Group Meta feed', () => {
       expect(page.items).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            account: ownerAccount,
-            domain: localIdentityDomain(),
-            namespaceId: 0,
             operation: 'MEMBER_UPSERT',
             body: {
+              account: ownerAccount,
+              namespaceId: 0,
               role: 'OWNER',
-              profileNamespaceId: 0,
               profileRev: 1,
             },
           }),
           expect.objectContaining({
-            account: memberAccount,
-            domain: peerDomain,
-            namespaceId: peerNamespaceId,
             operation: 'MEMBER_UPSERT',
+            body: {
+              account: memberAccount,
+              namespaceId: peerNamespaceId,
+              role: GroupRole.MEMBER,
+              profileRev: 1,
+            },
           }),
           expect.objectContaining({
             operation: 'GROUP_PROFILE',
-            body: { profileNamespaceId: 0, profileRev: 1 },
+            body: {
+              account: groupAccount,
+              namespaceId: 0,
+              profileRev: 1,
+            },
           }),
         ]),
       );
@@ -459,19 +457,18 @@ describe('canonical Group Meta feed', () => {
     expect(full.items).toEqual([
       {
         feedId: 1,
-        account: ownerAccount,
-        domain: localIdentityDomain(),
         operation: 'MEMBER_UPSERT',
         body: {
-          role: GroupRole.OWNER,
+          account: ownerAccount,
           namespaceId: 0,
+          role: GroupRole.OWNER,
           profileRev: 1,
         },
       },
       {
         feedId: 3,
         operation: 'GROUP_PROFILE',
-        body: { namespaceId: 0, profileRev: 1 },
+        body: { account: groupAccount, namespaceId: 0, profileRev: 1 },
       },
     ]);
 
@@ -484,10 +481,9 @@ describe('canonical Group Meta feed', () => {
     expect(delta.items).toEqual([
       {
         feedId: 4,
-        account: memberAccount,
-        domain: peerDomain,
         operation: 'MEMBER_DEPART',
         body: {
+          account: memberAccount,
           role: GroupRole.MEMBER,
           namespaceId: peerNamespaceId,
           profileRev: 1,
@@ -565,12 +561,8 @@ describe('canonical Group Meta feed', () => {
     await database.db.transaction((tx) =>
       feed.appendMemberTransitionInTx(tx, groupId, {
         ...member(),
+        role: GroupRole.ADMIN,
         operation: 'MEMBER_UPSERT',
-        body: {
-          role: GroupRole.ADMIN,
-          profileNamespaceId: peerNamespaceId,
-          profileRev: 1,
-        },
       }),
     );
     const continued = await publisher.serve(
@@ -583,7 +575,9 @@ describe('canonical Group Meta feed', () => {
     );
     expect(
       continued.items.some(
-        (item) => 'account' in item && item.account === memberAccount,
+        (item) =>
+          item.operation === 'MEMBER_UPSERT' &&
+          item.body.account === memberAccount,
       ),
     ).toBe(false);
     const retried = await publisher.serve(
@@ -604,9 +598,9 @@ describe('canonical Group Meta feed', () => {
     expect(delta.items).toEqual([
       expect.objectContaining({
         feedId: 4,
-        account: memberAccount,
         operation: 'MEMBER_UPSERT',
         body: {
+          account: memberAccount,
           role: GroupRole.ADMIN,
           namespaceId: peerNamespaceId,
           profileRev: 1,
@@ -633,10 +627,9 @@ describe('canonical Group Meta feed', () => {
     expect(delta.items).toEqual([
       {
         feedId: 5,
-        account: memberAccount,
-        domain: peerDomain,
         operation: 'MEMBER_UPSERT',
         body: {
+          account: memberAccount,
           role: GroupRole.MEMBER,
           namespaceId: peerNamespaceId,
           profileRev: 1,

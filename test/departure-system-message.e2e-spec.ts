@@ -221,12 +221,11 @@ describe('departure system message paths', () => {
       sourceMembers.map((row, index) => ({
         threadId: parent.id,
         feedId: index + 2,
-        memberAccount: row.account,
-        profileNamespaceId: row.namespaceId,
         operation: 'MEMBER_UPSERT' as const,
         body: {
+          account: row.account,
+          namespaceId: row.namespaceId,
           role: index === 0 ? 'OWNER' : 'MEMBER',
-          profileNamespaceId: row.namespaceId,
           profileRev: 1,
         },
       })),
@@ -693,9 +692,8 @@ describe('departure system message paths', () => {
             feedId: 6,
             operation: 'MEMBER_DEPART',
             account: h.member.account,
-            domain: localIdentityDomain(),
+            namespaceId: 0,
             role: GroupRole.MEMBER,
-            profileNamespaceId: 0,
             profileRev: 1,
           },
           through: 6,
@@ -889,12 +887,11 @@ describe('departure system message paths', () => {
           path === 'local' || path === 'denied'
             ? {
                 account: local.account,
-                domain: localIdentityDomain(),
+                profileNamespaceId: 0,
                 profileRev: expect.any(Number),
               }
             : {
                 account: peer.account,
-                domain: peerDomain,
                 profileRev: 0,
               },
       });
@@ -902,11 +899,9 @@ describe('departure system message paths', () => {
         expect.arrayContaining([
           expect.objectContaining({
             account: local.account,
-            domain: localIdentityDomain(),
           }),
           expect.objectContaining({
             account: peer.account,
-            domain: peerIsLocal ? localIdentityDomain() : peerDomain,
           }),
         ]),
       );

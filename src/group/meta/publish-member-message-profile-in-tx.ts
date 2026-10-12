@@ -51,10 +51,10 @@ export async function publishMemberMessageProfileInTx(
     profileRev: number;
     profileSourceSeq: number | null;
   }>(sql`
-    SELECT (body ->> 'profileRev')::integer AS "profileRev", "profileSourceSeq"
+    SELECT body -> 'profileRev' AS "profileRev", "profileSourceSeq"
     FROM "GroupMetaMemberFeed"
-    WHERE "threadId" = ${groupId} AND "memberAccount" = ${account}
-      AND "profileNamespaceId" = ${namespaceId} AND operation = 'MEMBER_UPSERT'
+    WHERE "threadId" = ${groupId} AND body ->> 'account' = ${account}
+      AND (body -> 'namespaceId') = to_jsonb(${namespaceId}::integer) AND operation = 'MEMBER_UPSERT'
       AND EXISTS (
         SELECT 1 FROM "RelationshipPair" pair
         WHERE pair."threadId" = ${groupId} AND pair.kind = 'GROUP_MEMBER'
@@ -119,8 +119,8 @@ export async function publishMemberMessageProfileInTx(
     SET "feedId" = ${feedId}, "profileSourceSeq" = ${messageSeq},
       body = jsonb_set(body, '{profileRev}', to_jsonb(${profileRev}::integer)),
       "updatedAt" = CURRENT_TIMESTAMP
-    WHERE "threadId" = ${groupId} AND "memberAccount" = ${account}
-      AND "profileNamespaceId" = ${namespaceId} AND operation = 'MEMBER_UPSERT'
+    WHERE "threadId" = ${groupId} AND body ->> 'account' = ${account}
+      AND (body -> 'namespaceId') = to_jsonb(${namespaceId}::integer) AND operation = 'MEMBER_UPSERT'
   `);
   await tx.execute(sql`
     UPDATE "GroupMeta" SET "metaEndId" = ${feedId},

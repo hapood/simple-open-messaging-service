@@ -29,9 +29,9 @@ beforeAll(async () => {
              (91, 'remote', 91, 1, 'Direct profile', ''),
              (92, 'remote', 91, 1, 'Relayed profile', '');
     INSERT INTO "GroupMeta" ("threadId", "metaEndId", "profileRev") VALUES (301, 1, 1), (302, 1, 2);
-    INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "profileNamespaceId", operation, body)
-      VALUES (301, 1, 'owner', 0, 'MEMBER_UPSERT', '{"role":"OWNER","profileRev":1}'),
-             (302, 1, 'remote', 91, 'MEMBER_UPSERT', '{"role":"MEMBER","profileRev":1}');
+    INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", operation, body)
+      VALUES (301, 1, 'MEMBER_UPSERT', '{"account":"owner","namespaceId":0,"role":"OWNER","profileRev":1}'),
+             (302, 1, 'MEMBER_UPSERT', '{"account":"remote","namespaceId":91,"role":"MEMBER","profileRev":1}');
     INSERT INTO "RelationshipPair" (id, kind, "endpointAType", "endpointAAccount", "endpointANamespaceId",
       "endpointBType", "endpointBAccount", "endpointBNamespaceId", "threadId", active)
       VALUES (401, 'P2P', 'USER', 'owner', 0, 'USER', 'remote', 91, 303, true);

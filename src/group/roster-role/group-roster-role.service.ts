@@ -327,11 +327,8 @@ export class GroupRosterRoleService {
         account: change.account,
         profileNamespaceId: change.profileNamespaceId,
         operation: 'MEMBER_UPSERT' as const,
-        body: {
-          role: change.role,
-          profileNamespaceId: change.profileNamespaceId,
-          profileRev: change.profileRev,
-        },
+        role: change.role,
+        profileRev: change.profileRev,
       })),
     );
     // Local role projections, in account order.

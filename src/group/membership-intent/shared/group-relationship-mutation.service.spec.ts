@@ -15,34 +15,41 @@ function queryResult<T>(value: T) {
 }
 
 describe('GroupRelationshipMutationService', () => {
-  it('passes the caller transaction through the group command lock', async () => {
-    const tx = {
-      select: vi.fn(() => queryResult([{ groupId: 9 }])),
-    } as never;
-    const relationshipIntents = {
-      lockGroupMutationInTx: vi.fn().mockResolvedValue({
-        id: 1n,
-        threadLock: {},
-      }),
-    };
-    const service = new GroupRelationshipMutationService(
-      relationshipIntents as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+  it.each([{ feedAllocatorUserIds: [] }, { feedAllocatorUserIds: [7] }])(
+    'passes transaction and allocator locks through the group command lock ($feedAllocatorUserIds)',
+    async ({ feedAllocatorUserIds }) => {
+      const tx = {
+        select: vi.fn(() => queryResult([{ groupId: 9 }])),
+      } as never;
+      const relationshipIntents = {
+        lockGroupMutationInTx: vi.fn().mockResolvedValue({
+          id: 1n,
+          threadLock: {},
+        }),
+      };
+      const service = new GroupRelationshipMutationService(
+        relationshipIntents as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+      );
 
-    await service.lockGroupMutationInTx(tx, 4, 7, [8]);
+      await service.lockGroupMutationInTx(tx, 4, 7, [8], feedAllocatorUserIds);
 
-    expect(relationshipIntents.lockGroupMutationInTx).toHaveBeenCalledWith(tx, {
-      threadId: 4,
-      groupId: 9,
-      memberUserId: 7,
-      projectionUserIds: [8],
-    });
-  });
+      expect(relationshipIntents.lockGroupMutationInTx).toHaveBeenCalledWith(
+        tx,
+        {
+          threadId: 4,
+          groupId: 9,
+          memberUserId: 7,
+          projectionUserIds: [8],
+          feedAllocatorUserIds,
+        },
+      );
+    },
+  );
 
   it('applies request projections in the same caller transaction', async () => {
     const tx = {} as never;
@@ -89,7 +96,7 @@ describe('GroupRelationshipMutationService', () => {
             {
               id: 9,
               account: '!remote-group',
-                            namespaceId: 12,
+              namespaceId: 12,
               name: 'Remote group',
               avatar: '',
               description: '',
@@ -101,7 +108,7 @@ describe('GroupRelationshipMutationService', () => {
         account: {
           findFirst: vi.fn().mockResolvedValue({
             account: 'local-user',
-                        namespaceId: 0,
+            namespaceId: 0,
           }),
         },
       },
@@ -201,7 +208,7 @@ describe('GroupRelationshipMutationService', () => {
             {
               id: 9,
               account: '!remote-group',
-                            namespaceId: 12,
+              namespaceId: 12,
               name: 'Remote group',
               avatar: '',
               description: '',
@@ -213,7 +220,7 @@ describe('GroupRelationshipMutationService', () => {
         account: {
           findFirst: vi.fn().mockResolvedValue({
             account: 'local-user',
-                        namespaceId: 0,
+            namespaceId: 0,
           }),
         },
       },
@@ -290,7 +297,7 @@ describe('GroupRelationshipMutationService', () => {
             {
               id: 9,
               account: '!group',
-                            namespaceId: 5,
+              namespaceId: 5,
             },
           ]),
         ),
@@ -298,7 +305,7 @@ describe('GroupRelationshipMutationService', () => {
         account: {
           findFirst: vi.fn().mockResolvedValue({
             account: 'member',
-                        namespaceId: 0,
+            namespaceId: 0,
           }),
         },
       },
@@ -332,7 +339,7 @@ describe('GroupRelationshipMutationService', () => {
             epoch: 9,
             group: {
               account: '!group',
-                            namespaceId: 5,
+              namespaceId: 5,
             },
           },
         },

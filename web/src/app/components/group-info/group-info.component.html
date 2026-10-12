@@ -204,7 +204,7 @@
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
                 [account]="m.account"
-                [domainSource]="{ type: 'snapshot', domain: m.domain }"
+                [domainSource]="{ type: 'subject-home', namespaceId: m.namespaceId }"
                 [profileEvidence]="memberProfileEvidence(m)"
                 [title]="m.name"
               ></app-user-avatar>
@@ -413,7 +413,7 @@
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
                 [account]="m.account"
-                [domainSource]="{ type: 'snapshot', domain: m.domain }"
+                [domainSource]="{ type: 'subject-home', namespaceId: m.namespaceId }"
                 [profileEvidence]="memberProfileEvidence(m)"
               ></app-user-avatar>
               <div class="member-info">

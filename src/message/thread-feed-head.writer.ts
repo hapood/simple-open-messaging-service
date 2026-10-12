@@ -275,7 +275,7 @@ export class ThreadFeedHeadWriter {
       FROM "GroupMeta" meta
       LEFT JOIN "GroupMetaMemberFeed" fact ON fact."threadId" = meta."threadId"
         AND fact.operation = 'GROUP_PROFILE'
-        AND (fact.body ->> 'profileRev')::integer = meta."profileRev"
+        AND fact.body -> 'profileRev' = to_jsonb(meta."profileRev")
       WHERE meta."threadId" = ${input.threadId} LIMIT 1`);
     const head = result.rows[0];
     if (!head?.metaEndId) return [];

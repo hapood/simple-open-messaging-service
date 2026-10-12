@@ -1141,7 +1141,6 @@ export class ThreadRepository {
                 .commitResolvedGroupMetaProfile(reference, {
                   namespaceId: reference.namespaceId,
                   account: reference.account,
-                  domain: reference.domain,
                   rev: reference.rev,
                   name: profile.name,
                   bio: profile.bio,

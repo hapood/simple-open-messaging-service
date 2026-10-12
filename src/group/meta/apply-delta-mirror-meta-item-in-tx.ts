@@ -1,5 +1,4 @@
 import { eq, sql } from 'drizzle-orm';
-import { validateNamespacedAddress } from '../../common/client-identity.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 import { messageThread } from '../../database/schema.js';
 import { MessageService } from '../../message/message.service.js';
@@ -62,7 +61,6 @@ export async function applyDeltaMirrorMetaItemInTx(
   const previousFact = await readCurrentMirrorMemberOperationInTx(
     tx,
     mirror.threadId,
-    input.group.publisherNamespaceId,
     input.item,
   );
   await applyMirrorMetaFactInTx(
@@ -148,7 +146,7 @@ function selectChangedMirrorMemberProfileDemand(
   previousFact:
     | {
         operation: string;
-        profileNamespaceId: number | null;
+        namespaceId: number | null;
         profileRev: number | null;
       }
     | undefined,
@@ -156,7 +154,7 @@ function selectChangedMirrorMemberProfileDemand(
   if (
     item.operation === 'MEMBER_UPSERT' &&
     previousFact?.operation === 'MEMBER_UPSERT' &&
-    previousFact.profileNamespaceId === item.profileNamespaceId &&
+    previousFact.namespaceId === item.namespaceId &&
     previousFact.profileRev === item.profileRev
   )
     return null;
@@ -202,12 +200,11 @@ export async function finalizeDeltaMirrorMetaRoundInTx(
 async function readCurrentMirrorMemberOperationInTx(
   tx: DatabaseTransaction,
   threadId: number,
-  namespaceId: number,
   item: MirrorMetaReplicatedItem,
 ): Promise<
   | {
       operation: string;
-      profileNamespaceId: number | null;
+      namespaceId: number | null;
       profileRev: number | null;
     }
   | undefined
@@ -217,24 +214,19 @@ async function readCurrentMirrorMemberOperationInTx(
     item.operation === 'GROUP_ANNOUNCEMENT'
   )
     return undefined;
-  const member = validateNamespacedAddress({
-    account: item.account,
-    domain: item.domain,
-    namespaceId: item.profileNamespaceId,
-  });
   const previous = await tx.execute<{
     operation: string;
-    profileNamespaceId: number | null;
+    namespaceId: number | null;
     profileRev: number | null;
   }>(sql`
     SELECT operation,
       CASE WHEN operation = 'MEMBER_UPSERT'
-        THEN (body ->> 'profileNamespaceId')::integer ELSE NULL END AS "profileNamespaceId",
+        THEN body -> 'namespaceId' ELSE NULL END AS "namespaceId",
       CASE WHEN operation = 'MEMBER_UPSERT'
-        THEN (body ->> 'profileRev')::integer ELSE NULL END AS "profileRev"
+        THEN body -> 'profileRev' ELSE NULL END AS "profileRev"
     FROM "GroupMetaMemberFeed"
-    WHERE "threadId" = ${threadId} AND "memberAccount" = ${member.account}
-      AND "profileNamespaceId" = ${member.namespaceId}
+    WHERE "threadId" = ${threadId} AND body ->> 'account' = ${item.account}
+      AND body -> 'namespaceId' = to_jsonb(${item.namespaceId}::integer)
     LIMIT 1
   `);
   return previous.rows[0];
@@ -251,7 +243,7 @@ async function writeObservedMembershipTransitionInTx(
   previousFact:
     | {
         operation: string;
-        profileNamespaceId: number | null;
+        namespaceId: number | null;
         profileRev: number | null;
       }
     | undefined,
@@ -270,11 +262,7 @@ async function writeObservedMembershipTransitionInTx(
     item.operation === 'GROUP_ANNOUNCEMENT'
   )
     return { transitioned: false };
-  const member = validateNamespacedAddress({
-    account: item.account,
-    domain: item.domain,
-    namespaceId: item.profileNamespaceId,
-  });
+  const member = { account: item.account, namespaceId: item.namespaceId };
   const joined =
     item.operation === 'MEMBER_UPSERT' &&
     previousFact?.operation !== 'MEMBER_UPSERT';
@@ -285,8 +273,8 @@ async function writeObservedMembershipTransitionInTx(
   if (left && member.namespaceId === 0) return { transitioned: false };
   const profileNamespaceId =
     item.operation === 'MEMBER_UPSERT'
-      ? item.profileNamespaceId
-      : previousFact?.profileNamespaceId;
+      ? item.namespaceId
+      : previousFact?.namespaceId;
   const profileRev =
     item.operation === 'MEMBER_UPSERT'
       ? item.profileRev

@@ -100,11 +100,14 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
     });
     await database.db.insert(tables.groupMetaMemberFeed).values({
       threadId,
-      memberAccount: account,
-      profileNamespaceId: 0,
       operation: 'MEMBER_UPSERT',
       feedId: 1,
-      body: { role: 'MEMBER', profileNamespaceId: 0, profileRev: 1 },
+      body: {
+        account,
+        namespaceId: 0,
+        role: 'MEMBER',
+        profileRev: 1,
+      },
     });
     await database.db.insert(tables.accountThreadState).values({
       accountId: viewerId,

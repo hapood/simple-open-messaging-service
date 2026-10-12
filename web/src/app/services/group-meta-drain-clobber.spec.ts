@@ -85,15 +85,21 @@ describe('group-meta drain vs renderer write-through (bug repro)', () => {
           {
             feedId: '2',
             operation: 'GROUP_PROFILE',
-            body: { profileNamespaceId: 0, profileRev: 1 },
+            body: {
+              account: '!four-one-alpha',
+              namespaceId: 0,
+              profileRev: 1,
+            },
           },
           {
             feedId: '3',
             operation: 'MEMBER_UPSERT',
-            account: 'alice.w1007',
-            domain: 'local',
-            namespaceId: 0,
-            body: { role: 'OWNER', profileRev: 1 },
+            body: {
+              account: 'alice.w1007',
+              namespaceId: 0,
+              role: 'OWNER',
+              profileRev: 1,
+            },
           },
         ],
         hasMore: false,

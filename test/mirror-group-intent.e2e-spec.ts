@@ -1,5 +1,4 @@
 import { and, desc, eq, or, sql } from 'drizzle-orm';
-import { localIdentityDomain } from './support/local-domain.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
@@ -280,8 +279,14 @@ describe('mirror group intent application', () => {
       status: 'REQUESTED',
       note: 'join us',
       threadId: pair!.threadId!,
-      group: { account: group.account },
+      group: {
+        account: group.account,
+        namespaceId: group.namespaceId,
+        profileRev: 3,
+      },
     });
+    // Invitation identity/profile comes from the persisted intent before any
+    // Group Meta facts are available; consuming Meta is a separate step.
     // A mirror owns no projections and no meta facts.
     expect(
       await database.db.query.groupRequestProjection.findMany({
@@ -386,7 +391,15 @@ describe('mirror group intent application', () => {
     });
     // Client surface: one incoming row for the group's acceptance.
     const feeds = await feedRows(bob.id);
-    expect(feeds.some((f) => bodyOf(f).status === 'ACCEPTED')).toBe(true);
+    const acceptedFeed = feeds.find((f) => bodyOf(f).status === 'ACCEPTED');
+    expect(acceptedFeed).toBeDefined();
+    expect(bodyOf(acceptedFeed!)).toMatchObject({
+      group: {
+        account: group.account,
+        namespaceId: group.namespaceId,
+        profileRev: 3,
+      },
+    });
     // The authoritative Group Meta delta will announce this join.
     const joins = await boundaryMessages(pair!.threadId!, 'GROUP_JOINED');
     expect(joins).toHaveLength(0);
@@ -647,10 +660,13 @@ describe('mirror group intent application', () => {
     await database.db.insert(tables.groupMetaMemberFeed).values({
       threadId: pair!.threadId!,
       feedId: 1,
-      memberAccount: bob.account,
-      profileNamespaceId: 0,
       operation: 'MEMBER_UPSERT',
-      body: { role: 'MEMBER', profileRev: 1 },
+      body: {
+        account: bob.account,
+        namespaceId: 0,
+        role: 'MEMBER',
+        profileRev: 1,
+      },
     });
     const authored = app.get(MemberAuthoredGroupMembershipIntentService);
     expect(
@@ -691,10 +707,13 @@ describe('mirror group intent application', () => {
     await database.db.insert(tables.groupMetaMemberFeed).values({
       threadId,
       feedId: 1,
-      memberAccount: bob.account,
-      profileNamespaceId: 0,
       operation: 'MEMBER_UPSERT',
-      body: { role: 'MEMBER', profileRev: 1 },
+      body: {
+        account: bob.account,
+        namespaceId: 0,
+        role: 'MEMBER',
+        profileRev: 1,
+      },
     });
     await authored.execute({
       threadId,
@@ -806,10 +825,13 @@ describe('mirror group intent application', () => {
       await database.db.insert(tables.groupMetaMemberFeed).values({
         threadId,
         feedId: rosterFeedId++,
-        memberAccount: m.account,
-        profileNamespaceId: 0,
         operation: 'MEMBER_UPSERT',
-        body: { role: 'MEMBER', profileRev: 1 },
+        body: {
+          account: m.account,
+          namespaceId: 0,
+          role: 'MEMBER',
+          profileRev: 1,
+        },
       });
       await database.db.insert(tables.accountThreadState).values({
         accountId: m.id,
@@ -894,7 +916,6 @@ describe('mirror group intent application', () => {
     expect(aliceNotices).toHaveLength(1);
     expect(JSON.parse(aliceNotices[0]!.content as string).member).toEqual({
       account: alice.account,
-      domain: localIdentityDomain(),
       profileNamespaceId: 0,
       profileRev: 1,
     });

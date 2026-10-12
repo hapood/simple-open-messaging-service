@@ -37,6 +37,7 @@ import type {
 import type { MediaStatus } from '../message-cards/chat-item';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
+import { MemberProfileRepository } from '../../services/member-profile-store.service';
 
 /** A P2P ConversationItem fixture (only threadId is read by HttpItemSource). */
 function conv(threadId: number): ConversationItem {
@@ -82,6 +83,37 @@ function row(seq: number, creator: number, clientMessageId?: string): Message {
 }
 
 /** A pending (optimistic, status:'sending') self-text send keyed by `cid`. Mirrors makeOptimisticItem's shape. */
+function groupConv(threadId: number): ConversationItem {
+  return {
+    threadId,
+    authorityNamespaceId: 1,
+    id: 1,
+    type: 'GROUP',
+    lastReadSeq: null,
+    role: 'MEMBER',
+    unreadCount: 0,
+    lastMessagePreview: null,
+    lastMessageAt: null,
+    group: {
+      account: '!group',
+      domain: 'alpha.test',
+      name: 'Group',
+      avatar: '',
+      description: '',
+    },
+  } as unknown as ConversationItem;
+}
+
+function remoteGroupMessage(seq: number): Message {
+  return {
+    ...row(seq, 2),
+    threadId: 42,
+    publisherNamespaceId: 1,
+    creator: { account: 'charlie', namespaceId: 1 },
+    profileRev: 1,
+  } as unknown as Message;
+}
+
 function pendingItem(cid: string, id = -1) {
   return {
     id,
@@ -122,6 +154,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         updatedAt: number;
       }>
     > = { code: 0, message: 'ok', data: [] },
+    memberProfiles?: MemberProfileRepository,
   ) {
     const liveSignal$ = new Subject<{
       threadId: number;
@@ -339,7 +372,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     const activeProfileRepo = resolutionRepo ?? profileRepo;
     const newerAvailable = vi.fn().mockName('onNewerAvailable');
     const src = new HttpItemSource(
-      conv(tid),
+      memberProfiles ? groupConv(tid) : conv(tid),
       repo,
       userService,
       outbox,
@@ -350,6 +383,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       },
       messages as never,
       activeProfileRepo,
+      memberProfiles,
     );
     return {
       src,
@@ -370,6 +404,50 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     };
   }
 
+  it('uses the group member roster for federated message authors', async () => {
+    const memberProfiles = {
+      recordMessageProfile: vi.fn().mockResolvedValue(undefined),
+      getByIdentity: vi.fn().mockResolvedValue({
+        profileResolved: true,
+        name: 'Charlie',
+      }),
+    } as unknown as MemberProfileRepository;
+    const accountProfiles = {
+      resolve: vi.fn().mockImplementation(() => {
+        throw new Error(
+          'generic account profile lookup must not run for groups',
+        );
+      }),
+    } as unknown as ProfileRepository;
+    const { src } = setup(
+      { code: 0, message: 'ok', data: [remoteGroupMessage(1)] },
+      42,
+      new ThreadSendOutbox(),
+      accountProfiles,
+      { code: 0, message: 'ok', data: [] },
+      memberProfiles,
+    );
+
+    const items = await src.init(-1, 20, 0);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]!.data).toMatchObject({
+      type: 'msg',
+      name: 'Charlie',
+      creator: JSON.stringify([1, 'charlie']),
+    });
+    expect(memberProfiles.recordMessageProfile).toHaveBeenCalledWith(
+      42,
+      { account: 'charlie', namespaceId: 1 },
+      1,
+      1,
+    );
+    expect(memberProfiles.getByIdentity).toHaveBeenCalledWith(
+      42,
+      JSON.stringify([1, 'charlie']),
+    );
+    expect(accountProfiles.resolve).not.toHaveBeenCalled();
+  });
   it('remounts an accepted native voice bubble so its confirmation timeout and retry remain visible', () => {
     const { src, outbox } = setup({ code: 0, message: 'ok', data: [] });
     const pending = pendingItem('voice-cid') as unknown as {

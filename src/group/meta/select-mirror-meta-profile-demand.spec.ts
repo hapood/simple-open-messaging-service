@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { GroupRole } from '../../database/enums.js';
-import {
-  normalizeMirrorMetaReplicatedItem,
-  type MirrorMetaReplicatedItem,
-} from './mirror-meta-shared.js';
+import type { MirrorMetaReplicatedItem } from './mirror-meta-shared.js';
 import { selectMirrorMetaProfileDemand } from './select-mirror-meta-profile-demand.js';
-
-process.env.SOMS_DOMAIN ??= 'mirror.example';
 
 const group = {
   account: '!mirror-group',
@@ -17,9 +12,8 @@ const member: MirrorMetaReplicatedItem = {
   feedId: 42,
   operation: 'MEMBER_UPSERT',
   account: 'remote-member',
-  domain: 'member.example',
+  namespaceId: 23,
   role: GroupRole.MEMBER,
-  profileNamespaceId: 23,
   profileRev: 9,
 };
 
@@ -42,75 +36,27 @@ describe('selectMirrorMetaProfileDemand', () => {
     { operation: 'MEMBER_UPSERT' as const, profileRev: 0 },
     { operation: 'GROUP_PROFILE' as const, profileRev: 3 },
   ])('does not create work for $operation', ({ operation, profileRev }) => {
-    const item =
-      operation === 'MEMBER_DEPART'
+    const item: MirrorMetaReplicatedItem =
+      operation === 'GROUP_PROFILE'
         ? {
             feedId: 43,
             operation,
-            account: member.account,
-            domain: member.domain,
-            role: member.role,
-            profileNamespaceId: member.profileNamespaceId,
-            profileRev: profileRev!,
+            account: group.account,
+            namespaceId: 0,
+            profileRev,
           }
-        : operation === 'GROUP_PROFILE'
-          ? {
-              feedId: 43,
-              operation,
-              profileNamespaceId: 0,
-              profileRev: profileRev!,
-            }
-          : {
-              ...member,
-              feedId: 43,
-              operation,
-              profileRev: profileRev!,
-            };
+        : {
+            ...member,
+            feedId: 43,
+            operation,
+            profileRev,
+          };
     expect(selectMirrorMetaProfileDemand(group, item)).toBeNull();
   });
 
-  it('preserves a foreign domain and namespace coordinate', () => {
-    const canonical = normalizeMirrorMetaReplicatedItem(group, {
-      ...member,
-      domain: 'mirror.example',
-      profileNamespaceId: 23,
-      profileRev: 4,
-    });
-
-    expect(canonical).toMatchObject({
-      domain: 'mirror.example',
-      profileNamespaceId: 23,
-    });
-    expect(selectMirrorMetaProfileDemand(group, canonical)).not.toBeNull();
-  });
-
-  it('accepts the local marker only with namespace zero', () => {
-    const canonical = normalizeMirrorMetaReplicatedItem(group, {
-      ...member,
-      domain: 'local',
-      profileNamespaceId: 0,
-    });
-
-    expect(canonical).toMatchObject({
-      domain: 'local',
-      profileNamespaceId: 0,
-    });
-  });
-
-  it('normalizes local departures to profile namespace zero', () => {
-    const depart = normalizeMirrorMetaReplicatedItem(group, {
-      feedId: 44,
-      operation: 'MEMBER_DEPART',
-      account: 'local-member',
-      domain: 'local',
-      role: GroupRole.MEMBER,
-      profileNamespaceId: 0,
-      profileRev: 0,
-    });
-
-    expect(depart).toMatchObject({
-      domain: 'local',
-      profileNamespaceId: 0,
-    });
+  it('keeps the publisher namespace coordinate without a domain field', () => {
+    expect(member).toMatchObject({ account: 'remote-member', namespaceId: 23 });
+    expect('domain' in member).toBe(false);
+    expect('profileNamespaceId' in member).toBe(false);
   });
 });

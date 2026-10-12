@@ -146,10 +146,10 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
       WHERE "threadId" = ${input.threadId}
     ), managers AS MATERIALIZED (
       SELECT a.id, r.body ->> 'role' AS role
-      FROM roster r JOIN "Account" a ON a.account = r."memberAccount"
+      FROM roster r JOIN "Account" a ON a.account = r.body ->> 'account'
         AND a."namespaceId" = 0
       JOIN "AccountThreadState" p ON p."accountId" = a.id AND p."threadId" = ${input.threadId}
-      WHERE r."profileNamespaceId" = 0
+      WHERE (r.body -> 'namespaceId') = to_jsonb(0)
         AND r.operation = 'MEMBER_UPSERT' AND r.body->>'role' IN ('OWNER', 'ADMIN')
     ), capacity_scope AS MATERIALIZED (
       -- Same authorization growth gate as the request-keyed variant; the
@@ -213,8 +213,8 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
     FROM ${groupStateSql} g
     LEFT JOIN reverse rev ON true
     LEFT JOIN side_a ON true
-    LEFT JOIN roster member_last ON member_last."memberAccount" = ${input.targetAccount}
-      AND member_last."profileNamespaceId" = ${input.targetNamespaceId}
+    LEFT JOIN roster member_last ON member_last.body ->> 'account' = ${input.targetAccount}
+      AND (member_last.body -> 'namespaceId') = to_jsonb(${input.targetNamespaceId}::integer)
     LEFT JOIN "IdentityNamespace" ns ON ns.id = ${input.targetNamespaceId}
     LEFT JOIN "Account" local_member ON local_member.account = ${input.targetAccount}
       AND local_member."namespaceId" = 0

@@ -60,25 +60,31 @@ export function userIntentCompactionKey(
 
 export function reverseRequestUnexpired(
   row: UserIntentAuthorizationRow,
+  now = Date.now(),
 ): boolean {
   return (
     row.reverseExpiresAt !== null &&
-    new Date(row.reverseExpiresAt).getTime() > Date.now()
+    new Date(row.reverseExpiresAt).getTime() > now
   );
 }
 
-export function ownRequestUnexpired(row: UserIntentAuthorizationRow): boolean {
+export function ownRequestUnexpired(
+  row: UserIntentAuthorizationRow,
+  now = Date.now(),
+): boolean {
   return (
-    row.ownExpiresAt !== null &&
-    new Date(row.ownExpiresAt).getTime() > Date.now()
+    row.ownExpiresAt !== null && new Date(row.ownExpiresAt).getTime() > now
   );
 }
 
 /** Whether the reverse direction is currently a positive relationship fact. */
-export function reverseEffective(row: UserIntentAuthorizationRow): boolean {
+export function reverseEffective(
+  row: UserIntentAuthorizationRow,
+  now = Date.now(),
+): boolean {
   return (
     row.reverseStatus === 'ACCEPTED' ||
-    (row.reverseStatus === 'REQUESTED' && reverseRequestUnexpired(row))
+    (row.reverseStatus === 'REQUESTED' && reverseRequestUnexpired(row, now))
   );
 }
 
@@ -159,31 +165,40 @@ export function requireExistingThreadId(threadId: number | null): number {
   return threadId;
 }
 
-/** Positive directions reset the participant state; an activation additionally
- * starts read at the current boundary. This lives in its own statement because the
- * participant trigger writes the same Account rows the composed statement's
- * feed allocation writes, and one statement may not touch that row twice.
- * The reused rows double as this command's participant locks. */
+/** Apply positive participant state after intent persistence, in the owning
+ * transaction. Activation uses the boundary captured before its system message.
+ * This is a separate statement because the participant trigger and composed
+ * feed allocation both write Account rows. Existing participants are locked
+ * before the composed write; newly inserted cursors use the peer declaration. */
 export async function resetUserIntentThreadStateInTx(
   tx: DatabaseTransaction,
   threadId: number,
   actor: UserIntentEndpoint,
   target: UserIntentEndpoint,
-  options: { activate: boolean },
+  options: { activate: boolean; boundarySeq: number },
 ): Promise<void> {
   await tx.execute(sql`
-    INSERT INTO "AccountThreadState" ("accountId", "threadId")
-    SELECT a.id, ${threadId} FROM "Account" a
-    WHERE a."namespaceId" = 0
-      AND ((a.account = ${actor.account})
-        OR (a.account = ${target.account} AND ${target.namespaceId} = 0))
+    INSERT INTO "AccountThreadState" ("accountId", "threadId", "threadProfileRev", "lastReadSeq")
+    SELECT v."accountId", ${threadId}, COALESCE(i."profileRev", 0),
+      CASE WHEN ${options.activate} THEN ${options.boundarySeq} ELSE 0 END
+    FROM (
+      SELECT a.id AS "accountId", a.account AS "viewerAccount",
+        ${target.account}::text AS "peerAccount", ${target.namespaceId}::integer AS "peerNamespaceId"
+      FROM "Account" a WHERE a."namespaceId" = 0 AND a.account = ${actor.account}
+      UNION ALL
+      SELECT a.id, a.account, ${actor.account}::text, 0
+      FROM "Account" a WHERE a."namespaceId" = 0 AND a.account = ${target.account}
+        AND ${target.namespaceId} = 0
+    ) v LEFT JOIN "RelationshipIntent" i
+      ON i."authorAccount" = v."peerAccount" AND i."authorNamespaceId" = v."peerNamespaceId"
+      AND i."receiverAccount" = v."viewerAccount" AND i."receiverNamespaceId" = 0
     ON CONFLICT ("accountId", "threadId") DO UPDATE SET
       "messageVisibleThroughSeq" = NULL,
+      "threadProfileRev" = CASE WHEN ${options.activate} THEN EXCLUDED."threadProfileRev"
+        ELSE "AccountThreadState"."threadProfileRev" END,
       "lastReadSeq" = CASE WHEN ${options.activate}
         THEN GREATEST("AccountThreadState"."lastReadSeq",
-          LEAST((SELECT t."curSeq" FROM "MessageThread" t WHERE t.id = ${threadId}),
-            COALESCE("AccountThreadState"."messageVisibleThroughSeq",
-              (SELECT t."curSeq" FROM "MessageThread" t WHERE t.id = ${threadId}))))
+          LEAST(${options.boundarySeq}, COALESCE("AccountThreadState"."messageVisibleThroughSeq", ${options.boundarySeq})))
         ELSE "AccountThreadState"."lastReadSeq" END,
       "unreadCount" = CASE WHEN ${options.activate} THEN 0
         ELSE "AccountThreadState"."unreadCount" END,

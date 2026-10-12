@@ -19,6 +19,7 @@ pub(crate) struct PendingTap {
     origin: String,
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn parse_activation(url: &str) -> Option<(i32, i32, String)> {
     let (route, _) = url.split_once('?')?;
     let parsed = reqwest::Url::parse(url).ok()?;

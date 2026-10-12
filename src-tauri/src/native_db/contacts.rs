@@ -207,7 +207,6 @@ pub(crate) async fn native_db_get_group_member(
     user_id: i64,
     thread_id: i64,
     account: String,
-    domain: String,
     namespace_id: i64,
 ) -> Result<Option<Value>, String> {
     super::lifetime::spawn(move || {
@@ -215,7 +214,7 @@ pub(crate) async fn native_db_get_group_member(
             .query_row(
                 "SELECT json_object(
                'threadId',member.thread_id,'account',member.member_account,
-               'domain',member.member_domain,
+               'domain',COALESCE(binding.domain,''),
                'namespaceId',member.namespace_id,
                'role',member.role,'left',json('false'),
                'profileRev',member.profile_rev,
@@ -224,19 +223,23 @@ pub(crate) async fn native_db_get_group_member(
                'profileName',identity.name,
                'profileBio',COALESCE(identity.bio,''),
                'user',json(CASE WHEN identity.profile_rev IS NOT NULL THEN
-                 json_object('account',identity.account,'domain',identity.domain,
+                 json_object('account',identity.account,'domain',COALESCE(binding.domain,''),
                    'namespaceId',identity.profile_namespace_id,'profileRev',identity.profile_rev,
                    'name',identity.name,'avatarDigest',identity.avatar_digest,'bio',identity.bio)
-               ELSE json_object('account',member.member_account,'domain',member.member_domain,
+               ELSE json_object('account',member.member_account,'domain',COALESCE(binding.domain,''),
                  'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatarDigest',json('null'),'bio','') END))
-             FROM members member LEFT JOIN profiles identity
+             FROM members member
+             LEFT JOIN profiles identity
                ON identity.user_id=member.user_id AND identity.account=member.member_account
-              AND identity.domain=member.member_domain
               AND identity.publisher_namespace_id=member.namespace_id AND identity.profile_namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
+             LEFT JOIN profile_namespaces binding
+               ON binding.user_id=member.user_id
+              AND binding.publisher_namespace_id=member.namespace_id
+              AND binding.profile_namespace_id=member.namespace_id
              WHERE member.user_id=?1 AND member.thread_id=?2 AND member.member_account=?3
-               AND member.member_domain=?4 AND member.namespace_id=?5
+               AND member.namespace_id=?4
                AND member.left_state=0",
-                params![user_id, thread_id, account, domain, namespace_id],
+                params![user_id, thread_id, account, namespace_id],
                 |row| row.get::<_, String>(0),
             )
             .optional()
@@ -258,15 +261,15 @@ pub(crate) async fn native_db_query_group_members(
     super::lifetime::spawn(move || {
         let conn = open()?;
         let cursor: Value = serde_json::from_str(&after_identity)
-            .unwrap_or_else(|_| serde_json::json!([0, "", ""]));
+            .unwrap_or_else(|_| serde_json::json!([0, ""]));
         let after_namespace = cursor.get(0).and_then(Value::as_i64).unwrap_or(0);
-        let after_domain = cursor.get(1).and_then(Value::as_str).unwrap_or("");
-        let after_account = cursor.get(2).and_then(Value::as_str).unwrap_or("");
+        let after_account = cursor.get(1).and_then(Value::as_str).unwrap_or("");
         let mut statement = conn
             .prepare(
                 "SELECT json_object(
                    'threadId', member.thread_id,
-                   'account', member.member_account, 'domain', member.member_domain,
+                   'account', member.member_account,
+                   'domain', COALESCE(binding.domain,''),
                    'namespaceId', member.namespace_id,
                    'role', member.role,
                    'left', json('false'),
@@ -276,27 +279,31 @@ pub(crate) async fn native_db_query_group_members(
                    'profileName',identity.name,
                    'profileBio',COALESCE(identity.bio,''),
                    'user', json(CASE WHEN identity.profile_rev IS NOT NULL THEN
-                     json_object('account',identity.account,'domain',identity.domain,
+                     json_object('account',identity.account,'domain',COALESCE(binding.domain,''),
                        'namespaceId',identity.profile_namespace_id,'profileRev',identity.profile_rev,
                        'name',identity.name,'avatarDigest',identity.avatar_digest,'bio',identity.bio)
-                   ELSE json_object('account',member.member_account,'domain',member.member_domain,
+                   ELSE json_object('account',member.member_account,'domain',COALESCE(binding.domain,''),
                      'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatarDigest',json('null'),'bio','') END)
                  )
-                 FROM members member LEFT JOIN profiles identity
+                 FROM members member
+                 LEFT JOIN profiles identity
                    ON identity.user_id=member.user_id
                   AND identity.account=member.member_account
-                  AND identity.domain=member.member_domain
                   AND identity.publisher_namespace_id=member.namespace_id AND identity.profile_namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
+                 LEFT JOIN profile_namespaces binding
+                   ON binding.user_id=member.user_id
+                  AND binding.publisher_namespace_id=member.namespace_id
+                  AND binding.profile_namespace_id=member.namespace_id
                  WHERE member.user_id=?1 AND member.thread_id=?2 AND member.left_state=0
-                   AND (member.namespace_id,member.member_domain,member.member_account)>(?3,?4,?5)
-                   AND (?6='' OR instr(lower(identity.name),lower(?6))>0
-                                OR instr(lower(member.member_account),lower(?6))>0)
-                 ORDER BY member.namespace_id,member.member_domain,member.member_account LIMIT ?7",
+                   AND (member.namespace_id,member.member_account)>(?3,?4)
+                   AND (?5='' OR instr(lower(identity.name),lower(?5))>0
+                                OR instr(lower(member.member_account),lower(?5))>0)
+                 ORDER BY member.namespace_id,member.member_account LIMIT ?6",
             )
             .map_err(|e| format!("prepare group member page: {e}"))?;
         let rows = statement
             .query_map(
-                params![user_id, thread_id, after_namespace, after_domain, after_account, search, take],
+                params![user_id, thread_id, after_namespace, after_account, search, take],
                 |row| row.get::<_, String>(0),
             )
             .map_err(|e| format!("query group member page: {e}"))?;
@@ -318,7 +325,6 @@ pub(crate) async fn native_db_record_group_member_profile_ref(
     user_id: i64,
     thread_id: i64,
     account: String,
-    domain: String,
     namespace_id: i64,
     profile_rev: i64,
     message_seq: i64,
@@ -328,17 +334,9 @@ pub(crate) async fn native_db_record_group_member_profile_ref(
             .execute(
                 "UPDATE members SET profile_rev=?6,profile_message_seq=?7
                  WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
-                   AND member_domain=?4 AND namespace_id=?5
-                   AND left_state=0 AND COALESCE(profile_message_seq,0)<?7",
-                params![
-                    user_id,
-                    thread_id,
-                    account,
-                    domain,
-                    namespace_id,
-                    profile_rev,
-                    message_seq,
-                ],
+                   AND namespace_id=?4
+                   AND left_state=0 AND COALESCE(profile_message_seq,0)<?6",
+                params![user_id, thread_id, account, namespace_id, profile_rev, message_seq],
             )
             .map_err(|e| format!("record group member profile reference: {e}"))?;
         Ok(changed > 0)

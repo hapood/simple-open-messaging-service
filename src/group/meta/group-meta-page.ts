@@ -2,35 +2,43 @@ import { sql } from 'drizzle-orm';
 import { HttpStatus } from '@nestjs/common';
 import { BusinessCode } from '../../common/business-code.js';
 import { BusinessException } from '../../common/business.exception.js';
-import { validateNamespacedAddress } from '../../common/client-identity.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 
 interface GroupMetaFeedItemBase {
   feedId: number;
-  account: string;
-  domain: string;
-  namespaceId?: number;
 }
 
-type GroupMetaFeedItem =
+/** One Group Meta feed item. The wire item is the stored body verbatim: the
+ * subject identity is (account, namespaceId) in the publisher's coordinate
+ * space, and no domain travels on the wire — consumers resolve the display
+ * domain through publisher-scoped namespace bindings. */
+export type GroupMetaFeedItem =
   | (GroupMetaFeedItemBase & {
       operation: 'MEMBER_UPSERT';
-      body: Record<string, unknown>;
+      body: {
+        account: string;
+        namespaceId: number;
+        role: 'OWNER' | 'ADMIN' | 'MEMBER';
+        profileRev: number;
+      };
     })
   | (GroupMetaFeedItemBase & {
       operation: 'MEMBER_DEPART';
-      body: Record<string, unknown>;
+      body: {
+        account: string;
+        namespaceId: number;
+        role: 'OWNER' | 'ADMIN' | 'MEMBER';
+        profileRev: number;
+      };
     })
-  | {
-      feedId: number;
+  | (GroupMetaFeedItemBase & {
       operation: 'GROUP_PROFILE';
-      body: { profileNamespaceId: number; profileRev: number };
-    }
-  | {
-      feedId: number;
+      body: { account: string; namespaceId: number; profileRev: number };
+    })
+  | (GroupMetaFeedItemBase & {
       operation: 'GROUP_ANNOUNCEMENT';
       body: { text: string | null };
-    };
+    });
 
 export interface GroupMetaFeedPage {
   account: string;
@@ -112,9 +120,6 @@ export async function readGroupMetaPageInTx(
   const memberRows = (
     await tx.execute<{
       feedId: number;
-      memberAccount: string | null;
-      profileNamespaceId: number | null;
-      domain: string | null;
       operation:
         | 'MEMBER_UPSERT'
         | 'MEMBER_DEPART'
@@ -122,18 +127,14 @@ export async function readGroupMetaPageInTx(
         | 'GROUP_ANNOUNCEMENT';
       body: Record<string, unknown>;
     }>(sql`
-    SELECT fact."feedId", fact."memberAccount" AS "memberAccount",
-      fact."profileNamespaceId" AS "profileNamespaceId", ns.domain AS "domain",
-      fact.operation::text AS operation,
-      fact.body
+    SELECT fact."feedId", fact.operation::text AS operation, fact.body
     FROM "GroupMetaMemberFeed" fact
-    JOIN "IdentityNamespace" ns ON ns.id = fact."profileNamespaceId"
     WHERE fact."threadId" = ${params.groupId}
       AND fact."feedId" > ${params.after} AND fact."feedId" <= ${scanEnd}
       ${params.feedMode === 'full' ? sql`AND fact.operation IN ('MEMBER_UPSERT', 'GROUP_PROFILE')` : sql.empty()}
     UNION ALL
-    SELECT meta."announcementFeedId", NULL::varchar, NULL::integer, NULL::varchar,
-      'GROUP_ANNOUNCEMENT'::text, jsonb_build_object('text', meta."announcementText")
+    SELECT meta."announcementFeedId", 'GROUP_ANNOUNCEMENT'::text,
+      jsonb_build_object('text', meta."announcementText")
     FROM "GroupMeta" meta WHERE meta."threadId" = ${params.groupId}
       AND meta."announcementFeedId" > ${params.after}
       AND meta."announcementFeedId" <= ${scanEnd}
@@ -146,38 +147,27 @@ export async function readGroupMetaPageInTx(
         return {
           feedId: row.feedId,
           operation: 'GROUP_ANNOUNCEMENT',
-          body: { text: row.body.text as string | null },
+          body: { text: (row.body.text as string | null) ?? null },
         };
       if (row.operation === 'GROUP_PROFILE')
         return {
           feedId: row.feedId,
           operation: 'GROUP_PROFILE',
           body: {
-            profileNamespaceId: Number(row.body.profileNamespaceId),
+            account: String(row.body.account),
+            namespaceId: Number(row.body.namespaceId),
             profileRev: Number(row.body.profileRev),
           },
         };
-      if (
-        row.profileNamespaceId === null ||
-        row.memberAccount === null ||
-        row.domain === null
-      )
-        throw new Error('group-meta member identity is missing');
-      const identity = {
-        account: row.memberAccount,
-        domain: row.domain,
-        namespaceId: row.profileNamespaceId,
-      };
-      const base = {
-        feedId: row.feedId,
-        ...(params.viewMode === 'client'
-          ? validateNamespacedAddress(identity)
-          : { account: identity.account, domain: identity.domain }),
-      };
       return {
-        ...base,
+        feedId: row.feedId,
         operation: row.operation,
-        body: row.body,
+        body: {
+          account: String(row.body.account),
+          namespaceId: Number(row.body.namespaceId),
+          role: row.body.role as 'OWNER' | 'ADMIN' | 'MEMBER',
+          profileRev: Number(row.body.profileRev),
+        },
       };
     })
     .sort((left, right) => left.feedId - right.feedId);

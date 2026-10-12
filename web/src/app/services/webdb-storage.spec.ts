@@ -177,7 +177,6 @@ describe('shared background storage', () => {
       type: 'GROUP',
       threadId: 9,
       account: '!team',
-      domain: '',
       namespaceId: 0,
       rev: 4,
     });
@@ -314,7 +313,6 @@ describe('shared background storage', () => {
     await db.put('members', {
       threadId: 7,
       account: 'peer',
-      domain: 'local',
       namespaceId: 0,
       profileRev: 1,
       role: 'MEMBER',

@@ -58,23 +58,24 @@ export function groupRosterRoleAuthorizationSql(input: {
       WHERE id = ${input.operatorUserId} AND "namespaceId" = 0
     ), operator_roster AS MATERIALIZED (
       SELECT latest.body ->> 'role' AS role,
-        (latest.body ->> 'profileRev')::integer AS "profileRev"
+        latest.body -> 'profileRev' AS "profileRev"
       FROM (
         SELECT * FROM "GroupMetaMemberFeed"
         WHERE "threadId" = ${input.threadId}
-          AND "memberAccount" = (SELECT account FROM operator_account)
-          AND "profileNamespaceId" = 0
+          AND body ->> 'account' = (SELECT account FROM operator_account)
+          AND body -> 'namespaceId' = to_jsonb(0)
         ORDER BY "feedId" DESC LIMIT 1
       ) latest WHERE latest.operation = 'MEMBER_UPSERT'
     ), target_roster AS MATERIALIZED (
-      SELECT latest."memberAccount" AS account, latest."profileNamespaceId" AS "namespaceId",
+      SELECT latest.body ->> 'account' AS account,
+        (latest.body ->> 'namespaceId')::integer AS "namespaceId",
         latest.body ->> 'role' AS role,
-        (latest.body ->> 'profileRev')::integer AS "profileRev"
+        latest.body -> 'profileRev' AS "profileRev"
       FROM (
         SELECT * FROM "GroupMetaMemberFeed"
         WHERE "threadId" = ${input.threadId}
-          AND "memberAccount" = ${input.targetAccount}
-          AND "profileNamespaceId" = ${input.targetNamespaceId}
+          AND body ->> 'account' = ${input.targetAccount}
+          AND body -> 'namespaceId' = to_jsonb(${input.targetNamespaceId}::integer)
         ORDER BY "feedId" DESC LIMIT 1
       ) latest WHERE latest.operation = 'MEMBER_UPSERT'
     )

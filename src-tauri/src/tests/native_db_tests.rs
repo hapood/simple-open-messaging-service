@@ -252,8 +252,8 @@ fn native_read_only_and_reestablishment_preserve_group_roster() {
     let mut conn = profile_cache_db();
     commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", 5, "ACTIVE"));
     conn.execute(
-        "INSERT INTO members(user_id,thread_id,member_account,member_domain,namespace_id,role)
-         VALUES(1,52,'bob','local',0,'MEMBER')",
+        "INSERT INTO members(user_id,thread_id,member_account,namespace_id,role)
+         VALUES(1,52,'bob',0,'MEMBER')",
         [],
     )
     .unwrap();
@@ -295,8 +295,8 @@ fn deleting_a_thread_clears_its_state_preview_and_roster_together() {
     }]);
     commit_test_thread_state(&mut conn, &snapshot);
     conn.execute(
-        "INSERT INTO members(user_id,thread_id,member_account,member_domain,namespace_id,role)
-         VALUES(1,52,'bob','local',0,'MEMBER')",
+        "INSERT INTO members(user_id,thread_id,member_account,namespace_id,role)
+         VALUES(1,52,'bob',0,'MEMBER')",
         [],
     )
     .unwrap();
@@ -718,9 +718,9 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
     super::attention::write_state(&conn, 1, &local).unwrap();
     let page = serde_json::json!([{"threadId":90,"namespaceId":7,"page":{
     "mode":"full","scannedThrough":"3","items":[
-        {"feedId":"1","operation":"MEMBER_UPSERT","account":"me","domain":"own.test","namespaceId":0,"body":{"role":"ADMIN","profileRev":2}},
-        {"feedId":"2","operation":"MEMBER_UPSERT","account":"other","domain":"authority.test","namespaceId":7,"body":{"role":"MEMBER","profileRev":2}},
-        {"feedId":"3","operation":"GROUP_PROFILE","body":{"profileRev":4}}
+        {"feedId":"1","operation":"MEMBER_UPSERT","body":{"account":"me","namespaceId":0,"role":"ADMIN","profileRev":2}},
+        {"feedId":"2","operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"MEMBER","profileRev":2}},
+        {"feedId":"3","operation":"GROUP_PROFILE","body":{"account":"!mirror","namespaceId":7,"profileRev":4}}
     ]}}]);
     super::client_state::apply_state_feed_page(
         &mut conn,
@@ -731,22 +731,22 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         false,
     )
     .unwrap();
-    let (local_ns, local_domain): (i64, String) = conn
+    let local_ns: i64 = conn
         .query_row(
-            "SELECT namespace_id, member_domain FROM members WHERE member_account='me'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!((local_ns, local_domain.as_str()), (0, "own.test"));
-    let home_binding: String = conn
-        .query_row(
-            "SELECT domain FROM profile_namespaces WHERE user_id=1 AND publisher_namespace_id=0 AND profile_namespace_id=0",
+            "SELECT namespace_id FROM members WHERE member_account='me'",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(home_binding, "own.test");
+    assert_eq!(local_ns, 0);
+    let home_binding: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM profile_namespaces WHERE user_id=1 AND publisher_namespace_id=0 AND profile_namespace_id=0",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(home_binding, 0);
     let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM members", [], |row| row.get(0))
         .unwrap();
@@ -755,14 +755,14 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         .query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0))
         .unwrap();
     assert_eq!(profiles, 0);
-    let source: String = conn
+    let source_count: i64 = conn
         .query_row(
-            "SELECT domain FROM profile_namespaces WHERE user_id=1 AND publisher_namespace_id=7 AND profile_namespace_id=7",
+            "SELECT COUNT(*) FROM profile_namespaces WHERE user_id=1 AND publisher_namespace_id=7 AND profile_namespace_id=7",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(source, "authority.test");
+    assert_eq!(source_count, 1);
     let thread = super::thread_store::read(&conn, 1, 90).unwrap().unwrap();
     assert_eq!(thread["authorityNamespaceId"], 7);
     assert_eq!(thread["role"], "MEMBER"); // Roster updates do not replace the thread-feed role.
@@ -783,8 +783,7 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
     .unwrap();
     let delta = serde_json::json!([{"threadId":90,"namespaceId":7,"page":{
     "mode":"delta","scannedThrough":"4","items":[
-        {"feedId":"4","operation":"MEMBER_UPSERT","account":"other","domain":"authority.test","namespaceId":7,
-         "body":{"role":"ADMIN","profileRev":2}}
+        {"feedId":"4","operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"ADMIN","profileRev":2}}
     ]}}]);
     super::client_state::apply_state_feed_page(
         &mut conn,

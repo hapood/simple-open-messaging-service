@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { localIdentityDomain } from './support/local-domain.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
@@ -156,9 +156,8 @@ describe('mirror Group Meta rounds', () => {
     feedId,
     operation: 'MEMBER_UPSERT',
     account: memberAccount,
-    domain: originDomain,
+    namespaceId: originNamespaceId,
     role: role as 'MEMBER',
-    profileNamespaceId: originNamespaceId,
     profileRev: 1,
   });
 
@@ -167,9 +166,8 @@ describe('mirror Group Meta rounds', () => {
       feedId,
       operation: 'MEMBER_DEPART',
       account: memberAccount,
-      domain: originDomain,
+      namespaceId: originNamespaceId,
       role: 'MEMBER',
-      profileNamespaceId: originNamespaceId,
       profileRev: 1,
     }) satisfies MirrorMetaReplicatedItem;
 
@@ -178,10 +176,8 @@ describe('mirror Group Meta rounds', () => {
       await database.db
         .select({
           feedId: groupMetaMemberFeed.feedId,
-          memberAccount: groupMetaMemberFeed.memberAccount,
-          profileNamespaceId: groupMetaMemberFeed.profileNamespaceId,
-          operation: groupMetaMemberFeed.operation,
           body: groupMetaMemberFeed.body,
+          operation: groupMetaMemberFeed.operation,
         })
         .from(groupMetaMemberFeed)
         .where(eq(groupMetaMemberFeed.threadId, threadId))
@@ -231,10 +227,8 @@ describe('mirror Group Meta rounds', () => {
     await database.db.insert(groupMetaMemberFeed).values({
       threadId,
       feedId: 1,
-      memberAccount: 'stale-member',
-      profileNamespaceId: originNamespaceId,
       operation: 'MEMBER_UPSERT',
-      body: { role: 'MEMBER', profileRev: 1 },
+      body: { account: 'stale-member', namespaceId: originNamespaceId, role: 'MEMBER', profileRev: 1 },
     });
     const items: MirrorMetaReplicatedItem[] = [
       memberUpsert(2, 'peer-one', 'OWNER'),
@@ -243,7 +237,8 @@ describe('mirror Group Meta rounds', () => {
       {
         feedId: 9,
         operation: 'GROUP_PROFILE',
-        profileNamespaceId: originNamespaceId,
+        account: groupAccount,
+        namespaceId: originNamespaceId,
         profileRev: 4,
       },
     ];
@@ -258,7 +253,7 @@ describe('mirror Group Meta rounds', () => {
         }),
       ),
     ).rejects.toThrow('complete fixed-through drain');
-    expect((await roster()).map((row) => row.memberAccount)).toEqual([
+    expect((await roster()).map((row) => row.body.account)).toEqual([
       'stale-member',
     ]);
     expect(await readMirrorMeta()).toMatchObject({
@@ -291,7 +286,7 @@ describe('mirror Group Meta rounds', () => {
     ).toBeUndefined();
     const rows = await roster();
     expect(
-      rows.find((row) => row.memberAccount === 'stale-member'),
+      rows.find((row) => row.body.account === 'stale-member'),
     ).toBeUndefined();
     expect(
       rows.filter((row) => row.operation === 'MEMBER_UPSERT'),
@@ -305,9 +300,7 @@ describe('mirror Group Meta rounds', () => {
     expect(rows.find((row) => row.operation === 'GROUP_PROFILE')).toMatchObject(
       {
         feedId: 9,
-        memberAccount: groupAccount,
-        profileNamespaceId: originNamespaceId,
-        body: { profileRev: 4 },
+        body: { account: groupAccount, namespaceId: originNamespaceId, profileRev: 4 },
       },
     );
     expect(
@@ -388,7 +381,6 @@ describe('mirror Group Meta rounds', () => {
       type: 'GROUP_JOINED',
       member: {
         account: 'peer-one',
-        domain: originDomain,
         profileNamespaceId: originNamespaceId,
         profileRev: 1,
       },
@@ -413,7 +405,6 @@ describe('mirror Group Meta rounds', () => {
     ).toEqual(['GROUP_JOINED', 'GROUP_LEFT']);
     expect(JSON.parse(transitions[1]!.content as string).member).toMatchObject({
       account: 'peer-one',
-      domain: originDomain,
       profileNamespaceId: originNamespaceId,
       profileRev: 1,
     });
@@ -519,7 +510,12 @@ describe('mirror Group Meta rounds', () => {
     expect(transitions).toEqual(['GROUP_JOINED', 'GROUP_LEFT']);
     expect(await roster()).toEqual([
       expect.objectContaining({
-        memberAccount: 'peer-one',
+        body: {
+          account: 'peer-one',
+          namespaceId: originNamespaceId,
+          role: 'MEMBER',
+          profileRev: 1,
+        },
         operation: 'MEMBER_UPSERT',
       }),
     ]);
@@ -682,6 +678,8 @@ describe('mirror Group Meta rounds', () => {
     const profileItem: MirrorMetaReplicatedItem = {
       feedId: 2,
       operation: 'GROUP_PROFILE',
+      account: groupAccount,
+      namespaceId: originNamespaceId,
       profileRev: 3,
     };
     await database.db.transaction((tx) =>
@@ -705,7 +703,13 @@ describe('mirror Group Meta rounds', () => {
         tx,
         threadId,
         group,
-        { feedId: 2, operation: 'GROUP_PROFILE', profileRev: 4 },
+        {
+          feedId: 2,
+          operation: 'GROUP_PROFILE',
+          account: groupAccount,
+          namespaceId: originNamespaceId,
+          profileRev: 4,
+        },
         'full',
       ),
     );
@@ -718,7 +722,13 @@ describe('mirror Group Meta rounds', () => {
         tx,
         threadId,
         group,
-        { feedId: 3, operation: 'GROUP_PROFILE', profileRev: 5 },
+        {
+          feedId: 3,
+          operation: 'GROUP_PROFILE',
+          account: groupAccount,
+          namespaceId: originNamespaceId,
+          profileRev: 5,
+        },
         'delta',
       ),
     );
@@ -818,7 +828,6 @@ describe('mirror Group Meta rounds', () => {
       type: 'GROUP_JOINED',
       member: {
         account: localMemberAccount,
-        domain: localIdentityDomain(),
         profileNamespaceId: 0,
       },
     });
@@ -833,12 +842,9 @@ describe('mirror Group Meta rounds', () => {
             feedId,
             operation,
             account: localMemberAccount,
-            domain: localIdentityDomain(),
             namespaceId: 0,
-            profileNamespaceId: 0,
-            ...(operation === 'MEMBER_UPSERT'
-              ? { role: 'MEMBER' as const, profileRev: 1 }
-              : { role: 'MEMBER' as const, profileRev: 1 }),
+            role: 'MEMBER' as const,
+            profileRev: 1,
           },
           through: 5,
           reachedBoundary: false,
@@ -967,7 +973,7 @@ describe('mirror Group Meta rounds', () => {
       .where(
         and(
           eq(groupMetaMemberFeed.threadId, threadId),
-          eq(groupMetaMemberFeed.memberAccount, 'peer-tombstone'),
+          sql`${groupMetaMemberFeed.body} ->> 'account' = 'peer-tombstone'`,
         ),
       );
     expect(facts).toEqual([{ feedId: 41, operation: 'MEMBER_DEPART' }]);
@@ -997,7 +1003,12 @@ describe('mirror Group Meta rounds', () => {
       expect.arrayContaining([
         expect.objectContaining({
           operation: 'MEMBER_DEPART',
-          account: 'peer-tombstone',
+          body: {
+            account: 'peer-tombstone',
+            namespaceId: originNamespaceId,
+            role: 'MEMBER',
+            profileRev: 1,
+          },
         }),
       ]),
     );

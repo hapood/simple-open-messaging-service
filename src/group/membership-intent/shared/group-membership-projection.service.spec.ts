@@ -102,11 +102,8 @@ describe('GroupMembershipProjectionService', () => {
         account: 'alice',
         profileNamespaceId: 0,
         operation: 'MEMBER_UPSERT',
-        body: {
-          role: 'MEMBER',
-          profileNamespaceId: 0,
-          profileRev: 3,
-        },
+        role: 'MEMBER',
+        profileRev: 3,
       },
     );
     expect(target.reconcileProfileInTx).toHaveBeenCalledWith(target.tx, 5, 1);
@@ -138,12 +135,11 @@ describe('GroupMembershipProjectionService', () => {
       target.tx,
       5,
       expect.objectContaining({
+        account: 'alice',
+        profileNamespaceId: 0,
         operation: 'MEMBER_UPSERT',
-        body: {
-          role: 'OWNER',
-          profileNamespaceId: 0,
-          profileRev: 3,
-        },
+        role: 'OWNER',
+        profileRev: 3,
       }),
     );
     expect(target.participantValues).toHaveBeenCalledWith(
@@ -180,11 +176,8 @@ describe('GroupMembershipProjectionService', () => {
         account: 'remote-member',
         profileNamespaceId: 23,
         operation: 'MEMBER_UPSERT',
-        body: {
-          role: 'MEMBER',
-          profileNamespaceId: 23,
-          profileRev: 9,
-        },
+        role: 'MEMBER',
+        profileRev: 9,
       },
     );
   });
@@ -245,7 +238,8 @@ describe('GroupMembershipProjectionService', () => {
         account: 'alice',
         profileNamespaceId: 0,
         operation: 'MEMBER_DEPART',
-        body: { role: 'ADMIN', profileNamespaceId: 0, profileRev: 2 },
+        role: 'ADMIN',
+        profileRev: 2,
       }),
     );
     expect(member.insert).not.toHaveBeenCalled();

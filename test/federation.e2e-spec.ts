@@ -329,7 +329,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .where(
         and(
           eq(message.creatorAccount, creator.account),
-          eq(message.profileNamespaceId, creatorNamespaceId),
+          eq(message.publisherNamespaceId, creatorNamespaceId),
+          eq(message.profileNamespaceId, 0),
           eq(message.contentType, ContentType.FORWARD),
         ),
       )
@@ -423,7 +424,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const resolved = await resolveFederatedCard(appA, tokenA, 'bob', DOM_B);
     expect(resolved.event, JSON.stringify(resolved)).toBe('resolved');
     expect(resolved.data).toMatchObject({
-      user: { id: 0, domain: DOM_B },
+      user: {
+        id: 0,
+        account: 'bob',
+        namespaceId: await requireActiveNamespaceId(appA, DOM_B),
+      },
     });
     expect(resolved.data).not.toHaveProperty('relationship');
     expect(
@@ -1085,8 +1090,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           where: and(
             eq(message.content, JSON.stringify({ text: marker })),
             eq(message.creatorAccount, 'alice'),
+            eq(message.profileNamespaceId, 0),
             eq(
-              message.profileNamespaceId,
+              message.publisherNamespaceId,
               await requireActiveNamespaceId(appB, DOM_A),
             ),
           ),
@@ -1116,8 +1122,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         const reply = await appA.database.query.message.findFirst({
           where: and(
             eq(message.creatorAccount, 'bob'),
+            eq(message.profileNamespaceId, 0),
             eq(
-              message.profileNamespaceId,
+              message.publisherNamespaceId,
               await requireActiveNamespaceId(appA, DOM_B),
             ),
             eq(message.contentType, ContentType.PURE_TEXT),
@@ -1420,8 +1427,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       expect(
         JSON.parse(quotedById.get(clientMessageId)!.content).quote,
       ).toMatchObject({
-        seq: sourceRows[index].seq,
-        contentType: sourceSpecs[index].contentType,
+        namespaceId: 0,
+        originSeq: sourceRows[index].seq,
       });
     }
 
@@ -1472,9 +1479,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       (item: { clientMessageId?: string }) =>
         item.clientMessageId === forwardQuoteId,
     );
-    expect(JSON.parse(forwardQuoteRow.content).quote).toMatchObject({
-      seq: innerSeq,
-      contentType: ContentType.FORWARD,
+    expect(JSON.parse(forwardQuoteRow.content).quote).toEqual({
+      namespaceId: 0,
+      originSeq: innerSeq,
     });
 
     // Exercise DIRECT through the real local API for every allowed type, including FORWARD. A quoted
@@ -2053,9 +2060,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: groupThreadA,
-        users: [
-          { account: 'bob', namespaceId: bobAddressOnA.namespaceId },
-        ],
+        users: [{ account: 'bob', namespaceId: bobAddressOnA.namespaceId }],
       });
     expect(invite.body.code, JSON.stringify(invite.body)).toBe(BusinessCode.OK);
 
@@ -2335,8 +2340,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             expect.objectContaining({
               authorAccount: relationship.groupEndpoint.account,
               authorNamespaceId: relationship.groupEndpoint.namespaceId,
-              status: 'REQUESTED',
-              expiresAt: expect.any(Date),
+              status: 'ACCEPTED',
+              expiresAt: null,
             }),
             expect.objectContaining({
               authorAccount: relationship.memberEndpoint.account,
@@ -2841,10 +2846,13 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     await appB.database.insert(groupMetaMemberFeed).values({
       threadId: firstMirrorGroupBId,
       feedId: 2_000_000_000,
-      memberAccount: 'stale-roster-member',
-      profileNamespaceId: namespaceAOnB,
       operation: 'MEMBER_UPSERT',
-      body: { role: GroupRole.MEMBER, profileRev: 1 },
+      body: {
+        account: 'stale-roster-member',
+        namespaceId: namespaceAOnB,
+        role: GroupRole.MEMBER,
+        profileRev: 1,
+      },
     });
     await appB.database
       .delete(groupMeta)
@@ -2950,8 +2958,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           await appB.database.query.groupMetaMemberFeed.findFirst({
             where: and(
               eq(groupMetaMemberFeed.threadId, firstMirrorGroupBId),
-              eq(groupMetaMemberFeed.memberAccount, 'stale-roster-member'),
-              eq(groupMetaMemberFeed.profileNamespaceId, namespaceAOnB),
+              sql`${groupMetaMemberFeed.body} ->> 'account' = ${'stale-roster-member'}`,
+              sql`${groupMetaMemberFeed.body} -> 'namespaceId' = to_jsonb(${namespaceAOnB}::integer)`,
               eq(groupMetaMemberFeed.operation, 'MEMBER_UPSERT'),
             ),
           });
@@ -3599,9 +3607,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         groupId: firstGroupThreadA,
-        users: [
-          { account: 'bob', namespaceId: bobAddressOnA.namespaceId },
-        ],
+        users: [{ account: 'bob', namespaceId: bobAddressOnA.namespaceId }],
       });
     expect(reinviteBob.body.code).toBe(BusinessCode.OK);
     await waitForAcceptedDurableTasks(appA.database, reinviteBob.body);

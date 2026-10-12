@@ -3,7 +3,6 @@ import {
   type PairAddressScope,
 } from '../src/common/locks/relationship-pair-business-lock.js';
 import { businessAccountScopeKey } from '../src/common/locks/account-business-lock.js';
-import { localIdentityDomain } from './support/local-domain.js';
 import {
   findP2PRelationship,
   seedAcceptedRelationship,
@@ -22,7 +21,7 @@ import {
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { withBusinessLockCapture } from './business-lock-capture.js';
@@ -36,6 +35,9 @@ import {
   UserIntentService,
   type UserIntentDependencies,
 } from '../src/user/p2p-intent/authored/user-intent.service.js';
+
+import { ReceivedUserIntentService } from '../src/user/p2p-intent/received/received-user-intent.service.js';
+import * as userIntentState from '../src/user/p2p-intent/shared/user-intent-state-sql.js';
 
 interface UserRef {
   id: number;
@@ -124,6 +126,159 @@ describe('user intent decision', () => {
     const bob = await seedUser(app, `${prefix}-bob`);
     return { alice, bob };
   }
+
+  async function setProfileRevision(user: UserRef, profileRev: number) {
+    await database.db.insert(tables.profileTable).values({
+      account: user.account,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
+      profileRev,
+      displayName: user.account,
+    });
+    await database.db
+      .update(tables.account)
+      .set({ defaultProfileRev: profileRev })
+      .where(eq(tables.account.id, user.id));
+  }
+
+  async function cursor(userId: number, threadId: number) {
+    return database.db.query.accountThreadState.findFirst({
+      where: and(
+        eq(tables.accountThreadState.accountId, userId),
+        eq(tables.accountThreadState.threadId, threadId),
+      ),
+    });
+  }
+
+  it('initializes local viewers from the request and acceptance declarations', async () => {
+    const { alice, bob } = await twoUsers('profile-initialization');
+    await setProfileRevision(alice, 7);
+    await setProfileRevision(bob, 3);
+    await service.execute({
+      userId: alice.id,
+      decision: 'REQUESTED',
+      target: { account: bob.account, namespaceId: 0 },
+    });
+    const { pair } = await findP2PRelationship(database.db, alice.id, bob.id);
+    const threadId = pair!.threadId!;
+    expect(await cursor(alice.id, threadId)).toMatchObject({
+      threadProfileRev: 0,
+    });
+    expect(await cursor(bob.id, threadId)).toMatchObject({
+      threadProfileRev: 7,
+    });
+    await service.execute({
+      userId: bob.id,
+      decision: 'ACCEPTED',
+      target: { account: alice.account, namespaceId: 0 },
+    });
+    expect(await cursor(alice.id, threadId)).toMatchObject({
+      threadProfileRev: 3,
+    });
+    expect(await cursor(bob.id, threadId)).toMatchObject({
+      threadProfileRev: 7,
+    });
+  });
+
+  it('initializes a received request from its declaration and captures the final thread feed', async () => {
+    const { alice } = await twoUsers('received-profile');
+    const domain = `received-profile-${++sequence}.test`;
+    const namespaceId = await seedFederatedPeerNamespace(database.db, domain);
+    const peer = { account: 'remote-profile', domain, namespaceId };
+    const receiver = new ReceivedUserIntentService({
+      ...deps,
+      userIntents: service,
+    });
+    const clientUpdates: import('../src/client-state-feed/client-state-feed.service.js').PendingClientStateFeedUpdate[] =
+      [];
+    const now = Date.now();
+    const command = {
+      localUserId: alice.id,
+      peer,
+      body: {
+        status: 'REQUESTED' as const,
+        profileNamespaceId: 0,
+        profileRev: 7,
+        note: '',
+        requestedAt: now,
+        expiresAt: now + 60_000,
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
+      },
+    };
+    await database.db.transaction((tx) =>
+      receiver.applyInTx(tx, command, clientUpdates, new Set()),
+    );
+    const pair = await database.db.query.relationshipPair.findFirst({
+      where: and(
+        eq(tables.relationshipPair.endpointAAccount, alice.account),
+        eq(tables.relationshipPair.endpointBAccount, peer.account),
+        eq(tables.relationshipPair.endpointBNamespaceId, namespaceId),
+      ),
+    });
+    const threadId = pair!.threadId!;
+    const state = await cursor(alice.id, threadId);
+    expect(state).toMatchObject({ threadProfileRev: 7 });
+    expect(clientUpdates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: alice.id,
+          threadFeedEndId: state!.threadFeedId,
+        }),
+      ]),
+    );
+
+    await service.execute({
+      userId: alice.id,
+      decision: 'ACCEPTED',
+      target: { account: peer.account, namespaceId },
+    });
+    expect(await cursor(alice.id, threadId)).toMatchObject({
+      threadProfileRev: 7,
+    });
+  });
+
+  it('reads the newly persisted peer declaration when a received acceptance activates a requested thread', async () => {
+    const { alice } = await twoUsers('received-accept-profile');
+    const domain = `received-accept-profile-${++sequence}.test`;
+    const namespaceId = await seedFederatedPeerNamespace(database.db, domain);
+    const peer = { account: 'remote-accept-profile', domain, namespaceId };
+    const receiver = new ReceivedUserIntentService({
+      ...deps,
+      userIntents: service,
+    });
+    await service.execute({
+      userId: alice.id,
+      decision: 'REQUESTED',
+      target: { account: peer.account, namespaceId },
+    });
+    const now = Date.now();
+    await receiver.execute({
+      localUserId: alice.id,
+      peer,
+      body: {
+        status: 'ACCEPTED',
+        profileNamespaceId: 0,
+        profileRev: 3,
+        note: '',
+        requestedAt: now,
+        expiresAt: null,
+        messageEndSeq: 0,
+        tombstoneEndSeq: 0,
+      },
+    });
+    const pair = await database.db.query.relationshipPair.findFirst({
+      where: and(
+        eq(tables.relationshipPair.endpointAAccount, alice.account),
+        eq(tables.relationshipPair.endpointBAccount, peer.account),
+        eq(tables.relationshipPair.endpointBNamespaceId, namespaceId),
+      ),
+    });
+    expect(pair).toMatchObject({ active: true });
+    expect(await cursor(alice.id, pair!.threadId!)).toMatchObject({
+      threadProfileRev: 3,
+    });
+  });
 
   /** Seed a pending request with the production entry (uncounted setup). */
   async function seedPending(
@@ -301,9 +456,6 @@ describe('user intent decision', () => {
       ] as const
     ).map((endpoint) => ({
       account: endpoint.account,
-      // Local endpoints resolve through the namespace-zero identity; remote
-      // domains are irrelevant to participant facts in this local suite.
-      domain: endpoint.namespaceId === 0 ? localIdentityDomain() : 'remote',
       profileNamespaceId: endpoint.namespaceId,
       profileRev:
         after.intents.find(
@@ -437,6 +589,192 @@ describe('user intent decision', () => {
       type: 'FRIEND_ADDED',
       participants: eventParticipants(after),
     });
+  });
+
+  it('resets both crossed-request boundaries before activation and leaves them intact on a repeated request', async () => {
+    const { alice, bob } = await twoUsers('crossed-boundary');
+    await seedPending(bob.id, alice.id);
+    const { pair } = await findP2PRelationship(database.db, alice.id, bob.id);
+    const threadId = pair!.threadId!;
+    // Model a retained history boundary before friendship is reactivated.
+    await database.db
+      .update(tables.messageThread)
+      .set({ curSeq: 8 })
+      .where(eq(tables.messageThread.id, threadId));
+    await database.db
+      .update(tables.accountThreadState)
+      .set({
+        lastReadSeq: 2,
+        unreadCount: 4,
+        previewSeqs: [3, 4],
+        lastMentionSeq: 4,
+      })
+      .where(eq(tables.accountThreadState.threadId, threadId));
+    await service.execute({
+      userId: alice.id,
+      decision: 'REQUESTED',
+      target: { account: bob.account, namespaceId: 0 },
+    });
+    for (const user of [alice, bob]) {
+      expect(await cursor(user.id, threadId)).toMatchObject({
+        lastReadSeq: 8,
+        unreadCount: 0,
+        previewSeqs: [],
+        lastMentionSeq: null,
+      });
+    }
+    const notice = await database.db.query.message.findFirst({
+      where: eq(tables.message.threadId, threadId),
+    });
+    expect(notice).toMatchObject({ seq: 9 });
+    expect(contentOf(notice!)).toMatchObject({ type: 'FRIEND_ADDED' });
+    await database.db
+      .update(tables.messageThread)
+      .set({ curSeq: 10 })
+      .where(eq(tables.messageThread.id, threadId));
+    await database.db
+      .update(tables.accountThreadState)
+      .set({
+        unreadCount: 2,
+        previewSeqs: [10],
+        lastMentionSeq: 10,
+      })
+      .where(eq(tables.accountThreadState.threadId, threadId));
+    await service.execute({
+      userId: alice.id,
+      decision: 'REQUESTED',
+      target: { account: bob.account, namespaceId: 0 },
+    });
+    for (const user of [alice, bob]) {
+      expect(await cursor(user.id, threadId)).toMatchObject({
+        lastReadSeq: 8,
+        unreadCount: 2,
+        previewSeqs: [10],
+        lastMentionSeq: 10,
+      });
+    }
+  });
+
+  it.each([false, true])(
+    'uses one expiry decision across crossed-request preparation (already expired: %s)',
+    async (alreadyExpired) => {
+      const { alice, bob } = await twoUsers('crossed-expiry');
+      await seedPending(bob.id, alice.id);
+      const { pair } = await findP2PRelationship(database.db, alice.id, bob.id);
+      const threadId = pair!.threadId!;
+      const expiresAt = Date.now() + 60_000;
+      await database.db
+        .update(tables.relationshipIntent)
+        .set({ expiresAt: new Date(expiresAt) })
+        .where(
+          and(
+            eq(tables.relationshipIntent.authorAccount, bob.account),
+            eq(tables.relationshipIntent.receiverAccount, alice.account),
+            eq(tables.relationshipIntent.authorNamespaceId, 0),
+            eq(tables.relationshipIntent.receiverNamespaceId, 0),
+          ),
+        );
+      await database.db
+        .update(tables.messageThread)
+        .set({ curSeq: 8 })
+        .where(eq(tables.messageThread.id, threadId));
+      await database.db
+        .update(tables.accountThreadState)
+        .set({
+          lastReadSeq: 2,
+          unreadCount: 4,
+          previewSeqs: [3, 4],
+          lastMentionSeq: 4,
+        })
+        .where(eq(tables.accountThreadState.threadId, threadId));
+      const clock = vi
+        .spyOn(Date, 'now')
+        .mockReturnValue(expiresAt + (alreadyExpired ? 1 : -1));
+      const lock = userIntentState.lockUserIntentThreadStateInTx;
+      const reset = vi
+        .spyOn(userIntentState, 'lockUserIntentThreadStateInTx')
+        .mockImplementation(async (...args) => {
+          await lock(...args);
+          // Simulate crossing the expiry boundary while waiting for DB work.
+          clock.mockReturnValue(expiresAt + 1);
+        });
+      try {
+        await service.execute({
+          userId: alice.id,
+          decision: 'REQUESTED',
+          target: { account: bob.account, namespaceId: 0 },
+        });
+        expect(reset).toHaveBeenCalledOnce();
+        for (const user of [alice, bob]) {
+          expect(await cursor(user.id, threadId)).toMatchObject(
+            alreadyExpired
+              ? {
+                  lastReadSeq: 2,
+                  unreadCount: 4,
+                  previewSeqs: [3, 4],
+                  lastMentionSeq: 4,
+                }
+              : {
+                  lastReadSeq: 8,
+                  unreadCount: 0,
+                  previewSeqs: [],
+                  lastMentionSeq: null,
+                },
+          );
+        }
+        const currentPair = await database.db.query.relationshipPair.findFirst({
+          where: eq(tables.relationshipPair.id, pair!.id),
+        });
+        expect(currentPair!.active).toBe(!alreadyExpired);
+        const notices = await database.db.query.message.findMany({
+          where: eq(tables.message.threadId, threadId),
+        });
+        expect(notices).toHaveLength(alreadyExpired ? 0 : 1);
+        if (!alreadyExpired)
+          expect(contentOf(notices[0])).toMatchObject({ type: 'FRIEND_ADDED' });
+      } finally {
+        reset.mockRestore();
+        clock.mockRestore();
+      }
+    },
+  );
+
+  it('rolls back the entire friendship operation if participant state fails after intent persistence', async () => {
+    const { alice, bob } = await twoUsers('atomic-acceptance');
+    await seedPending(alice.id, bob.id);
+    const before = await state(alice, bob);
+    const notify = vi.spyOn(deps.clientFeed, 'notifyFeedUpdates');
+    const push = vi
+      .spyOn(deps.federation, 'pushStateFeedNamespaces')
+      .mockResolvedValue(undefined);
+    const reset = vi
+      .spyOn(userIntentState, 'resetUserIntentThreadStateInTx')
+      .mockImplementation(async (tx) => {
+        const pair = await tx.query.relationshipPair.findFirst({
+          where: eq(tables.relationshipPair.id, before.pair!.id),
+        });
+        expect(pair).toMatchObject({ active: true });
+        // Fail inside the same transaction, after the intent/state-machine SQL.
+        await tx.execute(sql`SELECT 1 / 0`);
+      });
+    await expect(
+      service.execute({
+        userId: bob.id,
+        decision: 'ACCEPTED',
+        target: { account: alice.account, namespaceId: 0 },
+      }),
+    ).rejects.toThrow();
+    expect(reset).toHaveBeenCalledOnce();
+    const after = await state(alice, bob);
+    expect(after.pair).toEqual(before.pair);
+    expect(after.intents).toEqual(before.intents);
+    expect(after.states).toEqual(before.states);
+    expect(after.messages).toEqual(before.messages);
+    expect(after.feeds).toEqual(before.feeds);
+    expect(after.audiences).toEqual(before.audiences);
+    expect(after.threadTasks).toEqual(before.threadTasks);
+    expect(notify).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
   });
 
   it('no-ops an already-active acceptance and rejects a stale one', async () => {

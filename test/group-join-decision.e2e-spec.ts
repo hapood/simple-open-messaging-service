@@ -147,7 +147,7 @@ describe('group join decision', () => {
   async function runDecision(params: {
     threadId: number;
     managerUserId: number;
-    target: { account: string; domain: string };
+    target: { account: string; namespaceId: number };
     scope: 'APPLICATION';
     decision: 'ACCEPTED' | 'REVOKED';
   }): Promise<void> {
@@ -312,10 +312,13 @@ describe('group join decision', () => {
     await database.db.insert(tables.groupMetaMemberFeed).values({
       threadId: f.group.threadId,
       feedId: nextFeedId,
-      memberAccount: f.applicant.account,
-      profileNamespaceId: 0,
       operation: 'MEMBER_UPSERT',
-      body: { role: 'MEMBER', profileRev: 1 },
+      body: {
+        account: f.applicant.account,
+        namespaceId: 0,
+        role: 'MEMBER',
+        profileRev: 1,
+      },
     });
     expect((await state(f)).roster).toMatchObject({ role: 'MEMBER' });
     expect((await state(f)).pair?.active).toBe(false);
@@ -346,10 +349,13 @@ describe('group join decision', () => {
     await database.db.insert(tables.groupMetaMemberFeed).values({
       threadId: f.group.threadId,
       feedId: nextFeedId,
-      memberAccount: f.applicant.account,
-      profileNamespaceId: 0,
       operation: 'MEMBER_UPSERT',
-      body: { role: 'MEMBER', profileRev: 1 },
+      body: {
+        account: f.applicant.account,
+        namespaceId: 0,
+        role: 'MEMBER',
+        profileRev: 1,
+      },
     });
     const before = (
       await database.pool.query<{ count: number }>(
@@ -833,7 +839,7 @@ describe('group join decision', () => {
     const joins = await database.db.query.groupMetaMemberFeed.findMany({
       where: and(
         eq(tables.groupMetaMemberFeed.threadId, f.group.threadId),
-        eq(tables.groupMetaMemberFeed.memberAccount, f.applicant.account),
+        sql`${tables.groupMetaMemberFeed.body} ->> 'account' = ${f.applicant.account}`,
       ),
     });
     expect(joins).toHaveLength(1);
@@ -1034,7 +1040,7 @@ describe('group join decision', () => {
     expect(participant?.groupMetaFeedEndId).toBe(Number(meta.metaEndId));
     const [profileFact] = (
       await database.pool.query(
-        `SELECT "feedId", (body ->> 'profileRev')::integer AS rev
+        `SELECT "feedId", body -> 'profileRev' AS rev
            FROM "GroupMetaMemberFeed"
            WHERE "threadId" = $1 AND operation = 'GROUP_PROFILE'`,
         [f.group.threadId],
@@ -1470,7 +1476,8 @@ describe('group join decision', () => {
     const [lastFact] = (
       await database.pool.query(
         `SELECT operation FROM "GroupMetaMemberFeed" WHERE "threadId" = $1
-           AND "memberAccount" = $2 ORDER BY "feedId" DESC LIMIT 1`,
+           AND body ->> 'account' = $2 AND body -> 'namespaceId' = to_jsonb(0)
+           ORDER BY "feedId" DESC LIMIT 1`,
         [f.group.threadId, f.applicant.account],
       )
     ).rows;
@@ -1636,8 +1643,10 @@ describe('group join decision', () => {
     const [lastFact] = (
       await database.pool.query(
         `SELECT operation FROM "GroupMetaMemberFeed" WHERE "threadId" = $1
-           AND "memberAccount" = $2 ORDER BY "feedId" DESC LIMIT 1`,
-        [group.threadId, member.account],
+           AND body ->> 'account' = $2
+           AND body -> 'namespaceId' = to_jsonb($3::integer)
+           ORDER BY "feedId" DESC LIMIT 1`,
+        [group.threadId, member.account, namespaceId],
       )
     ).rows;
     expect(lastFact.operation).toBe('MEMBER_DEPART');
@@ -2199,7 +2208,7 @@ describe('group join decision', () => {
       threadId: created.threadId,
       managerUserId: owner.id,
       decision: 'REQUESTED',
-      target: { account: member.account, domain },
+      target: { account: member.account, namespaceId },
       note: 'join us',
     });
     expect(notifications).toEqual([[namespaceId]]);

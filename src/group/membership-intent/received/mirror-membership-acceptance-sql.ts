@@ -113,8 +113,8 @@ export function mirrorMembershipActivationSql(
     ), roster_role AS MATERIALIZED (
       SELECT COALESCE((SELECT body->>'role' FROM (
           SELECT operation, body FROM "GroupMetaMemberFeed"
-          WHERE "threadId" = ${input.threadId} AND "memberAccount" = ${input.memberAccount}
-            AND "profileNamespaceId" = 0
+          WHERE "threadId" = ${input.threadId} AND body ->> 'account' = ${input.memberAccount}
+            AND (body -> 'namespaceId') = to_jsonb(0)
           ORDER BY "feedId" DESC LIMIT 1
         ) latest WHERE operation = 'MEMBER_UPSERT'), 'MEMBER') AS role
     ), member_state AS (
@@ -170,7 +170,13 @@ export function mirrorMembershipActivationFeedSql(input: {
   threadId: number;
 }): SQL {
   return sql`
-    WITH candidate_bodies AS MATERIALIZED (
+    WITH persisted_intent AS MATERIALIZED (
+      SELECT "profileRev" FROM "RelationshipIntent"
+      WHERE "authorAccount" = ${input.presentation.groupAccount}
+        AND "authorNamespaceId" = ${input.presentation.groupNamespaceId}
+        AND "receiverAccount" = ${input.memberAccount}
+        AND "receiverNamespaceId" = 0
+    ), candidate_bodies AS MATERIALIZED (
       SELECT ${input.localMemberId}::integer AS "userId",
         ${input.presentation.groupNamespaceId}::integer AS "namespaceId", 1 AS ordinal,
         ${mirrorIntentCompactionKey({
@@ -184,6 +190,7 @@ export function mirrorMembershipActivationFeedSql(input: {
         ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId",
         ${mirrorIntentFeedBodySql({
           status: sql`${input.status}::text`,
+          profileRev: sql`v."profileRev"`,
           note: sql`${input.note}::text`,
           requestedAt: epochMillisSql(sql`${input.requestedAt}::timestamptz`),
           expiresAt: epochMillisSql(sql`${input.expiresAt}::timestamptz`),
@@ -191,6 +198,7 @@ export function mirrorMembershipActivationFeedSql(input: {
           threadId: input.threadId,
           presentation: input.presentation,
         })} AS body
+      FROM persisted_intent v
     ), ${clientIntentFeedWriteSql()}
     SELECT (SELECT "userId" FROM recipient_result) AS "recipientUserId",
       (SELECT "feedId" FROM recipient_result) AS "recipientFeedId"

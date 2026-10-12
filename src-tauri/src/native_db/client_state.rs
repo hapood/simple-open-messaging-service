@@ -95,12 +95,6 @@ pub(crate) struct ClientGroupMetaPage {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientGroupMetaItem {
     pub(super) feed_id: String,
-    #[serde(default)]
-    pub(super) account: String,
-    #[serde(default)]
-    pub(super) domain: String,
-    #[serde(default)]
-    pub(super) namespace_id: i64,
     pub(super) operation: String,
     #[serde(default)]
     pub(super) body: Value,
@@ -746,27 +740,27 @@ pub(super) fn apply_state_feed_page_with_resume(
                 // arrive first, so it cannot write a competing version into threads.
                 continue;
             }
-            if item.account.is_empty() || item.domain.is_empty() {
-                return Err("group-meta member has no subject address".into());
+            let body = item.body;
+            let account = body
+                .get("account")
+                .and_then(Value::as_str)
+                .ok_or("group-meta member has no account")?;
+            let namespace_id = body
+                .get("namespaceId")
+                .and_then(Value::as_i64)
+                .ok_or("group-meta member has no namespaceId")?;
+            if account.is_empty() {
+                return Err("group-meta member has no subject account".into());
             }
-            // The server always reports the member's real federation domain; the
-            // local user is identified by namespace zero, never by a sentinel.
-            if item.namespace_id < 0 {
+            if namespace_id < 0 {
                 return Err("group-meta member namespace must be non-negative".into());
             }
-            super::contacts::register_namespace(&tx, user_id, item.namespace_id, &item.domain)?;
             if item.operation == "MEMBER_DEPART" {
                 tx.execute(
                     "UPDATE members SET left_state=1
                          WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
-                           AND member_domain=?4 AND namespace_id=?5",
-                    params![
-                        user_id,
-                        update.thread_id,
-                        item.account,
-                        item.domain,
-                        item.namespace_id
-                    ],
+                           AND namespace_id=?4",
+                    params![user_id, update.thread_id, account, namespace_id],
                 )
                 .map_err(|e| format!("depart group member: {e}"))?;
                 continue;
@@ -774,25 +768,24 @@ pub(super) fn apply_state_feed_page_with_resume(
             if item.operation != "MEMBER_UPSERT" {
                 return Err("group-meta operation must be MEMBER_UPSERT or MEMBER_DEPART".into());
             }
-            let profile_rev = item
-                .body
+            let profile_rev = body
                 .get("profileRev")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| "group-meta MEMBER_UPSERT has no profileRev".to_string())?;
             tx.execute(
                     "INSERT INTO members(
-                       user_id,thread_id,member_account,member_domain,namespace_id,role,left_state,
+                       user_id,thread_id,member_account,namespace_id,role,left_state,
                        profile_rev,profile_message_seq
-                     ) VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8)
-                     ON CONFLICT(user_id,thread_id,member_account,member_domain,namespace_id)
+                     ) VALUES(?1,?2,?3,?4,?5,0,?6,?7)
+                     ON CONFLICT(user_id,thread_id,member_account,namespace_id)
                      DO UPDATE SET role=excluded.role,left_state=0,
                        profile_rev=CASE WHEN members.left_state=0 AND members.profile_message_seq IS NOT NULL
                          THEN members.profile_rev ELSE excluded.profile_rev END,
                        profile_message_seq=CASE WHEN members.left_state=0
                          THEN members.profile_message_seq ELSE NULL END",
                     params![
-                        user_id, update.thread_id, item.account, item.domain, item.namespace_id,
-                        item.body.get("role").and_then(Value::as_str).unwrap_or("MEMBER"),
+                        user_id, update.thread_id, account, namespace_id,
+                        body.get("role").and_then(Value::as_str).unwrap_or("MEMBER"),
                         profile_rev,
                         Option::<i64>::None,
                     ],

@@ -8,7 +8,6 @@ import { messageCreatorKey, parseUserIdentityKey } from './model';
 export interface ResolvedMemberProfile {
   identityKey: string;
   account: string;
-  domain: string;
   namespaceId: number;
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   isOwner: boolean;
@@ -56,7 +55,6 @@ export class MemberProfileRepository {
         namespaceId: member.namespaceId,
       }),
       account: member.account,
-      domain: member.domain,
       namespaceId: member.namespaceId,
       role: member.role,
       isOwner: member.role === 'OWNER',
@@ -92,7 +90,6 @@ export class MemberProfileRepository {
     const resolved: ResolvedMemberProfile = {
       identityKey,
       account: member.account,
-      domain: member.domain,
       namespaceId: member.namespaceId,
       role: member.role,
       isOwner: member.role === 'OWNER',

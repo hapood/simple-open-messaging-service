@@ -12,7 +12,7 @@ import {
 } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { BusinessCode } from '../src/common/business-code.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
@@ -106,7 +106,7 @@ describe('group membership re-entry and ownership transfer', () => {
       JSON.stringify(invited.body),
     ).toContainEqual({
       account: member.account,
-      domain: localIdentityDomain(),
+      namespaceId: 0,
     });
     const joined = await request(app.getHttpServer())
       .post('/api/v1/group/join-request')
@@ -126,8 +126,8 @@ describe('group membership re-entry and ownership transfer', () => {
     return database.db.query.groupMetaMemberFeed.findFirst({
       where: and(
         eq(groupMetaMemberFeed.threadId, threadId),
-        eq(groupMetaMemberFeed.memberAccount, member.account),
-        eq(groupMetaMemberFeed.profileNamespaceId, member.namespaceId),
+        sql`${groupMetaMemberFeed.body} ->> 'account' = ${member.account}`,
+        sql`${groupMetaMemberFeed.body} -> 'namespaceId' = to_jsonb(${member.namespaceId}::integer)`,
       ),
       orderBy: desc(groupMetaMemberFeed.feedId),
     });

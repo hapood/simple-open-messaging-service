@@ -81,14 +81,26 @@ describe('GroupInfoComponent privileged-role action gating', () => {
     name: 'Bob',
     account: 'bob',
     namespaceId: 0,
-    domain: 'chat.example.test',
+    role: 'MEMBER' as const,
+    isOwner: false,
+    avatar: '',
+    bio: '',
+    profileRev: 0,
+    profileMessageSeq: null,
+    profileResolved: false,
   } as ResolvedMemberProfile;
   const federatedMember = {
     identityKey: '[12,"bravo.test","charlie"]',
     name: 'Charlie',
     account: 'charlie',
     namespaceId: 12,
-    domain: 'bravo.test',
+    role: 'MEMBER' as const,
+    isOwner: false,
+    avatar: '',
+    bio: '',
+    profileRev: 0,
+    profileMessageSeq: null,
+    profileResolved: false,
   } as ResolvedMemberProfile;
   const withRole = (role: 'OWNER' | 'ADMIN' | 'MEMBER') =>
     ({ isOwner: () => role === 'OWNER' }) as unknown as GroupInfoComponent;

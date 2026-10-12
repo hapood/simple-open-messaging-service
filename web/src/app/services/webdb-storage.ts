@@ -179,7 +179,6 @@ export interface ProfileTomb {
 export interface MemberRecord {
   threadId: number;
   account: string;
-  domain: string;
   namespaceId: number;
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   left: boolean;
@@ -455,11 +454,11 @@ export interface WebdbSchema extends DBSchema {
     value: ProfileTomb;
   };
   members: {
-    key: [number, string, string, number];
+    key: [number, string, number];
     value: MemberRecord;
     indexes: {
       thread: number;
-      address: [number, string, string, number];
+      address: [number, string, number];
     };
   };
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
@@ -499,7 +498,12 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 40;
+export const CACHE_SCHEMA_VERSION = 41;
+// v41: Group Meta feed items carry the member identity (account/namespaceId)
+// inside the body and no domain travels on the wire, so roster rows are keyed
+// by (threadId, account, namespaceId) alone. Rows written under the old
+// domain-scoped key cannot be addressed by the new facts anymore; the whole
+// cache is discarded and rebuilt from the feeds.
 // v40: friend request projection keys now canonicalize the author's home
 // namespace (0 for the local user) instead of the pair namespace. Records
 // written under the old key shape cannot be addressed by feed facts anymore,
@@ -1078,13 +1082,12 @@ export class WebdbStorage {
         });
         db.createObjectStore('profileAvatarBlobs', { keyPath: 'digest' });
         const members = db.createObjectStore('members', {
-          keyPath: ['threadId', 'account', 'domain', 'namespaceId'],
+          keyPath: ['threadId', 'account', 'namespaceId'],
         });
         members.createIndex('thread', 'threadId');
         members.createIndex('address', [
           'threadId',
           'account',
-          'domain',
           'namespaceId',
         ]);
         db.createObjectStore('threads', { keyPath: 'threadId' });
@@ -2579,12 +2582,7 @@ export class WebdbStorage {
           currentThread.conversationState === 'READ_ONLY'
         )
           continue;
-        for (const entry of update.page.items) {
-          const item =
-            entry.operation === 'GROUP_PROFILE' ||
-            entry.operation === 'GROUP_ANNOUNCEMENT'
-              ? entry
-              : localSubjectIdentity(entry);
+        for (const item of update.page.items) {
           if (item.operation === 'GROUP_ANNOUNCEMENT') {
             const thread = await tx.objectStore('threads').get(update.threadId);
             if (thread?.type === 'GROUP') {
@@ -2621,9 +2619,8 @@ export class WebdbStorage {
             .index('address')
             .get([
               update.threadId,
-              item.account,
-              item.domain,
-              item.namespaceId,
+              item.body.account,
+              item.body.namespaceId,
             ]);
           if (item.operation === 'MEMBER_DEPART') {
             if (previous) await members.put({ ...previous, left: true });
@@ -2637,9 +2634,8 @@ export class WebdbStorage {
             : null;
           await members.put({
             threadId: update.threadId,
-            account: item.account,
-            domain: item.domain,
-            namespaceId: item.namespaceId,
+            account: body.account,
+            namespaceId: body.namespaceId,
             role: body.role,
             left: false,
             profileRev:
@@ -3264,10 +3260,8 @@ export class WebdbStorage {
   async getGroupMember(
     threadId: number,
     account: string,
-    domain: string,
     namespaceId: number,
   ): Promise<ResolvedMemberRecord | undefined> {
-    ({ domain, namespaceId } = localSubjectIdentity({ domain, namespaceId }));
     return this.runAccountOperation(async () => {
       if (isTauri() && this.currentUserId != null)
         return (
@@ -3277,7 +3271,6 @@ export class WebdbStorage {
               userId: Number(this.currentUserId),
               threadId,
               account,
-              domain,
               namespaceId,
             },
           )) ?? undefined
@@ -3286,7 +3279,6 @@ export class WebdbStorage {
       const member = await db.get('members', [
         threadId,
         account,
-        domain,
         namespaceId,
       ]);
       if (!member || member.left) return undefined;
@@ -3306,7 +3298,7 @@ export class WebdbStorage {
     return this.runAccountOperation(async () => {
       if (isTauri()) return [];
       const tx = (await this.db()).transaction(
-        ['threads', 'members', 'profiles', 'profileNamespaces'],
+        ['threads', 'members', 'profiles'],
         'readonly',
       );
       const references: import('./group-meta-model').GroupMetaProfileReference[] =
@@ -3326,16 +3318,11 @@ export class WebdbStorage {
             state.profileAccount,
             state.profileRev,
           ]);
-        const binding = await tx
-          .objectStore('profileNamespaces')
-          .get([state.publisherNamespaceId, state.publisherNamespaceId]);
-        const domain = binding?.domain ?? '';
         if (!cached)
           references.push({
             type: 'GROUP',
             threadId: state.threadId,
             account: state.profileAccount,
-            domain,
             namespaceId: state.publisherNamespaceId,
             rev: state.profileRev,
           });
@@ -3347,6 +3334,9 @@ export class WebdbStorage {
           member.profileMessageSeq != null
         )
           continue;
+        // The roster reads member snapshots at the member-home diagonal key
+        // [namespaceId, namespaceId]; no stored domain participates in the
+        // reference — display domains resolve through namespace bindings.
         const cached = await tx
           .objectStore('profiles')
           .get([
@@ -3360,7 +3350,6 @@ export class WebdbStorage {
             type: 'GROUP_MEMBER',
             threadId: member.threadId,
             account: member.account,
-            domain: member.domain,
             namespaceId: member.namespaceId,
             rev: member.profileRev,
           });
@@ -3375,7 +3364,6 @@ export class WebdbStorage {
     profile: {
       namespaceId: number;
       account: string;
-      domain: string;
       rev: number;
       name: string;
       bio: string;
@@ -3385,7 +3373,6 @@ export class WebdbStorage {
     if (
       profile.rev !== reference.rev ||
       profile.account !== reference.account ||
-      profile.domain !== reference.domain ||
       profile.namespaceId !== reference.namespaceId
     )
       throw new Error('resolved profile does not match Group Meta reference');
@@ -3401,7 +3388,6 @@ export class WebdbStorage {
           .get([
             reference.threadId,
             reference.account,
-            reference.domain,
             reference.namespaceId,
           ]);
         if (!member || member.left || member.profileRev !== reference.rev) {
@@ -3587,7 +3573,7 @@ export class WebdbStorage {
 
   async recordGroupMemberMessageProfile(
     threadId: number,
-    identity: { account: string; domain: string; namespaceId: number },
+    identity: { account: string; namespaceId: number },
     profileRev: number,
     messageSeq: number,
   ): Promise<boolean> {
@@ -3598,7 +3584,6 @@ export class WebdbStorage {
         userId: Number(this.currentUserId),
         threadId,
         account: identity.account,
-        domain: identity.domain,
         namespaceId: identity.namespaceId,
         profileRev,
         messageSeq,
@@ -3609,7 +3594,6 @@ export class WebdbStorage {
       const member = await tx.store.get([
         threadId,
         identity.account,
-        identity.domain,
         identity.namespaceId,
       ]);
       if (

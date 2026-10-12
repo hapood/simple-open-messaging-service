@@ -241,10 +241,12 @@ describe('transactional thread attention', () => {
     await db.db.insert(groupMetaMemberFeed).values({
       threadId: group.id,
       feedId: 1,
-      memberAccount: control.account,
-      profileNamespaceId: 0,
       operation: 'GROUP_PROFILE',
-      body: { profileRev: 3 },
+      body: {
+        account: control.account,
+        namespaceId: 0,
+        profileRev: 3,
+      },
     });
     await db.db.transaction((tx) =>
       ThreadFeedHeadWriter.advanceGroupMetaCoordinatesInTx(tx, {
@@ -277,7 +279,7 @@ describe('transactional thread attention', () => {
       .where(eq(groupMeta.threadId, group.id));
     await db.db
       .update(groupMetaMemberFeed)
-      .set({ feedId: 2, body: { profileRev: 1 } })
+      .set({ feedId: 2, body: { account: control.account, namespaceId: 0, profileRev: 1 } })
       .where(eq(groupMetaMemberFeed.threadId, group.id));
     await db.db.transaction((tx) =>
       ThreadFeedHeadWriter.reconcileGroupMetaCoordinateInTx(tx, {

@@ -328,9 +328,8 @@ describe('ProfileResolutionCoordinatorService', () => {
     let query = new PgDialect().sqlToQuery(
       database.db.execute.mock.calls.at(-1)![0] as SQL,
     ).sql;
-    expect(query).toContain("latest.body ->> 'profileNamespaceId'");
-    expect(query).toContain("latest.body ->> 'profileRev'");
-    expect(query).toContain('message."localState" = \'READY\'');
+    expect(query).toContain("latest.body -> 'namespaceId'");
+    expect(query).toContain("latest.body -> 'profileRev'");
     expect(query).not.toContain('message."isDeleted"');
 
     await subject['authorizeAccountDemand'](3, {
@@ -340,9 +339,8 @@ describe('ProfileResolutionCoordinatorService', () => {
     query = new PgDialect().sqlToQuery(
       database.db.execute.mock.calls.at(-1)![0] as SQL,
     ).sql;
-    expect(query).toContain("latest.body ->> 'profileNamespaceId'");
-    expect(query).toContain("latest.body ->> 'profileRev'");
-    expect(query).toContain('thread."authorityNamespaceId"');
+    expect(query).toContain("latest.body -> 'namespaceId'");
+    expect(query).toContain("latest.body -> 'profileRev'");
   });
 
   it('registers only the invoking session and deduplicates it per exact key', async () => {

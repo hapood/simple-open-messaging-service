@@ -8,7 +8,6 @@ import {
 } from '../group/meta/apply-delta-mirror-meta-item-in-tx.js';
 import { applyFullMirrorMetaBatchInTx } from '../group/meta/apply-full-mirror-meta-batch-in-tx.js';
 import {
-  normalizeMirrorMetaReplicatedItem,
   reopenMirrorMetaRecoveryInTx,
   type MirrorGroupAddress,
   type MirrorMetaReplicatedItem,
@@ -17,7 +16,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MessageService } from '../message/message.service.js';
 import { MESSAGE_PROFILE_WORK_COMMITTED } from '../message/message-profile-work.event.js';
 import {
-  isValidSomfpDomain,
+  isValidGroupAccount,
   isValidSomfpUserAccount,
   normalizeAccount,
 } from '../common/account.js';
@@ -148,9 +147,7 @@ export class FederationThreadMetaRoundExecutorService {
       });
       if (fetched.groupMetaFeedEndId < plan.metaTargetId)
         throw new Error('group-meta page did not reach its fixed target');
-      const items = fetched.items
-        .map((item) => validateItem(item, 'delta'))
-        .map((item) => normalizeMirrorMetaReplicatedItem(group, item));
+      const items = fetched.items.map((item) => validateItem(item, 'delta'));
       const reachedBoundary = !fetched.hasMore;
       if (items.length === 0 && reachedBoundary) {
         await this.database.db.transaction(async (tx) =>
@@ -204,8 +201,7 @@ export class FederationThreadMetaRoundExecutorService {
         through,
       });
       const items = page.items
-        .map((item) => validateItem(item, 'full'))
-        .map((item) => normalizeMirrorMetaReplicatedItem(group, item));
+        .map((item) => validateItem(item, 'full'));
       const reachedBoundary = !page.hasMore;
       snapshot.push(...items);
       if (reachedBoundary) {
@@ -265,8 +261,9 @@ function validateItem(
   }
   if (item.operation === 'GROUP_PROFILE') {
     requireKeys(item, ['feedId', 'operation', 'body']);
-    requireKeys(item.body, ['namespaceId', 'profileRev']);
+    requireKeys(item.body, ['account', 'namespaceId', 'profileRev']);
     if (
+      !isValidGroupAccount(item.body.account) ||
       !isProfileRev(item.body.profileRev) ||
       !isProfileNamespaceId(item.body.namespaceId)
     )
@@ -274,21 +271,21 @@ function validateItem(
     return {
       feedId,
       operation: 'GROUP_PROFILE',
-      profileNamespaceId: item.body.namespaceId,
+      account: item.body.account,
+      namespaceId: item.body.namespaceId,
       profileRev: item.body.profileRev,
     };
   }
   if (
-    !isValidSomfpUserAccount(item.account) ||
-    item.account !== normalizeAccount(item.account) ||
-    !isValidSomfpDomain(item.domain)
+    !isValidSomfpUserAccount(item.body.account) ||
+    item.body.account !== normalizeAccount(item.body.account)
   )
     throw new Error('invalid group-meta member address');
   if (item.operation === 'MEMBER_DEPART') {
-    requireKeys(item, ['feedId', 'account', 'domain', 'operation', 'body']);
+    requireKeys(item, ['feedId', 'operation', 'body']);
     if (mode === 'full')
       throw new Error('full group-meta cannot contain MEMBER_DEPART');
-    requireKeys(item.body, ['role', 'namespaceId', 'profileRev']);
+    requireKeys(item.body, ['account', 'namespaceId', 'role', 'profileRev']);
     if (
       !Object.values(GroupRole).includes(item.body.role as GroupRole) ||
       !isProfileRev(item.body.profileRev) ||
@@ -298,15 +295,14 @@ function validateItem(
     return {
       feedId,
       operation: 'MEMBER_DEPART',
-      account: item.account,
-      domain: item.domain,
+      account: item.body.account,
+      namespaceId: item.body.namespaceId,
       role: item.body.role as GroupRole,
-      profileNamespaceId: item.body.namespaceId as number,
-      profileRev: item.body.profileRev as number,
+      profileRev: item.body.profileRev,
     };
   }
-  requireKeys(item, ['feedId', 'account', 'domain', 'operation', 'body']);
-  requireKeys(item.body, ['role', 'namespaceId', 'profileRev']);
+  requireKeys(item, ['feedId', 'operation', 'body']);
+  requireKeys(item.body, ['account', 'namespaceId', 'role', 'profileRev']);
   if (
     !Object.values(GroupRole).includes(item.body.role as GroupRole) ||
     !isProfileRev(item.body.profileRev) ||
@@ -316,11 +312,10 @@ function validateItem(
   return {
     feedId,
     operation: 'MEMBER_UPSERT',
-    account: item.account,
-    domain: item.domain,
+    account: item.body.account,
+    namespaceId: item.body.namespaceId,
     role: item.body.role as GroupRole,
-    profileNamespaceId: item.body.namespaceId as number,
-    profileRev: item.body.profileRev as number,
+    profileRev: item.body.profileRev,
   };
 }
 

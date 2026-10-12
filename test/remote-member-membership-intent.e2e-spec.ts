@@ -1,4 +1,4 @@
-import { and, eq, or } from 'drizzle-orm';
+import { and, eq, or, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
@@ -154,12 +154,11 @@ describe('remote member membership intents on the authoritative group', () => {
       await database.db.insert(tables.groupMetaMemberFeed).values({
         threadId: thread!.id,
         feedId: 1,
-        memberAccount,
-        profileNamespaceId: namespaceId,
         operation: 'MEMBER_UPSERT',
         body: {
+          account: memberAccount,
+          namespaceId,
           role: 'MEMBER',
-          profileNamespaceId: namespaceId,
           profileRev: 3,
         },
       });
@@ -472,7 +471,8 @@ describe('remote member membership intents on the authoritative group', () => {
       .where(
         and(
           eq(tables.groupMetaMemberFeed.threadId, fixture.threadId),
-          eq(tables.groupMetaMemberFeed.memberAccount, fixture.member.account),
+          sql`${tables.groupMetaMemberFeed.body} ->> 'account' = ${fixture.member.account}`,
+          sql`${tables.groupMetaMemberFeed.body} -> 'namespaceId' = to_jsonb(${fixture.member.namespaceId}::integer)`,
         ),
       );
 

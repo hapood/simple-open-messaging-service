@@ -72,11 +72,8 @@ export class GroupMembershipProjectionService {
         account: identity.account,
         profileNamespaceId: identity.namespaceId,
         operation: 'MEMBER_DEPART',
-        body: {
-          role: current.role,
-          profileNamespaceId: current.namespaceId,
-          profileRev: current.profileRev,
-        },
+        role: current.role,
+        profileRev: current.profileRev,
       });
       return { canonicalRosterChanged: true };
     }
@@ -110,7 +107,8 @@ export class GroupMembershipProjectionService {
         account: identity.account,
         profileNamespaceId: identity.namespaceId,
         operation: 'MEMBER_UPSERT',
-        body: { role, profileNamespaceId: identity.namespaceId, profileRev },
+        role,
+        profileRev,
       });
       canonicalRosterChanged = true;
     }
@@ -130,9 +128,17 @@ export class GroupMembershipProjectionService {
       const groupMetaFeedEndId = params.hostedLocally
         ? sql<number>`(SELECT ${groupMeta.metaEndId} FROM ${groupMeta} WHERE ${groupMeta.threadId} = ${params.threadId})`
         : undefined;
-      // Local creation has already committed the group profile to the meta
-      // head. Mirrored groups may not have received that head yet.
-      const groupProfileRev = sql<number>`(SELECT ${groupMeta.profileRev} FROM ${groupMeta} WHERE ${groupMeta.threadId} = ${params.threadId})`;
+      // New participant cursors use the group's declaration to this member,
+      // independently of whether the group authority is local or mirrored.
+      // During local creation that declaration carries revision zero.
+      const declaredGroupProfileRev = sql<number>`(
+          SELECT i."profileRev" FROM "RelationshipIntent" i
+          JOIN "MessageThread" t ON t.id = ${params.threadId}
+          WHERE i."authorAccount" = t."groupAccount"
+            AND i."authorNamespaceId" = t."authorityNamespaceId"
+            AND i."receiverAccount" = ${identity.account}
+            AND i."receiverNamespaceId" = ${identity.namespaceId}
+          ORDER BY i."updatedAt" DESC LIMIT 1)`;
       const initialManagerProjection = initialGroupManagerProjection(
         role,
         projectionHead,
@@ -149,7 +155,7 @@ export class GroupMembershipProjectionService {
           accountId: localAccount.id,
           threadId: params.threadId,
           role,
-          threadProfileRev: groupProfileRev,
+          threadProfileRev: declaredGroupProfileRev,
           ...(groupMetaFeedEndId !== undefined ? { groupMetaFeedEndId } : {}),
           ...initialManagerProjection,
           updatedAt: new Date(),

@@ -1,11 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GroupRole } from '../database/enums.js';
-import {
-  groupAccount,
-  groupMeta,
-  messageThread,
-  profileTable,
-} from '../database/schema.js';
+import { groupAccount, groupMeta, messageThread } from '../database/schema.js';
 import { GroupService } from './group.service.js';
 
 describe('GroupService creation', () => {
@@ -41,6 +36,9 @@ describe('GroupService creation', () => {
     const tx = {
       insert,
       execute,
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({ where: vi.fn().mockResolvedValue([]) })),
+      })),
       query: {
         identityNamespace: {
           findFirst: vi.fn().mockResolvedValue({ domain: 'local.example' }),
@@ -87,19 +85,37 @@ describe('GroupService creation', () => {
       messages as never,
     );
 
+    const updateProfile = vi
+      .spyOn(
+        service as unknown as {
+          updateGroupInTx: (...args: unknown[]) => Promise<unknown>;
+        },
+        'updateGroupInTx',
+      )
+      .mockResolvedValue({});
+
     await service.createNewGroup({
       name: 'Group',
       description: 'Bio',
       owner: 11,
     });
 
-    expect(insertedTables).toEqual([
-      groupAccount,
-      messageThread,
-      profileTable,
-      groupMeta,
-    ]);
-    expect(execute).toHaveBeenCalledOnce();
+    expect(insertedTables).toEqual([groupAccount, messageThread, groupMeta]);
+    expect(database.db.transaction).toHaveBeenCalledTimes(2);
+    expect(updateProfile).toHaveBeenCalledWith(
+      tx,
+      {
+        threadId: 7,
+        operatorUserId: 11,
+        name: 'Group',
+        description: 'Bio',
+        avatar: '',
+      },
+      [11],
+    );
+    expect(updateProfile.mock.invocationCallOrder[0]).toBeLessThan(
+      clientStateFeed.notifyFeedUpdates.mock.invocationCallOrder[0]!,
+    );
     expect(writeMemberRelationshipIntentInTx).toHaveBeenCalledWith(
       tx,
       7,

@@ -9,7 +9,7 @@ import { GroupMetaFeedService } from '../src/group/meta/group-meta-feed.service.
 import { upsertCurrentGroupMetaFactsInTx } from '../src/group/meta/current-group-meta-fact.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { GroupRole } from '../src/database/enums.js';
@@ -97,18 +97,24 @@ describe('current Group Meta roster', () => {
       {
         threadId: groupId,
         feedId: 1,
-        memberAccount: `owner-${suffix}`,
-        profileNamespaceId: 0,
         operation: 'MEMBER_UPSERT',
-        body: { role: GroupRole.OWNER, profileRev: 1 },
+        body: {
+          account: `owner-${suffix}`,
+          namespaceId: 0,
+          role: GroupRole.OWNER,
+          profileRev: 1,
+        },
       },
       {
         threadId: groupId,
         feedId: 3,
-        memberAccount: `departed-${suffix}`,
-        profileNamespaceId: 0,
         operation: 'MEMBER_DEPART',
-        body: { profileRev: 1 },
+        body: {
+          account: `departed-${suffix}`,
+          namespaceId: 0,
+          role: GroupRole.MEMBER,
+          profileRev: 1,
+        },
         profileSourceSeq: 2,
       },
     ]);
@@ -166,7 +172,7 @@ describe('current Group Meta roster', () => {
       .where(
         and(
           eq(groupMetaMemberFeed.threadId, groupId),
-          eq(groupMetaMemberFeed.memberAccount, `owner-${suffix}`),
+          sql`${groupMetaMemberFeed.body} ->> 'account' = ${`owner-${suffix}`}`,
         ),
       );
     expect(fact.feedId).toBe(1);
@@ -178,7 +184,8 @@ describe('current Group Meta roster', () => {
       database.db.query.groupMetaMemberFeed.findFirst({
         where: and(
           eq(groupMetaMemberFeed.threadId, groupId),
-          eq(groupMetaMemberFeed.memberAccount, account),
+          sql`${groupMetaMemberFeed.body} ->> 'account' = ${account}`,
+          sql`${groupMetaMemberFeed.body} -> 'namespaceId' = to_jsonb(0)`,
         ),
       });
     expect(await current()).toMatchObject({
@@ -190,7 +197,8 @@ describe('current Group Meta roster', () => {
         account,
         profileNamespaceId: 0,
         operation: 'MEMBER_UPSERT',
-        body: { role: GroupRole.MEMBER, profileRev: 1 },
+        role: GroupRole.MEMBER,
+        profileRev: 1,
       }),
     );
     expect(feedId).toBe(4);
@@ -205,17 +213,21 @@ describe('current Group Meta roster', () => {
         .where(
           and(
             eq(groupMetaMemberFeed.threadId, groupId),
-            eq(groupMetaMemberFeed.memberAccount, account),
+            sql`${groupMetaMemberFeed.body} ->> 'account' = ${account}`,
+            sql`${groupMetaMemberFeed.body} -> 'namespaceId' = to_jsonb(0)`,
           ),
         );
       await upsertCurrentGroupMetaFactsInTx(tx, [
         {
           threadId: groupId,
           feedId: 5,
-          memberAccount: account,
-          profileNamespaceId: 0,
+          body: {
+            account,
+            namespaceId: 0,
+            role: GroupRole.MEMBER,
+            profileRev: 1,
+          },
           operation: 'MEMBER_DEPART',
-          body: { profileRev: 1 },
         },
       ]);
       await tx
@@ -232,10 +244,13 @@ describe('current Group Meta roster', () => {
         {
           threadId: groupId,
           feedId: 6,
-          memberAccount: account,
-          profileNamespaceId: 0,
+          body: {
+            account,
+            namespaceId: 0,
+            role: GroupRole.MEMBER,
+            profileRev: 3,
+          },
           operation: 'MEMBER_UPSERT',
-          body: { role: GroupRole.MEMBER, profileRev: 3 },
         },
       ]);
       await tx
@@ -246,7 +261,7 @@ describe('current Group Meta roster', () => {
     expect(await current()).toMatchObject({
       operation: 'MEMBER_UPSERT',
       profileSourceSeq: null,
-      body: { role: GroupRole.MEMBER, profileRev: 3 },
+      body: { account, namespaceId: 0, role: GroupRole.MEMBER, profileRev: 3 },
     });
   });
 
@@ -306,7 +321,7 @@ describe('current Group Meta roster', () => {
       database.db.query.groupMetaMemberFeed.findFirst({
         where: and(
           eq(groupMetaMemberFeed.threadId, groupId),
-          eq(groupMetaMemberFeed.memberAccount, memberAccount),
+          sql`${groupMetaMemberFeed.body} ->> 'account' = ${memberAccount}`,
         ),
       });
     await commitMessage(1, 7);
@@ -314,7 +329,12 @@ describe('current Group Meta roster', () => {
     expect(await selected()).toMatchObject({
       feedId: firstId,
       profileSourceSeq: 1,
-      body: { role: GroupRole.OWNER, profileRev: 7 },
+      body: {
+        account: memberAccount,
+        namespaceId: 0,
+        role: GroupRole.OWNER,
+        profileRev: 7,
+      },
     });
     await commitMessage(2, 7);
     expect(await publish(2, 7)).toBe(false);
@@ -324,7 +344,12 @@ describe('current Group Meta roster', () => {
     expect(await selected()).toMatchObject({
       feedId: firstId + 1,
       profileSourceSeq: 3,
-      body: { role: GroupRole.OWNER, profileRev: 4 },
+      body: {
+        account: memberAccount,
+        namespaceId: 0,
+        role: GroupRole.OWNER,
+        profileRev: 4,
+      },
     });
     await commitMessage(4, 9);
     expect(await publish(4, 9)).toBe(false); // The exact snapshot is missing.
@@ -334,7 +359,12 @@ describe('current Group Meta roster', () => {
     expect(await selected()).toMatchObject({
       feedId: firstId + 2,
       profileSourceSeq: 5,
-      body: { role: GroupRole.OWNER, profileRev: 0 },
+      body: {
+        account: memberAccount,
+        namespaceId: 0,
+        role: GroupRole.OWNER,
+        profileRev: 0,
+      },
     });
 
     // An old committed message can finish an async fetch after a new join;
@@ -349,13 +379,15 @@ describe('current Group Meta roster', () => {
         account: memberAccount,
         profileNamespaceId: 0,
         operation: 'MEMBER_DEPART',
-        body: { profileRev: 1 },
+        role: GroupRole.MEMBER,
+        profileRev: 1,
       });
       await meta.appendMemberTransitionInTx(tx, groupId, {
         account: memberAccount,
         profileNamespaceId: 0,
         operation: 'MEMBER_UPSERT',
-        body: { role: GroupRole.OWNER, profileRev: 1 },
+        role: GroupRole.OWNER,
+        profileRev: 1,
       });
       await tx.insert(message).values(
         withMessageDigest({
@@ -381,14 +413,19 @@ describe('current Group Meta roster', () => {
     expect(await selected()).toMatchObject({
       feedId: firstId + 4,
       profileSourceSeq: null,
-      body: { role: GroupRole.OWNER, profileRev: 1 },
+      body: { account: memberAccount, namespaceId: 0, role: GroupRole.OWNER, profileRev: 1 },
     });
     await commitMessage(7, 7);
     expect(await publish(7, 7)).toBe(true);
     expect(await selected()).toMatchObject({
       feedId: firstId + 5,
       profileSourceSeq: 7,
-      body: { role: GroupRole.OWNER, profileRev: 7 },
+      body: {
+        account: memberAccount,
+        namespaceId: 0,
+        role: GroupRole.OWNER,
+        profileRev: 7,
+      },
     });
   });
 
@@ -417,7 +454,8 @@ describe('current Group Meta roster', () => {
         account,
         profileNamespaceId: namespaceId,
         operation: 'MEMBER_UPSERT',
-        body: { role: GroupRole.MEMBER, profileRev: 2 },
+        role: GroupRole.MEMBER,
+        profileRev: 2,
       }),
     );
     await database.db.insert(message).values(
@@ -425,6 +463,8 @@ describe('current Group Meta roster', () => {
         threadId: groupId,
         seq: 8,
         creatorAccount: account,
+        publisherNamespaceId: namespaceId,
+        originSeq: 8,
 
         profileNamespaceId: namespaceId,
         profileRev: 4,
@@ -490,6 +530,8 @@ describe('current Group Meta roster', () => {
         threadId: groupId,
         seq: 10,
         creatorAccount: account,
+        publisherNamespaceId: namespaceId,
+        originSeq: 10,
 
         profileNamespaceId: namespaceId,
         profileRev: 4,
@@ -508,13 +550,18 @@ describe('current Group Meta roster', () => {
       .where(
         and(
           eq(groupMetaMemberFeed.threadId, groupId),
-          eq(groupMetaMemberFeed.memberAccount, account),
-          eq(groupMetaMemberFeed.profileNamespaceId, namespaceId),
+          sql`${groupMetaMemberFeed.body} ->> 'account' = ${account}`,
+          sql`${groupMetaMemberFeed.body} -> 'namespaceId' = to_jsonb(${namespaceId}::integer)`,
         ),
       );
     expect(fact).toMatchObject({
       profileSourceSeq: 10,
-      body: { role: GroupRole.MEMBER, profileRev: 4 },
+      body: {
+        account,
+        namespaceId,
+        role: GroupRole.MEMBER,
+        profileRev: 4,
+      },
     });
   });
 });

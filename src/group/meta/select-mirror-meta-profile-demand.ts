@@ -17,13 +17,13 @@ export function selectMirrorMetaProfileDemand(
   group: Pick<MirrorGroupAddress, 'account' | 'publisherNamespaceId'>,
   item: MirrorMetaReplicatedItem,
 ): ProfilePrefetchDemand | null {
-  // The item has already passed the mirror wire-boundary normalization. A
-  // canonical local member uses the local snapshot path and must not enter
-  // the federation resolver.
+  // A subject in the publisher's own namespace (namespaceId 0) is served by
+  // the origin-side member-profile publication path, not the federation
+  // resolver; the mirror skips it here.
   if (
     item.operation !== 'MEMBER_UPSERT' ||
     item.profileRev < 1 ||
-    item.profileNamespaceId === 0
+    item.namespaceId === 0
   )
     return null;
 
@@ -31,7 +31,7 @@ export function selectMirrorMetaProfileDemand(
     publisherNamespaceId: group.publisherNamespaceId,
     lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
     target: {
-      profileNamespaceId: item.profileNamespaceId,
+      profileNamespaceId: item.namespaceId,
       account: item.account,
       rev: item.profileRev,
     },

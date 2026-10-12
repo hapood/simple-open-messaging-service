@@ -148,6 +148,7 @@ interface ValidatedIntentBase {
   readonly localActorId: number;
   readonly localTargetId: number | null;
   readonly authorization: UserIntentAuthorizationRow;
+  readonly validationTime: number;
 }
 
 type ValidatedIntent = ValidatedIntentBase &
@@ -406,29 +407,8 @@ export class UserIntentService {
         row.authorizationEpoch !== options.expectedAuthorization.epoch)
     )
       return { staleAuthorization: true };
-    // Peer feed allocators precede every operation that may allocate from a
-    // local Account state-feed counter, including AccountThreadState triggers.
-    if (target.namespaceId !== 0)
-      await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
-        { namespaceId: targetNamespaceId },
-      ]);
-    if (params.decision === 'REVOKED')
-      await lockUserIntentThreadStateInTx(tx, shell, actor, target);
-    else
-      await resetUserIntentThreadStateInTx(tx, shell, actor, target, {
-        // Activation starts read at the boundary and must not touch an
-        // already-active pair.
-        activate: params.decision === 'ACCEPTED' && !row.pairActive,
-      });
-    // Account rows the composed statements allocate client feed ids from.
-    await lockUserIntentAccountsInTx(
-      tx,
-      [located.localTargetId, params.userId].filter(
-        (id): id is number => typeof id === 'number',
-      ),
-    );
-    const base = {
-      [validated]: true as const,
+    const base: ValidatedIntentBase = {
+      [validated]: true,
       tx,
       threadLock,
       params,
@@ -439,12 +419,32 @@ export class UserIntentService {
       localActorId: params.userId,
       localTargetId: row.localTargetId,
       authorization: row,
+      validationTime: Date.now(),
     };
-    if (params.decision === 'REQUESTED')
-      return this.validateRequestInTx(base, row);
-    if (params.decision === 'ACCEPTED')
-      return this.validateAcceptanceInTx(base, row);
-    return this.validateRevocationInTx(base, row);
+    // Resolve the branch once before participant mutation. Expiry must not
+    // route the same command differently after an awaited allocator lock.
+    const context =
+      params.decision === 'REQUESTED'
+        ? this.validateRequestInTx(base, row)
+        : params.decision === 'ACCEPTED'
+          ? this.validateAcceptanceInTx(base, row)
+          : this.validateRevocationInTx(base, row);
+    if ('noOp' in context || 'rejected' in context) return context;
+    // Peer feed allocators precede every operation that may allocate from a
+    // local Account state-feed counter, including AccountThreadState triggers.
+    if (target.namespaceId !== 0)
+      await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
+        { namespaceId: targetNamespaceId },
+      ]);
+    await lockUserIntentThreadStateInTx(tx, shell, actor, target);
+    // Account rows the composed statements allocate client feed ids from.
+    await lockUserIntentAccountsInTx(
+      tx,
+      [located.localTargetId, params.userId].filter(
+        (id): id is number => typeof id === 'number',
+      ),
+    );
+    return context;
   }
 
   private async locateInTx(
@@ -467,7 +467,8 @@ export class UserIntentService {
     base: ValidatedIntentBase,
     row: UserIntentAuthorizationRow,
   ): ValidatedIntent | NoOpIntent | RejectedIntent {
-    if (reverseEffective(row)) return this.validateAcceptanceInTx(base, row);
+    if (reverseEffective(row, base.validationTime))
+      return this.validateAcceptanceInTx(base, row);
     if (row.localTargetId === null && base.target.namespaceId === 0)
       return this.reject(
         'TARGET_NOT_FOUND',
@@ -499,7 +500,8 @@ export class UserIntentService {
   ): ValidatedIntent | NoOpIntent | RejectedIntent {
     if (row.pairActive) return { noOp: true, threadId: base.threadId };
     const live =
-      (row.reverseStatus === 'REQUESTED' && reverseRequestUnexpired(row)) ||
+      (row.reverseStatus === 'REQUESTED' &&
+        reverseRequestUnexpired(row, base.validationTime)) ||
       row.reverseStatus === 'ACCEPTED';
     if (!live)
       return this.reject(
@@ -543,8 +545,11 @@ export class UserIntentService {
   ): ValidatedIntent | RejectedIntent {
     const ownLive =
       row.ownStatus === 'ACCEPTED' ||
-      (row.ownStatus === 'REQUESTED' && ownRequestUnexpired(row));
-    if (!(ownLive || reverseEffective(row) || row.pairActive))
+      (row.ownStatus === 'REQUESTED' &&
+        ownRequestUnexpired(row, base.validationTime));
+    if (
+      !(ownLive || reverseEffective(row, base.validationTime) || row.pairActive)
+    )
       return this.reject(
         row.ownStatus === 'REQUESTED' || row.reverseStatus === 'REQUESTED'
           ? 'INTENT_EXPIRED'
@@ -613,6 +618,16 @@ export class UserIntentService {
       clientUpdates: Array<{ userId: number; feedId: number }>;
       peerFeedId: string | null;
     }>(userIntentRequestSql(context.input));
+    await resetUserIntentThreadStateInTx(
+      context.tx,
+      context.threadId,
+      context.actor,
+      context.target,
+      {
+        activate: false,
+        boundarySeq: context.authorization.threadCurSeq,
+      },
+    );
     return this.collectStateFeedWakeHints(context, result, clientUpdates);
   }
 
@@ -629,6 +644,16 @@ export class UserIntentService {
       clientUpdates: Array<{ userId: number; feedId: number }>;
       peerFeedId: string | null;
     }>(userIntentAcceptanceSql(context.input));
+    await resetUserIntentThreadStateInTx(
+      context.tx,
+      context.threadId,
+      context.actor,
+      context.target,
+      {
+        activate: result.rows[0]?.pairChanged === true,
+        boundarySeq: context.authorization.threadCurSeq,
+      },
+    );
     // The remote source activates from its retained authored snapshot, inside
     // this transaction and under the lock already held (gap recovery included).
     if (context.target.namespaceId !== 0)

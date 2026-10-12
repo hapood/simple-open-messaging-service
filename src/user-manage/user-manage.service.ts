@@ -63,8 +63,8 @@ export class UserManageService {
             SELECT member_fact.operation, member_fact.body, member_fact."createdAt"
             FROM "GroupMetaMemberFeed" member_fact
             WHERE member_fact."threadId" = group_profile.id
-              AND member_fact."memberAccount" = (SELECT account FROM "Account" WHERE id = ${id})
-              AND member_fact."profileNamespaceId" = 0
+              AND member_fact.body ->> 'account' = (SELECT account FROM "Account" WHERE id = ${id})
+              AND member_fact.body -> 'namespaceId' = to_jsonb(0)
             ORDER BY member_fact."feedId" DESC
             LIMIT 1
           ) latest ON latest.operation = 'MEMBER_UPSERT'

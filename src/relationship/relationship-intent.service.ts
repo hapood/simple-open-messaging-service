@@ -27,6 +27,7 @@ import {
   type BusinessScopeAddress,
 } from '../common/locks/account-business-lock.js';
 import { setLockedP2PPairActiveInTx } from './shared/p2p-pair-state.js';
+import { lockAccountFeedAllocatorsInTx } from '../common/locks/account-feed-allocator-lock.js';
 
 export type { RelationshipIntentStatus } from '../common/relationship-intent-state.js';
 
@@ -454,6 +455,8 @@ export class RelationshipIntentService {
       memberUserId: AccountTarget;
       threadId: number;
       projectionUserIds?: readonly number[];
+      /** Acquire these allocators before participant rows, after relationship locks. */
+      feedAllocatorUserIds?: readonly number[];
     },
   ): Promise<LockedPair & { threadLock: ThreadContentLock }> {
     const member = await accountAddressInTx(tx, params.memberUserId);
@@ -502,6 +505,7 @@ export class RelationshipIntentService {
     );
     await this.lockIntentRowsInTx(tx, pair);
 
+    await lockAccountFeedAllocatorsInTx(tx, params.feedAllocatorUserIds ?? []);
     const projectionUserIds = [...new Set(params.projectionUserIds ?? [])];
     await tx.execute(sql`
       SELECT participant.id FROM "AccountThreadState" participant

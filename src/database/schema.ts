@@ -90,6 +90,7 @@ export const groupMetaMemberOperation = pgEnum('GroupMetaMemberOperation', [
   'MEMBER_UPSERT',
   'MEMBER_DEPART',
   'GROUP_PROFILE',
+  'GROUP_ANNOUNCEMENT',
 ]);
 export const relationshipIntentStatus = pgEnum('RelationshipIntentStatus', [
   'REQUESTED',
@@ -1009,11 +1010,11 @@ export const message = pgTable(
       'Message_payload_digest_check',
       sql`${table.contentType} = 'SYSTEM' OR ${table.payloadDigest} IS NOT NULL`,
     ),
-    foreignKey({
-      columns: [table.profileNamespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'Message_profileNamespaceId_fkey',
-    }).onDelete('restrict'),
+    // NOTE: profileNamespaceId is the author's home-namespace id in the
+    // PUBLISHER's space (paired with publisherNamespaceId); it is not a local
+    // IdentityNamespace id, so it carries no local FK. Only origin-home and
+    // receiver-home authors normalize to 0; third-home members keep the
+    // publisher-space id verbatim.
     uniqueIndex('Message_clientMessageId_key').using(
       'btree',
       table.clientMessageId.asc().nullsLast().op('text_ops'),
@@ -1981,14 +1982,14 @@ export const groupMeta = pgTable(
   ],
 );
 
-/** One current Group Meta operation per stable key on origins and mirrors. */
+/** One current Group Meta operation per stable key on origins and mirrors. The subject
+ * identity (account + namespaceId) lives inside `body` in the publisher's coordinate
+ * space; it is deliberately not a local IdentityNamespace foreign key. */
 export const groupMetaMemberFeed = pgTable(
   'GroupMetaMemberFeed',
   {
     threadId: integer().notNull(),
     feedId: integer().notNull(),
-    memberAccount: varchar({ length: 31 }).notNull(),
-    profileNamespaceId: integer().notNull(),
     operation: groupMetaMemberOperation().notNull(),
     body: jsonb().$type<Record<string, unknown>>().notNull(),
     /** Backend-only member-message coordinate behind the currently published
@@ -2008,19 +2009,14 @@ export const groupMetaMemberFeed = pgTable(
     }),
     uniqueIndex('GroupMetaMemberFeed_member_key').on(
       table.threadId,
-      table.memberAccount,
-      table.profileNamespaceId,
-    ),
+      sql`(${table.body} ->> 'account')`,
+      sql`(${table.body} -> 'namespaceId')`,
+    ).where(sql`${table.operation} <> 'GROUP_ANNOUNCEMENT'`),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
       name: 'GroupMetaMemberFeed_threadId_fkey',
     }).onDelete('cascade'),
-    foreignKey({
-      columns: [table.profileNamespaceId],
-      foreignColumns: [identityNamespace.id],
-      name: 'GroupMetaMemberFeed_profileNamespaceId_fkey',
-    }).onDelete('restrict'),
     check('GroupMetaMemberFeed_feedId_check', sql`${table.feedId} > 0`),
     check(
       'GroupMetaMemberFeed_profileSourceSeq_check',
@@ -2029,10 +2025,7 @@ export const groupMetaMemberFeed = pgTable(
     check(
       'GroupMetaMemberFeed_body_check',
       sql`jsonb_typeof(${table.body}) = 'object'
-        AND ((${table.operation} = 'MEMBER_UPSERT' AND ${table.body} <> '{}'::jsonb)
-          OR (${table.operation} = 'MEMBER_DEPART' AND ${table.body} <> '{}'::jsonb)
-          OR (${table.operation} = 'GROUP_PROFILE'
-            AND ${table.body} <> '{}'::jsonb))`,
+        AND ${table.body} <> '{}'::jsonb`,
     ),
   ],
 );

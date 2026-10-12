@@ -74,6 +74,7 @@ export function mirrorMembershipRequestSql(
         ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId",
         ${mirrorIntentFeedBodySql({
           status: sql`v.status`,
+          profileRev: sql`v."profileRev"`,
           note: sql`v.note`,
           requestedAt: epochMillisSql(sql`v."requestedAt"`),
           expiresAt: epochMillisSql(sql`v."expiresAt"`),

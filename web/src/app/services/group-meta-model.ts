@@ -1,30 +1,35 @@
+/** One Group Meta feed item. The wire item is the stored body verbatim: the
+ *  subject identity is (account, namespaceId) in the publisher's coordinate
+ *  space, and no domain travels on the wire — consumers resolve the display
+ *  domain through publisher-scoped namespace bindings. */
 export interface ClientGroupMetaFeedPage {
   account: string;
   mode: 'full' | 'delta';
   items: Array<
     | {
         feedId: string;
-        account: string;
-        domain: string;
-        namespaceId: number;
         operation: 'MEMBER_UPSERT';
         body: {
+          account: string;
+          namespaceId: number;
           role: 'OWNER' | 'ADMIN' | 'MEMBER';
           profileRev: number;
         };
       }
     | {
         feedId: string;
-        account: string;
-        domain: string;
-        namespaceId: number;
         operation: 'MEMBER_DEPART';
-        body?: Record<string, never>;
+        body: {
+          account: string;
+          namespaceId: number;
+          role: 'OWNER' | 'ADMIN' | 'MEMBER';
+          profileRev: number;
+        };
       }
     | {
         feedId: string;
         operation: 'GROUP_PROFILE';
-        body: { profileNamespaceId: number; profileRev: number };
+        body: { account: string; namespaceId: number; profileRev: number };
       }
     | {
         feedId: string;
@@ -68,7 +73,6 @@ export type GroupMetaProfileReference =
       type: 'GROUP';
       threadId: number;
       account: string;
-      domain: string;
       namespaceId: number;
       rev: number;
     }
@@ -76,7 +80,6 @@ export type GroupMetaProfileReference =
       type: 'GROUP_MEMBER';
       threadId: number;
       account: string;
-      domain: string;
       namespaceId: number;
       rev: number;
     };

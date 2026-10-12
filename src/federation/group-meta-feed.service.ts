@@ -9,42 +9,13 @@ import {
   groupStateFields,
 } from '../group/shared/group-state.js';
 import { readGroupMetaPageInTx } from '../group/meta/group-meta-page.js';
+import type {
+  GroupMetaFeedItem,
+  GroupMetaFeedPage,
+} from '../group/meta/group-meta-page.js';
 import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
 
-interface GroupMetaFeedItemBase {
-  feedId: number;
-  account: string;
-  domain: string;
-}
-
-export type GroupMetaFeedItem =
-  | (GroupMetaFeedItemBase & {
-      operation: 'MEMBER_UPSERT';
-      body: Record<string, unknown>;
-    })
-  | (GroupMetaFeedItemBase & {
-      operation: 'MEMBER_DEPART';
-      body: Record<string, unknown>;
-    })
-  | {
-      feedId: number;
-      operation: 'GROUP_PROFILE';
-      body: { namespaceId: number; profileRev: number };
-    }
-  | {
-      feedId: number;
-      operation: 'GROUP_ANNOUNCEMENT';
-      body: { text: string | null };
-    };
-
-export interface GroupMetaFeedPage {
-  account: string;
-  mode: 'full' | 'delta';
-  items: GroupMetaFeedItem[];
-  scannedThrough: number;
-  groupMetaFeedEndId: number;
-  hasMore: boolean;
-}
+export type { GroupMetaFeedItem, GroupMetaFeedPage };
 
 const DEFAULT_TAKE = 100;
 
@@ -117,34 +88,7 @@ export class FederationGroupMetaFeedService {
           end: feed?.metaEndId ?? 0,
           visibleAfter: audience?.visibleAfter ?? 0,
         });
-        return {
-          ...page,
-          items: page.items.map((item): GroupMetaFeedItem => {
-            if (item.operation === 'GROUP_PROFILE')
-              return {
-                feedId: item.feedId,
-                operation: 'GROUP_PROFILE',
-                body: {
-                  namespaceId: item.body.profileNamespaceId,
-                  profileRev: item.body.profileRev,
-                },
-              };
-            if (
-              item.operation === 'MEMBER_UPSERT' ||
-              item.operation === 'MEMBER_DEPART'
-            ) {
-              const { profileNamespaceId, ...body } = item.body;
-              return {
-                ...item,
-                body: {
-                  ...body,
-                  namespaceId: Number(profileNamespaceId),
-                },
-              };
-            }
-            return item;
-          }),
-        };
+        return page;
       },
       { isolationLevel: 'repeatable read', accessMode: 'read only' },
     );

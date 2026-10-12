@@ -500,6 +500,7 @@ export class GroupRelationshipMutationService {
     threadId: number,
     memberUserId: AccountTarget,
     projectionUserIds: readonly number[] = [],
+    feedAllocatorUserIds: readonly number[] = [],
   ) {
     const [thread] = await tx
       .select({ groupId: tables.messageThread.id })
@@ -512,6 +513,7 @@ export class GroupRelationshipMutationService {
       groupId: thread.groupId,
       memberUserId,
       projectionUserIds,
+      feedAllocatorUserIds,
     });
   }
 

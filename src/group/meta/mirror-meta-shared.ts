@@ -1,9 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { normalizeAccount } from '../../common/account.js';
-import {
-  validateNamespacedAddress,
-  validateNamespacedAddressOrNull,
-} from '../../common/client-identity.js';
 import type { ThreadContentLock } from '../../common/locks/thread-content-lock.js';
 import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
@@ -22,30 +18,32 @@ export interface MirrorGroupAddress {
   publisherNamespaceId: number;
 }
 
-/** One validated replica item pulled from the origin's Group Meta feed. */
+/** One validated replica item pulled from the origin's Group Meta feed. The
+ * member/group subject identity is (account, namespaceId) in the publisher's
+ * coordinate space and is stored verbatim; the display domain resolves through
+ * publisher-scoped namespace bindings, never from the item. */
 export type MirrorMetaReplicatedItem =
   | {
       feedId: number;
       operation: 'MEMBER_UPSERT';
       account: string;
-      domain: string;
+      namespaceId: number;
       role: GroupRole;
-      profileNamespaceId: number;
       profileRev: number;
     }
   | {
       feedId: number;
       operation: 'MEMBER_DEPART';
       account: string;
-      domain: string;
+      namespaceId: number;
       role: GroupRole;
-      profileNamespaceId: number;
       profileRev: number;
     }
   | {
       feedId: number;
       operation: 'GROUP_PROFILE';
-      profileNamespaceId: number;
+      account: string;
+      namespaceId: number;
       profileRev: number;
     }
   | {
@@ -53,49 +51,6 @@ export type MirrorMetaReplicatedItem =
       operation: 'GROUP_ANNOUNCEMENT';
       text: string | null;
     };
-
-/** Convert a validated origin wire address into this server's canonical member
- * address before any mirror fact or profile-demand logic runs. A member whose
- * wire domain is this server's domain is local here; every other domain remains
- * remote. */
-export function normalizeMirrorMetaMemberAddress(
-  account: string,
-  domain: string,
-  profileNamespaceId: number,
-): { account: string; domain: string; profileNamespaceId: number } {
-  const identity = validateNamespacedAddressOrNull({
-    account,
-    domain,
-    namespaceId: profileNamespaceId,
-  });
-  if (!identity) throw new Error('invalid local subject namespace');
-  return {
-    account: identity.account,
-    domain: identity.domain,
-    profileNamespaceId: identity.namespaceId,
-  };
-}
-
-/** Normalize member addresses at the mirror wire boundary. All downstream
- * persistence, roster, and profile-demand code consumes this canonical item. */
-export function normalizeMirrorMetaReplicatedItem(
-  group: Pick<MirrorGroupAddress, 'publisherNamespaceId'>,
-  item: MirrorMetaReplicatedItem,
-): MirrorMetaReplicatedItem {
-  if (item.operation !== 'MEMBER_UPSERT' && item.operation !== 'MEMBER_DEPART')
-    return item;
-  const member = normalizeMirrorMetaMemberAddress(
-    item.account,
-    item.domain,
-    item.profileNamespaceId,
-  );
-  return {
-    ...item,
-    account: member.account,
-    domain: member.domain,
-    profileNamespaceId: member.profileNamespaceId,
-  };
-}
 
 export interface MirrorMetaCursor {
   threadId: number;
@@ -166,12 +121,12 @@ export async function requireMirrorMetaInTx(
   return cursor;
 }
 
-/** Full and delta pages upsert each stable key and its coordinate. A mirror
- * MEMBER_DEPART retains a tombstone at the item's coordinate: the feed is a shared
- * coordinate space, and deleting the row would leave a hole that delta
- * readers skip past without ever learning the departure. Current-roster and
- * full-page readers filter to MEMBER_UPSERT rows, so the tombstone stays invisible
- * to them. */
+/** Full and delta pages upsert each stable subject key and its coordinate. A
+ * mirror MEMBER_DEPART retains a tombstone at the item's coordinate: the feed
+ * is a shared coordinate space, and deleting the row would leave a hole that
+ * delta readers skip past without ever learning the departure. Current-roster
+ * and full-page readers filter to MEMBER_UPSERT rows, so the tombstone stays
+ * invisible to them. */
 export async function applyMirrorMetaFactInTx(
   tx: DatabaseTransaction,
   threadId: number,
@@ -192,78 +147,38 @@ export async function applyMirrorMetaFactInTx(
       .where(eq(groupMeta.threadId, threadId));
     return;
   }
-  if (item.operation === 'MEMBER_DEPART') {
-    const subject = validateNamespacedAddress({
-      account: item.account,
-      domain: item.domain,
-      namespaceId: item.profileNamespaceId,
-    });
+  if (item.operation === 'GROUP_PROFILE') {
     await upsertCurrentGroupMetaFactsInTx(tx, [
       {
         threadId,
         feedId: item.feedId,
-        memberAccount: subject.account,
-        profileNamespaceId: subject.namespaceId,
-        operation: 'MEMBER_DEPART',
+        operation: 'GROUP_PROFILE',
         body: {
-          role: item.role,
-          profileNamespaceId: item.profileNamespaceId,
+          account: item.account,
+          namespaceId: item.namespaceId,
           profileRev: item.profileRev,
         },
       },
     ]);
-    return;
-  }
-  await upsertCurrentGroupMetaFactsInTx(tx, [
-    currentMirrorMetaFact(threadId, group, item),
-  ]);
-  if (item.operation === 'GROUP_PROFILE')
     await tx
       .update(groupMeta)
       .set({ profileRev: item.profileRev, updatedAt: new Date() })
       .where(eq(groupMeta.threadId, threadId));
-}
-
-/** Translate one full or delta upsert into the same current-fact key. */
-export function currentMirrorMetaFact(
-  threadId: number,
-  group: MirrorGroupAddress,
-  item: Extract<
-    MirrorMetaReplicatedItem,
-    { operation: 'MEMBER_UPSERT' | 'GROUP_PROFILE' }
-  >,
-): typeof groupMetaMemberFeed.$inferInsert {
-  const body =
-    item.operation === 'MEMBER_UPSERT'
-      ? {
-          role: item.role,
-          profileNamespaceId: item.profileNamespaceId,
-          profileRev: item.profileRev,
-        }
-      : {
-          profileNamespaceId: item.profileNamespaceId,
-          profileRev: item.profileRev,
-        };
-  const subject =
-    item.operation === 'GROUP_PROFILE'
-      ? {
-          account: group.account,
-          domain: group.domain,
-          namespaceId: group.publisherNamespaceId,
-        }
-      : validateNamespacedAddress({
-          account: item.account,
-          domain: item.domain,
-          namespaceId: item.profileNamespaceId,
-        });
-  return {
-    threadId,
-    feedId: item.feedId,
-    memberAccount: subject.account,
-    profileNamespaceId: subject.namespaceId,
-    operation: item.operation,
-    body,
-  };
+    return;
+  }
+  await upsertCurrentGroupMetaFactsInTx(tx, [
+    {
+      threadId,
+      feedId: item.feedId,
+      operation: item.operation,
+      body: {
+        account: item.account,
+        namespaceId: item.namespaceId,
+        role: item.role,
+        profileRev: item.profileRev,
+      },
+    },
+  ]);
 }
 
 /** Fences the scan cursor against the round's fixed target. */
@@ -380,9 +295,6 @@ export async function finalizeMirrorMetaRecoveryInTx(
   const dissolved = !membership.rows[0]?.active;
   await tx
     .update(messageThread)
-    .set({
-      groupDissolvedAt: dissolved ? new Date() : null,
-      updatedAt: new Date(),
-    })
+    .set({ groupDissolvedAt: dissolved ? new Date() : null })
     .where(eq(messageThread.id, input.threadId));
 }

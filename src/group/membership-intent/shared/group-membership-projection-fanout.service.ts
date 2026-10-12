@@ -84,8 +84,8 @@ export class GroupMembershipProjectionFanoutService {
       const afterManagerId = readCursor(current.afterManagerId);
       const next = await tx.execute<{ userId: number }>(sql`
         SELECT owner.id AS "userId" FROM "GroupMetaMemberFeed" fact
-        JOIN "Account" owner ON fact."profileNamespaceId" = 0
-          AND owner.account = fact."memberAccount"
+        JOIN "Account" owner ON fact.body -> 'namespaceId' = to_jsonb(0)
+          AND owner.account = fact.body ->> 'account'
         JOIN "AccountThreadState" participant
           ON participant."accountId" = owner.id AND participant."threadId" = ${threadId}
         WHERE fact."threadId" = ${threadId}

@@ -98,10 +98,8 @@ describe('exact directed intent account-profile disclosure', () => {
     await database.db.insert(groupMetaMemberFeed).values({
       threadId,
       feedId: 1,
-      memberAccount: '',
-      profileNamespaceId: 0,
       operation: 'GROUP_PROFILE',
-      body: { profileNamespaceId: 0, profileRev: 3 },
+      body: { account: groupName, namespaceId: 0, profileRev: 3 },
     });
     await database.db.insert(relationshipPair).values([
       {

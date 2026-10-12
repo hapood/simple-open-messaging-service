@@ -227,8 +227,8 @@ export class FederationProfileService {
               AND meta."profileRev" = ${rev}
             JOIN "GroupMetaMemberFeed" fact ON fact."threadId" = meta."threadId"
               AND fact.operation = 'GROUP_PROFILE'
-              AND (fact.body ->> 'profileNamespaceId')::integer = ${profileNamespaceId}
-              AND (fact.body ->> 'profileRev')::integer = ${rev}
+              AND fact.body -> 'namespaceId' = to_jsonb(${profileNamespaceId}::integer)
+              AND fact.body -> 'profileRev' = to_jsonb(${rev}::integer)
             JOIN "Profile" profile ON profile.account = group_account.account
               AND profile."publisherNamespaceId" = 0
               AND profile."profileNamespaceId" = ${profileNamespaceId}
@@ -466,18 +466,18 @@ export class FederationProfileService {
               EXISTS (
                 SELECT 1 FROM "GroupMetaMemberFeed" fact
                 WHERE fact."threadId" = thread.id
-                  AND fact."memberAccount" = profile.account
-                  AND (fact.body ->> 'profileNamespaceId')::integer = member_home.id
+                  AND fact.body ->> 'account' = profile.account
+                  AND fact.body -> 'namespaceId' = to_jsonb(member_home.id)
                   AND fact.operation = 'MEMBER_UPSERT'
                   AND fact."feedId" = (
                     SELECT MAX(current_fact."feedId")
                     FROM "GroupMetaMemberFeed" current_fact
                     WHERE current_fact."threadId" = fact."threadId"
-                      AND current_fact."memberAccount" = fact."memberAccount"
-                      AND (current_fact.body ->> 'profileNamespaceId')::integer = (fact.body ->> 'profileNamespaceId')::integer
+                      AND current_fact.body ->> 'account' = fact.body ->> 'account'
+                      AND current_fact.body -> 'namespaceId' = fact.body -> 'namespaceId'
                   )
-                  AND (fact.body ->> 'profileNamespaceId')::integer = ${profileNamespaceId}
-                  AND (fact.body ->> 'profileRev')::integer = ${rev}
+                  AND fact.body -> 'namespaceId' = to_jsonb(${profileNamespaceId}::integer)
+                  AND fact.body -> 'profileRev' = to_jsonb(${rev}::integer)
                   AND ((member_home.id = 0
                     AND profile."publisherNamespaceId" = thread."authorityNamespaceId") OR EXISTS (
                     SELECT 1 FROM "RelationshipPair" pair

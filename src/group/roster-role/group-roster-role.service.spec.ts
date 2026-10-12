@@ -134,21 +134,17 @@ describe('GroupRosterRoleService', () => {
       expect.arrayContaining([
         expect.objectContaining({
           account: 'owner',
+          profileNamespaceId: 0,
           operation: 'MEMBER_UPSERT',
-          body: {
-            role: GroupRole.ADMIN,
-            profileNamespaceId: 0,
-            profileRev: 3,
-          },
+          role: GroupRole.ADMIN,
+          profileRev: 3,
         }),
         expect.objectContaining({
           account: 'member',
+          profileNamespaceId: 0,
           operation: 'MEMBER_UPSERT',
-          body: {
-            role: GroupRole.OWNER,
-            profileNamespaceId: 0,
-            profileRev: 6,
-          },
+          role: GroupRole.OWNER,
+          profileRev: 6,
         }),
       ]),
     );
@@ -255,11 +251,10 @@ describe('GroupRosterRoleService', () => {
     expect(groupMeta.reconcileMembersInTx).toHaveBeenCalledWith(tx, 10, [
       expect.objectContaining({
         account: 'member',
-        body: {
-          role: GroupRole.ADMIN,
-          profileNamespaceId: 0,
-          profileRev: 6,
-        },
+        profileNamespaceId: 0,
+        operation: 'MEMBER_UPSERT',
+        role: GroupRole.ADMIN,
+        profileRev: 6,
       }),
     ]);
     expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(

@@ -57,14 +57,17 @@ export async function readCurrentGroupMemberByAddressInTx(
   validateGroupId(groupId);
   const namespaceId = identity.namespaceId;
   const result = await tx.execute<RosterRow>(sql`
-    SELECT fact."memberAccount" AS account, ns.domain AS domain,
-      fact."profileNamespaceId" AS "namespaceId", fact.body ->> 'role' AS role,
-      (fact.body ->> 'profileRev')::integer AS "profileRev"
+    SELECT fact.body ->> 'account' AS account,
+      COALESCE(ns.domain, '') AS domain,
+      fact.body -> 'namespaceId' AS "namespaceId", fact.body ->> 'role' AS role,
+      fact.body -> 'profileRev' AS "profileRev"
     FROM "GroupMetaMemberFeed" fact
-    JOIN "IdentityNamespace" ns ON ns.id = fact."profileNamespaceId"
+    LEFT JOIN "IdentityNamespace" ns
+      ON fact."threadId" IN (SELECT id FROM "MessageThread" WHERE "authorityNamespaceId" = 0)
+      AND ns.id = (fact.body -> 'namespaceId')::integer
     WHERE fact."threadId" = ${groupId}
-      AND fact."memberAccount" = ${identity.account}
-      AND fact."profileNamespaceId" = ${namespaceId}
+      AND fact.body ->> 'account' = ${identity.account}
+      AND fact.body -> 'namespaceId' = to_jsonb(${namespaceId}::integer)
       AND fact.operation = 'MEMBER_UPSERT'
   `);
   return result.rows[0] ? member(result.rows[0]) : undefined;
@@ -76,11 +79,14 @@ export async function readCurrentGroupRosterInTx(
 ): Promise<CurrentGroupRosterMember[]> {
   validateGroupId(groupId);
   const result = await tx.execute<RosterRow>(sql`
-    SELECT fact."memberAccount" AS account, ns.domain AS domain,
-      fact."profileNamespaceId" AS "namespaceId", fact.body ->> 'role' AS role,
-      (fact.body ->> 'profileRev')::integer AS "profileRev"
+    SELECT fact.body ->> 'account' AS account,
+      COALESCE(ns.domain, '') AS domain,
+      fact.body -> 'namespaceId' AS "namespaceId", fact.body ->> 'role' AS role,
+      fact.body -> 'profileRev' AS "profileRev"
     FROM "GroupMetaMemberFeed" fact
-    JOIN "IdentityNamespace" ns ON ns.id = fact."profileNamespaceId"
+    LEFT JOIN "IdentityNamespace" ns
+      ON fact."threadId" IN (SELECT id FROM "MessageThread" WHERE "authorityNamespaceId" = 0)
+      AND ns.id = (fact.body -> 'namespaceId')::integer
     WHERE fact."threadId" = ${groupId} AND fact.operation = 'MEMBER_UPSERT'
   `);
   return result.rows.map(member);
@@ -96,10 +102,13 @@ export async function readCurrentGroupOwnersInTx(
   const result = await tx.execute<
     Record<string, unknown> & NamespacedAddress & { groupId: number }
   >(sql`
-    SELECT fact."threadId" AS "groupId", fact."memberAccount" AS account,
-      ns.domain AS domain, fact."profileNamespaceId" AS "namespaceId"
+    SELECT fact."threadId" AS "groupId", fact.body ->> 'account' AS account,
+      COALESCE(ns.domain, '') AS domain,
+      fact.body -> 'namespaceId' AS "namespaceId"
     FROM "GroupMetaMemberFeed" fact
-    JOIN "IdentityNamespace" ns ON ns.id = fact."profileNamespaceId"
+    LEFT JOIN "IdentityNamespace" ns
+      ON fact."threadId" IN (SELECT id FROM "MessageThread" WHERE "authorityNamespaceId" = 0)
+      AND ns.id = (fact.body -> 'namespaceId')::integer
     WHERE fact."threadId" = ANY(${sql.param(ids)}::integer[])
       AND fact.operation = 'MEMBER_UPSERT' AND fact.body ->> 'role' = 'OWNER'
   `);
@@ -125,8 +134,8 @@ export async function readCurrentLocalGroupManagersInTx(
     throw new TypeError('invalid manager user ID');
   const result = await tx.execute<{ userId: number }>(sql`
     SELECT owner.id AS "userId" FROM "GroupMetaMemberFeed" fact
-    JOIN "Account" owner ON fact."profileNamespaceId" = 0
-      AND owner.account = fact."memberAccount"
+    JOIN "Account" owner ON fact.body -> 'namespaceId' = to_jsonb(0)
+      AND owner.account = fact.body ->> 'account'
       AND owner."namespaceId" = 0
     JOIN "AccountThreadState" participant ON participant."accountId" = owner.id AND participant."threadId" = ${params.threadId}
     WHERE fact."threadId" = ${params.groupId}

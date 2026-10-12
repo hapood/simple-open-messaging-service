@@ -279,12 +279,7 @@ export class ReceivedUserIntentService {
     const localLive =
       row.ownStatus === 'ACCEPTED' ||
       (row.ownStatus === 'REQUESTED' && ownRequestUnexpired(row));
-    if (intent.status === 'REVOKED')
-      await lockUserIntentThreadStateInTx(tx, threadId, localUser, peer);
-    else
-      await resetUserIntentThreadStateInTx(tx, threadId, localUser, peer, {
-        activate: localLive && !row.pairActive,
-      });
+    await lockUserIntentThreadStateInTx(tx, threadId, localUser, peer);
     await lockUserIntentAccountsInTx(tx, [command.localUserId]);
 
     // The peer's newest direction is always persisted first (the composed
@@ -314,8 +309,15 @@ export class ReceivedUserIntentService {
         peer,
         row,
         clientUpdates,
+        localUserId: command.localUserId,
       });
-    if (intent.status === 'ACCEPTED') return { routed: 'noop:dropped-ack' };
+    if (intent.status === 'ACCEPTED') {
+      await resetUserIntentThreadStateInTx(tx, threadId, localUser, peer, {
+        activate: false,
+        boundarySeq: row.threadCurSeq,
+      });
+      return { routed: 'noop:dropped-ack' };
+    }
     return this.applyRevocationInTx(tx, {
       wireIntent,
       pairId,
@@ -364,6 +366,7 @@ export class ReceivedUserIntentService {
     );
     const result = await tx.execute<{
       reverseUpgraded: boolean;
+      pairChanged: boolean;
       clientUpdates: Array<{ userId: number; feedId: number }>;
     }>(
       userIntentAcceptanceSql({
@@ -399,6 +402,16 @@ export class ReceivedUserIntentService {
           tombstoneEndSeq: wireIntent.tombstoneEndSeq,
         }),
       }),
+    );
+    await resetUserIntentThreadStateInTx(
+      tx,
+      threadId,
+      context.localUser,
+      context.peer,
+      {
+        activate: result.rows[0]?.pairChanged === true,
+        boundarySeq: context.row.threadCurSeq,
+      },
     );
     this.pushUpdates(result.rows[0], context.clientUpdates);
     // Announce our direction when this item promoted it, or
@@ -491,6 +504,7 @@ export class ReceivedUserIntentService {
       peer: Endpoint;
       row: UserIntentAuthorizationRow;
       clientUpdates: PendingClientStateFeedUpdate[];
+      localUserId: number;
     },
   ): Promise<ReceivedUserIntentResult> {
     const { intent, wireIntent, pairId, threadId } = context;
@@ -539,7 +553,20 @@ export class ReceivedUserIntentService {
         }),
       }),
     );
+    await resetUserIntentThreadStateInTx(
+      tx,
+      threadId,
+      context.localUser,
+      context.peer,
+      {
+        activate: false,
+        boundarySeq: context.row.threadCurSeq,
+      },
+    );
     this.pushUpdates(result.rows[0], context.clientUpdates);
+    context.clientUpdates.push(
+      ...(await captureThreadStateUpdatesInTx(tx, [context.localUserId])),
+    );
     // A stranger's application is recorded; an expired or withdrawn prior
     // direction is refreshed. The effects are identical — routing is only a
     // diagnostic. On an already-active pair the refresh carries no transition.

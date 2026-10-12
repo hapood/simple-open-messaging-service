@@ -101,31 +101,34 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       UNION ALL SELECT "metaEndId" FROM "GroupMeta" WHERE "threadId" = ${input.threadId}
         AND NOT EXISTS (SELECT 1 FROM meta_allocation)
     ), member_fact AS (
-      INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "profileNamespaceId", operation, body)
-      SELECT ${input.threadId}, h."metaEndId" - p."profileChanged"::integer, ${input.memberAccount},
-        ${input.profileNamespaceId}::integer,
+      INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", operation, body)
+      SELECT ${input.threadId}, h."metaEndId" - p."profileChanged"::integer,
         'MEMBER_UPSERT', jsonb_build_object(
+          'account', ${input.memberAccount}::text,
+          'namespaceId', ${input.profileNamespaceId}::integer,
           'role', p.role,
-          'profileNamespaceId', ${input.profileNamespaceId}::integer,
           'profileRev', s."memberProfileRev"
         )
       FROM meta_head h CROSS JOIN roster_plan p CROSS JOIN join_source s
       CROSS JOIN meta_allocation
       WHERE p."memberChanged"
-      ON CONFLICT ("threadId", "memberAccount", "profileNamespaceId")
+      ON CONFLICT ("threadId", (body ->> 'account'), (body -> 'namespaceId'))
+        WHERE operation <> 'GROUP_ANNOUNCEMENT'
       DO UPDATE SET "feedId" = EXCLUDED."feedId",
         operation = EXCLUDED.operation, body = EXCLUDED.body,
         "profileSourceSeq" = NULL, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
     ), profile_fact AS (
-      INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", "memberAccount", "profileNamespaceId", operation, body)
-      SELECT ${input.threadId}, h."metaEndId", ${input.groupAccount}, 0,
+      INSERT INTO "GroupMetaMemberFeed" ("threadId", "feedId", operation, body)
+      SELECT ${input.threadId}, h."metaEndId",
         'GROUP_PROFILE'::"GroupMetaMemberOperation",
-        jsonb_build_object('profileNamespaceId', 0, 'profileRev', ${input.groupProfileRev}::integer)
+        jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
+          'profileRev', ${input.groupProfileRev}::integer)
       FROM meta_head h CROSS JOIN roster_plan p
       CROSS JOIN meta_allocation
       WHERE p."profileChanged"
-      ON CONFLICT ("threadId", "memberAccount", "profileNamespaceId")
+      ON CONFLICT ("threadId", (body ->> 'account'), (body -> 'namespaceId'))
+        WHERE operation <> 'GROUP_ANNOUNCEMENT'
       DO UPDATE SET "feedId" = EXCLUDED."feedId",
         operation = EXCLUDED.operation, body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"
@@ -135,7 +138,7 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       SELECT fact."feedId" AS "profileSourceId"
       FROM "GroupMetaMemberFeed" fact
       WHERE fact."threadId" = ${input.threadId} AND fact.operation = 'GROUP_PROFILE'
-        AND (fact.body ->> 'profileRev')::integer = ${input.groupProfileRev}
+        AND fact.body -> 'profileRev' = to_jsonb(${input.groupProfileRev}::integer)
         AND NOT EXISTS (SELECT 1 FROM profile_fact)
     ), seq_alloc AS (
       UPDATE "MessageThread" t SET

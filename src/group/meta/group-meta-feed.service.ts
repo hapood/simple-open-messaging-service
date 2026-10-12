@@ -1,8 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { isDeepStrictEqual } from 'node:util';
-import { and, asc, eq, or, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { serializeBody } from '../../common/serialize.interceptor.js';
-import { GroupRole } from '../../database/enums.js';
 import { groupMeta, groupMetaMemberFeed } from '../../database/schema.js';
 import type { DatabaseTransaction } from '../../database/database.service.js';
 import {
@@ -11,24 +10,29 @@ import {
 } from '../shared/group-state.js';
 import { upsertCurrentGroupMetaFactsInTx } from './current-group-meta-fact.js';
 
-export interface GroupMetaMemberBody extends Record<string, unknown> {
-  role: GroupRole;
-  profileNamespaceId: number;
-  profileRev: number;
-}
-
+/** A member fact body in the new unified shape: the subject identity
+ * (account + publisher-coordinate namespaceId) lives inside the body. */
 export interface GroupMetaMemberChange {
   account: string;
   profileNamespaceId: number;
-  body: GroupMetaMemberBody;
   operation: 'MEMBER_UPSERT' | 'MEMBER_DEPART';
+  role: import('../../database/enums.js').GroupRole;
+  profileRev: number;
 }
 
-function memberKey(member: {
-  profileNamespaceId: number;
-  account: string;
-}): string {
-  return JSON.stringify([member.profileNamespaceId, member.account]);
+function memberKey(member: { account: string; namespaceId: number }): string {
+  return JSON.stringify([member.namespaceId, member.account]);
+}
+
+function memberFactBody(
+  member: GroupMetaMemberChange,
+): Record<string, unknown> {
+  return serializeBody({
+    account: member.account,
+    namespaceId: member.profileNamespaceId,
+    role: member.role,
+    profileRev: member.profileRev,
+  }) as Record<string, unknown>;
 }
 
 @Injectable()
@@ -44,56 +48,56 @@ export class GroupMetaFeedService {
     let metaEndId = locked.metaEndId;
     const history = await tx
       .select({
-        account: groupMetaMemberFeed.memberAccount,
-        profileNamespaceId: groupMetaMemberFeed.profileNamespaceId,
-        operation: groupMetaMemberFeed.operation,
         body: groupMetaMemberFeed.body,
+        operation: groupMetaMemberFeed.operation,
         feedId: groupMetaMemberFeed.feedId,
       })
       .from(groupMetaMemberFeed)
       .where(
         and(
           eq(groupMetaMemberFeed.threadId, groupId),
-          or(
-            ...members.map((member) =>
-              and(
-                eq(
-                  groupMetaMemberFeed.profileNamespaceId,
-                  member.profileNamespaceId,
-                ),
-                eq(groupMetaMemberFeed.memberAccount, member.account),
-              ),
-            ),
-          ),
+          sql`${groupMetaMemberFeed.body} ->> 'account' IN (${sql.join(
+            members.map((member) => sql`${member.account}`),
+            sql`, `,
+          )})`,
         ),
       )
       .orderBy(asc(groupMetaMemberFeed.feedId));
     const current = new Map(
-      history.map((item) => [memberKey(item), item] as const),
+      history
+        .filter((item) => typeof item.body.account === 'string')
+        .map(
+          (item) =>
+            [
+              memberKey({
+                account: item.body.account as string,
+                namespaceId: Number(item.body.namespaceId),
+              }),
+              item,
+            ] as const,
+        ),
     );
-    const changes = members
-      .map((member) => ({
-        ...member,
-        body: serializeBody(member.body) as Record<string, unknown>,
-      }))
-      .filter((member) => {
-        const previous = current.get(memberKey(member));
-        return (
-          previous?.operation !== member.operation ||
-          !isDeepStrictEqual(previous.body, member.body)
-        );
-      })
-      .sort(compareMembers);
+    const changes = members.filter((member) => {
+      const previous = current.get(
+        memberKey({
+          account: member.account,
+          namespaceId: member.profileNamespaceId,
+        }),
+      );
+      const body = memberFactBody(member);
+      return (
+        previous?.operation !== member.operation ||
+        !isDeepStrictEqual(previous.body, body)
+      );
+    });
     if (changes.length === 0) return metaEndId;
     await upsertCurrentGroupMetaFactsInTx(
       tx,
       changes.map((change) => ({
         threadId: groupId,
         feedId: ++metaEndId,
-        memberAccount: change.account,
-        profileNamespaceId: change.profileNamespaceId,
         operation: change.operation,
-        body: change.body,
+        body: memberFactBody(change),
         updatedAt: new Date(),
       })),
     );
@@ -109,7 +113,7 @@ export class GroupMetaFeedService {
     groupId: number,
     member: GroupMetaMemberChange,
   ): Promise<number> {
-    const body = serializeBody(member.body) as Record<string, unknown>;
+    const body = memberFactBody(member);
     const allocation = await tx.execute<{ metaEndId: number }>(sql`
       WITH coordinate AS (
         INSERT INTO "GroupMeta" ("threadId", "metaEndId")
@@ -120,14 +124,14 @@ export class GroupMetaFeedService {
         RETURNING "metaEndId"
       ), member_fact AS (
         INSERT INTO "GroupMetaMemberFeed"
-          ("threadId", "feedId", "memberAccount", "profileNamespaceId",
-            operation, body)
-        SELECT ${groupId}, coordinate."metaEndId", ${member.account},
-          ${member.profileNamespaceId},
+          ("threadId", "feedId", operation, body)
+        SELECT ${groupId}, coordinate."metaEndId",
           ${member.operation}::"GroupMetaMemberOperation",
           ${JSON.stringify(body)}::jsonb
         FROM coordinate
-        ON CONFLICT ("threadId", "memberAccount", "profileNamespaceId")
+        ON CONFLICT ("threadId", (body ->> 'account'),
+            (body -> 'namespaceId'))
+          WHERE operation <> 'GROUP_ANNOUNCEMENT'
         DO UPDATE SET "feedId" = EXCLUDED."feedId",
           "profileSourceSeq" = CASE
             WHEN "GroupMetaMemberFeed".operation = 'MEMBER_DEPART'
@@ -196,10 +200,8 @@ export class GroupMetaFeedService {
       {
         threadId: groupId,
         feedId: metaEndId,
-        memberAccount: source.account,
-        profileNamespaceId: 0,
         operation: 'GROUP_PROFILE',
-        body: { profileNamespaceId: 0, profileRev },
+        body: { account: source.account, namespaceId: 0, profileRev },
         updatedAt: new Date(),
       },
     ]);
@@ -240,14 +242,4 @@ export class GroupMetaFeedService {
       .set({ metaEndId, profileRev, updatedAt: new Date() })
       .where(eq(groupMeta.threadId, groupId));
   }
-}
-
-function compareMembers(
-  left: { profileNamespaceId: number; account: string },
-  right: { profileNamespaceId: number; account: string },
-): number {
-  return (
-    left.profileNamespaceId - right.profileNamespaceId ||
-    left.account.localeCompare(right.account)
-  );
 }

@@ -262,40 +262,41 @@ describe('federation reverse thread rounds (two nodes)', () => {
   }
 
   it('retains a quote when its source was withdrawn before a remote member joined', async () => {
-    const { _originThreadId, mirrorThreadId } =
-      await createJoinedFederatedGroup(
-        'late-join-withdrawn-quote',
-        async (threadId) => {
-          const source = await request(appA.baseUrl)
-            .post('/api/v1/send-message')
-            .set('Authorization', `Bearer ${tokenA}`)
-            .send({
-              threadId,
-              content: 'withdraw-before-join',
-              contentType: ContentType.PURE_TEXT,
-              clientMessageId: randomUUID(),
-            });
-          expect(source.body.code).toBe(BusinessCode.OK);
-          const reply = await request(appA.baseUrl)
-            .post('/api/v1/send-message')
-            .set('Authorization', `Bearer ${tokenA}`)
-            .send({
-              threadId,
-              content: JSON.stringify({
-                text: 'late-join-quote',
-                quote: { seq: source.body.data.seq },
-              }),
-              contentType: ContentType.PURE_TEXT,
-              clientMessageId: randomUUID(),
-            });
-          expect(reply.body.code).toBe(BusinessCode.OK);
-          const withdrawn = await request(appA.baseUrl)
-            .post('/api/v1/withdraw-message')
-            .set('Authorization', `Bearer ${tokenA}`)
-            .send({ threadId, seq: source.body.data.seq });
-          expect(withdrawn.body.code).toBe(BusinessCode.OK);
-        },
-      );
+    let sourceSeq!: number;
+    const { originThreadId, mirrorThreadId } = await createJoinedFederatedGroup(
+      'late-join-withdrawn-quote',
+      async (threadId) => {
+        const source = await request(appA.baseUrl)
+          .post('/api/v1/send-message')
+          .set('Authorization', `Bearer ${tokenA}`)
+          .send({
+            threadId,
+            content: 'withdraw-before-join',
+            contentType: ContentType.PURE_TEXT,
+            clientMessageId: randomUUID(),
+          });
+        expect(source.body.code).toBe(BusinessCode.OK);
+        sourceSeq = source.body.data.seq;
+        const reply = await request(appA.baseUrl)
+          .post('/api/v1/send-message')
+          .set('Authorization', `Bearer ${tokenA}`)
+          .send({
+            threadId,
+            content: JSON.stringify({
+              text: 'late-join-quote',
+              quote: { seq: source.body.data.seq },
+            }),
+            contentType: ContentType.PURE_TEXT,
+            clientMessageId: randomUUID(),
+          });
+        expect(reply.body.code).toBe(BusinessCode.OK);
+        const withdrawn = await request(appA.baseUrl)
+          .post('/api/v1/withdraw-message')
+          .set('Authorization', `Bearer ${tokenA}`)
+          .send({ threadId, seq: source.body.data.seq });
+        expect(withdrawn.body.code).toBe(BusinessCode.OK);
+      },
+    );
     const mirror = await vi.waitFor(
       async () => {
         const rows = await appB.database.query.message.findMany({
@@ -328,17 +329,16 @@ describe('federation reverse thread rounds (two nodes)', () => {
     expect(queried.body.code).toBe(BusinessCode.OK);
     expect(JSON.parse(queried.body.data.messages[0].content)).toMatchObject({
       text: 'late-join-quote',
-      quote: { status: 'NOT_FOUND' },
+      quote: { namespaceId: mirror.publisherNamespaceId, originSeq: sourceSeq },
     });
-    const resolved = await request(appB.baseUrl)
-      .post('/api/v1/message/quote-resolution')
-      .set('Authorization', `Bearer ${tokenB}`)
-      .send({ threadId: mirrorThreadId, messageSeq: mirror.seq });
-    expect(resolved.body.code).toBe(BusinessCode.OK);
-    expect(resolved.body.data).toMatchObject({
-      status: 'READY',
-      result: { status: 'NOT_FOUND' },
-    });
+    expect(
+      await appA.database.query.message.findFirst({
+        where: and(
+          eq(message.threadId, originThreadId),
+          eq(message.seq, sourceSeq),
+        ),
+      }),
+    ).toMatchObject({ isDeleted: true });
   }, 60_000);
 
   it('filters third-party mirror copies before a later local gallery submission', async () => {
@@ -418,7 +418,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
           localState: 'READY',
           isDeleted: false,
         });
-        expect(source!.originSeq).toBe(received!.seq - 1);
+        expect(source!.originSeq).toBe(received!.seq);
         expect(
           await appA.database.query.message.findFirst({
             where: and(
@@ -473,6 +473,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       { timeout: 20_000, interval: 100 },
     );
     expect(origin.seq).not.toBe(sent.body.data.seq);
+    expect(origin.originSeq).toBe(sent.body.data.seq);
     await vi.waitFor(
       async () => {
         const source = await appB.database.query.message.findFirst({
@@ -521,7 +522,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
           }),
         ).toMatchObject({
           isDeleted: true,
-          originSeq: sent.body.data.originSeq,
+          originSeq: sent.body.data.seq,
         });
         expect(
           await appA.database.query.deletedMessage.findFirst({
@@ -1059,13 +1060,12 @@ describe('federation reverse thread rounds (two nodes)', () => {
           .where(
             and(
               eq(groupMetaMemberFeed.threadId, mirror.id!),
-              eq(groupMetaMemberFeed.memberAccount, 'reversecarol'),
-              eq(
-                groupMetaMemberFeed.profileNamespaceId,
+              sql`${groupMetaMemberFeed.body} ->> 'account' = ${'reversecarol'}`,
+              sql`${groupMetaMemberFeed.body} -> 'namespaceId' = to_jsonb(${
                 (await appB.database.query.identityNamespace.findFirst({
                   where: eq(identityNamespace.domain, FED_DOMAIN_A),
-                }))!.id,
-              ),
+                }))!.id
+              }::integer)`,
             ),
           );
         expect(departedCarolFacts).toEqual([]);

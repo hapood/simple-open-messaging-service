@@ -260,7 +260,11 @@ export class MirrorGroupMembershipIntentService {
     await this.deps.peerFeed.lockOutboundStateFeedNamespacesInTx(tx, [
       { namespaceId: group.namespaceId },
     ]);
-    const presentation = await this.presentationInTx(tx, threadId);
+    const presentation: MirrorGroupPresentationInput = {
+      groupAccount: group.account,
+      groupDomain: group.domain,
+      groupNamespaceId: group.namespaceId,
+    };
     const effective = (
       status: MirrorMembershipStateRow['memberIntentStatus'],
       expiresAt: string | null,
@@ -654,22 +658,6 @@ export class MirrorGroupMembershipIntentService {
     const row = result.rows[0];
     if (!row) throw new Error('mirror group thread disappeared');
     return row;
-  }
-
-  private async presentationInTx(
-    tx: DatabaseTransaction,
-    threadId: number,
-  ): Promise<MirrorGroupPresentationInput> {
-    const state = await readGroupState(tx, eq(groupStateFields.id, threadId));
-    if (!state) throw new Error('mirror group thread disappeared');
-    return {
-      groupAccount: state.account,
-      groupDomain: state.domain,
-      groupNamespaceId: state.namespaceId,
-      groupAvatar: state.avatar,
-      groupDescription: state.description,
-      groupProfileRev: state.profileRev,
-    };
   }
 
   private pushRecipient(

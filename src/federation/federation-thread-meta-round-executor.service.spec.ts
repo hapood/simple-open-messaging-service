@@ -73,12 +73,11 @@ describe('federation Group Meta round profile behavior', () => {
       items: [
         {
           feedId: 2,
-          account: 'alice',
-          domain: 'local',
           operation: 'MEMBER_UPSERT',
           body: {
-            role: GroupRole.MEMBER,
+            account: 'alice',
             namespaceId: -1,
+            role: GroupRole.MEMBER,
             profileRev: 1,
           },
         },

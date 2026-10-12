@@ -1,6 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
@@ -79,10 +79,8 @@ describe('exact profile completion for a federated group member', () => {
     await database.db.insert(tables.groupMetaMemberFeed).values({
       threadId,
       feedId: 1,
-      memberAccount: account,
-      profileNamespaceId: namespaceId,
       operation: 'MEMBER_UPSERT',
-      body: { role: 'OWNER', profileNamespaceId: namespaceId, profileRev: 2 },
+      body: { account, namespaceId, role: 'OWNER', profileRev: 2 },
     });
     await database.db.insert(tables.profileTable).values(
       [1, 2].map((profileRev) => ({
@@ -201,7 +199,7 @@ describe('exact profile completion for a federated group member', () => {
     await database.db
       .update(tables.groupMetaMemberFeed)
       .set({
-        body: { role: 'OWNER', profileNamespaceId: namespaceId, profileRev: 3 },
+        body: { account, namespaceId, role: 'OWNER', profileRev: 3 },
       })
       .where(eq(tables.groupMetaMemberFeed.threadId, threadId));
     try {
@@ -226,8 +224,9 @@ describe('exact profile completion for a federated group member', () => {
         .update(tables.groupMetaMemberFeed)
         .set({
           body: {
+            account,
+            namespaceId,
             role: 'OWNER',
-            profileNamespaceId: namespaceId,
             profileRev: 2,
           },
         })
@@ -314,13 +313,14 @@ describe('exact profile completion for a federated group member', () => {
   it('serves a departed subject from cache but does not authorize an uncached revision', async () => {
     const member = and(
       eq(tables.groupMetaMemberFeed.threadId, threadId),
-      eq(tables.groupMetaMemberFeed.memberAccount, account),
+      sql`${tables.groupMetaMemberFeed.body} ->> 'account' = ${account}`,
+      sql`${tables.groupMetaMemberFeed.body} -> 'namespaceId' = to_jsonb(${namespaceId}::integer)`,
     );
     await database.db
       .update(tables.groupMetaMemberFeed)
       .set({
         operation: 'MEMBER_DEPART',
-        body: { role: 'OWNER', profileNamespaceId: namespaceId, profileRev: 2 },
+        body: { account, namespaceId, role: 'OWNER', profileRev: 2 },
       })
       .where(member);
     try {
@@ -339,8 +339,9 @@ describe('exact profile completion for a federated group member', () => {
         .set({
           operation: 'MEMBER_UPSERT',
           body: {
+            account,
+            namespaceId,
             role: 'OWNER',
-            profileNamespaceId: namespaceId,
             profileRev: 2,
           },
         })

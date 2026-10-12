@@ -40,6 +40,7 @@ import { lockAccountFeedAllocatorsInTx } from '../common/locks/account-feed-allo
 import { GroupRelationshipMutationService } from './membership-intent/shared/group-relationship-mutation.service.js';
 import { GroupMetaFeedService } from './meta/group-meta-feed.service.js';
 import { enqueueCurrentThreadFanoutsInTx } from '../message/thread-fanout-task.js';
+import { ThreadFeedHeadWriter } from '../message/thread-feed-head.writer.js';
 import { MessageService } from '../message/message.service.js';
 import { SystemMessageType } from '../message/system-message.js';
 import { isThreadMutuallyAuthorized } from '../relationship/shared/relationship-authorization.js';
@@ -165,8 +166,8 @@ export class GroupService {
       LEFT JOIN LATERAL (
         SELECT member_fact.operation FROM "GroupMetaMemberFeed" member_fact
         WHERE member_fact."threadId" = thread_scope.id
-          AND member_fact."memberAccount" = friend.account
-          AND member_fact."profileNamespaceId" = friend."namespaceId"
+          AND member_fact.body ->> 'account' = friend.account
+          AND member_fact.body -> 'namespaceId' = to_jsonb(friend."namespaceId")
         ORDER BY member_fact."feedId" DESC LIMIT 1
       ) member ON true
       LEFT JOIN "GroupRequestProjection" invitation ON
@@ -390,9 +391,9 @@ export class GroupService {
   }
 
   /**
-   * Create a local group account, its initial immutable profile, and its conversation.
-   * The owner's authored relationship creates the first canonical OWNER membership fact.
-   * Retry a minted account collision without exposing any partial creation state.
+   * Create the revision-zero group and owner conversation first, then set its
+   * profile in a separate transaction. Publish captured feed heads only after
+   * both transactions commit. Account collision retries cover creation only.
    */
   @MeasureBusinessOperation('group.create')
   async createNewGroup(params: {
@@ -404,118 +405,132 @@ export class GroupService {
     assertGroupNameLength(params.name);
     for (let attempt = 0; attempt < 3; attempt++) {
       const account = mintGroupAccount();
-      try {
-        const result = await this.database.db.transaction(async (tx) => {
-          const [ownerAccount] = await tx
-            .insert(groupAccount)
-            .values({ account, defaultProfileRev: 1 })
-            .returning();
-          const [thread] = await tx
-            .insert(messageThread)
-            .values({
-              type: MessageThreadType.GROUP,
-              groupAccount: account,
-              groupDomain: await localIdentityDomain(tx),
-              groupAccountId: ownerAccount.id,
-              federationRoundsEnabled: true,
-              authorityNamespaceId: 0,
-              updatedAt: new Date(),
-            })
-            .returning();
-          const groupState = {
-            id: thread.id,
-            account,
-            name: params.name,
-            avatar: params.avatar ?? '',
-            description: params.description ?? '',
-          };
-          await tx.insert(profileTable).values({
-            account,
-            publisherNamespaceId: 0,
-            profileNamespaceId: 0,
-            profileRev: 1,
-            displayName: groupState.name,
-            avatar: groupState.avatar,
-            bio: groupState.description,
+      const result = await (async () => {
+        try {
+          return await this.database.db.transaction(async (tx) => {
+            const [ownerAccount] = await tx
+              .insert(groupAccount)
+              .values({ account, defaultProfileRev: 0 })
+              .returning();
+            const [thread] = await tx
+              .insert(messageThread)
+              .values({
+                type: MessageThreadType.GROUP,
+                groupAccount: account,
+                groupDomain: await localIdentityDomain(tx),
+                groupAccountId: ownerAccount.id,
+                federationRoundsEnabled: true,
+                authorityNamespaceId: 0,
+                updatedAt: new Date(),
+              })
+              .returning();
+            const groupState = {
+              id: thread.id,
+              account,
+              name: params.name,
+              avatar: params.avatar ?? '',
+              description: params.description ?? '',
+            };
+            const clientFeedUpdates: PendingClientStateFeedUpdate[] = [];
+            // Entry-scope advisory for the freshly minted group: uncontended, but
+            // taken here so the seeding writers keep the entry-lock contract.
+            await lockBusinessAccountsInTx(tx, [
+              { account, profileNamespaceId: 0 },
+            ]);
+            // Establish an explicit cleared announcement before any origin feed
+            // can be served; subsequent membership/profile facts use later ids.
+            await tx.insert(groupMeta).values({
+              threadId: thread.id,
+              metaEndId: 1,
+              announcementFeedId: 1,
+              announcementText: null,
+            });
+            await this.relationshipMutations.writeGroupRelationshipIntentInTx(
+              tx,
+              thread.id,
+              params.owner,
+              '',
+              'REQUESTED',
+              clientFeedUpdates,
+            );
+            // The creation notice is authority-local history: federation message
+            // feeds exclude SYSTEM rows. Write it before owner activation so the
+            // new participant's read boundary initializes at this sequence.
+            const owner = await tx.query.account.findFirst({
+              where: eq(userAccount.id, params.owner),
+              columns: {
+                account: true,
+                defaultProfileRev: true,
+              },
+            });
+            if (!owner) throw new Error('group creator account is unavailable');
+            await this.messages.writeSystemMessageInTx(tx, thread.id, {
+              type: SystemMessageType.GROUP_CREATED,
+              creator: {
+                account: owner.account,
+                profileNamespaceId: 0,
+                profileRev: owner.defaultProfileRev,
+              },
+            });
+            await this.relationshipMutations.writeMemberRelationshipIntentInTx(
+              tx,
+              thread.id,
+              params.owner,
+              'ACCEPTED',
+              clientFeedUpdates,
+              '',
+              undefined,
+              { initialRole: GroupRole.OWNER },
+            );
+            await this.relationshipMutations.writeGroupRelationshipIntentInTx(
+              tx,
+              thread.id,
+              params.owner,
+              '',
+              'ACCEPTED',
+              clientFeedUpdates,
+            );
+            return {
+              id: groupState.id,
+              threadId: thread.id,
+              name: groupState.name,
+              avatar: groupState.avatar,
+              bio: groupState.description,
+              clientFeedUpdates,
+            };
           });
-          const clientFeedUpdates: Array<{
-            userId: number;
-            feedId: number;
-          }> = [];
-          // Entry-scope advisory for the freshly minted group: uncontended, but
-          // taken here so the seeding writers keep the entry-lock contract.
-          await lockBusinessAccountsInTx(tx, [
-            { account, profileNamespaceId: 0 },
-          ]);
-          // Establish an explicit cleared announcement before any origin feed
-          // can be served; subsequent membership/profile facts use later ids.
-          await tx.insert(groupMeta).values({
-            threadId: thread.id,
-            metaEndId: 1,
-            announcementFeedId: 1,
-            announcementText: null,
-          });
-          await this.relationshipMutations.writeGroupRelationshipIntentInTx(
+        } catch (e) {
+          if (!isP2002(e)) throw e;
+          return undefined;
+        }
+      })();
+      if (!result) continue;
+      const profileFeedUpdates = await this.database.db.transaction(
+        async (tx) => {
+          await this.updateGroupInTx(
             tx,
-            thread.id,
-            params.owner,
-            '',
-            'REQUESTED',
-            clientFeedUpdates,
-          );
-          // The creation notice is authority-local history: federation message
-          // feeds exclude SYSTEM rows. Write it before owner activation so the
-          // new participant's read boundary initializes at this sequence.
-          const owner = await tx.query.account.findFirst({
-            where: eq(userAccount.id, params.owner),
-            columns: {
-              account: true,
-              defaultProfileRev: true,
+            {
+              threadId: result.threadId,
+              operatorUserId: params.owner,
+              name: params.name,
+              description: params.description ?? '',
+              avatar: params.avatar ?? '',
             },
-          });
-          if (!owner) throw new Error('group creator account is unavailable');
-          await this.messages.writeSystemMessageInTx(tx, thread.id, {
-            type: SystemMessageType.GROUP_CREATED,
-            creator: {
-              account: owner.account,
-              profileNamespaceId: 0,
-              profileRev: owner.defaultProfileRev,
-            },
-          });
-          await this.relationshipMutations.writeMemberRelationshipIntentInTx(
-            tx,
-            thread.id,
-            params.owner,
-            'ACCEPTED',
-            clientFeedUpdates,
-            '',
-            undefined,
-            { initialRole: GroupRole.OWNER },
+            [params.owner],
           );
-          await this.relationshipMutations.writeGroupRelationshipIntentInTx(
-            tx,
-            thread.id,
-            params.owner,
-            '',
-            'ACCEPTED',
-            clientFeedUpdates,
-          );
-          return {
-            id: groupState.id,
-            threadId: thread.id,
-            name: groupState.name,
-            avatar: groupState.avatar,
-            bio: groupState.description,
-            clientFeedUpdates,
-          };
-        });
-        this.clientStateFeed.notifyFeedUpdates(result.clientFeedUpdates);
-        const { clientFeedUpdates: _clientFeedUpdates, ...groupResult } =
-          result;
-        return groupResult;
-      } catch (e) {
-        if (!isP2002(e)) throw e; // regenerate a fresh ULID, never append a counter
-      }
+          await ThreadFeedHeadWriter.reconcileGroupMetaCoordinateInTx(tx, {
+            threadId: result.threadId,
+            userIds: [params.owner],
+          });
+          return captureThreadStateUpdatesInTx(tx, [params.owner]);
+        },
+      );
+      this.clientStateFeed.notifyFeedUpdates([
+        ...result.clientFeedUpdates,
+        ...profileFeedUpdates,
+      ]);
+      const { clientFeedUpdates: _clientFeedUpdates, ...groupResult } = result;
+      return groupResult;
     }
     throw new Error(
       'group account collision after 3 attempts (probabilistically impossible)',
@@ -788,87 +803,104 @@ export class GroupService {
     avatar?: string;
   }) {
     assertGroupNameLength(params.name);
-    return this.database.db.transaction(async (tx) => {
-      // Entry-scope advisory: the group's business scope is held before any row
-      // lock; nested writers never take advisories themselves.
-      const [located] = await tx
-        .select({
-          account: groupStateFields.account,
-          domain: groupStateFields.domain,
-          namespaceId: groupStateFields.namespaceId,
-        })
-        .from(messageThread)
-        .innerJoin(group, eq(group.id, messageThread.id))
-        .where(eq(messageThread.id, params.threadId))
-        .limit(1);
-      if (located)
-        await lockBusinessAccountsInTx(tx, [
-          {
-            account: located.account,
-            profileNamespaceId: located.namespaceId,
-          },
-        ]);
-      const locked = await this.relationshipMutations.lockGroupMutationInTx(
-        tx,
-        params.threadId,
-        params.operatorUserId,
-      );
-      const [current] = await tx
-        .select({ group: groupStateFields })
-        .from(messageThread)
-        .innerJoin(group, eq(group.id, messageThread.id))
-        .where(eq(messageThread.id, params.threadId))
-        .limit(1);
-      if (!current)
-        throw new BusinessException(
-          BusinessCode.NOT_FOUND,
-          'group thread not found',
-          HttpStatus.NOT_FOUND,
-        );
-      if (current.group.namespaceId !== 0 || current.group.dissolvedAt !== null)
-        throw new BusinessException(
-          BusinessCode.GROUP_FORBIDDEN,
-          'group profile authority is unavailable',
-        );
-      await this.assertGroupManagerInTx(
-        tx,
-        params.threadId,
-        params.operatorUserId,
-      );
-      const name = params.name ?? current.group.name;
-      const description = params.description ?? current.group.description;
-      const avatar = params.avatar ?? current.group.avatar;
-      if (
-        name === current.group.name &&
-        description === current.group.description &&
-        avatar === current.group.avatar
-      )
-        return current.group;
+    return this.database.db.transaction((tx) =>
+      this.updateGroupInTx(tx, params),
+    );
+  }
 
-      const nextRev = current.group.profileRev + 1;
-      await tx.insert(profileTable).values({
-        account: current.group.account,
-        publisherNamespaceId: 0,
-        profileNamespaceId: 0,
-        profileRev: nextRev,
-        displayName: name,
-        avatar,
-        bio: description,
-      });
-      await tx
-        .update(groupAccount)
-        .set({ defaultProfileRev: nextRev, updatedAt: new Date() })
-        .where(eq(groupAccount.account, current.group.account));
-      await tx
-        .update(messageThread)
-        .set({ updatedAt: new Date() })
-        .where(eq(messageThread.id, params.threadId));
-      const row = await readGroupState(tx, eq(group.id, params.threadId));
-      if (!row) throw new Error('group profile update returned no row');
-      await this.groupMeta.reconcileProfileInTx(tx, current.group.id, nextRev);
-      await enqueueCurrentThreadFanoutsInTx(tx, locked.threadLock);
-      return row;
+  private async updateGroupInTx(
+    tx: DatabaseTransaction,
+    params: {
+      threadId: number;
+      operatorUserId: number;
+      name?: string;
+      description?: string;
+      avatar?: string;
+    },
+    feedAllocatorUserIds: readonly number[] = [],
+  ) {
+    // Entry-scope advisory: the group's business scope is held before any row
+    // lock; nested writers never take advisories themselves.
+    const [located] = await tx
+      .select({
+        account: groupStateFields.account,
+        domain: groupStateFields.domain,
+        namespaceId: groupStateFields.namespaceId,
+      })
+      .from(messageThread)
+      .innerJoin(group, eq(group.id, messageThread.id))
+      .where(eq(messageThread.id, params.threadId))
+      .limit(1);
+    if (located)
+      await lockBusinessAccountsInTx(tx, [
+        {
+          account: located.account,
+          profileNamespaceId: located.namespaceId,
+        },
+      ]);
+    const locked = await this.relationshipMutations.lockGroupMutationInTx(
+      tx,
+      params.threadId,
+      params.operatorUserId,
+      [],
+      feedAllocatorUserIds,
+    );
+    const [current] = await tx
+      .select({ group: groupStateFields })
+      .from(messageThread)
+      .innerJoin(group, eq(group.id, messageThread.id))
+      .where(eq(messageThread.id, params.threadId))
+      .limit(1);
+    if (!current)
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'group thread not found',
+        HttpStatus.NOT_FOUND,
+      );
+    if (current.group.namespaceId !== 0 || current.group.dissolvedAt !== null)
+      throw new BusinessException(
+        BusinessCode.GROUP_FORBIDDEN,
+        'group profile authority is unavailable',
+      );
+    await this.assertGroupManagerInTx(
+      tx,
+      params.threadId,
+      params.operatorUserId,
+    );
+    const name = params.name ?? current.group.name;
+    const description = params.description ?? current.group.description;
+    const avatar = params.avatar ?? current.group.avatar;
+    if (
+      current.group.profileRev !== 0 &&
+      name === current.group.name &&
+      description === current.group.description &&
+      avatar === current.group.avatar
+    )
+      return current.group;
+
+    const nextRev = current.group.profileRev + 1;
+    await tx.insert(profileTable).values({
+      account: current.group.account,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
+      profileRev: nextRev,
+      displayName: name,
+      avatar,
+      bio: description,
     });
+    await tx
+      .update(groupAccount)
+      .set({ defaultProfileRev: nextRev, updatedAt: new Date() })
+      .where(eq(groupAccount.account, current.group.account));
+    await tx
+      .update(messageThread)
+      .set({ updatedAt: new Date() })
+      .where(eq(messageThread.id, params.threadId));
+    const row = await readGroupState(tx, eq(group.id, params.threadId));
+    if (!row) throw new Error('group profile update returned no row');
+    await this.groupMeta.reconcileProfileInTx(tx, current.group.id, nextRev);
+    await enqueueCurrentThreadFanoutsInTx(tx, locked.threadLock);
+    return row;
   }
 
   async assertGroupManagerInTx(

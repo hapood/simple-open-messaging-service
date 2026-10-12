@@ -367,18 +367,19 @@ describe('WebdbService', () => {
             {
               feedId: '1',
               operation: 'MEMBER_UPSERT',
-              account: 'me',
-              domain: 'local',
-              namespaceId: 7,
-              body: { role: 'MEMBER', profileRev: 2 },
+              body: {
+                account: 'me',
+                namespaceId: 7,
+                role: 'MEMBER',
+                profileRev: 2,
+              },
             },
             {
               feedId: '2',
               operation: 'MEMBER_UPSERT',
-              account: 'other',
-              domain: 'third.test',
-              namespaceId: 7,
               body: {
+                account: 'other',
+                namespaceId: 7,
                 role: 'MEMBER',
                 profileRev: 2,
               },
@@ -386,7 +387,7 @@ describe('WebdbService', () => {
             {
               feedId: '3',
               operation: 'GROUP_PROFILE',
-              body: { profileNamespaceId: 0, profileRev: 4 },
+              body: { account: '!mirror', namespaceId: 7, profileRev: 4 },
             },
           ],
         },
@@ -394,18 +395,16 @@ describe('WebdbService', () => {
       const members = await webdb.queryGroupMembers({ threadId: 90, take: 10 });
       expect(members).toHaveLength(2);
       expect(members.find((member) => member.account === 'me')).toMatchObject({
-        domain: 'local',
         namespaceId: 7,
         user: { name: 'me' },
       });
       expect(
         members.find((member) => member.account === 'other'),
       ).toMatchObject({
-        domain: 'third.test',
         namespaceId: 7,
         user: { name: 'other' },
       });
-      expect(await webdb.getGroupMember(90, 'me', 'local', 7)).toMatchObject({
+      expect(await webdb.getGroupMember(90, 'me', 7)).toMatchObject({
         namespaceId: 7,
       });
       expect(await db!.get('threads', 90)).toMatchObject({
@@ -554,18 +553,19 @@ describe('WebdbService', () => {
               {
                 feedId: '1',
                 operation: 'MEMBER_UPSERT',
-                account: 'bob',
-                domain: 'local',
-                namespaceId: 0,
-                body: { role: 'MEMBER', profileRev: 1 },
+                body: {
+                  account: 'bob',
+                  namespaceId: 0,
+                  role: 'MEMBER',
+                  profileRev: 1,
+                },
               },
               {
                 feedId: '2',
                 operation: 'MEMBER_UPSERT',
-                account: 'alice',
-                domain: 'local',
-                namespaceId: 0,
                 body: {
+                  account: 'alice',
+                  namespaceId: 0,
                   role: 'ADMIN',
                   profileRev: 1,
                   ...{ displayName: 'Conflicting name', profileResolved: true },
@@ -1988,7 +1988,6 @@ describe('WebdbService', () => {
         threadId: 9,
         namespaceId: 0,
         account: 'alice',
-        domain: 'local',
         profileRev: 1,
         role: 'MEMBER',
         left: false,
@@ -2008,7 +2007,6 @@ describe('WebdbService', () => {
         threadId: 9,
         namespaceId: 0,
         account: 'bob',
-        domain: 'local',
         profileRev: 1,
         role: 'MEMBER',
         left: false,
@@ -2121,23 +2119,27 @@ describe('WebdbService', () => {
             {
               feedId: '1',
               operation: 'GROUP_PROFILE',
-              body: { profileNamespaceId: 0, profileRev: 4 },
+              body: { account: '!team', namespaceId: 0, profileRev: 4 },
             },
             {
               feedId: '2',
               operation: 'MEMBER_UPSERT',
-              account: 'alice',
-              domain: 'local',
-              namespaceId: 0,
-              body: { role: 'OWNER', profileRev: 2 },
+              body: {
+                account: 'alice',
+                namespaceId: 0,
+                role: 'OWNER',
+                profileRev: 2,
+              },
             },
             {
               feedId: '3',
               operation: 'MEMBER_UPSERT',
-              account: 'bob',
-              domain: 'peer.test',
-              namespaceId: 12,
-              body: { role: 'MEMBER', profileRev: 5 },
+              body: {
+                account: 'bob',
+                namespaceId: 12,
+                role: 'MEMBER',
+                profileRev: 5,
+              },
             },
           ],
         },
@@ -2329,10 +2331,9 @@ describe('WebdbService', () => {
             {
               feedId: '1',
               operation: 'MEMBER_UPSERT',
-              account: 'self',
-              domain: 'local',
-              namespaceId: 0,
               body: {
+                account: 'self',
+                namespaceId: 0,
                 role: 'OWNER',
                 profileRev: 1,
               },
@@ -2340,10 +2341,9 @@ describe('WebdbService', () => {
             {
               feedId: '2',
               operation: 'MEMBER_UPSERT',
-              account: 'alice',
-              domain: 'home.example',
-              namespaceId: 12,
               body: {
+                account: 'alice',
+                namespaceId: 12,
                 role: 'ADMIN',
                 profileRev: 6,
               },
@@ -2364,7 +2364,7 @@ describe('WebdbService', () => {
       ).toEqual([
         expect.objectContaining({
           account: 'alice',
-          domain: 'home.example',
+          namespaceId: 12,
           user: expect.objectContaining({ name: 'Alice' }),
         }),
       ]);
@@ -2376,7 +2376,7 @@ describe('WebdbService', () => {
       });
 
       expect(
-        await webdb.getGroupMember(9, 'alice', 'home.example', 12),
+        await webdb.getGroupMember(9, 'alice', 12),
       ).toMatchObject({ profileRev: 6, profileMessageSeq: null });
 
       expect(
@@ -2384,7 +2384,6 @@ describe('WebdbService', () => {
           9,
           {
             account: 'alice',
-            domain: 'home.example',
             namespaceId: 12,
           },
           3,
@@ -2396,7 +2395,6 @@ describe('WebdbService', () => {
           9,
           {
             account: 'alice',
-            domain: 'home.example',
             namespaceId: 12,
           },
           9,
@@ -2410,7 +2408,6 @@ describe('WebdbService', () => {
             threadId: 9,
             rev: 3,
             account: 'alice',
-            domain: 'home.example',
             namespaceId: 12,
           },
           {
@@ -2419,13 +2416,12 @@ describe('WebdbService', () => {
             avatarBase64: 'YWJj',
             bio: 'Team',
             account: 'alice',
-            domain: 'home.example',
             namespaceId: 12,
           },
         ),
       ).toBe(true);
       expect(
-        await webdb.getGroupMember(9, 'alice', 'home.example', 12),
+        await webdb.getGroupMember(9, 'alice', 12),
       ).toMatchObject({
         profileRev: 3,
         profileMessageSeq: 20,
@@ -2444,10 +2440,12 @@ describe('WebdbService', () => {
             {
               feedId: '3',
               operation: 'MEMBER_UPSERT',
-              account: 'alice',
-              domain: 'home.example',
-              namespaceId: 12,
-              body: { role: 'MEMBER', profileRev: 6 },
+              body: {
+                account: 'alice',
+                namespaceId: 12,
+                role: 'MEMBER',
+                profileRev: 6,
+              },
             },
           ],
           hasMore: false,
@@ -2456,7 +2454,7 @@ describe('WebdbService', () => {
         },
       });
       expect(
-        await webdb.getGroupMember(9, 'alice', 'home.example', 12),
+        await webdb.getGroupMember(9, 'alice', 12),
       ).toMatchObject({ profileRev: 3, profileMessageSeq: 20, role: 'MEMBER' });
 
       await webdb.applyGroupMetaPage({
@@ -2469,10 +2467,9 @@ describe('WebdbService', () => {
             {
               feedId: '4',
               operation: 'MEMBER_UPSERT',
-              account: 'self',
-              domain: 'local',
-              namespaceId: 0,
               body: {
+                account: 'self',
+                namespaceId: 0,
                 role: 'ADMIN',
                 profileRev: 1,
               },
@@ -2510,10 +2507,12 @@ describe('WebdbService', () => {
             {
               feedId: '5',
               operation: 'MEMBER_DEPART',
-              account: 'self',
-              domain: 'local',
-              namespaceId: 0,
-              body: {},
+              body: {
+                account: 'self',
+                namespaceId: 0,
+                role: 'ADMIN',
+                profileRev: 1,
+              },
             },
           ],
           hasMore: false,
@@ -2548,10 +2547,12 @@ describe('WebdbService', () => {
             {
               feedId: '6',
               operation: 'MEMBER_DEPART',
-              account: 'alice',
-              domain: 'home.example',
-              namespaceId: 12,
-              body: {},
+              body: {
+                account: 'alice',
+                namespaceId: 12,
+                role: 'MEMBER',
+                profileRev: 6,
+              },
             },
           ],
           hasMore: false,
@@ -2655,10 +2656,9 @@ describe('WebdbService', () => {
             {
               feedId: '1',
               operation: 'MEMBER_UPSERT',
-              account: 'alice',
-              domain: 'local.test',
-              namespaceId: 0,
               body: {
+                account: 'alice',
+                namespaceId: 0,
                 role: 'OWNER',
                 profileRev: 1,
               },
@@ -2666,10 +2666,9 @@ describe('WebdbService', () => {
             {
               feedId: '2',
               operation: 'MEMBER_UPSERT',
-              account: 'bob',
-              domain: 'remote.test',
-              namespaceId: 12,
               body: {
+                account: 'bob',
+                namespaceId: 12,
                 role: 'MEMBER',
                 profileRev: 1,
               },
@@ -2739,7 +2738,7 @@ describe('WebdbService', () => {
         }),
       ]);
       expect(
-        await webdb.getGroupMember(12, 'bob', 'remote.test', 12),
+        await webdb.getGroupMember(12, 'bob', 12),
       ).toMatchObject({ role: 'MEMBER', left: false });
       expect((await webdb.getThreads())[0]).toMatchObject({
         group: { memberCount: 2, groupMetaFeedId: '2' },
@@ -2759,9 +2758,7 @@ describe('WebdbService', () => {
         }),
       ).toBeDefined();
       await webdb.beginGroupMetaRecovery(12, '3');
-      expect(
-        await webdb.getGroupMember(12, 'bob', 'remote.test', 12),
-      ).toBeUndefined();
+      expect(await webdb.getGroupMember(12, 'bob', 12)).toBeUndefined();
       expect((await webdb.getThreads())[0]).toMatchObject({
         group: { memberCount: 0, groupMetaFeedId: '0' },
       });

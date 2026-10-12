@@ -144,7 +144,8 @@ CREATE TYPE public."FileSyncStatus" AS ENUM (
 CREATE TYPE public."GroupMetaMemberOperation" AS ENUM (
     'MEMBER_UPSERT',
     'MEMBER_DEPART',
-    'GROUP_PROFILE'
+    'GROUP_PROFILE',
+    'GROUP_ANNOUNCEMENT'
 );
 
 
@@ -1250,10 +1251,8 @@ CREATE TABLE public."GroupMetaMemberFeed" (
     "createdAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updatedAt" timestamp(3) with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "threadId" integer NOT NULL,
-    "memberAccount" character varying(31) NOT NULL,
-    "profileNamespaceId" integer NOT NULL,
     "profileSourceSeq" integer,
-    CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK (((jsonb_typeof(body) = 'object'::text) AND (((operation = 'MEMBER_UPSERT'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'MEMBER_DEPART'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb)) OR ((operation = 'GROUP_PROFILE'::public."GroupMetaMemberOperation") AND (body <> '{}'::jsonb))))),
+    CONSTRAINT "GroupMetaMemberFeed_body_check" CHECK (((jsonb_typeof(body) = 'object'::text) AND (body <> '{}'::jsonb))),
     CONSTRAINT "GroupMetaMemberFeed_feedId_check" CHECK (("feedId" > 0)),
     CONSTRAINT "GroupMetaMemberFeed_profileSourceSeq_check" CHECK ((("profileSourceSeq" IS NULL) OR ("profileSourceSeq" > 0)))
 );
@@ -3091,7 +3090,7 @@ CREATE INDEX "ForwardMessage_bundleId_idx" ON public."ForwardMessage" USING btre
 -- Name: GroupMetaMemberFeed_member_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "GroupMetaMemberFeed_member_key" ON public."GroupMetaMemberFeed" USING btree ("threadId", "memberAccount", "profileNamespaceId");
+CREATE UNIQUE INDEX "GroupMetaMemberFeed_member_key" ON public."GroupMetaMemberFeed" USING btree ("threadId", ((body ->> 'account'::text)), ((body -> 'namespaceId'::text))) WHERE (operation <> 'GROUP_ANNOUNCEMENT'::public."GroupMetaMemberOperation");
 
 
 --
@@ -3760,14 +3759,6 @@ ALTER TABLE ONLY public."ForwardMessage"
 
 
 --
--- Name: GroupMetaMemberFeed GroupMetaMemberFeed_profileNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."GroupMetaMemberFeed"
-    ADD CONSTRAINT "GroupMetaMemberFeed_profileNamespaceId_fkey" FOREIGN KEY ("profileNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
-
-
---
 -- Name: GroupMetaMemberFeed GroupMetaMemberFeed_threadId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3869,14 +3860,6 @@ ALTER TABLE ONLY public."MessageThread"
 
 ALTER TABLE ONLY public."MessageThread"
     ADD CONSTRAINT "MessageThread_groupAccountId_fkey" FOREIGN KEY ("groupAccountId") REFERENCES public."GroupAccount"(id) ON DELETE RESTRICT;
-
-
---
--- Name: Message Message_profileNamespaceId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."Message"
-    ADD CONSTRAINT "Message_profileNamespaceId_fkey" FOREIGN KEY ("profileNamespaceId") REFERENCES public."IdentityNamespace"(id) ON DELETE RESTRICT;
 
 
 --

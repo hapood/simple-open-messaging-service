@@ -309,10 +309,9 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
       expect.objectContaining({
         namespaceId: 1,
         account: 'charlie',
-        domain: 'bravo.test',
         rev: 1,
         name: 'Charlie Bravo',
-        avatarBase64: null,
+        bio: 'bio',
       }),
     );
     expect(resolveProfileDemand).toHaveBeenCalledTimes(1);

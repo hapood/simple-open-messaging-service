@@ -28,7 +28,7 @@ use messages::{
     MessageInterval, MessageRange, MessageRangeState, ServerMessageRange,
 };
 
-const CACHE_SCHEMA_VERSION: i64 = 41;
+const CACHE_SCHEMA_VERSION: i64 = 42;
 
 pub(crate) fn invalidate_account_work() -> Result<(), String> {
     drop(lifetime::CACHE_LIFETIME.invalidate()?);
@@ -228,13 +228,12 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           user_id INTEGER NOT NULL,
           thread_id INTEGER NOT NULL,
           member_account TEXT NOT NULL,
-          member_domain TEXT NOT NULL,
           namespace_id INTEGER NOT NULL,
           role TEXT NOT NULL,
           left_state INTEGER NOT NULL DEFAULT 0,
           profile_rev INTEGER NOT NULL DEFAULT 0,
           profile_message_seq INTEGER,
-          PRIMARY KEY (user_id, thread_id, member_account, member_domain, namespace_id)
+          PRIMARY KEY (user_id, thread_id, member_account, namespace_id)
         );
         CREATE INDEX IF NOT EXISTS members_thread
           ON members(user_id, thread_id, left_state, namespace_id, member_account);

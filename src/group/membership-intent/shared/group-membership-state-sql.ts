@@ -67,10 +67,10 @@ export function groupMembershipStateSql(input: {
       WHERE "threadId" = ${input.threadId}
     ), managers AS MATERIALIZED (
       SELECT a.id, r.body ->> 'role' AS role
-      FROM roster r JOIN "Account" a ON a.account = r."memberAccount"
+      FROM roster r JOIN "Account" a ON a.account = r.body ->> 'account'
         AND a."namespaceId" = 0
       JOIN "AccountThreadState" p ON p."accountId" = a.id AND p."threadId" = ${input.threadId}
-      WHERE r."profileNamespaceId" = 0
+      WHERE (r.body -> 'namespaceId') = to_jsonb(0)
         AND r.operation = 'MEMBER_UPSERT' AND r.body->>'role' IN ('OWNER', 'ADMIN')
     ), capacity_scope AS MATERIALIZED (
       -- Same authorization growth gate as the group-side variants: each side A

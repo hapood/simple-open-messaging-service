@@ -87,12 +87,25 @@ function validatePage(
           entry.operation !== 'GROUP_ANNOUNCEMENT' &&
           entry.operation !== 'MEMBER_UPSERT' &&
           entry.operation !== 'MEMBER_DEPART') ||
+        (typeof entry.body !== 'object' ||
+          entry.body === null ||
+          Array.isArray(entry.body)) ||
         ((entry.operation === 'MEMBER_UPSERT' ||
           entry.operation === 'MEMBER_DEPART') &&
-          (!entry.account ||
-            !entry.domain ||
-            !Number.isSafeInteger(entry.namespaceId) ||
-            entry.namespaceId < 0)),
+          (!entry.body.account ||
+            !Number.isSafeInteger(entry.body.namespaceId) ||
+            entry.body.namespaceId < 0 ||
+            (entry.body.role !== 'OWNER' &&
+              entry.body.role !== 'ADMIN' &&
+              entry.body.role !== 'MEMBER') ||
+            !Number.isSafeInteger(entry.body.profileRev) ||
+            entry.body.profileRev < 0)) ||
+        (entry.operation === 'GROUP_PROFILE' &&
+          (!entry.body.account ||
+            !Number.isSafeInteger(entry.body.namespaceId) ||
+            entry.body.namespaceId < 0 ||
+            !Number.isSafeInteger(entry.body.profileRev) ||
+            entry.body.profileRev < 0)),
     )
   )
     throw new Error('invalid group-meta page');

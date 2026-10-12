@@ -101,9 +101,6 @@ export interface MirrorGroupPresentationInput {
   groupAccount: string;
   groupDomain: string;
   groupNamespaceId: number;
-  groupAvatar: string;
-  groupDescription: string;
-  groupProfileRev: number;
 }
 
 /** The invitee-facing compaction key: same tuple ClientStateFeedService uses,
@@ -123,8 +120,8 @@ export function mirrorIntentCompactionKey(input: {
 }
 
 /** The invitee's RELATIONSHIP_INTENT feed body for a received group intent:
- * status, note, timestamps, thread, and
- * the group presentation). `established` mirrors the pair's
+ * status, note, timestamps, thread, and the persisted declaration's profile
+ * revision. Group Meta is consumed independently and is not a source here. `established` mirrors the pair's
  * sticky flag: a kicked former member must read true (sibling CTE reads see
  * the pre-statement snapshot, so a same-statement deactivation stays sticky). */
 export function mirrorIntentFeedBodySql(params: {
@@ -133,6 +130,7 @@ export function mirrorIntentFeedBodySql(params: {
   requestedAt: SQL;
   expiresAt: SQL;
   established: SQL;
+  profileRev: SQL;
   threadId: number;
   presentation: MirrorGroupPresentationInput;
   requestStatus?: 'WITHDRAWN' | 'REJECTED';
@@ -148,9 +146,7 @@ export function mirrorIntentFeedBodySql(params: {
       'threadId', ${params.threadId}::integer,
       'group', jsonb_build_object('account', ${params.presentation.groupAccount}::text,
         'namespaceId', ${params.presentation.groupNamespaceId}::integer,
-        'avatar', ${params.presentation.groupAvatar}::text,
-        'description', ${params.presentation.groupDescription}::text,
-        'profileRev', ${params.presentation.groupProfileRev}::integer)) || ${provenance}`;
+        'profileRev', ${params.profileRev})) || ${provenance}`;
 }
 
 /** Millisecond wire timestamps from nullable timestamp columns. */

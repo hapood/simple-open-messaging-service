@@ -88,12 +88,13 @@ export function groupMembershipRevocationSql(
         AND "receiverAccount" = ${groupEndpoint.account} AND "receiverNamespaceId" = ${groupEndpoint.namespaceId} LIMIT 1)`;
   const memberProfileNamespaceId = input.profileNamespaceId;
   const memberBody = sql`jsonb_build_object(
+    'account', ${input.memberAccount}::text,
+    'namespaceId', ${memberProfileNamespaceId}::integer,
     'role', COALESCE((SELECT body ->> 'role' FROM "GroupMetaMemberFeed"
       WHERE "threadId" = ${input.threadId}
-        AND "memberAccount" = ${input.memberAccount}
-        AND "profileNamespaceId" = ${memberProfileNamespaceId}
+        AND body ->> 'account' = ${input.memberAccount}
+        AND (body -> 'namespaceId') = to_jsonb(${memberProfileNamespaceId}::integer)
         AND operation = 'MEMBER_UPSERT' LIMIT 1), 'MEMBER')::text,
-    'profileNamespaceId', ${memberProfileNamespaceId}::integer,
     'profileRev', COALESCE(${memberProfileRev}, 0)::integer)`;
   const content = sql`jsonb_build_object('type', 'GROUP_LEFT', 'member',
     jsonb_build_object('account', ${input.memberAccount}::text,
@@ -132,11 +133,12 @@ export function groupMembershipRevocationSql(
       RETURNING f."metaEndId"
     ), depart_fact AS (
       INSERT INTO "GroupMetaMemberFeed"
-        ("threadId", "feedId", "memberAccount", "profileNamespaceId", operation, body)
-      SELECT ${input.threadId}, a."metaEndId", ${input.memberAccount}, ${memberProfileNamespaceId},
+        ("threadId", "feedId", operation, body)
+      SELECT ${input.threadId}, a."metaEndId",
         'MEMBER_DEPART'::"GroupMetaMemberOperation", ${memberBody}::jsonb
       FROM depart_alloc a
-      ON CONFLICT ("threadId", "memberAccount", "profileNamespaceId")
+      ON CONFLICT ("threadId", (body ->> 'account'), (body -> 'namespaceId'))
+        WHERE operation <> 'GROUP_ANNOUNCEMENT'
       DO UPDATE SET "feedId" = EXCLUDED."feedId",
         operation = EXCLUDED.operation, body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "feedId"

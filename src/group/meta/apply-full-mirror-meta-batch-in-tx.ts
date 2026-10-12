@@ -16,7 +16,6 @@ import type {
 } from './mirror-meta-shared.js';
 import {
   advanceMirrorProcessedThroughInTx,
-  currentMirrorMetaFact,
   finalizeMirrorMetaRecoveryInTx,
   lockMirrorGroupInTx,
   requireMirrorMetaInTx,
@@ -64,14 +63,39 @@ export async function applyFullMirrorMetaBatchInTx(
   const profileDemands = input.items
     .map((item) => selectMirrorMetaProfileDemand(input.group, item))
     .filter((demand): demand is ProfilePrefetchDemand => demand !== null);
-  const facts = input.items.flatMap((item) => {
+  type MirrorFactInsert = (typeof groupMetaMemberFeed)['$inferInsert'];
+  const facts = input.items.flatMap<MirrorFactInsert>((item) => {
     if (item.operation === 'MEMBER_DEPART')
       throw new Error(
         'a full group-meta snapshot cannot contain MEMBER_DEPART',
       );
-    return item.operation === 'GROUP_ANNOUNCEMENT'
-      ? []
-      : [currentMirrorMetaFact(mirror.threadId, input.group, item)];
+    if (item.operation === 'GROUP_ANNOUNCEMENT') return [];
+    if (item.operation === 'GROUP_PROFILE')
+      return [
+        {
+          threadId: mirror.threadId,
+          feedId: item.feedId,
+          operation: 'GROUP_PROFILE' as const,
+          body: {
+            account: item.account,
+            namespaceId: item.namespaceId,
+            profileRev: item.profileRev,
+          },
+        },
+      ];
+    return [
+      {
+        threadId: mirror.threadId,
+        feedId: item.feedId,
+        operation: item.operation,
+        body: {
+          account: item.account,
+          namespaceId: item.namespaceId,
+          role: item.role,
+          profileRev: item.profileRev,
+        },
+      },
+    ];
   });
   await upsertCurrentGroupMetaFactsInTx(tx, facts);
   const announcement = input.items.find(

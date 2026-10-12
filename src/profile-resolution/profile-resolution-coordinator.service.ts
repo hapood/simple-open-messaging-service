@@ -198,14 +198,14 @@ export class ProfileResolutionCoordinatorService {
               SELECT fact.operation, fact.body
               FROM "GroupMetaMemberFeed" fact
               WHERE fact."threadId" = group_state.id
-                AND fact."memberAccount" = ${normalizeAccount(demand.target.account)}
-                AND (fact.body ->> 'profileNamespaceId')::integer = ${demand.target.profileNamespaceId}
+                AND fact.body ->> 'account' = ${normalizeAccount(demand.target.account)}
+                AND fact.body -> 'namespaceId' = to_jsonb(${demand.target.profileNamespaceId}::integer)
               ORDER BY fact."feedId" DESC
               LIMIT 1
             ) latest
             WHERE latest.operation = 'MEMBER_UPSERT'
-              AND (latest.body ->> 'profileNamespaceId')::integer = ${demand.target.profileNamespaceId}
-              AND (latest.body ->> 'profileRev')::integer = ${demand.target.rev}
+              AND latest.body -> 'namespaceId' = to_jsonb(${demand.target.profileNamespaceId}::integer)
+              AND latest.body -> 'profileRev' = to_jsonb(${demand.target.rev}::integer)
           ) OR EXISTS (
             SELECT 1 FROM "Message" message
             WHERE message."threadId" = thread.id
@@ -299,8 +299,8 @@ export class ProfileResolutionCoordinatorService {
               AND thread."groupAccount" = ${account}
               AND thread."authorityNamespaceId" = ${demand.publisherNamespaceId}
               AND latest.operation = 'GROUP_PROFILE'
-              AND (latest.body ->> 'profileNamespaceId')::integer = ${demand.target.profileNamespaceId}
-              AND (latest.body ->> 'profileRev')::integer = ${demand.target.rev}
+              AND latest.body -> 'namespaceId' = to_jsonb(${demand.target.profileNamespaceId}::integer)
+              AND latest.body -> 'profileRev' = to_jsonb(${demand.target.rev}::integer)
           )
         )
       LIMIT 1

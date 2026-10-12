@@ -15,7 +15,13 @@ import {
   viewChild,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import { firstValueFrom, Subscription } from 'rxjs';
+import {
+  catchError,
+  firstValueFrom,
+  map,
+  of,
+  Subscription,
+} from 'rxjs';
 import { HttpClient } from '@angular/common/http';
 import { TranslocoModule, TranslocoService } from '@jsverse/transloco';
 import {
@@ -124,6 +130,8 @@ import { CallPresentationService } from '../../services/call-presentation.servic
 import { BusinessCode, translateBizResult } from '../../services/biz-code';
 import { tauriInvoke } from '../../services/runtime';
 import { ProfileRepository } from '../../services/profile-store.service';
+import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
+import { namespaceDisplayDomain } from '../../services/profile-namespace-domain';
 import { PopupType, RouteService } from '../../services/route.service';
 import { currentGroupAnnouncement } from '../../services/group-announcement';
 import { GroupAnnouncementComponent } from '../group-announcement/group-announcement.component';
@@ -286,6 +294,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly userService = inject(UserService);
   readonly selfUserId = computed(() => this.userService.sessionProfile()?.id);
   private readonly profileRepo = inject(ProfileRepository);
+  private readonly namespaces = inject(ProfileNamespaceRepository);
   private readonly wsService = inject(WebsocketService);
   private readonly layout = inject(LayoutService);
   private readonly galleryViewer = inject(GalleryViewerService);
@@ -1614,6 +1623,20 @@ export class MessageThreadComponent implements OnDestroy {
     );
     if (!profile) return;
     this.dismissContextMenu();
+    // Member rows no longer store a display domain; the contact card resolves
+    // the member-home diagonal binding (the namespace publishing its own
+    // profiles) at open time instead.
+    const memberHomeDomain = await firstValueFrom(
+      this.namespaces
+        .resolve({
+          publisherNamespaceId: identity.namespaceId,
+          profileNamespaceId: identity.namespaceId,
+        })
+        .pipe(
+          map(namespaceDisplayDomain),
+          catchError(() => of(null)),
+        ),
+    );
     const friendThreadId = this.convList
       .items()
       .find(
@@ -1631,7 +1654,7 @@ export class MessageThreadComponent implements OnDestroy {
           name: profile.name,
           avatar: profile.avatar,
           bio: profile.bio,
-          domain: profile.domain,
+          domain: memberHomeDomain ?? '',
           namespaceId: profile.namespaceId,
           friendThreadId,
           relationship:

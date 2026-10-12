@@ -165,7 +165,7 @@ describe('Group Meta background synchronization', () => {
             {
               feedId: '1',
               operation: 'GROUP_PROFILE',
-              body: { profileRev: 1 },
+              body: { account: 'room', namespaceId: 7, profileRev: 1 },
             },
           ],
           scannedThrough: '1',

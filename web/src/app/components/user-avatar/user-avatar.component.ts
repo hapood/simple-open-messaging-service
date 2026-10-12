@@ -132,10 +132,17 @@ export class UserAvatarComponent {
         if (source.type === 'snapshot') return of(source.domain);
         return this.injector
           .get(ProfileNamespaceRepository)
-          .resolve({
-            publisherNamespaceId: 0,
-            profileNamespaceId: source.namespaceId,
-          })
+          .resolve(
+            source.type === 'subject-home'
+              ? {
+                  publisherNamespaceId: source.namespaceId,
+                  profileNamespaceId: source.namespaceId,
+                }
+              : {
+                  publisherNamespaceId: 0,
+                  profileNamespaceId: source.namespaceId,
+                },
+          )
           .pipe(map(namespaceDisplayDomain));
       }),
     ),
@@ -177,7 +184,11 @@ export class UserAvatarComponent {
   readonly federatedMarkerDomain = computed(() => {
     const source = this.domainSource();
     if (!source) return null;
-    if (source.type === 'namespace' && source.namespaceId === 0) return null;
+    if (
+      (source.type === 'namespace' || source.type === 'subject-home') &&
+      source.namespaceId === 0
+    )
+      return null;
     return this.resolvedDomain();
   });
 
@@ -275,10 +286,10 @@ export class UserAvatarComponent {
     const namespace = this.type() === UserAvatarType.GROUP ? 'g' : 'u';
     const source = this.domainSource();
     const coordinate =
-      source?.type === 'namespace'
-        ? source.namespaceId
-        : source?.type === 'snapshot'
-          ? source.domain
+      source?.type === 'snapshot'
+        ? source.domain
+        : source?.type === 'namespace' || source?.type === 'subject-home'
+          ? source.namespaceId
           : this.federatedMarkerDomain();
     const n = account ? JSON.stringify([namespace, coordinate, account]) : '';
     let h = 0;
