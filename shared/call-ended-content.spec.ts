@@ -6,11 +6,13 @@ const base = {
   callId: '550e8400-e29b-41d4-a716-446655440000',
   caller: {
     account: 'alice',
+    publisherNamespaceId: 0,
     profileNamespaceId: 1,
     profileRev: 0,
   },
   callee: {
     account: 'bob',
+    publisherNamespaceId: 3,
     profileNamespaceId: 2,
     profileRev: 0,
   },

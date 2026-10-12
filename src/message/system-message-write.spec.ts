@@ -33,6 +33,7 @@ describe('MessageService local system messages', () => {
         type: SystemMessageType.GROUP_JOINED,
         member: {
           account: 'alice',
+          publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 2,
         },
@@ -84,6 +85,7 @@ describe('MessageService local system messages', () => {
       type: SystemMessageType.GROUP_JOINED,
       member: {
         account: 'alice',
+        publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 2,
       },
@@ -104,6 +106,7 @@ describe('MessageService local system messages', () => {
       type: 'GROUP_JOINED',
       member: {
         account: 'alice',
+        publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 2,
       },
@@ -124,6 +127,7 @@ describe('MessageService local system messages', () => {
         type: SystemMessageType.GROUP_JOINED,
         member: {
           account: 'alice',
+          publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 2,
         },
@@ -149,17 +153,20 @@ describe('MessageService local system messages', () => {
         type: SystemMessageType.FRIEND_REMOVED,
         initiator: {
           account: 'bob',
+          publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 1,
         },
         participants: [
           {
             account: 'bob',
+            publisherNamespaceId: 0,
             profileNamespaceId: 0,
             profileRev: 1,
           },
           {
             account: 'alice',
+            publisherNamespaceId: 0,
             profileNamespaceId: 0,
             profileRev: 2,
           },
@@ -197,17 +204,20 @@ describe('MessageService local system messages', () => {
       type: SystemMessageType.FRIEND_REMOVED,
       initiator: {
         account: 'bob',
+        publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 1,
       },
       participants: [
         {
           account: 'bob',
+          publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 1,
         },
         {
           account: 'alice',
+          publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 2,
         },

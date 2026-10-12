@@ -146,20 +146,9 @@ export interface ClientMessageHistoryGap {
   recoverable: boolean;
 }
 
-function authorNamespaceId(message: {
-  publisherNamespaceId: number;
-  profileNamespaceId: number;
-}): number {
-  // The publisher's own subject is namespace 0 on its server, but clients
-  // address that author by the publisher's namespace on this server.
-  return message.profileNamespaceId === 0
-    ? message.publisherNamespaceId
-    : message.profileNamespaceId;
-}
-
 /**
  * Drop the internal BigInt `id` from a Message row. `id` is a global autoincrement — a cross-conversation
- * throughput side-channel whose deltas leak server-wide volume — so it must never reach a client or
+ * throughput side-channel whose leaks server-wide volume — so it must never reach a client or
  * federation payload; only the per-thread `seq` is public. Applied at every response/SSE boundary. (The
  * create path needs `id` for the MediaMessage FK, so the row is created in full and the id stripped only
  * on the way out — hence a post-hoc strip rather than a query-level omit on the create.)
@@ -183,10 +172,14 @@ export function stripMessageId<
   if (creatorAccount === null) throw new Error('message has no author');
   return {
     ...rest,
-    namespaceId: authorNamespaceId(msg),
+    namespaceId: msg.profileNamespaceId,
     creator: {
       account: creatorAccount,
-      namespaceId: authorNamespaceId(msg),
+      // The stored subject profile namespace. Clients address the author by
+      // this namespace scoped under the row's publisherNamespaceId; rewriting
+      // it to the publisher namespace would break roster/member joins for the
+      // publisher's own namespace-0 subjects.
+      namespaceId: msg.profileNamespaceId,
     },
   };
 }
@@ -748,7 +741,7 @@ export class MessageService {
     if (committed) {
       if (
         committed.creatorAccount !== author.account ||
-        authorNamespaceId(committed) !== author.namespaceId
+        committed.profileNamespaceId !== author.namespaceId
       ) {
         throw new BusinessException(
           BusinessCode.VALIDATION_FAILED,
@@ -1681,7 +1674,7 @@ export class MessageService {
             {
               account: target.creatorAccount,
               publisherNamespaceId: target.publisherNamespaceId,
-              profileNamespaceId: authorNamespaceId(target),
+              profileNamespaceId: target.profileNamespaceId,
               profileRev: target.profileRev,
             },
           ],
@@ -1739,7 +1732,7 @@ export class MessageService {
           viewerFilters?.hideCreators?.some(
             (creator) =>
               creator.account === target.creatorAccount &&
-              creator.namespaceId === authorNamespaceId(target),
+              creator.namespaceId === target.profileNamespaceId,
           ))
       );
     });
@@ -1752,7 +1745,7 @@ export class MessageService {
                 JSON.stringify([
                   target.creatorAccount,
                   target.publisherNamespaceId,
-                  authorNamespaceId(target),
+                  target.profileNamespaceId,
                   target.profileRev,
                 ]),
               ) ?? target.creatorAccount),

@@ -130,6 +130,7 @@ describe('GroupService creation', () => {
       type: 'GROUP_CREATED',
       creator: {
         account: 'owner',
+        publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 2,
       },

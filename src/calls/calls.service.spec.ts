@@ -1015,6 +1015,7 @@ describe('CallsService federated initiate (outbound)', () => {
     expect(lastBubbleContent(m)?.outcome).toBe('unreachable');
     expect(lastBubbleContent(m)?.callee).toEqual({
       account: 'bob',
+      publisherNamespaceId: 3,
       profileNamespaceId: 0,
       profileRev: 0,
     });

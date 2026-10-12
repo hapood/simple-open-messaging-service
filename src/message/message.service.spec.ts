@@ -112,7 +112,7 @@ const url = (d: string): string =>
   `/uploads/msg-assets/${d.slice(0, 2)}/${d.slice(2, 4)}/${d}`;
 
 describe('stripMessageId author projection namespace', () => {
-  it('preserves distinct profile coordinates when projected author identities collide', () => {
+  it('keeps creator coordinates distinct for a publisher-owned and a foreign subject', () => {
     const ownSubject = stripMessageId(
       mk({
         id: 1n,
@@ -132,17 +132,19 @@ describe('stripMessageId author projection namespace', () => {
       }),
     );
 
-    expect(ownSubject.creator).toEqual({ account: 'alice', namespaceId: 7 });
+    // The creator keeps the stored subject namespace so clients can join
+    // roster members and profile caches in the publisher-scoped space.
+    expect(ownSubject.creator).toEqual({ account: 'alice', namespaceId: 0 });
     expect(foreignSubject.creator).toEqual({ account: 'alice', namespaceId: 7 });
     expect(ownSubject.profileNamespaceId).toBe(0);
     expect(foreignSubject.profileNamespaceId).toBe(7);
     expect(ownSubject.publisherNamespaceId).toBe(7);
     expect(foreignSubject.publisherNamespaceId).toBe(7);
     expect(ownSubject).not.toHaveProperty('id');
-    expect(foreignSubject).not.toHaveProperty('creatorAccount');
+    expect(ownSubject).not.toHaveProperty('creatorAccount');
   });
 
-  it('addresses a publisher-owned remote author by the publisher namespace', () => {
+  it('addresses a publisher-owned remote author by the stored subject namespace', () => {
     const result = stripMessageId(
       mk({
         id: 1n,
@@ -153,8 +155,8 @@ describe('stripMessageId author projection namespace', () => {
       }),
     );
 
-    expect(result.creator?.namespaceId).toBe(7);
-    expect(result.namespaceId).toBe(7);
+    expect(result.creator?.namespaceId).toBe(0);
+    expect(result.namespaceId).toBe(0);
   });
 
   it('uses namespace zero for a local publisher and author', () => {
@@ -241,11 +243,13 @@ describe('MessageService committed profile work', () => {
       participants: [
         {
           account: string;
+          publisherNamespaceId: number;
           profileNamespaceId: number;
           profileRev: number;
         },
         {
           account: string;
+          publisherNamespaceId: number;
           profileNamespaceId: number;
           profileRev: number;
         },
@@ -255,11 +259,13 @@ describe('MessageService committed profile work', () => {
       participants: [
         {
           account: 'alice',
+          publisherNamespaceId: 7,
           profileNamespaceId: 7,
           profileRev: 3,
         },
         {
           account: 'bob',
+          publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 2,
         },
