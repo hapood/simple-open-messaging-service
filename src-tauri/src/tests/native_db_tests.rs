@@ -203,7 +203,7 @@ fn test_thread_snapshot(kind: &str, feed: i64, lifecycle: &str) -> serde_json::V
     serde_json::json!({
         "threadId":52,"threadFeedId":feed,"type":kind,"authorityNamespaceId":0,
         "conversationState":lifecycle,"blocked":lifecycle == "READ_ONLY","role":role,
-        "profile":{"account":account,"domain":"local","namespaceId":0,"profileRev":3},
+        "profile":{"account":account,"namespaceId":0,"profileRev":3},
         "alias":null,"threadProfileRev":3,"messageEndSeq":0,"tombstoneEndSeq":0,
         "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":-1,
         "groupInviteEndFeedId":0,"lastReadSeq":0,"announcementReadFeedId":0,
@@ -290,7 +290,7 @@ fn deleting_a_thread_clears_its_state_preview_and_roster_together() {
     let mut snapshot = test_thread_snapshot("GROUP", 5, "ACTIVE");
     snapshot["previews"] = serde_json::json!([{
         "seq": 2, "createdAt": "2026-01-01T00:00:00Z",
-        "sender": {"account":"bob","domain":"local","namespaceId":0,"profileRev":1},
+        "sender": {"account":"bob","namespaceId":0,"profileRev":1},
         "status":"LIVE", "text":"hello"
     }]);
     commit_test_thread_state(&mut conn, &snapshot);
@@ -703,7 +703,7 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
     let body = serde_json::json!({
         "threadId":90,"threadFeedId":1,"type":"GROUP","authorityNamespaceId":7,
         "conversationState":"ACTIVE","blocked":false,"role":"MEMBER",
-        "profile":{"account":"!mirror","domain":"authority.test","namespaceId":7,"profileRev":0},
+        "profile":{"account":"!mirror","namespaceId":7,"profileRev":0},
         "alias":null,"threadProfileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
         "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":-1,
         "groupInviteEndFeedId":0,"lastReadSeq":0,"announcementReadFeedId":0,
@@ -762,7 +762,8 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(source_count, 1);
+    // Coordinate-only feed and roster references do not invent display bindings.
+    assert_eq!(source_count, 0);
     let thread = super::thread_store::read(&conn, 1, 90).unwrap().unwrap();
     assert_eq!(thread["authorityNamespaceId"], 7);
     assert_eq!(thread["role"], "MEMBER"); // Roster updates do not replace the thread-feed role.
@@ -805,14 +806,17 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
 }
 
 #[test]
-fn native_message_creator_localization_preserves_message_source() {
-    let mut message = serde_json::json!({"publisherNamespaceId":7,"creator":{"account":"me","domain":"local","namespaceId":0}});
+fn native_message_creator_cleanup_preserves_publisher_space_profile_coordinates() {
+    let mut message = serde_json::json!({"publisherNamespaceId":7,"profileNamespaceId":2,
+        "profileRev":3,"creator":{"account":"me","domain":"local","namespaceId":0}});
     super::messages::normalize_message_creator(&mut message);
     assert_eq!(message["creator"]["namespaceId"], 0);
-    assert_eq!(message["creator"]["domain"], "local");
+    assert!(message["creator"].get("domain").is_none());
     assert_eq!(message["publisherNamespaceId"], 7);
+    assert_eq!(message["profileNamespaceId"], 2);
+    assert_eq!(message["profileRev"], 3);
     let mut foreign =
-        serde_json::json!({"creator":{"account":"other","domain":"third.test","namespaceId":7}});
+        serde_json::json!({"creator":{"account":"other","namespaceId":7}});
     let original = foreign.clone();
     super::messages::normalize_message_creator(&mut foreign);
     assert_eq!(foreign, original);

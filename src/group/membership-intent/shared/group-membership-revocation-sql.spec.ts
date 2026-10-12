@@ -35,7 +35,7 @@ describe('group departure system message SQL', () => {
     // polymorphic jsonb_build_object. The type casts are required even when
     // the values are strings and integers in JavaScript.
     expect(sql).toMatch(
-      /jsonb_build_object\('type', 'GROUP_LEFT', 'member',\s+jsonb_build_object\('account', \$\d+::text,\s+'profileNamespaceId', \$\d+::integer,/,
+      /jsonb_build_object\('type', 'GROUP_LEFT', 'member',\s+jsonb_build_object\(\s*'account', \$\d+::text,\s*'publisherNamespaceId', (?:0|\$\d+::integer),\s*'profileNamespaceId',/,
     );
   });
 });

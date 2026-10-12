@@ -34,7 +34,12 @@ fn read_call_peer_from_connection(
         return Ok(None);
     };
     let peer = &thread["peerUser"];
-    if thread["type"] != "P2P" || peer["account"] != account || peer["domain"] != domain {
+    if thread["type"] != "P2P" || peer["account"] != account {
+        return Ok(None);
+    }
+    // The Android call contract supplies a routing domain, not an identity coordinate.
+    // Validate it against the separately resolved binding, never a stored subject field.
+    if peer["domain"] != domain {
         return Ok(None);
     }
     let namespace_id = peer["namespaceId"]
@@ -44,8 +49,8 @@ fn read_call_peer_from_connection(
         .query_row(
             "SELECT thread_profile_rev FROM threads
          WHERE user_id=?1 AND thread_id=?2 AND kind='P2P'
-           AND subject_account=?3 AND subject_domain=?4 AND subject_namespace_id=?5",
-            params![user_id, thread_id, account, domain, namespace_id],
+           AND subject_account=?3 AND subject_namespace_id=?4",
+            params![user_id, thread_id, account, namespace_id],
             |row| row.get(0),
         )
         .optional()
@@ -106,9 +111,10 @@ mod tests {
     fn call_peer_is_scoped_to_thread_owner_and_exact_address() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE namespaces(user_id INTEGER,namespace_id INTEGER,domain TEXT,
-          status TEXT,PRIMARY KEY(user_id,namespace_id),UNIQUE(user_id,domain,namespace_id));
-          ",
+            "CREATE TABLE profile_namespaces(user_id INTEGER,publisher_namespace_id INTEGER,
+               profile_namespace_id INTEGER,domain TEXT,
+               PRIMARY KEY(user_id,publisher_namespace_id,profile_namespace_id));
+             INSERT INTO profile_namespaces VALUES(41,1,1,'remote.test');",
         )
         .unwrap();
         conn.execute_batch(super::super::thread_store::SCHEMA)
@@ -119,7 +125,7 @@ mod tests {
             7,
             &json!({
                 "threadId":7,"type":"P2P","authorityNamespaceId":1,
-                "peerUser":{"account":"bob","domain":"remote.test","namespaceId":1,"name":"Bob"},
+                "peerUser":{"account":"bob","namespaceId":1,"name":"Bob"},
                 "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
                 "threadProfileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
                 "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":0,

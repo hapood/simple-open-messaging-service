@@ -176,9 +176,6 @@ export class MessageAuthorAddressResponseDto {
   @ApiProperty({ example: 'alice' })
   account!: string;
 
-  @ApiProperty({ example: 'example.com' })
-  domain!: string;
-
   @ApiProperty({ example: 7 })
   namespaceId!: number;
 }
@@ -208,6 +205,13 @@ export class MessageResponseDto {
 
   @ApiProperty({ minimum: 0, description: 'Namespace owning originSeq.' })
   publisherNamespaceId!: number;
+
+  @ApiProperty({
+    minimum: 0,
+    description:
+      'Author profile namespace in the publisher server’s space, preserved independently of the projected author identity.',
+  })
+  profileNamespaceId!: number;
 
   @ApiProperty({
     example: 7,

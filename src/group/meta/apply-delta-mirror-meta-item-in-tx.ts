@@ -8,6 +8,7 @@ import { readCurrentLocalAuthorizedGroupMemberIdsInTx } from './current-group-ro
 import { requireGroupThreadContentLockUnderGroupInTx } from '../../common/locks/thread-content-lock.js';
 import type { ProfilePrefetchDemand } from '../../profile-resolution/profile-resolution-demand.js';
 import { collectCommittedProfileWork } from '../../message/collect-committed-profile-work.js';
+import { groupMemberProfileAddress } from './group-member-profile-address.js';
 import type { MessageProfileWorkCommittedEvent } from '../../message/message-profile-work.event.js';
 import { selectMirrorMetaProfileDemand } from './select-mirror-meta-profile-demand.js';
 import type {
@@ -299,6 +300,12 @@ async function writeObservedMembershipTransitionInTx(
     threadId,
   });
   if (!recipients.length) return { transitioned: false };
+  const memberAddress = groupMemberProfileAddress({
+    account: member.account,
+    publisherNamespaceId: group.publisherNamespaceId,
+    profileNamespaceId: profileNamespaceId ?? 0,
+    profileRev,
+  });
   const result = await deps.messages.writeSystemMessageInTx(
     tx,
     threadId,
@@ -306,11 +313,7 @@ async function writeObservedMembershipTransitionInTx(
       type: joined
         ? SystemMessageType.GROUP_JOINED
         : SystemMessageType.GROUP_LEFT,
-      member: {
-        account: member.account,
-        profileNamespaceId: profileNamespaceId ?? 0,
-        profileRev,
-      },
+      member: memberAddress,
     },
     { threadLock: deps.threadLock },
   );

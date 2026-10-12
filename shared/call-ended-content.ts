@@ -54,6 +54,7 @@ export function parseCallEndedContent(
       isProfiledAddress(x) && x.account !== '$system' && x.profileRev === 0
         ? {
             account: x.account,
+            publisherNamespaceId: x.publisherNamespaceId,
             profileNamespaceId: x.profileNamespaceId,
             profileRev: x.profileRev,
           }

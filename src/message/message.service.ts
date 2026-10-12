@@ -111,7 +111,7 @@ export interface MessageAuthorAddress {
 }
 export type PublicMessage<T extends Message = Message> = Omit<
   T,
-  'id' | 'creatorAccount' | 'profileNamespaceId'
+  'id' | 'creatorAccount'
 > & {
   creator: MessageAuthorAddress;
 };
@@ -174,12 +174,11 @@ export function stripMessageId<
   },
 >(
   msg: T,
-): Omit<T, 'id' | 'creatorAccount' | 'profileNamespaceId'> & {
+): Omit<T, 'id' | 'creatorAccount'> & {
   namespaceId: number;
   creator: MessageAuthorAddress;
 } {
-  const { id, creatorAccount, profileNamespaceId, ...rest } =
-    projectClientMessageContent(msg);
+  const { id, creatorAccount, ...rest } = projectClientMessageContent(msg);
   // The database constraint requires an author even for system messages.
   if (creatorAccount === null) throw new Error('message has no author');
   return {

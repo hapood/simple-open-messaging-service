@@ -255,13 +255,15 @@ export class GroupRosterRoleService {
           type: SystemMessageType.GROUP_OWNER_TRANSFERRED,
           previousOwner: {
             account: operator.account,
-            profileNamespaceId: 0,
-            profileRev: 0,
+            publisherNamespaceId: row.publisherNamespaceId,
+            profileNamespaceId: operator.profileNamespaceId,
+            profileRev: operator.profileRev,
           },
           newOwner: {
             account: newOwner.account,
-            profileNamespaceId: 0,
-            profileRev: 0,
+            publisherNamespaceId: row.publisherNamespaceId,
+            profileNamespaceId: newOwner.profileNamespaceId,
+            profileRev: newOwner.profileRev,
           },
         },
       };
@@ -307,8 +309,9 @@ export class GroupRosterRoleService {
             : SystemMessageType.GROUP_ADMIN_REVOKED,
         member: {
           account: change.account,
-          profileNamespaceId: 0,
-          profileRev: 0,
+          publisherNamespaceId: row.publisherNamespaceId,
+          profileNamespaceId: change.profileNamespaceId,
+          profileRev: change.profileRev,
         },
       },
     };

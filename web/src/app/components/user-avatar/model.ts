@@ -4,10 +4,9 @@ export enum UserAvatarType {
   GROUP,
 }
 
-/** Namespace identities and fixed address snapshots have distinct domain sources.
- *  `subject-home` resolves the member-home diagonal binding — the namespace
- *  publishing its own profiles — instead of the local-publisher view. */
+/** Local namespace identities, publisher-scoped profiles and fixed display snapshots
+ * have distinct domain sources. Profile coordinates are never inferred from local IDs. */
 export type AvatarDomainSource =
   | { type: 'namespace'; namespaceId: number }
-  | { type: 'subject-home'; namespaceId: number }
+  | { type: 'profile-namespace'; publisherNamespaceId: number; profileNamespaceId: number }
   | { type: 'snapshot'; domain: string };

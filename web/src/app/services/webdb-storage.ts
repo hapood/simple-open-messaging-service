@@ -3137,10 +3137,11 @@ export class WebdbStorage {
 
   private memberUser(
     member: MemberRecord,
+    publisherNamespaceId: number,
     snapshot?: ProfileSnapshot,
   ): ProfileSnapshot {
     return {
-      publisherNamespaceId: member.namespaceId,
+      publisherNamespaceId,
       account: member.account,
       profileNamespaceId: member.namespaceId,
       profileRev: member.profileRev,
@@ -3152,11 +3153,12 @@ export class WebdbStorage {
 
   private resolveMember(
     member: MemberRecord,
+    publisherNamespaceId: number,
     snapshot?: ProfileSnapshot,
   ): ResolvedMemberRecord {
     return {
       ...member,
-      user: this.memberUser(member, snapshot),
+      user: this.memberUser(member, publisherNamespaceId, snapshot),
       resolvedProfileRev: snapshot?.profileRev,
       profileName: snapshot?.name,
       profileBio: snapshot?.bio ?? '',
@@ -3219,6 +3221,9 @@ export class WebdbStorage {
           },
         );
       const db = await this.db();
+      const thread = await db.get('threads', params.threadId);
+      if (thread?.type !== 'GROUP') return [];
+      const publisherNamespaceId = thread.publisherNamespaceId;
       const result: ResolvedMemberRecord[] = [];
       const search = params.search?.trim().toLocaleLowerCase() ?? '';
       const cursor = params.afterIdentity
@@ -3240,18 +3245,18 @@ export class WebdbStorage {
       for (const member of members) {
         if (result.length >= params.take) break;
         const snapshot = await db.get('profiles', [
-          member.namespaceId,
+          publisherNamespaceId,
           member.namespaceId,
           member.account,
           member.profileRev,
         ]);
-        const user = this.memberUser(member, snapshot);
+        const user = this.memberUser(member, publisherNamespaceId, snapshot);
         if (
           !search ||
           user.name.toLocaleLowerCase().includes(search) ||
           user.account.toLocaleLowerCase().includes(search)
         )
-          result.push(this.resolveMember(member, snapshot));
+          result.push(this.resolveMember(member, publisherNamespaceId, snapshot));
       }
       return result;
     });
@@ -3281,14 +3286,15 @@ export class WebdbStorage {
         account,
         namespaceId,
       ]);
-      if (!member || member.left) return undefined;
+      const thread = await db.get('threads', threadId);
+      if (!member || member.left || thread?.type !== 'GROUP') return undefined;
       const snapshot = await db.get('profiles', [
-        namespaceId,
+        thread.publisherNamespaceId,
         namespaceId,
         account,
         member.profileRev,
       ]);
-      return this.resolveMember(member, snapshot);
+      return this.resolveMember(member, thread.publisherNamespaceId, snapshot);
     });
   }
 
@@ -3334,13 +3340,12 @@ export class WebdbStorage {
           member.profileMessageSeq != null
         )
           continue;
-        // The roster reads member snapshots at the member-home diagonal key
-        // [namespaceId, namespaceId]; no stored domain participates in the
-        // reference — display domains resolve through namespace bindings.
+        const thread = await tx.objectStore('threads').get(member.threadId);
+        if (thread?.type !== 'GROUP') continue;
         const cached = await tx
           .objectStore('profiles')
           .get([
-            member.namespaceId,
+            thread.publisherNamespaceId,
             member.namespaceId,
             member.account,
             member.profileRev,
@@ -3380,9 +3385,10 @@ export class WebdbStorage {
     if (reference.type === 'GROUP_MEMBER')
       return this.runAccountOperation(async () => {
         const tx = (await this.db()).transaction(
-          ['members', 'profiles', 'profileAvatarBlobs'],
+          ['threads', 'members', 'profiles', 'profileAvatarBlobs'],
           'readwrite',
         );
+        const thread = await tx.objectStore('threads').get(reference.threadId);
         const member = await tx
           .objectStore('members')
           .get([
@@ -3390,12 +3396,15 @@ export class WebdbStorage {
             reference.account,
             reference.namespaceId,
           ]);
-        if (!member || member.left || member.profileRev !== reference.rev) {
+        if (
+          thread?.type !== 'GROUP' ||
+          !member || member.left || member.profileRev !== reference.rev
+        ) {
           await tx.done;
           return false;
         }
         await this.writeSnapshot(tx.objectStore('profiles'), {
-          publisherNamespaceId: reference.namespaceId,
+          publisherNamespaceId: thread.publisherNamespaceId,
           profileNamespaceId: reference.namespaceId,
           account: reference.account,
           profileRev: reference.rev,
@@ -3621,7 +3630,8 @@ export class WebdbStorage {
     threadId: number,
     seq: number,
     account: string,
-    namespaceId: number,
+    publisherNamespaceId: number,
+    profileNamespaceId: number,
     profileRev: number,
   ): Promise<boolean> {
     if (
@@ -3630,8 +3640,10 @@ export class WebdbStorage {
       !Number.isSafeInteger(seq) ||
       seq < 1 ||
       !account ||
-      !Number.isSafeInteger(namespaceId) ||
-      namespaceId < 0 ||
+      !Number.isSafeInteger(publisherNamespaceId) ||
+      publisherNamespaceId < 0 ||
+      !Number.isSafeInteger(profileNamespaceId) ||
+      profileNamespaceId < 0 ||
       !Number.isSafeInteger(profileRev) ||
       profileRev < 1
     )
@@ -3645,7 +3657,8 @@ export class WebdbStorage {
             threadId,
             seq,
             account,
-            namespaceId,
+            publisherNamespaceId,
+            profileNamespaceId,
             profileRev,
           },
         );
@@ -3659,7 +3672,11 @@ export class WebdbStorage {
         await tx.done;
         return false;
       }
-      const participant = JSON.stringify([namespaceId, account]);
+      const participant = JSON.stringify([
+        publisherNamespaceId,
+        profileNamespaceId,
+        account,
+      ]);
       if (message.localSystemProfileRevs?.[participant] === profileRev) {
         await tx.done;
         return false;

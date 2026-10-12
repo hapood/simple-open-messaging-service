@@ -106,14 +106,10 @@ export class UserAvatarComponent {
     const evidence = this.effectiveProfileEvidence();
     const demand =
       evidence && ('demand' in evidence ? evidence.demand : evidence);
-    const source = this.domainSource();
-    const namespaceId =
-      source?.type === 'namespace'
-        ? source.namespaceId
-        : demand?.target.profileNamespaceId;
+    if (!demand || demand.publisherNamespaceId !== 0) return '';
     return conversation?.type === 'P2P' &&
       conversation.peerUser.account === this.account() &&
-      conversation.peerUser.namespaceId === namespaceId
+      conversation.peerUser.namespaceId === demand.target.profileNamespaceId
       ? (conversation.alias?.trim() ?? '')
       : '';
   });
@@ -133,10 +129,10 @@ export class UserAvatarComponent {
         return this.injector
           .get(ProfileNamespaceRepository)
           .resolve(
-            source.type === 'subject-home'
+            source.type === 'profile-namespace'
               ? {
-                  publisherNamespaceId: source.namespaceId,
-                  profileNamespaceId: source.namespaceId,
+                  publisherNamespaceId: source.publisherNamespaceId,
+                  profileNamespaceId: source.profileNamespaceId,
                 }
               : {
                   publisherNamespaceId: 0,
@@ -185,8 +181,9 @@ export class UserAvatarComponent {
     const source = this.domainSource();
     if (!source) return null;
     if (
-      (source.type === 'namespace' || source.type === 'subject-home') &&
-      source.namespaceId === 0
+      (source.type === 'namespace' && source.namespaceId === 0) ||
+      (source.type === 'profile-namespace' &&
+        source.publisherNamespaceId === 0 && source.profileNamespaceId === 0)
     )
       return null;
     return this.resolvedDomain();
@@ -288,9 +285,11 @@ export class UserAvatarComponent {
     const coordinate =
       source?.type === 'snapshot'
         ? source.domain
-        : source?.type === 'namespace' || source?.type === 'subject-home'
+        : source?.type === 'namespace'
           ? source.namespaceId
-          : this.federatedMarkerDomain();
+          : source?.type === 'profile-namespace'
+            ? [source.publisherNamespaceId, source.profileNamespaceId]
+            : this.federatedMarkerDomain();
     const n = account ? JSON.stringify([namespace, coordinate, account]) : '';
     let h = 0;
     for (let i = 0; i < n.length; i++)

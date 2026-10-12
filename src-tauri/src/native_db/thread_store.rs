@@ -10,7 +10,6 @@ CREATE TABLE threads (
   kind TEXT NOT NULL CHECK(kind IN ('P2P', 'GROUP')),
   authority_namespace_id INTEGER NOT NULL CHECK(authority_namespace_id >= 0),
   subject_account TEXT NOT NULL CHECK(subject_account <> ''),
-  subject_domain TEXT NOT NULL,
   subject_namespace_id INTEGER NOT NULL CHECK(subject_namespace_id >= 0),
   thread_feed_id INTEGER NOT NULL CHECK(thread_feed_id > 0),
   conversation_state TEXT NOT NULL CHECK(conversation_state IN ('ACTIVE','READ_ONLY')),
@@ -79,7 +78,6 @@ CREATE TABLE thread_previews (
   seq INTEGER NOT NULL,
   created_at TEXT NOT NULL,
   sender_account TEXT NOT NULL,
-  sender_domain TEXT NOT NULL,
   sender_namespace_id INTEGER NOT NULL,
   sender_profile_rev INTEGER NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('LIVE', 'USER_RETRACTION', 'MODERATION_REMOVAL')),
@@ -111,11 +109,6 @@ pub(super) fn write(
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .ok_or("thread subject account missing")?;
-    let domain = subject
-        .get("domain")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .ok_or("thread subject domain missing")?;
     let namespace = subject
         .get("namespaceId")
         .and_then(Value::as_i64)
@@ -126,9 +119,6 @@ pub(super) fn write(
         .and_then(Value::as_i64)
         .filter(|n| *n == namespace)
         .ok_or("thread authority namespace mismatch")?;
-    if (domain == "local") != (namespace == 0) {
-        return Err("thread subject namespace does not match domain".into());
-    }
     if kind == "GROUP"
         && subject
             .get("id")
@@ -195,7 +185,7 @@ pub(super) fn write(
     // own typed SQLite column; the sender's profileRev is deliberately not stored.
     conn.execute(
         "INSERT INTO threads(user_id,thread_id,kind,authority_namespace_id,
-          subject_account,subject_domain,subject_namespace_id,
+          subject_account,subject_namespace_id,
           thread_feed_id,conversation_state,blocked,alias,thread_profile_rev,
           message_end_seq,tombstone_end_seq,group_meta_feed_end_id,
           join_request_end_feed_id,join_request_read_feed_id,group_invite_end_feed_id,
@@ -211,46 +201,46 @@ pub(super) fn write(
           last_message_at,last_message_seq,muted,pinned,pinned_at,
           last_message_preview,last_message_sender_account,last_message_sender_namespace_id,mention_me,mention_all,
           unread_count,last_read_seq,role)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,
-           json_extract(?9,'$.threadFeedId'),
-           json_extract(?9,'$.conversationState'),json_extract(?9,'$.blocked'),
-           json_extract(?9,'$.alias'),json_extract(?9,'$.threadProfileRev'),
-           json_extract(?9,'$.messageEndSeq'),json_extract(?9,'$.tombstoneEndSeq'),
-           json_extract(?9,'$.groupMetaFeedEndId'),
-           json_extract(?9,'$.joinRequestEndFeedId'),
-           json_extract(?9,'$.joinRequestReadFeedId'),
-           json_extract(?9,'$.groupInviteEndFeedId'),
-           json_extract(?9,'$.serverLastReadSeq'),
-           json_extract(?9,'$.announcementReadFeedId'),
-           json_extract(?9,'$.serverUnreadCount'),
-           json_extract(?9,'$.lastMentionSeq'),
-           json_extract(?9,'$.localReadSeq'),
-           COALESCE(json_extract(?8,'$.name'),''),
-           COALESCE(json_extract(?8,'$.avatar'),''),
-           COALESCE(json_extract(?8,'$.bio'),json_extract(?8,'$.description'),''),
-           COALESCE(json_extract(?8,'$.createdAt'),0),COALESCE(json_extract(?8,'$.updatedAt'),0),
-           COALESCE(json_extract(?8,'$.isDeleted'),0),
-           json_extract(?9,'$.peerProfileMessageSeq'),
-           CASE WHEN ?3='GROUP' THEN json_extract(?8,'$.id') END,
-           json_extract(?8,'$.dissolvedAt'),COALESCE(json_extract(?8,'$.memberCount'),0),
-           COALESCE(json_extract(?8,'$.groupMetaFeedId'),'0'),
-           json_extract(?8,'$.announcement.feedId'),json_extract(?8,'$.announcement.text'),
-           json_extract(?9,'$.groupMetaRecoveryThrough'),
-           json_extract(?9,'$.groupMetaTargetFeedId'),
-           json_extract(?9,'$.groupMetaRecoveryAnnouncement.feedId'),
-           json_extract(?9,'$.groupMetaRecoveryAnnouncement.text'),
-           json_extract(?9,'$.lastMessageAt'),json_extract(?9,'$.lastMessageSeq'),
-           COALESCE(json_extract(?9,'$.muted'),0),COALESCE(json_extract(?9,'$.pinned'),0),
-           json_extract(?9,'$.pinnedAt'),json_extract(?9,'$.lastMessagePreview'),
-           json_extract(?9,'$.lastMessageSenderAccount'),
-           json_extract(?9,'$.lastMessageSenderNamespaceId'),
-           EXISTS(SELECT 1 FROM json_each(?9,'$.mentionUnread') WHERE value='me'),
-           EXISTS(SELECT 1 FROM json_each(?9,'$.mentionUnread') WHERE value='all'),
-           COALESCE(json_extract(?9,'$.unreadCount'),0),json_extract(?9,'$.lastReadSeq'),
-           json_extract(?9,'$.role'))
+         VALUES(?1,?2,?3,?4,?5,?6,
+           json_extract(?8,'$.threadFeedId'),
+           json_extract(?8,'$.conversationState'),json_extract(?8,'$.blocked'),
+           json_extract(?8,'$.alias'),json_extract(?8,'$.threadProfileRev'),
+           json_extract(?8,'$.messageEndSeq'),json_extract(?8,'$.tombstoneEndSeq'),
+           json_extract(?8,'$.groupMetaFeedEndId'),
+           json_extract(?8,'$.joinRequestEndFeedId'),
+           json_extract(?8,'$.joinRequestReadFeedId'),
+           json_extract(?8,'$.groupInviteEndFeedId'),
+           json_extract(?8,'$.serverLastReadSeq'),
+           json_extract(?8,'$.announcementReadFeedId'),
+           json_extract(?8,'$.serverUnreadCount'),
+           json_extract(?8,'$.lastMentionSeq'),
+           json_extract(?8,'$.localReadSeq'),
+           COALESCE(json_extract(?7,'$.name'),''),
+           COALESCE(json_extract(?7,'$.avatar'),''),
+           COALESCE(json_extract(?7,'$.bio'),json_extract(?7,'$.description'),''),
+           COALESCE(json_extract(?7,'$.createdAt'),0),COALESCE(json_extract(?7,'$.updatedAt'),0),
+           COALESCE(json_extract(?7,'$.isDeleted'),0),
+           json_extract(?8,'$.peerProfileMessageSeq'),
+           CASE WHEN ?3='GROUP' THEN json_extract(?7,'$.id') END,
+           json_extract(?7,'$.dissolvedAt'),COALESCE(json_extract(?7,'$.memberCount'),0),
+           COALESCE(json_extract(?7,'$.groupMetaFeedId'),'0'),
+           json_extract(?7,'$.announcement.feedId'),json_extract(?7,'$.announcement.text'),
+           json_extract(?8,'$.groupMetaRecoveryThrough'),
+           json_extract(?8,'$.groupMetaTargetFeedId'),
+           json_extract(?8,'$.groupMetaRecoveryAnnouncement.feedId'),
+           json_extract(?8,'$.groupMetaRecoveryAnnouncement.text'),
+           json_extract(?8,'$.lastMessageAt'),json_extract(?8,'$.lastMessageSeq'),
+           COALESCE(json_extract(?8,'$.muted'),0),COALESCE(json_extract(?8,'$.pinned'),0),
+           json_extract(?8,'$.pinnedAt'),json_extract(?8,'$.lastMessagePreview'),
+           json_extract(?8,'$.lastMessageSenderAccount'),
+           json_extract(?8,'$.lastMessageSenderNamespaceId'),
+           EXISTS(SELECT 1 FROM json_each(?8,'$.mentionUnread') WHERE value='me'),
+           EXISTS(SELECT 1 FROM json_each(?8,'$.mentionUnread') WHERE value='all'),
+           COALESCE(json_extract(?8,'$.unreadCount'),0),json_extract(?8,'$.lastReadSeq'),
+           json_extract(?8,'$.role'))
          ON CONFLICT(user_id,thread_id) DO UPDATE SET
            kind=excluded.kind,authority_namespace_id=excluded.authority_namespace_id,
-           subject_account=excluded.subject_account,subject_domain=excluded.subject_domain,
+           subject_account=excluded.subject_account,
            subject_namespace_id=excluded.subject_namespace_id,subject_name=excluded.subject_name,
            subject_avatar=excluded.subject_avatar,subject_bio=excluded.subject_bio,
            subject_created_at=excluded.subject_created_at,subject_updated_at=excluded.subject_updated_at,
@@ -272,7 +262,7 @@ pub(super) fn write(
            mention_me=excluded.mention_me,mention_all=excluded.mention_all,
            unread_count=excluded.unread_count,last_read_seq=excluded.last_read_seq,
            role=excluded.role",
-        params![user_id, thread_id, kind, authority, account, domain, namespace, subject.to_string(), json],
+        params![user_id, thread_id, kind, authority, account, namespace, subject.to_string(), json],
     ).map_err(|e| format!("write typed thread: {e}"))?;
     Ok(())
 }
@@ -283,7 +273,11 @@ pub(super) fn read(
     thread_id: i64,
 ) -> Result<Option<Value>, String> {
     conn.query_row(
-        "SELECT kind,authority_namespace_id,subject_account,subject_domain,subject_namespace_id,
+        "SELECT kind,authority_namespace_id,subject_account,
+           COALESCE((SELECT domain FROM profile_namespaces binding
+             WHERE binding.user_id=threads.user_id
+               AND binding.publisher_namespace_id=threads.subject_namespace_id
+               AND binding.profile_namespace_id=threads.subject_namespace_id),''),subject_namespace_id,
            subject_name,subject_avatar,subject_bio,subject_created_at,subject_updated_at,
            peer_is_deleted,peer_profile_message_seq,group_id,group_dissolved_at,
            group_member_count,group_meta_feed_id,group_announcement_feed_id,group_announcement_text,
@@ -429,9 +423,9 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "PRAGMA foreign_keys=ON;
-            CREATE TABLE namespaces(user_id INTEGER,namespace_id INTEGER,domain TEXT,
-              status TEXT, PRIMARY KEY(user_id,namespace_id),
-              UNIQUE(user_id,domain,namespace_id));",
+            CREATE TABLE profile_namespaces(user_id INTEGER,publisher_namespace_id INTEGER,
+              profile_namespace_id INTEGER,domain TEXT,
+              PRIMARY KEY(user_id,publisher_namespace_id,profile_namespace_id));",
         )
         .unwrap();
         conn.execute_batch(SCHEMA).unwrap();
@@ -444,7 +438,7 @@ mod tests {
             "joinRequestReadFeedId":0,"groupInviteEndFeedId":0,
             "serverLastReadSeq":0,"announcementReadFeedId":0,
             "serverUnreadCount":2,"lastMentionSeq":null,"localReadSeq":0,
-            "group": { "id": 7, "account": "!room", "domain": "local",
+            "group": { "id": 7, "account": "!room",
                 "namespaceId": 0, "name": "Team", "avatar": "", "description": "About",
                 "memberCount": 2, "groupMetaFeedId": "3" },
             "lastMessageSeq": 4, "unreadCount": 2,

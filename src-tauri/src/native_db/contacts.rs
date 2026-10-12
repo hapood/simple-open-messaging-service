@@ -224,17 +224,20 @@ pub(crate) async fn native_db_get_group_member(
                'profileBio',COALESCE(identity.bio,''),
                'user',json(CASE WHEN identity.profile_rev IS NOT NULL THEN
                  json_object('account',identity.account,'domain',COALESCE(binding.domain,''),
+                   'publisherNamespaceId',thread.authority_namespace_id,'profileNamespaceId',member.namespace_id,
                    'namespaceId',identity.profile_namespace_id,'profileRev',identity.profile_rev,
                    'name',identity.name,'avatarDigest',identity.avatar_digest,'bio',identity.bio)
                ELSE json_object('account',member.member_account,'domain',COALESCE(binding.domain,''),
+                 'publisherNamespaceId',thread.authority_namespace_id,'profileNamespaceId',member.namespace_id,
                  'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatarDigest',json('null'),'bio','') END))
              FROM members member
+             JOIN threads thread ON thread.user_id=member.user_id AND thread.thread_id=member.thread_id AND thread.kind='GROUP'
              LEFT JOIN profiles identity
                ON identity.user_id=member.user_id AND identity.account=member.member_account
-              AND identity.publisher_namespace_id=member.namespace_id AND identity.profile_namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
+              AND identity.publisher_namespace_id=thread.authority_namespace_id AND identity.profile_namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
              LEFT JOIN profile_namespaces binding
                ON binding.user_id=member.user_id
-              AND binding.publisher_namespace_id=member.namespace_id
+              AND binding.publisher_namespace_id=thread.authority_namespace_id
               AND binding.profile_namespace_id=member.namespace_id
              WHERE member.user_id=?1 AND member.thread_id=?2 AND member.member_account=?3
                AND member.namespace_id=?4
@@ -280,19 +283,22 @@ pub(crate) async fn native_db_query_group_members(
                    'profileBio',COALESCE(identity.bio,''),
                    'user', json(CASE WHEN identity.profile_rev IS NOT NULL THEN
                      json_object('account',identity.account,'domain',COALESCE(binding.domain,''),
+                       'publisherNamespaceId',thread.authority_namespace_id,'profileNamespaceId',member.namespace_id,
                        'namespaceId',identity.profile_namespace_id,'profileRev',identity.profile_rev,
                        'name',identity.name,'avatarDigest',identity.avatar_digest,'bio',identity.bio)
                    ELSE json_object('account',member.member_account,'domain',COALESCE(binding.domain,''),
+                     'publisherNamespaceId',thread.authority_namespace_id,'profileNamespaceId',member.namespace_id,
                      'namespaceId',member.namespace_id,'profileRev',member.profile_rev,'name',member.member_account,'avatarDigest',json('null'),'bio','') END)
                  )
                  FROM members member
+                 JOIN threads thread ON thread.user_id=member.user_id AND thread.thread_id=member.thread_id AND thread.kind='GROUP'
                  LEFT JOIN profiles identity
                    ON identity.user_id=member.user_id
                   AND identity.account=member.member_account
-                  AND identity.publisher_namespace_id=member.namespace_id AND identity.profile_namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
+                  AND identity.publisher_namespace_id=thread.authority_namespace_id AND identity.profile_namespace_id=member.namespace_id AND identity.profile_rev=member.profile_rev
                  LEFT JOIN profile_namespaces binding
                    ON binding.user_id=member.user_id
-                  AND binding.publisher_namespace_id=member.namespace_id
+                  AND binding.publisher_namespace_id=thread.authority_namespace_id
                   AND binding.profile_namespace_id=member.namespace_id
                  WHERE member.user_id=?1 AND member.thread_id=?2 AND member.left_state=0
                    AND (member.namespace_id,member.member_account)>(?3,?4)

@@ -550,15 +550,20 @@ fn commit_group_meta_profile(
         )
     } else {
         conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM members WHERE user_id=?1 AND thread_id=?2
-             AND member_account=?3 AND namespace_id=?4
-             AND profile_rev=?5 AND left_state=0)",
+            "SELECT EXISTS(SELECT 1 FROM members member
+             JOIN threads thread ON thread.user_id=member.user_id AND thread.thread_id=member.thread_id
+             WHERE member.user_id=?1 AND member.thread_id=?2
+             AND member.member_account=?3 AND member.namespace_id=?4
+             AND member.profile_rev=?5 AND member.left_state=0
+             AND thread.kind='GROUP' AND thread.authority_namespace_id=?6)",
             params![
                 user_id,
                 reference.thread_id,
                 reference.account,
                 reference.namespace_id,
-                reference.rev
+                reference.rev,
+                profile.get("publisherNamespaceId").and_then(Value::as_i64)
+                    .ok_or("resolved member profile has no publisher namespace")?
             ],
             |row| row.get(0),
         )
@@ -567,21 +572,7 @@ fn commit_group_meta_profile(
     if !current {
         return Ok(());
     }
-    // A GROUP_MEMBER_PROFILE echo is authorized by (and carries) the group's
-    // publisher namespace; the roster reads the member-home key
-    // [namespaceId, namespaceId], so re-key before the shared commit.
-    let owned;
-    let profile = if reference.is_group {
-        profile
-    } else {
-        owned = {
-            let mut rekeyed = profile.clone();
-            rekeyed["publisherNamespaceId"] =
-                serde_json::json!(reference.namespace_id);
-            rekeyed
-        };
-        &owned
-    };
+    // Preserve the group's publisher and the member namespace in that publisher's space.
     commit_resolved_profile(conn, user_id, profile)?;
     if reference.is_group {
         conn.execute(
@@ -636,9 +627,7 @@ async fn resolve_group_meta_profile(
             })
             .await
             .map_err(|e| format!("join group account lookup: {e}"))??;
-        // The server pins a GROUP_MEMBER_PROFILE demand to the group's
-        // authority namespace, while the roster reads the member-home key
-        // [namespaceId, namespaceId]; commit_group_meta_profile re-keys.
+        // Member snapshots remain scoped to the group's publisher.
         serde_json::json!({
             "publisherNamespaceId": authority_namespace_id,
             "lookup": "GROUP_MEMBER_PROFILE",
@@ -724,12 +713,13 @@ fn unresolved_group_meta_profiles(
             "SELECT member.thread_id, member.member_account,
                     member.namespace_id, member.profile_rev
              FROM members member
+             JOIN threads thread ON thread.user_id=member.user_id AND thread.thread_id=member.thread_id AND thread.kind='GROUP'
              WHERE member.user_id=?1 AND member.left_state=0 AND member.profile_rev>0
                AND member.profile_message_seq IS NULL
                AND NOT EXISTS (
                  SELECT 1 FROM profiles profile WHERE profile.user_id=member.user_id
                    AND profile.account=member.member_account
-                   AND profile.publisher_namespace_id=member.namespace_id
+                   AND profile.publisher_namespace_id=thread.authority_namespace_id
                    AND profile.profile_namespace_id=member.namespace_id
                    AND profile.profile_rev=member.profile_rev)",
         )
@@ -1303,7 +1293,7 @@ impl ThreadFeedSyncResult {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ThreadFeedProfile {
     pub(super) account: String,
-    pub(super) domain: String,
+    /// Receiver-local thread authority/publisher coordinate.
     pub(super) namespace_id: i32,
     pub(super) profile_rev: i32,
 }
@@ -1312,7 +1302,7 @@ pub(crate) struct ThreadFeedProfile {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ThreadPreviewSender {
     account: String,
-    domain: String,
+    /// Profile namespace in the thread authority publisher's space, not receiver-local.
     namespace_id: i32,
     profile_rev: i32,
 }
@@ -1400,7 +1390,6 @@ fn validate_snapshot(state: &ThreadFeedSnapshot) -> Result<(), String> {
         || state.profile.namespace_id < 0
         || state.profile.profile_rev < 0
         || state.profile.account.is_empty()
-        || state.profile.domain.is_empty()
         || state.thread_profile_rev < 0
         || state.profile.profile_rev != state.thread_profile_rev
         || state.message_end_seq < 0
@@ -1427,7 +1416,7 @@ pub(super) fn read_state(
     let state = conn
         .query_row(
             "SELECT thread_feed_id, kind, authority_namespace_id, conversation_state,
-                blocked, role, subject_account, subject_domain,
+                blocked, role, subject_account,
                 subject_namespace_id, alias, thread_profile_rev,
                 message_end_seq, tombstone_end_seq, group_meta_feed_end_id,
                 join_request_end_feed_id, join_request_read_feed_id,
@@ -1449,25 +1438,24 @@ pub(super) fn read_state(
                         role: row.get(5)?,
                         profile: ThreadFeedProfile {
                             account: row.get(6)?,
-                            domain: row.get(7)?,
-                            namespace_id: row.get(8)?,
-                            profile_rev: row.get(10)?,
+                            namespace_id: row.get(7)?,
+                            profile_rev: row.get(9)?,
                         },
-                        alias: row.get(9)?,
-                        thread_profile_rev: row.get(10)?,
-                        message_end_seq: row.get(11)?,
-                        tombstone_end_seq: row.get(12)?,
-                        group_meta_feed_end_id: row.get(13)?,
-                        join_request_end_feed_id: row.get(14)?,
-                        join_request_read_feed_id: row.get(15)?,
-                        group_invite_end_feed_id: row.get(16)?,
-                        last_read_seq: row.get(17)?,
-                        announcement_read_feed_id: row.get(18)?,
-                        unread_count: row.get(19)?,
-                        last_mention_seq: row.get(20)?,
+                        alias: row.get(8)?,
+                        thread_profile_rev: row.get(9)?,
+                        message_end_seq: row.get(10)?,
+                        tombstone_end_seq: row.get(11)?,
+                        group_meta_feed_end_id: row.get(12)?,
+                        join_request_end_feed_id: row.get(13)?,
+                        join_request_read_feed_id: row.get(14)?,
+                        group_invite_end_feed_id: row.get(15)?,
+                        last_read_seq: row.get(16)?,
+                        announcement_read_feed_id: row.get(17)?,
+                        unread_count: row.get(18)?,
+                        last_mention_seq: row.get(19)?,
                         previews: Vec::new(),
                     }),
-                    local_read_seq: Some(row.get(21)?),
+                    local_read_seq: Some(row.get(20)?),
                 })
             },
         )
@@ -1483,7 +1471,7 @@ pub(super) fn read_state(
     };
     let preview = conn
         .query_row(
-            "SELECT seq, created_at, sender_account, sender_domain, sender_namespace_id,
+            "SELECT seq, created_at, sender_account, sender_namespace_id,
                 sender_profile_rev, status, text
          FROM thread_previews WHERE user_id=?1 AND thread_id=?2",
             params![user_id, thread_id],
@@ -1494,15 +1482,14 @@ pub(super) fn read_state(
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
-                    row.get(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get(7)?,
+                    row.get::<_, String>(5)?,
+                    row.get(6)?,
                 ))
             },
         )
         .optional()
         .map_err(|e| format!("read thread preview: {e}"))?;
-    if let Some((seq, created_at, account, domain, namespace_id, profile_rev, status, text)) =
+    if let Some((seq, created_at, account, namespace_id, profile_rev, status, text)) =
         preview
     {
         let status = serde_json::from_value(serde_json::Value::String(status))
@@ -1512,7 +1499,6 @@ pub(super) fn read_state(
             created_at,
             sender: ThreadPreviewSender {
                 account,
-                domain,
                 namespace_id,
                 profile_rev,
             },
@@ -1536,15 +1522,15 @@ pub(super) fn write_state(
         .execute(
             "UPDATE threads SET
            thread_feed_id=?3,conversation_state=?6,blocked=?7,role=?8,
-           alias=?12,thread_profile_rev=?13,message_end_seq=?14,
-           tombstone_end_seq=?15,group_meta_feed_end_id=?16,
-           join_request_end_feed_id=?17,join_request_read_feed_id=?18,
-           group_invite_end_feed_id=?19,server_last_read_seq=?20,
-           announcement_read_feed_id=?21,server_unread_count=?22,
-           last_mention_seq=?23,local_read_seq=?24
+           alias=?11,thread_profile_rev=?12,message_end_seq=?13,
+           tombstone_end_seq=?14,group_meta_feed_end_id=?15,
+           join_request_end_feed_id=?16,join_request_read_feed_id=?17,
+           group_invite_end_feed_id=?18,server_last_read_seq=?19,
+           announcement_read_feed_id=?20,server_unread_count=?21,
+           last_mention_seq=?22,local_read_seq=?23
          WHERE user_id=?1 AND thread_id=?2 AND kind=?4
            AND authority_namespace_id=?5
-           AND subject_account=?9 AND subject_domain=?10 AND subject_namespace_id=?11",
+           AND subject_account=?9 AND subject_namespace_id=?10",
             params![
                 user_id,
                 state.thread_id,
@@ -1555,7 +1541,6 @@ pub(super) fn write_state(
                 server.blocked,
                 server.role,
                 server.profile.account,
-                server.profile.domain,
                 server.profile.namespace_id,
                 server.alias,
                 server.thread_profile_rev,
@@ -1585,14 +1570,14 @@ pub(super) fn write_state(
         };
         conn.execute(
             "INSERT INTO thread_previews (
-               user_id, thread_id, seq, created_at, sender_account, sender_domain,
+               user_id, thread_id, seq, created_at, sender_account,
                sender_namespace_id, sender_profile_rev, status, text
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
              ON CONFLICT(user_id,thread_id) DO UPDATE SET
-               (seq, created_at, sender_account, sender_domain,
+               (seq, created_at, sender_account,
                 sender_namespace_id, sender_profile_rev, status, text) =
                (excluded.seq, excluded.created_at, excluded.sender_account,
-                excluded.sender_domain, excluded.sender_namespace_id,
+                excluded.sender_namespace_id,
                 excluded.sender_profile_rev, excluded.status, excluded.text)",
             params![
                 user_id,
@@ -1600,7 +1585,6 @@ pub(super) fn write_state(
                 preview.seq,
                 preview.created_at,
                 preview.sender.account,
-                preview.sender.domain,
                 preview.sender.namespace_id,
                 preview.sender.profile_rev,
                 status,
@@ -2086,7 +2070,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "seq": seq,
             "createdAt": "2026-01-01T00:00:00Z",
-            "sender": {"account":"peer","domain":"local","namespaceId":0,"profileRev":0},
+            "sender": {"account":"peer","namespaceId":0,"profileRev":0},
             "status": "LIVE",
             "text": "message"
         }))
@@ -2102,7 +2086,6 @@ mod tests {
             role: None,
             profile: ThreadFeedProfile {
                 account: "peer".into(),
-                domain: "local".into(),
                 namespace_id: 0,
                 profile_rev: 0,
             },
@@ -2190,6 +2173,42 @@ mod tests {
         let mut other = key;
         other.publisher_namespace_id = 4;
         assert!(find_profile_for_key(&conn, 1, &other).unwrap().is_none());
+    }
+
+    #[test]
+    fn group_member_profiles_keep_the_group_publisher_without_diagonal_rekeying() {
+        let mut conn = db();
+        let mut group = snapshot(1, 0);
+        group.kind = "GROUP".into();
+        group.role = Some("MEMBER".into());
+        group.authority_namespace_id = 7;
+        group.profile.namespace_id = 7;
+        group.profile.account = "!team".into();
+        merge_states(&mut conn, 1, vec![group], None).unwrap();
+        conn.execute(
+            "INSERT INTO members(user_id,thread_id,member_account,namespace_id,role,profile_rev)
+             VALUES(1,7,'alice',2,'MEMBER',3)", [],
+        ).unwrap();
+        let reference = GroupMetaProfileReference {
+            is_group: false, thread_id: 7, account: "alice".into(), namespace_id: 2, rev: 3,
+        };
+        let mut profile = serde_json::json!({
+            "publisherNamespaceId": 2, "profileNamespaceId": 2,
+            "account": "alice", "rev": 3, "name": "Wrong diagonal", "bio": "",
+            "avatarBase64": null,
+        });
+        commit_resolved_profile(&conn, 1, &profile).unwrap();
+        assert_eq!(unresolved_group_meta_profiles(&conn, 1).unwrap().len(), 1);
+        profile["publisherNamespaceId"] = serde_json::json!(7);
+        profile["name"] = serde_json::json!("Correct publisher");
+        commit_group_meta_profile(&conn, 1, &reference, &profile).unwrap();
+        let exact = super::super::contacts::read_profile(&conn, 1, 7, 2, "alice", 3)
+            .unwrap().unwrap();
+        assert_eq!(exact["name"], "Correct publisher");
+        let diagonal = super::super::contacts::read_profile(&conn, 1, 2, 2, "alice", 3)
+            .unwrap().unwrap();
+        assert_eq!(diagonal["name"], "Wrong diagonal");
+        assert!(unresolved_group_meta_profiles(&conn, 1).unwrap().is_empty());
     }
 
     #[test]
@@ -2287,8 +2306,51 @@ mod tests {
         assert!(validate_snapshot(&invalid).is_err());
         invalid.profile.namespace_id = 2;
         assert!(validate_snapshot(&invalid).is_ok());
-        invalid.profile.domain = "local".into();
-        assert!(validate_snapshot(&invalid).is_ok());
+    }
+
+    #[test]
+    fn thread_feed_identity_roundtrips_without_domains_and_ignores_display_changes() {
+        let mut conn = db();
+        let mut feed = snapshot(1, 0);
+        feed.authority_namespace_id = 7;
+        feed.profile.namespace_id = 7;
+        feed.previews = vec![serde_json::from_value(serde_json::json!({
+            "seq": 1, "createdAt": "2026-01-01T00:00:00Z",
+            "sender": {"account": "alice", "namespaceId": 2, "profileRev": 3},
+            "status": "LIVE", "text": "Hello",
+        })).unwrap()];
+        let wire = serde_json::to_value(&feed).unwrap();
+        assert!(wire["profile"].get("domain").is_none());
+        assert!(wire["previews"][0]["sender"].get("domain").is_none());
+        for path in ["profile", "sender"] {
+            let mut leaked = wire.clone();
+            if path == "profile" {
+                leaked["profile"]["domain"] = "local".into();
+            } else {
+                leaked["previews"][0]["sender"]["domain"] = "local".into();
+            }
+            assert!(serde_json::from_value::<ThreadFeedSnapshot>(leaked).is_err());
+        }
+        merge_states(&mut conn, 1, vec![feed.clone()], None).unwrap();
+        assert_eq!(read_state(&conn, 1, 7).unwrap().server, Some(feed.clone()));
+        for domain in ["local", "renamed.test"] {
+            super::super::contacts::register_namespace(&conn, 1, 7, domain).unwrap();
+            conn.execute("UPDATE profile_namespaces SET domain=?1 WHERE user_id=1", [domain]).unwrap();
+            let state = read_state(&conn, 1, 7).unwrap();
+            write_state(&conn, 1, &state).unwrap();
+            assert_eq!(state.server, Some(feed.clone()));
+            let presentation = super::super::thread_store::read(&conn, 1, 7).unwrap().unwrap();
+            assert_eq!(presentation["peerUser"]["domain"], domain);
+        }
+        let mut wrong = read_state(&conn, 1, 7).unwrap();
+        wrong.server.as_mut().unwrap().profile.namespace_id = 8;
+        assert!(write_state(&conn, 1, &wrong).is_err());
+        for table in ["threads", "thread_previews"] {
+            let mut statement = conn.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+            let columns: Vec<String> = statement.query_map([], |row| row.get(1)).unwrap()
+                .map(Result::unwrap).collect();
+            assert!(!columns.iter().any(|column| column.ends_with("domain")));
+        }
     }
 
     #[test]

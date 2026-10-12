@@ -6,24 +6,27 @@ import {
 
 const aliceCreator = {
   account: 'alice',
-  domain: 'local',
   profileNamespaceId: 0,
   profileRev: 0,
 };
 const bobCreator = {
   account: 'bob',
-  domain: 'remote.test',
   profileNamespaceId: 3,
   profileRev: 7,
 };
 const aliceParticipant = {
   account: 'alice',
-  domain: 'local',
+  publisherNamespaceId: 0,
   profileNamespaceId: 0,
 };
 const bobParticipant = {
   account: 'bob',
-  domain: 'remote.test',
+  publisherNamespaceId: 3,
+  profileNamespaceId: 0,
+};
+const bobGroupParticipant = {
+  account: 'bob',
+  publisherNamespaceId: 3,
   profileNamespaceId: 3,
 };
 
@@ -199,12 +202,12 @@ describe('collectCommittedProfileWork', () => {
         {
           publisherNamespaceId: 3,
           lookup: 'ACCOUNT_PROFILE',
-          target: { profileNamespaceId: 3, account: 'bob', rev: 7 },
+          target: { profileNamespaceId: 0, account: 'bob', rev: 7 },
         },
         {
           publisherNamespaceId: 3,
           lookup: 'ACCOUNT_PROFILE',
-          target: { profileNamespaceId: 3, account: 'bob', rev: 2 },
+          target: { profileNamespaceId: 0, account: 'bob', rev: 2 },
         },
       ],
       evidenceProjections: [],
@@ -212,7 +215,7 @@ describe('collectCommittedProfileWork', () => {
   });
 
   it('returns group-member hints without turning a system seq into projection evidence', () => {
-    const member = { ...bobParticipant, profileRev: 4 };
+    const member = { ...bobGroupParticipant, profileRev: 4 };
     const selected = collectCommittedProfileWork([
       committed(2, 10, {
         threadType: 'GROUP',
@@ -308,17 +311,21 @@ describe('collectCommittedProfileWork', () => {
       });
     expect(
       collectCommittedProfileWork([
-        groupEvent(1, 0, 'GROUP_JOINED', { ...bobParticipant, profileRev: 3 }),
+        groupEvent(1, 0, 'GROUP_JOINED', {
+          ...bobGroupParticipant,
+          publisherNamespaceId: 0,
+          profileRev: 3,
+        }),
         groupEvent(2, 3, 'GROUP_JOINED', {
           ...aliceParticipant,
           profileRev: 4,
         }),
         groupEvent(3, 3, 'GROUP_JOINED', {
-          ...bobParticipant,
+          ...bobGroupParticipant,
           profileRev: 0,
         }),
         groupEvent(4, 3, 'GROUP_LEFT', {
-          ...bobParticipant,
+          ...bobGroupParticipant,
           profileRev: 3,
         }),
         committed(5, 0, {

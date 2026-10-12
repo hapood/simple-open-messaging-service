@@ -21,9 +21,8 @@ use crate::{perform_api_request, ServerSessionState};
 
 pub(super) fn normalize_message_creator(message: &mut Value) {
     if let Some(creator) = message.get_mut("creator").and_then(Value::as_object_mut) {
-        if creator.get("namespaceId").and_then(Value::as_i64) == Some(0) {
-            creator.insert("namespaceId".into(), Value::from(0));
-        }
+        // Creator is a coordinate-only address, not a display/routing snapshot.
+        creator.remove("domain");
     }
 }
 
@@ -53,6 +52,13 @@ fn message_tomb(identity: &Value, reason: &str) -> Result<Value, String> {
                 .clone();
         }
     }
+    // Preserve the publisher-space profile reference independently of the projected creator.
+    for field in ["publisherNamespaceId", "profileNamespaceId", "namespaceId"] {
+        if let Some(value) = identity.get(field) {
+            tomb[field] = value.clone();
+        }
+    }
+    normalize_message_creator(&mut tomb);
     Ok(tomb)
 }
 
@@ -159,7 +165,7 @@ mod tomb_tests {
     fn message() -> Value {
         json!({
             "threadId": 42, "seq": 4,
-            "creator": {"account": "alice", "domain": "example.test", "namespaceId": 1},
+            "creator": {"account": "alice", "namespaceId": 1},
             "profileRev": 3, "createdAt": 100, "updatedAt": 101,
             "contentType": "IMAGE", "isDeleted": false, "localState": "READY",
             "content": "private body", "quote": {"content": "private quote"},
@@ -195,7 +201,7 @@ mod tomb_tests {
         let tomb = write_message_slot(&tx, 1, deletion("USER_RETRACTION")).unwrap();
         tx.commit().unwrap();
         assert!(tomb.get("originSeq").is_none());
-        assert!(tomb.get("publisherNamespaceId").is_none());
+        assert_eq!(tomb["publisherNamespaceId"], 3);
         assert!(load_origin_message(&conn, 1, 42, 3, 104).unwrap().is_none());
     }
 
@@ -203,7 +209,7 @@ mod tomb_tests {
     fn local_system_profile_correction_survives_refills_of_only_its_row() {
         let mut conn = database();
         let tx = conn.transaction().unwrap();
-        let system = json!({"threadId":42,"seq":4,"creator":{"account":"$system","domain":"local","namespaceId":0},
+        let system = json!({"threadId":42,"seq":4,"creator":{"account":"$system","namespaceId":0},
             "profileRev":0,"createdAt":100,"updatedAt":101,"contentType":"SYSTEM","content":"group joined",
             "isDeleted":false,"localState":"READY"});
         write_message_slot(&tx, 1, MessageSlotWrite::Message(system.clone())).unwrap();
@@ -211,8 +217,8 @@ mod tomb_tests {
         other["seq"] = json!(5);
         write_message_slot(&tx, 1, MessageSlotWrite::Message(other)).unwrap();
         tx.commit().unwrap();
-        assert!(correct_system_message_profile(&mut conn, 1, 42, 4, "alice", 7, 2).unwrap());
-        assert!(!correct_system_message_profile(&mut conn, 1, 42, 4, "alice", 7, 2).unwrap());
+        assert!(correct_system_message_profile(&mut conn, 1, 42, 4, "alice", 7, 0, 2).unwrap());
+        assert!(!correct_system_message_profile(&mut conn, 1, 42, 4, "alice", 7, 0, 2).unwrap());
         let tx = conn.transaction().unwrap();
         write_message_slot(&tx, 1, MessageSlotWrite::Message(system.clone())).unwrap();
         tx.commit().unwrap();
@@ -226,7 +232,7 @@ mod tomb_tests {
                 .unwrap();
             parse_json(payload).unwrap()
         };
-        assert_eq!(read(4)["localSystemProfileRevs"]["[7,\"alice\"]"], 2);
+        assert_eq!(read(4)["localSystemProfileRevs"]["[7,0,\"alice\"]"], 2);
         assert!(read(5).get("localSystemProfileRevs").is_none());
     }
 
@@ -252,7 +258,7 @@ mod tomb_tests {
                 }
                 let expected = json!({
                     "threadId": 42, "seq": 4,
-                    "creator": {"account": "alice", "domain": "example.test", "namespaceId": 1},
+                    "creator": {"account": "alice", "namespaceId": 1},
                     "profileRev": 3, "createdAt": 100, "updatedAt": 101,
                     "contentType": "TOMB", "isDeleted": true, "deletionType": reason,
                 });
@@ -286,7 +292,7 @@ mod tomb_tests {
     }
 
     #[test]
-    fn query_tombs_preserve_null_creator_and_real_local_domain() {
+    fn query_tombs_preserve_null_creator_and_coordinate_only_profile_references() {
         let mut conn = database();
         let tx = conn.transaction().unwrap();
         let mut source = message();
@@ -297,14 +303,18 @@ mod tomb_tests {
             tomb
         );
         source["seq"] = json!(5);
-        source["creator"] = json!({"account": "alice", "domain": "example.test", "namespaceId": 0});
+        source["creator"] = json!({"account": "alice", "namespaceId": 0});
+        source["publisherNamespaceId"] = json!(7);
+        source["profileNamespaceId"] = json!(2);
         let merged = write_message_slot(
             &tx,
             1,
             MessageSlotWrite::Message(message_tomb(&source, "MODERATION_REMOVAL").unwrap()),
         )
         .unwrap();
-        assert_eq!(merged["creator"]["domain"], "example.test");
+        assert!(merged["creator"].get("domain").is_none());
+        assert_eq!(merged["publisherNamespaceId"], 7);
+        assert_eq!(merged["profileNamespaceId"], 2);
     }
 
     #[test]
@@ -356,7 +366,7 @@ mod tomb_tests {
             let mut slot = message();
             slot["seq"] = json!(seq);
             if seq == 4 || seq == 5 || seq == 10 {
-                slot["creator"] = json!({"account":"me", "domain":"example.test", "namespaceId": if seq == 10 { 2 } else { 0 }});
+                slot["creator"] = json!({"account":"me", "namespaceId": if seq == 10 { 2 } else { 0 }});
             }
             if seq == 6 {
                 slot["creator"] = Value::Null;
@@ -1941,14 +1951,16 @@ pub(crate) async fn native_db_correct_system_message_profile(
     thread_id: i64,
     seq: i64,
     account: String,
-    namespace_id: i64,
+    publisher_namespace_id: i64,
+    profile_namespace_id: i64,
     profile_rev: i64,
 ) -> Result<bool, String> {
     if user_id < 1
         || thread_id < 1
         || seq < 1
         || account.is_empty()
-        || namespace_id < 0
+        || publisher_namespace_id < 0
+        || profile_namespace_id < 0
         || profile_rev < 1
     {
         return Err("invalid system profile correction".into());
@@ -1960,7 +1972,8 @@ pub(crate) async fn native_db_correct_system_message_profile(
             thread_id,
             seq,
             &account,
-            namespace_id,
+            publisher_namespace_id,
+            profile_namespace_id,
             profile_rev,
         )
     })
@@ -1974,7 +1987,8 @@ fn correct_system_message_profile(
     thread_id: i64,
     seq: i64,
     account: &str,
-    namespace_id: i64,
+    publisher_namespace_id: i64,
+    profile_namespace_id: i64,
     profile_rev: i64,
 ) -> Result<bool, String> {
     let tx = conn
@@ -1996,7 +2010,11 @@ fn correct_system_message_profile(
     {
         return Ok(false);
     }
-    let participant = serde_json::to_string(&(namespace_id, account))
+    let participant = serde_json::to_string(&(
+        publisher_namespace_id,
+        profile_namespace_id,
+        account,
+    ))
         .map_err(|e| format!("encode system participant: {e}"))?;
     let revisions = message
         .as_object_mut()

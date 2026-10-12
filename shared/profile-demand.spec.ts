@@ -3,7 +3,34 @@ import {
   parseProfileDemand,
   parseProfileRequest,
   ProfileDemandParseError,
+  messageProfileKey,
+  profileNamespacePair,
 } from './profile-demand.js';
+
+describe('publisher-scoped message profile coordinates', () => {
+  it.each([[0, 0], [7, 0], [7, 7], [1, 2]])(
+    'preserves publisher %i and profile namespace %i independently',
+    (publisherNamespaceId, profileNamespaceId) => {
+      const message = {
+        publisherNamespaceId,
+        profileNamespaceId,
+        profileRev: 3,
+        creator: { account: 'alice', namespaceId: 99 },
+      };
+      const key = messageProfileKey(message);
+      expect(key).toEqual({
+        publisherNamespaceId,
+        profileNamespaceId,
+        account: 'alice',
+        rev: 3,
+      });
+      expect(profileNamespacePair(key)).toEqual({
+        publisherNamespaceId,
+        profileNamespaceId,
+      });
+    },
+  );
+});
 
 describe('profile demand parser', () => {
   const demand = {

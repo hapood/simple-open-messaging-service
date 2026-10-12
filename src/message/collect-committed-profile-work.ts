@@ -88,21 +88,16 @@ export function collectCommittedProfileWork(
       const event = parseSystemMessageContent(item.content);
       if (!event) continue;
       for (const address of eventParticipants(event, item.threadType)) {
-        if (
-          address.profileRev === 0 ||
-          address.account === '$system' ||
-          address.profileNamespaceId === 0
-        )
-          continue;
+        if (address.profileRev === 0 || address.account === '$system') continue;
         // A local publisher already owns the profile snapshot. Remote
         // publishers require a federation profile lookup.
-        if (item.publisherNamespaceId === 0) continue;
+        if (address.publisherNamespaceId === 0) continue;
         let thread = hints.get(item.threadId);
         if (!thread) {
           thread = new Map();
           hints.set(item.threadId, thread);
         }
-        const publisherNamespaceId = item.publisherNamespaceId;
+        const publisherNamespaceId = address.publisherNamespaceId;
         const key = JSON.stringify([
           publisherNamespaceId,
           address.profileNamespaceId,

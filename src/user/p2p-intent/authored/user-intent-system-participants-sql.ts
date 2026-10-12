@@ -5,8 +5,8 @@ import { sql, type SQL } from 'drizzle-orm';
  * its revision must come from the materialized authored state instead — the
  * actorState CTE returns the author coordinates so its row can be matched to
  * the direction being rendered. The local endpoint (side A) has namespace zero.
- * The enclosing message supplies the publisher namespace; the display domain
- * is not part of the wire contract. */
+ * Each participant carries its own publisher namespace; display domains are
+ * not part of the wire contract. */
 export function userIntentSystemParticipantsSql(input: {
   pairId: bigint;
   actorState: 'accepted' | 'revocation';
@@ -27,7 +27,8 @@ export function userIntentSystemParticipantsSql(input: {
     ), 0)`;
   return sql`(SELECT jsonb_build_array(
       jsonb_build_object('account', p."endpointAAccount",
-        'profileNamespaceId', p."endpointANamespaceId",
+        'publisherNamespaceId', p."endpointANamespaceId",
+        'profileNamespaceId', 0,
         'profileRev', ${revision({
           author: sql`p."endpointAAccount"`,
           authorNamespace: sql`p."endpointANamespaceId"`,
@@ -35,7 +36,8 @@ export function userIntentSystemParticipantsSql(input: {
           receiverNamespace: sql`p."endpointBNamespaceId"`,
         })}),
       jsonb_build_object('account', p."endpointBAccount",
-        'profileNamespaceId', p."endpointBNamespaceId",
+        'publisherNamespaceId', p."endpointBNamespaceId",
+        'profileNamespaceId', 0,
         'profileRev', ${revision({
           author: sql`p."endpointBAccount"`,
           authorNamespace: sql`p."endpointBNamespaceId"`,

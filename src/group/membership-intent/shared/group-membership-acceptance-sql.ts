@@ -3,6 +3,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fanout-admission-sql.js';
 import { requestProjectionFlipSql } from './group-membership-projection-sql.js';
+import { groupMemberProfileAddressSql } from '../../meta/group-member-profile-address.js';
 
 export interface GroupMembershipAcceptanceInput {
   pairId: bigint;
@@ -152,9 +153,12 @@ function relationshipAndRoster(input: GroupMembershipAcceptanceInput): SQL {
       INSERT INTO "Message" ("threadId", seq, "contentType", content, "creatorAccount", "profileNamespaceId", "publisherNamespaceId", "updatedAt")
       SELECT ${input.threadId}, s."curSeq", 'SYSTEM'::"ContentType",
         jsonb_build_object('type', 'GROUP_JOINED', 'member',
-          jsonb_build_object('account', ${input.memberAccount}::text,
-            'profileNamespaceId', ${input.profileNamespaceId}::integer,
-            'profileRev', (SELECT "memberProfileRev" FROM join_source))),
+          ${groupMemberProfileAddressSql({
+            account: sql`${input.memberAccount}::text`,
+            publisherNamespaceId: sql`0`,
+            profileNamespaceId: sql`${input.profileNamespaceId}::integer`,
+            profileRev: sql`(SELECT "memberProfileRev" FROM join_source)`,
+          })}),
         '$system', 0, 0, CURRENT_TIMESTAMP
       FROM seq_alloc s CROSS JOIN roster_plan p
       WHERE EXISTS (SELECT 1 FROM pair_change)

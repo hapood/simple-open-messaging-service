@@ -50,7 +50,6 @@ function databaseMock(queries: {
                 : [
                     {
                       account: 'alice',
-                      domain: 'local',
                       publisherNamespaceId: 0,
                       profileNamespaceId: 0,
                       name: 'Alice',
@@ -76,7 +75,6 @@ function databaseMock(queries: {
             vi.fn().mockResolvedValue([
               {
                 account: 'alice',
-                domain: 'local',
                 publisherNamespaceId: 0,
                 profileNamespaceId: 0,
                 name: 'Alice',
@@ -114,6 +112,36 @@ const url = (d: string): string =>
   `/uploads/msg-assets/${d.slice(0, 2)}/${d.slice(2, 4)}/${d}`;
 
 describe('stripMessageId author projection namespace', () => {
+  it('preserves distinct profile coordinates when projected author identities collide', () => {
+    const ownSubject = stripMessageId(
+      mk({
+        id: 1n,
+        seq: 1,
+        content: '{"text":"hello"}',
+        profileNamespaceId: 0,
+        publisherNamespaceId: 7,
+      }),
+    );
+    const foreignSubject = stripMessageId(
+      mk({
+        id: 2n,
+        seq: 2,
+        content: '{"text":"hello"}',
+        profileNamespaceId: 7,
+        publisherNamespaceId: 7,
+      }),
+    );
+
+    expect(ownSubject.creator).toEqual({ account: 'alice', namespaceId: 7 });
+    expect(foreignSubject.creator).toEqual({ account: 'alice', namespaceId: 7 });
+    expect(ownSubject.profileNamespaceId).toBe(0);
+    expect(foreignSubject.profileNamespaceId).toBe(7);
+    expect(ownSubject.publisherNamespaceId).toBe(7);
+    expect(foreignSubject.publisherNamespaceId).toBe(7);
+    expect(ownSubject).not.toHaveProperty('id');
+    expect(foreignSubject).not.toHaveProperty('creatorAccount');
+  });
+
   it('addresses a publisher-owned remote author by the publisher namespace', () => {
     const result = stripMessageId(
       mk({
@@ -213,13 +241,11 @@ describe('MessageService committed profile work', () => {
       participants: [
         {
           account: string;
-          domain: string;
           profileNamespaceId: number;
           profileRev: number;
         },
         {
           account: string;
-          domain: string;
           profileNamespaceId: number;
           profileRev: number;
         },
@@ -229,13 +255,11 @@ describe('MessageService committed profile work', () => {
       participants: [
         {
           account: 'alice',
-          domain: 'remote.test',
           profileNamespaceId: 7,
           profileRev: 3,
         },
         {
           account: 'bob',
-          domain: 'local',
           profileNamespaceId: 0,
           profileRev: 2,
         },
@@ -247,7 +271,7 @@ describe('MessageService committed profile work', () => {
         threadId: 9,
         seq: 4,
         profileRev: 0,
-        creator: { account: '$system', domain: 'local', namespaceId: 0 },
+        creator: { account: '$system', namespaceId: 0 },
         publisherNamespaceId: 7,
         contentType: 'SYSTEM',
         content: JSON.stringify(systemContent),
@@ -302,7 +326,7 @@ describe('MessageService committed profile work', () => {
       threadId: 9,
       seq: 4,
       profileRev: 3,
-      creator: { account: 'alice', domain: 'remote.test', namespaceId: 7 },
+      creator: { account: 'alice', namespaceId: 7 },
       publisherNamespaceId: 7,
       contentType: 'PURE_TEXT',
       content: JSON.stringify({ text: 'hello' }),
@@ -1086,7 +1110,6 @@ describe('MessageService quote previews', () => {
         user: vi.fn().mockResolvedValue([
           {
             account: 'bob',
-            domain: 'local',
             publisherNamespaceId: 0,
             profileNamespaceId: 0,
             name: 'Bob',

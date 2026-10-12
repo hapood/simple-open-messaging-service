@@ -37,13 +37,13 @@ const peerProfile = {
   profileRev: 0,
 };
 
-async function seedGroupFeed(webdb: WebdbService): Promise<void> {
+async function seedGroupFeed(webdb: WebdbService, publisherNamespaceId = 0): Promise<void> {
   await webdb.mergeThreadStates([
     threadFeedSnapshot(9, {
       type: 'GROUP',
       role: 'OWNER',
       profileAccount: '!team',
-      publisherNamespaceId: 0,
+      publisherNamespaceId,
       profileRev: 0,
     }),
   ]);
@@ -632,6 +632,7 @@ describe('WebdbService', () => {
       async (type) => {
         await webdb.openForUser('1');
         const message: Message = {
+          profileNamespaceId: 1,
           publisherNamespaceId: 0,
           originSeq: 4,
           threadId: 42,
@@ -679,6 +680,7 @@ describe('WebdbService', () => {
       const message: Message = {
         threadId: 42,
         seq: 104,
+        profileNamespaceId: 0,
         publisherNamespaceId: 3,
         originSeq: 4,
         namespaceId: 0,
@@ -723,6 +725,7 @@ describe('WebdbService', () => {
     it('commits identified tombs as timeline slots without exposing deleted bodies', async () => {
       await webdb.openForUser('1');
       const message: Message = {
+        profileNamespaceId: 1,
         publisherNamespaceId: 0,
         originSeq: 4,
         threadId: 42,
@@ -780,6 +783,7 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       const owner = { account: 'me', namespaceId: 0 };
       const base: Message = {
+        profileNamespaceId: 2,
         publisherNamespaceId: 0,
         originSeq: 1,
         threadId: 42,
@@ -882,6 +886,7 @@ describe('WebdbService', () => {
     it('keeps a system profile correction local to its row across cache refills', async () => {
       await webdb.openForUser('1');
       const message: Message = {
+        profileNamespaceId: 0,
         publisherNamespaceId: 0,
         originSeq: 1,
         threadId: 42,
@@ -898,14 +903,14 @@ describe('WebdbService', () => {
       };
       await webdb.putCachedMessages([message, { ...message, seq: 2 }]);
       expect(
-        await webdb.correctSystemMessageProfile(42, 1, 'alice', 7, 2),
+        await webdb.correctSystemMessageProfile(42, 1, 'alice', 7, 0, 2),
       ).toBe(true);
       expect(
-        await webdb.correctSystemMessageProfile(42, 1, 'alice', 7, 2),
+        await webdb.correctSystemMessageProfile(42, 1, 'alice', 7, 0, 2),
       ).toBe(false);
       await webdb.putCachedMessages([message, { ...message, seq: 2 }]);
       expect(await webdb.getMessage(42, 1)).toMatchObject({
-        localSystemProfileRevs: { '[7,"alice"]': 2 },
+        localSystemProfileRevs: { '[7,0,"alice"]': 2 },
       });
       expect(await webdb.getMessage(42, 2)).not.toHaveProperty(
         'localSystemProfileRevs',
@@ -924,6 +929,7 @@ describe('WebdbService', () => {
         Array.from(
           { length: 120 },
           (_, i): Message => ({
+            profileNamespaceId: 0,
             publisherNamespaceId: 0,
             originSeq: i + 1,
             threadId: 42,
@@ -2286,6 +2292,50 @@ describe('WebdbService', () => {
       });
     });
 
+    it('reads and commits member profiles in the group publisher space, never a diagonal', async () => {
+      await webdb.openForUser('1');
+      await seedGroupFeed(webdb, 7);
+      await webdb.putThread({
+        threadId: 9,
+        publisherNamespaceId: 7,
+        type: 'GROUP',
+        group: { account: '!team', namespaceId: 7, memberCount: 0, groupMetaFeedId: '0' },
+      } as never);
+      await webdb.applyGroupMetaPage({
+        threadId: 9,
+        namespaceId: 7,
+        page: {
+          account: '!team', mode: 'full', hasMore: false,
+          scannedThrough: '1', groupMetaFeedEndId: '1',
+          items: [{ feedId: '1', operation: 'MEMBER_UPSERT', body: {
+            account: 'alice', namespaceId: 2, role: 'MEMBER', profileRev: 3,
+          } }],
+        },
+      });
+      await webdb.commitResolvedProfile({
+        publisherNamespaceId: 2, profileNamespaceId: 2, account: 'alice', rev: 3,
+        name: 'Wrong diagonal', bio: '', avatarBase64: null,
+      });
+      expect((await webdb.getGroupMember(9, 'alice', 2))?.resolvedProfileRev).toBeUndefined();
+      expect(await webdb.getUnresolvedGroupMetaProfiles()).toContainEqual({
+        type: 'GROUP_MEMBER', threadId: 9, account: 'alice', namespaceId: 2, rev: 3,
+      });
+      expect(await webdb.commitResolvedGroupMetaProfile(
+        { type: 'GROUP_MEMBER', threadId: 9, account: 'alice', namespaceId: 2, rev: 3 },
+        { namespaceId: 2, account: 'alice', rev: 3, name: 'Correct publisher', bio: '', avatarBase64: null },
+      )).toBe(true);
+      expect(await webdb.getGroupMember(9, 'alice', 2)).toMatchObject({
+        profileName: 'Correct publisher',
+        user: { publisherNamespaceId: 7, profileNamespaceId: 2 },
+      });
+      expect(await webdb.queryGroupMembers({ threadId: 9, take: 10 })).toEqual([
+        expect.objectContaining({ profileName: 'Correct publisher' }),
+      ]);
+      expect(await webdb.getUnresolvedGroupMetaProfiles()).not.toContainEqual({
+        type: 'GROUP_MEMBER', threadId: 9, account: 'alice', namespaceId: 2, rev: 3,
+      });
+    });
+
     it('materializes full group metadata and pages/searches the local roster', async () => {
       const db = await webdb.openForUser('1');
       await seedGroupFeed(webdb);
@@ -2305,7 +2355,7 @@ describe('WebdbService', () => {
         account: 'alice',
         avatarBase64: 'YQ==',
         bio: 'About Alice',
-        publisherNamespaceId: 12,
+        publisherNamespaceId: 0,
         profileNamespaceId: 12,
         rev: 6,
       });
@@ -2562,7 +2612,7 @@ describe('WebdbService', () => {
       });
       expect(
         await webdb.getProfile({
-          publisherNamespaceId: 12,
+          publisherNamespaceId: 0,
           lookup: 'ACCOUNT_PROFILE',
           target: { profileNamespaceId: 12, account: 'alice', rev: 3 },
         }),

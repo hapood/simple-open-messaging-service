@@ -476,6 +476,7 @@ export class MirrorGroupMembershipIntentService {
         threadId,
         localMemberId: memberId,
         memberAccount,
+        publisherNamespaceId: group.namespaceId,
         threadLock,
       });
       peers.add(group.namespaceId);

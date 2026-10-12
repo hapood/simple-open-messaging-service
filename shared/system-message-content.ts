@@ -1,10 +1,11 @@
-import { isProfiledAddress, type ProfiledAddress } from './profiled-address.js';
+import { isProfiledAddress, type ProfiledAddress, profileKeyForAddress } from './profiled-address.js';
 import {
   parseCallEndedContent,
   type CallEndedContent,
 } from './call-ended-content.js';
 
 export type SystemEventAddress = ProfiledAddress;
+export { profileKeyForAddress };
 
 /** Event participants are independent of the notification sender. */
 export type OrdinarySystemMessageContent<A = SystemEventAddress> =
@@ -58,6 +59,7 @@ export function parseSystemMessageContent(
       isProfiledAddress(v) && (v.account !== '$system' || allowSystem)
         ? {
             account: v.account,
+            publisherNamespaceId: v.publisherNamespaceId,
             profileNamespaceId: v.profileNamespaceId,
             profileRev: v.profileRev,
           }

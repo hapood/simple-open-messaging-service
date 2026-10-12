@@ -107,6 +107,49 @@ describe('thread feed database previews', () => {
     expect(execute).toHaveBeenCalledTimes(2);
   });
 
+  it('preserves sender profile coordinates in the publisher space without domains', async () => {
+    const { service, read, execute } = setup();
+    execute
+      .mockResolvedValueOnce({ rows: [{ threadFeedEndId: 10 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            threadId: 7,
+            threadFeedId: 10,
+            type: 'GROUP',
+            publisherNamespaceId: 7,
+            profileAccount: '!group',
+            profileRev: 3,
+            groupMetaFeedEndId: null,
+          },
+        ],
+      });
+    read.mockResolvedValueOnce(
+      [0, 7].map((profileNamespaceId) => ({
+        seq: profileNamespaceId + 1,
+        createdAt: '2026-09-08T00:00:00Z',
+        creatorAccount: 'peer',
+        profileNamespaceId,
+        profileRev: 3,
+        isDeleted: false,
+        deletionType: null,
+        contentType: 'PURE_TEXT',
+        content: '{"text":"hello"}',
+      })),
+    );
+
+    const result = await service.queryThreadFeedDelta(1, {
+      after: 0,
+      previewCount: 2,
+    });
+    expect(result.items[0].publisherNamespaceId).toBe(7);
+    expect(result.items[0]).not.toHaveProperty('domain');
+    expect(result.items[0].previews?.map((preview) => preview.sender)).toEqual([
+      { account: 'peer', profileNamespaceId: 0, profileRev: 3 },
+      { account: 'peer', profileNamespaceId: 7, profileRev: 3 },
+    ]);
+  });
+
   it('renders mention entities as display text in previews, not wire markup', async () => {
     const { service, read } = setup();
     read.mockImplementation(async () => [

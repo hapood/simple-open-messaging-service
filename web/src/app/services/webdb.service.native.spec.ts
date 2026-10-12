@@ -220,6 +220,7 @@ describe('WebdbService native SQLite routing', () => {
 
   it('routes message cache maintenance, point reads, newest reads and thread cleanup to SQLite', async () => {
     const message = {
+      profileNamespaceId: 0,
       publisherNamespaceId: 0,
       originSeq: 3,
       threadId: 9,

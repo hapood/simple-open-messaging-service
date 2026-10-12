@@ -1623,14 +1623,13 @@ export class MessageThreadComponent implements OnDestroy {
     );
     if (!profile) return;
     this.dismissContextMenu();
-    // Member rows no longer store a display domain; the contact card resolves
-    // the member-home diagonal binding (the namespace publishing its own
-    // profiles) at open time instead.
+    // Resolve the member's namespace in the group's publisher space.
+    // A member namespace is never a receiver-local publisher ID.
     const memberHomeDomain = await firstValueFrom(
       this.namespaces
         .resolve({
-          publisherNamespaceId: identity.namespaceId,
-          profileNamespaceId: identity.namespaceId,
+          publisherNamespaceId: profile.publisherNamespaceId,
+          profileNamespaceId: profile.namespaceId,
         })
         .pipe(
           map(namespaceDisplayDomain),

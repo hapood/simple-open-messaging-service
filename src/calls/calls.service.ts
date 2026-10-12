@@ -1328,12 +1328,22 @@ export class CallsService implements OnModuleDestroy {
     const endedAt = call.terminal?.endedAt ?? this.localTime(call);
     if (!call.historyIdentity) {
       const address = async (id: number | null) => {
-        if (id === null)
+        if (id === null) {
+          const publisherNamespaceId = call.peerNamespaceId;
+          if (
+            !call.peerAccount ||
+            typeof publisherNamespaceId !== 'number' ||
+            !Number.isSafeInteger(publisherNamespaceId) ||
+            publisherNamespaceId < 0
+          )
+            throw new Error('call peer profile coordinate is unavailable');
           return {
-            account: call.peerAccount!,
+            account: call.peerAccount,
+            publisherNamespaceId,
             profileNamespaceId: 0,
             profileRev: 0,
           };
+        }
         const local = await this.database.db.query.account.findFirst({
           where: eq(user.id, id),
           columns: { account: true, namespaceId: true },
@@ -1341,6 +1351,7 @@ export class CallsService implements OnModuleDestroy {
         if (!local) throw new Error('call participant no longer exists');
         return {
           account: local.account,
+          publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 0,
         };

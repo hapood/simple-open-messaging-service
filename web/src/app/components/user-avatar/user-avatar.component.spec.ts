@@ -1,4 +1,5 @@
-import { Subject } from 'rxjs';
+import { Subject, of } from 'rxjs';
+import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { UserAvatarComponent, UserAvatarType } from './user-avatar.component';
@@ -33,11 +34,32 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
           provide: ConversationListService,
           useValue: { items: conversations },
         },
+        {
+          provide: ProfileNamespaceRepository,
+          useValue: {
+            resolve: vi.fn(() => of({ domain: 'publisher.test', status: 'ACTIVE' })),
+          },
+        },
       ],
     });
     fixture = TestBed.createComponent(UserAvatarComponent);
     sessionProfile.set(undefined);
     conversations.set([]);
+  });
+
+  it('resolves a publisher-owned avatar using the complete profile namespace pair', async () => {
+    fixture.componentRef.setInput('domainSource', {
+      type: 'profile-namespace',
+      publisherNamespaceId: 7,
+      profileNamespaceId: 0,
+    });
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(TestBed.inject(ProfileNamespaceRepository).resolve).toHaveBeenCalledWith({
+      publisherNamespaceId: 7,
+      profileNamespaceId: 0,
+    });
+    expect(fixture.componentInstance.federatedMarkerDomain()).toBe('publisher.test');
   });
 
   it.each([false, true])(
@@ -93,7 +115,7 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     fixture.componentRef.setInput('p2pThreadId', 42);
     vi.spyOn(TestBed.inject(ProfileRepository), 'resolve').mockReturnValue(new Subject());
     fixture.componentRef.setInput('profileEvidence', {
-      publisherNamespaceId: 4,
+      publisherNamespaceId: 0,
       lookup: 'ACCOUNT_PROFILE',
       target: { profileNamespaceId: 4, account: 'alice', rev: 1 },
     });

@@ -3,7 +3,6 @@ import {
   type SystemEventAddress,
 } from '../../../../../../shared/system-message-content';
 import { firstValueFrom, of } from 'rxjs';
-import { homeProfileDemand } from '../../../services/profile-demand';
 import { MemberProfileRepository } from '../../../services/member-profile-store.service';
 import { ProfileRepository } from '../../../services/profile-store.service';
 import { WebdbService } from '../../../services/webdb.service';
@@ -98,7 +97,8 @@ export class SystemRowComponent {
         return event.participants.find(
           (participant) =>
             participant.account !== self?.account ||
-            participant.profileNamespaceId !== self?.namespaceId,
+            participant.publisherNamespaceId !== self?.namespaceId ||
+            participant.profileNamespaceId !== 0,
         );
       }
       if ('member' in event) return event.member;
@@ -115,20 +115,25 @@ export class SystemRowComponent {
       this.profileName.set('');
       this.namespaceDomain.set(null);
       if (!identity || !data.threadId) return;
-      this.resolveIdentityDomain(identity, onCleanup);
+      this.resolveIdentityDomain(data, identity, onCleanup);
       this.resolveProfiledParticipant(data, identity, onCleanup);
     });
   }
 
+  private profilePair(_data: ChatMsgData, identity: SystemEventAddress) {
+    return {
+      publisherNamespaceId: identity.publisherNamespaceId,
+      profileNamespaceId: identity.profileNamespaceId,
+    };
+  }
+
   private resolveIdentityDomain(
+    data: ChatMsgData,
     identity: SystemEventAddress,
     onCleanup: (callback: () => void) => void,
   ): void {
     const subscription = this.namespaces
-      .resolve({
-        publisherNamespaceId: 0,
-        profileNamespaceId: identity.profileNamespaceId,
-      })
+      .resolve(this.profilePair(data, identity))
       .subscribe({
         next: (binding) =>
           this.namespaceDomain.set(namespaceDisplayDomain(binding)),
@@ -137,7 +142,40 @@ export class SystemRowComponent {
     onCleanup(() => subscription.unsubscribe());
   }
 
-  /** Resolve an exact profile key without ever deriving a member namespace from the group. */
+  private profileDemand(
+    data: ChatMsgData,
+    identity: SystemEventAddress,
+    revision: number,
+  ): ProfileDemand {
+    const item = data.threadId
+      ? this.conversations
+          .items()
+          .find((candidate) => candidate.threadId === data.threadId)
+      : undefined;
+    if (data.isGroupConversation && item?.type === 'GROUP') {
+      return {
+        publisherNamespaceId: identity.publisherNamespaceId,
+        lookup: 'GROUP_MEMBER_PROFILE',
+        target: {
+          profileNamespaceId: identity.profileNamespaceId,
+          account: identity.account,
+          rev: revision,
+        },
+        groupAccount: item.group.account,
+      };
+    }
+    return {
+      publisherNamespaceId: identity.publisherNamespaceId,
+      lookup: 'ACCOUNT_PROFILE',
+      target: {
+        profileNamespaceId: identity.profileNamespaceId,
+        account: identity.account,
+        rev: revision,
+      },
+    };
+  }
+
+  /** Resolve an exact profile key from the participant body. */
   private resolveProfiledParticipant(
     data: ChatMsgData,
     identity: SystemEventAddress,
@@ -145,6 +183,7 @@ export class SystemRowComponent {
   ): void {
     const threadId = data.threadId!;
     const participantKey = JSON.stringify([
+      identity.publisherNamespaceId,
       identity.profileNamespaceId,
       identity.account,
     ]);
@@ -159,13 +198,7 @@ export class SystemRowComponent {
       if (!revision) return;
       void firstValueFrom(
         this.profiles.resolve(
-          unevidencedProfileDemand(
-            homeProfileDemand(
-              identity.account,
-              identity.profileNamespaceId,
-              revision,
-            ),
-          ),
+          unevidencedProfileDemand(this.profileDemand(data, identity, revision)),
         ),
       )
         .then((profile) => {
@@ -193,27 +226,9 @@ export class SystemRowComponent {
           'GROUP_OWNER_TRANSFERRED',
         ].includes(event.type)
       )
-        evidence = {
-          publisherNamespaceId: identity.profileNamespaceId,
-          lookup: 'GROUP_MEMBER_PROFILE',
-          target: {
-            profileNamespaceId: identity.profileNamespaceId,
-            account: identity.account,
-            rev: revision,
-          },
-          groupAccount: (() => {
-            const item = this.conversations
-              .items()
-              .find((candidate) => candidate.threadId === threadId);
-            return item?.type === 'GROUP' ? item.group.account : '';
-          })(),
-        };
+        evidence = this.profileDemand(data, identity, revision);
       else if (event.type === 'FRIEND_ADDED')
-        evidence = homeProfileDemand(
-          identity.account,
-          identity.profileNamespaceId,
-          revision,
-        );
+        evidence = this.profileDemand(data, identity, revision);
     }
     const profileSubscription = evidence
       ? this.profiles.resolve(evidence).subscribe({
@@ -232,6 +247,7 @@ export class SystemRowComponent {
                 threadId,
                 data.msgId,
                 identity.account,
+                identity.publisherNamespaceId,
                 identity.profileNamespaceId,
                 profile.rev,
               );
@@ -251,7 +267,8 @@ export class SystemRowComponent {
     return (
       !!self &&
       identity.account === self.account &&
-      identity.profileNamespaceId === self.namespaceId
+      identity.publisherNamespaceId === self.namespaceId &&
+      identity.profileNamespaceId === 0
     );
   }
 
@@ -297,17 +314,18 @@ export class SystemRowComponent {
         return `${direction} · ${media} · ${result} · ${started} · ${waiting}${duration}`;
       }
       const identity = this.displayIdentity();
-      const alias = identity
-        ? (this.conversations
-            .items()
-            .find(
-              (item) =>
-                item.type === 'P2P' &&
-                item.peerUser.account === identity.account &&
-                item.peerUser.namespaceId === identity.profileNamespaceId,
-            )
-            ?.alias?.trim() ?? '')
-        : '';
+      const alias =
+        identity?.publisherNamespaceId === 0
+          ? (this.conversations
+              .items()
+              .find(
+                (item) =>
+                  item.type === 'P2P' &&
+                  item.peerUser.account === identity.account &&
+                  item.peerUser.namespaceId === identity.profileNamespaceId,
+              )
+              ?.alias?.trim() ?? '')
+          : '';
       const name =
         alias ||
         this.profileName() ||
@@ -315,7 +333,7 @@ export class SystemRowComponent {
           identity
             ? {
                 account: identity.account,
-                profileNamespaceId: identity.profileNamespaceId,
+                namespaceId: identity.publisherNamespaceId,
                 domain: this.namespaceDomain(),
               }
             : {},

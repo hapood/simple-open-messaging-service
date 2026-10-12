@@ -44,7 +44,7 @@ export type Message = Omit<
   'contentType' | 'mediaStatus' | 'creator'
 > & {
   contentType: S['MessageResponseDto']['contentType'];
-  /** Author profile namespace. This is not necessarily the publisher namespace. */
+  /** Projected author coordinate; never use it to reconstruct a profile namespace. */
   namespaceId: number;
   /** Immutable author profile selected when this message was committed. */
   profileRev: number;

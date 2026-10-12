@@ -7,16 +7,19 @@ import {
 
 const me = {
   account: 'alice',
+  publisherNamespaceId: 0,
   profileNamespaceId: 0,
   profileRev: 2,
 };
 const peer = {
   account: 'bob',
-  profileNamespaceId: 12,
+  publisherNamespaceId: 12,
+  profileNamespaceId: 0,
   profileRev: 3,
 };
 const system = {
   account: '$system',
+  publisherNamespaceId: 0,
   profileNamespaceId: 0,
   profileRev: 0,
 };
@@ -55,7 +58,7 @@ describe('system message content', () => {
     }
   });
 
-  it('accepts address keys outside the wire contract such as domain', () => {
+  it('drops domain keys outside the profile identity wire contract', () => {
     expect(
       parseSystemMessageContent(
         JSON.stringify({
@@ -63,7 +66,7 @@ describe('system message content', () => {
           member: { ...peer, domain: 'peer.test' },
         }),
       ),
-    ).toMatchObject({ type: SystemMessageType.GROUP_LEFT, member: peer });
+    ).toEqual({ type: SystemMessageType.GROUP_LEFT, member: peer });
   });
 
   it.each([

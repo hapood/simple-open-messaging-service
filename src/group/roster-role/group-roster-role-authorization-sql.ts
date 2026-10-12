@@ -9,6 +9,8 @@ export type GroupRosterRoleAuthorizationRow = {
   groupAccount: string;
   groupDomain: string;
   namespaceId: number;
+  /** Group publisher namespace for member profile coordinates. */
+  publisherNamespaceId: number;
   dissolvedAt: string | null;
   /** Local account address of the acting user (the command's operator). */
   operatorAccount: string | null;
@@ -80,7 +82,7 @@ export function groupRosterRoleAuthorizationSql(input: {
       ) latest WHERE latest.operation = 'MEMBER_UPSERT'
     )
     SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
-      g."namespaceId", g."dissolvedAt",
+      g."namespaceId", g."namespaceId" AS "publisherNamespaceId", g."dissolvedAt",
       operator.account AS "operatorAccount",
       (SELECT domain FROM "IdentityNamespace" WHERE id = 0) AS "operatorDomain",
       operator_roster.role AS "operatorRole",

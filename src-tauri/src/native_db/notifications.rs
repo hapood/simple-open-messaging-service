@@ -59,39 +59,14 @@ fn projected_count(
 fn sender_profile(
     conn: &Connection,
     user_id: i64,
-    thread_id: i32,
-    thread: &Value,
+    publisher_namespace: i64,
     account: &str,
-    domain: &str,
-    message_reference: Option<(i64, i64)>,
+    profile_namespace: i64,
+    revision: i64,
 ) -> Result<Option<Value>, String> {
-    let peer = &thread["peerUser"];
-    let reference = if let Some(reference) = message_reference {
-        Some(reference)
-    } else if peer["account"].as_str() == Some(account) && peer["domain"].as_str() == Some(domain) {
-        peer["namespaceId"]
-            .as_i64()
-            .zip(peer["profileRev"].as_i64())
-    } else {
-        conn.query_row(
-            "SELECT m.namespace_id,m.profile_rev FROM members m
-             JOIN profile_namespaces n ON n.user_id=m.user_id
-               AND n.publisher_namespace_id=m.namespace_id
-               AND n.profile_namespace_id=m.namespace_id
-             WHERE m.user_id=?1 AND m.thread_id=?2 AND m.member_account=?3
-               AND n.status='ACTIVE' ORDER BY m.namespace_id DESC LIMIT 1",
-            params![user_id, thread_id, account],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| format!("read notification member: {e}"))?
-    };
-    match reference {
-        Some((namespace, revision)) => {
-            super::contacts::read_profile(conn, user_id, namespace, namespace, account, revision)
-        }
-        None => Ok(None),
-    }
+    super::contacts::read_profile(
+        conn, user_id, publisher_namespace, profile_namespace, account, revision,
+    )
 }
 
 #[cfg(target_os = "android")]
@@ -159,7 +134,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "seq": seq,
             "createdAt": "2026-01-01T00:00:00Z",
-            "sender": {"account":"peer","domain":"local","namespaceId":0,"profileRev":rev},
+            "sender": {"account":"peer","namespaceId":0,"profileRev":rev},
             "status": status,
             "text": text,
         }))
@@ -179,7 +154,6 @@ mod tests {
                 role: None,
                 profile: super::super::attention::ThreadFeedProfile {
                     account: "peer".into(),
-                    domain: "local".into(),
                     namespace_id: 0,
                     profile_rev: 0,
                 },
@@ -234,7 +208,7 @@ mod tests {
         let conn = db();
         for (seq, account) in [(3, "peer"), (4, "me"), (5, "peer")] {
             conn.execute("INSERT INTO messages(user_id,thread_id,seq,created_at,payload_json) VALUES(1,7,?1,0,?2)", params![seq,
-                serde_json::json!({"isDeleted":true,"creator":{"account":account,"domain":"local","namespaceId":0}}).to_string()]).unwrap();
+                serde_json::json!({"isDeleted":true,"creator":{"account":account,"namespaceId":0}}).to_string()]).unwrap();
         }
         let owner = MessageCountOwner {
             account: "me".into(),
@@ -327,6 +301,27 @@ mod tests {
             "New peer"
         );
         assert_eq!(metadata["threads"][0]["previews"][0]["avatarIndex"], 0);
+    }
+
+    #[test]
+    fn preview_profiles_use_thread_publisher_and_sender_publisher_space_namespace() {
+        let conn = db();
+        for (publisher, namespace, name) in [
+            (7, 0, "Publisher-local member"),
+            (7, 2, "Correct member"),
+            (2, 2, "Wrong diagonal"),
+            (0, 0, "Wrong receiver-local"),
+        ] {
+            super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
+                "publisherNamespaceId": publisher, "profileNamespaceId": namespace,
+                "account": "alice", "profileRev": 3, "name": name,
+                "avatarDigest": null, "bio": "",
+            })).unwrap();
+        }
+        assert_eq!(sender_profile(&conn, 1, 7, "alice", 2, 3).unwrap().unwrap()["name"], "Correct member");
+        assert_eq!(sender_profile(&conn, 1, 7, "alice", 0, 3).unwrap().unwrap()["name"], "Publisher-local member");
+        assert!(sender_profile(&conn, 1, 8, "alice", 2, 3).unwrap().is_none());
+        assert!(sender_profile(&conn, 1, 7, "alice", 2, 4).unwrap().is_none());
     }
 
     #[test]
@@ -461,27 +456,28 @@ fn assemble(
             let account = preview["sender"]["account"]
                 .as_str()
                 .ok_or("invalid preview sender")?;
-            let domain = preview["sender"]["domain"]
-                .as_str()
-                .ok_or("invalid preview sender")?;
-            let message_reference = preview["sender"]["namespaceId"]
-                .as_i64()
-                .zip(preview["sender"]["profileRev"].as_i64());
+            let publisher_namespace = i64::from(
+                delivered.server.as_ref().unwrap().authority_namespace_id,
+            );
+            let profile_namespace = preview["sender"]["namespaceId"]
+                .as_i64().ok_or("invalid preview sender namespace")?;
+            let revision = preview["sender"]["profileRev"]
+                .as_i64().ok_or("invalid preview sender revision")?;
             let profile = sender_profile(
-                &tx,
-                user_id,
-                current.thread_id,
-                &thread,
-                account,
-                domain,
-                message_reference,
+                &tx, user_id, publisher_namespace, account, profile_namespace, revision,
+            )?;
+            let domain = super::profile_namespaces::display_domain(
+                &tx, user_id, publisher_namespace, profile_namespace,
             )?;
             let name = profile
                 .as_ref()
                 .and_then(|value| value["name"].as_str())
                 .filter(|name| !name.is_empty())
                 .map(str::to_owned)
-                .unwrap_or_else(|| format!("{account}@{domain}"));
+                .unwrap_or_else(|| match domain.as_deref() {
+                    Some(domain) => format!("{account}@{domain}"),
+                    None => account.to_owned(),
+                });
             let mut value = preview.clone();
             value["senderName"] = Value::String(name);
             if let Some(digest) = profile

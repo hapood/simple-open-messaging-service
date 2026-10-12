@@ -42,6 +42,33 @@ export interface ProfileKey {
   rev: number;
 }
 
+/** Select the exact profile snapshot carried by a persisted message.
+ * Publisher IDs are receiver-local; subject IDs belong to that publisher.
+ * Equal numbers across these spaces never authorize coordinate rewriting. */
+export function messageProfileKey(message: {
+  publisherNamespaceId: number;
+  profileNamespaceId: number;
+  profileRev: number;
+  creator: { account: string };
+}): ProfileKey {
+  return {
+    publisherNamespaceId: message.publisherNamespaceId,
+    profileNamespaceId: message.profileNamespaceId,
+    account: message.creator.account,
+    rev: message.profileRev,
+  };
+}
+
+/** Presentation bindings use the same publisher-scoped subject coordinates. */
+export function profileNamespacePair(
+  key: Pick<ProfileKey, 'publisherNamespaceId' | 'profileNamespaceId'>,
+): Pick<ProfileKey, 'publisherNamespaceId' | 'profileNamespaceId'> {
+  return {
+    publisherNamespaceId: key.publisherNamespaceId,
+    profileNamespaceId: key.profileNamespaceId,
+  };
+}
+
 export class ProfileDemandParseError extends Error {
   constructor(message = 'invalid profile demand') {
     super(message);

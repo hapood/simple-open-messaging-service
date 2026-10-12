@@ -13,7 +13,7 @@ fn preserve_thread_profile(incoming: &mut Value, current: &Value) {
     } else {
         "group"
     };
-    if ["account", "domain", "namespaceId"]
+    if ["account", "namespaceId"]
         .iter()
         .any(|key| incoming[field][*key] != current[field][*key])
         || current["profileRev"].as_i64().unwrap_or(0)
@@ -398,10 +398,10 @@ fn presentation_state(
     thread_id: i64,
     item: &Value,
 ) -> Result<(i64, i64), String> {
-    let state: Option<(i64, i64, String, i64, String, String, i64)> = conn
+    let state: Option<(i64, i64, String, i64, String, i64)> = conn
         .query_row(
             "SELECT thread_feed_id,thread_profile_rev,kind,authority_namespace_id,
-                    subject_account,subject_domain,subject_namespace_id
+                    subject_account,subject_namespace_id
              FROM threads WHERE user_id=?1 AND thread_id=?2",
             params![user_id, thread_id],
             |row| {
@@ -412,13 +412,12 @@ fn presentation_state(
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
-                    row.get(6)?,
                 ))
             },
         )
         .optional()
         .map_err(|e| format!("read stored thread selection: {e}"))?;
-    let (feed_id, revision, kind, namespace, account, domain, subject_namespace) =
+    let (feed_id, revision, kind, namespace, account, subject_namespace) =
         state.ok_or("thread presentation has no matching feed state")?;
     let subject = match item.get("type").and_then(Value::as_str) {
         Some("GROUP") => &item["group"],
@@ -429,7 +428,6 @@ fn presentation_state(
         || item["type"].as_str() != Some(kind.as_str())
         || item["authorityNamespaceId"].as_i64() != Some(namespace)
         || subject["account"].as_str() != Some(account.as_str())
-        || subject["domain"].as_str() != Some(domain.as_str())
         || subject["namespaceId"].as_i64() != Some(subject_namespace)
     {
         return Err("thread presentation identity differs from feed state".into());
@@ -447,23 +445,25 @@ mod presentation_state_tests {
         conn.execute_batch(
             "CREATE TABLE threads(
                user_id INTEGER,thread_id INTEGER,thread_feed_id INTEGER,thread_profile_rev INTEGER,
-               kind TEXT,authority_namespace_id INTEGER,subject_account TEXT,subject_domain TEXT,
+               kind TEXT,authority_namespace_id INTEGER,subject_account TEXT,
                subject_namespace_id INTEGER
              );",
         )
         .unwrap();
         let peer = serde_json::json!({
             "threadId":7,"type":"P2P","authorityNamespaceId":0,
-            "peerUser":{"account":"peer","domain":"local","namespaceId":0}
+            "peerUser":{"account":"peer","namespaceId":0}
         });
         assert!(presentation_state(&conn, 1, 7, &peer).is_err());
         conn.execute(
-            "INSERT INTO threads VALUES(1,7,3,4,'P2P',0,'peer','local',0)",
+            "INSERT INTO threads VALUES(1,7,3,4,'P2P',0,'peer',0)",
             [],
         )
         .unwrap();
         assert_eq!(presentation_state(&conn, 1, 7, &peer).unwrap(), (3, 4));
         let mut wrong = peer;
+        wrong["peerUser"]["domain"] = "display.test".into();
+        assert_eq!(presentation_state(&conn, 1, 7, &wrong).unwrap(), (3, 4));
         wrong["peerUser"]["account"] = "other".into();
         assert!(presentation_state(&conn, 1, 7, &wrong).is_err());
     }
@@ -973,11 +973,6 @@ pub(super) fn apply_thread_state(
         .and_then(Value::as_str)
         .filter(|v| !v.is_empty())
         .ok_or("invalid profile account")?;
-    let domain = profile
-        .get("domain")
-        .and_then(Value::as_str)
-        .filter(|v| !v.is_empty())
-        .ok_or("invalid profile domain")?;
     let namespace = profile
         .get("namespaceId")
         .and_then(Value::as_i64)
@@ -988,9 +983,7 @@ pub(super) fn apply_thread_state(
         .and_then(Value::as_i64)
         .filter(|v| *v >= 0)
         .ok_or("invalid profile revision")?;
-    if body.get("authorityNamespaceId").and_then(Value::as_i64) != Some(namespace)
-        || (domain.is_empty() && namespace != 0)
-    {
+    if body.get("authorityNamespaceId").and_then(Value::as_i64) != Some(namespace) {
         return Err("invalid thread authority namespace".into());
     }
     if body.get("role") != Some(&Value::Null)
@@ -1008,9 +1001,6 @@ pub(super) fn apply_thread_state(
     body.get("blocked")
         .and_then(Value::as_bool)
         .ok_or("invalid thread blocked flag")?;
-    if namespace > 0 {
-        super::contacts::register_namespace(tx, user_id, namespace, domain)?;
-    }
     let previous = super::thread_store::read(tx, user_id, thread_id)?;
     let old_state: Option<(i64, i64)> = tx.query_row(
         "SELECT thread_feed_id,thread_profile_rev FROM threads WHERE user_id=?1 AND thread_id=?2",
@@ -1032,7 +1022,7 @@ pub(super) fn apply_thread_state(
         return Err("thread type changed".into());
     }
     let field = if kind == "P2P" { "peerUser" } else { "group" };
-    let same_address = ["account", "domain", "namespaceId"]
+    let same_address = ["account", "namespaceId"]
         .iter()
         .all(|key| thread[field].get(*key) == profile.get(*key));
     if old_state.is_some() && !same_address {
@@ -1054,14 +1044,14 @@ pub(super) fn apply_thread_state(
             "id": if kind == "GROUP" { thread_id } else { 0 },
         "createdAt": 0, "updatedAt": 0, "memberCount": 0, "groupMetaFeedId": "0", "isGroup": kind == "GROUP", "isDeleted": false
         }));
-        let same = ["account", "domain", "namespaceId"]
+        let same = ["account", "namespaceId"]
             .iter()
             .all(|key| presentation.get(*key) == profile.get(*key))
             && thread.get("profileRev") == profile.get("profileRev");
         let object = presentation
             .as_object_mut()
             .ok_or("invalid thread presentation")?;
-        for key in ["account", "domain", "namespaceId"] {
+        for key in ["account", "namespaceId"] {
             object.insert(key.into(), profile[key].clone());
         }
         if !same {

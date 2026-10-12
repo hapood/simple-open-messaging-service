@@ -1,11 +1,11 @@
-import { eq, sql } from 'drizzle-orm';
-import { account } from '../../../database/schema.js';
+import { sql } from 'drizzle-orm';
 import type { DatabaseTransaction } from '../../../database/database.service.js';
 import {
   requireThreadContentLockInTx,
   type ThreadContentLock,
 } from '../../../common/locks/thread-content-lock.js';
 import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fanout-admission-sql.js';
+import { groupMemberProfileAddress } from '../../meta/group-member-profile-address.js';
 
 /** Announce an active-to-inactive local mirror relationship in the same
  * transaction that consumed or authored its REVOKED intent. The caller holds
@@ -16,22 +16,36 @@ export async function writeMirrorLocalGroupLeftInTx(
     threadId: number;
     localMemberId: number;
     memberAccount: string;
+    publisherNamespaceId: number;
     threadLock: ThreadContentLock;
   },
 ): Promise<number> {
   await requireThreadContentLockInTx(tx, input.threadId, input.threadLock);
-  const member = await tx.query.account.findFirst({
-    where: eq(account.id, input.localMemberId),
-    columns: { defaultProfileRev: true },
+  const member = await tx.execute<{
+    profileNamespaceId: number;
+    profileRev: number;
+  }>(sql`
+    SELECT body -> 'namespaceId' AS "profileNamespaceId",
+      body -> 'profileRev' AS "profileRev"
+    FROM "GroupMetaMemberFeed"
+    WHERE "threadId" = ${input.threadId}
+      AND body ->> 'account' = ${input.memberAccount}
+      AND operation = 'MEMBER_UPSERT'
+    ORDER BY "feedId" DESC
+    LIMIT 1
+  `);
+  const memberProfile = member.rows[0];
+  if (!memberProfile)
+    throw new Error('departing member has no current group profile coordinate');
+  const memberAddress = groupMemberProfileAddress({
+    account: input.memberAccount,
+    publisherNamespaceId: input.publisherNamespaceId,
+    profileNamespaceId: memberProfile.profileNamespaceId,
+    profileRev: memberProfile.profileRev,
   });
-  if (!member) throw new Error('departing local member is unavailable');
   const content = JSON.stringify({
     type: 'GROUP_LEFT',
-    member: {
-      account: input.memberAccount,
-      profileNamespaceId: 0,
-      profileRev: member.defaultProfileRev,
-    },
+    member: memberAddress,
   });
   const accountScope = JSON.stringify([
     'ACCOUNT_THREAD_FANOUT',

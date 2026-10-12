@@ -2,6 +2,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fanout-admission-sql.js';
 import { requestProjectionFlipSql } from './group-membership-projection-sql.js';
+import { groupMemberProfileAddressSql } from '../../meta/group-member-profile-address.js';
 import {
   clientIntentFeedWriteSql,
   peerIntentFeedWriteSql,
@@ -97,9 +98,12 @@ export function groupMembershipRevocationSql(
         AND operation = 'MEMBER_UPSERT' LIMIT 1), 'MEMBER')::text,
     'profileRev', COALESCE(${memberProfileRev}, 0)::integer)`;
   const content = sql`jsonb_build_object('type', 'GROUP_LEFT', 'member',
-    jsonb_build_object('account', ${input.memberAccount}::text,
-      'profileNamespaceId', ${memberProfileNamespaceId}::integer,
-      'profileRev', COALESCE(${memberProfileRev}, 0)))`;
+    ${groupMemberProfileAddressSql({
+      account: sql`${input.memberAccount}::text`,
+      publisherNamespaceId: sql`0`,
+      profileNamespaceId: sql`${memberProfileNamespaceId}::integer`,
+      profileRev: sql`COALESCE(${memberProfileRev}, 0)::integer`,
+    })})`;
   return sql`
     WITH authored AS (
       ${

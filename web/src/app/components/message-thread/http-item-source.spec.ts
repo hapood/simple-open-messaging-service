@@ -70,6 +70,7 @@ function row(seq: number, creator: number, clientMessageId?: string): Message {
     content: JSON.stringify({ text: 'hi' }),
     threadId: 42,
     publisherNamespaceId: 0,
+    profileNamespaceId: 0,
     creator:
       creator === 1
         ? { account: 'me', namespaceId: 0 }

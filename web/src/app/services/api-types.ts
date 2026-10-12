@@ -3875,8 +3875,6 @@ export interface components {
         MessageAuthorAddressResponseDto: {
             /** @example alice */
             account: string;
-            /** @example example.com */
-            domain: string;
             /** @example 7 */
             namespaceId: number;
         };
@@ -3898,6 +3896,8 @@ export interface components {
             originSeq: number | null;
             /** @description Namespace owning originSeq. */
             publisherNamespaceId: number;
+            /** @description Author profile namespace in the publisher server’s space, preserved independently of the projected author identity. */
+            profileNamespaceId: number;
             /**
              * @description Immutable complete-profile revision selected when this message was authored
              * @example 7

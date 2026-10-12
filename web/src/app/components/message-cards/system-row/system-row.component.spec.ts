@@ -6,6 +6,7 @@ import {
 } from '@jsverse/transloco';
 import { of, Subject } from 'rxjs';
 import {
+  createGroupConversation,
   createP2PConversation,
   type ConversationItem,
 } from '../../../services/model';
@@ -25,12 +26,14 @@ import { SystemRowComponent } from './system-row.component';
 describe('SystemRowComponent', () => {
   const me = {
     account: 'me',
+    publisherNamespaceId: 0,
     profileNamespaceId: 0,
     profileRev: 0,
   };
   const alice = {
     account: 'alice',
-    profileNamespaceId: 12,
+    publisherNamespaceId: 12,
+    profileNamespaceId: 0,
     profileRev: 0,
   };
   const participants: [typeof me, typeof alice] = [me, alice];
@@ -61,6 +64,8 @@ describe('SystemRowComponent', () => {
     const fixture = TestBed.createComponent(SystemRowComponent);
     fixture.componentRef.setInput('data', data(body, extra));
     fixture.detectChanges();
+    TestBed.flushEffects();
+    fixture.detectChanges();
     return fixture;
   };
   beforeEach(() => {
@@ -69,7 +74,7 @@ describe('SystemRowComponent', () => {
       of({
         account: 'alice',
         publisherNamespaceId: 12,
-        namespaceId: 12,
+        namespaceId: 0,
         rev: 3,
         name: '',
       }),
@@ -98,13 +103,24 @@ describe('SystemRowComponent', () => {
         {
           provide: ProfileNamespaceRepository,
           useValue: {
-            resolve: ({ profileNamespaceId }: { profileNamespaceId: number }) =>
-              of({
-                publisherNamespaceId: 0,
+            resolve: vi.fn(
+              ({
+                publisherNamespaceId,
                 profileNamespaceId,
-                domain: profileNamespaceId === 0 ? null : 'peer.test',
-                status: 'ACTIVE',
-              }),
+              }: {
+                publisherNamespaceId: number;
+                profileNamespaceId: number;
+              }) =>
+                of({
+                  publisherNamespaceId,
+                  profileNamespaceId,
+                  domain:
+                    publisherNamespaceId === 0 && profileNamespaceId === 0
+                      ? null
+                      : 'peer.test',
+                  status: 'ACTIVE',
+                }),
+            ),
           },
         },
         {
@@ -143,6 +159,7 @@ describe('SystemRowComponent', () => {
         type: 'GROUP_ADMIN_GRANTED',
         member: {
           account: 'bob',
+          publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 0,
         },
@@ -162,6 +179,7 @@ describe('SystemRowComponent', () => {
         type: 'FRIEND_REMOVED',
         initiator: {
           account: '$system',
+          publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 0,
         },
@@ -197,7 +215,7 @@ describe('SystemRowComponent', () => {
         of({
           account: 'alice',
           publisherNamespaceId: 12,
-          namespaceId: 12,
+          namespaceId: 0,
           rev: 3,
           name: 'Alice Profile',
         }),
@@ -238,7 +256,7 @@ describe('SystemRowComponent', () => {
         of({
           account: 'alice',
           publisherNamespaceId: 12,
-          namespaceId: 12,
+          namespaceId: 0,
           rev: 3,
           name: '',
         }),
@@ -247,7 +265,7 @@ describe('SystemRowComponent', () => {
         of({
           account: 'alice',
           publisherNamespaceId: 12,
-          namespaceId: 12,
+          namespaceId: 0,
           rev: 3,
           name: 'Alice Profile',
         }),
@@ -284,13 +302,13 @@ describe('SystemRowComponent', () => {
   });
 
   it("uses only this system row's cached profile key and persists its drift", async () => {
-    const participant = { ...alice, profileNamespaceId: 12, profileRev: 3 };
+    const participant = { ...alice, profileRev: 3 };
     getProfile.mockResolvedValue({ name: 'Alice before' });
     resolveProfile.mockReturnValue(
       of({
         name: 'Alice after',
         account: alice.account,
-        namespaceId: 12,
+        namespaceId: 0,
         rev: 4,
       }),
     );
@@ -304,6 +322,7 @@ describe('SystemRowComponent', () => {
         1,
         'alice',
         12,
+        0,
         4,
       ),
     );
@@ -318,12 +337,17 @@ describe('SystemRowComponent', () => {
       of({
         account: 'alice',
         publisherNamespaceId: 12,
-        namespaceId: 12,
+        namespaceId: 0,
         rev: 4,
         name: 'Alice cached',
       }),
     );
-    const participant = { ...alice, profileNamespaceId: 12, profileRev: 3 };
+    const participant = {
+      ...alice,
+      publisherNamespaceId: 0,
+      profileNamespaceId: 12,
+      profileRev: 3,
+    };
     const thread = createP2PConversation(
       7,
       {
@@ -347,12 +371,60 @@ describe('SystemRowComponent', () => {
     fixture.detectChanges();
   });
 
+  it('resolves group system participants in the group publisher profile namespace', async () => {
+    const group = createGroupConversation(
+      42,
+      { id: 42, account: '!group', name: 'Group', namespaceId: 7 },
+      { publisherNamespaceId: 7 },
+    );
+    conversations.set([group]);
+    resolveProfile.mockReturnValue(
+      of({
+        account: 'alice',
+        publisherNamespaceId: 7,
+        namespaceId: 0,
+        rev: 3,
+        name: 'Alice from group publisher',
+      }),
+    );
+    const fixture = render(
+      {
+        type: 'GROUP_JOINED',
+        member: {
+          account: 'alice',
+          publisherNamespaceId: 7,
+          profileNamespaceId: 0,
+          profileRev: 3,
+        },
+      },
+      { isGroupConversation: true },
+    );
+    await vi.waitFor(() =>
+      expect(fixture.nativeElement.textContent).toContain(
+        'Alice from group publisher 加入了群聊',
+      ),
+    );
+    expect(resolveProfile).toHaveBeenCalledWith({
+      evidence: null,
+      demand: {
+        publisherNamespaceId: 7,
+        lookup: 'GROUP_MEMBER_PROFILE',
+        target: { profileNamespaceId: 0, account: 'alice', rev: 3 },
+        groupAccount: '!group',
+      },
+    });
+    expect(TestBed.inject(ProfileNamespaceRepository).resolve).toHaveBeenCalledWith({
+      publisherNamespaceId: 7,
+      profileNamespaceId: 0,
+    });
+  });
+
   it('reads a departed member from its own cached revision without requesting evidence', async () => {
     resolveProfile.mockReturnValue(
       of({
         account: 'alice',
         publisherNamespaceId: 12,
-        namespaceId: 12,
+        namespaceId: 0,
         rev: 4,
         name: 'Alice cached',
       }),
@@ -360,11 +432,11 @@ describe('SystemRowComponent', () => {
     const fixture = render(
       {
         type: 'GROUP_LEFT',
-        member: { ...alice, profileNamespaceId: 12, profileRev: 3 },
+        member: { ...alice, profileRev: 3 },
       },
       {
         isGroupConversation: true,
-        localSystemProfileRevs: { '[12,"alice"]': 4 },
+        localSystemProfileRevs: { '[12,0,"alice"]': 4 },
       },
     );
     await vi.waitFor(() =>
@@ -390,7 +462,7 @@ describe('SystemRowComponent', () => {
       of({
         account: 'alice',
         publisherNamespaceId: 12,
-        namespaceId: 12,
+        namespaceId: 0,
         rev: 3,
         name: 'Alice Profile',
       }),
@@ -433,8 +505,8 @@ describe('SystemRowComponent', () => {
     const fixture = render({
       type: 'CALL_ENDED',
       callId: '550e8400-e29b-41d4-a716-446655440000',
-      caller: { ...me, profileNamespaceId: 0, profileRev: 0 },
-      callee: { ...alice, profileNamespaceId: 7, profileRev: 0 },
+      caller: { ...me, profileRev: 0 },
+      callee: { ...alice, publisherNamespaceId: 7, profileNamespaceId: 0, profileRev: 0 },
       mediaType: 'VIDEO',
       outcome: 'completed',
       initiatedAt: 1000,
