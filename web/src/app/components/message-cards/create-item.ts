@@ -186,7 +186,10 @@ export function createMsgCbElement(
   onQuoteJump?: (
     anchor: import('../../services/history-anchor').HistoryAnchor,
   ) => void,
-  onOpenMemberProfile?: (identityKey: string, anchor: DOMRect) => void,
+  onOpenMemberProfile?: (
+    demand: import('../../../../../shared/profile-demand').ProfileDemand | undefined,
+    anchor: DOMRect,
+  ) => void,
 ): CbElement<ChatItemData> {
   const data = item.data as ChatMsgData; // date is derived at the render layer
 
@@ -369,7 +372,7 @@ export function createMsgCbElement(
       if (!avatar || current.type !== 'msg') return;
       event.preventDefault();
       event.stopPropagation();
-      onOpenMemberProfile(current.creator, avatar.getBoundingClientRect());
+      onOpenMemberProfile(current.profileEvidence, avatar.getBoundingClientRect());
     };
     el.el.addEventListener('click', openMemberProfile);
     const baseDestroy = el.destroy;

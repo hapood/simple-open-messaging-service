@@ -39,7 +39,6 @@ import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
 import { messageAuthorProfileDemand } from '../../services/profile-demand';
-import { MemberProfileRepository } from '../../services/member-profile-store.service';
 import { MsgService } from '../../services/message.service';
 import {
   isRenderableMessageTomb,
@@ -184,7 +183,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     live: HttpItemSourceLiveOpts,
     private readonly messages: MsgService,
     private readonly profileRepo?: ProfileRepository,
-    private readonly memberProfiles?: MemberProfileRepository,
   ) {
     this.pending = outbox.forThread(conv.threadId);
     this.onQuoteUpdated = live.onQuoteUpdated ?? (() => {});
@@ -1057,57 +1055,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   /** Resolve each author at the revision selected by that message. */
   private async ensureProfiles(msgs: Message[]): Promise<void> {
-    if (this.conv.type === 'GROUP' && this.memberProfiles) {
-      await Promise.all(
-        msgs.flatMap((message) => {
-          if (message.contentType === 'SYSTEM') return [];
-          const identity = parseUserIdentityKey(
-            this.creatorKey(message.creator)!,
-          );
-          return identity
-            ? [
-                this.memberProfiles!.recordMessageProfile(
-                  this.conv.threadId,
-                  identity,
-                  message.profileRev,
-                  message.seq,
-                ),
-              ]
-            : [];
-        }),
-      );
-    }
     await Promise.all(
       msgs.map(async (message) => {
         if (message.contentType === 'SYSTEM') return;
         const key = this.creatorKey(message.creator)!;
         const identity = parseUserIdentityKey(key);
         if (!identity) throw new Error('invalid profile identity key');
-        if (this.conv.type === 'GROUP' && this.memberProfiles) {
-          await this.memberProfiles.recordMessageProfile(
-            this.conv.threadId,
-            identity,
-            message.profileRev,
-            message.seq,
-          );
-          const member = await this.memberProfiles.getByIdentity(
-            this.conv.threadId,
-            key,
-          );
-          const presentation = {
-            name: member?.profileResolved ? member.name : identity.account,
-            account: identity.account,
-            avatarIdentityId: JSON.stringify([
-              key,
-              'profile',
-              message.profileRev,
-            ]),
-            isSelf: this.isSelfAddress(identity.account, identity.namespaceId),
-          };
-          this.profilesBySeq.set(message.seq, presentation);
-          if (!this.profiles.has(key)) this.profiles.set(key, presentation);
-          return;
-        }
         const cached = await (this.profileRepo
           ? firstValueFrom(
               this.profileRepo.resolve(messageAuthorProfileDemand(message)!),

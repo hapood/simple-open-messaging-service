@@ -775,19 +775,15 @@ pub(super) fn apply_state_feed_page_with_resume(
             tx.execute(
                     "INSERT INTO members(
                        user_id,thread_id,member_account,namespace_id,role,left_state,
-                       profile_rev,profile_message_seq
-                     ) VALUES(?1,?2,?3,?4,?5,0,?6,?7)
+                       profile_rev
+                     ) VALUES(?1,?2,?3,?4,?5,0,?6)
                      ON CONFLICT(user_id,thread_id,member_account,namespace_id)
                      DO UPDATE SET role=excluded.role,left_state=0,
-                       profile_rev=CASE WHEN members.left_state=0 AND members.profile_message_seq IS NOT NULL
-                         THEN members.profile_rev ELSE excluded.profile_rev END,
-                       profile_message_seq=CASE WHEN members.left_state=0
-                         THEN members.profile_message_seq ELSE NULL END",
+                       profile_rev=excluded.profile_rev",
                     params![
                         user_id, update.thread_id, account, namespace_id,
                         body.get("role").and_then(Value::as_str).unwrap_or("MEMBER"),
                         profile_rev,
-                        Option::<i64>::None,
                     ],
                 ).map_err(|e| format!("upsert group member: {e}"))?;
         }

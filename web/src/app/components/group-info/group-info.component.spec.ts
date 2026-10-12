@@ -86,7 +86,6 @@ describe('GroupInfoComponent privileged-role action gating', () => {
     avatar: '',
     bio: '',
     profileRev: 0,
-    profileMessageSeq: null,
     profileResolved: false,
   } as ResolvedMemberProfile;
   const federatedMember = {
@@ -99,7 +98,6 @@ describe('GroupInfoComponent privileged-role action gating', () => {
     avatar: '',
     bio: '',
     profileRev: 0,
-    profileMessageSeq: null,
     profileResolved: false,
   } as ResolvedMemberProfile;
   const withRole = (role: 'OWNER' | 'ADMIN' | 'MEMBER') =>

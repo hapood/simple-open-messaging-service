@@ -2351,10 +2351,10 @@ describe('WebdbService', () => {
         },
       } as never);
       await webdb.commitResolvedProfile({
-        name: 'Alice',
+        name: 'Alice in team',
         account: 'alice',
-        avatarBase64: 'YQ==',
-        bio: 'About Alice',
+        avatarBase64: 'YWJj',
+        bio: 'Team',
         publisherNamespaceId: 0,
         profileNamespaceId: 12,
         rev: 6,
@@ -2415,7 +2415,7 @@ describe('WebdbService', () => {
         expect.objectContaining({
           account: 'alice',
           namespaceId: 12,
-          user: expect.objectContaining({ name: 'Alice' }),
+          user: expect.objectContaining({ name: 'Alice in team' }),
         }),
       ]);
       expect(
@@ -2427,41 +2427,19 @@ describe('WebdbService', () => {
 
       expect(
         await webdb.getGroupMember(9, 'alice', 12),
-      ).toMatchObject({ profileRev: 6, profileMessageSeq: null });
+      ).toMatchObject({ profileRev: 6 });
 
-      expect(
-        await webdb.recordGroupMemberMessageProfile(
-          9,
-          {
-            account: 'alice',
-            namespaceId: 12,
-          },
-          3,
-          20,
-        ),
-      ).toBe(true);
-      expect(
-        await webdb.recordGroupMemberMessageProfile(
-          9,
-          {
-            account: 'alice',
-            namespaceId: 12,
-          },
-          9,
-          19,
-        ),
-      ).toBe(false);
       expect(
         await webdb.commitResolvedGroupMetaProfile(
           {
             type: 'GROUP_MEMBER',
             threadId: 9,
-            rev: 3,
+            rev: 6,
             account: 'alice',
             namespaceId: 12,
           },
           {
-            rev: 3,
+            rev: 6,
             name: 'Alice in team',
             avatarBase64: 'YWJj',
             bio: 'Team',
@@ -2473,9 +2451,8 @@ describe('WebdbService', () => {
       expect(
         await webdb.getGroupMember(9, 'alice', 12),
       ).toMatchObject({
-        profileRev: 3,
-        profileMessageSeq: 20,
-        resolvedProfileRev: 3,
+        profileRev: 6,
+        resolvedProfileRev: 6,
         profileName: 'Alice in team',
         profileBio: 'Team',
       });
@@ -2505,7 +2482,7 @@ describe('WebdbService', () => {
       });
       expect(
         await webdb.getGroupMember(9, 'alice', 12),
-      ).toMatchObject({ profileRev: 3, profileMessageSeq: 20, role: 'MEMBER' });
+      ).toMatchObject({ profileRev: 6, role: 'MEMBER' });
 
       await webdb.applyGroupMetaPage({
         threadId: 9,
@@ -2614,7 +2591,7 @@ describe('WebdbService', () => {
         await webdb.getProfile({
           publisherNamespaceId: 0,
           lookup: 'ACCOUNT_PROFILE',
-          target: { profileNamespaceId: 12, account: 'alice', rev: 3 },
+          target: { profileNamespaceId: 12, account: 'alice', rev: 6 },
         }),
       ).toBeDefined();
     });

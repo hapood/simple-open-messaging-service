@@ -2,8 +2,8 @@ import { inject, Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { WebdbService } from './webdb.service';
-import { messageCreatorKey, parseUserIdentityKey } from './model';
+import { WebdbService, type ResolvedMemberRecord } from './webdb.service';
+import { messageCreatorKey } from './model';
 
 export interface ResolvedMemberProfile {
   identityKey: string;
@@ -17,8 +17,34 @@ export interface ResolvedMemberProfile {
   avatar: string;
   bio: string;
   profileRev: number;
-  profileMessageSeq: number | null;
   profileResolved: boolean;
+}
+
+/** Project a materialized roster row into a presentation profile. The name
+ * and bio resolve only when the cached profile matches the member's selected
+ * revision; otherwise the account handle keeps the row identifiable. */
+export function resolvedMemberProfile(
+  member: ResolvedMemberRecord,
+): ResolvedMemberProfile {
+  const profileResolved = member.profileRev === member.resolvedProfileRev;
+  return {
+    identityKey: messageCreatorKey({
+      account: member.account,
+      namespaceId: member.namespaceId,
+    }),
+    account: member.account,
+    publisherNamespaceId: member.user.publisherNamespaceId,
+    namespaceId: member.namespaceId,
+    role: member.role,
+    isOwner: member.role === 'OWNER',
+    name: profileResolved
+      ? (member.profileName ?? member.user.name)
+      : member.account,
+    avatar: '',
+    bio: profileResolved ? member.profileBio : '',
+    profileRev: member.profileRev,
+    profileResolved,
+  };
 }
 
 /** Paginated local-database reader for the materialized group roster. */
@@ -51,91 +77,6 @@ export class MemberProfileRepository {
   ): Promise<ResolvedMemberProfile[]> {
     this.queriedThreads.add(threadId);
     const members = await this.webdb.queryGroupMembers({ threadId, ...params });
-    const resolved = members.map((member) => ({
-      identityKey: messageCreatorKey({
-        account: member.account,
-        namespaceId: member.namespaceId,
-      }),
-      account: member.account,
-      publisherNamespaceId: member.user.publisherNamespaceId,
-      namespaceId: member.namespaceId,
-      role: member.role,
-      isOwner: member.role === 'OWNER',
-      name:
-        member.resolvedProfileRev === member.profileRev
-          ? (member.profileName ?? member.user.name)
-          : member.account,
-      avatar: '',
-      bio:
-        member.resolvedProfileRev === member.profileRev
-          ? member.profileBio
-          : '',
-      profileRev: member.profileRev,
-      profileMessageSeq: member.profileMessageSeq ?? null,
-      profileResolved: member.profileRev === member.resolvedProfileRev,
-    }));
-    return resolved;
-  }
-
-  async getByIdentity(
-    threadId: number,
-    identityKey: string,
-  ): Promise<ResolvedMemberProfile | undefined> {
-    this.queriedThreads.add(threadId);
-    const identity = parseUserIdentityKey(identityKey);
-    if (!identity) return undefined;
-    const member = (await this.webdb.queryGroupMembers({ threadId, take: 1000 })).find(
-      (candidate) =>
-        candidate.account === identity.account &&
-        candidate.namespaceId === identity.namespaceId,
-    );
-    if (!member) return undefined;
-    const resolved: ResolvedMemberProfile = {
-      identityKey,
-      account: member.account,
-      publisherNamespaceId: member.user.publisherNamespaceId,
-      namespaceId: member.namespaceId,
-      role: member.role,
-      isOwner: member.role === 'OWNER',
-      name:
-        member.resolvedProfileRev === member.profileRev
-          ? (member.profileName ?? member.user.name)
-          : member.account,
-      avatar: '',
-      bio:
-        member.resolvedProfileRev === member.profileRev
-          ? member.profileBio
-          : '',
-      profileRev: member.profileRev,
-      profileMessageSeq: member.profileMessageSeq ?? null,
-      profileResolved: member.profileRev === member.resolvedProfileRev,
-    };
-    return resolved;
-  }
-
-  async recordMessageProfile(
-    threadId: number,
-    identity: {
-      account: string;
-      namespaceId: number;
-    },
-    profileRev: number,
-    messageSeq: number,
-  ): Promise<void> {
-    const member = (await this.webdb.queryGroupMembers({ threadId, take: 1000 })).find(
-      (candidate) =>
-        candidate.account === identity.account &&
-        candidate.namespaceId === identity.namespaceId,
-    );
-    if (!member) return;
-    if (
-      await this.webdb.recordGroupMemberMessageProfile(
-        threadId,
-        member,
-        profileRev,
-        messageSeq,
-      )
-    )
-      this.notifyChanged([threadId]);
+    return members.map(resolvedMemberProfile);
   }
 }

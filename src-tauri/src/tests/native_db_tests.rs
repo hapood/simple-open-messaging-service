@@ -777,11 +777,6 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         .unwrap();
     assert_eq!(cursor, "99");
 
-    conn.execute(
-        "UPDATE members SET profile_rev=3, profile_message_seq=20 WHERE member_account='other'",
-        [],
-    )
-    .unwrap();
     let delta = serde_json::json!([{"threadId":90,"namespaceId":7,"page":{
     "mode":"delta","scannedThrough":"4","items":[
         {"feedId":"4","operation":"MEMBER_UPSERT","body":{"account":"other","namespaceId":7,"role":"ADMIN","profileRev":2}}
@@ -795,14 +790,16 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         false,
     )
     .unwrap();
-    let (rev, seq, role): (i64, Option<i64>, String) = conn
+    // A Meta fact selects the profile revision directly; no message anchor
+    // competes with it.
+    let (rev, role): (i64, String) = conn
         .query_row(
-            "SELECT profile_rev, profile_message_seq, role FROM members WHERE member_account='other'",
+            "SELECT profile_rev, role FROM members WHERE member_account='other'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!((rev, seq, role.as_str()), (3, Some(20), "ADMIN"));
+    assert_eq!((rev, role.as_str()), (2, "ADMIN"));
 }
 
 #[test]

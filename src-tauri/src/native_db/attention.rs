@@ -715,7 +715,6 @@ fn unresolved_group_meta_profiles(
              FROM members member
              JOIN threads thread ON thread.user_id=member.user_id AND thread.thread_id=member.thread_id AND thread.kind='GROUP'
              WHERE member.user_id=?1 AND member.left_state=0 AND member.profile_rev>0
-               AND member.profile_message_seq IS NULL
                AND NOT EXISTS (
                  SELECT 1 FROM profiles profile WHERE profile.user_id=member.user_id
                    AND profile.account=member.member_account

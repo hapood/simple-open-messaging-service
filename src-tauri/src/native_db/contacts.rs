@@ -218,7 +218,6 @@ pub(crate) async fn native_db_get_group_member(
                'namespaceId',member.namespace_id,
                'role',member.role,'left',json('false'),
                'profileRev',member.profile_rev,
-               'profileMessageSeq',member.profile_message_seq,
                'resolvedProfileRev',identity.profile_rev,
                'profileName',identity.name,
                'profileBio',COALESCE(identity.bio,''),
@@ -277,7 +276,6 @@ pub(crate) async fn native_db_query_group_members(
                    'role', member.role,
                    'left', json('false'),
                    'profileRev',member.profile_rev,
-                   'profileMessageSeq',member.profile_message_seq,
                    'resolvedProfileRev',identity.profile_rev,
                    'profileName',identity.name,
                    'profileBio',COALESCE(identity.bio,''),
@@ -324,29 +322,4 @@ pub(crate) async fn native_db_query_group_members(
     })
     .await
     .map_err(|e| format!("join group member page: {e}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_record_group_member_profile_ref(
-    user_id: i64,
-    thread_id: i64,
-    account: String,
-    namespace_id: i64,
-    profile_rev: i64,
-    message_seq: i64,
-) -> Result<bool, String> {
-    super::lifetime::spawn(move || {
-        let changed = open()?
-            .execute(
-                "UPDATE members SET profile_rev=?6,profile_message_seq=?7
-                 WHERE user_id=?1 AND thread_id=?2 AND member_account=?3
-                   AND namespace_id=?4
-                   AND left_state=0 AND COALESCE(profile_message_seq,0)<?6",
-                params![user_id, thread_id, account, namespace_id, profile_rev, message_seq],
-            )
-            .map_err(|e| format!("record group member profile reference: {e}"))?;
-        Ok(changed > 0)
-    })
-    .await
-    .map_err(|e| format!("join group member profile reference write: {e}"))?
 }

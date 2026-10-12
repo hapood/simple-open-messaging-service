@@ -17,7 +17,6 @@ import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
-import { MemberProfileRepository } from '../../services/member-profile-store.service';
 import { MsgService } from '../../services/message.service';
 import { HttpItemSource } from './http-item-source';
 import type {
@@ -219,7 +218,6 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
   private readonly users = inject(UserService);
   private readonly outbox = inject(ThreadSendOutbox);
   private readonly profiles = inject(ProfileRepository);
-  private readonly memberProfiles = inject(MemberProfileRepository);
   private readonly messages = inject(MsgService);
 
   override createSource(
@@ -234,7 +232,6 @@ class ProductionMessageThreadAdapter extends MessageThreadAdapter {
       callbacks,
       this.messages,
       this.profiles,
-      this.memberProfiles,
     );
   }
 

@@ -182,10 +182,8 @@ export interface MemberRecord {
   namespaceId: number;
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   left: boolean;
-  /** Profile reference selected by this group's metadata/message history. */
+  /** Profile reference selected by this group's metadata. */
   profileRev: number;
-  /** Message that most recently selected profileRev inside this group. */
-  profileMessageSeq?: number | null;
 }
 
 export interface ResolvedMemberRecord extends MemberRecord {
@@ -2627,20 +2625,13 @@ export class WebdbStorage {
             continue;
           }
           const body = item.body;
-          // A message sequence is stronger profile demand than a compacted Meta
-          // fact. Only a new membership incarnation discards its message anchor.
-          const messageAnchor = !previous?.left
-            ? (previous?.profileMessageSeq ?? null)
-            : null;
           await members.put({
             threadId: update.threadId,
             account: body.account,
             namespaceId: body.namespaceId,
             role: body.role,
             left: false,
-            profileRev:
-              messageAnchor === null ? body.profileRev : previous!.profileRev,
-            profileMessageSeq: messageAnchor,
+            profileRev: body.profileRev,
           });
         }
         const currentMembers = await members
@@ -3334,12 +3325,7 @@ export class WebdbStorage {
           });
       }
       for (const member of await tx.objectStore('members').getAll()) {
-        if (
-          member.left ||
-          member.profileRev < 1 ||
-          member.profileMessageSeq != null
-        )
-          continue;
+        if (member.left || member.profileRev < 1) continue;
         const thread = await tx.objectStore('threads').get(member.threadId);
         if (thread?.type !== 'GROUP') continue;
         const cached = await tx
@@ -3578,51 +3564,6 @@ export class WebdbStorage {
     return this.runMessageOperation(() =>
       this.queryCachedMessagesInternal(threadId, orderBy, take, anchor),
     );
-  }
-
-  async recordGroupMemberMessageProfile(
-    threadId: number,
-    identity: { account: string; namespaceId: number },
-    profileRev: number,
-    messageSeq: number,
-  ): Promise<boolean> {
-    if (isTauri()) {
-      if (this.accountMaintenance || this.currentUserId === null)
-        throw new Error('account cache lifetime expired');
-      return tauriInvoke<boolean>('native_db_record_group_member_profile_ref', {
-        userId: Number(this.currentUserId),
-        threadId,
-        account: identity.account,
-        namespaceId: identity.namespaceId,
-        profileRev,
-        messageSeq,
-      });
-    }
-    return this.runAccountOperation(async () => {
-      const tx = (await this.db()).transaction('members', 'readwrite');
-      const member = await tx.store.get([
-        threadId,
-        identity.account,
-        identity.namespaceId,
-      ]);
-      if (
-        !member ||
-        member.left ||
-        (member.profileMessageSeq !== undefined &&
-          member.profileMessageSeq !== null &&
-          member.profileMessageSeq >= messageSeq)
-      ) {
-        await tx.done;
-        return false;
-      }
-      await tx.store.put({
-        ...member,
-        profileRev,
-        profileMessageSeq: messageSeq,
-      });
-      await tx.done;
-      return true;
-    });
   }
 
   /** Persist a correction for one participant of one cached SYSTEM row only. */

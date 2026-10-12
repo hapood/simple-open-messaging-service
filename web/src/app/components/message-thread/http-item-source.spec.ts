@@ -39,6 +39,7 @@ import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
 import { MemberProfileRepository } from '../../services/member-profile-store.service';
 
+
 /** A P2P ConversationItem fixture (only threadId is read by HttpItemSource). */
 function conv(threadId: number): ConversationItem {
   return {
@@ -110,7 +111,7 @@ function remoteGroupMessage(seq: number): Message {
     ...row(seq, 2),
     threadId: 42,
     publisherNamespaceId: 1,
-    creator: { account: 'charlie', namespaceId: 1 },
+    creator: { account: 'charlie', namespaceId: 0 },
     profileRev: 1,
   } as unknown as Message;
 }
@@ -155,7 +156,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
         updatedAt: number;
       }>
     > = { code: 0, message: 'ok', data: [] },
-    memberProfiles?: MemberProfileRepository,
+    groupRoster = false,
   ) {
     const liveSignal$ = new Subject<{
       threadId: number;
@@ -373,7 +374,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     const activeProfileRepo = resolutionRepo ?? profileRepo;
     const newerAvailable = vi.fn().mockName('onNewerAvailable');
     const src = new HttpItemSource(
-      memberProfiles ? groupConv(tid) : conv(tid),
+      groupRoster ? groupConv(tid) : conv(tid),
       repo,
       userService,
       outbox,
@@ -384,7 +385,6 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       },
       messages as never,
       activeProfileRepo,
-      memberProfiles,
     );
     return {
       src,
@@ -405,28 +405,27 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     };
   }
 
-  it('uses the group member roster for federated message authors', async () => {
-    const memberProfiles = {
-      recordMessageProfile: vi.fn().mockResolvedValue(undefined),
-      getByIdentity: vi.fn().mockResolvedValue({
-        profileResolved: true,
+  it('resolves group message authors through the message profile demand', async () => {
+    const resolve = vi.fn().mockImplementation(() =>
+      of({
+        publisherNamespaceId: 1,
+        namespaceId: 0,
+        account: 'charlie',
+        rev: 1,
         name: 'Charlie',
+        bio: '',
+        avatarDigest: null,
+        avatarBlob: null,
       }),
-    } as unknown as MemberProfileRepository;
-    const accountProfiles = {
-      resolve: vi.fn().mockImplementation(() => {
-        throw new Error(
-          'generic account profile lookup must not run for groups',
-        );
-      }),
-    } as unknown as ProfileRepository;
+    );
+    const accountProfiles = { resolve } as unknown as ProfileRepository;
     const { src } = setup(
       { code: 0, message: 'ok', data: [remoteGroupMessage(1)] },
       42,
       new ThreadSendOutbox(),
       accountProfiles,
       { code: 0, message: 'ok', data: [] },
-      memberProfiles,
+      true,
     );
 
     const items = await src.init(-1, 20, 0);
@@ -435,19 +434,15 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     expect(items[0]!.data).toMatchObject({
       type: 'msg',
       name: 'Charlie',
-      creator: JSON.stringify([1, 'charlie']),
+      creator: JSON.stringify([0, 'charlie']),
     });
-    expect(memberProfiles.recordMessageProfile).toHaveBeenCalledWith(
-      42,
-      { account: 'charlie', namespaceId: 1 },
-      1,
-      1,
-    );
-    expect(memberProfiles.getByIdentity).toHaveBeenCalledWith(
-      42,
-      JSON.stringify([1, 'charlie']),
-    );
-    expect(accountProfiles.resolve).not.toHaveBeenCalled();
+    // The author resolves by the message's own publisher-scoped coordinates —
+    // the same demand path as P2P threads, never a roster identity join.
+    expect(resolve).toHaveBeenCalledWith({
+      publisherNamespaceId: 1,
+      lookup: 'ACCOUNT_PROFILE',
+      target: { profileNamespaceId: 0, account: 'charlie', rev: 1 },
+    });
   });
   it('remounts an accepted native voice bubble so its confirmation timeout and retry remain visible', () => {
     const { src, outbox } = setup({ code: 0, message: 'ok', data: [] });

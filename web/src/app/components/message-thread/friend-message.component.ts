@@ -95,7 +95,6 @@ import { NavStateMachineService } from '../../services/nav-state.service';
 import {
   displayThreadName,
   displayUserAccount,
-  parseUserIdentityKey,
   type ConversationItem,
   type StandardResponse,
 } from '../../services/model';
@@ -129,17 +128,15 @@ import { CallBannerComponent } from '../call-banner/call-banner.component';
 import { CallPresentationService } from '../../services/call-presentation.service';
 import { BusinessCode, translateBizResult } from '../../services/biz-code';
 import { tauriInvoke } from '../../services/runtime';
-import { ProfileRepository } from '../../services/profile-store.service';
+import { ProfileRepository, type ResolvedProfile } from '../../services/profile-store.service';
 import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
 import { namespaceDisplayDomain } from '../../services/profile-namespace-domain';
 import { PopupType, RouteService } from '../../services/route.service';
 import { currentGroupAnnouncement } from '../../services/group-announcement';
 import { GroupAnnouncementComponent } from '../group-announcement/group-announcement.component';
 import { ChatboxPopupComponent } from '../chatbox-popup/chatbox-popup.component';
-import {
-  MemberProfileRepository,
-  type ResolvedMemberProfile,
-} from '../../services/member-profile-store.service';
+import { MemberProfileRepository } from '../../services/member-profile-store.service';
+import type { ProfileDemand } from '../../../../../shared/profile-demand';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
 import { ALL_MENTION_ID, escapePlainText } from '../../lib/message-entity';
 import type { ChatMember } from '../chat-editor/chat-editor.component';
@@ -1599,28 +1596,25 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private async openSenderProfile(
-    identityKey: string,
+    demand: ProfileDemand | undefined,
     _anchor: DOMRect,
   ): Promise<void> {
-    const identity = parseUserIdentityKey(identityKey);
-    if (!identity) return;
     const conversation = this.userMsgTrd();
     if (conversation?.type === 'P2P') {
-      if (
-        conversation.peerUser.account !== identity.account ||
-        conversation.peerUser.namespaceId !== identity.namespaceId
-      )
+      if (!demand || conversation.peerUser.account !== demand.target.account)
         return;
       this.dismissContextMenu();
       this.nav.openAside('profile');
       return;
     }
     const threadId = this.threadId();
-    if (threadId === undefined) return;
-    const profile = await this.memberProfiles.getByIdentity(
-      threadId,
-      identityKey,
-    );
+    if (threadId === undefined || !demand) return;
+    let profile: ResolvedProfile | undefined;
+    try {
+      profile = await firstValueFrom(this.profileRepo.resolve(demand));
+    } catch {
+      return;
+    }
     if (!profile) return;
     this.dismissContextMenu();
     // Resolve the member's namespace in the group's publisher space.
@@ -1628,8 +1622,8 @@ export class MessageThreadComponent implements OnDestroy {
     const memberHomeDomain = await firstValueFrom(
       this.namespaces
         .resolve({
-          publisherNamespaceId: profile.publisherNamespaceId,
-          profileNamespaceId: profile.namespaceId,
+          publisherNamespaceId: demand.publisherNamespaceId,
+          profileNamespaceId: demand.target.profileNamespaceId,
         })
         .pipe(
           map(namespaceDisplayDomain),
@@ -1642,7 +1636,6 @@ export class MessageThreadComponent implements OnDestroy {
         (item) =>
           item.type === 'P2P' &&
           item.peerUser.account === profile.account &&
-          item.peerUser.namespaceId === profile.namespaceId &&
           item.friendshipActive !== false,
       )?.threadId;
     this.route.popupDlg(
@@ -1651,14 +1644,13 @@ export class MessageThreadComponent implements OnDestroy {
         identity: {
           account: profile.account,
           name: profile.name,
-          avatar: profile.avatar,
+          avatar: profile.avatarDigest ?? '',
           bio: profile.bio,
           domain: memberHomeDomain ?? '',
           namespaceId: profile.namespaceId,
           friendThreadId,
           relationship:
-            profile.account === this.userService.sessionProfile()?.account &&
-            profile.namespaceId === 0
+            profile.account === this.userService.sessionProfile()?.account
               ? 'SELF'
               : friendThreadId === undefined
                 ? 'NONE'
