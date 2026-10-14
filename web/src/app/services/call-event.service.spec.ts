@@ -37,6 +37,16 @@ describe('CallEventService web call routing', () => {
 
   afterEach(() => TestBed.resetTestingModule());
 
+  it('normalizes an identity-less terminal snapshot to idle without terminal chrome', () => {
+    const service = TestBed.inject(CallEventService);
+    const listener = vi.mocked(adapter.setSnapshotListener).mock.lastCall![0];
+
+    listener({ ...IDLE_CALL, phase: 'ended', terminalReason: 'failed' });
+
+    expect(service.callState()).toEqual(IDLE_CALL);
+    expect(adapter.applyLifecycle).not.toHaveBeenCalled();
+  });
+
   it('routes CALL_SIGNAL frames to the selected media adapter', () => {
     TestBed.inject(CallEventService);
     const signal = {
@@ -57,6 +67,54 @@ describe('CallEventService web call routing', () => {
     expect(adapter.handleSignal).toHaveBeenCalledTimes(1);
 
     expect(adapter.handleSignal).toHaveBeenCalledWith(signal);
+  });
+
+  it('retains answer correlation in realtime delivery', () => {
+    TestBed.inject(CallEventService);
+    const answer = {
+      id: 'answer-id',
+      callSid: 'call-1',
+      fromUserId: 7,
+      kind: 'answer',
+      payload: 'opaque-sdp',
+      inReplyTo: 'offer-id',
+    };
+    events.next({
+      event: 'CALL_SIGNAL',
+      status: 200,
+      message: '',
+      data: answer,
+    });
+    expect(adapter.handleSignal).toHaveBeenCalledWith(answer);
+  });
+
+  it('ignores wrong-call video upgrades and absorbs late setup progress on connected calls', () => {
+    const service = TestBed.inject(CallEventService);
+    const listener = vi.mocked(adapter.setSnapshotListener).mock.lastCall![0];
+    listener({
+      ...IDLE_CALL,
+      phase: 'connected',
+      callSid: 'owned',
+      isCaller: true,
+      startedAt: 1234,
+    });
+    const lifecycle = (type: string, callSid: string) =>
+      events.next({
+        event: 'CALL_EVENT',
+        status: 200,
+        message: '',
+        data: { type, callSid },
+      });
+    lifecycle('video-upgraded', 'other');
+    expect(service.callState().callType).toBe('AUDIO');
+    lifecycle('accepted', 'owned');
+    lifecycle('ringing', 'owned');
+    expect(service.callState()).toMatchObject({
+      phase: 'connected',
+      startedAt: 1234,
+    });
+    lifecycle('video-upgraded', 'owned');
+    expect(service.callState().callType).toBe('VIDEO');
   });
 
   it('seeds the incoming state and lets the web adapter acknowledge ringing', () => {

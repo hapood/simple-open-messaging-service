@@ -7,6 +7,7 @@ import {
   type CallPhase,
   type CallSnapshot,
   type CallTerminalReason,
+  type CallSignalPayload,
 } from './call-adapter';
 
 /**
@@ -113,15 +114,7 @@ export class CallEventService implements OnDestroy {
       )
       .subscribe((m) => {
         if (m.event === 'CALL_SIGNAL') {
-          this.adapter.handleSignal(
-            m.data as {
-              id: string;
-              callSid: string;
-              fromUserId: number | null;
-              kind: string;
-              payload: string;
-            },
-          );
+          this.adapter.handleSignal(m.data as CallSignalPayload);
         } else {
           this.handleCallEvent(m.data as CallEventPayload);
         }
@@ -144,6 +137,12 @@ export class CallEventService implements OnDestroy {
   }
 
   private applyAdapter(next: CallSnapshot): void {
+    // A pre-call media failure has no identity or terminal notice. Do not mount
+    // terminal chrome or disable retry for a call that never existed.
+    if (next.phase === 'ended' && !next.callSid) {
+      this.callState.set({ ...IDLE_CALL });
+      return;
+    }
     this.rememberOwnedCall(next);
     if (next.phase === 'ended' && next.callSid) {
       this.showTerminal(next.callSid, next.terminalReason ?? 'completed');
@@ -213,6 +212,12 @@ export class CallEventService implements OnDestroy {
   private handleCallEvent(p: CallEventPayload): void {
     const cur = this.callState();
     if (p.type === 'video-upgraded') {
+      if (
+        cur.callSid !== p.callSid ||
+        cur.phase === 'idle' ||
+        cur.phase === 'ended'
+      )
+        return;
       this.commit({
         ...cur,
         callType: 'VIDEO',
@@ -259,7 +264,11 @@ export class CallEventService implements OnDestroy {
     if (ownsActiveCall) {
       this.commit({
         ...cur,
-        phase,
+        phase:
+          cur.phase === 'connected' &&
+          (phase === 'connecting' || phase === 'ringing')
+            ? 'connected'
+            : phase,
         ...(p.type === 'connected' && p.startedAt
           ? { startedAt: p.startedAt }
           : {}),

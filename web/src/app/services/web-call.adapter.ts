@@ -12,6 +12,11 @@ import type {
   CallTerminalReason,
 } from './call-adapter';
 import { uuid } from '../lib/uuid';
+import {
+  WebCallNegotiation,
+  RemoteIceGenerations,
+  negotiatedVideo,
+} from './web-call-negotiation';
 
 interface IceServerResponse {
   urls: string | string[];
@@ -33,7 +38,7 @@ export function iceServersFromResponse(
 
 interface StagedSignaling {
   offer: { id: string; payload: string } | null;
-  answer: { id: string; payload: string } | null;
+  answer: { id: string; payload: string; inReplyTo: string } | null;
   ice: Array<{ id: string; payload: string }>;
 }
 
@@ -103,8 +108,19 @@ export class WebCallAdapter implements CallAdapter {
   private remoteAudio?: HTMLAudioElement;
   private remoteVideo?: HTMLVideoElement;
   private selfVideo?: HTMLVideoElement;
-  private pendingOffer?: string;
+  private pendingOffer?: { id: string; payload: string; callSid: string };
   private readonly pendingIce: string[] = [];
+  private generation = 0;
+  private negotiation?: WebCallNegotiation;
+  private remoteIce = new RemoteIceGenerations();
+  private remoteOfferTail: Promise<void> = Promise.resolve();
+  private remoteOfferBusy = false;
+  private serverConnected = false;
+  private pendingVideoState?: boolean;
+  private pendingVideoOffer = false;
+  private applyingAnswer = false;
+  private cameraBusy = false;
+  private outgoingBusy = false;
   private connectedReported = false;
   private answerBackstop?: ReturnType<typeof setTimeout>;
   private negotiationBackstop?: ReturnType<typeof setTimeout>;
@@ -146,11 +162,15 @@ export class WebCallAdapter implements CallAdapter {
     peerName: string,
     peerAvatar: string,
   ): Promise<void> {
+    if (this.outgoingBusy || this.state.phase !== 'idle') return;
+    this.outgoingBusy = true;
+    const generation = this.generation;
     let registered = false;
     try {
       // Request the mic directly from the click chain. Waiting for the HTTP round-trip first loses browser
       // user activation, which makes Tauri WebView/browser permission prompts reject getUserMedia.
       await this.acquireLocalMedia(callType === 'VIDEO');
+      if (generation !== this.generation) return;
       // Own the pending call before the response arrives so a rejection has a callSid to display.
       this.update({
         ...this.idle,
@@ -166,6 +186,11 @@ export class WebCallAdapter implements CallAdapter {
         'calls/initiate',
         { callSid, threadId, callType },
       );
+      if (generation !== this.generation) {
+        if (response.code === BusinessCode.OK)
+          await this.bestEffortPost('calls/cancel', { callSid });
+        return;
+      }
       if (response.code === BusinessCode.CALL_BUSY) {
         this.finish('busy');
         return;
@@ -185,22 +210,27 @@ export class WebCallAdapter implements CallAdapter {
         peerAvatar,
       });
       await this.createPeerConnection();
-      const offer = await this.pc!.createOffer();
-      await this.pc!.setLocalDescription(offer);
-      await this.signal('offer', offer.sdp ?? '');
-      this.update({ step: 'offer-sent' });
-      this.armNegotiationBackstop();
+      if (generation !== this.generation) return;
+      this.negotiation?.request('initial');
     } catch (error) {
+      if (generation !== this.generation) return;
       console.error('[call:web] outgoing setup failed', error);
-      if (registered) await this.bestEffortPost('calls/cancel', { callSid });
-      else this.notifyMediaError?.(callMediaErrorStep(error));
+      if (!registered) this.notifyMediaError?.(callMediaErrorStep(error));
       this.finish('failed');
+      if (registered) void this.bestEffortPost('calls/cancel', { callSid });
+    } finally {
+      if (generation === this.generation) this.outgoingBusy = false;
     }
   }
 
   async onIncoming(snapshot: CallSnapshot): Promise<void> {
     if (this.state.phase !== 'idle' && this.state.callSid !== snapshot.callSid)
       return;
+    if (this.pendingOffer && this.pendingOffer.callSid !== snapshot.callSid) {
+      this.pendingOffer = undefined;
+      this.pendingIce.length = 0;
+      this.seenSignalIds.clear();
+    }
     this.update(snapshot);
     await this.bestEffortPost('calls/ringing', { callSid: snapshot.callSid });
   }
@@ -210,16 +240,22 @@ export class WebCallAdapter implements CallAdapter {
   }
 
   private async acceptIncoming(callSid: string): Promise<void> {
+    if (this.acceptingLocally || this.state.callSid !== callSid) return;
+    const generation = this.generation;
     this.acceptingLocally = true;
+    this.update({ step: '' });
     let acceptedOnServer = false;
     try {
       await this.acquireLocalMedia(this.state.callType === 'VIDEO');
+      if (generation !== this.generation) return;
       await this.post('calls/accept', { callSid });
+      if (generation !== this.generation) return;
       acceptedOnServer = true;
-      this.update({ phase: 'connecting' });
+      this.update({ phase: 'connecting', step: '' });
       this.armNegotiationBackstop();
       await this.createPeerConnection();
-      if (this.pendingOffer) {
+      if (generation !== this.generation) return;
+      if (this.pendingOffer?.callSid === callSid) {
         const offer = this.pendingOffer;
         this.pendingOffer = undefined;
         await this.applyOffer(offer);
@@ -227,28 +263,34 @@ export class WebCallAdapter implements CallAdapter {
         const staged = await this.get<StagedSignaling>(
           `calls/${callSid}/signaling`,
         );
+        if (generation !== this.generation) return;
         if (staged?.offer && !this.seenSignalIds.has(staged.offer.id)) {
           this.seenSignalIds.add(staged.offer.id);
-          await this.applyOffer(staged.offer.payload);
+          await this.applyOffer({ ...staged.offer, callSid });
         }
         for (const candidate of staged?.ice ?? []) {
+          if (generation !== this.generation) return;
           if (this.seenSignalIds.has(candidate.id)) continue;
           this.seenSignalIds.add(candidate.id);
           await this.applyIce(candidate.payload);
         }
       }
+      if (generation !== this.generation) return;
       await this.flushPendingIce();
     } catch (error) {
+      if (generation !== this.generation) return;
       console.error('[call:web] accept failed', error);
       if (acceptedOnServer) {
-        await this.bestEffortPost('calls/end', {
+        this.finish();
+        void this.bestEffortPost('calls/end', {
           callSid,
           endReason: 'failed',
         });
-        this.finish();
       } else {
         this.acceptingLocally = false;
-        this.releaseMedia();
+        // The incoming call remains retryable. Received setup has not yet been
+        // applied to a peer connection, so retain it alongside its dedup IDs.
+        this.releaseMedia(true);
         this.update({ phase: 'incoming', step: callMediaErrorStep(error) });
       }
     }
@@ -297,7 +339,7 @@ export class WebCallAdapter implements CallAdapter {
     if (!track) return;
     track.enabled = enabled;
     this.update({ cameraEnabled: enabled });
-    void this.signal('video-state', JSON.stringify({ enabled }));
+    void this.publishVideoState(enabled);
   }
   setVideoRect(): void {}
   setVideoElements(
@@ -323,41 +365,38 @@ export class WebCallAdapter implements CallAdapter {
   }
 
   async handleSignal(signal: CallSignalPayload): Promise<void> {
+    if (signal.kind !== 'answer' && signal.inReplyTo !== undefined) return;
+    if (signal.kind === 'answer' && !signal.inReplyTo) return;
     if (signal.callSid !== this.state.callSid) {
       if (this.state.phase !== 'idle') return;
+      if (this.pendingOffer && this.pendingOffer.callSid !== signal.callSid)
+        return;
       if (this.seenSignalIds.has(signal.id)) return;
       this.seenSignalIds.add(signal.id);
       // An offer commonly arrives immediately before CALL_EVENT{incoming}.
-      if (signal.kind === 'offer') this.pendingOffer = signal.payload;
-      else if (signal.kind === 'ice') this.pendingIce.push(signal.payload);
+      if (signal.kind === 'offer') this.pendingOffer = signal;
+      else if (signal.kind === 'ice' && this.pendingIce.length < 128)
+        this.pendingIce.push(signal.payload);
       return;
     }
     if (this.seenSignalIds.has(signal.id)) return;
     this.seenSignalIds.add(signal.id);
     if (signal.kind === 'offer') {
-      if (!this.pc) this.pendingOffer = signal.payload;
+      const generation = this.generation;
+      if (!this.pc) this.pendingOffer = signal;
       else {
         try {
-          await this.applyOffer(signal.payload);
+          await this.applyOffer(signal);
         } catch (error) {
-          this.failNegotiation('remote offer', error);
+          if (generation === this.generation)
+            this.failNegotiation('remote offer', error);
         }
       }
     } else if (signal.kind === 'answer' && this.pc) {
-      try {
-        await this.pc.setRemoteDescription({
-          type: 'answer',
-          sdp: signal.payload,
-        });
-        if (this.answerBackstop) clearTimeout(this.answerBackstop);
-        this.update({ phase: 'connecting', step: 'answer-received' });
-        if (this.state.videoUpgradeState === 'upgrading')
-          await this.completeVideoUpgrade();
-      } catch (error) {
-        this.failNegotiation('remote answer', error);
-      }
+      await this.applyAnswer(signal);
     } else if (signal.kind === 'ice') {
-      if (!this.pc?.remoteDescription) this.pendingIce.push(signal.payload);
+      if (!this.pc && this.pendingIce.length < 128)
+        this.pendingIce.push(signal.payload);
       else await this.applyIce(signal.payload);
     } else if (signal.kind === 'video-state') {
       const enabled = this.readVideoEnabled(signal.payload);
@@ -394,7 +433,18 @@ export class WebCallAdapter implements CallAdapter {
       snapshot.phase === 'connecting' &&
       !this.pc?.remoteDescription &&
       !!snapshot.callSid;
-    this.update(snapshot);
+    // Late lifecycle progress must not move an established transport back into setup.
+    this.update(
+      this.state.phase === 'connected' &&
+        (snapshot.phase === 'connecting' || snapshot.phase === 'ringing')
+        ? {
+            ...snapshot,
+            phase: 'connected',
+            startedAt: this.state.startedAt,
+            step: '',
+          }
+        : snapshot,
+    );
     if (shouldFetchAnswer) {
       if (this.answerBackstop) clearTimeout(this.answerBackstop);
       this.answerBackstop = setTimeout(
@@ -402,25 +452,32 @@ export class WebCallAdapter implements CallAdapter {
         1_500,
       );
     }
+    if (snapshot.phase === 'connected' && !this.serverConnected) {
+      this.serverConnected = true;
+      void this.flushVideoRequests();
+    }
     if (snapshot.phase === 'idle') this.releaseMedia();
   }
 
   private async fetchStagedAnswer(callSid: string): Promise<void> {
     if (!this.pc || this.pc.remoteDescription || this.state.callSid !== callSid)
       return;
+    const generation = this.generation;
     try {
       const staged = await this.get<StagedSignaling>(
         `calls/${callSid}/signaling`,
       );
+      if (generation !== this.generation) return;
       if (staged?.answer && !this.seenSignalIds.has(staged.answer.id)) {
-        this.seenSignalIds.add(staged.answer.id);
-        await this.pc.setRemoteDescription({
-          type: 'answer',
-          sdp: staged.answer.payload,
+        await this.handleSignal({
+          ...staged.answer,
+          callSid,
+          kind: 'answer',
+          fromUserId: null,
         });
-        this.update({ phase: 'connecting', step: 'answer-received' });
       }
       for (const candidate of staged?.ice ?? []) {
+        if (generation !== this.generation) return;
         if (this.seenSignalIds.has(candidate.id)) continue;
         this.seenSignalIds.add(candidate.id);
         await this.applyIce(candidate.payload);
@@ -431,21 +488,36 @@ export class WebCallAdapter implements CallAdapter {
   }
 
   private async createPeerConnection(): Promise<void> {
+    const generation = this.generation;
     await this.acquireLocalMedia(this.state.callType === 'VIDEO');
+    if (generation !== this.generation) return;
     const iceServers = iceServersFromResponse(
       await this.get<IceConfigurationResponse>('calls/ice-servers'),
     );
+    if (generation !== this.generation) return;
     const pc = new RTCPeerConnection({ iceServers });
     this.pc = pc;
+    this.negotiation = new WebCallNegotiation(
+      (intent) => this.produceOffer(pc, generation, intent),
+      (error) => this.failNegotiation('local offer', error),
+    );
     for (const track of this.localStream!.getTracks())
       pc.addTrack(track, this.localStream!);
     pc.onicecandidate = ({ candidate }) => {
-      if (!candidate) return;
-      void this.signal('ice', JSON.stringify(candidate.toJSON()));
+      if (!candidate || this.pc !== pc || generation !== this.generation)
+        return;
+      const data = candidate.toJSON();
+      // Use the candidate's own generation, never the current local SDP credentials.
+      data.usernameFragment ??= candidate.usernameFragment;
+      if (!this.isIceCandidateInit(data)) return;
+      void this.signal('ice', JSON.stringify(data));
     };
-    pc.ontrack = (event) => this.attachRemoteTrack(event);
-    pc.onconnectionstatechange = () =>
-      this.onConnectionState(pc.connectionState);
+    pc.ontrack = (event) => {
+      if (this.pc === pc) this.attachRemoteTrack(event);
+    };
+    pc.onconnectionstatechange = () => {
+      if (this.pc === pc) this.onConnectionState(pc.connectionState);
+    };
   }
 
   private async acquireLocalMedia(withVideo: boolean): Promise<void> {
@@ -454,7 +526,8 @@ export class WebCallAdapter implements CallAdapter {
       (!withVideo || this.localStream.getVideoTracks().length > 0)
     )
       return;
-    this.localStream = await navigator.mediaDevices.getUserMedia({
+    const generation = this.generation;
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         autoGainControl: true,
@@ -462,33 +535,184 @@ export class WebCallAdapter implements CallAdapter {
       },
       video: withVideo ? { facingMode: this.facingMode } : false,
     });
+    if (generation !== this.generation) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    this.localStream = stream;
     for (const track of this.localStream.getTracks())
       this.bindLocalTrackLifecycle(track);
     this.update({ cameraEnabled: withVideo });
     if (this.selfVideo) this.selfVideo.srcObject = this.localStream;
   }
 
-  private async applyOffer(sdp: string): Promise<void> {
+  private async applyOffer(offer: {
+    id: string;
+    payload: string;
+    callSid: string;
+  }): Promise<void> {
     const pc = this.pc;
     if (!pc) {
-      this.pendingOffer = sdp;
+      this.pendingOffer = offer;
       return;
     }
-    await pc.setRemoteDescription({ type: 'offer', sdp });
-    await this.flushPendingIce();
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    await this.signal('answer', answer.sdp ?? '');
-    this.update({ step: 'answer-sent' });
-    if (this.state.videoUpgradeState === 'upgrading')
-      await this.completeVideoUpgrade();
+    const generation = this.generation;
+    // The caller may receive our answer before its POST response reaches us.
+    // Queue the next offer instead of confusing transport acknowledgement with JSEP overlap.
+    const operation = this.remoteOfferTail.then(() =>
+      this.answerOffer(offer, pc, generation),
+    );
+    this.remoteOfferTail = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async answerOffer(
+    offer: { id: string; payload: string; callSid: string },
+    pc: RTCPeerConnection,
+    generation: number,
+  ): Promise<void> {
+    const live = () =>
+      generation === this.generation &&
+      this.pc === pc &&
+      this.state.callSid === offer.callSid;
+    if (!live()) return;
+    if (this.state.isCaller || pc.signalingState !== 'stable')
+      throw new Error('unexpected remote offer');
+    this.armNegotiationBackstop();
+    this.remoteOfferBusy = true;
+    try {
+      await pc.setRemoteDescription({ type: 'offer', sdp: offer.payload });
+      if (!live()) return;
+      this.remoteIce.setDescription(offer.payload);
+      await this.flushPendingIce();
+      if (!live()) return;
+      const answer = await pc.createAnswer();
+      if (!live()) return;
+      await pc.setLocalDescription(answer);
+      if (!live()) return;
+      await this.signal('answer', answer.sdp ?? '', uuid(), offer.id);
+      if (!live()) return;
+      this.cancelNegotiationBackstop();
+      this.completeNegotiation('answer-sent');
+      if (this.state.callType === 'VIDEO')
+        this.update({ videoUpgradeState: 'idle' });
+    } finally {
+      if (live()) this.remoteOfferBusy = false;
+    }
+  }
+
+  private async produceOffer(
+    pc: RTCPeerConnection,
+    generation: number,
+    intent: { video: boolean; restart: boolean },
+  ): Promise<void> {
+    const live = () => this.pc === pc && generation === this.generation;
+    if (!live() || !this.state.isCaller) return;
+    if (pc.signalingState !== 'stable')
+      throw new Error('offer requires stable JSEP');
+    if (
+      intent.video &&
+      !pc
+        .getTransceivers()
+        .some(
+          (t) =>
+            t.direction !== 'stopped' &&
+            (t.sender.track?.kind === 'video' ||
+              t.receiver.track.kind === 'video'),
+        )
+    ) {
+      pc.addTransceiver('video', { direction: 'recvonly' });
+    }
+    const lane = this.negotiation!;
+    const id = uuid();
+    lane.active = {
+      id,
+      ...intent,
+      sendVideo: this.state.cameraEnabled,
+      receiveVideo:
+        intent.video &&
+        (!this.state.cameraEnabled || this.state.remoteCameraEnabled),
+    };
+    this.armNegotiationBackstop();
+    if (intent.restart) pc.restartIce();
+    const offer = await pc.createOffer(
+      intent.restart ? { iceRestart: true } : undefined,
+    );
+    if (!live()) return;
+    await pc.setLocalDescription(offer);
+    if (!live()) return;
+    this.armNegotiationBackstop();
+    await this.signal('offer', offer.sdp ?? '', id);
+    if (!live() || lane.active?.id !== id) return;
+    this.update({ step: this.state.phase === 'connected' ? '' : 'offer-sent' });
+    if (intent.restart) this.armReconnectBackstop();
+  }
+
+  private async applyAnswer(signal: CallSignalPayload): Promise<void> {
+    const pc = this.pc,
+      lane = this.negotiation;
+    if (!pc || !lane || !this.state.isCaller) return;
+    const reference = signal.inReplyTo;
+    if (reference && lane.isCompleted(reference)) return;
+    if (
+      !reference ||
+      lane.active?.id !== reference ||
+      pc.signalingState !== 'have-local-offer' ||
+      this.applyingAnswer
+    )
+      return;
+    const generation = this.generation;
+    const live = () => generation === this.generation && this.pc === pc;
+    const active = lane.active;
+    this.applyingAnswer = true;
+    try {
+      await pc.setRemoteDescription({ type: 'answer', sdp: signal.payload });
+      if (!live()) return;
+      if ((pc.signalingState as RTCSignalingState) !== 'stable')
+        throw new Error('answer did not stabilize JSEP');
+      this.remoteIce.setDescription(signal.payload);
+      await this.flushPendingIce();
+      if (!live()) return;
+      if (this.answerBackstop) clearTimeout(this.answerBackstop);
+      this.cancelNegotiationBackstop();
+      this.completeNegotiation('answer-received');
+      if (active.video) {
+        if (
+          negotiatedVideo(
+            pc.localDescription?.sdp ?? '',
+            signal.payload,
+            active.sendVideo,
+            active.receiveVideo,
+          )
+        )
+          await this.completeVideoUpgrade();
+        else this.update({ videoUpgradeState: 'failed' });
+      }
+      if (!live()) return;
+      this.applyingAnswer = false;
+      lane.complete(reference);
+    } catch (error) {
+      if (live()) this.failNegotiation('remote answer', error);
+    } finally {
+      if (live()) this.applyingAnswer = false;
+    }
+  }
+
+  private completeNegotiation(step: 'answer-sent' | 'answer-received'): void {
+    // Renegotiation need not change the peer connection's transport state. Keep an
+    // established call connected rather than waiting for another connected event.
+    if (this.state.phase === 'connected') this.update({ step: '' });
+    else if (step === 'answer-received' && this.state.phase !== 'reconnecting')
+      this.update({ phase: 'connecting', step });
+    else this.update({ step });
   }
 
   private async applyIce(payload: string): Promise<void> {
     try {
       const parsed: unknown = JSON.parse(payload);
       if (!this.isIceCandidateInit(parsed)) return;
-      await this.pc?.addIceCandidate(parsed);
+      const ready = this.remoteIce.take(parsed);
+      if (ready) await this.pc?.addIceCandidate(ready);
     } catch (error) {
       console.warn('[call:web] ignored invalid ICE candidate', error);
     }
@@ -496,8 +720,17 @@ export class WebCallAdapter implements CallAdapter {
 
   private async flushPendingIce(): Promise<void> {
     if (!this.pc?.remoteDescription) return;
-    for (const payload of this.pendingIce.splice(0))
+    const pc = this.pc;
+    const ice = this.remoteIce;
+    for (const payload of this.pendingIce.splice(0)) {
+      if (this.pc !== pc) return;
       await this.applyIce(payload);
+    }
+    if (this.pc !== pc) return;
+    for (const candidate of ice.flush()) {
+      if (this.pc !== pc) return;
+      await pc.addIceCandidate(candidate);
+    }
   }
 
   private onConnectionState(state: RTCPeerConnectionState): void {
@@ -518,7 +751,8 @@ export class WebCallAdapter implements CallAdapter {
       !this.state.isCaller &&
       !this.connectedReported
     ) {
-      this.cancelNegotiationBackstop();
+      if (!this.negotiation?.active && !this.remoteOfferBusy)
+        this.cancelNegotiationBackstop();
       this.cancelReconnectBackstop();
       this.iceRestartTried = false;
       this.connectedReported = true;
@@ -526,7 +760,8 @@ export class WebCallAdapter implements CallAdapter {
         callSid: this.state.callSid,
       });
     } else if (state === 'connected') {
-      this.cancelNegotiationBackstop();
+      if (!this.negotiation?.active && !this.remoteOfferBusy)
+        this.cancelNegotiationBackstop();
       this.cancelReconnectBackstop();
       this.iceRestartTried = false;
     } else if (state === 'disconnected') {
@@ -562,6 +797,8 @@ export class WebCallAdapter implements CallAdapter {
     this.negotiationBackstop = setTimeout(() => {
       this.negotiationBackstop = undefined;
       if (
+        !this.negotiation?.active &&
+        !this.remoteOfferBusy &&
         this.state.phase !== 'calling' &&
         this.state.phase !== 'ringing' &&
         this.state.phase !== 'connecting'
@@ -596,19 +833,7 @@ export class WebCallAdapter implements CallAdapter {
     const pc = this.pc;
     if (!pc || !this.state.isCaller || this.iceRestartTried) return;
     this.iceRestartTried = true;
-    try {
-      pc.restartIce();
-      const offer = await pc.createOffer({ iceRestart: true });
-      await pc.setLocalDescription(offer);
-      await this.signal('offer', offer.sdp ?? '');
-      this.update({ step: 'offer-sent' });
-      this.armReconnectBackstop();
-    } catch (error) {
-      console.warn('[call:web] ICE restart failed', error);
-      const callSid = this.state.callSid;
-      if (callSid)
-        void this.terminate('calls/end', { callSid, endReason: 'failed' });
-    }
+    this.negotiation?.request('restart');
   }
 
   private cancelReconnectBackstop(): void {
@@ -658,45 +883,129 @@ export class WebCallAdapter implements CallAdapter {
       return;
     if (this.localStream?.getVideoTracks().length) {
       this.setCameraEnabled(true);
+      if (this.state.callType === 'AUDIO') {
+        const pc = this.pc;
+        if (
+          this.state.isCaller &&
+          this.serverConnected &&
+          pc.signalingState === 'stable' &&
+          negotiatedVideo(
+            pc.localDescription?.sdp ?? '',
+            pc.remoteDescription?.sdp ?? '',
+            true,
+            this.state.remoteCameraEnabled,
+          )
+        ) {
+          this.update({ videoUpgradeState: 'upgrading' });
+          await this.completeVideoUpgrade();
+        } else if (this.state.isCaller) await this.createVideoOffer();
+      }
       return;
     }
+    if (this.cameraBusy) return;
+    const pc = this.pc;
+    const generation = this.generation;
+    const live = () => generation === this.generation && this.pc === pc;
+    this.cameraBusy = true;
     this.update({ videoUpgradeState: 'upgrading' });
     try {
       const camera = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: this.facingMode },
         audio: false,
       });
+      if (!live()) {
+        camera.getTracks().forEach((track) => track.stop());
+        return;
+      }
       const track = camera.getVideoTracks()[0];
       if (!track) throw new Error('camera returned no video track');
       this.localStream ??= new MediaStream();
       this.localStream.addTrack(track);
       this.bindLocalTrackLifecycle(track);
-      this.pc.addTrack(track, this.localStream);
+      const transceiver = pc
+        .getTransceivers()
+        .find(
+          (t) => t.direction !== 'stopped' && t.receiver.track.kind === 'video',
+        );
+      if (transceiver) {
+        await transceiver.sender.replaceTrack(track);
+        if (!live()) {
+          track.stop();
+          return;
+        }
+        transceiver.direction = 'sendrecv';
+      } else pc.addTrack(track, this.localStream);
       if (this.selfVideo) this.selfVideo.srcObject = this.localStream;
       this.update({ cameraEnabled: true });
-      await this.signal('video-state', JSON.stringify({ enabled: true }));
-      if (this.state.isCaller) await this.createVideoOffer();
+      await this.publishVideoState(true);
+      if (live() && this.state.isCaller) await this.createVideoOffer();
     } catch (error) {
+      if (!live()) return;
       console.error('[call:web] video upgrade failed', error);
       this.update({ videoUpgradeState: 'failed', cameraEnabled: false });
+    } finally {
+      if (live()) this.cameraBusy = false;
     }
   }
 
   private async createVideoOffer(): Promise<void> {
-    if (!this.pc || this.pc.signalingState !== 'stable') return;
-    const offer = await this.pc.createOffer();
-    await this.pc.setLocalDescription(offer);
-    await this.signal('offer', offer.sdp ?? '');
-    this.update({ step: 'offer-sent', videoUpgradeState: 'upgrading' });
+    if (!this.pc || !this.state.isCaller) return;
+    this.update({ videoUpgradeState: 'upgrading' });
+    if (!this.serverConnected) {
+      this.pendingVideoOffer = true;
+      return;
+    }
+    this.negotiation?.request('video');
+  }
+
+  private async publishVideoState(enabled: boolean): Promise<void> {
+    if (!this.serverConnected) {
+      this.pendingVideoState = enabled;
+      return;
+    }
+    await this.signal('video-state', JSON.stringify({ enabled }));
+  }
+
+  private async flushVideoRequests(): Promise<void> {
+    const generation = this.generation;
+    const enabled = this.pendingVideoState;
+    this.pendingVideoState = undefined;
+    try {
+      if (enabled !== undefined) await this.publishVideoState(enabled);
+      if (generation !== this.generation) return;
+      if (this.pendingVideoOffer) {
+        this.pendingVideoOffer = false;
+        await this.createVideoOffer();
+      }
+    } catch (error) {
+      if (generation === this.generation) {
+        console.error('[call:web] deferred media intent failed', error);
+        this.update({ videoUpgradeState: 'failed' });
+      }
+    }
   }
 
   private async completeVideoUpgrade(): Promise<void> {
     const callSid = this.state.callSid;
-    if (!callSid || !this.state.isCaller) return;
+    if (!callSid) return;
+    // Adding a camera to an existing video call is media renegotiation, not a
+    // server-side call-type upgrade. Either participant can complete it locally.
+    if (this.state.callType === 'VIDEO') {
+      this.update({ videoUpgradeState: 'idle' });
+      return;
+    }
+    if (!this.state.isCaller) return;
+    const generation = this.generation;
     try {
-      await this.post('calls/upgrade-video', { callSid });
+      const response = await this.postResponse('calls/upgrade-video', {
+        callSid,
+      });
+      if (generation !== this.generation) return;
+      if (response.code !== BusinessCode.OK)
+        throw new Error(`video upgrade rejected: ${response.code}`);
       this.update({ callType: 'VIDEO', videoUpgradeState: 'idle' });
     } catch (error) {
+      if (generation !== this.generation) return;
       console.error('[call:web] video upgrade persistence failed', error);
       this.update({ videoUpgradeState: 'failed' });
     }
@@ -705,17 +1014,27 @@ export class WebCallAdapter implements CallAdapter {
   private async replaceCamera(): Promise<void> {
     const oldTrack = this.localStream?.getVideoTracks()[0];
     if (!oldTrack || !this.pc) return;
+    const pc = this.pc;
+    const generation = this.generation;
     const nextFacing = this.facingMode === 'user' ? 'environment' : 'user';
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { exact: nextFacing } },
         audio: false,
       });
+      if (generation !== this.generation || this.pc !== pc) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       const nextTrack = stream.getVideoTracks()[0];
-      const sender = this.pc
+      const sender = pc
         .getSenders()
         .find((item) => item.track?.kind === 'video');
       await sender?.replaceTrack(nextTrack);
+      if (generation !== this.generation || this.pc !== pc) {
+        nextTrack.stop();
+        return;
+      }
       this.localStream!.removeTrack(oldTrack);
       oldTrack.stop();
       this.localStream!.addTrack(nextTrack);
@@ -765,10 +1084,10 @@ export class WebCallAdapter implements CallAdapter {
       (candidate['sdpMLineIndex'] === undefined ||
         candidate['sdpMLineIndex'] === null ||
         (Number.isInteger(candidate['sdpMLineIndex']) &&
-          (candidate['sdpMLineIndex'] as number) >= 0)) &&
-      (candidate['usernameFragment'] === undefined ||
-        candidate['usernameFragment'] === null ||
-        typeof candidate['usernameFragment'] === 'string')
+          (candidate['sdpMLineIndex'] as number) >= 0 &&
+          (candidate['sdpMLineIndex'] as number) <= 65535)) &&
+      typeof candidate['usernameFragment'] === 'string' &&
+      /^[A-Za-z0-9+/]{4,256}$/.test(candidate['usernameFragment'])
     );
   }
 
@@ -793,18 +1112,24 @@ export class WebCallAdapter implements CallAdapter {
       }
       this.localStream.removeTrack(track);
       this.update({ cameraEnabled: false });
-      void this.signal('video-state', JSON.stringify({ enabled: false }));
+      void this.publishVideoState(false);
     };
   }
 
-  private async signal(kind: string, payload: string): Promise<void> {
+  private async signal(
+    kind: string,
+    payload: string,
+    id = uuid(),
+    inReplyTo?: string,
+  ): Promise<void> {
     const { callSid } = this.state;
     if (!callSid) return;
     await this.post('calls/signal', {
-      id: uuid(),
+      id,
       callSid,
       kind,
       payload,
+      ...(kind === 'answer' ? { inReplyTo } : {}),
     });
   }
 
@@ -814,13 +1139,31 @@ export class WebCallAdapter implements CallAdapter {
   }
 
   private finish(reason?: CallTerminalReason): void {
-    this.update({ phase: 'ended', terminalReason: reason ?? null });
+    const ownsCall = !!this.state.callSid;
+    if (ownsCall)
+      this.update({ phase: 'ended', terminalReason: reason ?? null });
     this.releaseMedia();
     this.seenSignalIds.clear();
     this.state = { ...this.idle };
+    // Media acquisition may fail before a call is owned. Publish the cleaned idle
+    // state so the renderer can retry; there is no call to show as ended.
+    if (!ownsCall) this.listener?.({ ...this.state });
   }
 
-  private releaseMedia(): void {
+  private releaseMedia(preservePendingSetup = false): void {
+    this.generation++;
+    this.negotiation?.dispose();
+    this.negotiation = undefined;
+    this.remoteIce = new RemoteIceGenerations();
+    this.remoteOfferBusy =
+      this.applyingAnswer =
+      this.cameraBusy =
+      this.outgoingBusy =
+        false;
+    this.remoteOfferTail = Promise.resolve();
+    this.serverConnected = false;
+    this.pendingVideoState = undefined;
+    this.pendingVideoOffer = false;
     this.pc?.close();
     this.pc = undefined;
     for (const track of this.localStream?.getTracks() ?? []) {
@@ -841,8 +1184,10 @@ export class WebCallAdapter implements CallAdapter {
     if (this.selfVideo) this.selfVideo.srcObject = null;
     this.remoteVideo = undefined;
     this.selfVideo = undefined;
-    this.pendingOffer = undefined;
-    this.pendingIce.length = 0;
+    if (!preservePendingSetup) {
+      this.pendingOffer = undefined;
+      this.pendingIce.length = 0;
+    }
     this.connectedReported = false;
     this.cancelNegotiationBackstop();
     this.cancelReconnectBackstop();
@@ -856,7 +1201,10 @@ export class WebCallAdapter implements CallAdapter {
     path: string,
     body: object,
   ): Promise<T | undefined> {
-    return (await this.postResponse<T>(path, body)).data;
+    const response = await this.postResponse<T>(path, body);
+    if (response.code !== BusinessCode.OK)
+      throw new Error(`${path} rejected: ${response.code}`);
+    return response.data;
   }
 
   private async postResponse<T>(

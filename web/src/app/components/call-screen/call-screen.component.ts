@@ -89,7 +89,10 @@ import { ConversationListService } from '../../services/conversation-list.servic
                     [type]="UserAvatarType.OTHER"
                     [name]="snap().peerName || '?'"
                     [account]="identity.account"
-                    [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
+                    [domainSource]="{
+                      type: 'namespace',
+                      namespaceId: identity.namespaceId,
+                    }"
                     [src]="snap().peerAvatar"
                   />
                 } @else {
@@ -130,7 +133,10 @@ import { ConversationListService } from '../../services/conversation-list.servic
                     [type]="UserAvatarType.OTHER"
                     [name]="snap().peerName || '?'"
                     [account]="identity.account"
-                    [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
+                    [domainSource]="{
+                      type: 'namespace',
+                      namespaceId: identity.namespaceId,
+                    }"
                     [src]="snap().peerAvatar"
                   />
                 } @else {
@@ -190,7 +196,10 @@ import { ConversationListService } from '../../services/conversation-list.servic
                   [type]="UserAvatarType.OTHER"
                   [name]="snap().peerName || '?'"
                   [account]="identity.account"
-                  [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
+                  [domainSource]="{
+                    type: 'namespace',
+                    namespaceId: identity.namespaceId,
+                  }"
                   [src]="snap().peerAvatar"
                 />
               } @else {
@@ -362,7 +371,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
       </div>
     }
   `,
-  imports: [TranslocoModule, UserAvatarComponent, IconComponent, ],
+  imports: [TranslocoModule, UserAvatarComponent, IconComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [
     `
@@ -820,7 +829,6 @@ export class CallScreenComponent implements OnDestroy {
   private dragOrigin = { px: 0, py: 0, left: 0, top: 0 };
   /** rAF coalescing flag so a drag burst fires at most one native setVideoRect per animation frame. */
   private rectReportPending = false;
-  private lastVideoCallSid: string | null = null;
 
   /** The self-view hole element — measured to report its rect to native so the local-camera surface is
    *  positioned over it. Null on AUDIO calls (no self-view rendered). */
@@ -879,12 +887,47 @@ export class CallScreenComponent implements OnDestroy {
     });
     // A new call, camera-off transition, or renderer video remount must show the avatar until an actual
     // decoded frame is ready. `remoteCameraEnabled` alone only means the peer intends to send video.
-    effect(() => {
-      const sid = this.snap().callSid;
-      const enabled = this.snap().remoteCameraEnabled;
-      if (sid !== this.lastVideoCallSid || !enabled)
-        this.remoteVideoReady.set(false);
-      this.lastVideoCallSid = sid;
+    const videoCallSid = computed(() => this.snap().callSid);
+    const remoteCameraEnabled = computed(() => this.snap().remoteCameraEnabled);
+    const active = computed(
+      () => this.snap().phase !== 'idle' && this.snap().phase !== 'ended',
+    );
+    effect((onCleanup) => {
+      const sid = videoCallSid();
+      const enabled = remoteCameraEnabled();
+      const isActive = active();
+      const video = this.remoteVideo()?.nativeElement;
+      this.remoteVideoReady.set(false);
+      if (
+        !this.adapter.rendererOwnsVideo ||
+        !sid ||
+        !enabled ||
+        !isActive ||
+        !video ||
+        typeof video.requestVideoFrameCallback !== 'function'
+      )
+        return;
+
+      // An existing playing stream can resume without loadeddata/playing firing
+      // again. A new presented frame, not old dimensions or camera intent, proves
+      // that this renderer can remove the waiting placeholder.
+      let cancelled = false;
+      const handle = video.requestVideoFrameCallback(() => {
+        const current = this.snap();
+        if (
+          !cancelled &&
+          current.callSid === sid &&
+          current.remoteCameraEnabled &&
+          current.phase !== 'idle' &&
+          current.phase !== 'ended' &&
+          this.remoteVideo()?.nativeElement === video
+        )
+          this.remoteVideoReady.set(true);
+      });
+      onCleanup(() => {
+        cancelled = true;
+        video.cancelVideoFrameCallback(handle);
+      });
     });
     // React to PiP enter/exit (native pushes via window.__SOMS_PIP__). In PiP the chrome hides + the self
     //  surface detaches so only the remote video shows in the PiP window; on exit both restore.
@@ -1108,7 +1151,14 @@ export class CallScreenComponent implements OnDestroy {
   }
 
   onRemoteVideoReady(): void {
-    if (this.snap().remoteCameraEnabled) this.remoteVideoReady.set(true);
+    const video = this.remoteVideo()?.nativeElement;
+    // Browsers with frame callbacks use the scoped new-frame confirmation above.
+    // Preserve media events for older renderers without that API.
+    if (
+      this.snap().remoteCameraEnabled &&
+      typeof video?.requestVideoFrameCallback !== 'function'
+    )
+      this.remoteVideoReady.set(true);
   }
 
   /** Show the controls now; in a connected video call, re-arm the auto-hide so they fade again after inactivity. */

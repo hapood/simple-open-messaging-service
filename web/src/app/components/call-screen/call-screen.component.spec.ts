@@ -81,7 +81,14 @@ describe('CallScreenComponent', () => {
         { provide: CallAdapterService, useValue: adapter },
         { provide: CallRingtoneService, useValue: ringtone },
         { provide: CallPresentationService, useValue: presentation },
-        { provide: WebdbService, useFactory: () => new WebdbStorage(() => null, new SessionLifecycleService()) as WebdbService },
+        {
+          provide: WebdbService,
+          useFactory: () =>
+            new WebdbStorage(
+              () => null,
+              new SessionLifecycleService(),
+            ) as WebdbService,
+        },
         {
           provide: UserService,
           useValue: {
@@ -177,6 +184,122 @@ describe('CallScreenComponent', () => {
     (root.querySelector('.switch') as HTMLButtonElement).click();
     expect(adapter.switchCamera).toHaveBeenCalledTimes(1);
     fixture.destroy();
+  });
+
+  it('waits for a new video frame after camera resume and cancels stale callbacks', () => {
+    const callbacks = new Map<number, VideoFrameRequestCallback>();
+    let nextId = 0;
+    const request = vi.fn((callback: VideoFrameRequestCallback) => {
+      callbacks.set(++nextId, callback);
+      return nextId;
+    });
+    const cancel = vi.fn();
+    const prototype = HTMLVideoElement.prototype;
+    const originalRequest = Object.getOwnPropertyDescriptor(
+      prototype,
+      'requestVideoFrameCallback',
+    );
+    const originalCancel = Object.getOwnPropertyDescriptor(
+      prototype,
+      'cancelVideoFrameCallback',
+    );
+    Object.defineProperty(prototype, 'requestVideoFrameCallback', {
+      configurable: true,
+      value: request,
+    });
+    Object.defineProperty(prototype, 'cancelVideoFrameCallback', {
+      configurable: true,
+      value: cancel,
+    });
+    const fire = (id: number) =>
+      callbacks.get(id)!(0, {} as VideoFrameCallbackMetadata);
+    const fixture = TestBed.createComponent(CallScreenComponent);
+    try {
+      callState.update((state) => ({
+        ...state,
+        callType: 'VIDEO',
+        remoteCameraEnabled: true,
+      }));
+      fixture.detectChanges();
+      const component = fixture.componentInstance;
+      const first = nextId;
+      expect(first).toBeGreaterThan(0);
+      component.onRemoteVideoReady();
+      expect(component.remoteVideoReady()).toBe(false);
+      fire(first);
+      expect(component.remoteVideoReady()).toBe(true);
+
+      callState.update((state) => ({ ...state, remoteCameraEnabled: false }));
+      fixture.detectChanges();
+      expect(component.remoteVideoReady()).toBe(false);
+      expect(cancel).toHaveBeenCalledWith(first);
+      fire(first);
+      expect(component.remoteVideoReady()).toBe(false);
+
+      callState.update((state) => ({ ...state, remoteCameraEnabled: true }));
+      fixture.detectChanges();
+      const resumed = nextId;
+      expect(resumed).toBeGreaterThan(first);
+      expect(component.remoteVideoReady()).toBe(false);
+      fire(resumed);
+      fixture.detectChanges();
+      expect(component.remoteVideoReady()).toBe(true);
+      expect(
+        (fixture.nativeElement as HTMLElement).querySelector(
+          '.remote-camera-off',
+        ),
+      ).toBeNull();
+
+      // Unrelated call updates must not invalidate an already presented frame.
+      callState.update((state) => ({ ...state, muted: true }));
+      fixture.detectChanges();
+      expect(nextId).toBe(resumed);
+      expect(component.remoteVideoReady()).toBe(true);
+
+      callState.update((state) => ({ ...state, callSid: 'replacement-call' }));
+      fixture.detectChanges();
+      const replacement = nextId;
+      expect(component.remoteVideoReady()).toBe(false);
+      fire(resumed);
+      expect(component.remoteVideoReady()).toBe(false);
+
+      callState.update((state) => ({ ...state, callType: 'AUDIO' }));
+      fixture.detectChanges();
+      expect(cancel).toHaveBeenCalledWith(replacement);
+      fire(replacement);
+      expect(component.remoteVideoReady()).toBe(false);
+      callState.update((state) => ({ ...state, callType: 'VIDEO' }));
+      fixture.detectChanges();
+      const remounted = nextId;
+      expect(remounted).toBeGreaterThan(replacement);
+      fire(remounted);
+      expect(component.remoteVideoReady()).toBe(true);
+      callState.update((state) => ({ ...state, remoteCameraEnabled: false }));
+      fixture.detectChanges();
+      callState.update((state) => ({ ...state, remoteCameraEnabled: true }));
+      fixture.detectChanges();
+      const pendingAtDestroy = nextId;
+      fixture.destroy();
+      expect(cancel).toHaveBeenCalledWith(pendingAtDestroy);
+      fire(pendingAtDestroy);
+      expect(component.remoteVideoReady()).toBe(false);
+    } finally {
+      if (!fixture.componentRef.hostView.destroyed) fixture.destroy();
+      if (originalRequest)
+        Object.defineProperty(
+          prototype,
+          'requestVideoFrameCallback',
+          originalRequest,
+        );
+      else Reflect.deleteProperty(prototype, 'requestVideoFrameCallback');
+      if (originalCancel)
+        Object.defineProperty(
+          prototype,
+          'cancelVideoFrameCallback',
+          originalCancel,
+        );
+      else Reflect.deleteProperty(prototype, 'cancelVideoFrameCallback');
+    }
   });
 
   it('keeps video controls visible while the mouse is moving', () => {

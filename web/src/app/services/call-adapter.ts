@@ -92,13 +92,15 @@ export const IDLE_CALL: CallSnapshot = {
 };
 
 export type CallSnapshotListener = (snapshot: CallSnapshot) => void;
-export interface CallSignalPayload {
+export type CallSignalPayload = {
   id: string;
   callSid: string;
   fromUserId: number | null;
-  kind: string;
   payload: string;
-}
+} & (
+  | { kind: 'answer'; inReplyTo: string }
+  | { kind: 'offer' | 'ice' | 'video-state'; inReplyTo?: never }
+);
 
 /**
  * The call COMMAND adapter — hides platform differences behind one polymorphic surface (mirrors
