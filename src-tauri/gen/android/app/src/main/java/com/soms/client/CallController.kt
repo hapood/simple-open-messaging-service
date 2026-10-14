@@ -85,6 +85,7 @@ object CallController {
     /** Account-wide CALL_EVENT frames reach every signed-in device. Only the Android instance whose user
      *  tapped Accept may transition the callee into connecting; sibling devices dismiss on `accepted`. */
     @Volatile private var acceptingLocally: Boolean = false
+    private var acceptConfirmed = false
     /** The peer presentation resolved from native SQLite or the foreground SSE event and exposed in snapshots. */
     @Volatile var peerName: String = ""
         private set
@@ -142,7 +143,19 @@ object CallController {
      *  it is still ringing (before the user taps accept) — without buffering, `pc == null` drops them and the
      *  call never negotiates (stuck in connecting → server ringing-timeout → missed). Flushed by
      *  [flushPending] once accept builds the PC. */
-    private var pendingOffer: String? = null
+    private var pendingOffer: CallSignaling.Offer? = null
+    private var remoteOffer: CallSignaling.Offer? = null
+    private val offerLane = CallSignaling.OfferLane()
+    private val activeOfferId: String? get() = offerLane.activeId
+    private val answerApplying: Boolean get() = offerLane.applying
+    private var offerSendingVideo = false
+    private var offerReceivingVideo = false
+    private var queuedVideoOffer = false
+    private var queuedIceRestart = false
+    private var remoteSections = emptyList<CallSignaling.Section>()
+    private val obsoleteRemoteUfrags = HashSet<String>()
+    private var localIce = CallSignaling.LocalIce()
+    private var negotiationTimeout: Runnable? = null
     private val pendingIce = mutableListOf<String>()
 
     // ── video ─────────────────────────────────────────────────────────────────────
@@ -156,13 +169,6 @@ object CallController {
     /** True once the caller has tried an ICE restart for this call, so the reconnect backstop's second firing
      *  fails instead of restarting again (one restart attempt, then give up). Reset in [teardown]/[initiate]. */
     @Volatile private var iceRestartTried = false
-    /** True once the caller has applied the callee's SDP answer — the idempotency guard so the SSE relay + the
-     *  server-fetch fallback ([fetchAndApplyStaged]) delivering the SAME answer can't double-apply (a 2nd
-     *  setRemoteDescription(answer) on a stable PC errors). Set synchronously in [applySignal] before the async
-     *  setRemoteDescription, so the fetch path can't race a 2nd apply onto a pending 1st. Re-armed whenever a
-     *  fresh answer is expected: [initiate], [teardown], and [offerSdpObserver] (an ICE-restart offer expects a
-     *  new answer, so the guard must reset or the restart answer would be skipped as a "duplicate"). */
-    @Volatile private var answerApplied = false
     /** Only the original caller creates renegotiation offers, avoiding offer glare when both participants
      *  enable cameras at nearly the same time. Cleared when the corresponding answer is applied. */
     @Volatile private var videoRenegotiationInFlight = false
@@ -188,9 +194,8 @@ object CallController {
                 iceRestartTried = true
                 SomsLog.i(TAG) { "reconnect backstop -> ICE restart (caller); re-arming short backstop" }
                 runCatching {
-                    val c = pc!!
-                    c.restartIce()
-                    c.createOffer(offerSdpObserver, iceRestartConstraints())
+                    queuedIceRestart = true
+                    drainOffers(pc!!)
                 }.onFailure { SomsLog.w(TAG) { "ICE restart failed: ${it.message}" } }
                 mainHandler.postDelayed(reconnectBackstop, CallFsm.RECONNECT_BACKSTOP_SHORT_MS)
             } else {
@@ -264,6 +269,7 @@ object CallController {
         // UNIFIED_PLAN, BALANCED) are correct — only continual gathering needs setting. IPv6 stays on (a
         // cellular-IPv6 path may be the only one that works when the default WiFi lacks IPv6).
         cfg.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+        cfg.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         return cfg
     }
 
@@ -273,8 +279,12 @@ object CallController {
     private fun createPeerConnection(): PeerConnection {
         val f = ensureFactory()
         val iceServers = fetchIceServers()
-        val connection = f.createPeerConnection(rtcConfig(iceServers), observer)
+        val sid = callSid ?: throw IllegalStateException("no active call")
+        val iceIdentity = localIce
+        var ownedConnection: PeerConnection? = null
+        val connection = f.createPeerConnection(rtcConfig(iceServers), createObserver(sid, iceIdentity) { ownedConnection })
             ?: throw IllegalStateException("createPeerConnection returned null")
+        ownedConnection = connection
         pc = connection
         // Audio source + track. goog constraints = the standard AEC/AGC/NS toggles for comms audio.
         val constraints = MediaConstraints().apply {
@@ -352,7 +362,8 @@ object CallController {
 
     // ── the PC observer: ICE trickle + connection state ───────────────────────────
 
-    private val observer = object : PeerConnection.Observer {
+    private fun createObserver(sid: String, iceIdentity: CallSignaling.LocalIce,
+                               owned: () -> PeerConnection?) = object : PeerConnection.Observer {
         override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
             // Older callback; onConnectionChange (below) is the modern source — keep this for logging.
@@ -361,18 +372,39 @@ object CallController {
         override fun onIceConnectionReceivingChange(receiving: Boolean) {}
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
             SomsLog.d(TAG) { "iceGathering $state" }
+            if (state != PeerConnection.IceGatheringState.COMPLETE) return
+            val connection = owned() ?: return
+            if (!alive(connection, sid)) return
+            // Native callbacks may omit the ufrag extension after a restart.
+            // The engine's gathered SDP binds each candidate to its credentials;
+            // inspect that snapshot instead of relabeling an ambiguous callback.
+            val sdp = connection.localDescription?.description ?: return
+            for (candidate in iceIdentity.gathered(sdp)) {
+                signalCandidate(connection, candidate.candidate, candidate.mid, candidate.index, candidate.ufrag)
+            }
+        }
+
+        private fun signalCandidate(connection: PeerConnection, candidate: String, mid: String?, index: Int, ufrag: String) {
+            val payload = JSONObject()
+                .put("candidate", candidate)
+                .put("sdpMid", mid ?: JSONObject.NULL)
+                .put("sdpMLineIndex", index)
+                .put("usernameFragment", ufrag)
+                .toString()
+            callExecutor.execute {
+                if (alive(connection, sid) && iceIdentity.claim(candidate, mid, index, ufrag)) {
+                    postSignal(sid, "ice", payload)
+                }
+            }
         }
 
         /** A local ICE candidate is ready → trickle it to the peer over /calls/signal. */
         override fun onIceCandidate(candidate: IceCandidate) {
-            val sid = callSid ?: return
-            SomsLog.d(TAG) { "local ICE candidate → relay (sdpMid=${candidate.sdpMid})" }
-            val payload = JSONObject()
-                .put("candidate", candidate.sdp)
-                .put("sdpMid", candidate.sdpMid ?: "")
-                .put("sdpMLineIndex", candidate.sdpMLineIndex)
-                .toString()
-            postSignal(sid, "ice", payload)
+            val connection = owned() ?: return
+            if (!alive(connection, sid)) return
+            val ufrag = iceIdentity.identify(candidate.sdp, candidate.sdpMid, candidate.sdpMLineIndex)
+                ?: return // Ambiguous callbacks after a restart must not be relabeled.
+            signalCandidate(connection, candidate.sdp, candidate.sdpMid, candidate.sdpMLineIndex, ufrag)
         }
 
         override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>?) {}
@@ -389,10 +421,11 @@ object CallController {
             // storing the track + relinking means the sink lands the moment BOTH halves exist (not the
             // `remoteRenderer ?: return` early-drop that previously lost the track on the race). Remote AUDIO
             // is auto-routed by the AudioDeviceModule — no sink needed.
+            val connection = owned() ?: return
             val track = receiver?.track()
             SomsLog.d(TAG) { "onAddTrack: ${track?.javaClass?.simpleName} enabled=${track?.enabled()}" }
             if (track is VideoTrack) {
-                video.onRemoteTrack(track)
+                callExecutor.execute { if (alive(connection, sid)) video.onRemoteTrack(track) }
             }
         }
 
@@ -400,40 +433,33 @@ object CallController {
          *  real connect marker + the reconnecting/failed UX. */
         override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) {
             val s = newState?.name?.lowercase() ?: return
-            mediaState = s
-            SomsLog.d(TAG) { "connectionState=$s phase=$phase" }
-            when (newState) {
-                PeerConnection.PeerConnectionState.CONNECTED -> {
-                    cancelReconnectBackstop()
-                    cancelAnswerFetchBackstop()
-                    if (phase != "connected") {
-                        phase = "connected"
-                        startedAt = System.currentTimeMillis()
-                        SomsLog.i(TAG) { "media connected (sid=$callSid)" }
+            val connection = owned() ?: return
+            callExecutor.execute {
+                if (!alive(connection, sid)) return@execute
+                mediaState = s
+                SomsLog.d(TAG) { "connectionState=$s phase=$phase" }
+                when (newState) {
+                    PeerConnection.PeerConnectionState.CONNECTED -> {
+                        cancelReconnectBackstop()
+                        if (activeOfferId == null) cancelAnswerFetchBackstop()
+                        if (phase != "connected") {
+                            phase = "connected"
+                            startedAt = System.currentTimeMillis()
+                            SomsLog.i(TAG) { "media connected (sid=$callSid)" }
+                            pushSnapshot()
+                        }
+                        // The callee owns the authoritative connected timestamp.
+                        if (!isCaller) postConnected(sid)
+                    }
+                    PeerConnection.PeerConnectionState.DISCONNECTED -> {
+                        // Continual gathering can recover a handoff; otherwise restart once, then fail.
+                        if (phase == "connected") phase = "reconnecting"
                         pushSnapshot()
+                        armReconnectBackstop()
                     }
-                    // SOMS uses the callee's first media-up observation as the single authoritative
-                    // connected timestamp. The caller waits for CALL_EVENT{connected} from the server.
-                    if (!isCaller) {
-                        val sid = callSid ?: return
-                        callExecutor.execute { postConnected(sid) }
-                    }
+                    PeerConnection.PeerConnectionState.FAILED -> fail("failed")
+                    else -> {}
                 }
-                PeerConnection.PeerConnectionState.DISCONNECTED -> {
-                    // Transient (a blip / handoff). Do NOT fail immediately — GATHER_CONTINUALLY regathers on a
-                    // network change and recovers most of these inside the backstop window; the caller's ICE
-                    // restart covers the stale-credentials case. Mark reconnecting so the UI shows it calmly,
-                    // and arm the backstop so a real drop can't hang here forever.
-                    if (phase == "connected") phase = "reconnecting"
-                    pushSnapshot()
-                    armReconnectBackstop()
-                }
-                PeerConnection.PeerConnectionState.FAILED -> {
-                    // ICE gave up. End the call as failed (the server maps endReason=failed → the `failed`
-                    // CALL bubble with duration, since we did connect).
-                    fail("failed")
-                }
-                else -> {}
             }
         }
     }
@@ -466,46 +492,73 @@ object CallController {
     private fun handleSignalFrame(obj: JSONObject) {
         val sid = obj.optString("callSid")
         val id = obj.optString("id")
-        if (sid.isEmpty() || sid != callSid || id.isEmpty() || !seenSignalIds.add(id)) return
+        if (phase == "ended" || phase == "idle" || sid.isEmpty() ||
+            sid != callSid || !CallSignaling.canonicalId(id)) return
         val kind = obj.optString("kind")
+        val reply = obj.optString("inReplyTo")
+        if (!CallSignaling.validReference(kind, obj.has("inReplyTo"), reply)) return
         val payload = obj.optString("payload")
+        if (!seenSignalIds.add(id)) return
         if (kind == "video-state") {
             handleRemoteVideoState(payload)
             return
         }
         if (pc == null) {
             when (kind) {
-                "offer" -> { pendingOffer = payload; SomsLog.d(TAG) { "buffered offer (pc not created yet — pre-accept)" }; setStep("offer-received") }
-                "ice" -> { pendingIce.add(payload); SomsLog.d(TAG) { "buffered ICE (${pendingIce.size}) pre-accept" } }
+                "offer" -> {
+                    if (isCaller) return
+                    if (pendingOffer != null && pendingOffer?.id != id) { fail("failed"); return }
+                    pendingOffer = CallSignaling.Offer(id, payload)
+                    setStep("offer-received")
+                }
+                "ice" -> { bufferIce(payload); SomsLog.d(TAG) { "buffered ICE (${pendingIce.size}) pre-accept" } }
             }
             return
         }
-        applySignal(pc!!, kind, payload)
+        applySignal(pc!!, kind, payload, id, reply)
     }
 
     /** Apply one relayed frame to an EXISTING pc: offer→setRemoteDescription+createAnswer, answer→
      *  setRemoteDescription, ice→addIceCandidate. */
-    private fun applySignal(connection: PeerConnection, kind: String, payload: String) {
+    private fun applySignal(connection: PeerConnection, kind: String, payload: String,
+                            id: String = "", inReplyTo: String = "") {
         when (kind) {
             "offer" -> {
-                SomsLog.d(TAG) { "applying remote offer → setRemoteDescription + createAnswer" }
+                if (isCaller || !CallSignaling.canonicalId(id)) return
+                if (remoteOffer != null || connection.signalingState() != PeerConnection.SignalingState.STABLE) {
+                    fail("failed"); return
+                }
+                val offer = CallSignaling.Offer(id, payload)
+                remoteOffer = offer
+                pendingOffer = offer
+                armNegotiationTimeout(connection, callSid!!, id)
                 setRemote(connection, Type.OFFER, payload) {
-                    connection.createAnswer(answerSdpObserver, offerAnswerConstraints())
+                    connection.createAnswer(descriptionObserver(connection, callSid!!, id, false), offerAnswerConstraints())
                 }
             }
             "answer" -> {
-                // Idempotent: the SSE relay + the server-fetch fallback can both deliver the answer — apply it
-                // once. [answerApplied] is set synchronously BEFORE the async setRemoteDescription completes, so
-                // the fetch path can't race a 2nd apply onto a pending 1st (which would error on a stable PC).
-                cancelAnswerFetchBackstop() // the answer arrived — the fetch fallback is no longer needed
-                if (answerApplied) { SomsLog.d(TAG) { "answer already applied — skip duplicate" }; return }
-                answerApplied = true
-                SomsLog.d(TAG) { "applying remote answer → setRemoteDescription" }
+                if (!isCaller || !CallSignaling.canonicalId(inReplyTo)) return
+                when (offerLane.beginAnswer(inReplyTo,
+                    connection.signalingState() == PeerConnection.SignalingState.HAVE_LOCAL_OFFER)) {
+                    CallSignaling.AnswerDecision.IGNORE -> return
+                    CallSignaling.AnswerDecision.CONFLICT -> { fail("failed"); return }
+                    CallSignaling.AnswerDecision.APPLY -> {}
+                }
                 setRemote(connection, Type.ANSWER, payload) {
+                    if (activeOfferId != inReplyTo) return@setRemote
+                    if (connection.signalingState() != PeerConnection.SignalingState.STABLE) {
+                        fail("failed"); return@setRemote
+                    }
+                    offerLane.complete(inReplyTo)
+                    cancelNegotiationTimeout()
+                    cancelAnswerFetchBackstop()
                     if (videoRenegotiationInFlight) {
                         videoRenegotiationInFlight = false
-                        if (isCaller) completeVideoUpgrade()
+                        if (CallSignaling.videoNegotiated(connection.localDescription?.description.orEmpty(),
+                                payload, offerSendingVideo, offerReceivingVideo)) completeVideoUpgrade()
+                        else failVideoUpgrade("video-not-negotiated")
                     }
+                    drainOffers(connection)
                     if (phase == "calling" || phase == "ringing") {
                         step = "answer-received"
                         phase = "connecting"
@@ -521,15 +574,25 @@ object CallController {
                 val allowed = setOf("candidate", "sdpMid", "sdpMLineIndex", "usernameFragment")
                 val lineIndex = p.opt("sdpMLineIndex")
                 val validLineIndex = lineIndex == null || lineIndex == JSONObject.NULL ||
-                    (lineIndex is Number && lineIndex.toDouble() >= 0.0 && lineIndex.toDouble() % 1.0 == 0.0)
+                    (lineIndex is Number && lineIndex.toDouble() in 0.0..65535.0 && lineIndex.toDouble() % 1.0 == 0.0)
                 if (p.keys().asSequence().any { it !in allowed } ||
                     (p.has("candidate") && p.opt("candidate") !is String) ||
                     (p.has("sdpMid") && p.opt("sdpMid") !is String && !p.isNull("sdpMid")) ||
                     !validLineIndex ||
-                    (p.has("usernameFragment") && p.opt("usernameFragment") !is String && !p.isNull("usernameFragment"))) {
+                    (p.opt("usernameFragment") !is String || !CallSignaling.validIceUfrag(p.getString("usernameFragment")))) {
                     SomsLog.w(TAG) { "ignored invalid ICE candidate shape" }
                     return
                 }
+                val ufrag = p.getString("usernameFragment")
+                val mid = if (!p.has("sdpMid") || p.isNull("sdpMid")) null else p.getString("sdpMid")
+                val index = if (!p.has("sdpMLineIndex") || p.isNull("sdpMLineIndex")) -1 else p.getInt("sdpMLineIndex")
+                when (CallSignaling.remoteIce(remoteSections, obsoleteRemoteUfrags, ufrag, mid, index)) {
+                    CallSignaling.IceDecision.BUFFER -> { bufferIce(payload); return }
+                    CallSignaling.IceDecision.DROP -> return
+                    CallSignaling.IceDecision.APPLY -> {}
+                }
+                val embedded = CallSignaling.candidateUfrag(p.optString("candidate"))
+                if (embedded != null && embedded != ufrag) return
                 val accepted = connection.addIceCandidate(
                     IceCandidate(
                         if (!p.has("sdpMid") || p.isNull("sdpMid")) null else p.getString("sdpMid"),
@@ -545,12 +608,8 @@ object CallController {
     /** Flush the callee's buffered offer + ICE now that accept has built the PC. Offer first (setRemote +
      *  answer), then the queued ICE candidates (addIceCandidate is valid after setRemoteDescription). */
     private fun flushPending(connection: PeerConnection) {
-        pendingOffer?.let { applySignal(connection, "offer", it); pendingOffer = null }
-        if (pendingIce.isNotEmpty()) {
-            SomsLog.d(TAG) { "flushing ${pendingIce.size} buffered ICE candidate(s)" }
-            for (p in pendingIce) applySignal(connection, "ice", p)
-            pendingIce.clear()
-        }
+        pendingOffer?.let { applySignal(connection, "offer", it.sdp, it.id) }
+        flushIce(connection)
     }
 
     /** Fetch this side's staged setup signaling from `/calls/:sid/signaling` + apply it — symmetric for both
@@ -568,13 +627,17 @@ object CallController {
         if (sdpId.isEmpty() || sdp.isEmpty()) return
         val iceCount = staged.optJSONArray("ice")?.length() ?: 0
         SomsLog.i(TAG) { "applied staged $half from server (+$iceCount ICE)" }
-        if (seenSignalIds.add(sdpId)) applySignal(connection, half, sdp)
+        if (!alive(connection, sid) || !CallSignaling.canonicalId(sdpId)) return
+        val reply = sdpSignal.optString("inReplyTo")
+        if (!CallSignaling.validReference(half, sdpSignal.has("inReplyTo"), reply)) return
+        if (seenSignalIds.add(sdpId)) applySignal(connection, half, sdp, sdpId, reply)
         val ice = staged.optJSONArray("ice")
         if (ice != null) for (i in 0 until ice.length()) {
             val signal = ice.optJSONObject(i) ?: continue
             val id = signal.optString("id")
             val payload = signal.optString("payload")
-            if (id.isNotEmpty() && payload.isNotEmpty() && seenSignalIds.add(id)) {
+            if (CallSignaling.canonicalId(id) && !signal.has("inReplyTo") &&
+                payload.isNotEmpty() && seenSignalIds.add(id)) {
                 applySignal(connection, "ice", payload)
             }
         }
@@ -678,9 +741,9 @@ object CallController {
     private fun offerAnswerConstraints(): MediaConstraints =
         MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-            // OfferToReceiveVideo: true for a VIDEO call (sendrecv — we WANT the peer's camera), false for
-            // AUDIO. Was hardcoded false (an AUDIO-only-phase leftover) → the offer was video-sendonly → the
-            // callee answered recvonly → the caller never received the peer's video (one-way video).
+            // Under Unified Plan this asks native WebRTC to reuse an existing video receiver, or create
+            // one only when absent. Do not add a second recv-only transceiver here: addTrack also reuses
+            // the negotiated receiver when the local camera is enabled later (including callee-first video).
             val wantsVideo = callType == "VIDEO" || videoUpgradeState == "upgrading"
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (wantsVideo) "true" else "false"))
         }
@@ -688,17 +751,25 @@ object CallController {
     /** Apply a remote description before continuing the dependent JSEP step. A rejected remote SDP is a
      *  terminal negotiation failure; it must not create an answer or commit an upgrade. */
     private fun setRemote(connection: PeerConnection, type: Type, sdp: String, onSuccess: () -> Unit) {
+        val sid = callSid ?: return
         connection.setRemoteDescription(object : SdpObserver {
             override fun onCreateSuccess(p0: SessionDescription?) {}
             override fun onSetSuccess() {
                 callExecutor.execute {
-                    SomsLog.d(TAG) { "setRemoteDescription($type) ok" }
+                    if (!alive(connection, sid)) return@execute
+                    val next = CallSignaling.sections(sdp)
+                    val nextUfrags = next.mapNotNull { it.ufrag }.toSet()
+                    obsoleteRemoteUfrags.addAll(remoteSections.mapNotNull { it.ufrag }.filter { it !in nextUfrags })
+                    obsoleteRemoteUfrags.removeAll(nextUfrags)
+                    remoteSections = next
+                    flushIce(connection)
                     onSuccess()
                 }
             }
             override fun onCreateFailure(p0: String?) {}
             override fun onSetFailure(error: String?) {
                 callExecutor.execute {
+                    if (!alive(connection, sid)) return@execute
                     SomsLog.w(TAG) { "setRemoteDescription($type) failed: $error" }
                     fail("failed")
                 }
@@ -706,75 +777,110 @@ object CallController {
         }, SessionDescription(type, sdp))
     }
 
-    private val offerSdpObserver = object : SdpObserver {
+    private fun alive(connection: PeerConnection, sid: String): Boolean =
+        pc === connection && callSid == sid && phase != "ended" && phase != "idle"
+
+    private fun descriptionObserver(connection: PeerConnection, sid: String, offerId: String,
+                                    offering: Boolean): SdpObserver = object : SdpObserver {
+        private fun current() = alive(connection, sid) &&
+            (if (offering) activeOfferId == offerId else remoteOffer?.id == offerId)
         override fun onCreateSuccess(sdp: SessionDescription?) {
-            val connection = pc ?: return
-            val sid = callSid ?: return
-            if (sdp == null) return
-            // A fresh answer is expected after every offer we create (the initial offer AND an ICE-restart offer),
-            // so re-arm the answer-idempotency guard — otherwise the restart answer would be skipped as a "duplicate".
-            answerApplied = false
-            SomsLog.d(TAG) { "offer created → setLocalDescription + relay" }
-            connection.setLocalDescription(object : SdpObserver {
-                override fun onCreateSuccess(p0: SessionDescription?) {}
-                override fun onSetSuccess() {
-                    callExecutor.execute {
-                        postSignal(sid, "offer", sdp.description)
-                        setStep("offer-sent")
+            callExecutor.execute {
+                if (!current()) return@execute
+                if (sdp == null) { failLocalOffer("empty-sdp"); return@execute }
+                localIce.remember(sdp.description)
+                val signalId = if (offering) offerId else UUID.randomUUID().toString()
+                connection.setLocalDescription(object : SdpObserver {
+                    override fun onCreateSuccess(p0: SessionDescription?) {}
+                    override fun onCreateFailure(p0: String?) {}
+                    override fun onSetSuccess() {
+                        callExecutor.execute published@{
+                            if (!current()) return@published
+                            val kind = if (offering) "offer" else "answer"
+                            val expected = if (offering) PeerConnection.SignalingState.HAVE_LOCAL_OFFER
+                                else PeerConnection.SignalingState.STABLE
+                            if (connection.signalingState() != expected) {
+                                failLocalOffer("local-sdp-state"); return@published
+                            }
+                            if (!postSignal(sid, kind, sdp.description, signalId,
+                                    if (offering) null else offerId)) {
+                                failLocalOffer("signal-send"); return@published
+                            }
+                            setStep("$kind-sent")
+                            if (offering) armAnswerFetchBackstop()
+                            else {
+                                remoteOffer = null
+                                pendingOffer = null
+                                cancelNegotiationTimeout()
+                            }
+                        }
                     }
-                }
-                override fun onCreateFailure(p0: String?) {}
-                override fun onSetFailure(error: String?) {
-                    callExecutor.execute {
-                        SomsLog.w(TAG) { "setLocalDescription(offer) failed: $error" }
-                        failLocalOffer("set-local-offer")
+                    override fun onSetFailure(error: String?) {
+                        callExecutor.execute { if (current()) failLocalOffer("set-local-$error") }
                     }
-                }
-            }, sdp)
+                }, sdp)
+            }
         }
         override fun onSetSuccess() {}
         override fun onCreateFailure(error: String?) {
-            SomsLog.w(TAG) { "createOffer failed: $error" }
-            failLocalOffer("create-offer")
+            callExecutor.execute { if (current()) failLocalOffer("create-sdp-$error") }
         }
         override fun onSetFailure(error: String?) {
-            SomsLog.w(TAG) { "setLocalDescription(offer) failed: $error" }
-            failLocalOffer("set-local-offer")
+            callExecutor.execute { if (current()) failLocalOffer("set-sdp-$error") }
         }
     }
 
-    private val answerSdpObserver = object : SdpObserver {
-        override fun onCreateSuccess(sdp: SessionDescription?) {
-            val connection = pc ?: return
-            val sid = callSid ?: return
-            if (sdp == null) return
-            SomsLog.d(TAG) { "answer created → setLocalDescription + relay" }
-            connection.setLocalDescription(object : SdpObserver {
-                override fun onCreateSuccess(p0: SessionDescription?) {}
-                override fun onSetSuccess() {
-                    callExecutor.execute {
-                        postSignal(sid, "answer", sdp.description)
-                        setStep("answer-sent")
-                    }
-                }
-                override fun onCreateFailure(p0: String?) {}
-                override fun onSetFailure(error: String?) {
-                    callExecutor.execute {
-                        SomsLog.w(TAG) { "setLocalDescription(answer) failed: $error" }
-                        fail("failed")
-                    }
-                }
-            }, sdp)
+    private fun startOffer(connection: PeerConnection, constraints: MediaConstraints, videoOffer: Boolean) {
+        val sid = callSid ?: return
+        if (!isCaller || activeOfferId != null ||
+            connection.signalingState() != PeerConnection.SignalingState.STABLE) return
+        val id = UUID.randomUUID().toString() // Own identity before any asynchronous create/send.
+        if (!offerLane.begin(id)) return
+        videoRenegotiationInFlight = videoOffer
+        offerSendingVideo = cameraEnabled
+        offerReceivingVideo = remoteCameraEnabled
+        armNegotiationTimeout(connection, sid, id)
+        runCatching {
+            connection.createOffer(descriptionObserver(connection, sid, id, true), constraints)
+        }.onFailure { failLocalOffer("create-offer-${it.message}") }
+    }
+
+    private fun drainOffers(connection: PeerConnection) {
+        if (!isCaller || activeOfferId != null || !alive(connection, callSid ?: return)) return
+        if (queuedIceRestart) {
+            queuedIceRestart = false
+            val wantsVideo = queuedVideoOffer
+            queuedVideoOffer = false
+            connection.restartIce()
+            startOffer(connection, iceRestartConstraints(), wantsVideo)
+        } else if (queuedVideoOffer) {
+            queuedVideoOffer = false
+            startOffer(connection, videoOfferConstraints(), true)
         }
-        override fun onSetSuccess() {}
-        override fun onCreateFailure(error: String?) {
-            SomsLog.w(TAG) { "createAnswer failed: $error" }
-            fail("failed")
-        }
-        override fun onSetFailure(error: String?) {
-            SomsLog.w(TAG) { "setLocalDescription(answer) failed: $error" }
-            fail("failed")
-        }
+    }
+
+    private fun armNegotiationTimeout(connection: PeerConnection, sid: String, id: String) {
+        cancelNegotiationTimeout()
+        val task = Runnable { callExecutor.execute {
+            if (alive(connection, sid) && (activeOfferId == id || remoteOffer?.id == id)) fail("failed")
+        } }
+        negotiationTimeout = task
+        mainHandler.postDelayed(task, 60_000L)
+    }
+
+    private fun cancelNegotiationTimeout() {
+        negotiationTimeout?.let { mainHandler.removeCallbacks(it) }
+        negotiationTimeout = null
+    }
+
+    private fun bufferIce(payload: String) {
+        if (payload.length <= 16_384 && pendingIce.size < 256) pendingIce.add(payload)
+    }
+
+    private fun flushIce(connection: PeerConnection) {
+        val buffered = pendingIce.toList()
+        pendingIce.clear()
+        for (payload in buffered) applySignal(connection, "ice", payload)
     }
 
     // ── public API (the SomsCallInterface bridge calls these) ─────────────────────
@@ -858,12 +964,11 @@ object CallController {
                 phase = "calling"
                 startedAt = 0L
                 iceRestartTried = false
-                answerApplied = false
                 CallService.instance?.loadAvatar(avatarDataUrl, peerName)
                 pushSnapshot()
                 SomsLog.d(TAG) { "initiate: POST ok + state set → createPeerConnection + createOffer" }
                 val connection = createPeerConnection()
-                connection.createOffer(offerSdpObserver, offerAnswerConstraints())
+                startOffer(connection, offerAnswerConstraints(), false)
             } catch (e: Exception) {
                 SomsLog.w(TAG) { "initiate failed: ${e.message}" }
                 if (registeredOnServer) {
@@ -908,6 +1013,7 @@ object CallController {
      *  applied by [handleSignalFrame] on the offer signal — but if the offer has not arrived yet, createAnswer
      *  will run when it does; the PC must exist to receive it). */
     fun accept(sid: String) {
+        if (callSid != sid || isCaller) return
         // Stop the incoming ring immediately on the user's tap (before the network round-trip — UX). Comms
         // audio is acquired AFTER the server confirms this device is the answering one (below).
         acceptingLocally = true
@@ -920,12 +1026,15 @@ object CallController {
                 // answered, or it ended), POST /calls/accept returns a non-zero code (CALL_NOT_FOUND) → `post`
                 // returns null. This is the "late" device — dismiss + tear down; don't build a PC for a call
                 // already answered elsewhere.
-                val accepted = post("$origin${SomsSecureStore.API_PREFIX}/calls/accept", JSONObject().put("callSid", sid)).ok
+                if (callSid != sid || isCaller || phase == "ended" || phase == "idle") return@execute
+                if (acceptConfirmed && pc != null) return@execute
+                val accepted = acceptConfirmed || post("$origin${SomsSecureStore.API_PREFIX}/calls/accept", JSONObject().put("callSid", sid)).ok
                 if (!accepted) {
                     SomsLog.i(TAG) { "accept rejected by server (answered/ended on another device) -> dismiss" }
                     acceptingLocally = false
                     phase = "ended"; pushSnapshot(); teardown(); return@execute
                 }
+                acceptConfirmed = true
                 CallService.instance?.onAccepted() // confirmed the answering device — switch to comms audio
                 val connection = pc ?: createPeerConnection()
                 val hadOffer = pendingOffer != null
@@ -939,7 +1048,13 @@ object CallController {
                 pushSnapshot()
             } catch (e: Exception) {
                 SomsLog.w(TAG) { "accept failed: ${e.message}" }
-                acceptingLocally = false
+                if (callSid != sid) return@execute
+                if (remoteOffer != null) { fail("failed"); return@execute }
+                // Permission/media setup can be retried without another accept POST. Preserve buffered
+                // offer identity and signal dedup; discard only the incompletely constructed media leg.
+                disposeMedia()
+                localIce = CallSignaling.LocalIce()
+                acceptingLocally = acceptConfirmed
             }
         }
     }
@@ -991,11 +1106,9 @@ object CallController {
         }
     }
 
-    /** Relay one WebRTC frame to the peer. The JS bridge forwards frames the Angular layer generates only on
-     *  the web fallback path; on Android the native observers post offers/answers/ICE directly, so this is
-     *  primarily the renegotiate/media-state path. */
+    /** Renderer chrome may publish advisory video state, but cannot bypass native SDP/ICE ownership. */
     fun signal(sid: String, kind: String, payload: String) = callExecutor.execute {
-        postSignal(sid, kind, payload)
+        if (kind == "video-state") postSignal(sid, kind, payload)
     }
 
     /** Begin the one-way AUDIO→VIDEO upgrade after the Activity granted CAMERA permission. The existing
@@ -1057,10 +1170,8 @@ object CallController {
     }
 
     private fun createVideoRenegotiationOffer(connection: PeerConnection) {
-        if (videoRenegotiationInFlight) return
-        videoRenegotiationInFlight = true
-        answerApplied = false
-        connection.createOffer(offerSdpObserver, videoOfferConstraints())
+        queuedVideoOffer = true
+        drainOffers(connection)
     }
 
     private fun videoOfferConstraints(): MediaConstraints =
@@ -1096,7 +1207,6 @@ object CallController {
 
     private fun failLocalOffer(reason: String) {
         when {
-            videoRenegotiationInFlight -> failVideoUpgrade(reason)
             phase == "calling" || phase == "ringing" -> abortOutgoingSetup(reason)
             else -> fail("failed")
         }
@@ -1165,11 +1275,10 @@ object CallController {
 
     /** Caller fetch-fallback: the SSE-relayed answer did not arrive within [CallFsm.ANSWER_FETCH_DELAY_MS] (a
      *  mid-call reconnect during `connecting` dropped it) → pull the staged answer + the callee's ICE from the
-     *  server + apply them via [fetchAndApplyStaged]. A no-op if the answer has since arrived ([answerApplied])
-     *  or the call has moved off `connecting` (connected/ended). */
+     *  server + apply them via [fetchAndApplyStaged]. Applies only to the active offer, including later rounds. */
     private fun onAnswerFetchBackstop() {
         callExecutor.execute {
-            if (phase != "connecting" || answerApplied) return@execute
+            if (activeOfferId == null || answerApplying) return@execute
             val sid = callSid ?: return@execute
             val connection = pc ?: return@execute
             SomsLog.i(TAG) { "no SSE answer in ${CallFsm.ANSWER_FETCH_DELAY_MS}ms → fetch staged answer + callee ICE" }
@@ -1186,7 +1295,12 @@ object CallController {
         val sid = callSid
         if (phase != "ended" && phase != "idle") { phase = "ended"; pushSnapshot() }
         if (sid == null) return
-        callExecutor.execute { postEnd(sid, reason); teardown() }
+        val connection = pc
+        callExecutor.execute {
+            if (callSid != sid || pc !== connection) return@execute
+            postEnd(sid, reason)
+            teardown()
+        }
     }
 
     /** ICE-restart renegotiation constraints: the initial offer's constraints + iceRestart=true (fresh ICE
@@ -1254,12 +1368,8 @@ object CallController {
 
     // ── teardown + REST helpers ───────────────────────────────────────────────────
 
-    /** Release the PC + tracks + audio source for the current call, and stop the [CallService] anchor
-     *  (releases MODE_IN_COMMUNICATION + the wake lock + the ongoing notification). Leaves the factory
-     *  (expensive, reused across calls). Idempotent — safe against the CallService.onDestroy →
-     *  [destroy] → teardown re-entry (pc is already null on the second pass; stopService is a no-op when the
-     *  service isn't running). */
-    private fun teardown() {
+    /** Release only the native media leg; setup buffers and the service survive a media-permission retry. */
+    private fun disposeMedia() {
         val connection = pc
         pc = null
         localAudioTrack?.dispose()
@@ -1269,6 +1379,11 @@ object CallController {
         // Video teardown (capture/tracks/surfaces) lives in [video].
         video.tearDown()
         connection?.dispose()
+    }
+
+    /** Release media + service and all call-scoped signaling. The process-wide factory is reused. */
+    private fun teardown() {
+        disposeMedia()
         appContext?.stopService(Intent(appContext, CallService::class.java))
         // Unconditionally return to idle: teardown is the "no live call remains" transition, so the singleton
         // must be coherent for the next snapshotJson() read AND the busy-line guard in seedIncoming
@@ -1292,8 +1407,18 @@ object CallController {
         videoUpgradeState = "idle"
         videoRenegotiationInFlight = false
         iceRestartTried = false
-        answerApplied = false
+        offerLane.reset()
+        remoteOffer = null
+        queuedVideoOffer = false
+        queuedIceRestart = false
+        offerSendingVideo = false
+        offerReceivingVideo = false
+        remoteSections = emptyList()
+        obsoleteRemoteUfrags.clear()
+        localIce = CallSignaling.LocalIce()
+        cancelNegotiationTimeout()
         acceptingLocally = false
+        acceptConfirmed = false
         peerName = ""
         peerAvatar = ""
         ringer.stopRing()
@@ -1335,16 +1460,22 @@ object CallController {
         else -> emptyArray()
     }
 
-    private fun postSignal(callSid: String, kind: String, payload: String) {
-        val origin = activeOrigin() ?: return
-        post(
-            "$origin${SomsSecureStore.API_PREFIX}/calls/signal",
-            JSONObject()
-                .put("id", UUID.randomUUID().toString())
-                .put("callSid", callSid)
-                .put("kind", kind)
-                .put("payload", payload),
-        )
+    private fun postSignal(callSid: String, kind: String, payload: String,
+                           id: String = UUID.randomUUID().toString(), inReplyTo: String? = null): Boolean {
+        if (callSid != this.callSid || (kind == "answer" &&
+                (inReplyTo == null || !CallSignaling.canonicalId(inReplyTo))) ||
+            (kind != "answer" && inReplyTo != null)) return false
+        val origin = activeOrigin() ?: return false
+        val body = JSONObject().put("id", id).put("callSid", callSid)
+            .put("kind", kind).put("payload", payload)
+        if (inReplyTo != null) body.put("inReplyTo", inReplyTo)
+        // A transport failure may follow server admission. Retry the exact body/identity, never re-offer.
+        repeat(2) {
+            val result = post("$origin${SomsSecureStore.API_PREFIX}/calls/signal", body)
+            if (result.ok) return true
+            if (result.code != -1) return false
+        }
+        return false
     }
 
     private fun postRinging(callSid: String) {
