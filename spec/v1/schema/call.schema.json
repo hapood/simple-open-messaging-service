@@ -28,13 +28,22 @@
         "signalType": {
           "$ref": "#/$defs/signalType"
         },
+        "inReplyTo": {
+          "$ref": "urn:somfp:v1:common#/$defs/canonicalUuid"
+        },
         "data": {
           "type": "string",
           "minLength": 1,
           "maxLength": 32768
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": {
+        "properties": { "signalType": { "const": "answer" } },
+        "required": ["signalType"]
+      },
+      "then": { "required": ["inReplyTo"] },
+      "else": { "not": { "required": ["inReplyTo"] } }
     },
     "endReason": {
       "enum": ["completed", "timeout", "failed"]
@@ -81,7 +90,14 @@
         {
           "properties": {
             "operation": {
-              "enum": ["accepted", "ringing", "declined", "cancelled", "missed", "connected"]
+              "enum": [
+                "accepted",
+                "ringing",
+                "declined",
+                "cancelled",
+                "missed",
+                "connected"
+              ]
             }
           }
         }

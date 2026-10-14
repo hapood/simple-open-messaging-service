@@ -12,7 +12,7 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 
 ## Reading order
 
-See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and module dependencies, and [`RELEASE.json`](../RELEASE.json) for release metadata.
+See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and module dependencies, [`RELEASE.json`](../RELEASE.json) for release metadata, and the [pre-freeze review history](./review-history.md) for breaking candidate corrections.
 
 1. [Core Protocol](./protocol.md): roles, versioning, HTTP surface, shared types, responses, durable state, and evolution rules.
 2. [Transport and Security](./transport-security.md): well-known discovery, root and signing keys, SRV, TLS, logical authority, digests, and HTTP Message Signatures.

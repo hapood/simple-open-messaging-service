@@ -1,9 +1,13 @@
 import type {
   CallEndReason,
-  CallSignalType,
+  CallSignalPayload,
   S2SCallOperation,
 } from '../calls/federated-call-protocol.js';
 import { CALL_REPLAY_RETENTION_MS } from '../calls/call-timing.js';
+import {
+  FederationTransportError,
+  S2sResponseError,
+} from './federation-errors.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 
@@ -23,12 +27,7 @@ type PayloadlessOutboundCallOperation = Exclude<
 export type OutboundCallFrameParams = OutboundCallFrameBase &
   (
     | { op: 'incoming'; callType: 'AUDIO' | 'VIDEO' }
-    | {
-        op: 'signal';
-        signalId: string;
-        signalType: CallSignalType;
-        data: string;
-      }
+    | ({ op: 'signal' } & CallSignalPayload)
     | { op: 'ended'; endReason: CallEndReason }
     | { op: PayloadlessOutboundCallOperation }
   );
@@ -47,7 +46,6 @@ type DeliverCallFrame = (
 export class FederationCallDelivery {
   private readonly stopped = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly lifecycleTails = new Map<string, Promise<void>>();
-  private readonly answerDeliveries = new Map<string, Set<Promise<void>>>();
   private readonly lifecycleFailures = new Map<
     string,
     { op: S2SCallOperation; error: unknown }
@@ -93,39 +91,43 @@ export class FederationCallDelivery {
       throw failed.error;
     }
 
-    if (params.op === 'signal') {
+    const sdp =
+      params.op === 'signal' &&
+      (params.signalType === 'offer' || params.signalType === 'answer');
+    if (params.op === 'signal' && !sdp) {
       await previous;
       checkActive();
-      const delivery = deliver(params, peerDomain);
-      if (params.signalType !== 'answer') return delivery;
-      const pending = this.answerDeliveries.get(queueKey) ?? new Set();
-      pending.add(delivery);
-      this.answerDeliveries.set(queueKey, pending);
-      try {
-        await delivery;
-      } finally {
-        pending.delete(delivery);
-        if (pending.size === 0) this.answerDeliveries.delete(queueKey);
-      }
-      return;
+      return deliver(params, peerDomain);
     }
 
     const lifecyclePredecessor =
       terminal || failed?.op === params.op
         ? (previous ?? Promise.resolve()).catch(() => undefined)
         : (previous ?? Promise.resolve());
-    const pendingAnswers =
-      params.op === 'connected'
-        ? [...(this.answerDeliveries.get(queueKey) ?? [])]
-        : [];
-    const predecessor = Promise.all([
-      lifecyclePredecessor,
-      ...pendingAnswers,
-    ]).then(() => undefined);
-    const current = predecessor.then(async () => {
+    const current = lifecyclePredecessor.then(async () => {
       checkActive();
       try {
-        await deliver(params, peerDomain);
+        // Keep the complete admitted frame, including IDs, opaque data and answer
+        // correlation, unchanged across attempts. Retries occupy this queue slot,
+        // so dependent lifecycle frames cannot skip an unconfirmed SDP frame.
+        for (let attempt = 0; ; attempt++) {
+          checkActive();
+          try {
+            await deliver(params, peerDomain);
+            break;
+          } catch (error) {
+            const transient =
+              error instanceof FederationTransportError ||
+              (error instanceof S2sResponseError && error.status === 503);
+            if (!sdp || !transient || attempt >= 2) throw error;
+            // Three total attempts, with finite 100/200ms backoff. The HTTP
+            // transport itself has a finite request timeout; no lifecycle timer
+            // is renewed here. Terminal stop is checked again before retrying.
+            await new Promise((resolve) =>
+              setTimeout(resolve, 100 * 2 ** attempt),
+            );
+          }
+        }
         this.lifecycleFailures.delete(queueKey);
       } catch (error) {
         this.lifecycleFailures.set(queueKey, { op: params.op, error });

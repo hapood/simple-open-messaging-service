@@ -8,6 +8,10 @@ import {
   Matches,
   MaxLength,
   Min,
+  Validate,
+  ValidatorConstraint,
+  type ValidatorConstraintInterface,
+  type ValidationArguments,
 } from 'class-validator';
 import {
   CALL_SID_RE,
@@ -106,6 +110,20 @@ export class EndCallDto extends CallSidDto {
 
 /** Relay one WebRTC signaling frame to the peer. The payload is opaque to the server (relayed verbatim,
  *  never persisted) — SDP offer/answer, an ICE candidate, or camera enabled state. */
+@ValidatorConstraint({ name: 'answerCorrelation', async: false })
+class AnswerCorrelation implements ValidatorConstraintInterface {
+  validate(value: unknown, args: ValidationArguments): boolean {
+    return (args.object as SignalCallDto).kind === 'answer'
+      ? typeof value === 'string' && CALL_SID_RE.test(value)
+      : !Object.prototype.hasOwnProperty.call(args.object, 'inReplyTo') ||
+          value === undefined;
+  }
+
+  defaultMessage(): string {
+    return 'inReplyTo must be a canonical UUID for answer and absent for other kinds';
+  }
+}
+
 export class SignalCallDto {
   @ApiProperty({
     description:
@@ -132,6 +150,13 @@ export class SignalCallDto {
   })
   @IsIn(CALL_SIGNAL_TYPES)
   kind!: CallSignalType;
+
+  @ApiProperty({
+    required: false,
+    description: 'Required only for answer: the original offer signal ID.',
+  })
+  @Validate(AnswerCorrelation)
+  inReplyTo?: string;
 
   @ApiProperty({
     description:

@@ -632,6 +632,89 @@
       }
     },
     {
+      "name": "answer requires explicit offer correlation",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "signal",
+        "payload": {
+          "signalId": "c0a80101-0000-4000-8000-000000000002",
+          "signalType": "answer",
+          "data": "v=0"
+        }
+      }
+    },
+    {
+      "name": "answer rejects null offer correlation",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "signal",
+        "payload": {
+          "signalId": "c0a80101-0000-4000-8000-000000000002",
+          "signalType": "answer",
+          "inReplyTo": null,
+          "data": "v=0"
+        }
+      }
+    },
+    {
+      "name": "answer rejects noncanonical offer correlation",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "signal",
+        "payload": {
+          "signalId": "c0a80101-0000-4000-8000-000000000002",
+          "signalType": "answer",
+          "inReplyTo": "C0A80101-0000-4000-8000-000000000001",
+          "data": "v=0"
+        }
+      }
+    },
+    {
+      "name": "offer forbids answer-only correlation",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "signal",
+        "payload": {
+          "signalId": "c0a80101-0000-4000-8000-000000000001",
+          "signalType": "offer",
+          "inReplyTo": "c0a80101-0000-4000-8000-000000000002",
+          "data": "v=0"
+        }
+      }
+    },
+    {
+      "name": "ice forbids answer-only correlation",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "signal",
+        "payload": {
+          "signalId": "c0a80101-0000-4000-8000-000000000003",
+          "signalType": "ice",
+          "inReplyTo": "c0a80101-0000-4000-8000-000000000001",
+          "data": "{}"
+        }
+      }
+    },
+    {
+      "name": "video-state forbids answer-only correlation",
+      "schema": "urn:somfp:v1:call",
+      "value": {
+        "callId": "550e8400-e29b-41d4-a716-446655440000",
+        "operation": "signal",
+        "payload": {
+          "signalId": "c0a80101-0000-4000-8000-000000000004",
+          "signalType": "video-state",
+          "inReplyTo": "c0a80101-0000-4000-8000-000000000001",
+          "data": "{\"enabled\":true}"
+        }
+      }
+    },
+    {
       "name": "call frame rejects legacy callType field",
       "schema": "urn:somfp:v1:call",
       "value": {

@@ -69,6 +69,7 @@ type RelayedLifecycleOperation = Exclude<
 export interface StagedCallSignal {
   id: string;
   payload: string;
+  inReplyTo?: string;
 }
 
 /** The live (in-memory) state of one in-flight call. `ringing`, `accepted`, and `connected` are live; every
@@ -125,6 +126,9 @@ interface LiveCall {
    *  earlier offer on accept via GET /calls/:sid/signaling — no client-side re-offer hack. Cleared on
    *  `connected` (media up → setup consumed) and on release (call ends). Every staged item retains its
    *  endpoint-authored signal ID so pull fallback and realtime delivery share one dedup key. */
+  /** Admission correlation survives clearing the setup bodies on connection. */
+  currentOfferId?: string;
+  currentOfferAnswered?: boolean;
   pendingOffer?: StagedCallSignal;
   pendingAnswer?: StagedCallSignal;
   pendingOfferIce: StagedCallSignal[];
@@ -671,6 +675,7 @@ export class CallsService implements OnModuleDestroy {
       callSid: string;
       kind: CallSignalType;
       payload: string;
+      inReplyTo?: string;
     },
   ): Promise<void> {
     const call = this.activeCalls.get(dto.callSid);
@@ -692,6 +697,12 @@ export class CallsService implements OnModuleDestroy {
     }
     const localSignalKey = `${fromUserId}:${dto.id}`;
     if (call.localSignalIds.has(localSignalKey)) return;
+    if (call.localSignalIds.size >= MAX_CALL_SIGNAL_IDS) {
+      throw new BusinessException(
+        BusinessCode.CALL_INVALID_TRANSITION,
+        'call signal replay window is full',
+      );
+    }
     const senderRole =
       fromUserId === call.callerId ? ('caller' as const) : ('callee' as const);
     if (!isSignalAllowed(call.state, senderRole, dto.kind)) {
@@ -700,11 +711,14 @@ export class CallsService implements OnModuleDestroy {
         `${dto.kind} is not valid from ${senderRole} while ${call.state}`,
       );
     }
+    this.validateCorrelation(call, dto.kind, dto.inReplyTo, false);
     call.localSignalIds.add(localSignalKey);
-    this.stage(call, fromUserId, dto.id, dto.kind, dto.payload); // store-and-forward: a peer offline now can GET it later
+    this.stage(call, fromUserId, dto.id, dto.kind, dto.payload, dto.inReplyTo); // store-and-forward: a peer offline now can GET it later
     if (call.peerDomain) {
       // Federated: relay over S2S to the peer server (the foreign participant isn't on this server).
-      // Fire-and-forget: a dropped ICE candidate is harmless (the client re-gathers / retries).
+      // Admission remains asynchronous; the bridge queues and boundedly retries
+      // the identical offer/answer before any dependent lifecycle delivery.
+      // ICE is best-effort; exhausted SDP delivery explicitly fails the call.
       void this.callBridge
         .sendFrame(
           {
@@ -712,7 +726,9 @@ export class CallsService implements OnModuleDestroy {
             to: this.peerAddress(call),
             callSid: call.callSid,
             op: 'signal',
-            signalType: dto.kind,
+            ...(dto.kind === 'answer'
+              ? { signalType: 'answer' as const, inReplyTo: dto.inReplyTo! }
+              : { signalType: dto.kind }),
             data: dto.payload,
             signalId: dto.id,
           },
@@ -720,6 +736,8 @@ export class CallsService implements OnModuleDestroy {
         )
         .catch((e) => {
           if (this.convergePeerTerminal(call, e)) return;
+          if (dto.kind === 'offer' || dto.kind === 'answer')
+            this.failDelivery(call);
           this.logger.warn(
             `failed to relay call signal (callSid=${call.callSid}): ${(e as Error).message}`,
           );
@@ -732,6 +750,7 @@ export class CallsService implements OnModuleDestroy {
         fromUserId,
         kind: dto.kind,
         payload: dto.payload,
+        ...(dto.kind === 'answer' ? { inReplyTo: dto.inReplyTo } : {}),
       });
     }
   }
@@ -1080,7 +1099,13 @@ export class CallsService implements OnModuleDestroy {
         HttpStatus.BAD_REQUEST,
       );
     }
+    const inReplyTo =
+      frame.payload.signalType === 'answer'
+        ? frame.payload.inReplyTo
+        : undefined;
+    this.validateCorrelation(call, signalType, inReplyTo, true);
     await this.quota.tick(call.peerNamespaceId!, 'signals');
+    this.validateCorrelation(call, signalType, inReplyTo, true);
     call.seenSignalIds.add(frame.payload.signalId);
     const localUserId = this.localUserId(call);
     const peerLocalId =
@@ -1091,6 +1116,7 @@ export class CallsService implements OnModuleDestroy {
       frame.payload.signalId,
       frame.payload.signalType,
       frame.payload.data,
+      inReplyTo,
     );
     this.sse.onCallSignal(localUserId, {
       event: 'CALL_SIGNAL',
@@ -1099,6 +1125,7 @@ export class CallsService implements OnModuleDestroy {
       fromUserId: peerLocalId,
       kind: frame.payload.signalType,
       payload: frame.payload.data,
+      ...(signalType === 'answer' ? { inReplyTo } : {}),
     });
   }
 
@@ -1467,21 +1494,47 @@ export class CallsService implements OnModuleDestroy {
     this.clearRingTimer(call.callSid);
   }
 
+  private validateCorrelation(
+    call: LiveCall,
+    kind: CallSignalType,
+    inReplyTo: string | undefined,
+    federated: boolean,
+  ): void {
+    if (
+      kind !== 'answer' ||
+      (inReplyTo === call.currentOfferId &&
+        inReplyTo !== undefined &&
+        !call.currentOfferAnswered)
+    )
+      return;
+    throw new BusinessException(
+      federated
+        ? BusinessCode.FEDERATION_MALFORMED
+        : BusinessCode.CALL_INVALID_TRANSITION,
+      'answer must reference the current unanswered offer',
+      federated ? HttpStatus.BAD_REQUEST : HttpStatus.OK,
+    );
+  }
+
   /** Stage one setup frame for the recipient to fetch (store-and-forward). The offer + the caller's ICE are
    *  staged for the CALLEE; the answer + the callee's ICE for the CALLER — derived from the sender. ICE is
-   *  deduped by its raw payload (a retransmit / a replayed S2S frame must not duplicate). */
+   *  deduped by its endpoint-authored ID (accepted retries must not duplicate). */
   private stage(
     call: LiveCall,
     senderId: number | null,
     id: string,
     kind: string,
     payload: string,
+    inReplyTo?: string,
   ): void {
     const signal = { id, payload };
     if (kind === 'offer') {
+      call.currentOfferId = id;
+      call.currentOfferAnswered = false;
       call.pendingOffer = signal;
     } else if (kind === 'answer') {
-      call.pendingAnswer = signal;
+      call.currentOfferAnswered = true;
+      call.pendingAnswer = { ...signal, inReplyTo };
     } else if (kind === 'ice') {
       const list =
         senderId === call.callerId
@@ -1569,8 +1622,8 @@ export class CallsService implements OnModuleDestroy {
     }
   }
 
-  /** Enqueue a lifecycle S2S frame for the peer. The call bridge preserves per-call lifecycle order;
-   *  a failed delivery is logged and the peer's timeout remains the final cleanup backstop. */
+  /** Enqueue a lifecycle S2S frame for the peer. The call bridge preserves per-call order;
+   *  failure of a non-advisory live frame explicitly ends local active semantics. */
   private sendFrame(
     call: LiveCall,
     op: RelayedLifecycleOperation,
@@ -1601,10 +1654,25 @@ export class CallsService implements OnModuleDestroy {
     }
     void this.callBridge.sendFrame(params, call.peerDomain!).catch((e) => {
       if (this.convergePeerTerminal(call, e)) return;
+      if (op === 'accepted' || op === 'connected' || op === 'video-upgraded')
+        this.failDelivery(call);
       this.logger.warn(
         `failed to relay call frame ${op} (callSid=${call.callSid}): ${(e as Error).message}`,
       );
     });
+  }
+
+  /** Exhausted/fatal delivery is technical failure, even if local media already
+   *  connected and cleared the establishment timer. Terminal delivery drains the
+   *  failed queue predecessor; the peer's finite setup deadline is a partition
+   *  backstop if this best-effort failure notification also cannot arrive. */
+  private failDelivery(call: LiveCall): void {
+    if (call.terminal || this.activeCalls.get(call.callSid) !== call) return;
+    this.markTerminal(call, 'ended', 'failed');
+    this.notifyBoth(call, 'ended', { endReason: 'failed' });
+    void this.completeTerminal(call, 'failed').catch((error) =>
+      this.logger.error('Delivery failure history remains pending', error),
+    );
   }
 
   /** A peer tombstone is authoritative evidence that dependent frames must stop. */

@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FederationCallDelivery } from './federation-call-delivery.js';
+import {
+  FederationTransportError,
+  S2sResponseError,
+} from './federation-errors.js';
+import { BusinessCode } from '../common/business-code.js';
 
 function serviceWithPost(post: (...args: unknown[]) => Promise<void>) {
   const delivery = new FederationCallDelivery();
@@ -28,11 +33,80 @@ const answerParams = () => ({
   op: 'signal' as const,
   callType: 'AUDIO' as const,
   signalType: 'answer' as const,
+  inReplyTo: 'c0a80101-0000-4000-8000-000000000002',
   data: 'v=0',
   signalId: 'c0a80101-0000-4000-8000-000000000001',
 });
 
 describe('Federation call lifecycle ordering', () => {
+  it.each(['offer', 'answer'] as const)(
+    'retries an identical %s inside the queue before connected',
+    async (signalType) => {
+      const frame =
+        signalType === 'answer'
+          ? answerParams()
+          : {
+              ...params('accepted'),
+              op: 'signal' as const,
+              signalType,
+              signalId: 'offer-id',
+              data: 'opaque offer',
+            };
+      const attempts: unknown[] = [];
+      const { sendCallFrame } = serviceWithPost(async (body) => {
+        attempts.push(structuredClone(body));
+        if (attempts.length === 1)
+          throw new S2sResponseError('unavailable', 503);
+      });
+      const signal = sendCallFrame(frame, 'b.example');
+      const connected = sendCallFrame(params('connected'), 'b.example');
+      await Promise.all([signal, connected]);
+      expect(attempts).toEqual([frame, frame, params('connected')]);
+    },
+  );
+
+  it('stops retries when terminal convergence happens during backoff', async () => {
+    const delivery = new FederationCallDelivery();
+    const post = vi.fn(async () => {
+      delivery.stop('b.example', answerParams().callSid);
+      throw new FederationTransportError('response lost before termination');
+    });
+    await expect(
+      delivery.send(answerParams(), 'b.example', post),
+    ).rejects.toMatchObject({
+      bizCode: BusinessCode.CALL_TERMINATED,
+    });
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds persistent transport failure and never sends dependent connected', async () => {
+    const { sendCallFrame, post } = serviceWithPost(async () => {
+      throw new FederationTransportError('network unavailable');
+    });
+    const answer = sendCallFrame(answerParams(), 'b.example');
+    const connected = sendCallFrame(params('connected'), 'b.example');
+    const results = await Promise.allSettled([answer, connected]);
+    expect(results.map((result) => result.status)).toEqual([
+      'rejected',
+      'rejected',
+    ]);
+    expect(post).toHaveBeenCalledTimes(3);
+    for (const [body] of post.mock.calls) expect(body).toEqual(answerParams());
+  });
+
+  it.each([
+    new S2sResponseError('malformed', 400, BusinessCode.FEDERATION_MALFORMED),
+    new S2sResponseError('terminal', 200, BusinessCode.CALL_TERMINATED),
+  ])('does not retry fatal business responses: %s', async (error) => {
+    const { sendCallFrame, post } = serviceWithPost(async () => {
+      throw error;
+    });
+    await expect(sendCallFrame(answerParams(), 'b.example')).rejects.toBe(
+      error,
+    );
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
   it('does not let an in-flight or failed advisory ringing block accepted', async () => {
     let releaseRinging!: () => void;
     const ringingGate = new Promise<void>((resolve) => {
@@ -98,14 +172,33 @@ describe('Federation call lifecycle ordering', () => {
     });
 
     const answer = sendCallFrame(answerParams(), 'b.example');
-    await vi.waitFor(() => expect(order).toEqual(['answer']));
     const connected = sendCallFrame(params('connected'), 'b.example');
+    await vi.waitFor(() => expect(order).toEqual(['answer']));
     await Promise.resolve();
     expect(order).toEqual(['answer']);
 
     releaseAnswer();
     await Promise.all([answer, connected]);
     expect(order).toEqual(['answer', 'connected']);
+  });
+
+  it('blocks connected after an answer failure until the answer retry succeeds', async () => {
+    let fail = true;
+    const { sendCallFrame, post } = serviceWithPost(async (frame) => {
+      if ((frame as { op: string }).op === 'signal' && fail)
+        throw new Error('answer delivery failed');
+    });
+    await expect(sendCallFrame(answerParams(), 'b.example')).rejects.toThrow(
+      'answer delivery failed',
+    );
+    await expect(
+      sendCallFrame(params('connected'), 'b.example'),
+    ).rejects.toThrow('answer delivery failed');
+    expect(post).toHaveBeenCalledTimes(1);
+    fail = false;
+    await sendCallFrame(answerParams(), 'b.example');
+    await sendCallFrame(params('connected'), 'b.example');
+    expect(post).toHaveBeenCalledTimes(3);
   });
 
   it('blocks a dependent op after failure but permits retrying the failed op', async () => {

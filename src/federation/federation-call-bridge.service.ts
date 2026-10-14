@@ -93,11 +93,19 @@ export class FederationCallBridgeService {
         },
       };
     } else if (params.op === 'signal') {
-      const payload: CallSignalPayload = {
-        signalId: params.signalId,
-        signalType: params.signalType,
-        data: params.data,
-      };
+      const payload: CallSignalPayload =
+        params.signalType === 'answer'
+          ? {
+              signalId: params.signalId,
+              signalType: 'answer',
+              data: params.data,
+              inReplyTo: params.inReplyTo,
+            }
+          : {
+              signalId: params.signalId,
+              signalType: params.signalType,
+              data: params.data,
+            };
       frame = { ...base, op: 'signal', payload };
     } else if (params.op === 'ended') {
       frame = {

@@ -123,11 +123,12 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
       await incomingP; // the ring crossed S2S → appB mirrored + rang frank
 
       // Real offer relay over S2S, including the receiver-local peer id.
+      const offerId = randomUUID();
       const offer = await request(appA.baseUrl)
         .post('/api/v1/calls/signal')
         .set('Authorization', `Bearer ${tokenErin}`)
         .send({
-          id: randomUUID(),
+          id: offerId,
           callSid,
           kind: 'offer',
           payload: 'OFFER_SDP',
@@ -158,6 +159,7 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
           id: randomUUID(),
           callSid,
           kind: 'answer',
+          inReplyTo: offerId,
           payload: 'ANSWER_SDP',
         });
       expect(answer.body.code).toBe(BusinessCode.OK);
@@ -165,7 +167,8 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
         const staged = await request(appA.baseUrl)
           .get(`/api/v1/calls/${callSid}/signaling`)
           .set('Authorization', `Bearer ${tokenErin}`);
-        return staged.body.data?.answer?.payload === 'ANSWER_SDP'
+        return staged.body.data?.answer?.payload === 'ANSWER_SDP' &&
+          staged.body.data.answer.inReplyTo === offerId
           ? staged.body.data
           : null;
       });

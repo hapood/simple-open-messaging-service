@@ -35,7 +35,13 @@ type SerializedVideoState = string;
 export type CallSignalPayload =
   | {
       signalId: string;
-      signalType: 'offer' | 'answer';
+      signalType: 'offer';
+      data: SdpText;
+    }
+  | {
+      signalId: string;
+      signalType: 'answer';
+      inReplyTo: string;
       data: SdpText;
     }
   | {
@@ -181,7 +187,14 @@ export function assertS2SCallFrame(
   } else if (op === 'signal') {
     if (!isRecord(value.payload)) malformed('signal requires payload object');
     const signalType = value.payload.signalType;
-    if (!hasExactlyKeys(value.payload, ['signalId', 'signalType', 'data'])) {
+    if (
+      !hasExactlyKeys(value.payload, [
+        'signalId',
+        'signalType',
+        'data',
+        ...(signalType === 'answer' ? ['inReplyTo'] : []),
+      ])
+    ) {
       malformed('signal payload contains unknown fields');
     }
     const payloadLength =
@@ -193,6 +206,9 @@ export function assertS2SCallFrame(
       !(CALL_SIGNAL_TYPES as readonly string[]).includes(signalType) ||
       typeof value.payload.signalId !== 'string' ||
       !CALL_SID_RE.test(value.payload.signalId) ||
+      (signalType === 'answer' &&
+        (typeof value.payload.inReplyTo !== 'string' ||
+          !CALL_SID_RE.test(value.payload.inReplyTo))) ||
       typeof value.payload.data !== 'string' ||
       payloadLength === 0 ||
       payloadLength > 32768

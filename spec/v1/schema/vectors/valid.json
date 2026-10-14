@@ -532,6 +532,7 @@
           "payload": {
             "signalId": "c0a80101-0000-4000-8000-000000000002",
             "signalType": "answer",
+            "inReplyTo": "c0a80101-0000-4000-8000-000000000001",
             "data": "v=0"
           }
         },
@@ -541,7 +542,7 @@
           "payload": {
             "signalId": "c0a80101-0000-4000-8000-000000000003",
             "signalType": "ice",
-            "data": "{\"candidate\":\"candidate:1 1 UDP 2122260223 192.0.2.10 54321 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0}"
+            "data": "{\"candidate\":\"candidate:1 1 UDP 2122260223 192.0.2.10 54321 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0,\"usernameFragment\":\"abcd1234\"}"
           }
         },
         {

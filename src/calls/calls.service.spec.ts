@@ -8,7 +8,11 @@ import { CallsService } from './calls.service.js';
 import { callTombstoneCache } from './call-tombstone-cache.js';
 import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { BusinessCode } from '../common/business-code.js';
-import { S2sResponseError } from '../federation/federation-errors.js';
+import {
+  FederationTransportError,
+  S2sResponseError,
+} from '../federation/federation-errors.js';
+import { FederationCallDelivery } from '../federation/federation-call-delivery.js';
 import { parseCallEndedContent } from '../../shared/call-ended-content.js';
 import type { CallOutcome } from '../../shared/call-ended-content.js';
 import type { S2SCallFrame } from './federated-call-protocol.js';
@@ -1779,6 +1783,241 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
 });
 
 describe('CallsService signaling store-and-forward', () => {
+  it('retains correlation across connected, rejects conflicting new answers and replays old IDs without effects', async () => {
+    const { svc, m } = mkService();
+    await svc.initiate(1, { callSid: 'cs1', threadId: 10, callType: 'AUDIO' });
+    const offer = (id: string) =>
+      svc.signal(1, {
+        id,
+        callSid: 'cs1',
+        kind: 'offer',
+        payload: 'opaque SDP',
+      });
+    const answer = (id: string, inReplyTo: string) =>
+      svc.signal(2, {
+        id,
+        inReplyTo,
+        callSid: 'cs1',
+        kind: 'answer',
+        payload: 'opaque answer',
+      });
+    await svc.accept(2, 'cs1');
+    await expect(answer('a1', 'unknown')).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_INVALID_TRANSITION,
+    );
+    await offer('o1');
+    await answer('a1', 'o1'); // rejected ID was not consumed
+    expect(m.sse.onCallSignal).toHaveBeenLastCalledWith(
+      1,
+      expect.objectContaining({ inReplyTo: 'o1' }),
+    );
+    await svc.connected(2, 'cs1');
+    expect(svc.signaling(1, 'cs1').answer).toBeNull();
+    await expect(answer('a2', 'o1')).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_INVALID_TRANSITION,
+    );
+    await offer('o2');
+    await expect(answer('a2', 'o1')).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_INVALID_TRANSITION,
+    );
+    await answer('a2', 'o2');
+    const effects = m.sse.onCallSignal.mock.calls.length;
+    await answer('a1', 'o1');
+    expect(m.sse.onCallSignal).toHaveBeenCalledTimes(effects);
+    expect(svc.signaling(1, 'cs1').answer).toEqual({
+      id: 'a2',
+      inReplyTo: 'o2',
+      payload: 'opaque answer',
+    });
+  });
+
+  it.each([false, true])(
+    'converges exhausted SDP delivery even after local connected (persistent=%s)',
+    async (persistent) => {
+      const { svc, m } = mkService();
+      const delivery = new FederationCallDelivery();
+      const frames: unknown[] = [];
+      let answerAttempts = 0;
+      m.federation.sendFrame.mockImplementation((frame, domain) =>
+        delivery.send(frame, domain, async (body) => {
+          frames.push(structuredClone(body));
+          if (body.op === 'signal' && body.signalType === 'answer') {
+            answerAttempts++;
+            if (persistent || answerAttempts === 1)
+              throw new FederationTransportError('lost response');
+          }
+        }),
+      );
+      await inbound(svc, { localUserId: 2, frame: mkFrame() });
+      await inbound(svc, {
+        localUserId: 2,
+        frame: mkFrame({
+          op: 'signal',
+          payload: { signalId: 'o1', signalType: 'offer', data: 'opaque' },
+        }),
+      });
+      await svc.accept(2, 'cs1');
+      const dto = {
+        id: 'a1',
+        callSid: 'cs1',
+        kind: 'answer' as const,
+        inReplyTo: 'o1',
+        payload: 'opaque answer',
+      };
+      await svc.signal(2, dto);
+      await svc.signal(2, {
+        ...dto,
+        payload: 'duplicate must not replace body',
+      });
+      await svc.connected(2, 'cs1');
+      await vi.waitFor(() => expect(answerAttempts).toBe(persistent ? 3 : 2));
+      if (persistent) {
+        await vi.waitFor(() =>
+          expect(m.history.finish).toHaveBeenCalledTimes(1),
+        );
+        expect(lastBubbleContent(m)?.outcome).toBe('failed');
+        expect(() => svc.signaling(2, 'cs1')).toThrow();
+        expect(frames).not.toContainEqual(
+          expect.objectContaining({ op: 'connected' }),
+        );
+        expect(frames).toContainEqual(
+          expect.objectContaining({ op: 'ended', endReason: 'failed' }),
+        );
+      } else {
+        await vi.waitFor(() =>
+          expect(frames).toContainEqual(
+            expect.objectContaining({ op: 'connected' }),
+          ),
+        );
+        expect(m.history.finish).not.toHaveBeenCalled();
+      }
+      const answers = frames.filter(
+        (frame) => (frame as { op: string }).op === 'signal',
+      );
+      for (const answer of answers) expect(answer).toEqual(answers[0]);
+      svc.onModuleDestroy();
+    },
+  );
+
+  it('caps local signal admission before staging but keeps accepted duplicates no-op at capacity', async () => {
+    const { svc, m } = mkService();
+    await svc.initiate(1, { callSid: 'cs1', threadId: 10, callType: 'AUDIO' });
+    for (let i = 0; i < 1024; i++)
+      await svc.signal(1, {
+        id: `ice-${i}`,
+        callSid: 'cs1',
+        kind: 'ice',
+        payload: `candidate-${i}`,
+      });
+    await svc.signal(1, {
+      id: 'ice-0',
+      callSid: 'cs1',
+      kind: 'ice',
+      payload: 'changed duplicate',
+    });
+    await expect(
+      svc.signal(1, {
+        id: 'overflow',
+        callSid: 'cs1',
+        kind: 'offer',
+        payload: 'must not stage',
+      }),
+    ).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_INVALID_TRANSITION,
+    );
+    expect(m.sse.onCallSignal).toHaveBeenCalledTimes(1024);
+    expect(svc.signaling(2, 'cs1').offer).toBeNull();
+    expect(svc.signaling(2, 'cs1').ice).toHaveLength(1024);
+    svc.onModuleDestroy();
+  });
+
+  it('preserves federated outbound answer correlation and validates inbound answers before staging or dedup', async () => {
+    const { svc, m } = mkService();
+    await inbound(svc, { localUserId: 2, frame: mkFrame() });
+    await inbound(svc, {
+      localUserId: 2,
+      frame: mkFrame({
+        op: 'signal',
+        payload: { signalId: 'o1', signalType: 'offer', data: 'opaque' },
+      }),
+    });
+    await svc.accept(2, 'cs1');
+    await svc.signal(2, {
+      id: 'a1',
+      callSid: 'cs1',
+      kind: 'answer',
+      inReplyTo: 'o1',
+      payload: 'opaque answer',
+    });
+    expect(m.federation.sendFrame).toHaveBeenLastCalledWith(
+      expect.objectContaining({ signalType: 'answer', inReplyTo: 'o1' }),
+      'bbb.local',
+    );
+
+    const caller = mkService();
+    caller.m.participants.findP2PPeers.mockResolvedValue([
+      {
+        threadId: 10,
+        account: 'bob',
+        domain: 'bbb.local',
+        namespaceId: 3,
+        name: 'Bob',
+        avatar: '',
+        profileRev: 1,
+      },
+    ]);
+    await caller.svc.initiate(1, {
+      callSid: 'cs1',
+      threadId: 10,
+      callType: 'AUDIO',
+    });
+    await inbound(caller.svc, {
+      localUserId: 1,
+      frame: mkFrame({ op: 'accepted' }),
+    });
+    await caller.svc.signal(1, {
+      id: 'o1',
+      callSid: 'cs1',
+      kind: 'offer',
+      payload: 'opaque',
+    });
+    const receive = (id: string, inReplyTo: string) =>
+      inbound(caller.svc, {
+        localUserId: 1,
+        frame: mkFrame({
+          op: 'signal',
+          payload: {
+            signalId: id,
+            signalType: 'answer',
+            inReplyTo,
+            data: 'opaque answer',
+          },
+        }),
+      });
+    await expect(receive('a1', 'cross-call')).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.FEDERATION_MALFORMED,
+    );
+    await receive('a1', 'o1');
+    await expect(receive('a2', 'o1')).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.FEDERATION_MALFORMED,
+    );
+    await caller.svc.signal(1, {
+      id: 'o2',
+      callSid: 'cs1',
+      kind: 'offer',
+      payload: 'opaque',
+    });
+    await receive('a1', 'o1');
+    await expect(receive('a2', 'o1')).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.FEDERATION_MALFORMED,
+    );
+    await receive('a2', 'o2');
+    expect(caller.svc.signaling(1, 'cs1').answer).toEqual({
+      id: 'a2',
+      inReplyTo: 'o2',
+      payload: 'opaque answer',
+    });
+  });
   it('applies the shared offer/answer/video-state direction and phase policy to local calls', async () => {
     const { svc } = mkService();
     await svc.initiate(1, {
@@ -1818,10 +2057,17 @@ describe('CallsService signaling store-and-forward', () => {
       (e: unknown) => bizCode(e) === BusinessCode.CALL_INVALID_TRANSITION,
     );
 
+    await svc.signal(1, {
+      id: 'offer-1',
+      callSid: 'cs1',
+      kind: 'offer',
+      payload: 'SDP',
+    });
     await svc.accept(2, 'cs1');
     await expect(
       svc.signal(2, {
         id: 'answer-1',
+        inReplyTo: 'offer-1',
         callSid: 'cs1',
         kind: 'answer',
         payload: 'SDP',
@@ -1871,9 +2117,16 @@ describe('CallsService signaling store-and-forward', () => {
       threadId: 10,
       callType: 'AUDIO',
     });
+    await svc.signal(1, {
+      id: 'offer-1',
+      callSid: 'cs1',
+      kind: 'offer',
+      payload: 'SDP',
+    });
     await svc.accept(2, 'cs1');
     await svc.signal(2, {
       id: 'answer-1',
+      inReplyTo: 'offer-1',
       callSid: 'cs1',
       kind: 'answer',
       payload: 'ANSWER_SDP',
@@ -1885,7 +2138,7 @@ describe('CallsService signaling store-and-forward', () => {
       payload: 'CALLEE_ICE',
     });
     expect(svc.signaling(1, 'cs1')).toEqual({
-      answer: { id: 'answer-1', payload: 'ANSWER_SDP' },
+      answer: { id: 'answer-1', payload: 'ANSWER_SDP', inReplyTo: 'offer-1' },
       ice: [{ id: 'ice-1', payload: 'CALLEE_ICE' }],
     });
   });

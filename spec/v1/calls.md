@@ -2,6 +2,13 @@
 
 Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
 
+This unreleased v1 release-candidate contract revision requires answer correlation
+and generation-bound endpoint ICE. It replaces the earlier RC call contract with
+no legacy fallback; `/s2s/v1/call` and federation major 1 remain unchanged under
+this pre-release revision policy. Deployment MUST coordinate servers and all
+supported endpoints. Publication metadata is updated as part of coordinated RC
+publication, not by independently changing this profile's major version.
+
 This document defines normative requirements. Examples and the explicitly
 non-normative operational defaults illustrate those requirements without
 adding to them.
@@ -72,7 +79,7 @@ being inferred from SDP, ICE, or WebRTC transport state.
   signal. A sending server MUST use a distinct value for each logical signal
   in a call and preserve it across retries of that signal.
 
-Both UUID fields use the shared `CanonicalUuid` type defined by the
+These IDs and answer `inReplyTo` use the shared `CanonicalUuid` type defined by the
 [Core Protocol](./protocol.md#62-shared-federation-types): version field 1–8,
 RFC variant, lowercase hyphenated `8-4-4-4-12` form. v1 does
 not vary behavior by UUID version. The sending server is responsible for every
@@ -166,7 +173,7 @@ interface RTCIceCandidateInit {
   candidate?: string;
   sdpMid?: string | null;
   sdpMLineIndex?: number | null;
-  usernameFragment?: string | null;
+  usernameFragment: string;
 }
 
 interface VideoState {
@@ -181,7 +188,13 @@ interface CallFrameBase {
 type CallSignalPayload =
   | {
       signalId: CanonicalUuid;
-      signalType: 'offer' | 'answer';
+      signalType: 'offer';
+      data: SdpText;
+    }
+  | {
+      signalId: CanonicalUuid;
+      signalType: 'answer';
+      inReplyTo: CanonicalUuid;
       data: SdpText;
     }
   | {
@@ -224,11 +237,19 @@ from SDP, ICE, or `video-state`. v1 does not permit downgrade to AUDIO.
 
 `payload` is an operation-specific closed object. It is required only for
 `incoming`, `signal`, and `ended`, and forbidden for every other
-operation. The optional members of `RTCIceCandidateInit` retain the defaults
-and semantics defined by the
-[WebRTC 1.0 `RTCIceCandidateInit` dictionary](https://www.w3.org/TR/webrtc/#dom-rtcicecandidateinit);
-they are not protocol-level optional metadata and cannot be made universally
-required by this profile.
+operation. `inReplyTo` is REQUIRED for answer and FORBIDDEN for every other
+signal type. It references the original offer's `signalId` within the authenticated
+call binding, not a globally searchable ID.
+
+This endpoint profile requires `usernameFragment` to be a nonempty valid ICE
+ufrag: 4–256 characters from ASCII letters, digits, `+`, and `/` (RFC 8445).
+It MUST carry the candidate's actual local ICE generation unchanged, including
+on native endpoints; no missing-field fallback is permitted. This is an application
+interoperability requirement, not a WebRTC dictionary requirement. Other members
+retain the defaults and semantics of the
+[WebRTC 1.0 `RTCIceCandidateInit` dictionary](https://www.w3.org/TR/webrtc/#dom-rtcicecandidateinit).
+There is no outer ICE generation field. Servers MUST NOT parse the inner ICE
+JSON or SDP, or validate ICE generations.
 
 ## 5. Lifecycle state machine
 
@@ -521,7 +542,8 @@ description operation is not a completed negotiation and follows the SOMFP
 failure-convergence rule below.
 
 `signal.payload.data` is a string of 1–32768 Unicode code points. Federation
-servers validate only its outer type, length, ID, and active binding. They MUST
+servers validate only the outer shape, type, length, IDs, correlation, direction,
+stage, and active binding. They MUST
 NOT parse, normalize, reserialize, or rewrite it.
 
 `JsonText<T>` documents the structure an endpoint obtains after `JSON.parse`;
@@ -545,13 +567,42 @@ an otherwise usable call. Invalid inner content does not make an accepted
 At most one negotiation for a call may be incomplete at a time. The caller may
 create another offer only after the previous answer was successfully applied
 and endpoint signaling returned to `stable`. The callee produces at most one
-answer for each valid offer.
+answer for each valid offer. Requests while an answer is outstanding MUST queue
+or coalesce; endpoints MUST NOT replace an outstanding offer after a timeout.
+If negotiation cannot safely complete, bounded failure/termination is required.
+
+The offer producer MUST assign its signal ID before asynchronous sending. The
+answer producer MUST retain the received offer identity through buffering,
+media-permission retries, and SDP application, and capture it as `inReplyTo` when
+creating the answer. IDs and correlation MUST survive relay and retry unchanged.
+Endpoint delivery MUST preserve `inReplyTo`; staged retrieval MUST retain offer
+IDs and return staged answers as `{ id, payload, inReplyTo }` or an equivalent
+local representation preserving all three values.
+
+For a NEW answer, after role and stage checks the server MUST verify that
+`inReplyTo` equals the latest admitted caller offer ID in this call and that no
+logical answer has yet been admitted for that offer. Unknown, cross-call,
+superseded references and a second answer with a new ID return HTTP 400
+`FEDERATION_MALFORMED` (the local API uses its call-transition error). Invalid
+answers MUST NOT enter deduplication or overwrite staged bodies. Correlation
+metadata MUST be retained separately from staged bodies: clearing initial setup
+on connection MUST NOT erase offer/answer association needed for renegotiation.
+Server admission does not prove successful endpoint SDP application or stability.
+
+Endpoints MUST apply an answer only if `inReplyTo` matches the active local offer,
+the same call/peer-connection generation is alive, and JSEP permits application.
+Known old or duplicate completions have no effect; unexplained conflicting
+signaling follows failed-negotiation convergence. A mismatched answer MUST NOT
+release the negotiation lock or complete a video upgrade.
 
 The sender MUST use an unused `payload.signalId` for each new logical signal. A
 retry MUST preserve both the ID and the complete original signal body. For
 `(signer domain, callId, payload.signalId)`, the receiver accepts only the first
 signal. A repeated ID returns `200/code=0` without another application effect.
 It does not rewrite or invalidate the accepted signal based on a later body.
+Closed-shape validation still precedes replay handling: missing or invalid
+`inReplyTo` fails even for a replay. A valid-shape accepted-ID replay is a no-op
+before transition and correlation checks, including after a newer negotiation.
 The receiver retains this deduplication information for the Section 10
 tombstone lifetime.
 
@@ -559,7 +610,13 @@ ICE may arrive out of order relative to an offer or answer. A federation server
 MUST NOT reject, reorder, or interpret ICE according to JSEP ordering; it
 validates the outer frame and relays it unchanged. Endpoints buffer and apply
 it through `addIceCandidate` according to the WebRTC 1.0 and JSEP signaling
-state. ICE restart creates no lifecycle event. A successful AUDIO-to-VIDEO
+state. Endpoints MUST bind candidates to the matching remote SDP ICE credentials
+and media section, buffering pre-SDP candidates within bounded limits. Known
+obsolete generations MUST be ignored, never applied merely to whichever generation
+is current at delivery. Ordinary renegotiation may reuse credentials and MUST
+continue to accept that generation's candidates. End-of-candidates indications,
+if emitted, MUST also be generation-bound. Offer IDs are not ICE generation
+identities. ICE restart creates no lifecycle event. A successful AUDIO-to-VIDEO
 negotiation uses Section 9.
 
 HTTP `200/code=0` acknowledges server-level validation and acceptance, not
@@ -575,7 +632,8 @@ request also results in a caller-generated offer. Offer, answer, and ICE frames
 carry no business media type. The AUDIO-to-VIDEO business transition still
 requires `video-upgraded`; successful endpoint negotiation alone does not commit
 it. Only after the caller endpoint successfully applies the corresponding
-answer does the caller server send:
+answer matching its active offer and confirms negotiated video capability for
+the requested direction does the caller server send:
 
 ```json
 {
@@ -602,6 +660,11 @@ termination, the final type is VIDEO; if termination precedes confirmation of
 an AUDIO call's upgrade, the final type remains AUDIO. A late success response
 MUST NOT revise that lifecycle result. This is the protocol business type, not
 an assertion about every media track that may have been negotiated.
+
+Acquiring a camera or receiving an unrelated answer is insufficient for upgrade.
+Caller-camera-off/callee-camera-on MUST be supported without requiring caller
+camera permission. SDP completion and business-type persistence MUST NOT depend
+on decoded frame arrival; render readiness is independent.
 
 Disabling a camera sends only `video-state` and does not downgrade the business
 type. ICE restart or renegotiation without new video media MUST NOT create
@@ -793,7 +856,8 @@ Their senders and delivery prerequisites are defined in Sections 5 and 6.
 
 ```jsonl
 {"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","payload":{"signalId":"c0a80101-0000-4000-8000-000000000001","signalType":"offer","data":"v=0\r\no=- 46117317 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"}}
-{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","payload":{"signalId":"c0a80101-0000-4000-8000-000000000003","signalType":"ice","data":"{\"candidate\":\"candidate:1 1 UDP 2122260223 192.0.2.10 54321 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0}"}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","payload":{"signalId":"c0a80101-0000-4000-8000-000000000002","signalType":"answer","inReplyTo":"c0a80101-0000-4000-8000-000000000001","data":"v=0\r\n"}}
+{"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","payload":{"signalId":"c0a80101-0000-4000-8000-000000000003","signalType":"ice","data":"{\"candidate\":\"candidate:1 1 UDP 2122260223 192.0.2.10 54321 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0,\"usernameFragment\":\"abcd1234\"}"}}
 {"callId":"550e8400-e29b-41d4-a716-446655440000","operation":"signal","payload":{"signalId":"c0a80101-0000-4000-8000-000000000004","signalType":"video-state","data":"{\"enabled\":true}"}}
 ```
 
