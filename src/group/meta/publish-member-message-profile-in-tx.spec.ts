@@ -16,7 +16,7 @@ function candidate(overrides: Record<string, unknown> = {}) {
     threadLock: { tx: undefined, threadId: 9 } as never,
     account: 'charlie',
     publisherNamespaceId: 7,
-    namespaceId: 12,
+    namespaceId: 0,
     messageSeq: 24,
     profileRev: 6,
     ...overrides,
@@ -58,7 +58,6 @@ describe('publishMemberMessageProfileInTx', () => {
     expect(memberQuery).toContain('pair."endpointBNamespaceId"');
     expect(memberQuery).not.toContain('pair.established');
     expect(evidenceQuery).toContain('m."publisherNamespaceId"');
-    expect(evidenceQuery).toContain('p."publisherNamespaceId"');
     expect(enqueueCurrentThreadFanoutsInTx).toHaveBeenCalledOnce();
   });
 
@@ -83,6 +82,67 @@ describe('publishMemberMessageProfileInTx', () => {
     expect(evidenceQuery).toContain('newer.seq > m.seq');
     expect(evidenceQuery).toContain('newer."profileNamespaceId"');
     expect(evidenceQuery).toContain('newer."profileRev"');
+  });
+
+  it('selects without a stored profile snapshot and admits STUB evidence', async () => {
+    const tx = transaction();
+    await expect(
+      publishMemberMessageProfileInTx(tx as never, candidate()),
+    ).resolves.toBe(true);
+    const evidenceQuery = sqlText(tx.execute.mock.calls[2]![0]);
+    expect(evidenceQuery).not.toContain('"Profile"');
+    expect(evidenceQuery).toContain("'READY', 'STUB'");
+  });
+
+  it('identifies a publisher-home member by the publisher namespace', async () => {
+    const tx = transaction();
+    await publishMemberMessageProfileInTx(tx as never, candidate());
+    const memberQuery = new PgDialect().sqlToQuery(
+      tx.execute.mock.calls[1]![0] as never,
+    );
+    expect(memberQuery.params).toContain(7);
+  });
+
+  it('maps a third-home subject through its pinned root-key binding', async () => {
+    const tx = { execute: vi.fn() };
+    tx.execute
+      .mockResolvedValueOnce({ rows: [{ namespaceId: 19 }] })
+      .mockResolvedValueOnce({ rows: [{ metaEndId: 40 }] })
+      .mockResolvedValueOnce({
+        rows: [{ profileRev: 5, profileSourceSeq: null }],
+      })
+      .mockResolvedValueOnce({ rows: [{ allowed: 1 }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+    await expect(
+      publishMemberMessageProfileInTx(
+        tx as never,
+        candidate({ namespaceId: 12 }),
+      ),
+    ).resolves.toBe(true);
+    const bindingQuery = sqlText(tx.execute.mock.calls[0]![0]);
+    expect(bindingQuery).toContain(
+      'identity."rootPublicKey" = binding."rootPublicKey"',
+    );
+    const memberQuery = new PgDialect().sqlToQuery(
+      tx.execute.mock.calls[2]![0] as never,
+    );
+    const evidenceQuery = new PgDialect().sqlToQuery(
+      tx.execute.mock.calls[3]![0] as never,
+    );
+    expect(memberQuery.params).toContain(19);
+    expect(evidenceQuery.params).toContain(12);
+  });
+
+  it('rejects a third-home subject without a resolvable binding', async () => {
+    const tx = { execute: vi.fn().mockResolvedValue({ rows: [] }) };
+    await expect(
+      publishMemberMessageProfileInTx(
+        tx as never,
+        candidate({ namespaceId: 12 }),
+      ),
+    ).resolves.toBe(false);
+    expect(tx.execute).toHaveBeenCalledOnce();
   });
 
   it('advances metadata at metaEndId plus one and records the source seq', async () => {

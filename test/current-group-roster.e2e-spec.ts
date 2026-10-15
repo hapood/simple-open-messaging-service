@@ -32,6 +32,7 @@ describe('current Group Meta roster', () => {
   let groupId: number;
   let pairId: bigint;
   let remotePairId: bigint | undefined;
+  let namespaceIdGlobal = 0;
   let userIds: number[];
 
   beforeAll(async () => {
@@ -352,12 +353,22 @@ describe('current Group Meta roster', () => {
       },
     });
     await commitMessage(4, 9);
-    expect(await publish(4, 9)).toBe(false); // The exact snapshot is missing.
-    await commitMessage(5, 0);
-    expect(await publish(4, 9)).toBe(false); // A later message supersedes it.
-    expect(await publish(5, 0)).toBe(true); // Zero requires no snapshot.
+    expect(await publish(4, 9)).toBe(true); // Selection never waits for the snapshot.
     expect(await selected()).toMatchObject({
       feedId: firstId + 2,
+      profileSourceSeq: 4,
+      body: {
+        account: memberAccount,
+        namespaceId: 0,
+        role: GroupRole.OWNER,
+        profileRev: 9,
+      },
+    });
+    await commitMessage(5, 0);
+    expect(await publish(4, 9)).toBe(false); // A later-selected message supersedes it.
+    expect(await publish(5, 0)).toBe(true); // Zero requires no snapshot.
+    expect(await selected()).toMatchObject({
+      feedId: firstId + 3,
       profileSourceSeq: 5,
       body: {
         account: memberAccount,
@@ -411,14 +422,19 @@ describe('current Group Meta roster', () => {
     });
     expect(await publish(5, 0)).toBe(false);
     expect(await selected()).toMatchObject({
-      feedId: firstId + 4,
+      feedId: firstId + 5,
       profileSourceSeq: null,
-      body: { account: memberAccount, namespaceId: 0, role: GroupRole.OWNER, profileRev: 1 },
+      body: {
+        account: memberAccount,
+        namespaceId: 0,
+        role: GroupRole.OWNER,
+        profileRev: 1,
+      },
     });
     await commitMessage(7, 7);
     expect(await publish(7, 7)).toBe(true);
     expect(await selected()).toMatchObject({
-      feedId: firstId + 5,
+      feedId: firstId + 6,
       profileSourceSeq: 7,
       body: {
         account: memberAccount,
@@ -429,10 +445,11 @@ describe('current Group Meta roster', () => {
     });
   });
 
-  it('selects a remote member only after their exact home snapshot is stored', async () => {
+  it('selects a remote member message before its home snapshot is cached', async () => {
     const domain = `roster-member-${suffix}.test`;
     const account = `remote-${suffix}`;
     const namespaceId = await seedFederatedPeerNamespace(database.db, domain);
+    namespaceIdGlobal = namespaceId;
     const [pair] = await database.db
       .insert(relationshipPair)
       .values({
@@ -466,14 +483,14 @@ describe('current Group Meta roster', () => {
         publisherNamespaceId: namespaceId,
         originSeq: 8,
 
-        profileNamespaceId: namespaceId,
+        profileNamespaceId: 0,
         profileRev: 4,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'remote member' }),
         updatedAt: new Date(),
       }),
     );
-    const publish = (messageSeq = 8) =>
+    const publish = (messageSeq = 8, profileRev = 4) =>
       database.db.transaction(async (tx) => {
         await lockBusinessAccountsInTx(tx, [
           { account: `!roster-${suffix}`, profileNamespaceId: 0 },
@@ -483,28 +500,29 @@ describe('current Group Meta roster', () => {
           threadLock,
           account,
           publisherNamespaceId: namespaceId,
-          namespaceId,
+          namespaceId: 0,
           messageSeq,
-          profileRev: 4,
+          profileRev,
         });
       });
-    expect(await publish()).toBe(false);
-    await database.db.insert(profileTable).values({
-      account,
-      publisherNamespaceId: namespaceId,
-      profileNamespaceId: namespaceId,
-      profileRev: 4,
-      displayName: 'Remote member',
-    });
     await database.db
       .update(relationshipPair)
       .set({ active: false })
       .where(eq(relationshipPair.id, remotePairId));
-    expect(await publish()).toBe(false); // Revocation fences post-fetch work.
+    expect(await publish()).toBe(false); // Revocation fences committed evidence.
     await database.db
       .update(relationshipPair)
       .set({ active: true })
       .where(eq(relationshipPair.id, remotePairId));
+    expect(await publish()).toBe(true); // Selection never waits for the snapshot.
+    await database.db.insert(profileTable).values({
+      account,
+      publisherNamespaceId: namespaceId,
+      profileNamespaceId: 0,
+      profileRev: 4,
+      displayName: 'Remote member',
+    });
+    expect(await publish()).toBe(false); // A cached snapshot does not re-select.
     await database.db.insert(message).values(
       withMessageDigest({
         threadId: groupId,
@@ -533,14 +551,14 @@ describe('current Group Meta roster', () => {
         publisherNamespaceId: namespaceId,
         originSeq: 10,
 
-        profileNamespaceId: namespaceId,
-        profileRev: 4,
+        profileNamespaceId: 0,
+        profileRev: 5,
         contentType: 'PURE_TEXT',
         content: JSON.stringify({ text: 'new membership' }),
         updatedAt: new Date(),
       }),
     );
-    expect(await publish(10)).toBe(true);
+    expect(await publish(10, 5)).toBe(true);
     const [fact] = await database.db
       .select({
         profileSourceSeq: groupMetaMemberFeed.profileSourceSeq,
@@ -560,8 +578,53 @@ describe('current Group Meta roster', () => {
         account,
         namespaceId,
         role: GroupRole.MEMBER,
-        profileRev: 4,
+        profileRev: 5,
       },
+    });
+  });
+
+  it('admits a committed media STUB as member selection evidence', async () => {
+    const account = `remote-${suffix}`;
+    await database.db.insert(message).values(
+      withMessageDigest({
+        threadId: groupId,
+        seq: 12,
+        creatorAccount: account,
+        publisherNamespaceId: namespaceIdGlobal,
+        originSeq: 12,
+        profileNamespaceId: 0,
+        profileRev: 6,
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text: 'stub evidence' }),
+        localState: 'STUB',
+        updatedAt: new Date(),
+      }),
+    );
+    const selected = () =>
+      database.db.query.groupMetaMemberFeed.findFirst({
+        where: and(
+          eq(groupMetaMemberFeed.threadId, groupId),
+          sql`${groupMetaMemberFeed.body} ->> 'account' = ${account}`,
+        ),
+      });
+    const advanced = await database.db.transaction(async (tx) => {
+      await lockBusinessAccountsInTx(tx, [
+        { account: `!roster-${suffix}`, profileNamespaceId: 0 },
+      ]);
+      const threadLock = await requireThreadContentLockInTx(tx, groupId);
+      return publishMemberMessageProfileInTx(tx, {
+        threadLock,
+        account,
+        publisherNamespaceId: namespaceIdGlobal,
+        namespaceId: 0,
+        messageSeq: 12,
+        profileRev: 6,
+      });
+    });
+    expect(advanced).toBe(true);
+    expect(await selected()).toMatchObject({
+      profileSourceSeq: 12,
+      body: { account, namespaceId: namespaceIdGlobal, profileRev: 6 },
     });
   });
 });

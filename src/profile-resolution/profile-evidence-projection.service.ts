@@ -31,9 +31,16 @@ export class ProfileEvidenceProjectionService {
   ) {}
 
   async resolve(projection: ProfileEvidenceProjection): Promise<void> {
+    // Group-member selection is message-evidence-driven and independent of
+    // the profile cache, so publisher-home subjects (profile namespace 0)
+    // must be admitted for both local and federated members. The P2P
+    // projection keeps its stricter admission: its writer requires a positive
+    // revision and receiver-side subject identity that namespace 0 cannot
+    // express, and P2P thread pins advance in the landing transaction.
     if (
-      projection.profile.rev < 1 ||
-      projection.profile.profileNamespaceId === 0
+      projection.lookup === ProfileLookup.ACCOUNT_PROFILE &&
+      (projection.profile.rev < 1 ||
+        projection.profile.profileNamespaceId === 0)
     )
       return;
     const key = evidenceSlotKeyString(projection);

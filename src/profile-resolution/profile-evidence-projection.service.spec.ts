@@ -54,6 +54,32 @@ function mockSuccessfulP2PProjection(
 }
 
 describe('ProfileEvidenceProjectionService', () => {
+  it('admits publisher-home group-member evidence but not account evidence', async () => {
+    const { subject, database } = createSubject();
+    database.db.transaction.mockResolvedValue([]);
+
+    const memberProjection = {
+      profile: {
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
+        account: 'alice',
+        rev: 4,
+      },
+      lookup: ProfileLookup.GROUP_MEMBER_PROFILE,
+      groupAccount: '!group',
+      projection: { threadId: 9, messageSeq: 6 },
+    } as const;
+    await subject.resolve(memberProjection);
+    await vi.waitFor(() => expect(subject['pending'].size).toBe(0));
+    expect(database.db.transaction).toHaveBeenCalledOnce();
+
+    await subject.resolve({
+      ...memberProjection,
+      lookup: ProfileLookup.ACCOUNT_PROFILE,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(database.db.transaction).toHaveBeenCalledOnce();
+  });
   it('runs evidence projection through its own queue and LRU', async () => {
     const { subject, database, sse } = createSubject();
     mockSuccessfulP2PProjection(database);

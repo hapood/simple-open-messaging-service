@@ -50,7 +50,13 @@ interface FederationMessagePageEffectContext {
 
 export type FederationMessagePageEffect = FederationMessagePageEffectContext &
   (
-    | { kind: 'pending'; batchId: string; seq: number }
+    | {
+        kind: 'pending';
+        batchId: string;
+        seq: number;
+        profileDemand?: ProfilePrefetchDemand;
+        profileEvidenceProjection?: ProfileEvidenceProjection;
+      }
     | {
         kind: 'message';
         message: Message;
@@ -460,6 +466,33 @@ export class FederationInboundMessagePageService {
           federationEnvelopeDigest,
         });
         if (stored.kind === 'pending') {
+          // The validated media STUB already commits its profile evidence;
+          // member selection advances now, while bytes and snapshot bytes
+          // remain independent cache work.
+          const stubEvidence = selectInboundMessageProfileEvidenceProjection(
+            item.thread,
+            {
+              threadId: route.threadId,
+              seq: stored.seq,
+              isDeleted: false,
+              profileRev: item.profileRev,
+              creatorAccount: route.creatorAccount,
+            },
+            token.namespaceId,
+            profileNamespaceId,
+          );
+          const stubDemand = selectInboundMessageProfileDemand(
+            item.thread,
+            {
+              threadId: route.threadId,
+              seq: stored.seq,
+              isDeleted: false,
+              profileRev: item.profileRev,
+              creatorAccount: route.creatorAccount,
+            },
+            token.namespaceId,
+            profileNamespaceId,
+          );
           effects.push({
             kind: 'pending',
             historical,
@@ -470,6 +503,10 @@ export class FederationInboundMessagePageService {
             author,
             batchId: stored.batchId,
             seq: stored.seq,
+            ...(stubDemand ? { profileDemand: stubDemand } : {}),
+            ...(stubEvidence
+              ? { profileEvidenceProjection: stubEvidence }
+              : {}),
           });
           continue;
         }

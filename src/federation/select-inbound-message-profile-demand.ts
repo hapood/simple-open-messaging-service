@@ -1,5 +1,4 @@
 import { normalizeAccount } from '../common/account.js';
-import type { Message } from '../message/message.service.js';
 import {
   ProfileLookup,
   type ProfileEvidenceProjection,
@@ -7,10 +6,21 @@ import {
 } from '../profile-resolution/profile-resolution-demand.js';
 import type { FederationThreadAddress } from './federation-message-feed.service.js';
 
+/** The message fields profile work is derived from. A committed media STUB
+ * supplies the same evidence as a READY row, so callers may pass either the
+ * stored row or the admitted stub coordinate in this structural shape. */
+export interface InboundProfileWorkMessage {
+  threadId: number;
+  seq: number;
+  isDeleted: boolean;
+  profileRev: number;
+  creatorAccount: string | null;
+}
+
 /** Select snapshot-only profile work from a committed inbound federation message. */
 export function selectInboundMessageProfileDemand(
   thread: FederationThreadAddress,
-  message: Message,
+  message: InboundProfileWorkMessage,
   publisherNamespaceId: number,
   profileNamespaceId: number,
 ): ProfilePrefetchDemand | undefined {
@@ -36,7 +46,7 @@ export function selectInboundMessageProfileDemand(
 
 export function selectInboundMessageProfileEvidenceProjection(
   thread: FederationThreadAddress,
-  message: Message,
+  message: InboundProfileWorkMessage,
   publisherNamespaceId: number,
   profileNamespaceId: number,
 ): ProfileEvidenceProjection | undefined {
@@ -62,7 +72,7 @@ export function selectInboundMessageProfileEvidenceProjection(
 }
 
 function inboundMessageProfileWorkSubject(
-  message: Message,
+  message: InboundProfileWorkMessage,
   publisherNamespaceId: number,
   profileNamespaceId: number,
 ):

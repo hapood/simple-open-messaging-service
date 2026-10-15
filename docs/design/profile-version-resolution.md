@@ -97,14 +97,20 @@ different revision does not update the client directly or modify the member
 fact in its landing transaction. For a remote member, the common profile
 resolver obtains the exact positive snapshot and may replace the origin member
 fact in a separate transaction with a newly allocated Meta feed ID and fan
-out the new head. Revision zero needs no snapshot. A local member does **not**
+out the new head. Revision zero needs no snapshot. Crucially, **selection never
+waits for the snapshot**: the member fact advances from committed message
+evidence regardless of whether the exact profile bytes are cached locally, and
+a missing, delayed, or failed fetch must never be a precondition of the
+selection write. A local member does **not**
 enter the profile-fetch scheduler: after message commit, use the shared
 candidate selection helper and call the origin's Meta update in a separate
-transaction against the already stored local snapshot. Neither branch calls
+transaction. Neither branch calls
 the Meta writer from the message landing transaction. A full resolver queue
 may omit remote-member work: do not block message delivery or roll back a
 committed message; a later committed member message can submit another
-candidate.
+candidate. A message admitted as a validated federated media `STUB` already
+commits its profile evidence and may advance selection; `FAILED` placeholders
+never do.
 An unchanged revision updates neither the selected source seq nor the
 published member reference. Ordinary profile edits without a selecting message
 do not publish member Meta items.
@@ -208,9 +214,10 @@ the PostgreSQL migration does not imply approval of browser/native cache resets.
 
 The existing group member fact's `feedId` remains its canonical Meta ordering
 coordinate. A message-selected different revision replaces the current origin
-member fact with a newly allocated ID **after** the exact snapshot is available.
-For a remote member, the group origin requests that exact version from the
-member home using `account-profiles` with confirmed group-member relationship
+member fact with a newly allocated ID as soon as the committed message
+evidence selects a different revision. The snapshot fetch is independent
+display-cache work: for a remote member, the group origin requests that exact
+version from the member home using `account-profiles` with confirmed group-member relationship
 and serviceable member-message evidence; other peers and clients request
 `group-member-profiles` from the group origin. The demand always keeps namespace
 roles separate: the publisher namespace is the local namespace of the peer that
@@ -462,9 +469,10 @@ Ordinary non-system messages derive the target from their non-null `creator`
 and carried `profileNamespaceId` and `profileRev`. P2P author messages emit an `ACCOUNT_PROFILE` fetch
 demand and a separate account evidence projection. A remote member message at a
 group origin emits a `GROUP_MEMBER_PROFILE` fetch demand and a separate member
-evidence projection; after a local exact snapshot exists, the projection may
-publish the replacement `MEMBER_UPSERT`. A local group member bypasses the
-federation scheduler and uses its local snapshot for the same Meta capability.
+evidence projection; the projection publishes the replacement `MEMBER_UPSERT`
+without waiting for the fetch, a media `STUB` commits its evidence at
+admission, and a local group member bypasses the
+federation scheduler for the same Meta capability.
 System messages are the explicit creator exception: their creator is the local
 `$system` account and must not become the profile target; event participants
 supply any prefetch target instead.

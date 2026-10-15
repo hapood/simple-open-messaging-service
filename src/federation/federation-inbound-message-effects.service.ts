@@ -54,6 +54,27 @@ export class FederationInboundMessageEffectsService {
             offset,
           ),
         ).catch(() => undefined);
+        if (this.profileResolutions && effect.profileDemand) {
+          void this.profileResolutions
+            .resolveDemand(effect.profileDemand)
+            .catch((error: unknown) =>
+              this.logger.warn(
+                `message profile resolution failed for ${effect.threadId}:${effect.seq}: ${(error as Error).message}`,
+              ),
+            );
+        }
+        if (
+          this.profileEvidenceProjections &&
+          effect.profileEvidenceProjection
+        ) {
+          void this.profileEvidenceProjections
+            .resolve(effect.profileEvidenceProjection)
+            .catch((error: unknown) =>
+              this.logger.warn(
+                `message profile evidence projection failed for ${effect.threadId}:${effect.seq}: ${(error as Error).message}`,
+              ),
+            );
+        }
         continue;
       }
       if (
