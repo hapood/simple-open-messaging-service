@@ -38,6 +38,7 @@ import {
 import { UserService } from '../../services/user.service';
 import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
+import { messageAuthorAvatarProfile } from '../../services/avatar-profile-ref';
 import { messageAuthorProfileDemand } from '../../services/profile-demand';
 import { MsgService } from '../../services/message.service';
 import {
@@ -190,8 +191,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       .pipe(filter((threadId) => threadId === conv.threadId))
       .subscribe(() => {
         for (const [seq, entry] of this.mountedQuotes) {
-          if (!entry.quote.body && !entry.quote.unavailable)
-            void this.refreshMountedQuote(seq).catch(() => {});
+          if (!entry.quote.body) void this.refreshMountedQuote(seq).catch(() => {});
         }
       });
     this.deletedSub = repo.deletedLive$
@@ -204,7 +204,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
           }
           for (const item of this.pending) {
             if (item.data.quote?.seq !== seq) continue;
-            item.data.quote = { seq, unavailable: true };
+            // Coordinate-only quote: content is gone, but the tombstone row
+            // stays in the thread, so the quote keeps jumping to it.
+            item.data.quote = { seq };
             live.onQuoteDeleted?.(item.id, seq);
           }
         }
@@ -285,7 +287,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (!entry) return;
     const version = ++entry.version;
     let quote = entry.quote;
-    if (quote.unavailable) return;
     const anchor = quote.anchor;
     if (anchor?.kind === 'origin') {
       const target = await this.repo.getMessageByOrigin(
@@ -314,14 +315,15 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         [seq],
       );
       if (deleted.length || this.deletedQuoteSeqs.has(seq))
-        quote = { seq, unavailable: true };
+        // Coordinate-only quote: the tombstone row stays jumpable via the
+        // local seq, so keep no preview content and no origin re-resolve.
+        quote = { seq };
     }
     if (this.mountedQuotes.get(replySeq) !== entry || entry.version !== version)
       return;
     if (
       entry.quote.seq === quote.seq &&
-      entry.quote.body === quote.body &&
-      entry.quote.unavailable === quote.unavailable
+      entry.quote.body === quote.body
     )
       return;
     entry.quote = quote;
@@ -501,7 +503,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         item.data.quote?.seq !== undefined &&
         this.deletedQuoteSeqs.has(item.data.quote.seq)
       ) {
-        item.data.quote = { seq: item.data.quote.seq, unavailable: true };
+        item.data.quote = { seq: item.data.quote.seq };
       }
       if (item.data.type !== 'msg') return true;
       if (item.data.contentType === 'AUDIO' && item.clientMessageId) {
@@ -838,7 +840,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         item.data.quote?.seq !== undefined &&
         this.deletedQuoteSeqs.has(item.data.quote.seq)
       ) {
-        item.data.quote = { seq: item.data.quote.seq, unavailable: true };
+        item.data.quote = { seq: item.data.quote.seq };
       }
       if (m.clientMessageId) {
         item.clientMessageId = m.clientMessageId;
@@ -1032,7 +1034,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         profileNamespaceId: m.profileNamespaceId,
       },
       ...(m.profileRev > 0
-        ? { profileEvidence: messageAuthorProfileDemand(m) }
+        ? { avatarProfile: messageAuthorAvatarProfile(m) }
         : {}),
       // Non-text cards keep their wire content in `text` as well. In particular, FORWARD content is
       // the JSON card descriptor consumed by parseForwardCard; dropping it here makes every valid

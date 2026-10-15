@@ -27,7 +27,7 @@ import {
         [name]="other().name"
         [account]="other().account"
         [domainSource]="other().domainSource"
-        [profileEvidence]="other().profileEvidence"
+        [profile]="other().avatarProfile"
         [src]="other().snapshotAvatarUrl"
       />
     </div>
@@ -40,7 +40,7 @@ import {
         [type]="UserAvatarType.SELF"
         [name]="self().name"
         [domainSource]="self().domainSource"
-        [profileEvidence]="self().profileEvidence"
+        [profile]="self().avatarProfile"
         [src]="self().snapshotAvatarUrl"
       />
     </div>

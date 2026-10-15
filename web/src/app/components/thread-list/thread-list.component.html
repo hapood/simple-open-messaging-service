@@ -63,14 +63,14 @@
                 [name]="displayName(thread)"
                 [account]="avatarAccount(thread)"
                 [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(thread) }"
-                [profileEvidence]="avatarEvidence(thread)"
+                [profile]="avatarProfile(thread)"
               ></app-user-avatar>
             </span>
             <span class="thread-info">
               <span class="thread-row">
                 <app-user-identity-label
                   [account]="avatarAccount(thread)"
-                  [profileEvidence]="avatarEvidence(thread)"
+                  [profileRef]="avatarProfile(thread)"
                 />
                 @if (thread.pinned) {
                   <span

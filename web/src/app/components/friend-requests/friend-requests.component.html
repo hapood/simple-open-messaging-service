@@ -347,13 +347,13 @@
             "
             [account]="req.account"
             [domainSource]="{ type: 'namespace', namespaceId: req.namespaceId }"
-            [profileEvidence]="profileEvidence(req)"
+            [profile]="avatarProfile(req)"
           />
           <span class="profile-copy">
             <app-user-identity-label
               class="detail-identity"
               [account]="req.account"
-              [profileEvidence]="profileEvidence(req)"
+              [profileRef]="avatarProfile(req)"
             />
             <span class="profile-description">
               {{ req.reqMessage || ('friend.noMessage' | transloco) }}

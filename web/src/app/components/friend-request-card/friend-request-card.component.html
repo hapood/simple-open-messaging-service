@@ -15,7 +15,7 @@
       "
       [account]="requestItem().account"
       [domainSource]="{ type: 'namespace', namespaceId: requestItem().namespaceId }"
-      [profileEvidence]="profileEvidence()"
+      [profile]="avatarProfile()"
     />
   </span>
   <span class="content">
@@ -23,7 +23,7 @@
       <app-user-identity-label
         [account]="requestItem().account"
         [domain]="resolvedDomain"
-        [profileEvidence]="profileEvidence()"
+        [profileRef]="avatarProfile()"
       />
     </span>
     <span class="message" [class.error]="requestItem().errText">

@@ -7,10 +7,10 @@ import { UserAvatarComponent } from '../user-avatar/user-avatar.component';
 import {
   conversationAvatarAccount,
   conversationAvatarNamespaceId,
-  conversationAvatarEvidence,
   conversationAvatarSrc,
   conversationAvatarType,
 } from '../user-avatar/conversation-avatar.util';
+import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
 
 @Component({
   selector: 'app-contact-picker-dialog',
@@ -31,7 +31,7 @@ export class ContactPickerDialogComponent {
   readonly avatarType = conversationAvatarType;
   readonly avatarAccount = conversationAvatarAccount;
   readonly avatarNamespaceId = conversationAvatarNamespaceId;
-  readonly avatarEvidence = conversationAvatarEvidence;
+  readonly avatarProfile = conversationAvatarProfile;
   readonly avatarSrc = conversationAvatarSrc;
 
   choose(item: ConversationItem): void {

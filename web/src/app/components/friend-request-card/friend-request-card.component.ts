@@ -17,8 +17,7 @@ import {
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
-import type { ProfileDemand } from '../../../../../shared/profile-demand';
-import { homeProfileDemand } from '../../services/profile-demand';
+import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
 import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 
 export interface FriendRequestCardModel {
@@ -61,14 +60,16 @@ export class FriendRequestCardComponent {
   readonly rejected = output<void>();
   readonly UserAvatarType = UserAvatarType;
 
-  profileEvidence(): ProfileDemand | undefined {
+  avatarProfile(): AvatarProfileRef | undefined {
     const request = this.requestItem();
     return request.account && request.profileRev
-      ? homeProfileDemand(
-          request.account,
-          request.namespaceId,
-          request.profileRev,
-        )
+      ? {
+          account: request.account,
+          publisherNamespaceId: request.namespaceId,
+          profileNamespaceId: 0,
+          rev: request.profileRev,
+          linked: true,
+        }
       : undefined;
   }
 

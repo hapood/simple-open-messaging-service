@@ -1,6 +1,6 @@
 /** Geometry-only sticky-avatar calculation, kept independent of Angular and the virtual-scroll kernel. */
 import type { AvatarDomainSource } from '../components/user-avatar/model';
-import type { ProfileDemand } from '../../../../shared/profile-demand';
+import type { AvatarProfileRef } from '../services/avatar-profile-ref';
 
 const STICKY_AVATAR_TOP_GAP_PX = 12;
 const STICKY_AVATAR_SIZE_PX = 40;
@@ -25,7 +25,7 @@ interface StickyAvatarPlacement {
 
 export interface StickyAvatarView {
   readonly name: string;
-  readonly profileEvidence?: ProfileDemand;
+  readonly avatarProfile?: AvatarProfileRef;
   readonly snapshotAvatarUrl?: string;
   readonly identityId?: string;
   readonly account?: string;
@@ -37,7 +37,7 @@ export interface StickyAvatarView {
 
 export interface StickyAvatarIdentity {
   readonly name: string;
-  readonly profileEvidence?: ProfileDemand;
+  readonly avatarProfile?: AvatarProfileRef;
   readonly snapshotAvatarUrl?: string;
   readonly identityId?: string;
   readonly account?: string;
@@ -47,7 +47,7 @@ export interface StickyAvatarIdentity {
 
 export interface StickyAvatarMeasuredRow extends StickyAvatarRow {
   readonly name: string;
-  readonly profileEvidence?: ProfileDemand;
+  readonly avatarProfile?: AvatarProfileRef;
   readonly snapshotAvatarUrl?: string;
   readonly identityId?: string;
   readonly account?: string;
@@ -69,9 +69,9 @@ export function writeStickyAvatarIdentity(
   avatar: StickyAvatarIdentity,
 ): void {
   host.dataset['messageAvatarName'] = avatar.name;
-  if (avatar.profileEvidence)
+  if (avatar.avatarProfile)
     host.dataset['messageAvatarEvidence'] = JSON.stringify(
-      avatar.profileEvidence,
+      avatar.avatarProfile,
     );
   else delete host.dataset['messageAvatarEvidence'];
   if (avatar.snapshotAvatarUrl)
@@ -184,7 +184,7 @@ export function resolveStickyAvatar(
     hiddenHead: naturalHead,
     view: {
       name: row.name,
-      profileEvidence: row.profileEvidence,
+      avatarProfile: row.avatarProfile,
       snapshotAvatarUrl: row.snapshotAvatarUrl,
       identityId: row.identityId,
       // The overlay's <app-user-avatar> needs the same account+domain identity key as the natural row

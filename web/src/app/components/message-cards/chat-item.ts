@@ -1,5 +1,5 @@
 import type { AvatarDomainSource } from '../user-avatar/model';
-import type { ProfileDemand } from '../../../../../shared/profile-demand';
+import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
 
 // Federated media localize status values — the stable wire format (backend serializeBody + MEDIA_STATUS
 // SSE frame + the attachMediaStatus query field carry these exact strings). Defined here (the components
@@ -79,7 +79,7 @@ interface ChatMessageBase {
   isGroupConversation?: boolean;
   /** Sender display name (profile.account; filled for self too — template decides via showName). */
   name: string;
-  /** Avatar asset embedded in a forwarded snapshot; ordinary profiles use profileEvidence. */
+  /** Avatar asset embedded in a forwarded snapshot; ordinary profiles use the pinned avatar profile ref. */
   snapshotAvatarUrl?: string;
   /** Stable sender/profile identity key. Snapshot sources may use bundle-scoped keys. */
   avatarIdentityId?: string;
@@ -87,16 +87,15 @@ interface ChatMessageBase {
   avatarAccount?: string;
   /** Namespace identity or fixed snapshot address, independent of profile resolution. */
   avatarDomainSource?: AvatarDomainSource;
-  /** Authorization evidence used by the shared avatar/profile repository. */
-  profileEvidence?: ProfileDemand;
+  /** Pinned profile subject facts; the avatar/label components own the demand form. */
+  avatarProfile?: AvatarProfileRef;
   /** PURE_TEXT body / fallback text for unsupported types. */
   text: string;
   /** Canonical inline-entity storage string for an optimistic PURE_TEXT send. The bubble renders `text`;
    *  HTTP/retry sends this value. Real queried messages need no copy because their wire body is durable. */
   wireText?: string;
   quote?: {
-    /** A local tombstone makes the preview unavailable and disables navigation. */
-    unavailable?: boolean;
+    /** Federated media localize status; NOT_FOUND renders the not-found fallback. */
     status?: 'PENDING' | 'NOT_FOUND';
     anchor?: import('../../services/history-anchor').HistoryAnchor;
     /** Jump target in the current message source; absent for a display-only snapshot. */
@@ -171,6 +170,15 @@ export interface SystemMessageItem extends ChatMessageBase {
 }
 
 export type ChatMsgData = AuthoredMessageItem | SystemMessageItem;
+
+/** A row bound to a real server seq. Optimistic sends carry synthetic negative
+ *  placeholder ids (see ThreadSendOutboxService.allocatePlaceholderId) until the
+ *  server echo replaces them, so every seq-dependent capability (quote, direct
+ *  forward, multi-select/history-forward, withdraw, report) must gate on this.
+ *  Copy stays available on pending rows: it needs only local data. */
+export function isConfirmedMessage(message: ChatMsgData): boolean {
+  return message.msgId >= 0;
+}
 
 type ChatTextSegment =
   | { kind: 'text'; text: string }

@@ -19,14 +19,11 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import {
   ProfileRepository,
   type ResolvedProfile,
-  type UnevidencedProfileDemand,
 } from '../../services/profile-store.service';
-import type { ProfileDemand } from '../../../../../shared/profile-demand';
-
-/** Avatar profile inputs: a bare {@link ProfileDemand} keeps the evidenced
- *  resolution contract; an {@link UnevidencedProfileDemand} resolves from
- *  caches only (client IndexedDB, then the server durable cache). */
-export type AvatarProfileDemand = ProfileDemand | UnevidencedProfileDemand;
+import {
+  avatarProfileDemand,
+  type AvatarProfileRef,
+} from '../../services/avatar-profile-ref';
 
 /**
  * Initials avatar (industry best-practice palette).
@@ -46,9 +43,34 @@ export type AvatarProfileDemand = ProfileDemand | UnevidencedProfileDemand;
  * and drawers), independent of the parent's size or clipping — zero layout changes at call sites (nav-drawer /
  * icon-rail containers must drop the forced-circular overflow/border-radius).
  *
- * Resolved profiles provide a binary avatar through the profile repository. The component
- * owns the short-lived object URL. Local previews without profile evidence pass through.
+ * Resolved profiles provide a binary avatar through the profile repository; digest-addressed bytes
+ * are shared through a bounded module-level object-URL cache (same digest → same URL). Local previews
+ * without a profile ref pass through `src`.
  */
+/** Bounded LRU of avatar object URLs keyed by profile digest. Instances share URLs; the
+ *  cap bounds long sessions and eviction revokes the oldest URL (its digest re-materializes
+ *  on demand from IndexedDB). */
+const avatarUrlCache = new Map<string, string>();
+const AVATAR_URL_CACHE_LIMIT = 256;
+
+function avatarObjectUrl(digest: string, blob: Blob): string {
+  const cached = avatarUrlCache.get(digest);
+  if (cached) {
+    avatarUrlCache.delete(digest);
+    avatarUrlCache.set(digest, cached);
+    return cached;
+  }
+  const url = URL.createObjectURL(blob);
+  avatarUrlCache.set(digest, url);
+  if (avatarUrlCache.size > AVATAR_URL_CACHE_LIMIT) {
+    const evictedKey = avatarUrlCache.keys().next().value!;
+    const evictedUrl = avatarUrlCache.get(evictedKey)!;
+    avatarUrlCache.delete(evictedKey);
+    URL.revokeObjectURL(evictedUrl);
+  }
+  return url;
+}
+
 const PALETTE = [
   '#E53935',
   '#D81B60',
@@ -103,13 +125,11 @@ export class UserAvatarComponent {
     const conversation = this.conversations
       ?.items()
       .find((item) => item.threadId === threadId && item.type === 'P2P');
-    const evidence = this.effectiveProfileEvidence();
-    const demand =
-      evidence && ('demand' in evidence ? evidence.demand : evidence);
-    if (!demand || demand.publisherNamespaceId !== 0) return '';
+    const profile = this.effectiveProfile();
+    if (!profile || profile.publisherNamespaceId !== 0) return '';
     return conversation?.type === 'P2P' &&
       conversation.peerUser.account === this.account() &&
-      conversation.peerUser.namespaceId === demand.target.profileNamespaceId
+      conversation.peerUser.namespaceId === profile.profileNamespaceId
       ? (conversation.alias?.trim() ?? '')
       : '';
   });
@@ -148,27 +168,26 @@ export class UserAvatarComponent {
    *  misleading initial) paints until the backing profile/session is ready. Callers pass
    *  `!sessionProfile()` while the source signal is still loading. */
   readonly loading = input(false);
-  readonly profileEvidence = input<AvatarProfileDemand | undefined>(undefined);
-  private readonly effectiveProfileEvidence = computed(
-    (): AvatarProfileDemand | undefined => {
-      const explicit = this.profileEvidence();
+  /** Pinned profile subject (domain facts; the component owns the demand form and resolution).
+   *  SELF avatars without an explicit ref resolve the session profile. */
+  readonly profile = input<AvatarProfileRef | undefined>(undefined);
+  private readonly effectiveProfile = computed(
+    (): AvatarProfileRef | undefined => {
+      const explicit = this.profile();
       if (explicit) return explicit;
-      const preview = this.src();
       if (
         this.type() !== UserAvatarType.SELF ||
-        (preview && !preview.startsWith('/'))
+        (this.src() && this.src()!.startsWith('/'))
       )
         return undefined;
       const self = this.userService.sessionProfile();
       return self && (self.profileRev ?? 0) > 0
         ? {
+            account: self.account,
             publisherNamespaceId: 0,
-            lookup: 'ACCOUNT_PROFILE' as const,
-            target: {
-              profileNamespaceId: 0,
-              account: self.account,
-              rev: self.profileRev,
-            },
+            profileNamespaceId: 0,
+            rev: self.profileRev ?? 0,
+            linked: true,
           }
         : undefined;
     },
@@ -209,35 +228,29 @@ export class UserAvatarComponent {
   /** Image load failure (corrupt/404) → fall back to initials. Reset on src/identity change to retry the new image. */
   readonly imgFailed = signal(false);
 
-  private readonly profileObjectUrl = signal('');
-
   /**
-   * The `<img>` src. Profile evidence selects only committed bytes; previews without
-   * profile evidence use their supplied source.
+   * The `<img>` src. A pinned profile renders only committed bytes (empty until they arrive);
+   * previews without a profile ref use their supplied source.
    */
   readonly imgSrc = computed(() => {
-    if (this.effectiveProfileEvidence())
-      return this.resolvedProfile()?.avatarBlob ? this.profileObjectUrl() : '';
+    if (this.effectiveProfile()) {
+      // A pinned profile renders only committed bytes; nothing paints until they arrive.
+      const resolved = this.resolvedProfile();
+      return resolved?.avatarBlob && resolved.avatarDigest
+        ? avatarObjectUrl(resolved.avatarDigest, resolved.avatarBlob)
+        : '';
+    }
     const s = this.effectiveSrc();
     return s ? assetUrl(s) : '';
   });
 
   constructor() {
     effect((onCleanup) => {
-      const blob = this.resolvedProfile()?.avatarBlob;
-      if (!blob) {
-        this.profileObjectUrl.set('');
-        return;
-      }
-      const url = URL.createObjectURL(blob);
-      this.profileObjectUrl.set(url);
-      onCleanup(() => URL.revokeObjectURL(url));
-    });
-    effect((onCleanup) => {
-      const evidence = this.effectiveProfileEvidence();
+      const profileRef = this.effectiveProfile();
+      const demand = avatarProfileDemand(profileRef);
       this.resolvedProfile.set(null);
-      if (!evidence) return;
-      const subscription = this.profiles.resolve(evidence).subscribe({
+      if (!demand) return;
+      const subscription = this.profiles.resolve(demand).subscribe({
         next: (profile) => this.resolvedProfile.set(profile),
         error: () => this.resolvedProfile.set(null),
       });
@@ -248,7 +261,7 @@ export class UserAvatarComponent {
       this.imgSrc();
       this.account();
       this.domainSource();
-      this.effectiveProfileEvidence();
+      this.effectiveProfile();
       this.imgFailed.set(false);
     });
   }

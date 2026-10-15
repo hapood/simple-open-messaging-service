@@ -36,6 +36,22 @@
         [style.left.px]="menu.x"
         [style.top.px]="menu.y"
       >
+        @if (canCancelSend(menu.targetItem.data)) {
+          <button
+            type="button"
+            role="menuitem"
+            class="msg-context-menu__item--icon"
+            (click)="cancelContextSend()"
+            [attr.title]="'transfer.cancel' | transloco"
+          >
+            <svg viewBox="0 -960 960 960" aria-hidden="true">
+              <path
+                d="M280-120q-33 0-56.5-23.5T200-200v-520h-40v-80h200v-40h240v40h200v80h-40v520q0 33-23.5 56.5T680-120H280Zm400-600H280v520h400v-520ZM360-280h80v-360h-80v360Zm160 0h80v-360h-80v360Z"
+              />
+            </svg>
+            <span>{{ 'transfer.cancel' | transloco }}</span>
+          </button>
+        }
         @if (canCopyMessage(menu.targetItem.data)) {
           <button
             type="button"
@@ -84,20 +100,22 @@
             <span>{{ 'chat.selection.forward' | transloco }}</span>
           </button>
         }
-        <button
-          type="button"
-          role="menuitem"
-          class="msg-context-menu__item--icon"
-          (click)="selectContextMessage()"
-          [attr.title]="'chat.selection.multiSelect' | transloco"
-        >
-          <svg viewBox="0 -960 960 960" aria-hidden="true">
-            <path
-              d="M222-120 80-262l57-57 85 85 170-170 57 58-227 226Zm0-320L80-582l57-57 85 85 170-170 57 58-227 226Zm298 200v-80h360v80H520Zm0-320v-80h360v80H520Z"
-            />
-          </svg>
-          <span>{{ 'chat.selection.multiSelect' | transloco }}</span>
-        </button>
+        @if (canMultiSelect(menu.targetItem.data)) {
+          <button
+            type="button"
+            role="menuitem"
+            class="msg-context-menu__item--icon"
+            (click)="selectContextMessage()"
+            [attr.title]="'chat.selection.multiSelect' | transloco"
+          >
+            <svg viewBox="0 -960 960 960" aria-hidden="true">
+              <path
+                d="M222-120 80-262l57-57 85 85 170-170 57 58-227 226Zm0-320L80-582l57-57 85 85 170-170 57 58-227 226Zm298 200v-80h360v80H520Zm0-320v-80h360v80H520Z"
+              />
+            </svg>
+            <span>{{ 'chat.selection.multiSelect' | transloco }}</span>
+          </button>
+        }
         @if (canWithdrawOrReport(menu.targetItem.data)) {
           <button
             type="button"
@@ -176,7 +194,7 @@
                 [name]="emptyTitle()"
                 [account]="emptyAvatarAccount()"
                 [domainSource]="{ type: 'namespace', namespaceId: emptyAvatarNamespaceId() }"
-                [profileEvidence]="emptyAvatarEvidence()"
+                [profile]="emptyAvatarProfile()"
               >
               </app-user-avatar>
             </span>

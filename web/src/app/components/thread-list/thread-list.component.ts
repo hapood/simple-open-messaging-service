@@ -27,9 +27,9 @@ import {
 import {
   conversationAvatarType,
   conversationAvatarAccount,
-  conversationAvatarEvidence,
   conversationAvatarNamespaceId,
 } from '../user-avatar/conversation-avatar.util';
+import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
@@ -212,7 +212,7 @@ export class ThreadListComponent implements OnInit {
     return conversationAvatarAccount(t);
   }
 
-  readonly avatarEvidence = conversationAvatarEvidence;
+  readonly avatarProfile = conversationAvatarProfile;
 
   readonly avatarNamespaceId = conversationAvatarNamespaceId;
 

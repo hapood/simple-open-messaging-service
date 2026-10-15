@@ -7,12 +7,14 @@ import {
   input,
   signal,
 } from '@angular/core';
-import type { ProfileDemand } from '../../../../../shared/profile-demand';
 import {
   ProfileRepository,
   type ResolvedProfile,
-  type UnevidencedProfileDemand,
 } from '../../services/profile-store.service';
+import {
+  avatarProfileDemand,
+  type AvatarProfileRef,
+} from '../../services/avatar-profile-ref';
 
 /** A single-line user identity heading. Both halves may truncate so a long nickname or federated
  * domain never displaces trailing row metadata such as timestamps and action buttons. When profile
@@ -76,9 +78,8 @@ export class UserIdentityLabelComponent {
   readonly account = input<string | undefined>(undefined);
   readonly profile = input<{ name: string } | undefined>(undefined);
   readonly domain = input<string | null | undefined>(undefined);
-  readonly profileEvidence = input<
-    ProfileDemand | UnevidencedProfileDemand | undefined
-  >(undefined);
+  /** Pinned profile subject; the label owns the demand form and resolution. */
+  readonly profileRef = input<AvatarProfileRef | undefined>(undefined);
   private readonly resolvedProfile = signal<ResolvedProfile | null>(null);
   readonly effectiveName = computed(
     () =>
@@ -90,10 +91,10 @@ export class UserIdentityLabelComponent {
 
   constructor() {
     effect((onCleanup) => {
-      const evidence = this.profileEvidence();
+      const demand = avatarProfileDemand(this.profileRef());
       this.resolvedProfile.set(null);
-      if (!evidence) return;
-      const subscription = this.profiles.resolve(evidence).subscribe({
+      if (!demand) return;
+      const subscription = this.profiles.resolve(demand).subscribe({
         next: (profile) => this.resolvedProfile.set(profile),
         error: () => this.resolvedProfile.set(null),
       });

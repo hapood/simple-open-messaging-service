@@ -187,7 +187,7 @@ export function createMsgCbElement(
     anchor: import('../../services/history-anchor').HistoryAnchor,
   ) => void,
   onOpenMemberProfile?: (
-    demand: import('../../../../../shared/profile-demand').ProfileDemand | undefined,
+    profile: import('../../services/avatar-profile-ref').AvatarProfileRef | undefined,
     anchor: DOMRect,
   ) => void,
 ): CbElement<ChatItemData> {
@@ -253,7 +253,7 @@ export function createMsgCbElement(
     tailAvatarRef.setInput('account', message.avatarAccount);
     tailAvatarRef.setInput('domainSource', message.avatarDomainSource);
     tailAvatarRef.setInput('src', message.snapshotAvatarUrl);
-    tailAvatarRef.setInput('profileEvidence', message.profileEvidence);
+    tailAvatarRef.setInput('profile', message.avatarProfile);
     tailAvatarRef.changeDetectorRef.detectChanges();
   };
   updateTailAvatar(data);
@@ -281,7 +281,7 @@ export function createMsgCbElement(
       host.dataset['messageSide'] = message.isSelf ? 'self' : 'other';
       writeStickyAvatarIdentity(host, {
         name: message.name,
-        profileEvidence: message.profileEvidence,
+        avatarProfile: message.avatarProfile,
         snapshotAvatarUrl: message.snapshotAvatarUrl,
         identityId: message.avatarIdentityId,
         account: message.avatarAccount,
@@ -372,7 +372,7 @@ export function createMsgCbElement(
       if (!avatar || current.type !== 'msg') return;
       event.preventDefault();
       event.stopPropagation();
-      onOpenMemberProfile(current.profileEvidence, avatar.getBoundingClientRect());
+      onOpenMemberProfile(current.avatarProfile, avatar.getBoundingClientRect());
     };
     el.el.addEventListener('click', openMemberProfile);
     const baseDestroy = el.destroy;

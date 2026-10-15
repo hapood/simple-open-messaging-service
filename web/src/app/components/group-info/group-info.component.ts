@@ -59,8 +59,7 @@ import {
 } from '../../lib/unicode-text';
 import { ContactCardShareService } from '../../services/contact-card-share.service';
 import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-state';
-import type { ProfileDemand } from '../../../../../shared/profile-demand';
-import { homeProfileDemand } from '../../services/profile-demand';
+import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
 import {
   currentGroupAnnouncement,
   isGroupMetaCurrent,
@@ -117,28 +116,30 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   /** The open thread id (template-bound for the alias editor). */
   readonly threadId = this.convList.openThreadId;
 
-  groupProfileEvidence(): ProfileDemand | undefined {
+  groupProfileRef(): AvatarProfileRef | undefined {
     const group = this.group();
     const threadId = this.threadId();
     const rev = this.userMsgTrd()?.profileRev;
     return group && threadId !== undefined && rev && rev > 0
-      ? homeProfileDemand(group.account, group.namespaceId, rev)
+      ? {
+          account: group.account,
+          publisherNamespaceId: group.namespaceId,
+          profileNamespaceId: 0,
+          rev,
+          linked: true,
+        }
       : undefined;
   }
 
-  memberProfileEvidence(
-    member: ResolvedMemberProfile,
-  ): ProfileDemand | undefined {
+  memberProfileRef(member: ResolvedMemberProfile): AvatarProfileRef | undefined {
     const thread = this.userMsgTrd();
     if (thread?.type !== 'GROUP') return undefined;
     return {
+      account: member.account,
       publisherNamespaceId: thread.publisherNamespaceId,
-      lookup: 'GROUP_MEMBER_PROFILE',
-      target: {
-        profileNamespaceId: member.namespaceId,
-        account: member.account,
-        rev: member.profileRev,
-      },
+      profileNamespaceId: member.namespaceId,
+      rev: member.profileRev,
+      linked: true,
       groupAccount: thread.group.account,
     };
   }

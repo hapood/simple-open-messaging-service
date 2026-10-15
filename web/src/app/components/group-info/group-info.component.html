@@ -32,7 +32,7 @@
                 type: 'namespace',
                 namespaceId: identity.namespaceId,
               }"
-              [profileEvidence]="groupProfileEvidence()"
+              [profile]="groupProfileRef()"
             />
           }
         </span>
@@ -205,7 +205,7 @@
                 [name]="m.name"
                 [account]="m.account"
                 [domainSource]="{ type: 'profile-namespace', publisherNamespaceId: m.publisherNamespaceId, profileNamespaceId: m.namespaceId }"
-                [profileEvidence]="memberProfileEvidence(m)"
+                [profile]="memberProfileRef(m)"
                 [title]="m.name"
               ></app-user-avatar>
             }
@@ -414,7 +414,7 @@
                 [name]="m.name"
                 [account]="m.account"
                 [domainSource]="{ type: 'profile-namespace', publisherNamespaceId: m.publisherNamespaceId, profileNamespaceId: m.namespaceId }"
-                [profileEvidence]="memberProfileEvidence(m)"
+                [profile]="memberProfileRef(m)"
               ></app-user-avatar>
               <div class="member-info">
                 <span class="member-name"

@@ -47,7 +47,7 @@ class StubUserAvatarComponent {
   readonly account = input<string | undefined | null>(undefined);
   readonly domainSource = input<AvatarDomainSource | undefined>(undefined);
   readonly src = input<string | undefined | null>(undefined);
-  readonly profileEvidence = input<unknown>(undefined);
+  readonly profile = input<unknown>(undefined);
 }
 
 function buildMsg(

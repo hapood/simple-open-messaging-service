@@ -85,10 +85,12 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
       if (pending) resolve.mockResolvedValueOnce({ status: 'PENDING', key });
       resolve.mockResolvedValue({ status: 'READY', profile });
       fixture.componentRef.setInput('src', 'data:image/webp;base64,b2xk');
-      fixture.componentRef.setInput('profileEvidence', {
+      fixture.componentRef.setInput('profile', {
+        account: 'alice',
         publisherNamespaceId: 1,
-        lookup: 'ACCOUNT_PROFILE',
-        target: { profileNamespaceId: 1, account: 'alice', rev: 2 },
+        profileNamespaceId: 1,
+        rev: 2,
+        linked: true,
       });
       fixture.detectChanges();
       await vi.waitFor(() => expect(resolve).toHaveBeenCalledTimes(1));
@@ -114,10 +116,12 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     });
     fixture.componentRef.setInput('p2pThreadId', 42);
     vi.spyOn(TestBed.inject(ProfileRepository), 'resolve').mockReturnValue(new Subject());
-    fixture.componentRef.setInput('profileEvidence', {
+    fixture.componentRef.setInput('profile', {
+      account: 'alice',
       publisherNamespaceId: 0,
-      lookup: 'ACCOUNT_PROFILE',
-      target: { profileNamespaceId: 4, account: 'alice', rev: 1 },
+      profileNamespaceId: 4,
+      rev: 1,
+      linked: true,
     });
     const conversation = createP2PConversation(
       42,

@@ -55,6 +55,7 @@ import {
   type AuthoredContentType,
   type FileInfo,
   type MediaStatus,
+  isConfirmedMessage,
 } from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
@@ -64,10 +65,14 @@ import {
 } from '../user-avatar/user-avatar.component';
 import {
   conversationAvatarAccount,
-  conversationAvatarEvidence,
   conversationAvatarNamespaceId,
   conversationAvatarType,
 } from '../user-avatar/conversation-avatar.util';
+import {
+  avatarProfileDemand,
+  conversationAvatarProfile,
+  type AvatarProfileRef,
+} from '../../services/avatar-profile-ref';
 import {
   ChatInputComponent,
   type ChatSendIntent,
@@ -544,6 +549,7 @@ export class MessageThreadComponent implements OnDestroy {
   private scroller?: ScrollerApi<ChatItemData>;
   private source?: MessageThreadSource;
   private currentTrdId: number | null = null;
+  private blockedReadyTrdId: number | null = null;
   /** True only once `initScroller`'s async `init()` has settled (set in its `.finally`, cleared at init
    *  start + in `teardown`). Distinct from `currentTrdId === trd.id` (which is set synchronously at init
    *  START): a pane mid-init has the right `currentTrdId` but is NOT yet ready. {@link reset} uses this to
@@ -673,9 +679,9 @@ export class MessageThreadComponent implements OnDestroy {
     const t = this.userMsgTrd();
     return t ? conversationAvatarNamespaceId(t) : 0;
   });
-  readonly emptyAvatarEvidence = computed(() => {
+  readonly emptyAvatarProfile = computed(() => {
     const t = this.userMsgTrd();
-    return t ? conversationAvatarEvidence(t) : undefined;
+    return t ? conversationAvatarProfile(t) : undefined;
   });
   /** Hint copy varies by state: a blocked peer can't be messaged until unblocked, so the "say hello" line is
    *  swapped for an unblock prompt; otherwise it is per thread type. Returns a transloco key. */
@@ -770,15 +776,12 @@ export class MessageThreadComponent implements OnDestroy {
       const trd = this.userMsgTrd();
       if (!vp || !ct || !trd) return;
       if (this.blockedPeer()) {
-        // teardown reads and resets several UI signals. Keep those reads out of this effect's dependency
-        // graph or their resets can continuously retrigger the blocked branch. Mark the pane cold as well,
-        // so unblocking the same conversation initializes a fresh kernel instead of matching the stale id.
-        if (this.currentTrdId !== null || this.scroller) {
-          untracked(() => this.teardown());
-          this.currentTrdId = null;
-        }
+        this.presentBlockedThread(trd.threadId);
         return;
       }
+      // Leaving the parallel blocked-state branch makes this pane eligible for
+      // normal message-kernel initialization again.
+      this.blockedReadyTrdId = null;
       // Native background delivery can outlive the WebView's list projection. The
       // unread count and divider are computed from the live thread state at mount,
       // so mounting before the foreground drain catches up is safe.
@@ -1186,7 +1189,8 @@ export class MessageThreadComponent implements OnDestroy {
       onQuoteDeleted: (replySeq: number, targetSeq: number) => {
         this.scroller?.mutateItem(replySeq, (item) => ({
           ...item,
-          data: { ...item.data, quote: { seq: targetSeq, unavailable: true } },
+          // Coordinate-only quote: the tombstone stays jumpable.
+          data: { ...item.data, quote: { seq: targetSeq } },
         }));
       },
     });
@@ -1456,12 +1460,19 @@ export class MessageThreadComponent implements OnDestroy {
               item as CbItem<ChatMsgData>,
               memberId,
             );
-      const menuItemCount =
-        2 +
+      const itemCount =
+        (this.canCancelSend(contextItem.data) ? 1 : 0) +
         (this.canCopyMessage(contextItem.data) ? 1 : 0) +
         (this.canQuote(contextItem.data) ? 1 : 0) +
         (this.canDirectForward(contextItem.data) ? 1 : 0) +
+        (this.canMultiSelect(contextItem.data) ? 1 : 0) +
         (this.canWithdrawOrReport(contextItem.data) ? 1 : 0);
+      // An unconfirmed row can legitimately offer nothing (e.g. `accepted`:
+      // committed server-side, awaiting the echo — no copy, no cancel). Open
+      // no menu rather than an empty box.
+      if (itemCount === 0) return;
+      // +1 keeps the historical positioning headroom of the height estimate.
+      const menuItemCount = 1 + itemCount;
       const visualViewport = window.visualViewport;
       const messageViewport =
         this.viewportRef()?.nativeElement.getBoundingClientRect();
@@ -1596,19 +1607,24 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private async openSenderProfile(
-    demand: ProfileDemand | undefined,
+    profileRef: AvatarProfileRef | undefined,
     _anchor: DOMRect,
   ): Promise<void> {
     const conversation = this.userMsgTrd();
     if (conversation?.type === 'P2P') {
-      if (!demand || conversation.peerUser.account !== demand.target.account)
+      if (
+        !profileRef ||
+        conversation.peerUser.account !== profileRef.account
+      )
         return;
       this.dismissContextMenu();
       this.nav.openAside('profile');
       return;
     }
     const threadId = this.threadId();
-    if (threadId === undefined || !demand) return;
+    if (threadId === undefined || !profileRef) return;
+    const demand = avatarProfileDemand(profileRef);
+    if (!demand) return;
     let profile: ResolvedProfile | undefined;
     try {
       profile = await firstValueFrom(this.profileRepo.resolve(demand));
@@ -1622,8 +1638,8 @@ export class MessageThreadComponent implements OnDestroy {
     const memberHomeDomain = await firstValueFrom(
       this.namespaces
         .resolve({
-          publisherNamespaceId: demand.publisherNamespaceId,
-          profileNamespaceId: demand.target.profileNamespaceId,
+          publisherNamespaceId: profileRef.publisherNamespaceId,
+          profileNamespaceId: profileRef.profileNamespaceId,
         })
         .pipe(
           map(namespaceDisplayDomain),
@@ -1674,12 +1690,27 @@ export class MessageThreadComponent implements OnDestroy {
     this.openForwardDialog([context.targetItem], 'DIRECT');
   }
 
+  private canWithdraw(message: ChatMsgData): boolean {
+    if (!message.isSelf) return false;
+    const thread = this.userMsgTrd();
+    if (thread?.type === 'P2P' && thread.friendshipActive === false)
+      return false;
+    if (thread?.type === 'GROUP' && this.leftGroup()) return false;
+    if (thread?.type === 'GROUP' && this.dissolvedGroup()) return false;
+    return true;
+  }
+
+  canMultiSelect(message: ChatMsgData): boolean {
+    return isConfirmedMessage(message) && message.type === 'msg';
+  }
+
   canWithdrawOrReport(message: ChatMsgData): boolean {
     return (
-      message.msgId >= 0 &&
+      isConfirmedMessage(message) &&
       message.status !== 'sending' &&
       message.status !== 'failed' &&
-      message.contentType !== 'SYSTEM'
+      message.contentType !== 'SYSTEM' &&
+      (!message.isSelf || this.canWithdraw(message))
     );
   }
 
@@ -1747,23 +1778,48 @@ export class MessageThreadComponent implements OnDestroy {
 
   canDirectForward(message: ChatMsgData): boolean {
     return (
-      message.contentType === 'PURE_TEXT' ||
-      message.contentType === 'IMAGE' ||
-      message.contentType === 'VIDEO' ||
-      message.contentType === 'AUDIO' ||
-      message.contentType === 'FILE' ||
-      message.contentType === 'LINK' ||
-      message.contentType === 'FORWARD' ||
-      message.contentType === 'CONTACT_CARD'
+      isConfirmedMessage(message) &&
+      (message.contentType === 'PURE_TEXT' ||
+        message.contentType === 'IMAGE' ||
+        message.contentType === 'VIDEO' ||
+        message.contentType === 'AUDIO' ||
+        message.contentType === 'FILE' ||
+        message.contentType === 'LINK' ||
+        message.contentType === 'FORWARD' ||
+        message.contentType === 'CONTACT_CARD')
     );
   }
 
   canCopyMessage(message: ChatMsgData): boolean {
-    return canCopyMessage(message);
+    return isConfirmedMessage(message) && canCopyMessage(message);
   }
 
   canQuote(message: ChatMsgData): boolean {
-    return message.contentType !== 'SYSTEM';
+    return isConfirmedMessage(message) && message.contentType !== 'SYSTEM';
+  }
+
+  /** Pending rows (optimistic sends whose server echo has not replaced the
+   *  placeholder) expose exactly one context action: cancel the in-flight
+   *  send. Every other capability needs a confirmed seq. Cancel follows the
+   *  media-row bubble convention (`isSelf && status === 'sending'`): once the
+   *  HTTP send is accepted the server has committed, so `accepted`/`failed`
+   *  rows lose the cancel entry (`accepted` keeps only the echo spinner;
+   *  `failed` keeps the bubble retry). */
+  canCancelSend(message: ChatMsgData): boolean {
+    return (
+      message.type === 'msg' &&
+      message.isSelf &&
+      message.status === 'sending' &&
+      !isConfirmedMessage(message)
+    );
+  }
+
+  cancelContextSend(): void {
+    const context = this.messageContextMenu();
+    if (!context || !this.canCancelSend(context.targetItem.data)) return;
+    const clientMessageId = context.sourceItem.clientMessageId;
+    this.closeContextMenu();
+    if (clientMessageId) void this.cancelPending(clientMessageId);
   }
 
   openSelectedForwardDialog(): void {
@@ -2830,6 +2886,22 @@ export class MessageThreadComponent implements OnDestroy {
 
   private newClientMessageId(): string {
     return this.optimistic.newClientMessageId();
+  }
+
+  /** Present the non-kernel blocked state and satisfy ChatPane's ready handshake.
+   *  Keep the pane cold so unblocking the same thread starts a fresh message kernel. */
+  private presentBlockedThread(threadId: number): void {
+    if (this.currentTrdId !== null || this.scroller) {
+      untracked(() => this.teardown());
+      this.currentTrdId = null;
+    }
+    this.initialLoading.set(false);
+    this.initialLoadFailed.set(false);
+    this.kernelReady = false;
+    this.unreadDividerReady.set(false);
+    if (this.blockedReadyTrdId === threadId) return;
+    this.blockedReadyTrdId = threadId;
+    this.ready.emit(threadId);
   }
 
   private teardown(): void {

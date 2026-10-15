@@ -3,8 +3,11 @@ import {
   conversationAvatarAccount,
   conversationAvatarNamespaceId,
   conversationAvatarSrc,
-  conversationAvatarEvidence,
 } from './conversation-avatar.util';
+import {
+  conversationAvatarProfile,
+  avatarProfileDemand,
+} from '../../services/avatar-profile-ref';
 import { UserAvatarType } from './model';
 import type { ConversationItem } from '../../services/model';
 
@@ -36,12 +39,12 @@ describe('conversation-avatar util', () => {
   } as unknown as ConversationItem;
 
   it('sends an authorized demand while the conversation is active', () => {
-    const request = conversationAvatarEvidence({
+    const ref = conversationAvatarProfile({
       ...p2p,
       profileRev: 7,
       conversationState: 'ACTIVE',
     });
-    expect(request).toEqual({
+    expect(avatarProfileDemand(ref)).toEqual({
       publisherNamespaceId: 0,
       lookup: 'ACCOUNT_PROFILE',
       target: { profileNamespaceId: 0, account: 'alice', rev: 7 },
@@ -49,12 +52,12 @@ describe('conversation-avatar util', () => {
   });
 
   it('falls back to a cache-only lookup for a severed conversation', () => {
-    const request = conversationAvatarEvidence({
+    const ref = conversationAvatarProfile({
       ...p2p,
       profileRev: 7,
       conversationState: 'READ_ONLY',
     });
-    expect(request).toEqual({
+    expect(avatarProfileDemand(ref)).toEqual({
       evidence: null,
       demand: {
         publisherNamespaceId: 0,
@@ -65,7 +68,7 @@ describe('conversation-avatar util', () => {
   });
 
   it('uses the publisher home namespace but subject namespace zero for foreign peers', () => {
-    const request = conversationAvatarEvidence({
+    const ref = conversationAvatarProfile({
       ...p2p,
       peerUser: {
         account: 'alice',
@@ -79,7 +82,8 @@ describe('conversation-avatar util', () => {
       profileRev: 3,
       conversationState: 'READ_ONLY',
     } as ConversationItem);
-    expect(request && 'demand' in request ? request.demand : request).toEqual({
+    const demand = avatarProfileDemand(ref);
+    expect(demand && 'demand' in demand ? demand.demand : demand).toEqual({
       publisherNamespaceId: 7,
       lookup: 'ACCOUNT_PROFILE',
       target: { profileNamespaceId: 0, account: 'alice', rev: 3 },
@@ -87,12 +91,12 @@ describe('conversation-avatar util', () => {
   });
 
   it('returns a reference-stable request while the coordinates hold', () => {
-    const first = conversationAvatarEvidence({
+    const first = conversationAvatarProfile({
       ...p2p,
       profileRev: 7,
       conversationState: 'ACTIVE',
     });
-    const second = conversationAvatarEvidence({
+    const second = conversationAvatarProfile({
       ...p2p,
       profileRev: 7,
       conversationState: 'ACTIVE',
@@ -100,27 +104,27 @@ describe('conversation-avatar util', () => {
     expect(first).toBe(second);
     // A different conversation form or revision is a different demand object.
     expect(
-      conversationAvatarEvidence({
+      conversationAvatarProfile({
         ...p2p,
         profileRev: 7,
         conversationState: 'READ_ONLY',
       }),
     ).not.toBe(first);
     expect(
-      conversationAvatarEvidence({
+      conversationAvatarProfile({
         ...p2p,
         profileRev: 8,
         conversationState: 'ACTIVE',
       }),
     ).not.toBe(first);
     // The cache keys the form too: the severed request is stable on its own.
-    const severed = conversationAvatarEvidence({
+    const severed = conversationAvatarProfile({
       ...p2p,
       profileRev: 7,
       conversationState: 'READ_ONLY',
     });
     expect(
-      conversationAvatarEvidence({
+      conversationAvatarProfile({
         ...p2p,
         profileRev: 7,
         conversationState: 'READ_ONLY',

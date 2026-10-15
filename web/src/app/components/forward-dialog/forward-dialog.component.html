@@ -1,42 +1,68 @@
 <div class="forward-dialog">
   <app-page-header
     [title]="
-      (purpose() === 'NATIVE_SHARE'
+      (kind() === 'NATIVE_SHARE'
         ? 'nativeShare.title'
-        : purpose() === 'CHAT_CARD'
+        : kind() === 'CHAT_CARD'
           ? 'contactCard.shareTitle'
           : 'forward.title'
       ) | transloco
     "
     (back)="close()"
   >
-    @if (purpose() !== 'NATIVE_SHARE') {
-      <button
-        pageHeaderAction
-        type="button"
-        class="forward-dialog__header-action forward-dialog__header-action--primary"
-        [disabled]="!canConfirm()"
-        (click)="confirm()"
-      >
-        {{ 'forward.send' | transloco }}
-      </button>
-    } @else {
-      <button
-        pageHeaderAction
-        type="button"
-        class="forward-dialog__header-action forward-dialog__header-action--primary"
-        [disabled]="!canConfirm()"
-        (click)="confirm()"
-      >
-        {{ 'nativeShare.send' | transloco: { count: selectedCount() } }}
-      </button>
+    @switch (kind()) {
+      @case ('HISTORY_FORWARD') {
+        <app-split-button
+          pageHeaderAction
+          [label]="selectedForwardModeLabel()"
+          [menuAriaLabel]="'forward.chooseMode' | transloco"
+          [options]="forwardModeOptions()"
+          [selectedValue]="selectedForwardMode()"
+          [disabled]="!canConfirm()"
+          (primaryAction)="confirm()"
+          (optionAction)="selectForwardMode($event)"
+        />
+      }
+      @case ('CHAT_CARD') {
+        <button
+          pageHeaderAction
+          type="button"
+          class="forward-dialog__header-action forward-dialog__header-action--primary"
+          [disabled]="!canConfirm()"
+          (click)="confirm()"
+        >
+          {{ 'forward.send' | transloco }}
+        </button>
+      }
+      @case ('DIRECT_FORWARD') {
+        <button
+          pageHeaderAction
+          type="button"
+          class="forward-dialog__header-action forward-dialog__header-action--primary"
+          [disabled]="!canConfirm()"
+          (click)="confirm()"
+        >
+          {{ 'forward.send' | transloco }}
+        </button>
+      }
+      @case ('NATIVE_SHARE') {
+        <button
+          pageHeaderAction
+          type="button"
+          class="forward-dialog__header-action forward-dialog__header-action--primary"
+          [disabled]="!canConfirm()"
+          (click)="confirm()"
+        >
+          {{ 'nativeShare.send' | transloco: { count: selectedCount() } }}
+        </button>
+      }
     }
   </app-page-header>
 
   <div class="forward-dialog__workspace">
     <section class="forward-dialog__preview-pane">
       <div class="forward-dialog__preview">
-        @if (purpose() === 'NATIVE_SHARE') {
+        @if (kind() === 'NATIVE_SHARE') {
           @if (shareMode() === 'text') {
             <div class="forward-dialog__direct-preview native-share-preview">
               {{ sharedText() }}
@@ -188,7 +214,7 @@
                       [name]="displayName(item)"
                       [account]="avatarAccount(item)"
                       [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(item) }"
-                      [profileEvidence]="avatarEvidence(item)"
+                      [profile]="avatarProfile(item)"
                     ></app-user-avatar>
                     <span
                       class="forward-dialog__recent-check"
@@ -230,7 +256,7 @@
                   [name]="displayName(item)"
                   [account]="avatarAccount(item)"
                   [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(item) }"
-                  [profileEvidence]="avatarEvidence(item)"
+                  [profile]="avatarProfile(item)"
                 ></app-user-avatar>
               </span>
               <span class="forward-dialog__recipient-name">{{

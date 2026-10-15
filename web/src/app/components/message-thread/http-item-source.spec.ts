@@ -479,14 +479,12 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     );
     const items = await src.init(-1, 50, 0);
     expect(items[0].data).toMatchObject({
-      profileEvidence: {
-        lookup: 'ACCOUNT_PROFILE',
+      avatarProfile: {
+        account: 'alice',
         publisherNamespaceId: 0,
-        target: {
-          profileNamespaceId: 0,
-          account: 'alice',
-          rev: 3,
-        },
+        profileNamespaceId: 0,
+        rev: 3,
+        linked: true,
       },
     });
     expect(repository.resolve).toHaveBeenCalledWith({
@@ -1438,10 +1436,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       body: 'old',
     });
     await vi.waitFor(() =>
-      expect(onQuoteUpdated).toHaveBeenCalledWith(101, {
-        seq: 44,
-        unavailable: true,
-      }),
+      expect(onQuoteUpdated).toHaveBeenCalledWith(101, { seq: 44 }),
     );
     src.destroy();
   });
@@ -1463,10 +1458,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       anchor: { kind: 'origin', namespaceId: 3, originSeq: 4 },
     });
     await vi.waitFor(() =>
-      expect(onQuoteUpdated).toHaveBeenCalledWith(101, {
-        seq: 44,
-        unavailable: true,
-      }),
+      expect(onQuoteUpdated).toHaveBeenCalledWith(101, { seq: 44 }),
     );
     src.destroy();
   });
@@ -1515,7 +1507,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     getDeletedMessageSeqs.mockResolvedValue([44]);
     const items = await src.init(-1, 50, 0);
     expect(getDeletedMessageSeqs).toHaveBeenCalledWith(42, [44]);
-    expect(items[0].data.quote).toEqual({ seq: 44, unavailable: true });
+    expect(items[0].data.quote).toEqual({ seq: 44 });
     expect(items[0].data.text).toBe('reply');
     src.destroy();
   });
@@ -1538,10 +1530,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     });
     expect(onQuoteDeleted).toHaveBeenCalledWith(101, 44);
     // A later stale HTTP/cache body cannot restore the preview.
-    expect((await src.init(-1, 50, 0))[0].data.quote).toEqual({
-      seq: 44,
-      unavailable: true,
-    });
+    expect((await src.init(-1, 50, 0))[0].data.quote).toEqual({ seq: 44 });
     src.destroy();
     onQuoteDeleted.mockClear();
     deletedLive$.next({
@@ -1564,10 +1553,7 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
       });
       return [];
     });
-    expect((await src.init(-1, 50, 0))[0].data.quote).toEqual({
-      seq: 44,
-      unavailable: true,
-    });
+    expect((await src.init(-1, 50, 0))[0].data.quote).toEqual({ seq: 44 });
     src.destroy();
   });
 

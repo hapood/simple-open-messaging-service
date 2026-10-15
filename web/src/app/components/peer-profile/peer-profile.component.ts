@@ -33,7 +33,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
 import { ContactCardShareService } from '../../services/contact-card-share.service';
 import { FocusedInputRevealDirective } from '../../directives/focused-input-reveal.directive';
-import { conversationAvatarEvidence } from '../user-avatar/conversation-avatar.util';
+import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
 
 /**
  * P2P (friend) profile panel — rendered in the `aside` auxiliary outlet (`chat/:threadId/(aside:profile)`).
@@ -84,7 +84,7 @@ import { conversationAvatarEvidence } from '../user-avatar/conversation-avatar.u
                 [type]="UserAvatarType.OTHER"
                 [name]="identity.name"
                 [account]="identity.account"
-                [profileEvidence]="peerProfileEvidence()"
+                [profile]="peerProfileRef()"
                 [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
               />
             </span>
@@ -456,9 +456,9 @@ export class PeerProfileComponent {
       ? this.convList.items().find((t) => t.threadId === id)
       : undefined;
   });
-  readonly peerProfileEvidence = computed(() => {
+  readonly peerProfileRef = computed(() => {
     const thread = this.userMsgTrd();
-    return thread ? conversationAvatarEvidence(thread) : undefined;
+    return thread ? conversationAvatarProfile(thread) : undefined;
   });
   readonly peer = computed(() => this.userMsgTrd()?.peerUser);
   readonly friendshipEnded = computed(

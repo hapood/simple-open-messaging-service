@@ -34,12 +34,19 @@ function createLabel() {
 describe('UserIdentityLabelComponent', () => {
   it('resolves the selected profile name and retains the real local domain', () => {
     const { fixture, resolution, resolve } = createLabel();
+    const ref = {
+      account: 'alice',
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
+      rev: 7,
+      linked: true,
+    };
     const demand = {
       publisherNamespaceId: 0,
       lookup: 'ACCOUNT_PROFILE',
       target: { profileNamespaceId: 0, account: 'alice', rev: 7 },
     };
-    fixture.componentRef.setInput('profileEvidence', demand);
+    fixture.componentRef.setInput('profileRef', ref);
     fixture.detectChanges();
     expect(fixture.componentInstance.effectiveName()).toBe('alice');
     expect(resolve).toHaveBeenCalledWith(demand);

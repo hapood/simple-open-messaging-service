@@ -22,7 +22,7 @@ import { MatTabsModule } from '@angular/material/tabs';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
-import { homeProfileDemand } from '../../services/profile-demand';
+import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
 import { FormsModule } from '@angular/forms';
@@ -44,7 +44,6 @@ import { FriendInviteDialogComponent } from '../friend-invite-dialog/friend-invi
 import { VirtualInfiniteListComponent } from '../virtual-infinite-list/virtual-infinite-list.component';
 import { FriendRequestCardComponent } from '../friend-request-card/friend-request-card.component';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
-import type { ProfileDemand } from '../../../../../shared/profile-demand';
 import { NamespaceDomainPipe } from '../../pipes/namespace-domain.pipe';
 
 export enum AddTabStatus {
@@ -175,9 +174,14 @@ export class FriendRequestsComponent implements OnDestroy {
    * remains visible and cancellable in this dialog. */
   initialUser = input<UserRef | undefined>(undefined);
   /** Fixed address snapshots are resolved before assigning namespace coordinates or relationship state. */
-  initialAddress = input<{ account: string; domain: string } | undefined>(
-    undefined,
-  );
+  initialAddress = input<
+    | {
+        account: string;
+        domain: string;
+        publicKey: string;
+      }
+    | undefined
+  >(undefined);
   activeTab = signal(0);
   isShowBackBtn = signal(true);
   private readonly incomingList =
@@ -353,7 +357,13 @@ export class FriendRequestsComponent implements OnDestroy {
     const runResolve = () => {
       this.searchSub = domain
         ? this.userService
-            .resolveFederatedUser({ account, domain }, (stage) => {
+            .resolveFederatedUser(
+              {
+                account,
+                domain,
+                ...(address ? { publicKey: address.publicKey } : {}),
+              },
+              (stage) => {
               this.connectingDomain.set(domain);
               this.federationStage.set(stage);
             })
@@ -831,13 +841,15 @@ export class FriendRequestsComponent implements OnDestroy {
     }
   }
 
-  profileEvidence(request: PendingReq): ProfileDemand | undefined {
+  avatarProfile(request: PendingReq): AvatarProfileRef | undefined {
     return request.account && request.profileRev
-      ? homeProfileDemand(
-          request.account,
-          request.namespaceId,
-          request.profileRev,
-        )
+      ? {
+          account: request.account,
+          publisherNamespaceId: request.namespaceId,
+          profileNamespaceId: 0,
+          rev: request.profileRev,
+          linked: true,
+        }
       : undefined;
   }
 
