@@ -203,7 +203,11 @@ export class ProfileResolutionCoordinatorService {
               ORDER BY fact."feedId" DESC
               LIMIT 1
             ) latest
-            WHERE latest.operation = 'MEMBER_UPSERT'
+            -- A departing member keeps the pinned revision in Meta; the
+            -- exact historical reference stays authorized, just as the
+            -- message-evidence branch below already serves departed
+            -- members from their own committed messages.
+            WHERE latest.operation IN ('MEMBER_UPSERT', 'MEMBER_DEPART')
               AND latest.body -> 'namespaceId' = to_jsonb(${demand.target.profileNamespaceId}::integer)
               AND latest.body -> 'profileRev' = to_jsonb(${demand.target.rev}::integer)
           ) OR EXISTS (

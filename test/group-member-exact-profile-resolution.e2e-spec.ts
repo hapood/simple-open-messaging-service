@@ -327,6 +327,39 @@ describe('exact profile completion for a federated group member', () => {
       await expect(
         subject.start(viewerId, 0, selector()),
       ).resolves.toMatchObject({ status: 'READY', profile: { rev: 2 } });
+      // The retained pinned Meta fact alone (no matching message evidence)
+      // keeps the exact historical reference of a departed member
+      // authorized; an unpinned revision still fails. The outer fixture
+      // already flipped the member row to MEMBER_DEPART.
+      await database.db
+        .delete(tables.message)
+        .where(eq(tables.message.threadId, threadId));
+      try {
+        await expect(
+          subject['authorizeGroupMemberDemand'](viewerId, selector()),
+        ).resolves.toBeUndefined();
+        await expect(
+          subject['authorizeGroupMemberDemand'](viewerId, {
+            ...selector(),
+            target: { ...selector().target, rev: 3 },
+          }),
+        ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
+      } finally {
+        await database.db.insert(tables.message).values({
+          threadId,
+          seq: 1,
+          originSeq: 1,
+          originServerTime: new Date(),
+          publisherNamespaceId: namespaceId,
+          creatorAccount: account,
+          profileNamespaceId: namespaceId,
+          profileRev: 2,
+          contentType: 'PURE_TEXT',
+          content: JSON.stringify({ text: 'member proof' }),
+          payloadDigest: 'profile-proof-restore',
+          updatedAt: new Date(),
+        });
+      }
       await expect(
         subject.start(viewerId, 0, {
           ...selector(),
