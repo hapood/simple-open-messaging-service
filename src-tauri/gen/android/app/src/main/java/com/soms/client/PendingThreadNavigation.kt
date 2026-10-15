@@ -9,8 +9,8 @@ class PendingThreadNavigation {
 
     @Synchronized fun offer(value: String?, sessionId: Int?, origin: String?, currentSessionId: Int?, currentOrigin: String?): Boolean {
         val id = value?.toIntOrNull()?.takeIf { it > 0 } ?: return false
-        if (sessionId == null || sessionId <= 0 || sessionId != currentSessionId ||
-            origin.isNullOrEmpty() || origin != currentOrigin) return false
+        val binding = NotificationSessionBinding.fromValues(sessionId, origin) ?: return false
+        if (!binding.isCurrent(currentSessionId, currentOrigin)) return false
         pending = "{\"id\":\"${UUID.randomUUID()}\",\"threadId\":$id,\"sessionId\":$sessionId,\"origin\":${org.json.JSONObject.quote(origin)}}"
         return true
     }

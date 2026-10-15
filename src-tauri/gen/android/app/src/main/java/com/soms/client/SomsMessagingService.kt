@@ -65,14 +65,23 @@ class SomsMessagingService : FirebaseMessagingService() {
                 // the ring for a call the SSE already advanced.
                 val p = CallController.phase
                 if (CallController.callSid == sid && p != "idle") return
-                val callerUserId = data["callerUserId"]?.toIntOrNull() ?: return
-                val callerAccount = data["callerAccount"] ?: return
-                val callerDomain = data["callerDomain"] ?: return
-                val threadId = data["threadId"]?.toIntOrNull() ?: 0
+                val callerUserId = data["callerUserId"]?.toIntOrNull()
+                val callerAccount = data["callerAccount"]?.takeIf { it.isNotEmpty() } ?: return
+                val callerNamespaceId = data["callerNamespaceId"]?.toIntOrNull() ?: -1
+                val threadId = data["threadId"]?.toIntOrNull()?.takeIf { it > 0 } ?: return
+                // A push must match this account's local P2P thread. Never ring by guessing an identity
+                // when the thread is missing or its cached coordinates disagree with the payload.
+                val peer = ClientStateDb.getCallPeer(this, callerAccount, callerNamespaceId, threadId)
+                    ?: return
                 val callType = data["callType"] ?: "AUDIO"
                 SomsLog.i("Notif") { "CALL_INCOMING sid=$sid from=$callerUserId type=$callType -> ring" }
+                CallController.seedIncoming(
+                    sid, callerUserId ?: 0, callerAccount, callerNamespaceId,
+                    peer.name, peer.avatarDataUrl(), threadId, callType,
+                )
                 CallService.startIncoming(
-                    this, sid, callerUserId, callerAccount, callerDomain, threadId, callType,
+                    this, sid, callerAccount, callerNamespaceId, threadId, callType,
+                    peer.name, peer.avatarDataUrl(),
                 )
             }
         }
@@ -90,7 +99,7 @@ class SomsMessagingService : FirebaseMessagingService() {
         const val CHANNEL_MESSAGES = "messages"
         // v2 is intentional: setShowBadge() is immutable after channel creation, and older builds created
         // "background" with the badge-enabled default.
-        const val CHANNEL_BACKGROUND = "background_sync_v2"
+        const val CHANNEL_BACKGROUND = "background_sync_v1"
         const val CHANNEL_DIAGNOSTICS = "diagnostics"
         const val EXTRA_THREAD_ID = "soms_thread_id"
         const val EXTRA_SESSION_ID = "soms_session_id"
@@ -170,6 +179,17 @@ class SomsMessagingService : FirebaseMessagingService() {
             renderAwayNotification(ctx, allowAlert = true, threadFeedEndId = threadFeedEndId)
         }
 
+        /** Execute an already synchronized Rust batch. No network/projection work is scheduled here. */
+        fun renderNativeBatch(ctx: Context, batch: NativeNotificationBatch, isCurrent: () -> Boolean) {
+            if (!isCurrent()) return
+            val descriptors = batch.descriptors(ClientStateDb.getNotificationPreviewMode(),
+                ctx.getString(R.string.notif_private_body), ctx.getString(R.string.notif_message_retracted),
+                ctx.getString(R.string.notif_message_removed))
+            renderDescriptors(ctx, if (appInForeground) descriptors.filter {
+                it.data.optInt("threadId", -1) != activeThreadId
+            } else descriptors, allowAlert = true, isCurrent = isCurrent)
+        }
+
         private fun renderAwayNotificationOnce(ctx: Context, allowAlert: Boolean, target: Int) {
             val userId = SomsSecureStore.getCurrentUserId(ctx) ?: return
             val token = SomsSecureStore.getSessionToken(ctx) ?: return
@@ -193,19 +213,22 @@ class SomsMessagingService : FirebaseMessagingService() {
 
         /** Apply a notification delta. Every background entry point uses the same process-wide alert
          * throttle; threads absent from the delta remain unchanged. */
-        fun renderDescriptors(ctx: Context, descriptors: List<NotifDescriptor>, allowAlert: Boolean) {
-            if (descriptors.isEmpty()) return
+        fun renderDescriptors(ctx: Context, descriptors: List<NotifDescriptor>, allowAlert: Boolean,
+                              isCurrent: () -> Boolean = { true }) {
+            if (descriptors.isEmpty() || !isCurrent()) return
             ensureChannel(ctx)
             val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: run {
                 SomsLog.w("Notif") { "renderDescriptors: NotificationManager unavailable → skip" }
                 return
             }
+            if (!isCurrent()) return
             nm.cancel(AWAY_NOTIF_ID)
             renderThreadDescriptors(
                 ctx,
                 nm,
                 descriptors.filter { it.kind == "thread-message" },
                 allowAlert,
+                isCurrent,
             )
         }
 
@@ -215,6 +238,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             nm: NotificationManager,
             descriptors: List<NotifDescriptor>,
             allowAlert: Boolean,
+            isCurrent: () -> Boolean,
         ) {
             // Stable IDs replace named conversations; absent threads remain untouched.
             val policy = ClientStateDb.getNotificationAlertPolicy()
@@ -224,6 +248,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                 else -> true
             }
             for (d in descriptors) {
+                if (!isCurrent()) return
                 val tid = d.data.optInt("threadId", -1)
                 if (tid < 0) continue
                 val id = threadNotifId(tid)
@@ -239,9 +264,11 @@ class SomsMessagingService : FirebaseMessagingService() {
                     d,
                     alertThisCard,
                     onlyAlertOnce = policy == "once_per_thread",
+                    isCurrent = isCurrent,
                 )
                 if (policy != "once_per_thread") alertSlot = false
             }
+            if (!isCurrent()) return
             nm.cancel(LEGACY_GROUP_SUMMARY_ID)
             SomsLog.i("Notif") { "renderDescriptors: ${descriptors.size} conversation cards appInFg=$appInForeground" }
         }
@@ -254,6 +281,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             d: NotifDescriptor,
             allowAlert: Boolean,
             onlyAlertOnce: Boolean,
+            isCurrent: () -> Boolean,
         ) {
             val sessionId = SomsSecureStore.getSessionId(ctx) ?: return
             val origin = SomsSecureStore.getApiOrigin(ctx) ?: return
@@ -308,7 +336,9 @@ class SomsMessagingService : FirebaseMessagingService() {
                 builder.setStyle(style)
             }
             if (!allowAlert || d.silent == true) builder.setSilent(true)
-            nm.notify(id, builder.build())
+            // Avatar decoding/platform preparation can outlive the runtime that issued this command.
+            // Never publish its card after that instance/account has been invalidated.
+            if (isCurrent()) nm.notify(id, builder.build())
         }
 
         private fun buildPublicVersion(ctx: Context, contentIntent: PendingIntent): Notification =

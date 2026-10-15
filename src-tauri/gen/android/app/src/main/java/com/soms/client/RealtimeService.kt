@@ -9,740 +9,183 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
-import okhttp3.OkHttpClient
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
-import okhttp3.sse.EventSource
-import okhttp3.sse.EventSourceListener
-import okhttp3.sse.EventSources
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.io.IOException
+import androidx.annotation.Keep
 import org.json.JSONObject
 
-/** logcat tag for this otherwise-headless service. The FGS runs with no WebView and used to
- *  be a total black box — these calls (onOpen / onEvent / onClosed / onFailure) are the only way to see
- *  whether the native SSE is connecting, receiving frames, and why it drops. Native `Log.*` → logcat is
- *  the legitimate debug surface for a headless service (distinct from the web no-console.log rule). */
-private const val TAG = "SomsFgs"
-
-/** Coalesce a burst of durable State Feed wakes into one notification projection pull. */
-private const val NOTIFICATION_COALESCE_MS = 500L
-
-/**
- * The single native-owned realtime channel. A (optionally foreground) service holding a long-lived SSE
- * to `GET /events` with the no-expiry session token, **continuous across fg/bg**. This is the Android half
- * of "one connection, native-owned": the WebView does NOT open its own `/events` worker on Android — it
- * consumes the frames this service forwards via `window.__SOMS_EVENT__`. (Web/desktop still run their own
- * `sse.worker.ts`.) Supersedes `MessageSyncService`, which held a *parallel* `/notifications/stream`
- * alongside the WebView's `/events` — two connections swapping on fg/bg, neither handing data to the
- * other. One session token now authenticates both this stream and the background Rust thread-feed
- * fetchers (FCM / WorkManager).
- *
- * **Lifecycle (the service must run while foregrounded — the WebView's only event source is this stream):**
- *  - When background realtime is enabled, promote while the activity is visible (onResume or login) and
- *    retain the foreground notification across onStop. Promoting for the first time from onStop is too late
- *    on Android 12+, which may already consider the app backgrounded.
- *  - When disabled, the visible WebView still needs this stream as a plain service; onStop stops it and
- *    background delivery falls back to FCM / WorkManager.
- *  - A `START_STICKY` system restart (null intent) promotes only if background realtime remains enabled
- *    and the session token is present. It reconnects without a WebView or Tauri activity.
- *
- * **Foreground** ([SomsMessagingService.appInForeground] true): every named event is forwarded to the
- * WebView via `window.__SOMS_EVENT__(type, data)` — the JS `WebsocketService` feeds the existing
- * `eventSubject`, so all downstream consumers are unchanged. Durable State Feed cursors bridge transient
- * drops; a fresh connect after a process restart is backstopped by the WebView's catch-up on resume.
- *
- * **Background:** the WebView is suspended. `STATE_FEED_UPDATED` wakes the native notification projection;
- * the server suppresses FCM only while this exact session owns the live SSE stream. Other durable events
- * are recovered from their cursors on resume. Ephemeral call events still reach the native call owner.
- *
- * Connection state is pushed to the WebView via `window.__SOMS_CONN_STATE__` so the ConnectionBanner
- * reflects Kotlin-owned connect/reconnect/close (the JS side cannot observe the native socket).
- */
-class RealtimeService : Service() {
-
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.SECONDS) // long-lived stream — no read timeout
-        .build()
-    private val sseFactory = EventSources.createFactory(client)
-
-    @Volatile private var stopping = false
-    // @Volatile: written on the main looper (openStream / reopenTask), read on OkHttp's SSE dispatcher
-    // thread (the onClosed/onFailure identity check). Without it the SSE thread can see a stale reference
-    // and mis-fire the FORCE_RECONNECT race guard (null the fresh socket → a duplicate stream opens).
-    @Volatile private var eventSource: EventSource? = null
+/** Android lifecycle/presentation adapter for Rust's shared realtime runtime.
+ * No sockets, origin probes, retries, feed work, or HELLO cache are owned here. */
+@Keep
+class RealtimeService : Service(), RealtimeCallbacks {
     private val handler = Handler(Looper.getMainLooper())
-    private data class FeedReceipt(val sseUuid: String, val threadFeedEndId: Int)
-    private var receiptOrigin: String? = null
-    private var receiptToken: String? = null
-    private var pendingReceipt: FeedReceipt? = null
-    private var receiptDueAt = 0L
-    private var receiptRetries = 0
-    private var receiptScheduled = false
-    private var receiptCall: Call? = null
-    private val receiptTask = Runnable { flushReceipt() }
-
-    /** The main looper owns this bounded buffer; OkHttp performs HTTP asynchronously. */
-    private fun queueReceipt(receipt: FeedReceipt) {
-        handler.post {
-            if (stopping) return@post
-            val previous = pendingReceipt
-            if (previous == null) {
-                receiptDueAt = SystemClock.elapsedRealtime() + 3_000
-                receiptRetries = 0
-            }
-            if (previous == null || previous.sseUuid != receipt.sseUuid ||
-                previous.threadFeedEndId <= receipt.threadFeedEndId) {
-                pendingReceipt = receipt
-            }
-            scheduleReceipt()
-        }
-    }
-
-    private fun scheduleReceipt() {
-        if (pendingReceipt == null || receiptScheduled || stopping) return
-        receiptScheduled = true
-        handler.postDelayed(
-            receiptTask,
-            (receiptDueAt - SystemClock.elapsedRealtime()).coerceAtLeast(0),
-        )
-    }
-
-    private fun flushReceipt() {
-        receiptScheduled = false
-        if (stopping || receiptCall != null) return
-        val receipt = pendingReceipt ?: return
-        pendingReceipt = null
-        val origin = receiptOrigin
-        val token = receiptToken
-        if (origin == null || token == null) return // The five-second FCM fallback owns this wake.
-        val body = JSONObject()
-            .put("sseUuid", receipt.sseUuid)
-            .put("threadFeedEndId", receipt.threadFeedEndId)
-            .toString()
-            .toRequestBody("application/json".toMediaType())
-        val request = Request.Builder()
-            .url("$origin${SomsSecureStore.API_PREFIX}/events/receipt")
-            .addHeader("Authorization", "Bearer $token")
-            .post(body)
-            .build()
-        val call = client.newCall(request)
-        call.timeout().timeout(2, TimeUnit.SECONDS)
-        receiptCall = call
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) = finish(false)
-            override fun onResponse(call: Call, response: Response) {
-                response.use { finish(it.isSuccessful) }
-            }
-
-            private fun finish(success: Boolean) {
-                handler.post {
-                    if (receiptCall !== call || stopping) return@post
-                    receiptCall = null
-                    if (!success && pendingReceipt == null && receiptRetries == 0) {
-                        pendingReceipt = receipt
-                        receiptRetries = 1
-                        receiptDueAt = SystemClock.elapsedRealtime() + 1_000
-                    }
-                    scheduleReceipt()
-                }
-            }
-        })
-    }
-
-    /** Single-thread executor for blocking origin probes and notification projection pulls. */
-    private val ioExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsRealtimeIo") }
-    private var attempt = 0
-
-    /** Single-flight lock for [establishConnection]. Probes + the open decision are serialized through this so
-     *  two concurrent triggers (e.g. onFailure firing while ConnectivityManager.onAvailable races in) launch at
-     *  most ONE resolve+open cycle, not two divergent streams. Guards [establishing] + the eventSource!=null
-     *  re-check at the open step. */
-    private val establishLock = Any()
-    /** True while an [establishConnection] cycle is mid-flight (between accepting the trigger and finishing the
-     *  resolve+open / scheduleReopen). Read+written under [establishLock]. */
-    private var establishing = false
-    /** The OS network is up (a default network is present). Flipped by [networkCallback]: onLost→false (push
-     *  Disconnected, stop attempting — a probe would only fail), onAvailable→true (race + reconnect). Read in
-     *  [establishConnection]'s guard so no doomed probe/open runs while the device is offline. @Volatile: written
-     *  on the ConnectivityManager binder thread, read on ioExecutor / the main looper. */
-    @Volatile private var networkOnline = true
-    /** The system connectivity service, held so [onDestroy] can unregister [networkCallback]. Null only before
-     *  [onCreate] / when the service has no Context (never in practice). */
+    private val adapter = NativeRealtimeAdapter(object : NativeRealtimeRuntime {
+        override fun start() = RustRuntimeBridge.realtimeStart(this@RealtimeService)
+        override fun stop(instance: Long) = RustRuntimeBridge.realtimeStop(instance)
+        override fun network(instance: Long, online: Boolean) = RustRuntimeBridge.realtimeNet(instance, online)
+        override fun retry(instance: Long) = RustRuntimeBridge.realtimeRetryNow(instance)
+        override fun reconnect(instance: Long) = RustRuntimeBridge.realtimeForceReconnect(instance)
+    })
     private var connectivityManager: ConnectivityManager? = null
+    private var callbackRegistered = false
+    @Volatile private var networkOnline = true
 
-    /** OS network-state observer (the default network). `onLost` = device went offline → Disconnected (distinct
-     *  from server-unreachable Reconnecting — no backoff countdown, no point retrying); `onAvailable` = network
-     *  (re)gained → race both origins and reconnect. Registered in [onCreate]; registerDefaultNetworkCallback
-     *  fires `onAvailable` immediately on register when online (harmless — [establishConnection] single-flights
-     *  the dedup vs the onStartCommand open). */
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onLost(network: Network) {
-            SomsLog.i("Rt") { "network onLost → disconnected (stop attempting)" }
             networkOnline = false
-            handler.removeCallbacks(reopenTask)
-            eventSource?.cancel()
-            eventSource = null
-            pushConnState("disconnected")
+            adapter.network(false)
         }
-
         override fun onAvailable(network: Network) {
-            SomsLog.i("Rt") { "network onAvailable → race + reconnect" }
             networkOnline = true
-            attempt = 0
-            establishConnection("reconnecting")
+            adapter.network(true)
         }
     }
 
     override fun onCreate() {
         super.onCreate()
-        // Observe OS connectivity so the banner distinguishes "device offline" (Disconnected) from "server
-        // unreachable" (Reconnecting), and so [establishConnection] stops launching doomed probes while offline.
-        // registerDefaultNetworkCallback tracks the DEFAULT network — onLost fires only when the device loses
-        // its last default route (true offline), not on a Wi-Fi↔cellular handoff (that's onAvailable for the new
-        // default). Normal permission (ACCESS_NETWORK_STATE); registered for the service's lifetime.
         connectivityManager = getSystemService(ConnectivityManager::class.java)
+        networkOnline = connectivityManager?.activeNetwork != null
         connectivityManager?.registerDefaultNetworkCallback(networkCallback)
+        callbackRegistered = connectivityManager != null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        SomsLog.i("Rt") { "onStartCommand action=${intent?.action} (null=sticky-restart) streamOpen=${eventSource != null} startId=$startId" }
-        when (intent?.action) {
-            ACTION_FOREGROUND -> {
-                handler.removeCallbacks(notificationProjectionTask)
-                if (SomsSecureStore.getForegroundServiceEnabled(this)) {
-                    if (!promoteOrStop(startId)) return START_NOT_STICKY
-                } else {
-                    dropForegroundNotification()
-                }
-            }
-            ACTION_RETRY -> {
-                // User tapped the disconnected chip (SomsFcm.retryNow → this action): cancel the pending
-                // backoff + reset the attempt counter so the immediate retry starts fresh, then let the
-                // openStream() below reconnect at once. openStream() is a no-op if a stream is already open,
-                // so a retry while healthy is harmless. Parity with the worker's retry-now / Rust's sse_net.
-                SomsLog.i("Rt") { "onStartCommand retry-now (cancel backoff + reconnect)" }
-                handler.removeCallbacks(reopenTask)
-                attempt = 0
-            }
-            ACTION_FORCE_RECONNECT -> {
-                // HELLO-timeout (SomsFcm.forceReconnect → this action): the open stream is unusable — no
-                // HELLO within the deadline — so CANCEL it + reopen, so the fresh connection re-pushes HELLO.
-                // Unlike ACTION_RETRY (which openStream() no-ops when already open), this tears down the
-                // dead-open socket first. JS cannot close the native socket, so the WebView asks Kotlin. The
-                // listener's identity check ensures the canceled socket's late onClosed/onFailure can't
-                // clobber the fresh socket establishConnection() opens below.
-                SomsLog.i("Rt") { "onStartCommand force-reconnect (cancel open stream + reopen)" }
-                handler.removeCallbacks(reopenTask)
-                attempt = 0
-                if (eventSource != null) {
-                    eventSource?.cancel()
-                    eventSource = null
-                }
-                // Re-resolve (probe + race) + reopen on the chosen origin; establishConnection surfaces
-                // "reconnecting" itself. Return early so the tail openStream() — which establishes as a calm
-                // "connecting" — can't override this path's urgent reconnect label.
-                establishConnection("reconnecting")
-                return START_STICKY
-            }
-            else -> {
-                // Only a START_STICKY restart or an already-foreground-enabled service reaches this path.
-                // Never resurrect a disabled/logged-out background connection after a process restart.
-                if (!SomsSecureStore.getForegroundServiceEnabled(this) ||
-                    SomsSecureStore.getSessionToken(this) == null) {
-                    stopSelfResult(startId)
-                    return START_NOT_STICKY
-                }
-                if (!promoteOrStop(startId)) return START_NOT_STICKY
-            }
+        if (!adapter.isAlive || SomsSecureStore.getSessionToken(this) == null) {
+            stopSelfResult(startId)
+            return START_NOT_STICKY
         }
-        openStream()
+        val action = intent?.action
+        val enabled = SomsSecureStore.getForegroundServiceEnabled(this)
+        if (action != ACTION_FOREGROUND && action != ACTION_RETRY && action != ACTION_FORCE_RECONNECT && !enabled) {
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+        if (enabled) {
+            if (!promoteOrStop(startId)) return START_NOT_STICKY
+        } else dropForegroundNotification()
+        adapter.start()
+        adapter.network(networkOnline)
+        when (action) {
+            ACTION_RETRY -> adapter.retry()
+            ACTION_FORCE_RECONNECT -> adapter.reconnect()
+        }
         return START_STICKY
     }
 
-    /** Bound-mode is unused (this is a started service); satisfy the abstract base. */
     override fun onBind(intent: Intent?): IBinder? = null
 
-    /** Quota exhaustion or FGS restrictions must not crash a sticky service restart. Stop rather than
-     *  keeping a background socket without its foreground-service anchor. */
     private fun promoteOrStop(startId: Int): Boolean = try {
-        startForegroundCompat()
+        val notification = SomsMessagingService.buildForegroundNotification(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(SomsMessagingService.FGS_PERSISTENT_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else startForeground(SomsMessagingService.FGS_PERSISTENT_ID, notification)
         true
-    } catch (e: RuntimeException) {
-        Log.w(TAG, "dataSync foreground promotion rejected", e)
+    } catch (error: RuntimeException) {
+        Log.w("SomsRealtimeAdapter", "dataSync foreground promotion rejected", error)
+        adapter.destroy()
         stopSelfResult(startId)
         false
     }
 
-    /** Promote to foreground with the persistent notification. The typed `dataSync` startForeground is
-     *  required on Android 14+ (UPSIDE_DOWN_CAKE); older versions fall back to the 2-arg overload and
-     *  rely on the manifest-declared type. No-op-safe to call repeatedly. */
-    private fun startForegroundCompat() {
-        val notif = SomsMessagingService.buildForegroundNotification(this)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                SomsMessagingService.FGS_PERSISTENT_ID,
-                notif,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-            )
-        } else {
-            startForeground(SomsMessagingService.FGS_PERSISTENT_ID, notif)
-        }
-    }
-
-    /** Leave foreground service state and remove the persistent notification. Used on resume so the
-     *  "Background sync" notification isn't shown while the user is in the app. The stream is unaffected
-     *  (foreground state is only about process priority / survivability, not the connection itself). */
     private fun dropForegroundNotification() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION") stopForeground(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE)
+        else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
         }
     }
 
-    /** Open the /events stream if it isn't already. Idempotent: a re-delivered intent (fg/bg cycle) never
-     *  tears down a healthy connection. Delegates the origin decision + the actual open to
-     *  [establishConnection] (the probe→flip→race state machine) — the boot/resume path establishes as a calm
-     *  "connecting"; failure paths call [establishConnection] directly with "reconnecting". */
-    private fun openStream() {
-        if (eventSource != null) {
-            SomsLog.d("Rt") { "openStream no-op (eventSource already open)" }
-            return // already connected
-        }
-        establishConnection("connecting")
-    }
-
-    /** The single origin-selection + open entry point — Kotlin is the origin AUTHORITY on Android (it owns the
-     *  FGS, including background; Rust is passive and accepts whatever Kotlin signals via [signalRust]).
-     *
-     *  Single-flight ([establishLock]): at most one resolve+open cycle runs at a time, so two concurrent
-     *  triggers (onFailure racing ConnectivityManager.onAvailable) launch one stream, not two. The resolve is
-     *  off-main ([ioExecutor]) because it does blocking health probes; the open ([openStreamOn]) is non-blocking
-     *  and safe off-main.
-     *
-     *  - `asState` is the banner state to surface while resolving ("connecting" for boot, "reconnecting" for a
-     *    failure/retry). Overridden to "disconnected" when the OS network is down.
-     *  - [OriginSelector] races both origins and returns the first healthy one (both-down ⇒ null).
-     *    null ⇒ [scheduleReopen] (backoff, whose retry re-runs this).
-     *  - On a chosen origin: [signalRust] so Rust's API transports follow (no API⇄SSE origin split), then open. */
-    private fun establishConnection(asState: String) {
-        synchronized(establishLock) {
-            if (establishing || eventSource != null) return
-            if (!networkOnline) { pushConnState("disconnected"); return }
-            establishing = true
-        }
-        pushConnState(asState)
-        ioExecutor.execute {
-            try {
-                val token = SomsSecureStore.getSessionToken(this)
-                if (token == null) {
-                    SomsLog.w("Rt") { "establish abort (no token) → stopSelf" }
-                    stopSelf(); return@execute
-                }
-                val origin = OriginSelector.select(this)
-                if (origin == null) {
-                    // Both origins down (or the single configured origin is down) → backoff; the retry re-runs
-                    // establishConnection (which races again). The "reconnecting" + countdown are pushed by
-                    // scheduleReopen. Don't clear `establishing` before scheduleReopen — it's cleared in finally.
-                    scheduleReopen(); return@execute
-                }
-                // Re-check under the lock: the network may have dropped, or another path may have opened a
-                // stream, during the probe. If so, abandon this open (no duplicate stream, no doomed connect).
-                synchronized(establishLock) {
-                    if (!networkOnline || eventSource != null) return@execute
-                }
-                signalRust(origin)
-                openStreamOn(origin, token)
-            } finally {
-                synchronized(establishLock) { establishing = false }
-            }
-        }
-    }
-
-    /** Build + open the /events EventSource on the resolved origin. Non-blocking (OkHttp connects on its
-     *  dispatcher thread; the listener fires there), so this is safe to call from [ioExecutor]. The [eventSource]
-     *  assignment is the single writer the listener's identity check reads (@Volatile). Does NOT push state — the
-     *  banner keeps the [establishConnection] `asState` ("connecting" boot / "reconnecting" failure) until onOpen
-     *  flips it to "open", so a recovery doesn't flicker reconnecting→connecting→open (expand→collapse→gone). */
-    private fun openStreamOn(origin: String, token: String) {
+    /** JNI may deliver on any Rust worker. Fence the queued main-thread operation too, not just ingress.
+     * Capture the OS-store token under its mutation lock so Rust's token update and native persistence
+     * cannot split this snapshot. The credential remains in native memory and is never logged. */
+    private fun dispatch(generation: Long, action: () -> Unit) {
+        if (!adapter.isAlive) return
+        val token = synchronized(SomsSecureStore) { SomsSecureStore.getSessionToken(this) }
         handler.post {
-            receiptOrigin = origin
-            receiptToken = token
-        }
-        val request = Request.Builder()
-            .url("$origin${SomsSecureStore.API_PREFIX}/events")
-            .addHeader("Authorization", "Bearer $token")
-            .addHeader("Accept", "text/event-stream")
-            .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
-            .build()
-        SomsLog.i("Rt") { "openStreamOn url=${request.url} attempt=$attempt" }
-        eventSource = sseFactory.newEventSource(request, listener)
-    }
-
-    /** Signal Rust the origin Kotlin decided is active, so Rust's API transports ([api_request] / media / upload)
-     *  follow it — no API⇄SSE origin split. Rust is passive on Android ([runtime_switch] is a no-op there); it
-     *  accepts this via the `set_active_origin` command. Foreground-only in effect: [SomsBridge.eval] is a no-op
-     *  while no WebView is attached (background), which is fine — background has no API traffic to diverge from,
-     *  and the next foreground [openStreamOn] re-signals. */
-    private fun signalRust(origin: String) {
-        SomsBridge.eval("window.__SOMS_SET_ACTIVE_ORIGIN__ && window.__SOMS_SET_ACTIVE_ORIGIN__(${SomsBridge.jsonStr(origin)});")
-    }
-
-    private val listener = object : EventSourceListener() {
-        override fun onOpen(eventSource: EventSource, response: Response) {
-            SomsLog.i("Rt") { "onOpen connected code=${response.code}" }
-            this@RealtimeService.pushConnState("open")
-        }
-
-        override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-            val frameToken = eventSource.request().header("Authorization")?.removePrefix("Bearer ")
-            if (frameToken.isNullOrEmpty() || frameToken != SomsSecureStore.getSessionToken(this@RealtimeService)) return
-            attempt = 0 // any real frame resets the reconnect backoff
-            if (type == "THREAD_FEED_UPDATED" && this@RealtimeService.eventSource === eventSource) {
-                val receipt = runCatching {
-                    val body = JSONObject(data)
-                    val uuid = body.optString("sseUuid")
-                    val head = body.optInt("threadFeedEndId", -1)
-                    if (uuid.isNotEmpty() && head >= 0) FeedReceipt(uuid, head) else null
-                }.getOrNull()
-                if (receipt != null) queueReceipt(receipt)
+            if (!adapter.isAlive || !RustRuntimeBridge.realtimeIsCurrent(generation) || token != SomsSecureStore.getSessionToken(this)) return@post
+            try {
+                action()
+            } catch (error: Exception) {
+                // JNI can only catch synchronous callback errors; a queued platform action must also
+                // fail safely. Never include event bodies or credential-bearing exception text.
+                Log.w("SomsRealtimeAdapter", "platform command failed: ${error.javaClass.simpleName}")
             }
-            // Cache HELLO + merge incremental revision frames (runs in fg AND bg, so the cache stays fresh
-            // while the WebView is suspended). SomsFcm.replayHello hands a re-attached WebView this merged
-            // HELLO — a retained open stream does not re-push HELLO on its own.
-            cacheHelloFrame(type, data, frameToken)
-            if (type == "HELLO") reconcileActiveCall(data)
-            // THE diagnostic line: `appInFg` here is the ground-truth branch selector. If a backgrounded
-            // device shows appInFg=true, the foreground branch runs on a suspended WebView (frame vanishes,
-            // no notification) — that's the bug. If appInFg=false + branch=background but no notification
-            // appears, the failure is downstream in native notification synchronization/renderDescriptors (see Soms/Notif).
-            SomsLog.i("Rt") {
-                "onEvent type=$type id=$id dataLen=${data.length} appInFg=${SomsMessagingService.appInForeground}"
-            }
-
-            if (type == "SSE_REPLACED") {
-                if (this@RealtimeService.eventSource !== eventSource) return
-                // A newer stream authenticated as this device session took ownership.
-                // Do not reconnect the displaced socket and evict it in a loop.
-                this@RealtimeService.eventSource = null
-                eventSource.cancel()
-                stopSelf()
-                return
-            }
-
-            // FORCE_LOGOUT: the session was invalidated (all-device logout / password change / admin
-            // purge). Forward so the JS layer performs the logout, then stop — the token is dead and
-            // reconnecting would just 401-loop.
-            if (type == "FORCE_LOGOUT") {
-                SomsLog.i("Rt") { "FORCE_LOGOUT → forward + stopSelf" }
-                forwardToJs(type, data)
-                stopSelf()
-                return
-            }
-
-            // CALL_SIGNAL / CALL_EVENT: hand to the native WebRTC owner IN ADDITION to the WebView mirror
-            // below. This runs in BOTH fg and bg (above the appInForeground gate, like cacheHelloFrame) — a
-            // CALL_SIGNAL ICE candidate MUST reach the native RTCPeerConnection even while the WebView is
-            // suspended (the whole point of native-owned media: the media leg must not die when the chrome
-            // does). forwardToJs (the fg branch) mirrors the frame to the Angular call UI; CallController
-            // owns the actual peer connection. A no-op when no live call matches (CallController.onFrame
-            // drops a stray frame after the call ended).
-            if (type == "CALL_SIGNAL" || type == "CALL_EVENT") {
-                CallController.onFrame(type, data)
-            }
-
-            if (SomsMessagingService.appInForeground &&
-                (type == "HELLO" || type == "THREAD_FEED_UPDATED" || type == "STATE_FEED_UPDATED")) {
-                val frame = runCatching { JSONObject(data) }.getOrNull()
-                val threadTarget = if (type == "HELLO" || type == "THREAD_FEED_UPDATED")
-                    frame?.optInt("threadFeedEndId", -1)?.takeIf { it >= 0 } else null
-                val stateTarget = if (type == "HELLO" || type == "STATE_FEED_UPDATED")
-                    frame?.optLong(if (type == "HELLO") "stateFeedEndId" else "feedId", -1)
-                        ?.takeIf { it >= 0 } else null
-                if (threadTarget != null || stateTarget != null) {
-                    ioExecutor.execute {
-                        if (stateTarget != null && !syncNativeStateFeed(stateTarget)) return@execute
-                        if (threadTarget != null) runCatching {
-                            SomsMessagingService.renderForegroundNotification(this@RealtimeService, threadTarget)
-                        }.onFailure { e -> SomsLog.w("Notif", e) { "foreground projection failed" } }
-                        if (SomsMessagingService.appInForeground) forwardToJs(type, data)
-                    }
-                    return
-                }
-            }
-
-            if (SomsMessagingService.appInForeground) {
-                // Foreground: hand every event to the WebView. It dispatches via WebsocketService exactly
-                // as the sse.worker would, so all downstream consumers (chat-box, threadlist, …) are
-                // unchanged. `data` is the server-serialized JSON, valid as a JS expression.
-                SomsLog.d("Rt") { "branch=foreground → forwardToJs (WebView is suspended if appInFg lags reality)" }
-                forwardToJs(type, data)
-            } else if (type == "THREAD_FEED_UPDATED" || type == "HELLO" || type == "STATE_FEED_UPDATED") {
-                // Background state-feed pages are also Rust-owned; resume reads their committed cursor.
-                if (type == "HELLO" || type == "STATE_FEED_UPDATED") {
-                    val key = if (type == "HELLO") "stateFeedEndId" else "feedId"
-                    val stateTarget = runCatching { JSONObject(data).getLong(key) }.getOrNull()
-                    if (stateTarget != null && stateTarget >= 0)
-                        ioExecutor.execute { syncNativeStateFeed(stateTarget) }
-                }
-                if (type == "HELLO" || type == "THREAD_FEED_UPDATED") {
-                    val target = runCatching { JSONObject(data).getInt("threadFeedEndId") }.getOrNull()
-                    if (target != null && target >= 0) scheduleNotificationProjection(target)
-                }
-            } else {
-                // Background durable events are recovered by cursor on resume. Message notification wakes
-                // arrive independently through FCM, so the SSE stream does not own notification rendering.
-                SomsLog.d("Rt") { "branch=background → dropped (resume catch-up covers it)" }
-            }
-        }
-
-        override fun onClosed(eventSource: EventSource) {
-            // Stale callback (a FORCE_RECONNECT-canceled socket's late close): ignore ENTIRELY — the fresh
-            // socket is already open, so no nulling, no "reconnecting" push (no banner flicker), no reopen.
-            if (this@RealtimeService.eventSource !== eventSource) return
-            SomsLog.i("Rt") { "onClosed → scheduleReopen" }
-            this@RealtimeService.eventSource = null
-            this@RealtimeService.pushConnState("reconnecting")
-            scheduleReopen()
-        }
-
-        override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-            Log.w(TAG, "onFailure code=${response?.code} ${t?.javaClass?.simpleName}: ${t?.message}")
-            // Stale callback (a FORCE_RECONNECT-canceled socket's late failure): ignore entirely (see onClosed).
-            if (this@RealtimeService.eventSource !== eventSource) return
-            this@RealtimeService.eventSource = null
-            // 401 → the session token is dead (revoked / password change / admin purge / all-device logout).
-            // Clear it so onResume's token-presence check stops reconnecting into a 401 loop, AND forward a
-            // synthetic FORCE_LOGOUT so the WebView runs its logout flow (the same path the in-band
-            // FORCE_LOGOUT event uses). The eval is best-effort — a suspended/absent WebView is a no-op; the
-            // cleared token still terminates the reconnect cycle on the next foreground.
-            if (response?.code == 401) {
-                SomsSecureStore.setSessionToken(this@RealtimeService, null)
-                SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('FORCE_LOGOUT', {});")
-                stopSelf()
-                return
-            }
-            // Network failure (not 401): re-resolve + reopen via establishConnection. OriginSelector races both
-            // configured addresses, immediately adopts the first healthy one, and cancels the loser. If both are
-            // down, establishConnection falls through to scheduleReopen (backoff, whose retry races again).
-            // Kotlin owns this decision and signals Rust (signalRust) so the API
-            // transports follow — no origin split. (401 is handled above — session-dead.)
-            this@RealtimeService.establishConnection("reconnecting")
         }
     }
 
-    /** Forward one event to the WebView. `type` is quoted via [SomsBridge.jsonStr]; `data` is the raw JSON
-     *  the server serialized (valid as a JS expression), defaulted to `{}` if the frame carried none. */
-    private fun forwardToJs(type: String?, data: String) {
-        val safeType = type ?: "message"
-        val safeData = if (data.isBlank()) "{}" else data
-        // webViewAttached=false → SomsBridge.eval is a no-op (no activity attached). webViewAttached=true
-        // while the activity is STOPPED → evaluateJavascript is accepted but the JS engine is paused, so the
-        // call queues and may never flush. Both look like "frame vanished." This line distinguishes
-        // "forwarding ran" from "the background branch never ran" — pair it with the onEvent branch log.
-        SomsLog.d("Rt") {
-            "forwardToJs type=$safeType webViewAttached=${SomsBridge.webView != null} appInFg=${SomsMessagingService.appInForeground}"
-        }
-        SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__(${SomsBridge.jsonStr(safeType)}, $safeData);")
+    override fun onEvent(generation: Long, type: String, dataJson: String) = dispatch(generation) {
+        // Routing to a platform media owner is adapter work; the transport frame remains opaque.
+        if (type == "CALL_SIGNAL" || type == "CALL_EVENT") CallController.onFrame(type, dataJson)
+        if (SomsMessagingService.appInForeground)
+            SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__(${SomsBridge.jsonStr(type)}, $dataJson);")
     }
 
-    /** Cache HELLO / merge one incremental revision frame into the cached HELLO (the value
-     *  [SomsFcmInterface.replayHello] hands a re-attached WebView). Delegates the pure merge rules to
-     *  [HelloMerger] (JVM-testable); runs in foreground AND background (called from onEvent before the fg/bg
-     *  forwarding branch) so the cache stays fresh while the WebView is suspended. [synchronized][helloLock]
-     *  against [replayCachedHello] so a concurrent replay never sees a mid-mutation toString. */
-    private fun cacheHelloFrame(type: String?, data: String, frameToken: String) {
-        val t = type ?: return
-        if (frameToken != SomsSecureStore.getSessionToken(this)) return
-        if (t == "HELLO") {
-            val userId = try { JSONObject(data).optInt("userId", 0) } catch (_: Exception) { 0 }
-            val sessionId = try { JSONObject(data).optInt("sessionId", 0) } catch (_: Exception) { 0 }
-            if (!SomsSecureStore.setHelloIdentity(this, frameToken, sessionId, userId)) return
-        }
-        synchronized(helloLock) {
-            if (frameToken == SomsSecureStore.getSessionToken(this))
-                cachedHello = HelloMerger.merge(cachedHello, t, data)
-        }
-    }
-
-    /** HELLO activeCall recovery: a reconnecting / freshly-booted callee that MISSED the CALL_EVENT{incoming}
-     *  (the SSE was down when it fired) re-derives the incoming state from the HELLO's activeCall summary. If
-     *  the call is still ringing + this is the callee + the native FSM is idle, re-seed incoming (ring + notify
-     *  + arm accept) — otherwise the user could never answer a call that arrived while offline / reconnecting,
-     *  and the caller would stall on connecting with no answer. The caller (isCaller) + post-ringing states
-     *  (accepted/connected) are skipped: the caller initiates, and an already-accepted call belongs to another
-     *  device. */
-    private fun reconcileActiveCall(helloData: String) {
-        try {
-            val active = JSONObject(helloData).optJSONObject("activeCall") ?: return
-            val sid = active.optString("callSid", "")
-            val state = active.optString("state", "")
-            val peerId = active.optInt("peerUserId", 0)
-            val threadId = active.optInt("threadId", 0)
-            val peerAccount = active.optString("peerAccount", "")
-            val peerDomain = active.optString("peerDomain", "")
-            val isCaller = active.optBoolean("isCaller", false)
-            val callType = active.optString("callType", "AUDIO")
-            if (sid.isEmpty() || threadId <= 0 || peerAccount.isEmpty()) return
-            if (state == "ringing" && !isCaller && CallController.phase == "idle") {
-                SomsLog.i("Rt") { "HELLO activeCall: re-seeding incoming (missed CALL_EVENT) sid=$sid peer=$peerId" }
-                // Presentation is resolved from native SQLite by the canonical peer address; the summary
-                // carries identity only. seedIncoming is idempotent + rings.
-                val peer = ClientStateDb.getCallPeer(this, peerAccount, peerDomain, threadId)
-                CallController.seedIncoming(
-                    sid, peerId, peerAccount, peerDomain, peer?.name ?: "",
-                    peer?.avatarDataUrl() ?: "", threadId, callType,
-                )
-                // The recovery missed the original incoming (SSE was down): post the same CallStyle
-                // notification whether or not the app is visible. seedIncoming rings but doesn't notify;
-                // startIncoming's seedIncoming is a no-op now (already seeded).
-                CallService.startIncoming(
-                    this, sid, peerId, peerAccount, peerDomain, threadId, callType,
-                )
-            }
-        } catch (e: Exception) {
-            SomsLog.w("Rt") { "reconcileActiveCall failed: ${e.message}" }
-        }
-    }
-
-    /** Push the native connection state to the WebView so the ConnectionBanner reflects Kotlin-owned
-     *  connect/reconnect/close (the JS side cannot observe the native socket itself — the worker transport
-     *  infers this from its own loop, but the native transport only receives what Kotlin tells it). Mirrors
-     *  the worker's `state` messages; a no-op until the native transport installs the hook. */
-    private fun pushConnState(state: String) {
-        connState = state
-        SomsLog.i("Rt") { "connState=$state" }
+    override fun onState(generation: Long, state: String) = dispatch(generation) {
         SomsBridge.eval("window.__SOMS_CONN_STATE__ && window.__SOMS_CONN_STATE__(${SomsBridge.jsonStr(state)});")
     }
 
-    private fun syncNativeStateFeed(target: Long): Boolean {
-        val userId = SomsSecureStore.getCurrentUserId(this) ?: return false
-        val token = SomsSecureStore.getSessionToken(this) ?: return false
-        val committed = runCatching { RustRuntimeBridge.synchronizeStateFeed(userId, target) }
-            .getOrElse { e ->
-                SomsLog.w("Rt", e) { "native state-feed synchronization failed" }
-                return false
-            }
-        if (SomsSecureStore.getCurrentUserId(this) != userId ||
-            SomsSecureStore.getSessionToken(this) != token) return false
-        var current = false
-        RustRuntimeBridge.withCurrentSession(committed.getLong("accountEpoch")) {
-            current = true
-            if (SomsMessagingService.appInForeground)
-                SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('LOCAL_STATE_FEED_COMMITTED', $committed);")
-        }
-        return current
-    }
-
-    private var notificationTarget = 0
-
-    @Synchronized
-    private fun scheduleNotificationProjection(target: Int) {
-        notificationTarget = maxOf(notificationTarget, target)
-        handler.removeCallbacks(notificationProjectionTask)
-        handler.postDelayed(notificationProjectionTask, NOTIFICATION_COALESCE_MS)
-    }
-
-    private val notificationProjectionTask = Runnable {
-        if (SomsMessagingService.appInForeground) return@Runnable
-        val target = synchronized(this@RealtimeService) {
-            notificationTarget.also { notificationTarget = 0 }
-        }
-        ioExecutor.execute {
-            SomsMessagingService.renderAwayNotification(this@RealtimeService, allowAlert = true, threadFeedEndId = target)
-        }
-    }
-
-    /** The pending backoff-driven reopen, posted by [scheduleReopen] and cancelled by the ACTION_RETRY /
-     *  onLost paths so neither a manual retry nor an offline transition races the scheduled one. Re-resolves via
-     *  [establishConnection] (probe + concurrent race) so a reconnect after both origins were down finds the one
-     *  that came back. A named Runnable (not an anonymous lambda) so removeCallbacks can target it selectively
-     *  without clearing the unrelated away-coalesce task. */
-    private val reopenTask = Runnable { establishConnection("reconnecting") }
-
-    /** Re-open the stream after exponential backoff (capped ~32s). okhttp-sse already retries some
-     *  transient failures; this covers server-initiated closes + the rest. No-op once stopping. */
-    private fun scheduleReopen() {
-        if (stopping) return
-        handler.removeCallbacks(reopenTask) // never stack two pending reopens
-        attempt = (attempt + 1).coerceAtMost(6)
-        val delayMs = (1000L shl attempt.coerceAtMost(5)).coerceAtMost(30_000)
-        // Announce the scheduled delay so the WebView's countdown chip can tick (the JS side owns the live
-        // clock). Both call sites push "reconnecting" immediately before this, so the order is
-        // state→deadline. openStream() pushes the next state (open/reconnecting), which clears it.
-        pushReconnectIn(delayMs)
-        handler.postDelayed(reopenTask, delayMs)
-    }
-
-    /** Push the scheduled-ms-until-next-reconnect to the WebView so the ConnectionBanner can render a live
-     *  countdown (mirrors [pushConnState]; a no-op until the native transport installs the hook). */
-    private fun pushReconnectIn(ms: Long) {
+    override fun onReconnectIn(generation: Long, ms: Long) = dispatch(generation) {
         SomsBridge.eval("window.__SOMS_RECONNECT_IN__ && window.__SOMS_RECONNECT_IN__($ms);")
     }
 
-    /** Android 15+ dataSync time budget exhausted (~6h/24h). Stop promptly; FCM and the independently
-     *  scheduled WorkManager poll remain available. Do not try to restart from the background. */
+    override fun onForceLogout(generation: Long, reason: String?) = dispatch(generation) {
+        SomsSecureStore.setSessionToken(this, null)
+        val payload = JSONObject().put("message", reason ?: JSONObject.NULL)
+        SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('FORCE_LOGOUT', $payload);")
+        adapter.destroy()
+        stopSelf()
+    }
+
+    override fun onOriginActive(generation: Long, origin: String, mode: String) = dispatch(generation) {
+        SomsSecureStore.recordActiveOriginMode(this, mode)
+    }
+
+    override fun onIdentity(generation: Long, userId: Int, sessionId: Long) = dispatch(generation) {
+        if (sessionId in 1..Int.MAX_VALUE.toLong())
+            SomsSecureStore.setHelloIdentity(this, SomsSecureStore.getSessionToken(this), sessionId.toInt(), userId)
+    }
+
+    override fun onNotifications(generation: Long, batch: NativeNotificationBatch) = dispatch(generation) {
+        SomsMessagingService.renderNativeBatch(this, batch) {
+            adapter.isAlive && RustRuntimeBridge.realtimeIsCurrent(generation) && RustRuntimeBridge.isAccountEpochCurrent(batch.accountEpoch)
+        }
+    }
+
+    /** Execute Rust's explicit recovery command; do not re-derive ringing/caller policy from HELLO. */
+    override fun onIncomingCall(generation: Long, dataJson: String) = dispatch(generation) {
+        val command = JSONObject(dataJson)
+        val sid = command.getString("callSid")
+        val peerId = command.getInt("peerUserId")
+        val threadId = command.getInt("threadId")
+        val account = command.getString("peerAccount")
+        val namespaceId = command.optInt("peerNamespaceId", -1)
+        val callType = command.optString("callType", "AUDIO")
+        // The shared native resolver owns presentation (alias → cached profile → cached thread name →
+        // account); the HELLO payload's name/avatar are only the fallback without a local record.
+        val peer = ClientStateDb.getCallPeer(this, account, namespaceId, threadId)
+        val name = peer?.name ?: command.optString("peerName", account)
+        val avatar = peer?.avatarDataUrl()
+            ?: if (command.isNull("peerAvatar")) "" else command.optString("peerAvatar", "")
+        CallController.seedIncoming(sid, peerId, account, namespaceId, name, avatar, threadId, callType)
+        CallService.startIncoming(this, sid, account, namespaceId, threadId, callType, name, avatar)
+    }
+
     override fun onTimeout(startId: Int) {
+        adapter.destroy()
         stopSelf()
     }
 
     override fun onDestroy() {
-        stopping = true
-        receiptCall?.cancel()
-        receiptCall = null
-        receiptToken = null
-        receiptOrigin = null
-        connectivityManager?.unregisterNetworkCallback(networkCallback)
+        // OS unregistration does not retract callbacks already queued on ConnectivityThread.
+        adapter.destroy()
+        if (callbackRegistered) connectivityManager?.unregisterNetworkCallback(networkCallback)
+        callbackRegistered = false
         handler.removeCallbacksAndMessages(null)
-        ioExecutor.shutdownNow()
-        eventSource?.cancel()
-        eventSource = null
-        pushConnState("closed")
         super.onDestroy()
     }
 
     companion object {
-        /** App visible → retain the FGS if enabled, otherwise run as a plain service. */
         const val ACTION_FOREGROUND = "com.soms.client.action.FOREGROUND"
-        /** User tapped the disconnected chip → cancel the pending backoff + reconnect now (the JS→native
-         *  retry channel, parity with the worker's retry-now and Rust's sse_net(online:true)). Delivered
-         *  by SomsFcm.retryNow. */
         const val ACTION_RETRY = "com.soms.client.action.RETRY"
-        /** HELLO-timeout (the open stream sent no HELLO within the deadline) → cancel the open socket +
-         *  reopen so the fresh connection re-pushes HELLO. Unlike ACTION_RETRY (a no-op when open), this
-         *  tears down the dead-open socket. Delivered by SomsFcm.forceReconnect. */
         const val ACTION_FORCE_RECONNECT = "com.soms.client.action.FORCE_RECONNECT"
-        /** The most recently pushed connection state. Process-global so the SomsFcm @JavascriptInterface
-         *  can read it synchronously (a freshly-booted WebView needs the current state, but [pushConnState]
-         *  only fires on transitions). Volatile: written on the SSE thread, read on the JS bridge thread. */
-        @Volatile
-        var connState: String = "closed"
-        /** The last HELLO frame merged with every incremental revision frame (for example,
-         *  STATE_FEED_UPDATED) — the FRESH handshake a re-attached
-         *  WebView needs, since a retained open `/events` stream does NOT re-push HELLO on its own (it is
-         *  sent once per register). Stored as a NATIVE JSONObject (deserialized once on HELLO, mutated in
-         *  place by [cacheHelloFrame], serialized once by [replayCachedHello]) — no per-frame parse/reserialize.
-         *  Process-global so the bridge reads it; @Volatile for the cross-thread ref read. */
-        @Volatile
-        var cachedHello: JSONObject? = null
-        /** Serializes [cacheHelloFrame]'s in-place JSONObject mutations against [replayCachedHello]'s
-         *  toString, so a concurrent replay never observes a mid-mutation (torn) JSON. */
-        private val helloLock = Any()
-
-        fun clearCachedHello() { synchronized(helloLock) { cachedHello = null } }
-
-        /** Serialize the cached HELLO once (at replay time), under [helloLock] so a concurrent SSE-frame
-         *  merge can't tear it. Null when no HELLO has been cached yet (the caller then no-ops + the facade's
-         *  HELLO-timeout backstop force-reconnects for a fresh one). */
-        fun replayCachedHello(): String? = synchronized(helloLock) { cachedHello?.toString() }
     }
 }

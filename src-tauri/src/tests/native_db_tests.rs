@@ -200,20 +200,44 @@ fn test_thread_snapshot(kind: &str, feed: i64, lifecycle: &str) -> serde_json::V
     } else {
         ("bob", serde_json::Value::Null)
     };
+    // The wire shape of /thread-feed (shared/thread-attention.ts), not the nested
+    // structural shape `apply_thread_state` consumes.
     serde_json::json!({
-        "threadId":52,"threadFeedId":feed,"type":kind,"authorityNamespaceId":0,
+        "threadId":52,"threadFeedId":feed,"type":kind,"publisherNamespaceId":0,
         "conversationState":lifecycle,"blocked":lifecycle == "READ_ONLY","role":role,
-        "profile":{"account":account,"namespaceId":0,"profileRev":3},
-        "alias":null,"threadProfileRev":3,"messageEndSeq":0,"tombstoneEndSeq":0,
+        "profileAccount":account,"profileRev":3,
+        "alias":null,"messageEndSeq":0,"tombstoneEndSeq":0,
         "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":-1,
         "groupInviteEndFeedId":0,"lastReadSeq":0,"announcementReadFeedId":0,
         "unreadCount":0,"lastMentionSeq":null,"previews":[],
     })
 }
 
+/// Translate a wire thread-feed snapshot into the nested structural shape
+/// `client_state::apply_thread_state` consumes (the shape `merge_states` builds).
+fn nested_state_body(wire: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "type": wire["type"], "threadId": wire["threadId"],
+        "authorityNamespaceId": wire["publisherNamespaceId"],
+        "conversationState": wire["conversationState"], "blocked": wire["blocked"],
+        "role": wire["role"],
+        "profile": {"account": wire["profileAccount"], "namespaceId": wire["publisherNamespaceId"],
+                    "profileRev": wire["profileRev"]},
+        "alias": wire["alias"], "threadProfileRev": wire["profileRev"],
+        "messageEndSeq": wire["messageEndSeq"], "tombstoneEndSeq": wire["tombstoneEndSeq"],
+        "groupMetaFeedEndId": wire["groupMetaFeedEndId"],
+        "joinRequestEndFeedId": wire["joinRequestEndFeedId"],
+        "joinRequestReadFeedId": wire["joinRequestReadFeedId"],
+        "groupInviteEndFeedId": wire["groupInviteEndFeedId"],
+        "lastReadSeq": wire["lastReadSeq"], "announcementReadFeedId": wire["announcementReadFeedId"],
+        "unreadCount": wire["unreadCount"], "lastMentionSeq": wire["lastMentionSeq"],
+    })
+}
+
 fn commit_test_thread_state(conn: &mut Connection, body: &serde_json::Value) {
     let tx = conn.transaction().unwrap();
-    super::client_state::apply_thread_state(&tx, 1, body, body["threadFeedId"].as_i64().unwrap())
+    let nested = nested_state_body(body);
+    super::client_state::apply_thread_state(&tx, 1, &nested, body["threadFeedId"].as_i64().unwrap())
         .unwrap();
     tx.commit().unwrap();
     let local: super::attention::LocalThreadAttention =
@@ -233,9 +257,9 @@ fn native_thread_state_restores_history_and_ignores_old_snapshots() {
     .unwrap();
     commit_test_thread_state(&mut conn, &test_thread_snapshot("P2P", 6, "READ_ONLY"));
     let mut stale = test_thread_snapshot("P2P", 5, "ACTIVE");
-    stale["profile"]["profileRev"] = 99.into();
+    stale["profileRev"] = 99.into();
     let tx = conn.transaction().unwrap();
-    super::client_state::apply_thread_state(&tx, 1, &stale, 5).unwrap();
+    super::client_state::apply_thread_state(&tx, 1, &nested_state_body(&stale), 5).unwrap();
     tx.commit().unwrap();
     let thread = super::client_state::read_threads(&conn, 1)
         .unwrap()
@@ -290,7 +314,7 @@ fn deleting_a_thread_clears_its_state_preview_and_roster_together() {
     let mut snapshot = test_thread_snapshot("GROUP", 5, "ACTIVE");
     snapshot["previews"] = serde_json::json!([{
         "seq": 2, "createdAt": "2026-01-01T00:00:00Z",
-        "sender": {"account":"bob","namespaceId":0,"profileRev":1},
+        "sender": {"account":"bob","profileNamespaceId":0,"profileRev":1},
         "status":"LIVE", "text":"hello"
     }]);
     commit_test_thread_state(&mut conn, &snapshot);
@@ -701,16 +725,16 @@ fn native_profile_cache_rejects_a_different_avatar_for_one_revision() {
 fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
     let mut conn = profile_cache_db();
     let body = serde_json::json!({
-        "threadId":90,"threadFeedId":1,"type":"GROUP","authorityNamespaceId":7,
+        "threadId":90,"threadFeedId":1,"type":"GROUP","publisherNamespaceId":7,
         "conversationState":"ACTIVE","blocked":false,"role":"MEMBER",
-        "profile":{"account":"!mirror","namespaceId":7,"profileRev":0},
-        "alias":null,"threadProfileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
+        "profileAccount":"!mirror","profileRev":0,
+        "alias":null,"messageEndSeq":0,"tombstoneEndSeq":0,
         "groupMetaFeedEndId":null,"joinRequestEndFeedId":0,"joinRequestReadFeedId":-1,
         "groupInviteEndFeedId":0,"lastReadSeq":0,"announcementReadFeedId":0,
         "unreadCount":0,"lastMentionSeq":null,"previews":[],
     });
     let tx = conn.transaction().unwrap();
-    super::client_state::apply_thread_state(&tx, 1, &body, 1).unwrap();
+    super::client_state::apply_thread_state(&tx, 1, &nested_state_body(&body), 1).unwrap();
     tx.commit().unwrap();
     let local: super::attention::LocalThreadAttention =
         serde_json::from_value(serde_json::json!({"threadId":90,"server":body,"localReadSeq":0}))
@@ -812,8 +836,7 @@ fn native_message_creator_cleanup_preserves_publisher_space_profile_coordinates(
     assert_eq!(message["publisherNamespaceId"], 7);
     assert_eq!(message["profileNamespaceId"], 2);
     assert_eq!(message["profileRev"], 3);
-    let mut foreign =
-        serde_json::json!({"creator":{"account":"other","namespaceId":7}});
+    let mut foreign = serde_json::json!({"creator":{"account":"other","namespaceId":7}});
     let original = foreign.clone();
     super::messages::normalize_message_creator(&mut foreign);
     assert_eq!(foreign, original);

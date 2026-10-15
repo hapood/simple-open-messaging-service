@@ -762,7 +762,7 @@ export class PushService implements OnModuleDestroy {
       callerName: string;
       callerAvatar: string;
       callerAccount: string;
-      callerDomain: string;
+      callerNamespaceId: number;
       threadId: number;
       callType: 'AUDIO' | 'VIDEO';
     },
@@ -785,7 +785,7 @@ export class PushService implements OnModuleDestroy {
         callerUserId:
           payload.callerUserId === null ? '' : String(payload.callerUserId),
         callerAccount: payload.callerAccount,
-        callerDomain: payload.callerDomain,
+        callerNamespaceId: String(payload.callerNamespaceId),
         threadId: String(payload.threadId),
         callType: payload.callType,
       };

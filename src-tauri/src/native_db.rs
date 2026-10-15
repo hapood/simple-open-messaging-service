@@ -35,14 +35,12 @@ pub(crate) fn invalidate_account_work() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "android")]
 pub(crate) fn capture_account_epoch() -> Result<u64, String> {
     lifetime::CACHE_LIFETIME.capture()
 }
 
-#[cfg(target_os = "android")]
 pub(crate) fn is_account_epoch_current(epoch: u64) -> bool {
-    lifetime::CACHE_LIFETIME.admit(epoch).is_ok()
+    lifetime::CACHE_LIFETIME.is_current(epoch)
 }
 
 fn db_path() -> Result<PathBuf, String> {
@@ -383,7 +381,11 @@ pub(crate) async fn native_db_recreate_cache() -> Result<(), String> {
         profile_avatars::clear()
     })
     .await
-    .map_err(|e| format!("join native cache initialization: {e}"))?
+    .map_err(|e| format!("join native cache initialization: {e}"))??;
+    // The database lifetime lock has been released. Same-token restoration needs a fresh worker
+    // generation; the OS service owner and its connectivity registration remain unchanged.
+    crate::realtime::runtime().refresh_account_epoch();
+    Ok(())
 }
 
 #[tauri::command]
@@ -444,7 +446,9 @@ pub(crate) async fn native_db_recreate_messages() -> Result<(), String> {
             .map_err(|e| format!("commit message cache recreation: {e}"))
     })
     .await
-    .map_err(|e| format!("join message cache recreation: {e}"))?
+    .map_err(|e| format!("join message cache recreation: {e}"))??;
+    crate::realtime::runtime().refresh_account_epoch();
+    Ok(())
 }
 
 #[tauri::command]

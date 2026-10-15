@@ -23,16 +23,23 @@ pub(crate) struct PendingTap {
 fn parse_activation(url: &str) -> Option<(i32, i32, String)> {
     let (route, _) = url.split_once('?')?;
     let parsed = reqwest::Url::parse(url).ok()?;
-    if parsed.fragment().is_some() { return None; }
+    if parsed.fragment().is_some() {
+        return None;
+    }
     let pairs: Vec<_> = parsed.query_pairs().collect();
-    if pairs.len() != 1 || pairs[0].0 != "origin" || pairs[0].1.is_empty() { return None; }
+    if pairs.len() != 1 || pairs[0].0 != "origin" || pairs[0].1.is_empty() {
+        return None;
+    }
     let origin = pairs[0].1.to_string();
     let path = route.strip_prefix("soms-notification://session/")?;
     let (session, thread) = path.split_once("/thread/")?;
     let session_id = session.parse::<i32>().ok()?;
     let thread_id = thread.parse::<i32>().ok()?;
-    (session_id > 0 && thread_id > 0 && session == session_id.to_string() && thread == thread_id.to_string())
-        .then_some((session_id, thread_id, origin))
+    (session_id > 0
+        && thread_id > 0
+        && session == session_id.to_string()
+        && thread == thread_id.to_string())
+    .then_some((session_id, thread_id, origin))
 }
 
 static PENDING_TAP: Mutex<Option<PendingTap>> = Mutex::new(None);
@@ -71,9 +78,18 @@ pub(crate) fn initialize_windows_links(app: &tauri::AppHandle) -> Result<(), Str
 }
 
 fn tapped(app: &tauri::AppHandle, thread_id: i32, session_id: i32, origin: &str) {
-    if thread_id <= 0 || session_id <= 0 || origin.is_empty() { return; }
+    if thread_id <= 0 || session_id <= 0 || origin.is_empty() {
+        return;
+    }
     let state = app.state::<crate::ServerSessionState>();
-    if *state.api_origin_primary.lock().expect("primary origin lock") != origin { return; }
+    if *state
+        .api_origin_primary
+        .lock()
+        .expect("primary origin lock")
+        != origin
+    {
+        return;
+    }
     let Ok(mut pending) = PENDING_TAP.lock() else {
         return;
     };
@@ -101,14 +117,17 @@ pub(crate) fn desktop_notification_pending() -> Result<Option<PendingTap>, Strin
 }
 
 #[tauri::command]
-pub(crate) fn desktop_notification_acknowledge(id: String, thread_id: i32, session_id: i32) -> Result<(), String> {
+pub(crate) fn desktop_notification_acknowledge(
+    id: String,
+    thread_id: i32,
+    session_id: i32,
+) -> Result<(), String> {
     let mut pending = PENDING_TAP
         .lock()
         .map_err(|_| "notification tap state poisoned")?;
-    if pending
-        .as_ref()
-        .is_some_and(|tap| tap.id == id && tap.thread_id == thread_id && tap.session_id == session_id)
-    {
+    if pending.as_ref().is_some_and(|tap| {
+        tap.id == id && tap.thread_id == thread_id && tap.session_id == session_id
+    }) {
         *pending = None;
     }
     Ok(())
@@ -120,7 +139,12 @@ mod navigation_tests {
 
     #[test]
     fn activation_requires_exact_session_scope() {
-        assert_eq!(parse_activation("soms-notification://session/11/thread/7?origin=https%3A%2F%2Fprimary"), Some((11, 7, "https://primary".into())));
+        assert_eq!(
+            parse_activation(
+                "soms-notification://session/11/thread/7?origin=https%3A%2F%2Fprimary"
+            ),
+            Some((11, 7, "https://primary".into()))
+        );
         for url in [
             "soms-notification://thread/7",
             "soms-notification://account/11/thread/7?origin=https%3A%2F%2Fprimary",
@@ -142,14 +166,20 @@ mod navigation_tests {
         let new_id = next_tap_id();
         assert_ne!(old_id, new_id);
         *PENDING_TAP.lock().unwrap() = Some(PendingTap {
-            id: new_id.clone(), thread_id: 7, session_id: 11, origin: "https://primary".into(),
+            id: new_id.clone(),
+            thread_id: 7,
+            session_id: 11,
+            origin: "https://primary".into(),
         });
         desktop_notification_acknowledge(old_id, 7, 11).unwrap();
         assert_eq!(desktop_notification_pending().unwrap().unwrap().id, new_id);
         desktop_notification_acknowledge(new_id.clone(), 9, 11).unwrap();
         assert!(desktop_notification_pending().unwrap().is_some());
         desktop_notification_acknowledge(new_id.clone(), 7, 12).unwrap();
-        assert_eq!(desktop_notification_pending().unwrap().unwrap().session_id, 11);
+        assert_eq!(
+            desktop_notification_pending().unwrap().unwrap().session_id,
+            11
+        );
         desktop_notification_acknowledge(new_id, 7, 11).unwrap();
         assert!(desktop_notification_pending().unwrap().is_none());
     }
@@ -305,8 +335,14 @@ mod windows_platform {
             return ToastNotificationManager::History()?
                 .RemoveGroupedTagWithId(&tag, &group, &app_id);
         }
-        let mut activation = reqwest::Url::parse(&format!("soms-notification://session/{}/thread/{}", input.session_id, input.thread_id)).expect("notification URL");
-        activation.query_pairs_mut().append_pair("origin", &input.origin);
+        let mut activation = reqwest::Url::parse(&format!(
+            "soms-notification://session/{}/thread/{}",
+            input.session_id, input.thread_id
+        ))
+        .expect("notification URL");
+        activation
+            .query_pairs_mut()
+            .append_pair("origin", &input.origin);
         let xml = XmlDocument::new()?;
         xml.LoadXml(&HSTRING::from(format!(
             "<toast activationType=\"protocol\" launch=\"{}\"><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{}</toast>",
@@ -335,8 +371,11 @@ pub(crate) async fn desktop_notification_update(
     app: tauri::AppHandle,
     notification: DesktopNotification,
 ) -> Result<(), String> {
-    if notification.thread_id <= 0 || notification.count < 0 ||
-        (notification.count > 0 && (notification.session_id <= 0 || notification.origin.is_empty())) {
+    if notification.thread_id <= 0
+        || notification.count < 0
+        || (notification.count > 0
+            && (notification.session_id <= 0 || notification.origin.is_empty()))
+    {
         return Err("invalid desktop notification coordinates".into());
     }
     // Share the account-cache lifetime: queued work cannot post after session invalidation.
@@ -346,7 +385,14 @@ pub(crate) async fn desktop_notification_update(
         macos_platform::authorize().await?;
     }
     super::lifetime::spawn_at(Ok(epoch), move || {
-        if notification.count > 0 && *app.state::<crate::ServerSessionState>().api_origin_primary.lock().expect("primary origin lock") != notification.origin {
+        if notification.count > 0
+            && *app
+                .state::<crate::ServerSessionState>()
+                .api_origin_primary
+                .lock()
+                .expect("primary origin lock")
+                != notification.origin
+        {
             return Err("notification origin expired".into());
         }
         #[cfg(target_os = "linux")]

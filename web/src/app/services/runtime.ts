@@ -122,7 +122,7 @@ declare global {
       getConnState: () => string;
       /** Race the configured origins through Android's shared native selector. */
       pickActiveOrigin: () => string | null;
-      /** User tapped the disconnected chip: cancel Kotlin's pending backoff + reconnect now (the JS→native
+      /** User tapped the disconnected chip: request immediate retry in Rust (the JS→native
        *  retry channel — parity with the worker's retry-now and Rust's sse_net(online:true)). Delivered as
        *  an ACTION_RETRY Intent; a no-op if the stream is already open. Android-only. */
       retryNow: () => void;
@@ -132,8 +132,6 @@ declare global {
        *  force-reconnect channel `retryNow` cannot serve — retryNow only cancels pending backoff and is a
        *  no-op against an already-open stream. Android-only. */
       forceReconnect: () => void;
-      /** Adopt Rust's authoritative active origin in native background state and restart `/events`. */
-      useActiveOrigin: (origin: string) => void;
       /** Replay the cached+merged HELLO to a freshly-attached webview (renderer reclaim / FGS-pre-connected
        *  cold start). A retained open stream does NOT re-push HELLO on its own (it is sent once per
        *  register); the native layer caches HELLO + merges every revision frame, and this hands the current
@@ -240,7 +238,7 @@ declare global {
         callSid: string,
         callType: 'AUDIO' | 'VIDEO',
         peerAccount: string,
-        peerDomain: string,
+        peerNamespaceId: number,
       ) => void;
       accept: (callSid: string) => void;
       decline: (callSid: string) => void;
@@ -382,28 +380,22 @@ declare global {
       visible: boolean;
       isFinal: boolean;
     }) => void;
-    /** Kotlin→JS push (RealtimeService.forwardToJs): one `/events` frame forwarded from the native-owned
+    /** Android adapter→JS push: one `/events` frame forwarded from the Rust-owned
      *  SSE, so the Android WebView consumes realtime without opening its own worker. Installed by the
      *  NativeEventTransport; absent on browser/desktop (where the WebsocketService spawns sse.worker.ts).
      *  Kotlin guards the call (`window.__SOMS_EVENT__ && …`), so frames arriving before the transport
      *  installs the hook are silently dropped and recovered by the app-open HWM catch-up. */
     __SOMS_EVENT__?: (type: string, data: any) => void;
-    /** Kotlin→JS push (RealtimeService.pushConnState): a connection-state transition
+    /** Android adapter→JS push: a connection-state transition
      *  ('connecting'|'open'|'reconnecting'|'closed') of the native /events stream, so the ConnectionBanner
-     *  reflects the Kotlin-owned connection. Installed by the NativeEventTransport; the current value is
+     *  reflects the Rust-owned connection through the Android adapter. Installed by the NativeEventTransport; the current value is
      *  also readable synchronously via `SomsFcm.getConnState()` (Kotlin only pushes on transitions). */
     __SOMS_CONN_STATE__?: (state: string) => void;
-    /** Kotlin→JS push (RealtimeService.scheduleReopen): the scheduled ms until the native stream's next
+    /** Android adapter→JS push: the scheduled ms until the native stream's next
      *  reconnect attempt, so the ConnectionBanner can render a live countdown (the facade owns the clock;
-     *  this just delivers the one-shot deadline Kotlin computes before its `postDelayed` backoff). Installed
+     *  this just delivers the one-shot deadline computed by the shared Rust runtime). Installed
      *  by the NativeEventTransport; a no-op until then (Kotlin guards the call). */
     __SOMS_RECONNECT_IN__?: (ms: number) => void;
-    /** Kotlin→JS push (RealtimeService.signalRust): the origin Kotlin decided is ACTIVE for the /events stream,
-     *  so Rust's API transports follow it (Android = Kotlin-authoritative; Rust is passive there and accepts
-     *  this via the `set_active_origin` command — no API⇄SSE origin split). Installed eagerly by
-     *  {@link installActiveOriginBridge} before bootstrap, so Kotlin's very first decision (even ahead of the
-     *  NativeEventTransport connecting) lands. A no-op outside Tauri. */
-    __SOMS_SET_ACTIVE_ORIGIN__?: (origin: string) => void;
   }
 }
 
@@ -801,32 +793,4 @@ export function applySafeInsets(): void {
   } catch {
     // SomsShell present but the call failed — leave the CSS default (env(), 0 on Android).
   }
-}
-
-/**
- * Install the `window.__SOMS_SET_ACTIVE_ORIGIN__` sink — Kotlin's RealtimeService signals the origin it chose
- * for the /events stream (Android is Kotlin-authoritative; Rust is passive there), and this forwards it to the
- * Rust `set_active_origin` command so the API transports follow the same origin (no API⇄SSE origin split).
- *
- * Installed EAGERLY (before bootstrap, like {@link installKeyboardInsetBridge}) rather than in the
- * NativeEventTransport, because it is a thin pass-through to a Tauri command independent of the realtime
- * transport — eager install means Kotlin's first decision (which can fire ahead of transport.connect, e.g. the
- * login-time openStream) is not lost. A no-op outside Tauri (Kotlin never calls it there); a no-op on desktop
- * (Rust decides the origin itself there and never receives this push).
- */
-export function installActiveOriginBridge(): void {
-  if (typeof window === 'undefined') return;
-  window.__SOMS_SET_ACTIVE_ORIGIN__ = (origin: string) => {
-    if (!isTauri() || !origin) return;
-    // Rust accepts without probing/deciding (it is not the authority on Android). Rejections are logged by
-    // tauriInvoke; a swallowed rejection is harmless — the next signalRust (every openStreamOn) re-syncs.
-    void tauriInvoke('set_active_origin', { url: origin });
-  };
-  // Rust owns HTTP failover. When its concurrent race succeeds, make Android's persisted native mode
-  // follow the exact winner and force `/events` to reopen on it. Desktop has no SomsFcm bridge; its Rust
-  // SSE supervisor is reset directly through origin_notify.
-  void window.__TAURI__?.event?.listen?.('active-origin-changed', (event) => {
-    const origin = typeof event.payload === 'string' ? event.payload : '';
-    if (origin) window.SomsFcm?.useActiveOrigin?.(origin);
-  });
 }

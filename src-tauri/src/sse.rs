@@ -2,26 +2,16 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use log::warn;
-use tauri::Emitter;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::{http_client_for, pick_origin_race, ServerSessionState, SSE_CONNECT_TIMEOUT};
+use crate::{http_client_for, ServerSessionState, SSE_CONNECT_TIMEOUT};
 
-// --- desktop SSE supervisor (Rust-owned /events stream) ------------------------------------
-//
-// Under the Tauri DESKTOP shell the realtime downlink is owned HERE in Rust — not by a JS Web Worker
-// (the browser path) and not by Kotlin (the Android path). The webview's `WebsocketService` selects the
-// `RustChannelSseTransport` (web/.../rust-channel-sse.transport.ts) for `isTauri() && !isAndroid`, which
-// calls these commands and receives frames/state over Tauri events. This decouples the long-lived
-// connection from the renderer: it survives a webview reclaim (the stream is tied to the AppHandle, not
-// the window), it reads the Bearer directly from `ServerSessionState.token` (no JS token handshake), and it
-// never touches `tauri-plugin-http`'s fragile `__TAURI_CHANNEL__` (the source of the "resource id is
-// invalid" churn). Mobile is excluded (`#[cfg(desktop)]`) — Android's Kotlin RealtimeService owns SSE.
+// Shared Rust /events protocol. Desktop commands below are compatibility adapters;
+// Android's headless JNI adapter uses the same run_loop and typed publication sink.
 
-#[cfg(desktop)]
 #[derive(Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 enum ConnectionState {
@@ -29,9 +19,9 @@ enum ConnectionState {
     Open,
     Reconnecting,
     Closed,
+    Disconnected,
 }
 
-#[cfg(desktop)]
 #[derive(Clone, serde::Serialize)]
 struct SseEventPayload {
     event: String,
@@ -40,7 +30,6 @@ struct SseEventPayload {
     data: serde_json::Value, // Null when the frame carried no `data:`
 }
 
-#[cfg(desktop)]
 #[derive(Clone, serde::Serialize)]
 struct SseForceLogout {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,7 +37,6 @@ struct SseForceLogout {
 }
 
 /// One parsed SSE frame: the `event:` name + the joined `data:` lines as parsed JSON (Null when empty).
-#[cfg(desktop)]
 struct ParsedFrame {
     event: String,
     data: serde_json::Value,
@@ -56,12 +44,13 @@ struct ParsedFrame {
 
 /// Why one stream attempt ended → tells the supervisor loop whether to reconnect (back off + retry) or
 /// stop (force-logout / cancelled).
-#[cfg(desktop)]
+#[derive(Debug, PartialEq, Eq)]
 enum StreamOutcome {
-    StreamClosed,                // server ended the stream cleanly → reconnect
-    Cancelled,                   // sse_stop / logout → exit the loop
+    ForcedReconnect, // explicit control: reopen immediately, without failure backoff
+    StreamClosed,    // server ended the stream cleanly → reconnect
+    Cancelled,       // sse_stop / logout → exit the loop
     ForceLogout(Option<String>), // 401 or a `FORCE_LOGOUT` frame → exit (no retry, no 401-loop)
-    Err,                         // network / non-2xx → reconnect
+    Err,             // network / non-2xx → reconnect
 }
 
 /// Supervisor state: the spawned connect-loop task + its cancellation token, a synchronous state mirror
@@ -73,46 +62,39 @@ enum StreamOutcome {
 /// stream does not re-push HELLO on its own).
 #[cfg(desktop)]
 pub(crate) struct SseSupervisor {
-    cancel: Mutex<Option<CancellationToken>>,
-    handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
-    state: Arc<Mutex<ConnectionState>>,
-    wake: Arc<Notify>,
-    offline: Arc<AtomicBool>,
-    cached_hello: Arc<Mutex<Option<serde_json::Value>>>,
+    runtime: &'static crate::realtime::Supervisor,
 }
 
 #[cfg(desktop)]
 impl SseSupervisor {
     pub(crate) fn new() -> Self {
         Self {
-            cancel: Mutex::new(None),
-            handle: Mutex::new(None),
-            state: Arc::new(Mutex::new(ConnectionState::Closed)),
-            wake: Arc::new(Notify::new()),
-            offline: Arc::new(AtomicBool::new(false)),
-            cached_hello: Arc::new(Mutex::new(None)),
+            runtime: crate::realtime::runtime(),
         }
     }
 }
 
-#[cfg(desktop)]
 fn conn_state_str(s: ConnectionState) -> &'static str {
     match s {
         ConnectionState::Connecting => "connecting",
         ConnectionState::Open => "open",
         ConnectionState::Reconnecting => "reconnecting",
         ConnectionState::Closed => "closed",
+        ConnectionState::Disconnected => "disconnected",
     }
 }
 
 /// Mirror `s` into the synchronous state field (so `sse_get_state` reflects it) AND emit it to the
 /// webview (`soms-sse-state`) so the connection banner updates on every transition.
-#[cfg(desktop)]
-fn emit_state(app: &tauri::AppHandle, state: &Arc<Mutex<ConnectionState>>, s: ConnectionState) {
+fn emit_state(
+    app: &Arc<crate::realtime::Run>,
+    state: &Arc<Mutex<ConnectionState>>,
+    s: ConnectionState,
+) {
     if let Ok(mut g) = state.lock() {
         *g = s;
     }
-    let _ = app.emit("soms-sse-state", s);
+    app.set_state(conn_state_str(s));
 }
 
 /// Idempotently spawn the connect-loop (no-op if one is already running). The facade's origin-swap path
@@ -125,23 +107,11 @@ pub(crate) fn sse_start(
     app: tauri::AppHandle,
     proxy: tauri::State<'_, ServerSessionState>,
     sse: tauri::State<'_, SseSupervisor>,
-) -> Result<(), String> {
-    if sse.handle.lock().expect("sse handle lock").is_some() {
-        return Ok(());
-    }
-    let cancel = CancellationToken::new();
-    *sse.cancel.lock().expect("sse cancel lock") = Some(cancel.clone());
-    let handle = tauri::async_runtime::spawn(sse_supervisor_loop(
-        app,
+) -> Result<u64, String> {
+    Ok(sse.runtime.start(
         proxy.inner().clone(),
-        cancel,
-        sse.state.clone(),
-        sse.wake.clone(),
-        sse.offline.clone(),
-        sse.cached_hello.clone(),
-    ));
-    *sse.handle.lock().expect("sse handle lock") = Some(handle);
-    Ok(())
+        Arc::new(crate::realtime::DesktopSink::new(app)),
+    ))
 }
 
 /// Stop the supervisor: emit `closed` synchronously, wake any backoff sleep, cancel the task. Every await
@@ -150,17 +120,8 @@ pub(crate) fn sse_start(
 /// returns at once; the task unwinds on its own.
 #[cfg(desktop)]
 #[tauri::command]
-pub(crate) fn sse_stop(
-    app: tauri::AppHandle,
-    sse: tauri::State<'_, SseSupervisor>,
-) -> Result<(), String> {
-    emit_state(&app, &sse.state, ConnectionState::Closed);
-    sse.wake.notify_one();
-    if let Some(cancel) = sse.cancel.lock().expect("sse cancel lock").take() {
-        cancel.cancel();
-    }
-    // take() + drop = detach (the task exits via cancel; we don't block the IPC on it).
-    *sse.handle.lock().expect("sse handle lock") = None;
+pub(crate) fn sse_stop(instance: u64, sse: tauri::State<'_, SseSupervisor>) -> Result<(), String> {
+    sse.runtime.stop(instance);
     Ok(())
 }
 
@@ -169,8 +130,12 @@ pub(crate) fn sse_stop(
 /// webview's banner would be stale until the next transition.
 #[cfg(desktop)]
 #[tauri::command]
-pub(crate) fn sse_get_state(sse: tauri::State<'_, SseSupervisor>) -> String {
-    conn_state_str(*sse.state.lock().expect("sse state lock")).to_string()
+pub(crate) fn sse_get_state(instance: u64, sse: tauri::State<'_, SseSupervisor>) -> String {
+    if sse.runtime.current().is_some_and(|r| r.owner() == instance) {
+        sse.runtime.state()
+    } else {
+        "closed".into()
+    }
 }
 
 /// The webview's `navigator` online/offline is the one source that knows the network dropped before the
@@ -180,10 +145,19 @@ pub(crate) fn sse_get_state(sse: tauri::State<'_, SseSupervisor>) -> String {
 /// `offline` to decide immediate-retry vs. drop-the-stream.
 #[cfg(desktop)]
 #[tauri::command]
-pub(crate) fn sse_net(online: bool, sse: tauri::State<'_, SseSupervisor>) -> Result<(), String> {
-    sse.offline.store(!online, Ordering::Release);
-    sse.wake.notify_one();
+pub(crate) fn sse_net(
+    instance: u64,
+    online: bool,
+    sse: tauri::State<'_, SseSupervisor>,
+) -> Result<(), String> {
+    sse.runtime.net(instance, online, false);
     Ok(())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+pub(crate) fn sse_retry(instance: u64, force: bool, sse: tauri::State<'_, SseSupervisor>) -> u64 {
+    sse.runtime.retry(instance, force)
 }
 
 /// Hand a freshly-attached webview the cached HELLO. A retained open stream does NOT re-push HELLO (it is
@@ -198,11 +172,14 @@ pub(crate) fn sse_net(online: bool, sse: tauri::State<'_, SseSupervisor>) -> Res
 #[cfg(desktop)]
 #[tauri::command]
 pub(crate) fn sse_replay_hello(
-    app: tauri::AppHandle,
+    instance: u64,
     sse: tauri::State<'_, SseSupervisor>,
 ) -> Result<(), String> {
-    if let Some(data) = sse.cached_hello.lock().expect("cached_hello lock").clone() {
-        let _ = app.emit(
+    if let Some(run) = sse.runtime.current().filter(|r| r.owner() == instance) {
+        let Some(data) = run.replay() else {
+            return Ok(());
+        };
+        let _ = run.emit(
             "soms-sse-event",
             SseEventPayload {
                 event: "HELLO".to_string(),
@@ -215,9 +192,86 @@ pub(crate) fn sse_replay_hello(
     Ok(())
 }
 
-#[cfg(desktop)]
+fn control_wake_outcome(offline: &AtomicBool, force: &AtomicBool) -> Option<StreamOutcome> {
+    if offline.load(Ordering::Acquire) {
+        return Some(StreamOutcome::StreamClosed);
+    }
+    force
+        .swap(false, Ordering::AcqRel)
+        .then_some(StreamOutcome::ForcedReconnect)
+}
+
+fn receipt_body_accepted(body: &serde_json::Value) -> bool {
+    body.get("code").and_then(serde_json::Value::as_i64) == Some(0)
+}
+
+async fn receipt_accepted(response: Result<reqwest::Response, reqwest::Error>) -> bool {
+    let Ok(response) = response else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    response
+        .json::<serde_json::Value>()
+        .await
+        .is_ok_and(|body| receipt_body_accepted(&body))
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    #[test]
+    fn explicit_force_is_not_a_failure_and_does_not_override_offline() {
+        use super::*;
+        let offline = AtomicBool::new(false);
+        let force = AtomicBool::new(true);
+        assert_eq!(
+            control_wake_outcome(&offline, &force),
+            Some(StreamOutcome::ForcedReconnect)
+        );
+        assert_eq!(control_wake_outcome(&offline, &force), None);
+        offline.store(true, Ordering::Release);
+        force.store(true, Ordering::Release);
+        assert_eq!(
+            control_wake_outcome(&offline, &force),
+            Some(StreamOutcome::StreamClosed)
+        );
+        assert!(force.load(Ordering::Acquire));
+    }
+    #[test]
+    fn only_business_success_acknowledges_a_receipt() {
+        assert!(super::receipt_body_accepted(
+            &serde_json::json!({"code":0,"data":null})
+        ));
+        for body in [
+            serde_json::json!({"code":10000}),
+            serde_json::json!({"code":"0"}),
+            serde_json::json!({}),
+            serde_json::Value::Null,
+        ] {
+            assert!(!super::receipt_body_accepted(&body));
+        }
+    }
+}
+
+pub(crate) async fn run_loop(app: Arc<crate::realtime::Run>, proxy: ServerSessionState) {
+    sse_supervisor_loop(
+        app.clone(),
+        proxy,
+        app.cancel.clone(),
+        Arc::new(Mutex::new(ConnectionState::Closed)),
+        app.wake.clone(),
+        app.offline.clone(),
+        app.hello.clone(),
+    )
+    .await;
+    // Cover early identity/bootstrap failures as well as normal terminal stream outcomes.
+    app.set_state("closed");
+    app.cancel.cancel();
+}
+
 async fn sse_supervisor_loop(
-    app: tauri::AppHandle,
+    app: Arc<crate::realtime::Run>,
     proxy: ServerSessionState,
     cancel: CancellationToken,
     state: Arc<Mutex<ConnectionState>>,
@@ -234,6 +288,9 @@ async fn sse_supervisor_loop(
             return;
         }
         if proxy.token.lock().expect("token lock").is_some() {
+            if !app.bind_identity() {
+                return;
+            }
             break;
         }
         tokio::select! {
@@ -246,12 +303,21 @@ async fn sse_supervisor_loop(
     }
 
     emit_state(&app, &state, ConnectionState::Connecting);
+    app.pick_origin().await;
+    if !app.authenticated() {
+        return;
+    }
+    app.publish_origin();
 
     let mut opened_once = false;
     let mut attempt: u32 = 0;
     loop {
-        if cancel.is_cancelled() {
+        if !app.authenticated() {
             break;
+        }
+        if offline.load(Ordering::Acquire) {
+            emit_state(&app, &state, ConnectionState::Disconnected);
+            tokio::select! { biased; _ = cancel.cancelled() => break, _ = wake.notified() => continue }
         }
         let outcome = open_one_stream(
             &app,
@@ -273,14 +339,21 @@ async fn sse_supervisor_loop(
                 break; // no retry — a stale/revoked token would 401-loop
             }
             StreamOutcome::Cancelled => break,
+            StreamOutcome::ForcedReconnect => {
+                attempt = 0;
+                emit_state(&app, &state, ConnectionState::Connecting);
+                continue;
+            }
             StreamOutcome::StreamClosed | StreamOutcome::Err => {
-                // On a connect/network error (Err), try a SMOOTH switch first: maybe_switch probes the
-                // current; if it's healthy (transient) or the OTHER is reachable (flip), reopen at once with
-                // no backoff. If both are down (BothDown) or there's no fallback, fall through to the
-                // reconnecting backoff — whose retry races both (pick_origin_race below). StreamClosed /
-                // Stale may be server-side (not network); they skip the smooth switch → straight to backoff.
+                // Preserve the existing origin race after a network error: a successful selection
+                // reopens immediately. Server-side closure goes through the bounded backoff.
                 if matches!(outcome, StreamOutcome::Err) {
-                    if pick_origin_race(&proxy).await.is_some() {
+                    let picked = app.pick_origin().await;
+                    if !app.authenticated() {
+                        break;
+                    }
+                    if picked.is_some() {
+                        app.publish_origin();
                         warn!("sse: origin race after Err succeeded → reopen at once (no backoff)");
                         attempt = 0;
                         continue;
@@ -311,7 +384,10 @@ async fn sse_supervisor_loop(
                 // Full-disconnect RECONNECT: race BOTH origins (the concurrent race) to find the reachable
                 // one before reopening. This + login init are the only two places the concurrent race runs.
                 // If both are still down, the active is unchanged → the next open fails → backoff again.
-                pick_origin_race(&proxy).await;
+                app.pick_origin().await;
+                if app.authenticated() {
+                    app.publish_origin();
+                }
             }
         }
     }
@@ -323,7 +399,6 @@ async fn sse_supervisor_loop(
 /// the cache wholesale; each incremental revision frame patches its matching field. Additive — the caller
 /// still emits the frame to the live webview. Best-effort: a missing/malformed field is skipped (never
 /// panics); incremental frames before the first HELLO are dropped (no partial cached handshake).
-#[cfg(desktop)]
 fn merge_cached_hello(
     cached: &Arc<Mutex<Option<serde_json::Value>>>,
     event: &str,
@@ -363,14 +438,12 @@ fn merge_cached_hello(
 #[path = "tests/cached_hello_merge_tests.rs"]
 mod cached_hello_merge_tests;
 
-#[cfg(desktop)]
 #[derive(Default)]
 struct StateFeedHead {
     user_id: Option<i64>,
     target: i64,
 }
 
-#[cfg(desktop)]
 impl StateFeedHead {
     fn accept(&mut self, event: &str, data: &serde_json::Value) -> Option<(i64, i64)> {
         if event == "HELLO" {
@@ -395,14 +468,12 @@ impl StateFeedHead {
     }
 }
 
-#[cfg(desktop)]
 #[derive(Default)]
 struct ThreadFeedHead {
     user_id: Option<i64>,
     target: i32,
 }
 
-#[cfg(desktop)]
 impl ThreadFeedHead {
     fn accept(&mut self, event: &str, data: &serde_json::Value) -> Option<(i64, i32)> {
         if event != "HELLO" && event != "THREAD_FEED_UPDATED" {
@@ -425,10 +496,9 @@ impl ThreadFeedHead {
 }
 
 /// Open + consume one SSE stream until it ends (clean close / error / stale / cancel / force-logout).
-#[cfg(desktop)]
 #[allow(clippy::too_many_arguments)]
 async fn open_one_stream(
-    app: &tauri::AppHandle,
+    app: &Arc<crate::realtime::Run>,
     proxy: &ServerSessionState,
     cancel: &CancellationToken,
     state: &Arc<Mutex<ConnectionState>>,
@@ -437,6 +507,9 @@ async fn open_one_stream(
     cached_hello: &Arc<Mutex<Option<serde_json::Value>>>,
     opened_once: &mut bool,
 ) -> StreamOutcome {
+    // A selection made before this attempt already applies to its URL. Consume that stored wake
+    // before reading the endpoint, so our own bootstrap race does not immediately close the new stream.
+    let _ = proxy.origin_notify.notified().now_or_never();
     let origin = proxy.api_origin.lock().expect("origin lock").clone();
     let token = match proxy.token.lock().expect("token lock").clone() {
         Some(t) => t,
@@ -454,7 +527,7 @@ async fn open_one_stream(
     let receipt_origin = origin.clone();
     // This task is independent of the stream reader and the thread-feed projection. A fixed
     // window (not trailing debounce) coalesces continuous message wakes without delaying FCM.
-    tauri::async_runtime::spawn(async move {
+    crate::realtime::spawn(app.clone(), async move {
         loop {
             tokio::select! {
                 _ = receipt_cancel.cancelled() => break,
@@ -491,7 +564,7 @@ async fn open_one_stream(
             };
             let success = tokio::select! {
                 _ = receipt_cancel.cancelled() => return,
-                result = send(&latest) => result.is_ok_and(|response| response.status().is_success()),
+                success = async { receipt_accepted(send(&latest).await).await } => success,
             };
             if !success && !receipt_receiver.has_changed().unwrap_or(false) {
                 tokio::select! {
@@ -501,7 +574,9 @@ async fn open_one_stream(
                 }
                 tokio::select! {
                     _ = receipt_cancel.cancelled() => return,
-                    result = send(&latest) => { let _ = result; },
+                    success = async { receipt_accepted(send(&latest).await).await } => {
+                        if !success { warn!("SSE receipt retry was not acknowledged"); }
+                    },
                 }
             }
         }
@@ -512,7 +587,7 @@ async fn open_one_stream(
     let feed_proxy = proxy.clone();
     let feed_token = token.clone();
     // The stream owns one coalescing consumer. Never wait for HTTP/database work in the SSE reader.
-    tauri::async_runtime::spawn(async move {
+    crate::realtime::spawn(app.clone(), async move {
         loop {
             tokio::select! {
                 _ = feed_cancel.cancelled() => break,
@@ -537,13 +612,26 @@ async fn open_one_stream(
             }
             let result = tokio::select! {
                 _ = feed_cancel.cancelled() => break,
-                result = crate::native_db::attention::sync_thread_feed(Some(&feed_app), &feed_proxy, user_id, target) => result,
+                result = crate::native_db::attention::sync_thread_feed(feed_app.app(), &feed_proxy, user_id, target) => result,
             };
             if feed_proxy.token.lock().expect("token lock").as_ref() != Some(&feed_token) {
                 break;
             }
+            if !feed_app.authenticated() || feed_cancel.is_cancelled() {
+                break;
+            }
             match result {
                 Ok(result) => {
+                    #[cfg(target_os = "android")]
+                    {
+                        let batch = tokio::select! { biased;
+                            _ = feed_cancel.cancelled() => break,
+                            result = crate::native_db::notifications::from_result(user_id, &result) => result,
+                        };
+                        if let Ok(batch) = batch {
+                            feed_app.publish(crate::realtime::Output::Notifications(batch));
+                        }
+                    }
                     if let Some(error) = &result.error {
                         warn!("thread feed wake failed; next wake retries: {error}");
                     }
@@ -584,7 +672,7 @@ async fn open_one_stream(
     let state_token = token.clone();
     let state_cancel = cancel.child_token();
     let _state_guard = state_cancel.clone().drop_guard();
-    tauri::async_runtime::spawn(async move {
+    crate::realtime::spawn(app.clone(), async move {
         loop {
             tokio::select! {
                 _ = state_cancel.cancelled() => break,
@@ -601,6 +689,9 @@ async fn open_one_stream(
                 result = crate::native_db::state_feed_sync::synchronize(&state_proxy, user_id, target) => result,
             };
             if state_proxy.token.lock().expect("token lock").as_ref() != Some(&state_token) {
+                break;
+            }
+            if !state_app.authenticated() || state_cancel.is_cancelled() {
                 break;
             }
             match result {
@@ -623,16 +714,28 @@ async fn open_one_stream(
     let mut feed_head = ThreadFeedHead::default();
     let url = format!("{}/api/v1/events", origin.trim_end_matches('/'));
     // Bound the connect/headers phase: a server that never responds must not hang startup.
-    let resp = match tokio::time::timeout(
+    let request = tokio::time::timeout(
         SSE_CONNECT_TIMEOUT,
         http_client_for(&origin)
             .get(&url)
             .header("accept", "text/event-stream")
             .header("authorization", format!("Bearer {}", token))
             .send(),
-    )
-    .await
-    {
+    );
+    let response = tokio::select! { biased;
+        _ = cancel.cancelled() => return StreamOutcome::Cancelled,
+        outcome = async {
+            loop {
+                wake.notified().await;
+                if let Some(outcome) = control_wake_outcome(offline, &app.force) { break outcome; }
+            }
+        } => return outcome,
+        result = request => result,
+    };
+    if !app.authenticated() {
+        return StreamOutcome::Cancelled;
+    }
+    let resp = match response {
         Ok(Ok(r)) => r,
         // Surface WHY the connect failed (DNS / TLS / refused / timeout) — without this the supervisor
         // retried silently and the webview console never learned the cause.
@@ -675,12 +778,15 @@ async fn open_one_stream(
             // active (the loop re-enters open_one_stream, which re-reads proxy.api_origin). API⇄SSE lockstep:
             // they never sit on different origins. Race-free (Notify holds one stored permit).
             _ = proxy.origin_notify.notified() => return StreamOutcome::StreamClosed,
+            _ = proxy.token_notify.notified() => {
+                if !app.authenticated() { return StreamOutcome::Cancelled; }
+            },
             _ = wake.notified() => {
                 // Network transitioned or the user hit retry. Offline → drop the stream and reconnect
                 // (the next attempt fails fast, backs off). Online while a healthy stream is open → no-op
                 // (avoid churning a working connection); the loop re-enters the select.
-                if offline.load(Ordering::Acquire) {
-                    return StreamOutcome::StreamClosed;
+                if let Some(outcome) = control_wake_outcome(offline, &app.force) {
+                    return outcome;
                 }
             }
             chunk = stream.next() => match chunk {
@@ -689,6 +795,7 @@ async fn open_one_stream(
                 Some(Ok(bytes)) => {
                     buf.extend_from_slice(&bytes);
                     while let Some(content) = take_sse_frame(&mut buf) {
+                        if !app.authenticated() { return StreamOutcome::Cancelled; }
                         if let Some(parsed) = parse_sse_frame(&content) {
                             // if/else-if (not `match parsed.event.as_str()`): the scrutinee of a match
                             // would borrow `parsed.event` for the whole match, blocking the move in the
@@ -718,6 +825,18 @@ async fn open_one_stream(
                                 // Cache/merge the frame into the cached HELLO (additive) BEFORE emitting it
                                 // — the borrows (as_str / &data) end at the call's `)`, so the move into the
                                 // payload below is unaffected (same scoping rule the FORCE_LOGOUT branch uses).
+                                if parsed.event == "HELLO" {
+                                    if let (Some(user), Some(session)) = (parsed.data["userId"].as_i64().and_then(|v| i32::try_from(v).ok()), parsed.data["sessionId"].as_i64()) {
+                                        app.publish(crate::realtime::Output::Identity(user, session));
+                                    }
+                                    if let Some(call) = parsed.data.get("activeCall") {
+                                        if call["state"].as_str() == Some("ringing") && call["isCaller"].as_bool() == Some(false) {
+                                            // Establish the call immediately, before forwarding later SDP/ICE.
+                                            // Optional presentation lookup must never gate call initialization.
+                                            app.publish(crate::realtime::Output::IncomingCall(call.clone()));
+                                        }
+                                    }
+                                }
                                 merge_cached_hello(cached_hello, parsed.event.as_str(), &parsed.data);
                                 if let Some(head) = state_head.accept(&parsed.event, &parsed.data) {
                                     state_target_for_feed.store(head.1, Ordering::Release);
@@ -732,15 +851,19 @@ async fn open_one_stream(
                                         let profile_app = app.clone();
                                         let profile_proxy = proxy.clone();
                                         let profile_data = parsed.data;
-                                        tauri::async_runtime::spawn(async move {
-                                            match crate::native_db::attention::materialize_profile_event(
-                                                &profile_app,
+                                        let profile_cancel = cancel.child_token();
+                                        crate::realtime::spawn(app.clone(), async move {
+                                            let result = tokio::select! { biased;
+                                                _ = profile_cancel.cancelled() => return,
+                                                result = crate::native_db::attention::materialize_profile_event(
+                                                profile_app.app(),
                                                 &profile_proxy,
                                                 user_id,
                                                 &profile_data,
-                                            )
-                                            .await
-                                            {
+                                                ) => result,
+                                            };
+                                            if !profile_app.authenticated() || profile_cancel.is_cancelled() { return; }
+                                            match result {
                                                 Ok(()) => {
                                                     let _ = profile_app.emit(
                                                         "soms-sse-event",
@@ -778,7 +901,6 @@ async fn open_one_stream(
 
 /// Full-jitter delay in `[0, ceil)` ms. Subsec nanos of the wall clock is plenty of entropy for backoff
 /// spread (the timing is not a secret) and avoids pulling in a `rand` dependency.
-#[cfg(desktop)]
 fn jitter(ceil: u64) -> u64 {
     if ceil == 0 {
         return 0;
@@ -793,7 +915,6 @@ fn jitter(ceil: u64) -> u64 {
 /// `(true, len)` if a logical SSE line-end (`\n`, `\r`, or `\r\n`) starts at `i`. Line-ends never appear
 /// inside UTF-8 continuation bytes (they're 0x80–0xBF), so byte-wise frame scanning is unambiguous and
 /// no streaming UTF-8 decoder is needed (unlike the JS worker's `TextDecoder({stream:true})`).
-#[cfg(desktop)]
 fn line_end_at(buf: &[u8], i: usize) -> (bool, usize) {
     if i >= buf.len() {
         return (false, 1);
@@ -814,7 +935,6 @@ fn line_end_at(buf: &[u8], i: usize) -> (bool, usize) {
 /// If a complete frame (text terminated by a blank line — two adjacent logical line-ends) is buffered at
 /// the front of `buf`, return its content and drain through the boundary. `None` when no full frame is
 /// present yet (the caller waits for more bytes).
-#[cfg(desktop)]
 fn take_sse_frame(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
     let n = buf.len();
     let mut i = 0;
@@ -841,7 +961,6 @@ fn take_sse_frame(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
 /// → `None` (dropped — e.g. the leading `: connected`). A non-empty `data:` payload that fails to parse
 /// as JSON → `None` (drop the frame, keep the stream alive — NOT the worker's `JSON.parse`-throws-kills-
 /// the-stream behavior).
-#[cfg(desktop)]
 fn parse_sse_frame(content: &[u8]) -> Option<ParsedFrame> {
     let text = std::str::from_utf8(content).ok()?;
     let mut event: Option<String> = None;

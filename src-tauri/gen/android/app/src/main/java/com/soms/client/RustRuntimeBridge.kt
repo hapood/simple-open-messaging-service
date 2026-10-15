@@ -29,7 +29,7 @@ object RustRuntimeBridge {
     // to parse its schema, so background Kotlin components must never open that file directly.
     external fun getNotificationPreference(key: String): String?
     external fun setNotificationPreference(key: String, value: String)
-    external fun queryCallPeer(userId: Int, threadId: Int, account: String, domain: String): String?
+    external fun queryCallPeer(userId: Int, threadId: Int, account: String, namespaceId: Int): String?
 
     private fun origins(ctx: Context): String = JSONObject().apply {
         put("primary", SomsSecureStore.getApiOrigin(ctx) ?: JSONObject.NULL)
@@ -53,7 +53,19 @@ object RustRuntimeBridge {
         if (isAccountEpochCurrent(expected)) action()
     }
 
-    private external fun isAccountEpochCurrent(epoch: Long): Boolean
+    external fun isAccountEpochCurrent(epoch: Long): Boolean
+
+    // Instance leases fence commands from destroyed Android adapters. Rust owns the connection,
+    // cancellation, origin selection and all synchronization/projection work.
+    external fun realtimeStart(callbacks: RealtimeCallbacks): Long
+    external fun realtimeIsCurrent(generation: Long): Boolean
+    external fun realtimeStop(instance: Long)
+    external fun realtimeNet(instance: Long, online: Boolean)
+    external fun realtimeRetryNow(instance: Long): Long
+    external fun realtimeForceReconnect(instance: Long): Long
+    external fun realtimeGetState(): String
+    external fun realtimeReplayHello(): String?
+    external fun realtimePickOrigin(): String?
 
     private external fun updateSessionToken(token: String?)
 

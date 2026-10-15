@@ -231,7 +231,7 @@ class MainActivity : TauriActivity() {
         // the phone; CallController is already seeded incoming). Accept natively now — the webview boots and
         // shows the connecting UI from the snapshot.
         if (intent?.action == CallService.ACTION_ANSWER) {
-            intent.getStringExtra(CallService.EXTRA_SID)?.let { handleCallAnswer(it) }
+            intent.getStringExtra(CallService.EXTRA_SID)?.let { handleCallAnswer(it, intent) }
         }
         // Reflect call-phase changes in the show-when-locked / turn-screen-on flags (lock-screen incoming UI).
         CallController.setPhaseListener {
@@ -968,7 +968,7 @@ class MainActivity : TauriActivity() {
         }
         // Warm-start answer: the app was already running when the user tapped Answer on the ringing notif.
         if (intent.action == CallService.ACTION_ANSWER) {
-            intent.getStringExtra(CallService.EXTRA_SID)?.let { handleCallAnswer(it) }
+            intent.getStringExtra(CallService.EXTRA_SID)?.let { handleCallAnswer(it, intent) }
         }
     }
 
@@ -1068,9 +1068,13 @@ class MainActivity : TauriActivity() {
     /** System-owned controls remain usable while the Web chrome is hidden in PiP. Broadcast intents route to
      *  the process-global CallController, so they also work when the Activity is paused. */
     private fun buildPipActions(): List<RemoteAction> {
+        val binding = CallService.instance?.currentNotificationSession() ?: return emptyList()
+        val sid = CallController.callSid ?: return emptyList()
         val icon = Icon.createWithResource(this, R.drawable.ic_notification)
         val muteIntent = Intent(this, SomsActionReceiver::class.java)
             .putExtra(SomsActionReceiver.EXTRA_CALL_TOGGLE_MUTE, true)
+            .putExtra(CallService.EXTRA_SID, sid)
+        binding.attach(muteIntent, "pip-mute", sid)
         val mutePi = PendingIntent.getBroadcast(
             this,
             PIP_REQ_MUTE,
@@ -1078,7 +1082,8 @@ class MainActivity : TauriActivity() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val endIntent = Intent(this, SomsActionReceiver::class.java)
-            .putExtra(SomsActionReceiver.EXTRA_CALL_END, CallController.callSid ?: "")
+            .putExtra(SomsActionReceiver.EXTRA_CALL_END, sid)
+        binding.attach(endIntent, "pip-end", sid)
         val endPi = PendingIntent.getBroadcast(
             this,
             PIP_REQ_END,
@@ -1433,7 +1438,12 @@ class MainActivity : TauriActivity() {
      *  onResume's RealtimeService start guard. Called by SomsCallInterface.initiate / accept. */
     internal fun startCallService() {
         try {
-            startForegroundService(Intent(this, CallService::class.java))
+            val binding = NotificationSessionBinding.capture(this) ?: return
+            val serviceIntent = Intent(this, CallService::class.java)
+            val sid = CallController.callSid ?: return
+            serviceIntent.putExtra(CallService.EXTRA_SID, sid)
+            binding.attach(serviceIntent, "outgoing-service", sid)
+            startForegroundService(serviceIntent)
         } catch (e: RuntimeException) {
             Log.w("SomsActivity", "call service start skipped: ${e.javaClass.simpleName}: ${e.message}")
         }
@@ -1448,9 +1458,12 @@ class MainActivity : TauriActivity() {
      *  CallController was already seeded incoming by the FCM wake-up (CallService.startIncoming); accept stops
      *  the ring + switches to comms audio + POSTs /calls/accept + builds the PC. Mic (+ camera for VIDEO) is
      *  gated first (same path as the in-app accept button). Runs on the UI thread (onCreate/onNewIntent). */
-    private fun handleCallAnswer(sid: String) {
+    private fun handleCallAnswer(sid: String, source: Intent?) {
+        val binding = NotificationSessionBinding.fromIntent(source) ?: return
+        if (!binding.isCurrent(this) || CallController.callSid != sid) return
         ensureCallPermissions(CallController.callType) {
-            CallController.accept(sid)
+            // Permission UI can outlive logout or server/account switching.
+            if (binding.isCurrent(this) && CallController.callSid == sid) CallController.accept(sid)
         }
     }
 
@@ -1638,14 +1651,13 @@ class MainActivity : TauriActivity() {
          *  ('connecting'|'open'|'reconnecting'|'closed'), so a freshly-booted WebView can seed its
          *  connection-state signal before the next transition (Kotlin only pushes on transitions). */
         @JavascriptInterface
-        fun getConnState(): String = RealtimeService.connState
+        fun getConnState(): String = RustRuntimeBridge.realtimeGetState()
 
-        /** Run Android's shared origin race before login. RealtimeService uses the exact same selector for
-         * reconnects, so login/API and SSE cannot disagree because of duplicated selection logic. */
+        /** Delegate login reachability to the same Rust origin selector used by the realtime runtime. */
         @JavascriptInterface
         fun pickActiveOrigin(): String? {
-            val a = activityRef.get() ?: return null
-            return OriginSelector.select(a)
+            if (activityRef.get() == null) return null
+            return RustRuntimeBridge.realtimePickOrigin()
         }
 
         /** User tapped the disconnected chip: tell RealtimeService to cancel its pending backoff and
@@ -1669,32 +1681,24 @@ class MainActivity : TauriActivity() {
             a.startService(Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_FORCE_RECONNECT))
         }
 
-        /** Follow Rust's authoritative HTTP origin after a successful address race, then restart SSE on
-         *  the same endpoint. The configured pair remains unchanged; only the persisted active mode moves. */
-        @JavascriptInterface
-        fun useActiveOrigin(origin: String) {
-            val a = activityRef.get() ?: return
-            val normalized = origin.trimEnd('/')
-            val secondary = SomsSecureStore.getApiOriginSecondary(a)
-            SomsSecureStore.setOriginMode(
-                a,
-                if (secondary != null && normalized == secondary.trimEnd('/')) "secondary" else "primary",
-            )
-            a.startService(
-                Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_FORCE_RECONNECT),
-            )
-        }
-
         /** Re-attached-WebView (renderer reclaim / FGS-pre-connected cold start) handshake replay: hand the
          *  freshly-booted WebView the cached+merged HELLO. A retained open `/events` stream does NOT re-push
          *  HELLO on its own (it is sent once per register), so this cache (kept fresh by
-         *  [RealtimeService.cacheHelloFrame]) is how the WebView bootstraps (userId / threadRevision /
+         *  the Rust runtime) is how the WebView bootstraps (userId / threadRevision /
          *  profileRev / latestMessage) without a reconnect. No-op when the cache is empty
          *  (the facade's HELLO-timeout backstop then force-reconnects for a fresh one). */
         @JavascriptInterface
         fun replayHello() {
-            val hello = RealtimeService.replayCachedHello() ?: return
-            SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('HELLO', $hello);")
+            val activity = activityRef.get() ?: return
+            val token = synchronized(SomsSecureStore) { SomsSecureStore.getSessionToken(activity) }
+            val raw = RustRuntimeBridge.realtimeReplayHello() ?: return
+            val snapshot = org.json.JSONObject(raw)
+            val generation = snapshot.getLong("generation")
+            val hello = snapshot.getJSONObject("hello")
+            activity.runOnUiThread {
+                if (token != SomsSecureStore.getSessionToken(activity) || !RustRuntimeBridge.realtimeIsCurrent(generation)) return@runOnUiThread
+                SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('HELLO', $hello);")
+            }
         }
 
         /** Whether the 6-hour background-sync poller is enabled (default true). Read by the Settings page
@@ -2054,23 +2058,29 @@ class MainActivity : TauriActivity() {
         /** Caller begins a call. Native SQLite presentation is resolved first; only then is the `starting`
          *  snapshot published and the call foreground service started. */
         @JavascriptInterface
-        fun initiate(threadId: Int, callSid: String, callType: String, peerAccount: String, peerDomain: String) {
+        fun initiate(threadId: Int, callSid: String, callType: String, peerAccount: String, peerNamespaceId: Int) {
             val a = activityRef.get() ?: return
+            val revision = CallController.captureSessionResourceRevision() ?: return
+            val binding = NotificationSessionBinding.capture(a) ?: return
             a.runOnUiThread {
+                if (!binding.isCurrent(a)) return@runOnUiThread
                 a.ensureCallPermissions(callType) {
+                    if (!binding.isCurrent(a)) return@ensureCallPermissions
                     // Native SQLite is the presentation authority. Resolve it off the UI thread and only
                     // publish the starting snapshot after the name/avatar are ready.
                     Thread {
-                        val peer = ClientStateDb.getCallPeer(a.applicationContext, peerAccount, peerDomain, threadId)
-                        a.runOnUiThread {
+                        val peer = ClientStateDb.getCallPeer(a.applicationContext, peerAccount, peerNamespaceId, threadId)
+                        a.runOnUiThread seed@{
+                            if (!binding.isCurrent(a)) return@seed
                             if (CallController.initiate(
                                     threadId,
                                     callSid,
                                     callType,
                                     peerAccount,
-                                    peerDomain,
+                                    peerNamespaceId,
                                     peer?.name ?: "",
                                     peer?.avatarDataUrl() ?: "",
+                                    revision,
                                 )) {
                                 a.startCallService()
                             }
@@ -2089,8 +2099,10 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun accept(callSid: String) {
             val a = activityRef.get() ?: return
+            val binding = NotificationSessionBinding.capture(a) ?: return
             a.runOnUiThread {
                 a.ensureCallPermissions(CallController.callType) {
+                    if (!binding.isCurrent(a) || CallController.callSid != callSid) return@ensureCallPermissions
                     a.startCallService()
                     CallController.accept(callSid)
                 }

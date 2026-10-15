@@ -60,25 +60,43 @@ class CallService : Service() {
     /** The peer's avatar bitmap for the notification Person icon. */
     @Volatile private var avatarBitmap: Bitmap? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var notificationSession: NotificationSessionBinding? = null
+    private var notificationCallSid: String? = null
+    @Volatile private var destroyed = false
 
     override fun onCreate() {
         super.onCreate()
         instance = this
     }
 
+    fun currentNotificationSession(): NotificationSessionBinding? =
+        if (destroyed) null else notificationSession?.takeIf { it.isCurrent(this) }
+
     /** Bound-mode is unused (a started service); satisfy the abstract base. */
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val requestedSession = NotificationSessionBinding.fromIntent(intent)
+        if (requestedSession == null || !requestedSession.isCurrent(this)) {
+            if (notificationSession?.isCurrent(this) != true) stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        val owner = notificationSession
+        if (owner != null && owner != requestedSession) {
+            // Do not reparent an existing call's notification to a newly logged-in session.
+            if (!owner.isCurrent(this)) stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        notificationSession = requestedSession
+        notificationCallSid = intent?.getStringExtra(EXTRA_SID)?.takeIf { it.isNotEmpty() }
         val isIncoming = intent?.action == ACTION_INCOMING
         val sid = if (isIncoming) intent?.getStringExtra(EXTRA_SID) else null
-        val callerUserId = intent?.getIntExtra(EXTRA_CALLER_UID, 0) ?: 0
         val callerAccount = intent?.getStringExtra(EXTRA_CALLER_ACCOUNT) ?: ""
-        val callerDomain = intent?.getStringExtra(EXTRA_CALLER_DOMAIN) ?: ""
+        val callerNamespaceId = intent?.getIntExtra(EXTRA_CALLER_NAMESPACE_ID, -1) ?: -1
         val incomingThreadId = intent?.getIntExtra(EXTRA_THREAD_ID, 0) ?: 0
-        // Promote before touching SQLite or decoding an avatar: a cold FCM start has only a short
-        // deadline to call startForeground. The initial incoming card has a placeholder caller; it is
-        // updated under the same notification ID once presentation has been resolved.
+        // Promote before decoding an avatar: a cold FCM start has only a short deadline to call
+        // startForeground. The initial incoming card has a placeholder caller; it is updated under the
+        // same notification ID once the passed-in presentation facts are decoded.
         try {
             if (isIncoming && !sid.isNullOrEmpty()) {
                 incomingCallerName = ""
@@ -96,15 +114,14 @@ class CallService : Service() {
             } catch (_: Exception) { /* nothing more we can do */ }
         }
         if (isIncoming && !sid.isNullOrEmpty()) {
-            val localPeer = try {
-                ClientStateDb.getCallPeer(this, callerAccount, callerDomain, incomingThreadId)
-            } catch (e: Exception) {
-                SomsLog.w("SomsCall") { "incoming caller lookup failed: ${e.message}" }
-                null
-            }
-            incomingCallerName = localPeer?.name ?: ""
+            // The trigger (SSE / HELLO / FCM) resolved the caller presentation from native SQLite and
+            // passed the facts inline; this service only renders them (with its own terminal fallbacks)
+            // and never re-resolves identity itself.
+            incomingCallerName = intent?.getStringExtra(EXTRA_CALLER_NAME)?.takeIf { it.isNotEmpty() } ?: callerAccount
+            val avatarDataUrl = intent?.getStringExtra(EXTRA_CALLER_AVATAR)?.takeIf { it.isNotEmpty() }
             avatarBitmap = runCatching {
-                localPeer?.avatarBytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                avatarDataUrl?.let { decodeAvatarDataUrl(it) }
+                    ?.let { BitmapFactory.decodeByteArray(it.second, 0, it.second.size) }
                     ?: LetterAvatar.render(this, incomingCallerName)
             }.getOrNull()
             try {
@@ -112,16 +129,10 @@ class CallService : Service() {
             } catch (e: Exception) {
                 SomsLog.w("SomsCall") { "incoming notification update failed: ${e.message}" }
             }
-            CallController.seedIncoming(
-                sid,
-                callerUserId,
-                callerAccount,
-                callerDomain,
-                incomingCallerName,
-                localPeer?.avatarDataUrl() ?: "",
-                incomingThreadId,
-                incomingCallType,
-            )
+            if (notificationSession?.isCurrent(this) != true) {
+                stopSelf(startId)
+                return START_NOT_STICKY
+            }
         } else if (!isIncoming) {
             // Outgoing / re-delivered start: comms audio (the call is negotiating/active).
             acquireAudio()
@@ -139,6 +150,7 @@ class CallService : Service() {
      *  from the ringing card to the ongoing "call in progress" one (which also dismisses the full-screen
      *  incoming surface). The ring itself was already stopped in accept. */
     fun onAccepted() {
+        if (notificationSession?.isCurrent(this) != true) { stopSelf(); return }
         acquireAudio()
         startCallForeground()
     }
@@ -147,6 +159,8 @@ class CallService : Service() {
      *  typed startForeground (3-arg, FOREGROUND_SERVICE_TYPE_PHONE_CALL) is required on Android 14+; older
      *  versions use the 2-arg overload. Mirrors [RealtimeService.startForegroundCompat]. */
     private fun startCallForeground() {
+        if (destroyed) return
+        if (notificationSession?.isCurrent(this) != true) { stopSelf(); return }
         val notif = buildOngoingNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
@@ -155,8 +169,24 @@ class CallService : Service() {
         }
     }
 
+    /** Decode the `data:image/<mime>;base64,…` avatar the trigger resolved from native SQLite (the same
+     *  inline form [com.soms.client.ClientStateDb] produces). Returns mime + raw bytes. */
+    private fun decodeAvatarDataUrl(value: String): Pair<String, ByteArray>? {
+        if (!value.startsWith("data:image/")) return null
+        val marker = value.indexOf(";base64,")
+        if (marker < 5) return null
+        return try {
+            value.substring(5, marker) to
+                Base64.decode(value.substring(marker + 8), Base64.DEFAULT)
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+    }
+
     /** Promote to foreground with the INCOMING-ring notification (the FGS foreground surface while ringing). */
     private fun startIncomingForeground(sid: String) {
+        if (destroyed) return
+        if (notificationSession?.isCurrent(this) != true) { stopSelf(); return }
         val notif = buildIncomingNotification(sid)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
@@ -187,6 +217,7 @@ class CallService : Service() {
         // ongoing notification is posted (the call is live); the empty-string guard is in the receiver.
         val hangUpIntent = Intent(this, SomsActionReceiver::class.java).apply {
             putExtra(SomsActionReceiver.EXTRA_CALL_END, CallController.callSid ?: "")
+            notificationSession!!.attach(this, "end", CallController.callSid ?: "")
         }
         val hangUpPi = PendingIntent.getBroadcast(
             this, REQ_HANGUP, hangUpIntent,
@@ -226,6 +257,7 @@ class CallService : Service() {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             action = ACTION_ANSWER
             putExtra(EXTRA_SID, sid)
+            notificationSession!!.attach(this, "answer", sid)
         }
         val answerPi = PendingIntent.getActivity(
             this, REQ_ANSWER, answerIntent,
@@ -233,6 +265,7 @@ class CallService : Service() {
         )
         val declineIntent = Intent(this, SomsActionReceiver::class.java).apply {
             putExtra(SomsActionReceiver.EXTRA_CALL_DECLINE, sid)
+            notificationSession!!.attach(this, "decline", sid)
         }
         val declinePi = PendingIntent.getBroadcast(
             this, REQ_DECLINE, declineIntent,
@@ -246,6 +279,7 @@ class CallService : Service() {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             action = ACTION_SHOW_INCOMING
             putExtra(EXTRA_SID, sid)
+            notificationSession!!.attach(this, "show", sid)
         }
         val showIncomingPi = PendingIntent.getActivity(
             this, REQ_SHOW_INCOMING, showIncomingIntent,
@@ -340,10 +374,12 @@ class CallService : Service() {
     }
 
     override fun onDestroy() {
+        destroyed = true
+        mainHandler.removeCallbacksAndMessages(null)
         // Clear the instance FIRST so CallController.onAccepted can't reach a destroying service.
-        instance = null
+        if (instance === this) instance = null
         releaseAudio()
-        CallController.destroy()
+        CallController.destroy(notificationCallSid)
         super.onDestroy()
     }
 
@@ -433,11 +469,11 @@ class CallService : Service() {
     companion object {
         /** Stable notification id for the call (the ringing card + the ongoing card share it — one replaces
          *  the other; distinct from RealtimeService's 0x6). */
-        private const val NOTIF_ID = 0x7
+        private const val NOTIF_ID = 0x9
         // v2 is intentional: older channels used Android's badge-enabled default, and setShowBadge cannot
         // be changed after a channel has been submitted to NotificationManager.
-        private const val CHANNEL_ONGOING = "soms_calls_v2"
-        private const val CHANNEL_INCOMING = "soms_calls_incoming_v2"
+        private const val CHANNEL_ONGOING = "soms_calls_v1"
+        private const val CHANNEL_INCOMING = "soms_calls_incoming_v1"
 
         /** Start the service in the incoming-ring mode (from the CALL_INCOMING FCM push). */
         private const val ACTION_INCOMING = "soms.action.CALL_INCOMING"
@@ -449,9 +485,10 @@ class CallService : Service() {
         /** The callSid extra shared by the service start + the notification intents (MainActivity + the
          *  decline receiver read it). Public so those callers can reference it. */
         const val EXTRA_SID = "soms_call_sid"
-        private const val EXTRA_CALLER_UID = "soms_call_caller_uid"
         private const val EXTRA_CALLER_ACCOUNT = "soms_call_caller_account"
-        private const val EXTRA_CALLER_DOMAIN = "soms_call_caller_domain"
+        private const val EXTRA_CALLER_NAMESPACE_ID = "soms_call_caller_namespace_id"
+        private const val EXTRA_CALLER_NAME = "soms_call_caller_name"
+        private const val EXTRA_CALLER_AVATAR = "soms_call_caller_avatar"
         private const val EXTRA_THREAD_ID = "soms_call_thread_id"
         private const val EXTRA_CALL_TYPE = "soms_call_type"
         private const val REQ_ANSWER = 7001
@@ -464,32 +501,44 @@ class CallService : Service() {
         @Volatile var instance: CallService? = null
             private set
 
-        /** Start the call FGS for an incoming ring (from the CALL_INCOMING FCM push). The high-priority FCM
-         *  grant is the exemption that lets a backgrounded/killed app start a phoneCall FGS; the try/catch is
+        /** Start the call FGS for an incoming ring. The trigger (SSE / HELLO / FCM) has already resolved
+         *  the caller presentation from native SQLite and seeds [CallController] itself; this start passes
+         *  the resolved facts inline, so the service only renders them. The high-priority FCM grant is the
+         *  exemption that lets a backgrounded/killed app start a phoneCall FGS; the try/catch is
          *  belt-and-suspenders for a rare rejected start (the phone still won't ring, but the process won't
-         *  crash). Seeds the FSM + rings inside onStartCommand (after the foreground promotion). */
+         *  crash). */
         fun startIncoming(
             ctx: Context,
             sid: String,
-            callerUserId: Int,
             callerAccount: String,
-            callerDomain: String,
+            callerNamespaceId: Int,
             threadId: Int,
             callType: String,
+            callerName: String,
+            callerAvatarDataUrl: String,
         ) {
+            val binding = NotificationSessionBinding.capture(ctx) ?: run {
+                SomsLog.w("SomsCall") { "incoming notification skipped: session identity is not ready" }
+                return
+            }
             val intent = Intent(ctx, CallService::class.java).apply {
+                binding.attach(this, "incoming-service", sid)
                 action = ACTION_INCOMING
                 putExtra(EXTRA_SID, sid)
-                putExtra(EXTRA_CALLER_UID, callerUserId)
                 putExtra(EXTRA_CALLER_ACCOUNT, callerAccount)
-                putExtra(EXTRA_CALLER_DOMAIN, callerDomain)
+                putExtra(EXTRA_CALLER_NAMESPACE_ID, callerNamespaceId)
+                putExtra(EXTRA_CALLER_NAME, callerName)
+                putExtra(EXTRA_CALLER_AVATAR, callerAvatarDataUrl)
                 putExtra(EXTRA_THREAD_ID, threadId)
                 putExtra(EXTRA_CALL_TYPE, callType)
             }
-            try {
-                ContextCompat.startForegroundService(ctx, intent)
-            } catch (e: Exception) {
-                SomsLog.w("SomsCall") { "CallService.startIncoming skipped: ${e.javaClass.simpleName}: ${e.message}" }
+            CallController.whenSessionResourcesReleased {
+                if (!binding.isCurrent(ctx)) return@whenSessionResourcesReleased
+                try {
+                    ContextCompat.startForegroundService(ctx, intent)
+                } catch (e: Exception) {
+                    SomsLog.w("SomsCall") { "CallService.startIncoming skipped: ${e.javaClass.simpleName}: ${e.message}" }
+                }
             }
         }
     }

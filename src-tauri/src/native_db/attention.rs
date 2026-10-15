@@ -4,7 +4,6 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use tauri::Emitter;
 
 use super::client_state::{ClientGroupMetaApply, ClientGroupMetaPage};
 use super::messages::{count_unread_message_slots, MessageCountOwner};
@@ -62,6 +61,7 @@ pub(crate) async fn native_db_drain_thread_misc(
     let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
     // Fire both drains concurrently; they share the `OPEN_THREAD_ID` guard.
     let group_meta_app = app.clone();
+    let group_meta_events = crate::realtime::NativeEvents::capture(Some(&app));
     let group_meta_proxy = proxy.inner().clone();
     let group_meta_task = tokio::spawn(async move {
         if let Some(_target) = group_meta_end_id {
@@ -79,7 +79,7 @@ pub(crate) async fn native_db_drain_thread_misc(
             // Deliver committed pages even when a later page or profile
             // reference failed; the persisted cursor already advanced.
             if !changed.is_empty() {
-                let _ = group_meta_app.emit(
+                let _ = group_meta_events.emit(
                     "soms-sse-event",
                     LocalEventPayload {
                         event: "LOCAL_GROUP_META_COMMITTED".into(),
@@ -99,6 +99,7 @@ pub(crate) async fn native_db_drain_thread_misc(
         }
     });
     let tombstone_app = app.clone();
+    let tombstone_events = crate::realtime::NativeEvents::capture(Some(&app));
     let tombstone_proxy = proxy.inner().clone();
     let tombstone_task = tokio::spawn(async move {
         if let Some(target) = tombstone_end_seq {
@@ -113,7 +114,7 @@ pub(crate) async fn native_db_drain_thread_misc(
             .await
             {
                 Ok(committed) if !committed.is_empty() => {
-                    let _ = tombstone_app.emit(
+                    let _ = tombstone_events.emit(
                         "soms-sse-event",
                         LocalEventPayload {
                             event: "LOCAL_TOMBSTONE_COMMITTED".into(),
@@ -379,11 +380,11 @@ pub(crate) async fn native_profile_resolve(
     user_id: i64,
     request: Value,
 ) -> Result<Value, String> {
-    resolve_profile(&app, &proxy, user_id, request).await
+    resolve_profile(Some(&app), &proxy, user_id, request).await
 }
 
 async fn resolve_profile(
-    app: &tauri::AppHandle,
+    app: Option<&tauri::AppHandle>,
     proxy: &ServerSessionState,
     user_id: i64,
     request: Value,
@@ -403,7 +404,7 @@ async fn resolve_profile(
         return Ok(serde_json::json!({ "status": "READY", "profile": profile }));
     }
     let response = perform_api_request_with_events(
-        Some(app),
+        app,
         proxy,
         "POST".into(),
         "/api/v1/user/profile-resolution".into(),
@@ -441,7 +442,7 @@ async fn resolve_profile(
 }
 
 pub(crate) async fn materialize_profile_event(
-    app: &tauri::AppHandle,
+    app: Option<&tauri::AppHandle>,
     proxy: &ServerSessionState,
     user_id: i64,
     key: &Value,
@@ -962,12 +963,11 @@ async fn sync_group_meta_thread_unchecked(
                 namespace_id: plan.namespace_id,
                 page,
             };
-            let patch =
-                super::lifetime::spawn_at(Ok(epoch), move || {
-                    super::client_state::apply_group_meta_page(&mut open()?, user_id, update)
-                })
-                .await
-                .map_err(|e| format!("join group-meta page commit: {e}"))??;
+            let patch = super::lifetime::spawn_at(Ok(epoch), move || {
+                super::client_state::apply_group_meta_page(&mut open()?, user_id, update)
+            })
+            .await
+            .map_err(|e| format!("join group-meta page commit: {e}"))??;
             if let Some(patch) = patch {
                 patches.push(patch);
                 changed.push(plan.thread_id);
@@ -998,9 +998,7 @@ async fn sync_group_meta_thread_unchecked(
         match resolve_group_meta_profile(app, proxy, user_id, epoch, reference).await {
             Ok(true) => changed.push(changed_thread_id),
             Ok(false) => {}
-            Err(error) => warn!(
-                "group-meta profile reference failed; next wake retries: {error}"
-            ),
+            Err(error) => warn!("group-meta profile reference failed; next wake retries: {error}"),
         }
     }
     Ok(())
@@ -1290,18 +1288,10 @@ impl ThreadFeedSyncResult {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ThreadFeedProfile {
-    pub(super) account: String,
-    /// Receiver-local thread authority/publisher coordinate.
-    pub(super) namespace_id: i32,
-    pub(super) profile_rev: i32,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ThreadPreviewSender {
     account: String,
     /// Profile namespace in the thread authority publisher's space, not receiver-local.
+    #[serde(rename = "profileNamespaceId")]
     namespace_id: i32,
     profile_rev: i32,
 }
@@ -1330,17 +1320,23 @@ pub(crate) struct ThreadPreview {
 pub(crate) struct ThreadFeedSnapshot {
     #[serde(rename = "type")]
     pub(super) kind: String,
+    /// Thread authority/publisher coordinate (wire: `publisherNamespaceId`).
+    #[serde(rename = "publisherNamespaceId")]
     pub(super) authority_namespace_id: i32,
     pub(super) conversation_state: String,
     pub(super) blocked: bool,
     #[serde(deserialize_with = "required_nullable")]
     pub(super) role: Option<String>,
-    pub(super) profile: ThreadFeedProfile,
+    /// Peer's account in the publisher's namespace (wire: `profileAccount`).
+    #[serde(rename = "profileAccount")]
+    pub(super) subject_account: String,
     pub(super) thread_id: i32,
     pub(super) thread_feed_id: i32,
     #[serde(deserialize_with = "required_nullable")]
     pub(super) alias: Option<String>,
     pub(super) message_end_seq: i32,
+    /// Peer's profile revision in the publisher's namespace (wire: `profileRev`).
+    #[serde(rename = "profileRev")]
     pub(super) thread_profile_rev: i32,
     pub(super) tombstone_end_seq: i32,
     #[serde(deserialize_with = "required_nullable")]
@@ -1364,7 +1360,7 @@ where
     Option::<T>::deserialize(deserializer)
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct LocalThreadAttention {
     /// Transient eligibility from the consumed page; never part of the durable snapshot.
@@ -1373,6 +1369,43 @@ pub(crate) struct LocalThreadAttention {
     pub(super) thread_id: i32,
     pub(super) server: Option<ThreadFeedSnapshot>,
     pub(super) local_read_seq: Option<i32>,
+}
+
+/// The WebView contract (shared/thread-attention.ts) is a FLAT snapshot plus `localReadSeq`,
+/// not a nested `server` object. Serialize the committed snapshot accordingly; the nested
+/// form stays the internal/Deserialize representation.
+impl Serialize for LocalThreadAttention {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.server {
+            Some(server) => {
+                #[derive(Serialize)]
+                struct Flat<'a> {
+                    #[serde(flatten)]
+                    server: &'a ThreadFeedSnapshot,
+                    #[serde(rename = "localReadSeq")]
+                    local_read_seq: i32,
+                }
+                Flat {
+                    server,
+                    local_read_seq: self.local_read_seq.unwrap_or(server.last_read_seq),
+                }
+                .serialize(serializer)
+            }
+            None => {
+                #[derive(Serialize)]
+                #[serde(rename_all = "camelCase")]
+                struct Empty {
+                    thread_id: i32,
+                    local_read_seq: i32,
+                }
+                Empty {
+                    thread_id: self.thread_id,
+                    local_read_seq: self.local_read_seq.unwrap_or(0),
+                }
+                .serialize(serializer)
+            }
+        }
+    }
 }
 
 fn validate_snapshot(state: &ThreadFeedSnapshot) -> Result<(), String> {
@@ -1385,12 +1418,9 @@ fn validate_snapshot(state: &ThreadFeedSnapshot) -> Result<(), String> {
             .role
             .as_deref()
             .is_some_and(|role| !matches!(role, "OWNER" | "ADMIN" | "MEMBER"))
-        || state.authority_namespace_id != state.profile.namespace_id
-        || state.profile.namespace_id < 0
-        || state.profile.profile_rev < 0
-        || state.profile.account.is_empty()
+        || state.authority_namespace_id < 0
+        || state.subject_account.is_empty()
         || state.thread_profile_rev < 0
-        || state.profile.profile_rev != state.thread_profile_rev
         || state.message_end_seq < 0
         || state.tombstone_end_seq < 0
         || state.join_request_end_feed_id < 0
@@ -1435,11 +1465,7 @@ pub(super) fn read_state(
                         conversation_state: row.get(3)?,
                         blocked: row.get(4)?,
                         role: row.get(5)?,
-                        profile: ThreadFeedProfile {
-                            account: row.get(6)?,
-                            namespace_id: row.get(7)?,
-                            profile_rev: row.get(9)?,
-                        },
+                        subject_account: row.get(6)?,
                         alias: row.get(8)?,
                         thread_profile_rev: row.get(9)?,
                         message_end_seq: row.get(10)?,
@@ -1488,9 +1514,7 @@ pub(super) fn read_state(
         )
         .optional()
         .map_err(|e| format!("read thread preview: {e}"))?;
-    if let Some((seq, created_at, account, namespace_id, profile_rev, status, text)) =
-        preview
-    {
+    if let Some((seq, created_at, account, namespace_id, profile_rev, status, text)) = preview {
         let status = serde_json::from_value(serde_json::Value::String(status))
             .map_err(|e| format!("decode thread preview status: {e}"))?;
         state.server.as_mut().unwrap().previews.push(ThreadPreview {
@@ -1539,8 +1563,8 @@ pub(super) fn write_state(
                 server.conversation_state,
                 server.blocked,
                 server.role,
-                server.profile.account,
-                server.profile.namespace_id,
+                server.subject_account,
+                server.authority_namespace_id,
                 server.alias,
                 server.thread_profile_rev,
                 server.message_end_seq,
@@ -1635,8 +1659,34 @@ fn merge_states(
                     || old.unread_count != snapshot.unread_count
                     || old.last_mention_seq != snapshot.last_mention_seq
             });
-            let body = serde_json::to_value(&snapshot)
-                .map_err(|e| format!("encode thread structure: {e}"))?;
+            // The structural write helper consumes its own nested shape (distinct from the
+            // thread-feed wire shape): profile {account, namespaceId, profileRev} plus
+            // authorityNamespaceId. Translate the validated wire snapshot explicitly.
+            let body = serde_json::json!({
+                "type": snapshot.kind.as_str(),
+                "threadId": snapshot.thread_id,
+                "authorityNamespaceId": snapshot.authority_namespace_id,
+                "conversationState": snapshot.conversation_state.as_str(),
+                "blocked": snapshot.blocked,
+                "role": snapshot.role,
+                "profile": {
+                    "account": snapshot.subject_account.as_str(),
+                    "namespaceId": snapshot.authority_namespace_id,
+                    "profileRev": snapshot.thread_profile_rev,
+                },
+                "alias": snapshot.alias,
+                "threadProfileRev": snapshot.thread_profile_rev,
+                "messageEndSeq": snapshot.message_end_seq,
+                "tombstoneEndSeq": snapshot.tombstone_end_seq,
+                "groupMetaFeedEndId": snapshot.group_meta_feed_end_id,
+                "joinRequestEndFeedId": snapshot.join_request_end_feed_id,
+                "joinRequestReadFeedId": snapshot.join_request_read_feed_id,
+                "groupInviteEndFeedId": snapshot.group_invite_end_feed_id,
+                "lastReadSeq": snapshot.last_read_seq,
+                "announcementReadFeedId": snapshot.announcement_read_feed_id,
+                "unreadCount": snapshot.unread_count,
+                "lastMentionSeq": snapshot.last_mention_seq,
+            });
             super::client_state::apply_thread_state(
                 &tx,
                 user_id,
@@ -1826,8 +1876,8 @@ pub(crate) async fn native_db_project_thread_attention(
     owner: MessageCountOwner,
 ) -> Result<ThreadAttentionProjection, String> {
     super::lifetime::spawn(move || project_attention(&mut open()?, user_id, thread_id, &owner))
-    .await
-    .map_err(|e| format!("join attention projection: {e}"))?
+        .await
+        .map_err(|e| format!("join attention projection: {e}"))?
 }
 
 #[tauri::command]
@@ -1931,7 +1981,7 @@ mod tests {
         let mut other = snapshot(2, 0);
         other.thread_id = 8;
         let mut replacement = snapshot(3, 0);
-        replacement.profile.account = "different-peer".into();
+        replacement.subject_account = "different-peer".into();
         assert!(merge_states(&mut conn, 1, vec![other, replacement], Some(3)).is_err());
         assert_eq!(
             read_state(&conn, 1, 7)
@@ -2040,7 +2090,7 @@ mod tests {
         let mut conn = db();
         let mut next = snapshot(1, 0);
         next.thread_profile_rev = 2;
-        next.profile.profile_rev = 2;
+        next.thread_profile_rev = 2;
         merge_states(&mut conn, 1, vec![next], Some(1)).unwrap();
         let state = read_state(&conn, 1, 7).unwrap();
         assert_eq!(state.server.unwrap().thread_profile_rev, 2);
@@ -2069,7 +2119,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "seq": seq,
             "createdAt": "2026-01-01T00:00:00Z",
-            "sender": {"account":"peer","namespaceId":0,"profileRev":0},
+            "sender": {"account":"peer","profileNamespaceId":0,"profileRev":0},
             "status": "LIVE",
             "text": "message"
         }))
@@ -2083,11 +2133,7 @@ mod tests {
             conversation_state: "ACTIVE".into(),
             blocked: false,
             role: None,
-            profile: ThreadFeedProfile {
-                account: "peer".into(),
-                namespace_id: 0,
-                profile_rev: 0,
-            },
+            subject_account: "peer".into(),
             thread_id: 7,
             thread_feed_id: feed,
             alias: None,
@@ -2181,15 +2227,21 @@ mod tests {
         group.kind = "GROUP".into();
         group.role = Some("MEMBER".into());
         group.authority_namespace_id = 7;
-        group.profile.namespace_id = 7;
-        group.profile.account = "!team".into();
+        group.authority_namespace_id = 7;
+        group.subject_account = "!team".into();
         merge_states(&mut conn, 1, vec![group], None).unwrap();
         conn.execute(
             "INSERT INTO members(user_id,thread_id,member_account,namespace_id,role,profile_rev)
-             VALUES(1,7,'alice',2,'MEMBER',3)", [],
-        ).unwrap();
+             VALUES(1,7,'alice',2,'MEMBER',3)",
+            [],
+        )
+        .unwrap();
         let reference = GroupMetaProfileReference {
-            is_group: false, thread_id: 7, account: "alice".into(), namespace_id: 2, rev: 3,
+            is_group: false,
+            thread_id: 7,
+            account: "alice".into(),
+            namespace_id: 2,
+            rev: 3,
         };
         let mut profile = serde_json::json!({
             "publisherNamespaceId": 2, "profileNamespaceId": 2,
@@ -2202,10 +2254,12 @@ mod tests {
         profile["name"] = serde_json::json!("Correct publisher");
         commit_group_meta_profile(&conn, 1, &reference, &profile).unwrap();
         let exact = super::super::contacts::read_profile(&conn, 1, 7, 2, "alice", 3)
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert_eq!(exact["name"], "Correct publisher");
         let diagonal = super::super::contacts::read_profile(&conn, 1, 2, 2, "alice", 3)
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert_eq!(diagonal["name"], "Wrong diagonal");
         assert!(unresolved_group_meta_profiles(&conn, 1).unwrap().is_empty());
     }
@@ -2216,8 +2270,8 @@ mod tests {
         let mut group = snapshot(1, 0);
         group.kind = "GROUP".into();
         group.role = Some("OWNER".into());
-        group.profile.account = "!team".into();
-        group.profile.profile_rev = 2;
+        group.subject_account = "!team".into();
+        group.thread_profile_rev = 2;
         group.thread_profile_rev = 2;
         merge_states(&mut conn, 1, vec![group], None).unwrap();
         let reference = GroupMetaProfileReference {
@@ -2273,8 +2327,8 @@ mod tests {
         let mut group = snapshot(1, 0);
         group.kind = "GROUP".into();
         group.role = Some("OWNER".into());
-        group.profile.account = "!team".into();
-        group.profile.profile_rev = 2;
+        group.subject_account = "!team".into();
+        group.thread_profile_rev = 2;
         group.thread_profile_rev = 2;
         merge_states(&mut conn, 1, vec![group], None).unwrap();
         super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
@@ -2301,10 +2355,77 @@ mod tests {
     #[test]
     fn namespace_identity_validation_uses_namespace_coordinates() {
         let mut invalid = snapshot(1, 0);
-        invalid.authority_namespace_id = 2;
+        invalid.authority_namespace_id = -1;
         assert!(validate_snapshot(&invalid).is_err());
-        invalid.profile.namespace_id = 2;
+        invalid.authority_namespace_id = 2;
         assert!(validate_snapshot(&invalid).is_ok());
+    }
+
+    #[test]
+    fn thread_feed_response_decodes_the_shared_wire_shape() {
+        // Mirrors the server response built by ThreadFeedService (backend) and the shared
+        // ThreadFeedSnapshot type: flat publisher/profile coordinates, no nested profile
+        // object, sender carries profileNamespaceId. This guards against wire drift.
+        let body = serde_json::json!({
+            "code": 0,
+            "data": {
+                "threadFeedEndId": 4, "through": 4, "scannedThrough": 4, "hasMore": false,
+                "items": [{
+                    "threadId": 10, "threadFeedId": 1, "type": "P2P",
+                    "publisherNamespaceId": 0, "conversationState": "ACTIVE",
+                    "blocked": false, "role": null, "profileAccount": "bob",
+                    "profileRev": 3, "alias": "Pal",
+                    "messageEndSeq": 7, "tombstoneEndSeq": 0, "groupMetaFeedEndId": null,
+                    "joinRequestEndFeedId": 0, "joinRequestReadFeedId": -1,
+                    "groupInviteEndFeedId": 0, "lastReadSeq": 0,
+                    "announcementReadFeedId": 0, "unreadCount": 2, "lastMentionSeq": null,
+                    "previews": [{
+                        "seq": 7, "createdAt": "2026-10-15T00:00:00.000Z",
+                        "sender": {"account": "bob", "profileNamespaceId": 0, "profileRev": 3},
+                        "status": "LIVE", "text": "hello",
+                    }],
+                }],
+            },
+        });
+        let page = serde_json::from_value::<ThreadFeedResponse>(body)
+            .unwrap()
+            .data
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        let item = &page.items[0];
+        assert_eq!(item.authority_namespace_id, 0);
+        assert_eq!(item.subject_account, "bob");
+        assert_eq!(item.thread_profile_rev, 3);
+        assert_eq!(item.previews[0].sender.namespace_id, 0);
+        assert_eq!(item.previews[0].sender.profile_rev, 3);
+        validate_page(&page, 0, 4).unwrap();
+        validate_snapshot(item).unwrap();
+    }
+
+    #[test]
+    fn thread_states_serialize_flat_for_the_webview_contract() {
+        // The WebView consumes shared/thread-attention.ts LocalThreadAttention: a FLAT
+        // snapshot plus localReadSeq. A nested `server` object breaks isThreadStateSnapshot
+        // and silently aborts onHello (observed on device as navigationReady never set).
+        let mut conn = db();
+        merge_states(&mut conn, 1, vec![snapshot(1, 0)], Some(1)).unwrap();
+        let states = read_states(&conn, 1).unwrap();
+        assert_eq!(states.len(), 1);
+        let json = serde_json::to_value(&states[0]).unwrap();
+        assert!(json.get("server").is_none());
+        for key in [
+            "threadId", "threadFeedId", "type", "publisherNamespaceId",
+            "conversationState", "blocked", "profileAccount", "profileRev",
+            "localReadSeq",
+        ] {
+            assert!(json.get(key).is_some(), "missing flat key {key}");
+        }
+        assert_eq!(json["profileAccount"], "peer");
+        assert_eq!(json["localReadSeq"], 0);
+        // Round-trip through the WebView-side guard semantics: every integer coordinate
+        // the TS guard checks must be present and integral.
+        assert!(json["threadFeedId"].is_i64());
+        assert!(json["publisherNamespaceId"].is_i64());
     }
 
     #[test]
@@ -2312,42 +2433,59 @@ mod tests {
         let mut conn = db();
         let mut feed = snapshot(1, 0);
         feed.authority_namespace_id = 7;
-        feed.profile.namespace_id = 7;
         feed.previews = vec![serde_json::from_value(serde_json::json!({
             "seq": 1, "createdAt": "2026-01-01T00:00:00Z",
-            "sender": {"account": "alice", "namespaceId": 2, "profileRev": 3},
+            "sender": {"account": "alice", "profileNamespaceId": 2, "profileRev": 3},
             "status": "LIVE", "text": "Hello",
-        })).unwrap()];
+        }))
+        .unwrap()];
         let wire = serde_json::to_value(&feed).unwrap();
-        assert!(wire["profile"].get("domain").is_none());
+        // The wire shape is the flat shared protocol: no nested profile object, no domains.
+        assert_eq!(wire["profileAccount"], "peer");
+        assert_eq!(wire["publisherNamespaceId"], 7);
+        assert_eq!(wire["previews"][0]["sender"]["profileNamespaceId"], 2);
+        assert!(wire.get("profile").is_none());
+        assert!(wire.get("domain").is_none());
         assert!(wire["previews"][0]["sender"].get("domain").is_none());
-        for path in ["profile", "sender"] {
+        for (pointer, key) in [("", "domain"), ("/previews/0/sender", "domain")] {
             let mut leaked = wire.clone();
-            if path == "profile" {
-                leaked["profile"]["domain"] = "local".into();
+            let target = if pointer.is_empty() {
+                &mut leaked
             } else {
-                leaked["previews"][0]["sender"]["domain"] = "local".into();
-            }
+                leaked.pointer_mut(pointer).unwrap()
+            };
+            target[key] = "local".into();
             assert!(serde_json::from_value::<ThreadFeedSnapshot>(leaked).is_err());
         }
         merge_states(&mut conn, 1, vec![feed.clone()], None).unwrap();
         assert_eq!(read_state(&conn, 1, 7).unwrap().server, Some(feed.clone()));
         for domain in ["local", "renamed.test"] {
             super::super::contacts::register_namespace(&conn, 1, 7, domain).unwrap();
-            conn.execute("UPDATE profile_namespaces SET domain=?1 WHERE user_id=1", [domain]).unwrap();
+            conn.execute(
+                "UPDATE profile_namespaces SET domain=?1 WHERE user_id=1",
+                [domain],
+            )
+            .unwrap();
             let state = read_state(&conn, 1, 7).unwrap();
             write_state(&conn, 1, &state).unwrap();
             assert_eq!(state.server, Some(feed.clone()));
-            let presentation = super::super::thread_store::read(&conn, 1, 7).unwrap().unwrap();
+            let presentation = super::super::thread_store::read(&conn, 1, 7)
+                .unwrap()
+                .unwrap();
             assert_eq!(presentation["peerUser"]["domain"], domain);
         }
         let mut wrong = read_state(&conn, 1, 7).unwrap();
-        wrong.server.as_mut().unwrap().profile.namespace_id = 8;
+        wrong.server.as_mut().unwrap().authority_namespace_id = 8;
         assert!(write_state(&conn, 1, &wrong).is_err());
         for table in ["threads", "thread_previews"] {
-            let mut statement = conn.prepare(&format!("PRAGMA table_info({table})")).unwrap();
-            let columns: Vec<String> = statement.query_map([], |row| row.get(1)).unwrap()
-                .map(Result::unwrap).collect();
+            let mut statement = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap();
+            let columns: Vec<String> = statement
+                .query_map([], |row| row.get(1))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
             assert!(!columns.iter().any(|column| column.ends_with("domain")));
         }
     }

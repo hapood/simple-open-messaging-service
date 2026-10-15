@@ -116,7 +116,7 @@ export abstract class CallAdapter {
   abstract setSnapshotListener(listener?: CallSnapshotListener): void;
   /** Caller begins a call (POST /calls/initiate + createOffer happen natively). `callType` ∈ AUDIO|VIDEO.
    *  `peerName` + `peerAvatar` are renderer-WebRTC presentation data. Android ignores them and resolves
-   *  presentation from native SQLite by `peerAccount` + `peerDomain`. */
+   *  presentation from native SQLite by `peerAccount` + `peerNamespaceId`. */
   abstract initiate(
     threadId: number,
     callSid: string,
@@ -124,7 +124,7 @@ export abstract class CallAdapter {
     peerName: string,
     peerAvatar: string,
     peerAccount: string,
-    peerDomain: string,
+    peerNamespaceId: number,
   ): void;
   /** Callee accepts the incoming ring (POST /calls/accept + createAnswer natively). */
   abstract accept(callSid: string): void;
@@ -171,14 +171,14 @@ class AndroidCallAdapter extends CallAdapter {
     _peerName: string,
     _peerAvatar: string,
     peerAccount: string,
-    peerDomain: string,
+    peerNamespaceId: number,
   ): void {
     window.SomsCall!.initiate(
       threadId,
       callSid,
       callType,
       peerAccount,
-      peerDomain,
+      peerNamespaceId,
     );
   }
   accept(callSid: string): void {
@@ -319,7 +319,7 @@ export class CallAdapterService {
     peerName: string,
     peerAvatar: string,
     peerAccount: string,
-    peerDomain: string,
+    peerNamespaceId: number,
   ): void {
     this.adapter.initiate(
       threadId,
@@ -328,7 +328,7 @@ export class CallAdapterService {
       peerName,
       peerAvatar,
       peerAccount,
-      peerDomain,
+      peerNamespaceId,
     );
   }
   accept(callSid: string): void {

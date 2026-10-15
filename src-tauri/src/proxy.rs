@@ -215,25 +215,18 @@ pub(crate) async fn send_with_headers_deadline(
 
 // --- native LAN-domain fallback: reachability probe + origin selection -------------------
 //
-// Origin selection has TWO modes, deliberately split:
-//  - `pick_origin_race` — the CONCURRENT probe-both race. Used ONLY for initialization (login, before the
-//    auth request — picks the origin to authenticate against) and for a full-disconnect RECONNECT (both
-//    origins were down → the backoff retry races both to find the reachable one). "Pick from scratch."
-//  - `maybe_switch` — the runtime smooth switch: probe the CURRENT active; if down, probe the OTHER
-//    (sequential, single — NOT concurrent); flip if the other is reachable. Used on single-point failures
-//    (a transport request / the SSE stream). Lighter than a full race; never races both at runtime.
+// Initialization and network-failure recovery use the concurrent probe-both race. When a secondary
+// is configured, the first healthy endpoint wins; if both fail, the current selection is retained.
 //
 // `GET /api/v1/client/compat` works PRE-LOGIN (no token), unlike SSE. No request re-send:
 // the failed request surfaces to the caller and the SSE HELLO/reconcile restores
 // state; these only fix which origin subsequent traffic uses.
 //
-// Authority: on DESKTOP Rust decides both (race + switch + `origin_notify` to its own SSE supervisor). On
-// ANDROID Kotlin is authoritative (it owns the FGS, including background); Rust is PASSIVE — it never
-// probes/switches, it just accepts the origin Kotlin signals via `set_active_origin` (JS-mediated). So the
-// `maybe_switch`/`pick_origin_race` CALL SITES in the transports/SSE are desktop-only.
+// Rust is the origin authority on every native host. OS adapters mirror its selection and report
+// connectivity facts; API and SSE transports share this same state and origin notification.
 
 /// A `reqwest::Error` that means the origin is UNREACHABLE (connect / DNS / TLS / timeout) — a candidate
-/// for `maybe_switch` / `pick_origin_race`. An HTTP status response (incl. 401) never reaches this: it
+/// for `pick_origin_race`. An HTTP status response (incl. 401) never reaches this: it
 /// means the server IS reachable, so no switch. Extracted pure so the boundary is unit-testable.
 pub(crate) fn is_network_failure(e: &reqwest::Error) -> bool {
     e.is_connect() || e.is_timeout()
@@ -266,8 +259,8 @@ async fn probe_client_compat(origin: &str) -> bool {
     )
 }
 
-/// Apply a chosen origin + mode as the active one, notifying the desktop SSE supervisor to reopen on it
-/// (API⇄SSE lockstep). No-op if it's already the active. Shared by `pick_origin_race` + `maybe_switch`.
+/// Apply a chosen origin + mode, notifying the shared SSE supervisor when the endpoint changes
+/// (API/SSE lockstep). An unchanged endpoint does not schedule a reconnect.
 pub(crate) fn activate_origin(state: &ServerSessionState, origin: &str, mode: OriginMode) {
     let prev = {
         let mut g = state.api_origin.lock().expect("origin lock");
@@ -276,17 +269,28 @@ pub(crate) fn activate_origin(state: &ServerSessionState, origin: &str, mode: Or
     *state.origin_mode.lock().expect("mode lock") = mode;
     if prev.as_str() != origin {
         warn!("origin: {prev} → {origin} ({mode:?})");
-        // Nudge the desktop SSE supervisor to cancel + reopen on the new active immediately. Race-free
-        // (Notify holds one permit). Mobile SSE (Kotlin) follows via its own state + signals Rust instead.
+        // Nudge the shared SSE supervisor to reopen on the changed endpoint. Notify holds one permit.
         state.origin_notify.notify_one();
     }
 }
 
 /// The CONCURRENT race: probe BOTH origins and immediately adopt the first healthy one. Used for login
-/// init + full-disconnect reconnect — NOT for runtime single-failure (that's `maybe_switch`). No-op when
+/// initialization and network-failure recovery. No-op when
 /// no secondary is configured (dev / no SOMS_LAN_DOMAIN). Single-flight (one race at a time). Never adopts
 /// a dead origin: if both fail, the active is left as-is.
 pub(crate) async fn pick_origin_race(state: &ServerSessionState) -> Option<String> {
+    pick_origin_race_with_commit(state, |origin, mode| {
+        activate_origin(state, origin, mode);
+        true
+    })
+    .await
+}
+
+/// Probe without holding a lifecycle lock; the caller admits the synchronous selection commit.
+pub(crate) async fn pick_origin_race_with_commit(
+    state: &ServerSessionState,
+    commit: impl FnOnce(&str, OriginMode) -> bool,
+) -> Option<String> {
     let Some(secondary) = state
         .api_origin_secondary
         .lock()
@@ -350,22 +354,10 @@ pub(crate) async fn pick_origin_race(state: &ServerSessionState) -> Option<Strin
         warn!("pick_origin_race: both origins unreachable; staying on {active}");
         return None;
     };
-    if origin != active {
-        activate_origin(state, &origin, mode);
-    } else {
-        *state.origin_mode.lock().expect("mode lock") = mode;
-        // A transport failure triggered this race. Even when the winning URL did not change, reset SSE:
-        // its socket may be stale while the health endpoint has already recovered.
-        state.origin_notify.notify_one();
-        #[cfg(debug_assertions)]
-        log::info!("origin race: selected={origin} mode={mode:?}");
-    }
-    Some(origin)
+    commit(&origin, mode).then_some(origin)
 }
 
-/// Desktop-only runtime switch (the transports + diagnostics call this on a network failure). On Android
-/// Rust is PASSIVE — Kotlin owns the decision and signals via `set_active_origin` — so this is a no-op
-/// there, avoiding a second, divergent decision-maker.
+/// Shared Rust runtime origin switch; Android's OS adapter does not select endpoints.
 pub(crate) async fn runtime_switch(state: &ServerSessionState) {
     let _ = pick_origin_race(state).await;
 }
@@ -612,4 +604,23 @@ pub(crate) async fn media_request(
         content_type,
         body: bytes.to_vec(),
     })
+}
+
+#[cfg(test)]
+mod realtime_origin_tests {
+    use super::*;
+    use futures_util::FutureExt;
+
+    #[tokio::test]
+    async fn only_changed_endpoints_schedule_a_stream_wake() {
+        let state = ServerSessionState::new();
+        let primary = state.api_origin.lock().unwrap().clone();
+        activate_origin(&state, &primary, OriginMode::Primary);
+        assert!(state.origin_notify.notified().now_or_never().is_none());
+        let secondary = "http://127.0.0.1:39999";
+        activate_origin(&state, secondary, OriginMode::Secondary);
+        assert!(state.origin_notify.notified().now_or_never().is_some());
+        activate_origin(&state, secondary, OriginMode::Secondary);
+        assert!(state.origin_notify.notified().now_or_never().is_none());
+    }
 }

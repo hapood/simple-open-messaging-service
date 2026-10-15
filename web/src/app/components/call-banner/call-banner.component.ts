@@ -14,6 +14,7 @@ import {
   UserAvatarType,
 } from '../user-avatar/user-avatar.component';
 import { ConversationListService } from '../../services/conversation-list.service';
+import { callPeerPresentation } from '../../services/call-peer-presentation';
 
 @Component({
   selector: 'app-call-banner',
@@ -31,10 +32,11 @@ import { ConversationListService } from '../../services/conversation-list.servic
             @if (peer(); as identity) {
               <app-user-avatar
                 [type]="UserAvatarType.OTHER"
-                [name]="state().peerName || '?'"
+                [name]="peerName() || '?'"
                 [account]="identity.account"
                 [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
-                [src]="state().peerAvatar"
+                [src]="peerAvatar()"
+                [profile]="peerProfile()"
               />
             } @else {
               <app-user-avatar [loading]="true" />
@@ -42,7 +44,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
           </span>
           <span class="copy"
             ><strong>{{
-              state().peerName || ('call.audioCall' | transloco)
+              peerName() || ('call.audioCall' | transloco)
             }}</strong
             ><span>{{ status() }}</span></span
           >
@@ -165,13 +167,17 @@ export class CallBannerComponent {
   private readonly conversations = inject(ConversationListService);
   private readonly transloco = inject(TranslocoService);
   readonly state = computed(() => this.events.callState());
-  readonly peer = computed(() => {
-    const threadId = this.state().threadId;
-    const thread = this.conversations
-      .items()
-      .find((item) => item.type === 'P2P' && item.threadId === threadId);
-    return thread?.type === 'P2P' ? thread.peerUser : undefined;
-  });
+  // The peer identity/name comes from the shared thread-record resolver — the same source as the
+  // call screen — not from the transport-provided snapshot fields. The template's own fallbacks
+  // ('?' / the generic call label) are terminal presentation guards only.
+  private readonly peerView = callPeerPresentation(
+    this.conversations,
+    this.state,
+  );
+  readonly peer = this.peerView.peer;
+  readonly peerName = this.peerView.name;
+  readonly peerAvatar = this.peerView.avatarSrc;
+  readonly peerProfile = this.peerView.profile;
   readonly visible = computed(
     () => this.presentation.minimized() && this.state().phase !== 'idle',
   );

@@ -16,9 +16,12 @@ import { CallScreenComponent } from './call-screen.component';
 import { UserService } from '../../services/user.service';
 import { WebdbService, WebdbStorage } from '../../services/webdb.service';
 import { SessionLifecycleService } from '../../services/session-lifecycle.service';
+import { ConversationListService } from '../../services/conversation-list.service';
+import type { ConversationItem } from '../../services/model';
 
 describe('CallScreenComponent', () => {
   const callState = signal<CallSnapshot>({ ...IDLE_CALL });
+  const conversations = signal<ConversationItem[]>([]);
   const adapter = {
     accept: vi.fn().mockName('accept'),
     decline: vi.fn().mockName('decline'),
@@ -43,6 +46,7 @@ describe('CallScreenComponent', () => {
   };
 
   beforeEach(() => {
+    conversations.set([]);
     callState.set({
       ...IDLE_CALL,
       phase: 'connected',
@@ -79,6 +83,10 @@ describe('CallScreenComponent', () => {
           },
         },
         { provide: CallAdapterService, useValue: adapter },
+        {
+          provide: ConversationListService,
+          useValue: { items: conversations },
+        },
         { provide: CallRingtoneService, useValue: ringtone },
         { provide: CallPresentationService, useValue: presentation },
         {
@@ -98,6 +106,46 @@ describe('CallScreenComponent', () => {
         },
       ],
     });
+  });
+
+  it('uses common Web conversation presentation, not native snapshot strings', () => {
+    const thread = {
+      type: 'P2P',
+      threadId: 4,
+      alias: 'Local alias',
+      profileRev: 7,
+      conversationState: 'ACTIVE',
+      peerUser: {
+        account: 'bob',
+        namespaceId: 2,
+        name: 'Bob',
+        avatar: 'local-avatar',
+      },
+    } as unknown as ConversationItem;
+    conversations.set([thread]);
+    callState.update((state) => ({
+      ...state,
+      threadId: 4,
+      peerName: 'Native name',
+      peerAvatar: 'native-avatar',
+    }));
+    const fixture = TestBed.createComponent(CallScreenComponent);
+    const component = fixture.componentInstance;
+    expect(component.peerName()).toBe('Local alias');
+    expect(component.peerAvatar()).toBe('local-avatar');
+    expect(component.peerProfile()).toEqual({
+      account: 'bob',
+      publisherNamespaceId: 2,
+      profileNamespaceId: 0,
+      rev: 7,
+      linked: true,
+    });
+    conversations.set([{ ...thread, alias: null } as ConversationItem]);
+    expect(component.peerName()).toBe('Bob');
+    conversations.set([]);
+    expect(component.peerName()).toBe('');
+    expect(component.peerAvatar()).toBeUndefined();
+    fixture.destroy();
   });
 
   it('maps incoming and ringing phases to distinct call tones', () => {
@@ -372,8 +420,25 @@ describe('CallScreenComponent', () => {
   });
 
   it('keeps video mode while the local and remote cameras are off', () => {
+    conversations.set([
+      {
+        type: 'P2P',
+        threadId: 4,
+        alias: null,
+        profileRev: 0,
+        conversationState: 'ACTIVE',
+        peerUser: {
+          account: 'alice',
+          namespaceId: 0,
+          name: 'Alice',
+          avatar: null,
+        },
+      } as unknown as ConversationItem,
+    ]);
     callState.update((state) => ({
       ...state,
+      threadId: 4,
+      peerName: 'Ignored native name',
       callType: 'VIDEO',
       cameraEnabled: false,
       remoteCameraEnabled: false,

@@ -22,7 +22,8 @@ export interface ActiveCallSummary {
   /** The other participant's local Account ID, or null for a foreign endpoint. */
   peerUserId: number | null;
   peerAccount: string;
-  peerDomain: string;
+  /** Identity namespace of the peer account (publisher namespace on this server); 0 for a local peer. */
+  peerNamespaceId: number;
   callType: 'AUDIO' | 'VIDEO';
   isCaller: boolean;
   /** Connect epoch-ms (null until connected). */
@@ -49,10 +50,11 @@ export class CallStateRegistry {
   setPeerIdentity(
     userId: number,
     peerAccount: string,
-    peerDomain: string,
+    peerNamespaceId: number,
   ): void {
     const cur = this.byUser.get(userId);
-    if (cur) this.byUser.set(userId, { ...cur, peerAccount, peerDomain });
+    if (cur)
+      this.byUser.set(userId, { ...cur, peerAccount, peerNamespaceId });
   }
 
   clear(userId: number): void {

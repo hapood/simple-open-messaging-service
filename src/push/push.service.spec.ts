@@ -431,7 +431,7 @@ describe('PushService — identity-only payloads', () => {
       callerName: 'Alice',
       callerAvatar: '',
       callerAccount: 'alice',
-      callerDomain: 'example.test',
+      callerNamespaceId: 1,
       threadId: 42,
       callType: 'AUDIO',
     });

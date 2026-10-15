@@ -36,7 +36,7 @@ object SomsSecureStore {
     private const val KEY_CURRENT_USER_ID = "current_user_id"
     private const val KEY_API_ORIGIN = "api_origin"
     private const val KEY_API_ORIGIN_SECONDARY = "api_origin_secondary"
-    /** Kotlin SSE's active-origin choice: "primary" (default) or "secondary". */
+    /** Persisted mirror of Rust's active-origin choice: "primary" (default) or "secondary". */
     private const val KEY_ORIGIN_MODE = "origin_mode"
     private const val KEY_POLLING_ENABLED = "polling_enabled"
     private const val KEY_FGS_ENABLED = "fgs_enabled"
@@ -81,28 +81,39 @@ object SomsSecureStore {
      *  (FGS / FCM / WorkManager). Supersedes the scoped 30-day notification token; revocation-only (no
      *  client-side expiry), mirroring Telegram's auth_key model. JS pushes it via SomsFcm.setSessionToken
      *  on login and clears it on logout. */
-    @Synchronized fun setSessionToken(ctx: Context, token: String?) {
-        RustRuntimeBridge.setSessionToken(token)
-        val ed = prefs(ctx).edit()
-        val changed = token.isNullOrEmpty() || token != getSessionToken(ctx)
-        if (changed) {
-            ed.remove("session_id")
-            ed.remove(KEY_CURRENT_USER_ID)
-        }
-        if (token.isNullOrEmpty()) {
-            ed.remove(KEY_SESSION_TOKEN)
-            ed.remove(KEY_CURRENT_USER_ID)
-        } else {
-            ed.putString(KEY_SESSION_TOKEN, token)
-        }
-        ed.apply()
-        if (changed) {
-            RealtimeService.clearCachedHello()
-            SomsMessagingService.clearSessionMessageNotifs(ctx)
+    fun setSessionToken(ctx: Context, token: String?) {
+        var releaseResources: (() -> Unit)? = null
+        try {
+            synchronized(this) {
+                val previous = getSessionToken(ctx)
+                val changed = token.isNullOrEmpty() || token != previous
+                if (!previous.isNullOrEmpty() && previous != token) {
+                    releaseResources = CallController.prepareSessionResourceRelease()
+                }
+                RustRuntimeBridge.setSessionToken(token)
+                val ed = prefs(ctx).edit()
+                if (changed) {
+                    ed.remove("session_id")
+                    ed.remove(KEY_CURRENT_USER_ID)
+                }
+                if (token.isNullOrEmpty()) {
+                    ed.remove(KEY_SESSION_TOKEN)
+                    ed.remove(KEY_CURRENT_USER_ID)
+                } else {
+                    ed.putString(KEY_SESSION_TOKEN, token)
+                }
+                ed.apply()
+                if (changed) {
+                    SomsMessagingService.clearSessionMessageNotifs(ctx)
+                }
+            }
+        } finally {
+            // SDK cancellation and media disposal must never run under the credential monitor.
+            releaseResources?.invoke()
         }
     }
 
-    fun getSessionToken(ctx: Context): String? = prefs(ctx).getString(KEY_SESSION_TOKEN, null)
+    @Synchronized fun getSessionToken(ctx: Context): String? = prefs(ctx).getString(KEY_SESSION_TOKEN, null)
 
     @Synchronized fun setHelloIdentity(ctx: Context, token: String?, sessionId: Int, userId: Int): Boolean {
         if (token.isNullOrEmpty() || token != getSessionToken(ctx) || sessionId <= 0 || userId <= 0) return false
@@ -203,19 +214,20 @@ object SomsSecureStore {
         prefs(ctx).getString(KEY_ORIGIN_MODE, "primary") ?: "primary"
 
     fun setOriginMode(ctx: Context, mode: String) {
-        prefs(ctx).edit()
-            .putString(KEY_ORIGIN_MODE, if (mode == "secondary") "secondary" else "primary")
-            .apply()
+        recordActiveOriginMode(ctx, mode)
         RustRuntimeBridge.updateOrigins(ctx)
     }
 
-    /** The ACTIVE origin — the secondary when the mode is "secondary" (RealtimeService flipped to the LAN
-     *  origin), else the primary. Use this — NOT [getApiOrigin] — for every native network path that must
-     *  follow Kotlin's origin decision: the background Rust thread-feed fetch + the avatar/notif-icon
-     *  fetch in SomsMessagingService (FCM / WorkManager / the RealtimeService away-coalesce all route through
-     *  those). Without it a device on the LAN secondary would route background traffic at the hairpin-
-     *  unreachable primary and silently drop every background notification. The /events stream follows via
-     *  OriginSelector; Rust's API transports follow via the set_active_origin signal. */
+    /** Persist Rust's selected mode without feeding the same origin decision back into the runtime. */
+    fun recordActiveOriginMode(ctx: Context, mode: String) {
+        prefs(ctx).edit()
+            .putString(KEY_ORIGIN_MODE, if (mode == "secondary") "secondary" else "primary")
+            .apply()
+    }
+
+    /** Persisted mirror of Rust's ACTIVE endpoint. Platform avatar/icon requests and notification taps
+     *  must use this rather than the configured primary, which may be unreachable on the current network.
+     *  The adapter records Rust's selected mode; it does not independently probe or choose endpoints. */
     fun getActiveOrigin(ctx: Context): String? {
         val secondary = getApiOriginSecondary(ctx)
         return if (secondary != null && getOriginMode(ctx) == "secondary") secondary else getApiOrigin(ctx)

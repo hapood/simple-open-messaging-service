@@ -920,7 +920,7 @@ describe('CallsService federated initiate (outbound)', () => {
       threadId: 10,
       peerUserId: null,
       peerAccount: 'remote',
-      peerDomain: 'bbb.local',
+      peerNamespaceId: 3,
     });
     expect(callState.get(2)).toBeNull();
     await expect(

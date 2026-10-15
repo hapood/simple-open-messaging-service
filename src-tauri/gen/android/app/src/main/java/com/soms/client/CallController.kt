@@ -31,6 +31,7 @@ import org.webrtc.VideoTrack
 import org.webrtc.SessionDescription.Type
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.util.UUID
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -94,7 +95,8 @@ object CallController {
         private set
     @Volatile var peerAccount: String = ""
         private set
-    @Volatile var peerDomain: String = ""
+    /** Identity namespace of the peer account (publisher namespace on this device); -1 when unknown. */
+    @Volatile var peerNamespaceId: Int = -1
         private set
     /** UI phase, the merged call-FSM ∪ RTCPeerConnection state (Phase 5 refines the labels):
      *  idle | starting | calling | ringing | incoming | connecting | connected | reconnecting | ended.
@@ -211,7 +213,8 @@ object CallController {
     // within the connecting window). No client-side re-offer backstop is needed.
 
     /** Serial executor for every PC op + REST call (see class doc). Named for logcat. */
-    private val callExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsCall") }
+    private val callExecutorRaw = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsCall") }
+    private val callExecutor = Executor { action -> sessionResources.execute { action.run() } }
 
     /** Synchronous REST client for the /calls endpoints. Long-ish timeouts: ICE trickling + a flaky peer
      *  can make a signal relay slow; the call must not abort on a tight timeout. */
@@ -220,6 +223,25 @@ object CallController {
         .readTimeout(20, TimeUnit.SECONDS)
         .writeTimeout(20, TimeUnit.SECONDS)
         .build()
+
+    private val sessionResources = NativeCallResourceCancellation(
+        enqueue = { action -> callExecutorRaw.execute(action) },
+        currentOwner = { callSid },
+        release = { teardown() },
+    )
+
+    fun captureSessionResourceRevision(): Long? = sessionResources.admitWhileOpen { true }
+
+    /** Close SDK admission now; the returned host cleanup runs outside the credential monitor. */
+    fun prepareSessionResourceRelease(): () -> Unit = sessionResources.prepare()
+
+    fun whenSessionResourcesReleased(action: () -> Unit) {
+        sessionResources.whenReleased {
+            mainHandler.post {
+                if (sessionResources.isClosing) whenSessionResourcesReleased(action) else action()
+            }
+        }
+    }
 
     // ── factory / PC construction ─────────────────────────────────────────────────
 
@@ -472,6 +494,7 @@ object CallController {
      *  end). */
     fun onFrame(type: String, data: String) {
         callExecutor.execute {
+            if (sessionResources.isClosing) return@execute
             try {
                 val kind = if (type == "CALL_SIGNAL") JSONObject(data).optString("kind", "")
                     else JSONObject(data).optString("type", "")
@@ -662,19 +685,30 @@ object CallController {
             !(type == "incoming" && phase == "starting")) return
         when (type) {
             "incoming" -> {
-                // We are the CALLEE. Seed the incoming snapshot (shared with the FCM/HELLO paths via
-                // seedIncomingState — the PC is created on accept).
-                peerAccount = obj.optString("callerAccount", "")
-                peerDomain = obj.optString("callerDomain", "")
-                seedIncomingState(sid, obj.optInt("callerUserId"), obj.optString("callerName", ""),
-                    obj.optString("callerAvatar", ""), obj.optInt("threadId"), obj.optString("callType", "AUDIO"))
+                // We are the CALLEE. Resolve the peer presentation from native SQLite first (the shared
+                // resolver: alias → cached profile → cached thread name → account); the SSE payload's
+                // name/avatar are only the fallback when the local cache has no record.
+                val callerAccount = obj.optString("callerAccount", "")
+                val callerNamespaceId = obj.optInt("callerNamespaceId", -1)
+                val threadId = obj.optInt("threadId")
+                val peer = appContext?.let {
+                    ClientStateDb.getCallPeer(it, callerAccount, callerNamespaceId, threadId)
+                }
+                // Seed the incoming snapshot (shared with the FCM/HELLO paths via seedIncomingState —
+                // the PC is created on accept), then surface the system ringing notification.
+                if (!seedIncomingState(sid, obj.optInt("callerUserId"),
+                        peer?.name ?: obj.optString("callerName", ""),
+                        peer?.avatarDataUrl() ?: obj.optString("callerAvatar", ""),
+                        threadId, obj.optString("callType", "AUDIO"),
+                        callerAccount, callerNamespaceId)) return
                 // Always use the same system CallStyle notification and its channel sound, including when
                 // the app is visible. The in-app incoming screen remains visual-only. The SSE path is the
                 // primary trigger; FCM is the killed-process fallback.
                 ringer.startRing()
                 appContext?.let {
                     CallService.startIncoming(
-                        it, sid, peerUserId, peerAccount, peerDomain, threadId, callType,
+                        it, sid, peerAccount, peerNamespaceId, threadId, callType,
+                        peerName, peerAvatar,
                     )
                 }
             }
@@ -778,7 +812,7 @@ object CallController {
     }
 
     private fun alive(connection: PeerConnection, sid: String): Boolean =
-        pc === connection && callSid == sid && phase != "ended" && phase != "idle"
+        !sessionResources.isClosing && pc === connection && callSid == sid && phase != "ended" && phase != "idle"
 
     private fun descriptionObserver(connection: PeerConnection, sid: String, offerId: String,
                                     offering: Boolean): SdpObserver = object : SdpObserver {
@@ -894,33 +928,37 @@ object CallController {
         sid: String,
         type: String,
         account: String,
-        domain: String,
+        namespaceId: Int,
         name: String,
         avatarDataUrl: String,
+        resourceRevision: Long,
     ): Boolean {
         // Seed the presentation state synchronously, before the bridge starts CallService. Both the WebView
         // call screen and the mandatory FGS notification therefore observe the SAME `starting` snapshot.
         // The server busy-line is still authoritative: `starting` is only a local presentation phase and the
         // response below must still confirm that this sid owns the state before promoting it to `calling`.
-        if (phase != "idle") return false
-        callSid = sid
-        threadId = 0
-        peerUserId = 0
-        callType = type
-        cameraEnabled = false
-        remoteCameraEnabled = type == "VIDEO"
-        videoUpgradeState = "idle"
-        isCaller = true
-        phase = "starting"
-        startedAt = 0L
-        step = ""
-        peerName = name
-        peerAvatar = avatarDataUrl
-        peerAccount = account
-        peerDomain = domain
+        val admission = sessionResources.admitWhileOpen(resourceRevision) {
+            if (phase != "idle") return@admitWhileOpen false
+            callSid = sid
+            threadId = 0
+            peerUserId = 0
+            callType = type
+            cameraEnabled = false
+            remoteCameraEnabled = type == "VIDEO"
+            videoUpgradeState = "idle"
+            isCaller = true
+            phase = "starting"
+            startedAt = 0L
+            step = ""
+            peerName = name
+            peerAvatar = avatarDataUrl
+            peerAccount = account
+            peerNamespaceId = namespaceId
+            true
+        } ?: return false
         pushSnapshot()
 
-        callExecutor.execute {
+        sessionResources.execute(admission) {
             var registeredOnServer = false
             var origin: String? = null
             try {
@@ -1249,8 +1287,12 @@ object CallController {
 
     /** Called by CallService.onDestroy (the FGS is being torn down): release the PC + tracks. Safe to call
      *  when already idle. */
-    fun destroy() {
-        callExecutor.execute { teardown() }
+    fun destroy(ownerCallSid: String?) {
+        if (ownerCallSid.isNullOrEmpty()) return
+        callExecutor.execute {
+            // Service destruction can queue behind blocking signaling. Never tear down a newer call.
+            if (callSid == ownerCallSid) teardown()
+        }
     }
 
     // ── reconnect backstop + failure ──────────────────────────────────────────────
@@ -1323,7 +1365,22 @@ object CallController {
      *  activeCall recovery ([RealtimeService.reconcileActiveCall]). Flips the FSM to 'incoming' + acks
      *  alerting (POST /calls/ringing). Does NOT ring nor post the call notification — each trigger does that
      *  after seeding, regardless of whether the app is visible. */
-    private fun seedIncomingState(sid: String, callerUserId: Int, name: String, avatar: String, tid: Int, type: String) {
+    private fun seedIncomingState(sid: String, callerUserId: Int, name: String, avatar: String,
+                                  tid: Int, type: String, account: String, namespaceId: Int): Boolean {
+        val admission = sessionResources.admitWhileOpen {
+            if (callSid != null && callSid != sid && phase != "starting") return@admitWhileOpen false
+            peerAccount = account
+            peerNamespaceId = namespaceId
+            writeIncomingSnapshot(sid, callerUserId, name, avatar, tid, type)
+            true
+        } ?: return false
+        pushSnapshot()
+        sessionResources.execute(admission) { postRinging(sid) }
+        return true
+    }
+
+    /** Only in-memory snapshot writes; callers hold the resource admission monitor. */
+    private fun writeIncomingSnapshot(sid: String, callerUserId: Int, name: String, avatar: String, tid: Int, type: String) {
         callSid = sid
         threadId = tid
         peerUserId = callerUserId
@@ -1338,8 +1395,6 @@ object CallController {
         startedAt = 0L
         step = ""
         iceRestartTried = false
-        pushSnapshot()
-        callExecutor.execute { postRinging(sid) } // ack alerting → the caller's UI shows "Ringing…"
     }
 
     /** Seed the incoming call from the CALL_INCOMING FCM push / HELLO activeCall recovery (the killed /
@@ -1349,19 +1404,21 @@ object CallController {
         sid: String,
         callerUserId: Int,
         account: String,
-        domain: String,
+        namespaceId: Int,
         name: String,
         avatar: String,
         tid: Int,
         type: String,
     ) {
-        if (phase != "idle" && phase != "starting") {
-            if (callSid == sid) return // already ringing this call (SSE beat the push) — no-op
-            return                      // a different call is live (busy) — ignore the stray push
-        }
-        peerAccount = account
-        peerDomain = domain
-        seedIncomingState(sid, callerUserId, name, avatar, tid, type)
+        val admission = sessionResources.admitWhileOpen {
+            if (phase != "idle" && phase != "starting") return@admitWhileOpen false
+            peerAccount = account
+            peerNamespaceId = namespaceId
+            writeIncomingSnapshot(sid, callerUserId, name, avatar, tid, type)
+            true
+        } ?: return
+        pushSnapshot()
+        sessionResources.execute(admission) { postRinging(sid) }
         // The audible ringtone is the CHANNEL_INCOMING sound; CallRinger adds the looping vibration + wake lock.
         ringer.startRing()
     }
@@ -1398,7 +1455,7 @@ object CallController {
         threadId = 0
         peerUserId = 0
         peerAccount = ""
-        peerDomain = ""
+        peerNamespaceId = -1
         startedAt = 0L
         mediaState = "new"
         speakerEnabled = false
@@ -1434,7 +1491,8 @@ object CallController {
      *  to), so a call's signaling follows the same origin the SSE did (no origin split mid-call). */
     private fun activeOrigin(): String? = appContext?.let { SomsSecureStore.getActiveOrigin(it) }
 
-    private fun token(): String? = appContext?.let { SomsSecureStore.getSessionToken(it) }
+    private fun token(): String? = if (sessionResources.isClosing) null
+        else appContext?.let { SomsSecureStore.getSessionToken(it) }
 
     /** GET /calls/ice-servers → the RTCConfiguration's iceServers (STUN + time-limited TURN REST creds;
      *  TURN is OFF in current SOMS, so this is often empty/STUN-only — never hardcode a STUN URL). */
@@ -1524,23 +1582,39 @@ object CallController {
      *  (-1 for transport/parse failures). Keep the code so initiate can distinguish a busy rejection. */
     private class CallResp(val ok: Boolean, val data: JSONObject?, val code: Int = -1)
 
-    private fun exec(req: Request): CallResp = try {
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                SomsLog.w(TAG) { "${req.method} ${req.url.encodedPath} → ${resp.code}" }
+    private fun exec(req: Request): CallResp {
+        val request = http.newCall(req)
+        val cancel = { request.cancel() }
+        if (!sessionResources.registerNetwork(cancel)) {
+            request.cancel()
+            return CallResp(false, null)
+        }
+        return try {
+            // Registration and closing admission share a monitor, but no network I/O holds it.
+            val currentToken = token()
+            if (currentToken == null || req.header("Authorization") != "Bearer $currentToken") {
+                request.cancel()
                 return CallResp(false, null)
             }
-            val envelope = JSONObject(resp.body?.string().orEmpty())
-            val code = envelope.optInt("code", -1)
-            if (code != 0) {
-                SomsLog.w(TAG) { "${req.url.encodedPath} biz code=$code msg=${envelope.optString("message")}" }
-                return CallResp(false, null, code)
+            request.execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    SomsLog.w(TAG) { "${req.method} ${req.url.encodedPath} → ${resp.code}" }
+                    return CallResp(false, null)
+                }
+                val envelope = JSONObject(resp.body?.string().orEmpty())
+                val code = envelope.optInt("code", -1)
+                if (code != 0) {
+                    SomsLog.w(TAG) { "${req.url.encodedPath} biz code=$code msg=${envelope.optString("message")}" }
+                    return CallResp(false, null, code)
+                }
+                CallResp(true, envelope.optJSONObject("data"))
             }
-            CallResp(true, envelope.optJSONObject("data"))
+        } catch (e: Exception) {
+            SomsLog.w(TAG) { "${req.method} ${req.url.encodedPath} failed: ${e.message}" }
+            CallResp(false, null)
+        } finally {
+            sessionResources.unregisterNetwork(cancel)
         }
-    } catch (e: Exception) {
-        SomsLog.w(TAG) { "${req.method} ${req.url.encodedPath} failed: ${e.message}" }
-        CallResp(false, null)
     }
 
     /** Notified on a phase CHANGE (idle/incoming/…/ended) — registered by MainActivity to toggle the

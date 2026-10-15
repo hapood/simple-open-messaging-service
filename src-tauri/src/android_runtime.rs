@@ -10,53 +10,29 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_queryNotifications
     user_id: jni::sys::jint,
     target: jni::sys::jint,
 ) -> jni::sys::jobject {
-    let result = (|| -> Result<jni::sys::jobject, String> {
-        let proxy = proxy_state()?;
-        let token = proxy
-            .token
-            .lock()
-            .map_err(|_| "token lock poisoned")?
-            .clone()
-            .ok_or("notification session is not authenticated")?;
-        let batch = tauri::async_runtime::block_on(crate::native_db::notifications::synchronize(
-            proxy,
-            i64::from(user_id),
-            target,
-        ))?;
-        if proxy
-            .token
-            .lock()
-            .map_err(|_| "token lock poisoned")?
-            .as_ref()
-            != Some(&token)
-        {
-            return Err("notification session expired".into());
-        }
-        let metadata = JObject::from(env.new_string(batch.metadata).map_err(|e| e.to_string())?);
-        let images = env
-            .new_object_array(batch.avatars.len() as i32, "[B", JObject::null())
-            .map_err(|e| e.to_string())?;
-        for (index, bytes) in batch.avatars.iter().enumerate() {
-            let image = env
-                .byte_array_from_slice(bytes)
-                .map_err(|e| e.to_string())?;
-            env.set_object_array_element(&images, index as i32, &image)
-                .map_err(|e| e.to_string())?;
-            env.delete_local_ref(image).map_err(|e| e.to_string())?;
-        }
-        let images = JObject::from(images);
-        env.new_object(
-            "com/soms/client/NativeNotificationBatch",
-            "(Ljava/lang/String;[[BJ)V",
-            &[
-                jni::objects::JValue::Object(&metadata),
-                jni::objects::JValue::Object(&images),
-                jni::objects::JValue::Long(batch.account_epoch as i64),
-            ],
-        )
-        .map(|object| object.into_raw())
-        .map_err(|e| e.to_string())
-    })();
+    let result =
+        (|| -> Result<jni::sys::jobject, String> {
+            let proxy = proxy_state()?;
+            let token = proxy
+                .token
+                .lock()
+                .map_err(|_| "token lock poisoned")?
+                .clone()
+                .ok_or("notification session is not authenticated")?;
+            let batch = tauri::async_runtime::block_on(
+                crate::native_db::notifications::synchronize(proxy, i64::from(user_id), target),
+            )?;
+            if proxy
+                .token
+                .lock()
+                .map_err(|_| "token lock poisoned")?
+                .as_ref()
+                != Some(&token)
+            {
+                return Err("notification session expired".into());
+            }
+            notification_object(&mut env, &batch).map(|object| object.into_raw())
+        })();
     match result {
         Ok(result) => result,
         Err(error) => {
@@ -159,16 +135,15 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_queryCallPeer(
     user_id: jni::sys::jint,
     thread_id: jni::sys::jint,
     account: JString,
-    domain: JString,
+    namespace_id: jni::sys::jint,
 ) -> jstring {
     let result = (|| -> Result<Option<String>, String> {
         let account: String = env.get_string(&account).map_err(|e| e.to_string())?.into();
-        let domain: String = env.get_string(&domain).map_err(|e| e.to_string())?.into();
         crate::native_db::call_peer::read_call_peer(
             i64::from(user_id),
             i64::from(thread_id),
             &account,
-            &domain,
+            i64::from(namespace_id),
         )?
         .map(|value| serde_json::to_string(&value).map_err(|e| e.to_string()))
         .transpose()
@@ -184,6 +159,35 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_queryCallPeer(
             std::ptr::null_mut()
         }
     }
+}
+
+pub(crate) fn notification_object<'local>(
+    env: &mut JNIEnv<'local>,
+    batch: &crate::native_db::notifications::NotificationBatch,
+) -> Result<JObject<'local>, String> {
+    let metadata = JObject::from(env.new_string(&batch.metadata).map_err(|e| e.to_string())?);
+    let images = env
+        .new_object_array(batch.avatars.len() as i32, "[B", JObject::null())
+        .map_err(|e| e.to_string())?;
+    for (index, bytes) in batch.avatars.iter().enumerate() {
+        let image = env
+            .byte_array_from_slice(bytes)
+            .map_err(|e| e.to_string())?;
+        env.set_object_array_element(&images, index as i32, &image)
+            .map_err(|e| e.to_string())?;
+        env.delete_local_ref(image).map_err(|e| e.to_string())?;
+    }
+    let images = JObject::from(images);
+    env.new_object(
+        "com/soms/client/NativeNotificationBatch",
+        "(Ljava/lang/String;[[BJ)V",
+        &[
+            jni::objects::JValue::Object(&metadata),
+            jni::objects::JValue::Object(&images),
+            jni::objects::JValue::Long(batch.account_epoch as i64),
+        ],
+    )
+    .map_err(|e| e.to_string())
 }
 
 static PROXY: OnceLock<crate::ServerSessionState> = OnceLock::new();

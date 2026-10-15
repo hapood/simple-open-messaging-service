@@ -65,7 +65,12 @@ fn sender_profile(
     revision: i64,
 ) -> Result<Option<Value>, String> {
     super::contacts::read_profile(
-        conn, user_id, publisher_namespace, profile_namespace, account, revision,
+        conn,
+        user_id,
+        publisher_namespace,
+        profile_namespace,
+        account,
+        revision,
     )
 }
 
@@ -77,10 +82,36 @@ pub(crate) async fn synchronize(
 ) -> Result<NotificationBatch, String> {
     let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
     let result = super::attention::sync_thread_feed(None, proxy, user_id, target).await?;
+    from_result_at(user_id, result.states, result.cursor, result.error, epoch).await
+}
+
+#[cfg(target_os = "android")]
+pub(crate) async fn from_result(
+    user_id: i64,
+    result: &super::attention::ThreadFeedSyncResult,
+) -> Result<NotificationBatch, String> {
+    let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
+    from_result_at(
+        user_id,
+        result.states.clone(),
+        result.cursor,
+        result.error.clone(),
+        epoch,
+    )
+    .await
+}
+
+#[cfg(target_os = "android")]
+async fn from_result_at(
+    user_id: i64,
+    states: Vec<LocalThreadAttention>,
+    cursor: i32,
+    error: Option<String>,
+    epoch: u64,
+) -> Result<NotificationBatch, String> {
     super::lifetime::spawn_at(Ok(epoch), move || {
-        let has_threads = !result.states.is_empty();
-        let cursor = result.cursor;
-        let mut batch = assemble(&mut super::open()?, user_id, result.states, result.error)?;
+        let has_threads = !states.is_empty();
+        let mut batch = assemble(&mut super::open()?, user_id, states, error)?;
         let mut metadata: Value =
             serde_json::from_str(&batch.metadata).map_err(|e| e.to_string())?;
         let mut changes = Vec::new();
@@ -134,7 +165,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "seq": seq,
             "createdAt": "2026-01-01T00:00:00Z",
-            "sender": {"account":"peer","namespaceId":0,"profileRev":rev},
+            "sender": {"account":"peer","profileNamespaceId":0,"profileRev":rev},
             "status": status,
             "text": text,
         }))
@@ -152,11 +183,7 @@ mod tests {
                 conversation_state: "ACTIVE".into(),
                 blocked: false,
                 role: None,
-                profile: super::super::attention::ThreadFeedProfile {
-                    account: "peer".into(),
-                    namespace_id: 0,
-                    profile_rev: 0,
-                },
+                subject_account: "peer".into(),
                 thread_id: 7,
                 thread_feed_id: 8,
                 alias: None,
@@ -188,15 +215,22 @@ mod tests {
             let mut base = serde_json::to_value(server).unwrap();
             base["type"] = server.kind.clone().into();
             base["authorityNamespaceId"] = server.authority_namespace_id.into();
+            base["threadProfileRev"] = server.thread_profile_rev.into();
             base["serverLastReadSeq"] = server.last_read_seq.into();
             base["serverUnreadCount"] = server.unread_count.into();
             base["localReadSeq"] = state.local_read_seq.unwrap_or(server.last_read_seq).into();
+            // The presentation object is the publisher-space profile coordinate.
+            let profile = serde_json::json!({
+                "account": server.subject_account,
+                "namespaceId": server.authority_namespace_id,
+                "profileRev": server.thread_profile_rev,
+            });
             if server.kind == "GROUP" {
-                let mut group = serde_json::to_value(&server.profile).unwrap();
+                let mut group = profile;
                 group["id"] = (server.thread_id as i64).into();
                 base["group"] = group;
             } else {
-                base["peerUser"] = serde_json::to_value(&server.profile).unwrap();
+                base["peerUser"] = profile;
             }
             super::super::thread_store::write(conn, 1, state.thread_id as i64, &base).unwrap();
         }
@@ -312,16 +346,31 @@ mod tests {
             (2, 2, "Wrong diagonal"),
             (0, 0, "Wrong receiver-local"),
         ] {
-            super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
-                "publisherNamespaceId": publisher, "profileNamespaceId": namespace,
-                "account": "alice", "profileRev": 3, "name": name,
-                "avatarDigest": null, "bio": "",
-            })).unwrap();
+            super::super::contacts::write_profile(
+                &conn,
+                1,
+                &serde_json::json!({
+                    "publisherNamespaceId": publisher, "profileNamespaceId": namespace,
+                    "account": "alice", "profileRev": 3, "name": name,
+                    "avatarDigest": null, "bio": "",
+                }),
+            )
+            .unwrap();
         }
-        assert_eq!(sender_profile(&conn, 1, 7, "alice", 2, 3).unwrap().unwrap()["name"], "Correct member");
-        assert_eq!(sender_profile(&conn, 1, 7, "alice", 0, 3).unwrap().unwrap()["name"], "Publisher-local member");
-        assert!(sender_profile(&conn, 1, 8, "alice", 2, 3).unwrap().is_none());
-        assert!(sender_profile(&conn, 1, 7, "alice", 2, 4).unwrap().is_none());
+        assert_eq!(
+            sender_profile(&conn, 1, 7, "alice", 2, 3).unwrap().unwrap()["name"],
+            "Correct member"
+        );
+        assert_eq!(
+            sender_profile(&conn, 1, 7, "alice", 0, 3).unwrap().unwrap()["name"],
+            "Publisher-local member"
+        );
+        assert!(sender_profile(&conn, 1, 8, "alice", 2, 3)
+            .unwrap()
+            .is_none());
+        assert!(sender_profile(&conn, 1, 7, "alice", 2, 4)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -331,7 +380,7 @@ mod tests {
         let server = delivered.server.as_mut().unwrap();
         server.kind = "GROUP".into();
         server.role = Some("MEMBER".into());
-        server.profile.account = "!group".into();
+        server.subject_account = "!group".into();
         delivered.server.as_mut().unwrap().alias = Some("Private name".into());
         save(&conn, &delivered);
         let mut presentation = super::super::thread_store::read(&conn, 1, 7)
@@ -347,7 +396,6 @@ mod tests {
         let batch = assemble(&mut conn, 1, vec![delivered.clone()], None).unwrap();
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
         assert_eq!(metadata["threads"][0]["title"], "Profile name");
-        delivered.server.as_mut().unwrap().profile.profile_rev = 3;
         delivered.server.as_mut().unwrap().thread_profile_rev = 3;
         save(&conn, &delivered);
         super::super::contacts::write_profile(&conn, 1, &serde_json::json!({
@@ -456,18 +504,27 @@ fn assemble(
             let account = preview["sender"]["account"]
                 .as_str()
                 .ok_or("invalid preview sender")?;
-            let publisher_namespace = i64::from(
-                delivered.server.as_ref().unwrap().authority_namespace_id,
-            );
-            let profile_namespace = preview["sender"]["namespaceId"]
-                .as_i64().ok_or("invalid preview sender namespace")?;
+            let publisher_namespace =
+                i64::from(delivered.server.as_ref().unwrap().authority_namespace_id);
+            let profile_namespace = preview["sender"]["profileNamespaceId"]
+                .as_i64()
+                .ok_or("invalid preview sender namespace")?;
             let revision = preview["sender"]["profileRev"]
-                .as_i64().ok_or("invalid preview sender revision")?;
+                .as_i64()
+                .ok_or("invalid preview sender revision")?;
             let profile = sender_profile(
-                &tx, user_id, publisher_namespace, account, profile_namespace, revision,
+                &tx,
+                user_id,
+                publisher_namespace,
+                account,
+                profile_namespace,
+                revision,
             )?;
             let domain = super::profile_namespaces::display_domain(
-                &tx, user_id, publisher_namespace, profile_namespace,
+                &tx,
+                user_id,
+                publisher_namespace,
+                profile_namespace,
             )?;
             let name = profile
                 .as_ref()

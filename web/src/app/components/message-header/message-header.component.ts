@@ -1,7 +1,4 @@
 import { toObservable, toSignal } from '@angular/core/rxjs-interop';
-import { map, of, switchMap } from 'rxjs';
-import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
-import { namespaceDisplayDomain } from '../../pipes/namespace-domain.pipe';
 import {
   Component,
   computed,
@@ -25,8 +22,8 @@ import { RouteService, PopupType } from '../../services/route.service';
 import { currentGroupAnnouncement } from '../../services/group-announcement';
 
 /**
- * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
- * the top-right MORE button. P2P and GROUP each open their own dedicated information panel directly.
+ * Chat surface header: back (mobile), the centered thread title, and the top-right MORE button.
+ * P2P and GROUP each open their own dedicated information panel from MORE.
  * System settings is NOT here — it lives in the global nav
  * (icon-rail / nav-drawer), not a per-thread context menu.
  *
@@ -42,23 +39,6 @@ import { currentGroupAnnouncement } from '../../services/group-announcement';
 export class MessageHeaderComponent {
   readonly AppIconType = AppIconType;
   readonly userMsgTrd = input<ConversationItem>();
-  private readonly namespaces = inject(ProfileNamespaceRepository);
-  private readonly callPeerDomain = toSignal(
-    toObservable(this.userMsgTrd).pipe(
-      switchMap((thread) =>
-        thread?.type === 'P2P'
-          ? this.namespaces.resolve({
-              publisherNamespaceId: 0,
-              profileNamespaceId: thread.peerUser.namespaceId,
-            }).pipe(map((binding) => ({
-              threadId: thread.threadId,
-              domain: namespaceDisplayDomain(binding),
-            })))
-          : of(null),
-      ),
-    ),
-    { initialValue: null },
-  );
   /** The current thread's id, fed to the embedded search field. Derived from userMsgTrd. */
   readonly threadId = computed(() => this.userMsgTrd()?.threadId ?? 0);
 
@@ -123,14 +103,12 @@ export class MessageHeaderComponent {
    *  of being a second chat-header entry point. Mints a client-side callSid (the call's idempotency
    *  key + signaling address — a UUIDv4, accepted by CALL_SID_RE) and hands it to the native call layer, which
    *  POSTs /calls/initiate + creates the offer. Android resolves the peer presentation directly from native
-   *  SQLite by account + domain; the renderer neither reads avatar bytes nor serializes them across the JS bridge. */
+   * SQLite by account + namespace id; the renderer neither reads avatar bytes nor serializes them across the JS bridge. */
   placeCall(): void {
     if (this.callActive()) return;
     const thread = this.userMsgTrd();
     const peer = thread?.peerUser;
-    const binding = this.callPeerDomain();
-    if (!thread || !peer || binding?.threadId !== thread.threadId || !binding.domain)
-      return;
+    if (!thread || !peer) return;
     this.callAdapter.initiate(
       thread.threadId,
       uuid(),
@@ -138,7 +116,7 @@ export class MessageHeaderComponent {
       peer.name ?? '',
       peer.avatar ?? '',
       peer.account,
-      binding.domain,
+      peer.namespaceId,
     );
   }
 
@@ -230,7 +208,8 @@ export class MessageHeaderComponent {
   /**
    * Open (or toggle) the peer-profile / group-info panel in the `aside` slot. The panels resolve their
    * thread from `ConversationListService.openThreadId`, so no threadId is needed. Toggling the SAME panel
-   * closed just clears the aside signal (≈ hardware-back).
+   * closed just clears the aside signal (≈ hardware-back). This is intentionally reached from the MORE
+   * button; the centered title is presentation only.
    */
   showThreadInfo(): void {
     const trd = this.userMsgTrd();

@@ -29,11 +29,13 @@ object ClientStateDb {
         catch (_: IllegalArgumentException) { null }
     }
 
-    /** Resolve the exact profile selected by this P2P thread, without a synthetic user row. */
-    fun getCallPeer(ctx: Context, account: String, domain: String, threadId: Int): CallPeer? {
+    /** Resolve the exact profile selected by this P2P thread, without a synthetic user row. `namespaceId`
+     *  is the peer's identity namespace (-1 = not supplied); it is a consistency check against the cached
+     *  thread record, never an override. */
+    fun getCallPeer(ctx: Context, account: String, namespaceId: Int, threadId: Int): CallPeer? {
         val ownerUserId = SomsSecureStore.getCurrentUserId(ctx) ?: return null
         return try {
-            val json = RustRuntimeBridge.queryCallPeer(ownerUserId, threadId, account, domain) ?: return null
+            val json = RustRuntimeBridge.queryCallPeer(ownerUserId, threadId, account, namespaceId) ?: return null
             val peer = JSONObject(json)
             val avatar = inlineAvatar(peer.optString("avatarDataUrl"))
             CallPeer(peer.optString("name", account), avatar?.first, avatar?.second)

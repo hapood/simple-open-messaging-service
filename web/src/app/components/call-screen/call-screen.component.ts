@@ -22,6 +22,7 @@ import {
 } from '../user-avatar/user-avatar.component';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 import { ConversationListService } from '../../services/conversation-list.service';
+import { callPeerPresentation } from '../../services/call-peer-presentation';
 
 /**
  * The 1:1 call UI — a fullscreen overlay mounted at the app root (AppComponent), shown whenever a call is
@@ -87,13 +88,14 @@ import { ConversationListService } from '../../services/conversation-list.servic
                 @if (peer(); as identity) {
                   <app-user-avatar
                     [type]="UserAvatarType.OTHER"
-                    [name]="snap().peerName || '?'"
+                    [name]="peerName() || '?'"
                     [account]="identity.account"
                     [domainSource]="{
                       type: 'namespace',
                       namespaceId: identity.namespaceId,
                     }"
-                    [src]="snap().peerAvatar"
+                    [src]="peerAvatar()"
+                    [profile]="peerProfile()"
                   />
                 } @else {
                   <app-user-avatar [loading]="true" />
@@ -105,7 +107,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
                 } @else {
                   {{
                     'call.peerCameraOff'
-                      | transloco: { name: snap().peerName || '…' }
+                      | transloco: { name: peerName() || '…' }
                   }}
                 }
               </span>
@@ -131,13 +133,14 @@ import { ConversationListService } from '../../services/conversation-list.servic
                 @if (peer(); as identity) {
                   <app-user-avatar
                     [type]="UserAvatarType.OTHER"
-                    [name]="snap().peerName || '?'"
+                    [name]="peerName() || '?'"
                     [account]="identity.account"
                     [domainSource]="{
                       type: 'namespace',
                       namespaceId: identity.namespaceId,
                     }"
-                    [src]="snap().peerAvatar"
+                    [src]="peerAvatar()"
+                    [profile]="peerProfile()"
                   />
                 } @else {
                   <app-user-avatar [loading]="true" />
@@ -169,7 +172,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
           <div class="call-kind">
             {{ (isVideo() ? 'call.videoCall' : 'call.audioCall') | transloco }}
           </div>
-          <div class="name">{{ snap().peerName || '…' }}</div>
+          <div class="name">{{ peerName() || '…' }}</div>
           <div
             class="status"
             role="status"
@@ -194,13 +197,14 @@ import { ConversationListService } from '../../services/conversation-list.servic
               @if (peer(); as identity) {
                 <app-user-avatar
                   [type]="UserAvatarType.OTHER"
-                  [name]="snap().peerName || '?'"
+                  [name]="peerName() || '?'"
                   [account]="identity.account"
                   [domainSource]="{
                     type: 'namespace',
                     namespaceId: identity.namespaceId,
                   }"
-                  [src]="snap().peerAvatar"
+                  [src]="peerAvatar()"
+                  [profile]="peerProfile()"
                 />
               } @else {
                 <app-user-avatar [loading]="true" />
@@ -782,13 +786,16 @@ export class CallScreenComponent implements OnDestroy {
   readonly miniIconSize = { width: '22px', height: '22px' };
 
   readonly snap = computed(() => this.events.callState());
-  readonly peer = computed(() => {
-    const threadId = this.snap().threadId;
-    const thread = this.conversations
-      .items()
-      .find((item) => item.type === 'P2P' && item.threadId === threadId);
-    return thread?.type === 'P2P' ? thread.peerUser : undefined;
-  });
+  // Native snapshots own call/media state, not Web profile presentation: the peer identity comes
+  // from the shared thread-record resolver (see callPeerPresentation).
+  private readonly peerView = callPeerPresentation(
+    this.conversations,
+    this.snap,
+  );
+  readonly peer = this.peerView.peer;
+  readonly peerName = this.peerView.name;
+  readonly peerAvatar = this.peerView.avatarSrc;
+  readonly peerProfile = this.peerView.profile;
 
   /** A 1s ticking clock so the connected timer updates; read by `timer()`. Cleared in ngOnDestroy. */
   private readonly now = signal(Date.now());

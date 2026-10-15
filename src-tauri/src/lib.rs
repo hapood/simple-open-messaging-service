@@ -15,6 +15,8 @@
 // headers, and the backend's httpOnly `media_token` cookie is SameSite=Strict so it can't cross origins).
 
 #[cfg(target_os = "android")]
+mod android_realtime;
+#[cfg(target_os = "android")]
 mod android_runtime;
 mod client_compat;
 mod diagnostics;
@@ -24,9 +26,9 @@ mod native_video;
 mod navigation;
 mod origin_commands;
 mod proxy;
+mod realtime;
 #[cfg(desktop)]
 mod secure_storage;
-#[cfg(desktop)]
 mod sse;
 mod upload;
 
@@ -88,7 +90,6 @@ const ORIGIN_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Max wait for the SSE stream's opening response. A server that accepts the connection but
 /// never sends headers would hang the connect forever. On timeout → treat as a network error → backoff
 /// + reconnect (parity with any other connect failure).
-#[cfg(desktop)]
 const SSE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The backend origin the shell talks to when nothing else is configured. A deliberate non-routable
@@ -193,9 +194,13 @@ impl ServerSessionState {
                     }
                 }
             }
+            let changed = *current != token;
             let previous = std::mem::replace(&mut *current, token);
             drop(current);
             self.token_notify.notify_one();
+            if changed {
+                realtime::runtime().refresh_account_epoch();
+            }
             return previous;
         }
         None
@@ -502,6 +507,7 @@ pub fn run() {
                     sse::sse_stop,
                     sse::sse_get_state,
                     sse::sse_net,
+                    sse::sse_retry,
                     sse::sse_replay_hello,
                     upload::upload_stream_file,
                     upload::cancel_upload,

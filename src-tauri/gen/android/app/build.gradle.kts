@@ -156,7 +156,7 @@ dependencies {
     // server is signaling-only); the WebView consumes CALL_EVENT/CALL_SIGNAL over the existing SSE bridge.
     implementation("io.getstream:stream-webrtc-android:1.3.8")
     testImplementation("junit:junit:4.13.2")
-    // org.json for JVM unit tests of pure JSON logic (HelloMerger) — Android's org.json is API-compatible
+    // org.json for JVM unit tests of native payload parsing — Android's org.json is API-compatible
     // with this standalone build, so the test exercises the same put/opt/toString surface the service uses.
     testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")

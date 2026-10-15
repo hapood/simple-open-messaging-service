@@ -3,10 +3,9 @@ use std::collections::BTreeSet;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::Emitter;
 
-fn emit_message_commit(app: &tauri::AppHandle, user_id: i64, thread_id: i64) {
-    let _ = app.emit(
+fn emit_message_commit(events: &crate::realtime::NativeEvents, user_id: i64, thread_id: i64) {
+    let _ = events.emit(
         "soms-sse-event",
         serde_json::json!({
             "event": "LOCAL_MESSAGE_DB_COMMITTED", "status": 0,
@@ -366,7 +365,8 @@ mod tomb_tests {
             let mut slot = message();
             slot["seq"] = json!(seq);
             if seq == 4 || seq == 5 || seq == 10 {
-                slot["creator"] = json!({"account":"me", "namespaceId": if seq == 10 { 2 } else { 0 }});
+                slot["creator"] =
+                    json!({"account":"me", "namespaceId": if seq == 10 { 2 } else { 0 }});
             }
             if seq == 6 {
                 slot["creator"] = Value::Null;
@@ -1189,6 +1189,7 @@ async fn walk_native_history(
     // A gap item belongs to the left-open/right-closed source page containing its inclusive right
     // endpoint. In particular, the older leg of an around read must skip a gap that crosses the anchor;
     // the newer leg owns that item and the renderer must never deduplicate source seams.
+    let commit_events = crate::realtime::NativeEvents::capture(Some(app));
     let ownership_seam = cursor;
     if count <= 0 {
         return Ok(DirectionalWalk {
@@ -1355,7 +1356,7 @@ async fn walk_native_history(
         )
         .await?;
         drop(super::lifetime::CACHE_LIFETIME.admit(account_epoch)?);
-        emit_message_commit(app, user_id, thread_id);
+        emit_message_commit(&commit_events, user_id, thread_id);
         ranges = committed.ranges;
         let Some(scan) = scan else {
             return Ok(DirectionalWalk {
@@ -1505,7 +1506,9 @@ pub(crate) async fn native_message_history_get(
             let count = validate_count(count)?;
             let (server_lower, upper) = match known_newest_seq {
                 Some(seq) if seq >= 0 => (lower, seq),
-                Some(_) => return Err("native latest demand has an invalid newest hint".to_string()),
+                Some(_) => {
+                    return Err("native latest demand has an invalid newest hint".to_string())
+                }
                 None => bootstrap_message_bounds(&app, &proxy, thread_id).await?,
             };
             let lower = lower.max(server_lower);
@@ -1544,7 +1547,9 @@ pub(crate) async fn native_message_history_get(
             let newer_count = validate_count(newer_count)?;
             let (server_lower, upper) = match known_newest_seq {
                 Some(seq) if seq >= 0 => (lower, seq),
-                Some(_) => return Err("native around demand has an invalid newest hint".to_string()),
+                Some(_) => {
+                    return Err("native around demand has an invalid newest hint".to_string())
+                }
                 None => bootstrap_message_bounds(&app, &proxy, thread_id).await?,
             };
             let lower = lower.max(server_lower);
@@ -1656,6 +1661,7 @@ pub(crate) async fn native_db_put_cached_messages(
     user_id: i64,
     messages: Vec<Value>,
 ) -> Result<(), String> {
+    let commit_events = crate::realtime::NativeEvents::capture(Some(&app));
     let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
     let thread_ids: BTreeSet<i64> = messages
         .iter()
@@ -1676,7 +1682,7 @@ pub(crate) async fn native_db_put_cached_messages(
     .map_err(|error| format!("join cached message write: {error}"))??;
     drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
     for thread_id in thread_ids {
-        emit_message_commit(&app, user_id, thread_id);
+        emit_message_commit(&commit_events, user_id, thread_id);
     }
     Ok(())
 }
@@ -2010,12 +2016,9 @@ fn correct_system_message_profile(
     {
         return Ok(false);
     }
-    let participant = serde_json::to_string(&(
-        publisher_namespace_id,
-        profile_namespace_id,
-        account,
-    ))
-        .map_err(|e| format!("encode system participant: {e}"))?;
+    let participant =
+        serde_json::to_string(&(publisher_namespace_id, profile_namespace_id, account))
+            .map_err(|e| format!("encode system participant: {e}"))?;
     let revisions = message
         .as_object_mut()
         .ok_or("invalid system message")?

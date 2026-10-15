@@ -455,11 +455,8 @@ mod presentation_state_tests {
             "peerUser":{"account":"peer","namespaceId":0}
         });
         assert!(presentation_state(&conn, 1, 7, &peer).is_err());
-        conn.execute(
-            "INSERT INTO threads VALUES(1,7,3,4,'P2P',0,'peer',0)",
-            [],
-        )
-        .unwrap();
+        conn.execute("INSERT INTO threads VALUES(1,7,3,4,'P2P',0,'peer',0)", [])
+            .unwrap();
         assert_eq!(presentation_state(&conn, 1, 7, &peer).unwrap(), (3, 4));
         let mut wrong = peer;
         wrong["peerUser"]["domain"] = "display.test".into();
@@ -773,19 +770,23 @@ pub(super) fn apply_state_feed_page_with_resume(
                 .and_then(Value::as_i64)
                 .ok_or_else(|| "group-meta MEMBER_UPSERT has no profileRev".to_string())?;
             tx.execute(
-                    "INSERT INTO members(
+                "INSERT INTO members(
                        user_id,thread_id,member_account,namespace_id,role,left_state,
                        profile_rev
                      ) VALUES(?1,?2,?3,?4,?5,0,?6)
                      ON CONFLICT(user_id,thread_id,member_account,namespace_id)
                      DO UPDATE SET role=excluded.role,left_state=0,
                        profile_rev=excluded.profile_rev",
-                    params![
-                        user_id, update.thread_id, account, namespace_id,
-                        body.get("role").and_then(Value::as_str).unwrap_or("MEMBER"),
-                        profile_rev,
-                    ],
-                ).map_err(|e| format!("upsert group member: {e}"))?;
+                params![
+                    user_id,
+                    update.thread_id,
+                    account,
+                    namespace_id,
+                    body.get("role").and_then(Value::as_str).unwrap_or("MEMBER"),
+                    profile_rev,
+                ],
+            )
+            .map_err(|e| format!("upsert group member: {e}"))?;
         }
         if let Some(mut thread) = thread.take() {
             let recovered_announcement = if update.page.mode == "full" && !update.page.has_more {
@@ -936,8 +937,7 @@ pub(super) fn apply_group_meta_page(
         .optional()
         .map_err(|e| format!("read state-feed cursor for group meta: {e}"))?
         .unwrap_or(0);
-    let patches =
-        apply_state_feed_page(conn, user_id, Vec::new(), feed_id, vec![update], false)?;
+    let patches = apply_state_feed_page(conn, user_id, Vec::new(), feed_id, vec![update], false)?;
     Ok(patches.into_iter().next())
 }
 

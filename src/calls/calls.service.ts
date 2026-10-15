@@ -373,6 +373,7 @@ export class CallsService implements OnModuleDestroy {
             )[0],
             account: call.peerAccount!,
             domain: call.peerDomain!,
+            namespaceId: call.peerNamespaceId ?? 0,
           }
         : await this.database.db.query.account
             .findFirst({
@@ -391,11 +392,15 @@ export class CallsService implements OnModuleDestroy {
       callerName: caller?.name ?? '',
       callerAvatar: caller?.avatar ?? '',
       callerAccount: caller?.account ?? '',
-      callerDomain: caller?.domain ?? '',
+      callerNamespaceId: caller?.namespaceId ?? 0,
       callType: call.callType,
     });
     if (caller?.account) {
-      this.callState.setPeerIdentity(calleeId, caller.account, caller.domain);
+      this.callState.setPeerIdentity(
+        calleeId,
+        caller.account,
+        caller.namespaceId,
+      );
     }
     void this.push.dispatchForCall(calleeId, {
       callSid: call.callSid,
@@ -403,7 +408,7 @@ export class CallsService implements OnModuleDestroy {
       callerName: caller?.name ?? '',
       callerAvatar: caller?.avatar ?? '',
       callerAccount: caller?.account ?? '',
-      callerDomain: caller?.domain ?? '',
+      callerNamespaceId: caller?.namespaceId ?? 0,
       threadId: call.threadId,
       callType: call.callType,
     });
@@ -1467,7 +1472,7 @@ export class CallsService implements OnModuleDestroy {
         ...base,
         peerUserId: call.calleeId,
         peerAccount: call.peerAccount ?? '',
-        peerDomain: call.peerDomain ?? '',
+        peerNamespaceId: call.peerNamespaceId ?? 0,
         isCaller: true,
       });
     if (call.calleeId !== null)
@@ -1475,7 +1480,7 @@ export class CallsService implements OnModuleDestroy {
         ...base,
         peerUserId: call.callerId,
         peerAccount: '',
-        peerDomain: '',
+        peerNamespaceId: 0,
         isCaller: false,
       });
   }
