@@ -60,6 +60,22 @@ describe('translateBizResult', () => {
     ).toBe('errors.biz.threadNotApproved');
   });
 
+  it('localizes the forward depth limit instead of exposing the backend message', () => {
+    expect(BusinessCode.FORWARD_MAX_DEPTH_EXCEEDED).toBe(30004);
+    expect(
+      translateBizResult(
+        res(30004, 'forward bundle depth cannot exceed 3'),
+        transloco,
+      ),
+    ).toBe('errors.biz.forwardMaxDepthExceeded');
+  });
+
+  it('maps invalid forward bundles to a user-facing message', () => {
+    expect(
+      translateBizResult(res(BusinessCode.FORWARD_INVALID_BUNDLE), transloco),
+    ).toBe('errors.biz.forwardInvalidBundle');
+  });
+
   it('localizes a stale row after its federated friend request was withdrawn', () => {
     expect(
       translateBizResult(res(BusinessCode.INVITE_ALREADY_HANDLED), transloco),

@@ -250,20 +250,9 @@ export class ForwardBundleService {
     if (visible.contentType !== ContentType.FORWARD) {
       return { content, contentType: visible.contentType };
     }
-    const binding = await this.database.db.query.forwardMessage.findFirst({
-      where: eq(forwardMessage.messageId, visible.id),
-    });
-    if (!binding) {
-      throw new BusinessException(
-        BusinessCode.FORWARD_INVALID_BUNDLE,
-        'forward source binding not found',
-      );
-    }
-    const wireBundle = await this.buildClosure(binding.bundleId);
     return {
-      content: rewriteForwardCardBundleId(content, wireBundle.id),
-      contentType: visible.contentType,
-      forwardBundleId: binding.bundleId,
+      content: directForwardTextFromCard(content),
+      contentType: ContentType.PURE_TEXT,
     };
   }
 
@@ -1616,6 +1605,22 @@ function isLocalForwardBundleId(value: unknown): value is string {
     !value.includes('\0') &&
     !value.includes('/')
   );
+}
+
+function directForwardTextFromCard(content: string): string {
+  try {
+    const value = JSON.parse(content) as { summaryLines?: unknown };
+    const lines = Array.isArray(value.summaryLines)
+      ? value.summaryLines.filter(
+          (line): line is string => typeof line === 'string',
+        )
+      : [];
+    return JSON.stringify({
+      text: lines.length > 0 ? lines.join('\n') : '[Chat history]',
+    });
+  } catch {
+    return JSON.stringify({ text: '[Chat history]' });
+  }
 }
 
 function isForwardBundleId(value: unknown): value is string {

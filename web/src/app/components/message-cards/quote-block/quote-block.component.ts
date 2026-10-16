@@ -35,15 +35,11 @@ export class QuoteBlockComponent {
   private readonly threshold = inject(MediaSizeThresholdService);
   readonly displayQuote = computed(() => {
     const quote = this.quote();
-    return quote?.unavailable
-      ? { seq: quote.seq, unavailable: true }
-      : quote?.status
-        ? { seq: quote.seq, status: quote.status }
-        : quote;
+    return quote?.status ? { seq: quote.seq, status: quote.status } : quote;
   });
   readonly anchor = computed<HistoryAnchor | undefined>(() => {
     const quote = this.displayQuote();
-    if (!quote || quote.unavailable || quote.status) return undefined;
+    if (!quote || quote.status) return undefined;
     return (
       quote.anchor ??
       (quote.seq && quote.seq > 0

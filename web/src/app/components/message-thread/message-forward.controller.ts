@@ -6,6 +6,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { PopupType, RouteService } from '../../services/route.service';
 import { ToastService } from '../../services/toast.service';
 import type { ChatMsgData } from '../message-cards/chat-item';
+import type { StandardResponse } from '../../services/model';
 import type { ForwardDialogResult } from '../forward-dialog/forward-dialog.component';
 import type { ForwardMessageItem } from '../forward-message-card/forward-message-card.component';
 import { MessageThreadAdapter } from './message-thread-adapter';
@@ -42,7 +43,7 @@ export class MessageForwardController {
       );
     this.route.popupDlg(
       PopupType.FORWARD,
-      { messages, mode, recordKind },
+      { messages, kind: mode === 'DIRECT' ? 'DIRECT_FORWARD' : 'HISTORY_FORWARD', recordKind },
       (result) => {
         if (result)
           void this.send(result, sourceThreadId).then((completed) => {
@@ -76,36 +77,52 @@ export class MessageForwardController {
     result: ForwardDialogResult,
     sourceThreadId: number,
   ): Promise<boolean> {
-    const sourceMessages = result.messages.map((message) => ({
-      threadId: sourceThreadId,
-      seq: message.id,
-    }));
     const outcomes = await Promise.all(
       result.threadIds.map(async (threadId) => {
-        try {
-          const response = await firstValueFrom(
-            this.adapter
-              .sendForward({
-                threadId,
-                sourceMessages,
-                mode: result.mode,
-                clientMessageId: this.newClientMessageId(),
-              })
-              .pipe(timeout(MESSAGE_SEND_TIMEOUT_MS)),
-          );
-          if (response.code === BusinessCode.GROUP_DISSOLVED) {
-            this.conversations.applyGroupUpdate(threadId, {
-              dissolvedAt: Date.now(),
-            });
-          } else if (response.code === BusinessCode.FRIEND_NOT_FOUND) {
-            this.conversations.applyThreadMeta(threadId, {
-              friendshipActive: false,
-            });
+        const batches =
+          result.mode === 'DIRECT'
+            ? result.messages.map((message) => [message])
+            : [result.messages];
+        const responses = [] as StandardResponse<unknown>[];
+        let transportFailed = false;
+        for (const batch of batches) {
+          try {
+            const response = await firstValueFrom(
+              this.adapter
+                .sendForward({
+                  threadId,
+                  sourceMessages: batch.map((message) => ({
+                    threadId: sourceThreadId,
+                    seq: message.id,
+                  })),
+                  mode: result.mode,
+                  clientMessageId: this.newClientMessageId(),
+                })
+                .pipe(timeout(MESSAGE_SEND_TIMEOUT_MS)),
+            );
+            responses.push(response);
+            if (response.code === BusinessCode.GROUP_DISSOLVED) {
+              this.conversations.applyGroupUpdate(threadId, {
+                dissolvedAt: Date.now(),
+              });
+            } else if (response.code === BusinessCode.FRIEND_NOT_FOUND) {
+              this.conversations.applyThreadMeta(threadId, {
+                friendshipActive: false,
+              });
+            }
+          } catch {
+            transportFailed = true;
           }
-          return { ok: response.code === BusinessCode.OK, response };
-        } catch {
-          return { ok: false, response: undefined };
         }
+        return {
+          ok:
+            !transportFailed &&
+            responses.length === batches.length &&
+            responses.every((response) => response.code === BusinessCode.OK),
+          response: responses.find(
+            (response) => response.code !== BusinessCode.OK,
+          ),
+        };
       }),
     );
     const sent = outcomes.filter((outcome) => outcome.ok).length;

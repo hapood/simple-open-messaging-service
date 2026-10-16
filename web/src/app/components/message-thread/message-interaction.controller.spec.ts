@@ -15,6 +15,17 @@ function message(id: number, ids?: number[]): CbItem<ChatMsgData> {
   } as CbItem<ChatMsgData>;
 }
 
+function systemMessage(id: number): CbItem<ChatMsgData> {
+  return {
+    id,
+    data: {
+      type: 'system',
+      msgId: id,
+      contentType: 'SYSTEM',
+    },
+  } as CbItem<ChatMsgData>;
+}
+
 describe('MessageInteractionController', () => {
   it('owns whole-message and album-member selection transitions', () => {
     const controller = new MessageInteractionController();
@@ -49,6 +60,49 @@ describe('MessageInteractionController', () => {
     expect(controller.selectedMessageIds()).toEqual(new Set([4]));
 
     controller.removeMessage(4);
+    expect(controller.selectedCount()).toBe(0);
+  });
+
+  it('does not select system or deletion placeholder messages', () => {
+    const controller = new MessageInteractionController();
+    const system = systemMessage(7);
+    const deleted = {
+      ...systemMessage(8),
+      data: { ...systemMessage(8).data, deletionType: 'MODERATION_REMOVAL' },
+    } as CbItem<ChatMsgData>;
+
+    controller.toggle(system);
+    controller.toggle(deleted);
+    expect(controller.selectionMode()).toBe(false);
+    expect(controller.selectedCount()).toBe(0);
+
+    controller.openContextMenu(
+      deleted,
+      undefined,
+      { x: 30, y: 40 },
+      { left: 0, top: 0, right: 300, bottom: 400 },
+      3,
+    );
+    expect(controller.selectContextMessage()).toBe(false);
+    expect(controller.selectedCount()).toBe(0);
+  });
+
+  it('does not select a pending optimistic row whose id is still a placeholder', () => {
+    const controller = new MessageInteractionController();
+    const pending = message(-3);
+
+    controller.toggle(pending);
+    expect(controller.selectionMode()).toBe(false);
+    expect(controller.selectedCount()).toBe(0);
+
+    controller.openContextMenu(
+      pending,
+      undefined,
+      { x: 30, y: 40 },
+      { left: 0, top: 0, right: 300, bottom: 400 },
+      3,
+    );
+    expect(controller.selectContextMessage()).toBe(false);
     expect(controller.selectedCount()).toBe(0);
   });
 

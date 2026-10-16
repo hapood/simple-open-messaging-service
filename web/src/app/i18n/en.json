@@ -808,6 +808,8 @@
       "mustChangePassword": "Please set your own password to continue.",
       "notFriends": "You are not friends with this user",
       "messageEmpty": "Message is empty",
+      "forwardMaxDepthExceeded": "Chat history can be nested up to 3 levels and cannot be merged forward again.",
+      "forwardInvalidBundle": "The selected messages include deleted or inaccessible messages and cannot be forwarded.",
       "threadNotApproved": "Conversation is not active",
       "threadNotFound": "Conversation not found",
       "groupInvalidToken": "This invite is invalid or expired",

@@ -1,6 +1,10 @@
 import { computed, signal } from '@angular/core';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
-import type { ChatItemData, ChatMsgData } from '../message-cards/chat-item';
+import type {
+  ChatItemData,
+  ChatMsgData,
+} from '../message-cards/chat-item';
+import { isConfirmedMessage } from '../message-cards/chat-item';
 import { albumMemberItem, messageMemberIds } from './message-selection';
 import { positionMessageContextMenu } from './message-context-menu-position';
 
@@ -29,6 +33,10 @@ export interface MessageContextBounds {
  * Owns the interaction state machine for message selection, context menus and
  * quote composition. Rendering and side effects stay with the thread component.
  */
+function canSelectMessage(message: ChatMsgData): boolean {
+  return isConfirmedMessage(message) && message.type === 'msg';
+}
+
 export class MessageInteractionController {
   readonly selectionMode = signal(false);
   readonly selectedMessageIds = signal<ReadonlySet<number>>(new Set());
@@ -88,7 +96,7 @@ export class MessageInteractionController {
 
   selectContextMessage(): boolean {
     const context = this.contextMenu();
-    if (!context) return false;
+    if (!context || !canSelectMessage(context.targetItem.data)) return false;
     const next = new Set(this.selectedMessageIds());
     next.add(context.targetSeq);
     this.selectedMessageItems.set(context.targetSeq, context.targetItem);
@@ -100,9 +108,10 @@ export class MessageInteractionController {
 
   toggle(item: CbItem<ChatItemData>, memberId?: number): void {
     if (item.data.serverGap) return;
+    const messageItem = item as CbItem<ChatMsgData>;
+    if (!canSelectMessage(messageItem.data)) return;
     this.closeContextMenu();
     this.selectionMode.set(true);
-    const messageItem = item as CbItem<ChatMsgData>;
     if (memberId === undefined) this.toggleMessage(messageItem);
     else this.toggleAlbumMember(messageItem, memberId);
   }

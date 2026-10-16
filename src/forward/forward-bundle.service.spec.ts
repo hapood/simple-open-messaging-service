@@ -322,6 +322,7 @@ describe('ForwardBundleService', () => {
         content: JSON.stringify({
           account: 'bob',
           domain: 'peer.test',
+          publicKey: 'p'.repeat(43) + '=',
           displayName: 'Bob',
           bio: '',
           avatar: `/uploads/msg-assets/bb/bb/${contactDigest}`,
@@ -480,7 +481,7 @@ describe('ForwardBundleService', () => {
     });
   });
 
-  it('directly forwards a depth-3 card without creating another bundle layer', async () => {
+  it('directly forwards a chat-record card as a plain text snapshot', async () => {
     const database = databaseFake();
     const service = new ForwardBundleService(
       database as never,
@@ -491,7 +492,7 @@ describe('ForwardBundleService', () => {
           contentType: ContentType.FORWARD,
           content: JSON.stringify({
             bundleId: '01childbundle0000000000000',
-            summaryLines: ['Alice：nested'],
+            summaryLines: ['Alice：nested', 'Bob：reply'],
             messageCount: 3,
             depth: 3,
           }),
@@ -499,11 +500,12 @@ describe('ForwardBundleService', () => {
       } as never,
     );
 
-    const result = await service.prepareDirectMessage(9, {
-      threadId: 4,
-      seq: 7,
+    await expect(
+      service.prepareDirectMessage(9, { threadId: 4, seq: 7 }),
+    ).resolves.toEqual({
+      content: JSON.stringify({ text: 'Alice：nested\nBob：reply' }),
+      contentType: ContentType.PURE_TEXT,
     });
-    expect(JSON.parse(result.content).bundleId).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it.each([ContentType.SYSTEM])(

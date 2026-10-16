@@ -127,11 +127,10 @@ describe('TextRowComponent — forwarded quote navigation', () => {
     ref.destroy();
   });
 
-  it('renders a tombstoned quote without preview metadata or a clickable target', () => {
+  it('renders a tombstoned quote as a coordinate-only clickable jump', () => {
     const ref = mount(
       message({
         seq: 1,
-        unavailable: true,
         author: 'Alice',
         body: 'secret',
         image: '/old.jpg',
@@ -143,12 +142,20 @@ describe('TextRowComponent — forwarded quote navigation', () => {
     const targets: import('../../../services/history-anchor').HistoryAnchor[] =
       [];
     ref.instance.quoteJump.subscribe((seq) => targets.push(seq));
+    // The source became a tombstone: the producer strips the quote down to the
+    // jump coordinate, so no preview metadata survives.
+    ref.setInput('data', {
+      ...ref.instance.data(),
+      quote: { seq: 1 },
+    });
+    ref.changeDetectorRef.detectChanges();
     const quote = host.querySelector<HTMLElement>('.msg-quote')!;
-    expect(quote.textContent?.trim()).toBe('Message not found');
+    expect(quote.textContent?.trim()).toBe('Click to view quoted message');
     expect(quote.querySelector('img, strong, app-user-avatar')).toBeNull();
-    expect(host.querySelector('button.msg-quote')).toBeNull();
-    quote.click();
-    expect(targets).toEqual([]);
+    const button = host.querySelector<HTMLButtonElement>('button.msg-quote')!;
+    expect(button).not.toBeNull();
+    button.click();
+    expect(targets).toEqual([{ kind: 'local', seq: 1 }]);
     expect(host.querySelector('.msg-bubble-text')?.textContent).toContain(
       'reply',
     );

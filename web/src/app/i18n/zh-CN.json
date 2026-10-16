@@ -808,6 +808,8 @@
       "mustChangePassword": "请先设置你自己的密码再继续。",
       "notFriends": "你和该用户不是好友",
       "messageEmpty": "消息内容为空",
+      "forwardMaxDepthExceeded": "聊天记录最多嵌套 3 层，无法继续合并转发",
+      "forwardInvalidBundle": "所选消息中包含已删除或不可访问的消息，无法转发",
       "threadNotApproved": "会话尚未建立",
       "threadNotFound": "会话不存在",
       "groupInvalidToken": "邀请无效或已过期",

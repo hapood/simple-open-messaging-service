@@ -25,7 +25,7 @@
       } @else {
         <span>{{
           quote.body ||
-            ((quote.unavailable || quote.status === 'NOT_FOUND'
+            ((quote.status === 'NOT_FOUND'
               ? 'chat.messageNotFound'
               : 'chat.quoteNotFetched'
             ) | transloco)
