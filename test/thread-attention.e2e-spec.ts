@@ -279,7 +279,10 @@ describe('transactional thread attention', () => {
       .where(eq(groupMeta.threadId, group.id));
     await db.db
       .update(groupMetaMemberFeed)
-      .set({ feedId: 2, body: { account: control.account, namespaceId: 0, profileRev: 1 } })
+      .set({
+        feedId: 2,
+        body: { account: control.account, namespaceId: 0, profileRev: 1 },
+      })
       .where(eq(groupMetaMemberFeed.threadId, group.id));
     await db.db.transaction((tx) =>
       ThreadFeedHeadWriter.reconcileGroupMetaCoordinateInTx(tx, {
@@ -365,6 +368,50 @@ describe('transactional thread attention', () => {
     expect(await state()).toEqual(before);
     expect(await service.readEndId(userId)).toBe(head);
   });
+  let mentionGroupSerial = 0;
+  async function useLocalGroupForUserMentions() {
+    // User mentions are group-scoped. Use a real local group rather than
+    // interpreting group namespace tokens inside the default P2P fixture.
+    await db.db
+      .delete(accountThreadState)
+      .where(eq(accountThreadState.accountId, userId));
+    const [group] = await db.db
+      .insert(groupAccount)
+      .values({
+        account: `!attention-mention-${++mentionGroupSerial}`,
+        updatedAt: new Date(),
+      })
+      .returning();
+    const [thread] = await db.db
+      .insert(messageThread)
+      .values({
+        type: 'GROUP',
+        curSeq: 2000,
+        groupAccount: group.account,
+        groupDomain: localIdentityDomain(),
+        groupAccountId: group.id,
+        authorityNamespaceId: 0,
+        updatedAt: new Date(),
+      })
+      .returning();
+    threadId = thread.id;
+    await db.db.insert(relationshipPair).values({
+      kind: 'GROUP_MEMBER',
+      active: true,
+      established: true,
+      threadId,
+      endpointAType: 'GROUP',
+      endpointAAccount: group.account,
+      endpointANamespaceId: 0,
+      endpointBType: 'USER',
+      endpointBAccount: 'reader',
+      endpointBNamespaceId: 0,
+      updatedAt: new Date(),
+    });
+    await db.db
+      .insert(accountThreadState)
+      .values({ accountId: userId, threadId, updatedAt: new Date() });
+  }
   const put = (
     seq: number,
     text = 'hello',
@@ -750,6 +797,7 @@ describe('transactional thread attention', () => {
     });
   });
   it('maintains insertion MAX and recomputes retracted mentions above lastReadSeq', async () => {
+    await useLocalGroupForUserMentions();
     await projectCurrentHeads();
     await put(1, '[@Reader](somfp://user/0/reader)');
     await put(2, '[@Reader](somfp://user/0/reader)');
@@ -883,6 +931,7 @@ describe('transactional thread attention', () => {
   });
 
   it('persists visibility bounds without changing projections, feed cursors or tasks', async () => {
+    await useLocalGroupForUserMentions();
     await put(1);
     await put(2);
     await put(3, '[@Reader](somfp://user/0/reader)');

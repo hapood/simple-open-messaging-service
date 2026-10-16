@@ -23,6 +23,7 @@ interface ThreadFeedPreview {
 export interface ThreadFeedState {
   type: 'P2P' | 'GROUP';
   publisherNamespaceId: number;
+  selfMentionNamespaceId: number | null;
   conversationState: 'ACTIVE' | 'READ_ONLY';
   blocked: boolean;
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
@@ -99,6 +100,9 @@ export class ThreadFeedService {
                s."joinRequestReadFeedId", s."groupInviteEndFeedId",
                s."threadProfileRev" AS "profileRev", s."lastReadSeq", s."announcementReadFeedId",
                s."unreadCount", s."lastMentionSeq", t.type, t."authorityNamespaceId" AS "publisherNamespaceId",
+               CASE WHEN t.type <> 'GROUP' THEN NULL
+                 WHEN t."authorityNamespaceId" = 0 THEN 0
+                 ELSE origin."peerAssignedLocalNamespaceId" END AS "selfMentionNamespaceId",
                CASE WHEN pair.active THEN 'ACTIVE' ELSE 'READ_ONLY' END AS "conversationState",
                s.blocked, CASE WHEN pair.active THEN s.role ELSE NULL END AS role,
                CASE WHEN t.type = 'GROUP' THEN t."groupAccount"
@@ -107,6 +111,7 @@ export class ThreadFeedService {
         FROM "AccountThreadState" s
         JOIN "Account" self ON self.id = s."accountId"
         JOIN "MessageThread" t ON t.id = s."threadId"
+        LEFT JOIN "IdentityNamespace" origin ON origin.id = t."authorityNamespaceId"
         JOIN "RelationshipPair" pair ON pair."threadId" = t.id AND pair.established
           AND ((pair."endpointAType" = 'USER' AND pair."endpointAAccount" = self.account
             AND pair."endpointANamespaceId" = 0)

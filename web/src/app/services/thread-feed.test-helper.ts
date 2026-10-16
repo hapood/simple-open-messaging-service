@@ -23,6 +23,7 @@ export function threadStructure(
   return {
     threadId,
     type: 'P2P',
+    selfMentionNamespaceId: null,
     conversationState: 'ACTIVE',
     blocked: false,
     role: null,

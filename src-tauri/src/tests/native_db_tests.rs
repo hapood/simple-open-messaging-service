@@ -204,6 +204,7 @@ fn test_thread_snapshot(kind: &str, feed: i64, lifecycle: &str) -> serde_json::V
     // structural shape `apply_thread_state` consumes.
     serde_json::json!({
         "threadId":52,"threadFeedId":feed,"type":kind,"publisherNamespaceId":0,
+        "selfMentionNamespaceId": if kind == "GROUP" { serde_json::json!(0) } else { serde_json::Value::Null },
         "conversationState":lifecycle,"blocked":lifecycle == "READ_ONLY","role":role,
         "profileAccount":account,"profileRev":3,
         "alias":null,"messageEndSeq":0,"tombstoneEndSeq":0,
@@ -219,6 +220,7 @@ fn nested_state_body(wire: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "type": wire["type"], "threadId": wire["threadId"],
         "authorityNamespaceId": wire["publisherNamespaceId"],
+        "selfMentionNamespaceId": wire["selfMentionNamespaceId"],
         "conversationState": wire["conversationState"], "blocked": wire["blocked"],
         "role": wire["role"],
         "profile": {"account": wire["profileAccount"], "namespaceId": wire["publisherNamespaceId"],
@@ -237,8 +239,13 @@ fn nested_state_body(wire: &serde_json::Value) -> serde_json::Value {
 fn commit_test_thread_state(conn: &mut Connection, body: &serde_json::Value) {
     let tx = conn.transaction().unwrap();
     let nested = nested_state_body(body);
-    super::client_state::apply_thread_state(&tx, 1, &nested, body["threadFeedId"].as_i64().unwrap())
-        .unwrap();
+    super::client_state::apply_thread_state(
+        &tx,
+        1,
+        &nested,
+        body["threadFeedId"].as_i64().unwrap(),
+    )
+    .unwrap();
     tx.commit().unwrap();
     let local: super::attention::LocalThreadAttention =
         serde_json::from_value(serde_json::json!({"threadId":52,"server":body,"localReadSeq":0}))
@@ -726,6 +733,7 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
     let mut conn = profile_cache_db();
     let body = serde_json::json!({
         "threadId":90,"threadFeedId":1,"type":"GROUP","publisherNamespaceId":7,
+        "selfMentionNamespaceId":12,
         "conversationState":"ACTIVE","blocked":false,"role":"MEMBER",
         "profileAccount":"!mirror","profileRev":0,
         "alias":null,"messageEndSeq":0,"tombstoneEndSeq":0,

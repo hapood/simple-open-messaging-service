@@ -370,6 +370,7 @@ function withStoredPreview(
     threadFeedId,
     type,
     publisherNamespaceId,
+    selfMentionNamespaceId: state.selfMentionNamespaceId,
     conversationState,
     blocked,
     role,
@@ -496,20 +497,8 @@ export interface MessageDbSchema extends DBSchema {
 
 const DB_PREFIX = 'soms-webdb-u';
 const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
-export const CACHE_SCHEMA_VERSION = 41;
-// v41: Group Meta feed items carry the member identity (account/namespaceId)
-// inside the body and no domain travels on the wire, so roster rows are keyed
-// by (threadId, account, namespaceId) alone. Rows written under the old
-// domain-scoped key cannot be addressed by the new facts anymore; the whole
-// cache is discarded and rebuilt from the feeds.
-// v40: friend request projection keys now canonicalize the author's home
-// namespace (0 for the local user) instead of the pair namespace. Records
-// written under the old key shape cannot be addressed by feed facts anymore,
-// so the whole cache is discarded and rebuilt from the state feed.
-// Cursors moved out of the generic `settings` bag: account-level cursors now
-// live in a dedicated `syncState` store, per-thread cursors in `threadSyncState`.
-// Message content now stores canonical CAS paths; discard cached contextual URLs.
-export const MESSAGE_CACHE_SCHEMA_VERSION = 8;
+export const CACHE_SCHEMA_VERSION = 1;
+export const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
 
 export class LocalCacheUnavailableError extends Error {
@@ -1083,11 +1072,7 @@ export class WebdbStorage {
           keyPath: ['threadId', 'account', 'namespaceId'],
         });
         members.createIndex('thread', 'threadId');
-        members.createIndex('address', [
-          'threadId',
-          'account',
-          'namespaceId',
-        ]);
+        members.createIndex('address', ['threadId', 'account', 'namespaceId']);
         db.createObjectStore('threads', { keyPath: 'threadId' });
         db.createObjectStore('threadPreviews', { keyPath: 'threadId' });
         const relationshipRequests = db.createObjectStore(
@@ -2615,11 +2600,7 @@ export class WebdbStorage {
           }
           const previous = await members
             .index('address')
-            .get([
-              update.threadId,
-              item.body.account,
-              item.body.namespaceId,
-            ]);
+            .get([update.threadId, item.body.account, item.body.namespaceId]);
           if (item.operation === 'MEMBER_DEPART') {
             if (previous) await members.put({ ...previous, left: true });
             continue;
@@ -3247,7 +3228,9 @@ export class WebdbStorage {
           user.name.toLocaleLowerCase().includes(search) ||
           user.account.toLocaleLowerCase().includes(search)
         )
-          result.push(this.resolveMember(member, publisherNamespaceId, snapshot));
+          result.push(
+            this.resolveMember(member, publisherNamespaceId, snapshot),
+          );
       }
       return result;
     });
@@ -3272,11 +3255,7 @@ export class WebdbStorage {
           )) ?? undefined
         );
       const db = await this.db();
-      const member = await db.get('members', [
-        threadId,
-        account,
-        namespaceId,
-      ]);
+      const member = await db.get('members', [threadId, account, namespaceId]);
       const thread = await db.get('threads', threadId);
       if (!member || member.left || thread?.type !== 'GROUP') return undefined;
       const snapshot = await db.get('profiles', [
@@ -3377,14 +3356,12 @@ export class WebdbStorage {
         const thread = await tx.objectStore('threads').get(reference.threadId);
         const member = await tx
           .objectStore('members')
-          .get([
-            reference.threadId,
-            reference.account,
-            reference.namespaceId,
-          ]);
+          .get([reference.threadId, reference.account, reference.namespaceId]);
         if (
           thread?.type !== 'GROUP' ||
-          !member || member.left || member.profileRev !== reference.rev
+          !member ||
+          member.left ||
+          member.profileRev !== reference.rev
         ) {
           await tx.done;
           return false;

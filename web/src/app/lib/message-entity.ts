@@ -138,12 +138,37 @@ export interface RenderMessageEntities {
   mentionState: 'none' | 'me' | 'all';
 }
 
-/** Builds safe render segments and compares stable accounts rather than mutable display labels. */
+export interface MentionIdentity {
+  account: string;
+  namespaceId: number;
+}
+
+/** Translate the viewer into the group's origin space, not the serving mirror's space. */
+export function selfMentionIdentity(
+  thread:
+    | {
+        type: string;
+        publisherNamespaceId: number;
+        selfMentionNamespaceId: number | null;
+      }
+    | null
+    | undefined,
+  account: string | null | undefined,
+): MentionIdentity | undefined {
+  if (!account || thread?.type !== 'GROUP') return undefined;
+  const namespaceId = thread.selfMentionNamespaceId;
+  return typeof namespaceId === 'number' &&
+    Number.isSafeInteger(namespaceId) &&
+    namespaceId >= 0
+    ? { account, namespaceId }
+    : undefined;
+}
+
+/** Builds safe render segments and matches exact group-origin identities, never display labels. */
 export function toRenderMessageEntities(
   content: string,
-  selfAccount?: string | null,
+  self?: MentionIdentity | null,
 ): RenderMessageEntities {
-  const normalizedSelf = selfAccount?.trim().toLocaleLowerCase() ?? '';
   let mentionState: RenderMessageEntities['mentionState'] = 'none';
   const segments: RenderMessageEntities['segments'] = [];
 
@@ -152,11 +177,11 @@ export function toRenderMessageEntities(
       segments.push(segment);
     } else if (segment.entityType === 'user' && segment.entityId) {
       const slash = segment.entityId.indexOf('/');
-      const accountPart =
-        slash > 0 ? segment.entityId.slice(slash + 1) : segment.entityId;
       const isMe =
-        !!normalizedSelf &&
-        accountPart.trim().toLocaleLowerCase() === normalizedSelf;
+        !!self &&
+        slash > 0 &&
+        Number(segment.entityId.slice(0, slash)) === self.namespaceId &&
+        segment.entityId.slice(slash + 1) === self.account;
       if (isMe) mentionState = 'me';
       segments.push({
         kind: 'mention',

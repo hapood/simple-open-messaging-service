@@ -5,6 +5,7 @@ import {
   serializeUserMention,
   toDisplayText,
   toRenderMessageEntities,
+  selfMentionIdentity,
 } from './message-entity';
 
 describe('message entity codec', () => {
@@ -27,7 +28,10 @@ describe('message entity codec', () => {
   it('distinguishes a stable-account mention of me from another user', () => {
     const me = serializeUserMention('我的新昵称', 0, 'me');
     const other = serializeUserMention('张三', 12, 'zhangsan');
-    const rendered = toRenderMessageEntities(`${me} 和 ${other}`, 'me');
+    const rendered = toRenderMessageEntities(`${me} 和 ${other}`, {
+      account: 'me',
+      namespaceId: 0,
+    });
     expect(rendered.mentionState).toBe('me');
     expect(rendered.segments).toEqual([
       {
@@ -44,6 +48,62 @@ describe('message entity codec', () => {
         account: '12/zhangsan',
       },
     ]);
+  });
+
+  it('distinguishes same-account users in different group-origin namespaces', () => {
+    const token = serializeUserMention('Alice', 12, 'alice');
+    expect(
+      toRenderMessageEntities(token, { account: 'alice', namespaceId: 12 })
+        .mentionState,
+    ).toBe('me');
+    for (const self of [
+      undefined,
+      { account: 'alice', namespaceId: 0 },
+      { account: 'alice', namespaceId: 15 },
+    ]) {
+      const rendered = toRenderMessageEntities(token, self);
+      expect(rendered.mentionState).toBe('none');
+      expect(rendered.segments[0]).toEqual(
+        expect.objectContaining({ target: 'other' }),
+      );
+    }
+    expect(
+      toRenderMessageEntities(serializeAudienceMention('Everyone', 'all'))
+        .mentionState,
+    ).toBe('all');
+  });
+
+  it('maps self only through the group origin coordinate, with no mirror-local fallback', () => {
+    expect(
+      selfMentionIdentity(
+        { type: 'GROUP', publisherNamespaceId: 0, selfMentionNamespaceId: 0 },
+        'alice',
+      ),
+    ).toEqual({ account: 'alice', namespaceId: 0 });
+    expect(
+      selfMentionIdentity(
+        { type: 'GROUP', publisherNamespaceId: 7, selfMentionNamespaceId: 12 },
+        'alice',
+      ),
+    ).toEqual({ account: 'alice', namespaceId: 12 });
+    for (const value of [null]) {
+      expect(
+        selfMentionIdentity(
+          {
+            type: 'GROUP',
+            publisherNamespaceId: 7,
+            selfMentionNamespaceId: value,
+          },
+          'alice',
+        ),
+      ).toBeUndefined();
+    }
+    expect(
+      selfMentionIdentity(
+        { type: 'P2P', publisherNamespaceId: 0, selfMentionNamespaceId: null },
+        'alice',
+      ),
+    ).toBeUndefined();
   });
 
   it('does not promote manually typed protocol text to an entity', () => {

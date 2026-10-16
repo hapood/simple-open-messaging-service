@@ -75,6 +75,7 @@ import {
 import {
   toDisplayText,
   toRenderMessageEntities,
+  selfMentionIdentity,
 } from '../../lib/message-entity';
 import { requireTextMessageContent } from '../../../../../shared/text-message-content';
 import { parseClientMessageQuote } from '../../../../../shared/client-message-quote';
@@ -191,7 +192,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       .pipe(filter((threadId) => threadId === conv.threadId))
       .subscribe(() => {
         for (const [seq, entry] of this.mountedQuotes) {
-          if (!entry.quote.body) void this.refreshMountedQuote(seq).catch(() => {});
+          if (!entry.quote.body)
+            void this.refreshMountedQuote(seq).catch(() => {});
         }
       });
     this.deletedSub = repo.deletedLive$
@@ -321,10 +323,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
     if (this.mountedQuotes.get(replySeq) !== entry || entry.version !== version)
       return;
-    if (
-      entry.quote.seq === quote.seq &&
-      entry.quote.body === quote.body
-    )
+    if (entry.quote.seq === quote.seq && entry.quote.body === quote.body)
       return;
     entry.quote = quote;
     this.onQuoteUpdated(replySeq, quote);
@@ -1013,7 +1012,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const renderedText = textContent
       ? toRenderMessageEntities(
           textContent.text,
-          this.userService.sessionProfile()?.account,
+          selfMentionIdentity(
+            this.conv,
+            this.userService.sessionProfile()?.account,
+          ),
         )
       : null;
     return {

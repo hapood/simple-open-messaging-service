@@ -155,6 +155,8 @@ type ConversationItemBase = {
   threadId: number;
   /** Immutable namespace owning this thread's publisher coordinate space. */
   publisherNamespaceId: number;
+  /** Viewer home namespace in the group origin's space, never a receiver-local namespace. */
+  selfMentionNamespaceId: number | null;
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
   lastMessageAt: number | null;
   /** Durable server message ceiling; independent from the evictable local message cache. */
@@ -239,6 +241,7 @@ export function createP2PConversation(
   return {
     threadId,
     publisherNamespaceId: peer.namespaceId,
+    selfMentionNamespaceId: null,
     type: 'P2P',
     profileRev: peer.profileRev,
     role: null,
@@ -285,6 +288,7 @@ export function createGroupConversation(
   return {
     threadId,
     publisherNamespaceId: groupProfile.namespaceId,
+    selfMentionNamespaceId: groupProfile.namespaceId === 0 ? 0 : null,
     type: 'GROUP',
     profileRev,
     role: null,

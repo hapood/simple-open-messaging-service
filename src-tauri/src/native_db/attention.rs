@@ -1323,6 +1323,9 @@ pub(crate) struct ThreadFeedSnapshot {
     /// Thread authority/publisher coordinate (wire: `publisherNamespaceId`).
     #[serde(rename = "publisherNamespaceId")]
     pub(super) authority_namespace_id: i32,
+    /// Viewer home namespace in the group origin's space; unknown is not namespace zero.
+    #[serde(deserialize_with = "required_nullable")]
+    pub(super) self_mention_namespace_id: Option<i32>,
     pub(super) conversation_state: String,
     pub(super) blocked: bool,
     #[serde(deserialize_with = "required_nullable")]
@@ -1419,6 +1422,9 @@ fn validate_snapshot(state: &ThreadFeedSnapshot) -> Result<(), String> {
             .as_deref()
             .is_some_and(|role| !matches!(role, "OWNER" | "ADMIN" | "MEMBER"))
         || state.authority_namespace_id < 0
+        || state
+            .self_mention_namespace_id
+            .is_some_and(|namespace| namespace < 0)
         || state.subject_account.is_empty()
         || state.thread_profile_rev < 0
         || state.message_end_seq < 0
@@ -1450,7 +1456,7 @@ pub(super) fn read_state(
                 message_end_seq, tombstone_end_seq, group_meta_feed_end_id,
                 join_request_end_feed_id, join_request_read_feed_id,
                 group_invite_end_feed_id, server_last_read_seq, announcement_read_feed_id,
-                server_unread_count, last_mention_seq, local_read_seq
+                server_unread_count, last_mention_seq, local_read_seq, self_mention_namespace_id
          FROM threads WHERE user_id=?1 AND thread_id=?2",
             params![user_id, thread_id],
             |row| {
@@ -1462,6 +1468,7 @@ pub(super) fn read_state(
                         thread_feed_id: row.get(0)?,
                         kind: row.get(1)?,
                         authority_namespace_id: row.get(2)?,
+                        self_mention_namespace_id: row.get(21)?,
                         conversation_state: row.get(3)?,
                         blocked: row.get(4)?,
                         role: row.get(5)?,
@@ -1550,7 +1557,7 @@ pub(super) fn write_state(
            join_request_end_feed_id=?16,join_request_read_feed_id=?17,
            group_invite_end_feed_id=?18,server_last_read_seq=?19,
            announcement_read_feed_id=?20,server_unread_count=?21,
-           last_mention_seq=?22,local_read_seq=?23
+           last_mention_seq=?22,local_read_seq=?23,self_mention_namespace_id=?24
          WHERE user_id=?1 AND thread_id=?2 AND kind=?4
            AND authority_namespace_id=?5
            AND subject_account=?9 AND subject_namespace_id=?10",
@@ -1578,6 +1585,7 @@ pub(super) fn write_state(
                 server.unread_count,
                 server.last_mention_seq,
                 local_read_seq,
+                server.self_mention_namespace_id,
             ],
         )
         .map_err(|e| format!("write attention: {e}"))?;
@@ -1666,6 +1674,7 @@ fn merge_states(
                 "type": snapshot.kind.as_str(),
                 "threadId": snapshot.thread_id,
                 "authorityNamespaceId": snapshot.authority_namespace_id,
+                "selfMentionNamespaceId": snapshot.self_mention_namespace_id,
                 "conversationState": snapshot.conversation_state.as_str(),
                 "blocked": snapshot.blocked,
                 "role": snapshot.role,
@@ -2130,6 +2139,7 @@ mod tests {
         ThreadFeedSnapshot {
             kind: "P2P".into(),
             authority_namespace_id: 0,
+            self_mention_namespace_id: None,
             conversation_state: "ACTIVE".into(),
             blocked: false,
             role: None,
@@ -2373,6 +2383,7 @@ mod tests {
                 "items": [{
                     "threadId": 10, "threadFeedId": 1, "type": "P2P",
                     "publisherNamespaceId": 0, "conversationState": "ACTIVE",
+                    "selfMentionNamespaceId": null,
                     "blocked": false, "role": null, "profileAccount": "bob",
                     "profileRev": 3, "alias": "Pal",
                     "messageEndSeq": 7, "tombstoneEndSeq": 0, "groupMetaFeedEndId": null,
@@ -2414,8 +2425,14 @@ mod tests {
         let json = serde_json::to_value(&states[0]).unwrap();
         assert!(json.get("server").is_none());
         for key in [
-            "threadId", "threadFeedId", "type", "publisherNamespaceId",
-            "conversationState", "blocked", "profileAccount", "profileRev",
+            "threadId",
+            "threadFeedId",
+            "type",
+            "publisherNamespaceId",
+            "conversationState",
+            "blocked",
+            "profileAccount",
+            "profileRev",
             "localReadSeq",
         ] {
             assert!(json.get(key).is_some(), "missing flat key {key}");
@@ -2433,6 +2450,7 @@ mod tests {
         let mut conn = db();
         let mut feed = snapshot(1, 0);
         feed.authority_namespace_id = 7;
+        feed.self_mention_namespace_id = Some(12);
         feed.previews = vec![serde_json::from_value(serde_json::json!({
             "seq": 1, "createdAt": "2026-01-01T00:00:00Z",
             "sender": {"account": "alice", "profileNamespaceId": 2, "profileRev": 3},
@@ -2443,6 +2461,13 @@ mod tests {
         // The wire shape is the flat shared protocol: no nested profile object, no domains.
         assert_eq!(wire["profileAccount"], "peer");
         assert_eq!(wire["publisherNamespaceId"], 7);
+        assert_eq!(wire["selfMentionNamespaceId"], 12);
+        let mut missing = wire.clone();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("selfMentionNamespaceId");
+        assert!(serde_json::from_value::<ThreadFeedSnapshot>(missing).is_err());
         assert_eq!(wire["previews"][0]["sender"]["profileNamespaceId"], 2);
         assert!(wire.get("profile").is_none());
         assert!(wire.get("domain").is_none());

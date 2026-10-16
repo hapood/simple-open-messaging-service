@@ -4213,6 +4213,8 @@ export interface components {
             /** @enum {string} */
             type: "P2P" | "GROUP";
             publisherNamespaceId: number;
+            /** Viewer home namespace in the group origin space; null for P2P or unknown binding. */
+            selfMentionNamespaceId: number | null;
             /** @enum {string} */
             conversationState: "ACTIVE" | "READ_ONLY";
             blocked: boolean;

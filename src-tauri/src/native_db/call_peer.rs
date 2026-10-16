@@ -141,6 +141,7 @@ mod tests {
             7,
             &json!({
                 "threadId":7,"type":"P2P","authorityNamespaceId":1,
+                "selfMentionNamespaceId":null,
                 "peerUser":{"account":"bob","namespaceId":1,"name":"Bob"},
                 "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
                 "threadProfileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,
@@ -189,6 +190,7 @@ mod tests {
             .unwrap();
         let thread = json!({
             "threadId":7,"type":"P2P","authorityNamespaceId":1,
+            "selfMentionNamespaceId":null,
             "peerUser":{"account":"bob","namespaceId":1,"name":"Cached Bob"},
             "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
             "threadProfileRev":0,"messageEndSeq":0,"tombstoneEndSeq":0,

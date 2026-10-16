@@ -142,7 +142,11 @@ import { MemberProfileRepository } from '../../services/member-profile-store.ser
 import type { ProfileDemand } from '../../../../../shared/profile-demand';
 import { MAX_MEDIA_FILE_BYTES } from '../../../../../shared/media-upload-limits';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
-import { ALL_MENTION_ID, escapePlainText } from '../../lib/message-entity';
+import {
+  ALL_MENTION_ID,
+  escapePlainText,
+  selfMentionIdentity,
+} from '../../lib/message-entity';
 import type { ChatMember } from '../chat-editor/chat-editor.component';
 import { StableReadTracker } from './stable-read-tracker';
 import { messageOpenOptions } from './message-open-position';
@@ -236,7 +240,7 @@ let nativeComposerContextSequence = Date.now() * 1000;
     ChatboxPopupComponent,
     EmptyStateComponent,
     UserAvatarComponent,
-        TranslocoModule,
+    TranslocoModule,
   ],
   templateUrl: './friend-message.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -338,7 +342,9 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly optimistic = new ThreadOptimisticController(
     () => this.sendOutbox.allocatePlaceholderId(),
     (cid) => this.onConfirmationTimeout(cid),
-    (cid) => { this.sendOutbox.failPending(cid); },
+    (cid) => {
+      this.sendOutbox.failPending(cid);
+    },
   );
   private readonly sendRetry = new ThreadSendRetryController(
     this.sendOutbox,
@@ -429,7 +435,11 @@ export class MessageThreadComponent implements OnDestroy {
     this.threadAdapter,
     {
       threadId: () => this.threadId(),
-      selfAccount: () => this.userService.sessionProfile()?.account,
+      selfMentionIdentity: () =>
+        selfMentionIdentity(
+          this.userMsgTrd(),
+          this.userService.sessionProfile()?.account,
+        ),
       consumeQuote: () => this.messageInteraction.consumeQuote(),
       makeItem: (cid, text, contentType) =>
         this.makeOptimisticItem(cid, text, contentType, null, null),
@@ -492,12 +502,18 @@ export class MessageThreadComponent implements OnDestroy {
     const members = roster
       .filter(
         (member) =>
-          !isSelfMentionMember(this.userService.sessionProfile(), member),
+          !isSelfMentionMember(
+            selfMentionIdentity(
+              trd,
+              this.userService.sessionProfile()?.account,
+            ),
+            member,
+          ),
       )
       .map((member) => ({
         // Mention entity ids are serialized as v1 user entities:
         // somfp://user/<namespaceId>/<account>. The member's namespaceId is the
-        // publisher-scoped subject namespace (0 for a local member).
+        // group origin's subject namespace (0 for a member hosted by the origin).
         id: `${member.namespaceId}/${member.account}`,
         label: member.name,
         avatarUrl: assetUrl(avatarUrl(member.avatar)),
@@ -539,15 +555,16 @@ export class MessageThreadComponent implements OnDestroy {
       dispatch: (item) => this.dispatchPending(item),
       accept: (item) => this.markAccepted(item),
       fail: (item) => this.failPending(item),
-      retain: (cid, threadId, size) => this.sendOutbox.retainResource(cid, {
-        type: 'native-voice',
-        threadId,
-        size,
-        discard: () => {
-          this.nativeVoiceUploads.forget(cid);
-          void tauriInvoke('discard_native_voice', { clientMessageId: cid });
-        },
-      }),
+      retain: (cid, threadId, size) =>
+        this.sendOutbox.retainResource(cid, {
+          type: 'native-voice',
+          threadId,
+          size,
+          discard: () => {
+            this.nativeVoiceUploads.forget(cid);
+            void tauriInvoke('discard_native_voice', { clientMessageId: cid });
+          },
+        }),
     },
   );
 
@@ -1195,7 +1212,8 @@ export class MessageThreadComponent implements OnDestroy {
       },
       onQuoteUpdated: (replySeq, quote) => {
         this.scroller?.mutateItem(replySeq, (item) => ({
-          ...item, data: { ...item.data, quote },
+          ...item,
+          data: { ...item.data, quote },
         }));
       },
       onQuoteDeleted: (replySeq: number, targetSeq: number) => {
@@ -1391,7 +1409,10 @@ export class MessageThreadComponent implements OnDestroy {
     if (item.data.quote && this.source?.mountQuote) {
       const unregister = this.source.mountQuote(item.id, item.data.quote);
       const destroy = rendered.destroy.bind(rendered);
-      rendered.destroy = () => { unregister(); destroy(); };
+      rendered.destroy = () => {
+        unregister();
+        destroy();
+      };
     }
     return rendered;
   }
@@ -1626,10 +1647,7 @@ export class MessageThreadComponent implements OnDestroy {
   ): Promise<void> {
     const conversation = this.userMsgTrd();
     if (conversation?.type === 'P2P') {
-      if (
-        !profileRef ||
-        conversation.peerUser.account !== profileRef.account
-      )
+      if (!profileRef || conversation.peerUser.account !== profileRef.account)
         return;
       this.dismissContextMenu();
       this.nav.openAside('profile');
@@ -1956,7 +1974,8 @@ export class MessageThreadComponent implements OnDestroy {
   private applyUnreadDivider(threadId: number): void {
     const previous = this.scrollState.firstUnreadSeq;
     const next =
-      this.convList.captureUnreadEntryBoundary(threadId)?.firstUnreadSeq ?? null;
+      this.convList.captureUnreadEntryBoundary(threadId)?.firstUnreadSeq ??
+      null;
     if (previous === next) return;
     this.scrollState.open(next);
     this.pendingDividerRefresh = [
@@ -1972,8 +1991,10 @@ export class MessageThreadComponent implements OnDestroy {
     const pending = this.pendingDividerRefresh;
     this.pendingDividerRefresh = [];
     for (const seq of pending) {
-      if (scroller.getMountedGeometry(seq) &&
-          !scroller.mutateItem(seq, (item) => ({ ...item })))
+      if (
+        scroller.getMountedGeometry(seq) &&
+        !scroller.mutateItem(seq, (item) => ({ ...item }))
+      )
         this.pendingDividerRefresh.push(seq);
     }
   }
@@ -2799,31 +2820,48 @@ export class MessageThreadComponent implements OnDestroy {
    * completed-transfer cleanup already hid it; the retained outbox still owns the original file. */
   private onConfirmationTimeout(cid: string): void {
     const resource = this.sendOutbox.resource(cid);
-    if (!resource || resource.type === 'voice' || resource.type === 'native-voice')
+    if (
+      !resource ||
+      resource.type === 'voice' ||
+      resource.type === 'native-voice'
+    )
       return; // These two have retry/cancel actions directly on their message bubble.
     const threadId = this.threadId();
     if (!threadId) return;
-    const existing = this.transfers.tasks().find((task) => task.clientMessageId === cid);
+    const existing = this.transfers
+      .tasks()
+      .find((task) => task.clientMessageId === cid);
     if (!existing) {
       if (resource.type === 'web-attachment') {
         this.transfers.start({
-          clientMessageId: cid, threadId, kind: resource.mediaKind, file: resource.file,
+          clientMessageId: cid,
+          threadId,
+          kind: resource.mediaKind,
+          file: resource.file,
         });
       } else if (resource.type === 'native-attachment') {
         const file = resource.selection;
         this.transfers.start({
-          clientMessageId: cid, threadId, kind: file.kind,
-          name: file.name, size: file.size, previewUrl: file.preview,
+          clientMessageId: cid,
+          threadId,
+          kind: file.kind,
+          name: file.name,
+          size: file.size,
+          previewUrl: file.preview,
         });
       } else if (resource.type === 'web-gallery') {
         this.transfers.start({
-          clientMessageId: cid, threadId, kind: 'file',
+          clientMessageId: cid,
+          threadId,
+          kind: 'file',
           name: resource.parts[0].file.name,
           size: resource.parts.reduce((sum, part) => sum + part.file.size, 0),
         });
       } else {
         this.transfers.start({
-          clientMessageId: cid, threadId, kind: 'file',
+          clientMessageId: cid,
+          threadId,
+          kind: 'file',
           name: resource.parts[0].selection.name,
           size: resource.parts.reduce(
             (sum, part) => sum + part.selection.size,
@@ -3045,7 +3083,9 @@ export class MessageThreadComponent implements OnDestroy {
     if (!source || !scroller) return false;
     const seq = source.resolveHistoryAnchor
       ? await source.resolveHistoryAnchor(anchor)
-      : anchor.kind === 'local' ? anchor.seq : null;
+      : anchor.kind === 'local'
+        ? anchor.seq
+        : null;
     if (seq === null || source !== this.source || scroller !== this.scroller)
       return false;
     return (await jumpToMessage(scroller, seq)) !== false;

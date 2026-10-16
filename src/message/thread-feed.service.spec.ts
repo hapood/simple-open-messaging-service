@@ -190,40 +190,46 @@ describe('thread feed database previews', () => {
 });
 
 describe('thread mention semantics', () => {
-  it('recognizes user and audience entities but not escaped text or another account', () => {
-    const content = (text: string) => JSON.stringify({ text });
-    expect(
-      mentionsAccount(content('[@Reader](somfp://user/0/reader)'), 'reader'),
-    ).toBe(true);
-    expect(
-      mentionsAccount(content('[@All](somfp://audience/all)'), 'reader'),
-    ).toBe(true);
-    expect(
-      mentionsAccount(content('[@Other](somfp://user/0/other)'), 'reader'),
-    ).toBe(false);
+  const content = (text: string) => JSON.stringify({ text });
+  it.each([
+    [0, 0, true],
+    [12, 12, true],
+    [12, 15, false],
+    [12, 0, false],
+    [0, 12, false],
+    [12, null, false],
+    [0, null, false],
+  ] as const)(
+    'matches group-origin identities (token=%s, viewer=%s)',
+    (target, viewer, expected) => {
+      expect(
+        mentionsAccount(content(`[@Reader](somfp://user/${target}/reader)`), {
+          account: 'reader',
+          namespaceId: viewer,
+        }),
+      ).toBe(expected);
+    },
+  );
+  it('does not derive identity from labels, another account, escaped text, or case folding', () => {
+    const self = { account: 'reader', namespaceId: 12 };
+    for (const text of [
+      '[@Reader](somfp://user/12/other)',
+      String.raw`\[@Reader](somfp://user/12/reader)`,
+      '[@Reader](somfp://user/12/Reader)',
+      'plain text',
+    ])
+      expect(mentionsAccount(content(text), self)).toBe(false);
     expect(
       mentionsAccount(
-        content(String.raw`\[@Reader](somfp://user/0/reader)`),
-        'reader',
+        content('[@Unrelated label](somfp://user/12/reader)'),
+        self,
       ),
-    ).toBe(false);
-    expect(mentionsAccount(content('plain text'), 'reader')).toBe(false);
-  });
-
-  it('matches the production namespace/account entity forms issued by clients', () => {
-    const content = (text: string) => JSON.stringify({ text });
-    // The composer serializes chips as v1 user entities: somfp://user/<ns>/<account>.
-    // A local subject uses namespace 0; a foreign subject uses the publisher's
-    // namespace for that subject. mentionsAccount compares the account segment.
-    expect(
-      mentionsAccount(content('[@Reader](somfp://user/0/reader)'), 'reader'),
     ).toBe(true);
     expect(
-      mentionsAccount(content('[@Reader](somfp://user/12/reader)'), 'reader'),
+      mentionsAccount(content('[@All](somfp://audience/all)'), {
+        account: 'reader',
+        namespaceId: null,
+      }),
     ).toBe(true);
-    // A different account must not badge this user.
-    expect(
-      mentionsAccount(content('[@Other](somfp://user/0/other)'), 'reader'),
-    ).toBe(false);
   });
 });

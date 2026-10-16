@@ -23,7 +23,7 @@ describe('ThreadMessageSendController', () => {
       } as unknown as CbItem<ChatMsgData>;
       const host = {
         threadId: () => 3,
-        selfAccount: () => 'alice',
+        selfMentionIdentity: () => ({ account: 'alice', namespaceId: 12 }),
         consumeQuote: () => null,
         makeItem: () => item,
         newClientMessageId: () => 'cid',
@@ -58,7 +58,7 @@ describe('ThreadMessageSendController', () => {
     } as unknown as CbItem<ChatMsgData>;
     const host = {
       threadId: () => 3,
-      selfAccount: () => 'alice',
+      selfMentionIdentity: () => ({ account: 'alice', namespaceId: 12 }),
       consumeQuote: () => null,
       makeItem: () => item,
       newClientMessageId: () => 'cid',
@@ -90,7 +90,7 @@ describe('ThreadMessageSendController', () => {
     const source = {} as MessageThreadSource;
     const host = {
       threadId: () => 3,
-      selfAccount: () => 'alice',
+      selfMentionIdentity: () => ({ account: 'alice', namespaceId: 12 }),
       consumeQuote: () => null,
       makeItem: vi.fn(() => item),
       newClientMessageId: () => 'contact-cid',

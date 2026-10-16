@@ -9,6 +9,7 @@ CREATE TABLE threads (
   thread_id INTEGER NOT NULL CHECK(thread_id > 0),
   kind TEXT NOT NULL CHECK(kind IN ('P2P', 'GROUP')),
   authority_namespace_id INTEGER NOT NULL CHECK(authority_namespace_id >= 0),
+  self_mention_namespace_id INTEGER CHECK(self_mention_namespace_id >= 0),
   subject_account TEXT NOT NULL CHECK(subject_account <> ''),
   subject_namespace_id INTEGER NOT NULL CHECK(subject_namespace_id >= 0),
   thread_feed_id INTEGER NOT NULL CHECK(thread_feed_id > 0),
@@ -156,6 +157,7 @@ pub(super) fn write(
     for field in [
         "threadFeedId",
         "conversationState",
+        "selfMentionNamespaceId",
         "blocked",
         "alias",
         "threadProfileRev",
@@ -174,6 +176,11 @@ pub(super) fn write(
         if item.get(field).is_none() {
             return Err(format!("thread state has no {field}"));
         }
+    }
+    if item.get("selfMentionNamespaceId").is_some_and(|value| {
+        !value.is_null() && value.as_i64().is_none_or(|namespace| namespace < 0)
+    }) {
+        return Err("invalid self mention namespace".into());
     }
     if item["threadFeedId"].as_i64().is_none_or(|id| id <= 0)
         || item["threadProfileRev"].as_i64().is_none_or(|rev| rev < 0)
@@ -200,7 +207,7 @@ pub(super) fn write(
           group_recovery_announcement_text,
           last_message_at,last_message_seq,muted,pinned,pinned_at,
           last_message_preview,last_message_sender_account,last_message_sender_namespace_id,mention_me,mention_all,
-          unread_count,last_read_seq,role)
+          unread_count,last_read_seq,role,self_mention_namespace_id)
          VALUES(?1,?2,?3,?4,?5,?6,
            json_extract(?8,'$.threadFeedId'),
            json_extract(?8,'$.conversationState'),json_extract(?8,'$.blocked'),
@@ -237,7 +244,7 @@ pub(super) fn write(
            EXISTS(SELECT 1 FROM json_each(?8,'$.mentionUnread') WHERE value='me'),
            EXISTS(SELECT 1 FROM json_each(?8,'$.mentionUnread') WHERE value='all'),
            COALESCE(json_extract(?8,'$.unreadCount'),0),json_extract(?8,'$.lastReadSeq'),
-           json_extract(?8,'$.role'))
+           json_extract(?8,'$.role'),json_extract(?8,'$.selfMentionNamespaceId'))
          ON CONFLICT(user_id,thread_id) DO UPDATE SET
            kind=excluded.kind,authority_namespace_id=excluded.authority_namespace_id,
            subject_account=excluded.subject_account,
@@ -261,7 +268,7 @@ pub(super) fn write(
            last_message_sender_namespace_id=excluded.last_message_sender_namespace_id,
            mention_me=excluded.mention_me,mention_all=excluded.mention_all,
            unread_count=excluded.unread_count,last_read_seq=excluded.last_read_seq,
-           role=excluded.role",
+           role=excluded.role,self_mention_namespace_id=excluded.self_mention_namespace_id",
         params![user_id, thread_id, kind, authority, account, namespace, subject.to_string(), json],
     ).map_err(|e| format!("write typed thread: {e}"))?;
     Ok(())
@@ -290,7 +297,7 @@ pub(super) fn read(
            message_end_seq,tombstone_end_seq,group_meta_feed_end_id,
            join_request_end_feed_id,join_request_read_feed_id,group_invite_end_feed_id,
            server_last_read_seq,announcement_read_feed_id,server_unread_count,
-           last_mention_seq,local_read_seq
+           last_mention_seq,local_read_seq,self_mention_namespace_id
          FROM threads WHERE user_id=?1 AND thread_id=?2",
         params![user_id, thread_id], |row| {
             let kind: String = row.get(0)?;
@@ -326,6 +333,7 @@ pub(super) fn read(
                 "serverUnreadCount": row.get::<_, i64>(48)?,
                 "lastMentionSeq": row.get::<_, Option<i64>>(49)?,
                 "localReadSeq": row.get::<_, i64>(50)?,
+                "selfMentionNamespaceId": row.get::<_, Option<i64>>(51)?,
             });
             let mut mentions = Vec::new();
             if row.get::<_, bool>(30)? { mentions.push("me"); }
@@ -432,6 +440,7 @@ mod tests {
         let input = serde_json::json!({
             "threadId": 7, "type": "GROUP", "authorityNamespaceId": 0,
             "profileRev": 99,
+            "selfMentionNamespaceId": 12,
             "threadFeedId":1,"conversationState":"ACTIVE","blocked":false,"alias":null,
             "threadProfileRev":3,"messageEndSeq":4,"tombstoneEndSeq":0,
             "groupMetaFeedEndId":"3","joinRequestEndFeedId":0,
@@ -447,6 +456,13 @@ mod tests {
         write(&conn, 1, 7, &input).unwrap();
         let restored = read(&conn, 1, 7).unwrap().unwrap();
         assert_eq!(restored["group"]["name"], "Team");
+        assert_eq!(restored["selfMentionNamespaceId"], 12);
+        let mut missing = input.clone();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("selfMentionNamespaceId");
+        assert!(write(&conn, 1, 7, &missing).is_err());
         assert_eq!(restored["group"]["memberCount"], 2);
         assert_eq!(restored["mentionUnread"], serde_json::json!(["me"]));
         assert_eq!(restored["group"]["announcement"], Value::Null);

@@ -3,6 +3,8 @@ import { Test, type TestingModule } from '@nestjs/testing';
 import { eq, inArray } from 'drizzle-orm';
 import { DatabaseModule } from '../src/database/database.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
+import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
+import { ThreadFeedService } from '../src/message/thread-feed.service.js';
 import { GroupService } from '../src/group/group.service.js';
 import { GroupRole } from '../src/database/enums.js';
 import {
@@ -11,12 +13,14 @@ import {
   groupMetaMemberFeed,
   identityNamespace,
   messageThread,
+  message,
   profileTable,
   relationshipPair,
   account as user,
 } from '../src/database/schema.js';
 import { BusinessException } from '../src/common/business.exception.js';
 import { BusinessCode } from '../src/common/business-code.js';
+import { withMessageDigest } from './support/message-fixture.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 
 describe('mention target resolution across group authority modes', () => {
@@ -33,8 +37,9 @@ describe('mention target resolution across group authority modes', () => {
   const createdPairIds: bigint[] = [];
 
   beforeAll(async () => {
-    module = await Test.createTestingModule({ imports: [DatabaseModule] })
-      .compile();
+    module = await Test.createTestingModule({
+      imports: [DatabaseModule],
+    }).compile();
     database = module.get(DatabaseService);
     groups = new GroupService(
       database,
@@ -216,19 +221,104 @@ describe('mention target resolution across group authority modes', () => {
       .where(inArray(relationshipPair.id, createdPairIds));
     await database.db
       .delete(messageThread)
-      .where(
-        inArray(messageThread.id, [mirrorThreadId, authorityThreadId]),
-      );
+      .where(inArray(messageThread.id, [mirrorThreadId, authorityThreadId]));
     await database.db
       .delete(groupAccount)
       .where(eq(groupAccount.id, authorityGroupId));
-    await database.db
-      .delete(user)
-      .where(inArray(user.id, createdUserIds));
+    await database.db.delete(user).where(inArray(user.id, createdUserIds));
     await database.db
       .delete(identityNamespace)
       .where(eq(identityNamespace.id, peerNamespaceId));
     await module.close();
+  });
+
+  it.each([12, null])(
+    'projects the viewer in the group origin namespace (assigned=%s)',
+    async (assigned) => {
+      await database.db
+        .update(identityNamespace)
+        .set({ peerAssignedLocalNamespaceId: assigned })
+        .where(eq(identityNamespace.id, peerNamespaceId));
+      await database.db.transaction(async (tx) => {
+        const state = await ThreadFeedHeadWriter.readStateInTx(
+          tx,
+          senderId,
+          mirrorThreadId,
+        );
+        expect(state.selfMentionNamespaceId).toBe(assigned);
+      });
+      const feed = await new ThreadFeedService(database).queryThreadFeedDelta(
+        senderId,
+        { after: 0 },
+      );
+      expect(
+        feed.items.find((item) => item.threadId === mirrorThreadId)
+          ?.selfMentionNamespaceId,
+      ).toBe(assigned);
+    },
+  );
+
+  it('does not badge a mirrored viewer for a same-account mention in another origin namespace', async () => {
+    await database.db.transaction(async (tx) => {
+      await tx
+        .update(identityNamespace)
+        .set({ peerAssignedLocalNamespaceId: 12 })
+        .where(eq(identityNamespace.id, peerNamespaceId));
+      const selfAccount = `mirror-sender-${suffix}`;
+      await tx.insert(message).values(
+        [12, 15].map((namespaceId, index) =>
+          withMessageDigest({
+            threadId: mirrorThreadId,
+            seq: index + 1,
+            publisherNamespaceId: peerNamespaceId,
+            profileNamespaceId: 0,
+            creatorAccount: `peer-owner-${suffix}`,
+            originSeq: index + 1,
+            contentType: 'PURE_TEXT',
+            content: JSON.stringify({
+              text: `[@Sender](somfp://user/${namespaceId}/${selfAccount})`,
+            }),
+            updatedAt: new Date(),
+          }),
+        ),
+      );
+      const previous = await ThreadFeedHeadWriter.readStateInTx(
+        tx,
+        senderId,
+        mirrorThreadId,
+      );
+      expect(
+        await ThreadFeedHeadWriter.resolveMentionInTx(
+          tx,
+          senderId,
+          mirrorThreadId,
+          previous,
+          { lastReadSeq: 0, messageEndSeq: 2, tombstoneEndSeq: 0 },
+        ),
+      ).toBe(1);
+      await tx.delete(message).where(eq(message.threadId, mirrorThreadId));
+    });
+  });
+
+  it('uses namespace zero only for viewers of a locally authoritative group', async () => {
+    await database.db.transaction(async (tx) => {
+      await tx
+        .insert(accountThreadState)
+        .values({
+          accountId: senderId,
+          threadId: authorityThreadId,
+          updatedAt: new Date(),
+        });
+      const state = await ThreadFeedHeadWriter.readStateInTx(
+        tx,
+        senderId,
+        authorityThreadId,
+      );
+      expect(state.selfMentionNamespaceId).toBe(0);
+      await tx
+        .delete(accountThreadState)
+        .where(eq(accountThreadState.threadId, authorityThreadId));
+    });
   });
 
   it('resolves non-local members on a member-home mirror from the Group Meta roster', async () => {

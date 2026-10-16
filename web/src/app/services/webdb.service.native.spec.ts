@@ -86,6 +86,7 @@ describe('WebdbService native SQLite routing', () => {
     const thread = {
       threadId: 9,
       publisherNamespaceId: 0,
+      selfMentionNamespaceId: null,
       profileRev: 0,
       role: null,
       lastMessageAt: null,

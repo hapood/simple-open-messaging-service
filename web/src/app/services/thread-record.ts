@@ -1,10 +1,7 @@
 import type { LocalThreadAttention } from '../../../../shared/thread-attention';
 import type { ConversationItem } from './model';
 
-export type StoredThreadAttention = Omit<
-  LocalThreadAttention,
-  'previews'
->;
+export type StoredThreadAttention = Omit<LocalThreadAttention, 'previews'>;
 
 /** One typed row per conversation. State owns the identity, selected avatar revision and
  * server/local read positions; presentation owns only locally materialized display fields. */
@@ -95,6 +92,7 @@ export function restoreThread(
   const common = {
     threadId: row.threadId,
     publisherNamespaceId: row.publisherNamespaceId,
+    selfMentionNamespaceId: row.selfMentionNamespaceId,
     visible: true,
     threadFeedId: row.threadFeedId,
     role: row.role,

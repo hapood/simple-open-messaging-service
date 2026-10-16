@@ -180,6 +180,7 @@ mod tests {
             server: Some(ThreadFeedSnapshot {
                 kind: "P2P".into(),
                 authority_namespace_id: 0,
+                self_mention_namespace_id: None,
                 conversation_state: "ACTIVE".into(),
                 blocked: false,
                 role: None,

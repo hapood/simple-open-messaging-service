@@ -3,6 +3,8 @@ export interface ThreadStateSnapshot {
   threadId: number;
   type: 'P2P' | 'GROUP';
   publisherNamespaceId: number;
+  /** Viewer home namespace in the group origin's space; null when unknown or P2P. */
+  selfMentionNamespaceId: number | null;
   profileAccount: string;
   profileRev: number;
   conversationState: 'ACTIVE' | 'READ_ONLY';
@@ -21,6 +23,8 @@ export function isThreadStateSnapshot(
   return (
     integer(v['threadId'], 1) &&
     integer(v['publisherNamespaceId']) &&
+    (v['selfMentionNamespaceId'] === null ||
+      integer(v['selfMentionNamespaceId'])) &&
     integer(v['profileRev']) &&
     (v['type'] === 'P2P' || v['type'] === 'GROUP') &&
     (v['conversationState'] === 'ACTIVE' ||

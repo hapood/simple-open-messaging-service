@@ -12,13 +12,9 @@ export function applyThreadStateSnapshot(
   snapshot: ThreadFeedSnapshot,
   feedId: number,
 ): ConversationItem {
-  if (
-    !Number.isSafeInteger(feedId) ||
-    feedId < 1
-  )
+  if (!Number.isSafeInteger(feedId) || feedId < 1)
     throw new Error('invalid thread state snapshot');
-  if (current?.threadFeedId && current.threadFeedId >= feedId)
-    return current;
+  if (current?.threadFeedId && current.threadFeedId >= feedId) return current;
   if (current && current.type !== snapshot.type)
     throw new Error('thread type changed');
   const identity = {
@@ -40,6 +36,7 @@ export function applyThreadStateSnapshot(
     threadFeedId: feedId,
     visible: true,
     publisherNamespaceId: snapshot.publisherNamespaceId,
+    selfMentionNamespaceId: snapshot.selfMentionNamespaceId,
     conversationState: snapshot.conversationState,
     blocked: snapshot.blocked,
     role: snapshot.role,

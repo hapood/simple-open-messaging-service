@@ -104,6 +104,14 @@ export class ThreadFeedProfileDto {
 export class ThreadFeedStateDto {
   @ApiProperty({ enum: ['P2P', 'GROUP'] }) type!: 'P2P' | 'GROUP';
   @ApiProperty({ minimum: 0 }) publisherNamespaceId!: number;
+  @ApiProperty({
+    type: Number,
+    minimum: 0,
+    nullable: true,
+    description:
+      'Viewer home namespace in the group origin space; null for P2P or unknown binding',
+  })
+  selfMentionNamespaceId!: number | null;
   @ApiProperty({ enum: ['ACTIVE', 'READ_ONLY'] }) conversationState!:
     | 'ACTIVE'
     | 'READ_ONLY';

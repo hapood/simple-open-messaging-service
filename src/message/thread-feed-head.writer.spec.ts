@@ -7,6 +7,7 @@ describe('mention projection in the shared head writer', () => {
   afterEach(() => vi.restoreAllMocks());
   const state = {
     account: 'reader',
+    selfMentionNamespaceId: 0,
     unreadCount: 0,
     previewSeqs: [],
     lastReadSeq: 0,
@@ -39,6 +40,33 @@ describe('mention projection in the shared head writer', () => {
       ),
     ).toBe(7);
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the viewer namespace assigned by the group origin, not account alone', async () => {
+    const execute = vi.fn().mockResolvedValue({
+      rows: [
+        { seq: 8, content: '{"text":"[@Reader](somfp://user/15/reader)"}' },
+        { seq: 7, content: '{"text":"[@Reader](somfp://user/12/reader)"}' },
+      ],
+    });
+    expect(
+      await ThreadFeedHeadWriter.resolveMentionInTx(
+        { execute } as never,
+        1,
+        2,
+        { ...state, selfMentionNamespaceId: 12, lastMentionSeq: null },
+        next,
+      ),
+    ).toBe(7);
+    expect(
+      await ThreadFeedHeadWriter.resolveMentionInTx(
+        { execute } as never,
+        1,
+        2,
+        { ...state, selfMentionNamespaceId: null, lastMentionSeq: null },
+        next,
+      ),
+    ).toBeNull();
   });
 
   it('rescans after a tomb interval hits the current mention', async () => {

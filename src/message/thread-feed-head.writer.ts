@@ -5,29 +5,37 @@ import { parseMessageEntities } from '../common/message-entity.js';
 import { parseTextMessageContent } from '../../shared/text-message-content.js';
 import { THREAD_PREVIEW_LIMIT } from './thread-preview-limit.js';
 
-/** Clients serialize mention chips as v1 user entities (validated at send):
- * `somfp://user/<namespaceId>/<account>`. The projection compares the
- * account segment; `namespaceId: 0` denotes a subject local to the publishing
- * server, a positive value a foreign subject's namespace. */
-function userMentionTargetsAccount(entityId: string, account: string): boolean {
-  const parsed = parseSomfpUserMentionEntity(entityId);
-  if (!parsed) return false;
-  return parsed.account.toLowerCase() === account.toLowerCase();
+function userMentionTargetsIdentity(
+  entityId: string,
+  self: { account: string; namespaceId: number | null },
+): boolean {
+  const target = parseSomfpUserMentionEntity(entityId);
+  return (
+    !!target &&
+    target.namespaceId === self.namespaceId &&
+    target.account === self.account
+  );
 }
 
-export function mentionsAccount(content: string, account: string): boolean {
+/** User tokens always use the group origin's namespace space, even on mirrors.
+ * A missing peer-assigned namespace cannot identify a user mention. */
+export function mentionsAccount(
+  content: string,
+  self: { account: string; namespaceId: number | null },
+): boolean {
   const text = parseTextMessageContent(content)?.text ?? '';
   return parseMessageEntities(text).some(
     (entity) =>
       entity.kind === 'entity' &&
       ((entity.entityType === 'audience' && entity.entityId === 'all') ||
         (entity.entityType === 'user' &&
-          userMentionTargetsAccount(entity.entityId, account))),
+          userMentionTargetsIdentity(entity.entityId, self))),
   );
 }
 
 type MentionProjectionState = {
   account: string;
+  selfMentionNamespaceId: number | null;
   unreadCount: number;
   previewSeqs: number[];
   lastReadSeq: number;
@@ -97,10 +105,15 @@ export class ThreadFeedHeadWriter {
     threadId: number,
   ) {
     const result = await tx.execute<MentionProjectionState>(sql`
-      SELECT a.account, s."unreadCount", s."previewSeqs", s."lastReadSeq", s."lastMentionSeq", s."messageEndSeq",
+      SELECT a.account,
+        CASE WHEN t.type <> 'GROUP' THEN NULL
+          WHEN t."authorityNamespaceId" = 0 THEN 0
+          ELSE origin."peerAssignedLocalNamespaceId" END AS "selfMentionNamespaceId",
+        s."unreadCount", s."previewSeqs", s."lastReadSeq", s."lastMentionSeq", s."messageEndSeq",
         s."tombstoneEndSeq", s."threadProfileRev", s."profileSourceId", s.blocked, t."clearedSeq", s."messageVisibleThroughSeq"
       FROM "AccountThreadState" s JOIN "Account" a ON a.id = s."accountId"
       JOIN "MessageThread" t ON t.id = s."threadId"
+      LEFT JOIN "IdentityNamespace" origin ON origin.id = t."authorityNamespaceId"
       WHERE s."accountId" = ${accountId} AND s."threadId" = ${threadId}
       FOR NO KEY UPDATE OF s`);
     return result.rows[0];
@@ -213,7 +226,10 @@ export class ThreadFeedHeadWriter {
           AND m.seq > ${after} AND m.seq <= ${through}
         ORDER BY m.seq DESC LIMIT 100`);
       const found = candidates.rows.find((row) =>
-        mentionsAccount(row.content, previous.account),
+        mentionsAccount(row.content, {
+          account: previous.account,
+          namespaceId: previous.selfMentionNamespaceId,
+        }),
       );
       if (found) return Math.max(current ?? 0, found.seq);
       if (candidates.rows.length < 100) return current;

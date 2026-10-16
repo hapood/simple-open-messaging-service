@@ -963,6 +963,8 @@ pub(super) fn apply_thread_state(
         .and_then(Value::as_str)
         .filter(|v| matches!(*v, "ACTIVE" | "READ_ONLY"))
         .ok_or("invalid thread state lifecycle")?;
+    body.get("selfMentionNamespaceId")
+        .ok_or("thread state self mention namespace missing")?;
     let profile = body.get("profile").ok_or("thread state profile missing")?;
     profile
         .get("account")
@@ -1065,6 +1067,7 @@ pub(super) fn apply_thread_state(
     }
     for key in [
         "authorityNamespaceId",
+        "selfMentionNamespaceId",
         "blocked",
         "role",
         "conversationState",

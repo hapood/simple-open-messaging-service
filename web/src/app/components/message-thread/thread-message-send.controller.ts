@@ -3,6 +3,7 @@ import type { ChatSendIntent } from '../../lib/chat-input/chat-input.component';
 import {
   toDisplayText,
   toRenderMessageEntities,
+  type MentionIdentity,
 } from '../../lib/message-entity';
 import { stringifyTextMessageContent } from '../../../../../shared/text-message-content';
 import { withMessageContentQuote } from '../../../../../shared/message-content-quote';
@@ -17,7 +18,7 @@ import { MESSAGE_SEND_TIMEOUT_MS } from './message-send-timeout';
 
 export interface ThreadMessageSendHost {
   threadId(): number | undefined;
-  selfAccount(): string | undefined;
+  selfMentionIdentity(): MentionIdentity | undefined;
   consumeQuote(): ChatMsgData['quote'] | null;
   makeItem(
     clientMessageId: string,
@@ -69,7 +70,10 @@ export class ThreadMessageSendController {
       'PURE_TEXT',
     );
     item.data.wireText = trimmed;
-    const rendered = toRenderMessageEntities(trimmed, this.host.selfAccount());
+    const rendered = toRenderMessageEntities(
+      trimmed,
+      this.host.selfMentionIdentity(),
+    );
     item.data.textSegments = rendered.segments;
     item.data.mentionState = rendered.mentionState;
     item.data.quote = this.host.consumeQuote() ?? undefined;

@@ -10,6 +10,7 @@ import {
 const snapshot: ThreadFeedSnapshot = {
   type: 'P2P',
   publisherNamespaceId: 0,
+  selfMentionNamespaceId: null,
   profileAccount: 'peer',
   profileRev: 0,
   conversationState: 'ACTIVE',
@@ -32,6 +33,17 @@ const snapshot: ThreadFeedSnapshot = {
 const initial = () => mergeThreadAttention(undefined, snapshot);
 
 describe('shared attention reconciliation', () => {
+  it('rejects missing or invalid viewer mention namespace instead of applying a fallback', () => {
+    for (const value of [undefined, -1, '12']) {
+      expect(() =>
+        mergeThreadAttention(undefined, {
+          ...snapshot,
+          selfMentionNamespaceId: value,
+        } as unknown as ThreadFeedSnapshot),
+      ).toThrow('Invalid thread structure');
+    }
+    expect(initial().selfMentionNamespaceId).toBeNull();
+  });
   it('rejects missing announcement coordinates', () => {
     const missing = { ...snapshot } as Record<string, unknown>;
     delete missing['announcementReadFeedId'];
