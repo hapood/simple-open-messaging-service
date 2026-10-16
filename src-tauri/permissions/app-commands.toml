@@ -128,6 +128,11 @@ description = "Enables sse_replay_hello — replay the cached+merged HELLO to a 
 commands.allow = ["sse_replay_hello"]
 
 [[permission]]
+identifier = "allow-sse-retry"
+description = "Enables sse_retry — lease-scoped supervisor retry/force-reconnect (explicit user retry and the HELLO-timeout backstop), so a stuck stream can be reopened without a process restart."
+commands.allow = ["sse_retry"]
+
+[[permission]]
 identifier = "allow-upload-stream-file"
 description = "Enables upload_stream_file — desktop streaming multipart upload from an on-disk file path (avoids buffering the whole file through the webview/IPC)."
 commands.allow = ["upload_stream_file"]
@@ -201,8 +206,6 @@ description = "Enables the typed native SQLite cache commands used by the bundle
 commands.allow = [
   "native_db_advance_thread_read",
   "native_db_apply_deleted_messages",
-  "native_db_apply_group_member_profile_drift",
-  "native_db_archive_namespace",
   "native_db_cleanup_relationship_requests",
   "native_db_correct_system_message_profile",
   "native_db_count_messages",
@@ -213,14 +216,11 @@ commands.allow = [
   "native_db_get_preference",
   "native_db_list_relationship_requests",
   "native_db_mark_relationship_request_accepted",
-  "native_db_merge_thread_states",
-  "native_db_namespaces",
   "native_db_page_relationship_requests",
   "native_db_put_cached_messages",
   "native_db_put_message_head",
   "native_db_put_preference",
   "native_db_query_group_members",
-  "native_db_record_group_member_profile_ref",
   "native_db_recreate_cache",
   "native_db_recreate_messages",
   "native_db_thread_states",
@@ -240,9 +240,17 @@ commands.allow = [
   "native_db_get_deleted_message_seqs",
   "native_db_newest_messages",
   "native_db_delete_messages_by_thread",
+  "native_db_get_message_by_origin",
   "native_message_history_get",
   "native_profile_resolve",
   "native_thread_feed_changes",
+  "native_db_project_thread_attention",
+  "native_db_drain_thread_misc",
+  "native_db_profile_namespace_bindings",
+  "native_db_commit_profile_namespace_bindings",
+  "native_db_apply_profile_namespace_changes",
+  "native_db_write_profile_namespace_tomb",
+  "native_db_write_profile_tomb",
 ]
 
 [[permission]]
@@ -277,6 +285,7 @@ permissions = [
   "allow-sse-get-state",
   "allow-sse-net",
   "allow-sse-replay-hello",
+  "allow-sse-retry",
   "allow-upload-stream-file",
   "allow-cancel-upload",
   "allow-retry-native-voice",
