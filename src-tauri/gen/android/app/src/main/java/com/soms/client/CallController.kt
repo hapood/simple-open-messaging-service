@@ -467,6 +467,11 @@ object CallController {
                         if (phase != "connected") {
                             phase = "connected"
                             startedAt = System.currentTimeMillis()
+                            // Media up means signaling is done: clear the offer/answer step so the
+                            // status label falls back to the phase/duration. The authoritative
+                            // CALL_EVENT{connected} that would clear it is an FSM no-op once this
+                            // path has already set phase=connected (see CallFsm.nextPhase).
+                            step = ""
                             SomsLog.i(TAG) { "media connected (sid=$callSid)" }
                             pushSnapshot()
                         }
@@ -757,6 +762,9 @@ object CallController {
             "video-upgraded" -> {
                 callType = "VIDEO"
                 videoUpgradeState = "idle"
+                // The upgrade renegotiation finished; clear its offer/answer step so the status label
+                // doesn't stay stuck on the stale "offer-sent"/"answer-sent" mid-call.
+                step = ""
                 pushSnapshot()
             }
             "declined", "cancelled", "missed", "ended" -> {
