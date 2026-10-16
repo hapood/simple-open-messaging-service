@@ -400,15 +400,8 @@ export class FederationMessageFeedService {
       const target = quoteTargets.get(row.messageId);
       const coordinate =
         quote && storedQuoteCoordinate(quote, row.publisherNamespaceId);
-      // Absent targets (seq 0, or an unresolved PENDING/NOT_FOUND status) carry
-      // no payload to attest, so they legitimately have no quote digest.
-      const absentQuote =
-        quote !== undefined &&
-        (quote.seq === 0 ||
-          target === undefined ||
-          quote.status === 'PENDING' ||
-          quote.status === 'NOT_FOUND');
-      if (quote && !quote.digest && !absentQuote) {
+      // Target availability never changes the reply's retained digest.
+      if (quote && !quote.digest) {
         throw new Error(
           `message ${row.messageId.toString()} has a quote without quote digest`,
         );

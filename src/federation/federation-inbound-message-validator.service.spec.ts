@@ -24,6 +24,37 @@ const groupMessage = (): FederationMessageFeedMessage => ({
 describe('FederationInboundMessageValidatorService', () => {
   const validator = new FederationInboundMessageValidatorService();
 
+  it.each([{ seq: 8 }, { originSeq: 42 }])(
+    'requires a digest with positive coordinate %j without requiring a target body',
+    (quoteTarget) => {
+      expect(() =>
+        validator.assertEnvelope({
+          ...message(),
+          quoteTarget,
+          quoteDigest: 'a'.repeat(64),
+        }),
+      ).not.toThrow();
+      expect(() =>
+        validator.assertEnvelope({ ...message(), quoteTarget }),
+      ).toThrow('must appear together');
+    },
+  );
+
+  it('rejects orphan digests and zero coordinates even with a digest', () => {
+    expect(() =>
+      validator.assertEnvelope({ ...message(), quoteDigest: 'a'.repeat(64) }),
+    ).toThrow('must appear together');
+    for (const quoteTarget of [{ seq: 0 }, { originSeq: 0 }]) {
+      expect(() =>
+        validator.assertEnvelope({
+          ...message(),
+          quoteTarget,
+          quoteDigest: 'a'.repeat(64),
+        }),
+      ).toThrow('invalid federated reply target');
+    }
+  });
+
   it('rejects non-canonical wire account grammars', () => {
     expect(() =>
       validator.assertEnvelope({
@@ -110,7 +141,7 @@ describe('FederationInboundMessageValidatorService', () => {
     ['profile revision', { profileRev: 3 }],
     ['content type', { contentType: 'LINK' }],
     ['content', { content: '{"text":"different"}' }],
-    ['quote', { quoteTarget: { seq: 0 } }],
+    ['quote', { quoteTarget: { seq: 8 }, quoteDigest: 'a'.repeat(64) }],
     ['asset descriptors', { assets: [{ digest: 'a'.repeat(64), bytes: 1 }] }],
     ['created time', { createdAt: 1_700_000_000_001 }],
   ])('changes the envelope fingerprint when %s changes', (_name, change) => {

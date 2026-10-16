@@ -329,6 +329,7 @@
       "schema": "urn:somfp:v1:message-query#/$defs/quoteTarget",
       "values": [
         null,
+        { "seq": 0 },
         {},
         {
           "seq": 8,

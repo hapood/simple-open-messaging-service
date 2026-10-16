@@ -28,9 +28,21 @@ Coordinated pre-freeze corrections to the wire contract:
   namespace space. Their meaning does not change when the message publisher
   changes; valid tokens are preserved across hops.
 
-These changes do not decide namespace-binding status fields or the absent-target
-quote-digest policy. The draft wire major remains `1`; earlier working shapes
-are not compatibility aliases.
+The draft wire major remains `1`; earlier working shapes are not compatibility
+aliases.
+
+## Positive reply coordinates
+
+A coordinated pre-freeze correction removes the zero-valued `quoteTarget.seq`
+placeholder. Both `seq` and `originSeq` must be positive thread sequences.
+Replies retain their source-scoped coordinate and `quoteDigest` even when the
+target body is not yet available or has been withdrawn. The target's existence
+is not a prerequisite for accepting a valid reply. `quoteTarget` and
+`quoteDigest` must appear together; ordinary messages omit both.
+
+There is no zero-coordinate compatibility form. Bundle-local `quoteTargetId`
+is a separate reference space and retains its existing absent-entry semantics.
+The draft wire major remains `1`.
 
 ## Answer correlation and generation-bound ICE
 

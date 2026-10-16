@@ -259,6 +259,79 @@ describe('FederationMessageFeedService group origin coordinates', () => {
     expect(reply.quoteTarget).toEqual({ seq: 42 });
   });
 
+  it.each(['PENDING', 'NOT_FOUND'] as const)(
+    'retains an unavailable receiver target coordinate and digest with status %s',
+    async (status) => {
+      const [reply] = await service().serializeMessagesInTx(
+        transaction(),
+        [
+          groupRow({
+            content: JSON.stringify({
+              text: 'reply',
+              quote: {
+                seq: 42,
+                namespaceId: 9,
+                digest: 'd'.repeat(64),
+                status,
+              },
+            }),
+          }),
+        ],
+        9,
+        { account: '!group' },
+      );
+      expect(reply.quoteTarget).toEqual({ originSeq: 42 });
+      expect(reply.quoteDigest).toBe('d'.repeat(64));
+    },
+  );
+
+  it.each([undefined, 'PENDING', 'NOT_FOUND'] as const)(
+    'rejects a missing quote digest even without a target body (%s)',
+    async (status) => {
+      await expect(
+        service().serializeMessagesInTx(
+          transaction(),
+          [
+            groupRow({
+              content: JSON.stringify({
+                text: 'reply',
+                quote: {
+                  seq: 42,
+                  namespaceId: 9,
+                  status,
+                },
+              }),
+            }),
+          ],
+          9,
+          { account: '!group' },
+        ),
+      ).rejects.toThrow('quote without quote digest');
+    },
+  );
+
+  it('rejects a stored zero coordinate rather than publishing an absent-target sentinel', async () => {
+    await expect(
+      service().serializeMessagesInTx(
+        transaction(),
+        [
+          groupRow({
+            content: JSON.stringify({
+              text: 'reply',
+              quote: {
+                seq: 0,
+                namespaceId: 0,
+                digest: 'd'.repeat(64),
+              },
+            }),
+          }),
+        ],
+        9,
+        { account: '!group' },
+      ),
+    ).rejects.toThrow('positive thread sequence');
+  });
+
   it('does not fabricate a coordinate or drop a quote when a local mapping invariant is broken', async () => {
     await expect(
       service().serializeMessagesInTx(

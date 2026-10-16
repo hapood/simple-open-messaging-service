@@ -16,8 +16,8 @@ implementation task.
 | 1 | F1 message author | Documentation corrected to nested namespace-only authors; schema, examples, vectors, and shape regression checks updated |
 | 2 | F2 Group Meta | Documentation corrected after checking all four operations: common `{ feedId, operation, body }`, subject identity in body, no domain; schema and vectors updated |
 | 3 | F3 profile responses | Documentation and both response schemas corrected to omit domain for all three S2S profile routes |
-| 4 | F4 binding status | Pending separate discussion; contract and implementation unchanged |
-| 5 | F5 absent-target quote digest | Pending separate discussion; existing contract and implementation unchanged |
+| 4 | F4 binding status | User confirmed lifecycle is local implementation state: removed from S2S bindings output and consumer dependencies; existing closed schema remains unchanged |
+| 5 | F5 absent-target quote digest | User confirmed positive sender/receiver coordinates replace the zero sentinel. Removed zero wire references and missing-digest exceptions; unavailable target bodies retain positive coordinates and digest. No compatibility path or schema migration |
 | 6 | F6 group receipts | Contract and implementation corrected: origin forward/reverse message queries send `includeSelf=false`; inbound routing skips non-home authors before receipt association. Federation unit suite passes; database E2E remains part of V1 |
 | 7 | F7 mention space | Contract and implementation corrected: backend attention, web rendering, optimistic sends, and editor self filtering use exact group-origin namespace/account identity; required nullable viewer coordinate persists in web and Rust caches. Unit and PostgreSQL regressions pass; schema versions remain 1 without compatibility paths |
 | 8 | S1 local cached-profile disclosure check | **Deferred** by user; the local check is not implemented, and this pass does not add it or approve cache sharing as policy |
@@ -76,7 +76,7 @@ must not silently rewrite the draft to match current source.
 | Normative inventory | The core document omitted Message, Message Provenance, and Profile Namespace Feed from its normative inventory | Added the references and the missing reading/conformance entries; removed the stale fixed document count |
 | HTTP surface | The purported complete core table omitted Verify and Message Provenance; manifest and CLI omitted provenance | Restored the operations from their existing subject specifications, added provenance schemas/vectors, and check table/manifest/controller route equality |
 | Digest terminology | Provenance Section 3 hashed content alone, while Section 7 defined content + assets + quote digest; HTTP digest was conflated with embedded content | Use the existing complete payload-object definition consistently; distinguish it from HTTP `Content-Digest` |
-| Quote artifact | Envelope required `quoteDigest`, but the closed message schema rejected it and the immutable-field list omitted it | Aligned the schema, immutable-field list, example, vectors, and regression tests with the existing normative requirement; sentinel-policy difference remains open below |
+| Quote artifact | Envelope required `quoteDigest`, but the closed message schema rejected it and the immutable-field list omitted it | Aligned the schema, immutable-field list, example, vectors, and regression tests; F5 subsequently removes the obsolete zero sentinel and its missing-digest exceptions |
 | Health | Recognition's authentication summary said failures use error envelopes, contradicting its detailed privacy rules | Summary now follows the uniform unavailable projection and its explicit rate-limit exception |
 | Protocol neutrality | Normative message text described the current client's reply UI; review history mixed in implementation progress | Removed those implementation-specific statements; completion belongs outside the specification |
 | Links | Source paths, migration files, and several specification heading anchors no longer existed | Updated active references to current capabilities, SQL baseline, and headings |
@@ -135,30 +135,45 @@ public lookup selects the publisher's own local account. The challenge proof
 may still contain opaque caller-selected text, including a domain; that is not
 a response identity field.
 
-### F4 — Namespace binding response contains an unspecified field (blocking)
+### F4 — Namespace binding lifecycle stays local (implementation corrected)
 
-The [bindings specification](../../spec/v1/profile-namespace-feed.md#6-namespace-bindings-query)
-and [closed schema](../../spec/v1/schema/profile-namespace.schema.json) contain
-`domain`, `rootPublicKey`, and `profileNamespaceFeedEndId` only. The
-[service](../../src/federation/profile-namespace-feed.service.ts) additionally
-emits `status: ACTIVE | ARCHIVED`. The product design already relies on that
-lifecycle distinction. Either specify it through an explicit draft revision or
-remove it from the S2S surface and preserve the intended behavior another way;
-current strict consumers cannot accept both forms.
+User decision: `ACTIVE | ARCHIVED` is local implementation state, not a
+federation field. The [bindings service](../../src/federation/profile-namespace-feed.service.ts)
+now returns only `domain`, `rootPublicKey`, and `profileNamespaceFeedEndId`,
+matching the unchanged [closed schema](../../spec/v1/schema/profile-namespace.schema.json).
+Retired namespaces still disclose retained bindings for historical rendering;
+unknown or never-bound namespaces remain business misses.
 
-### F5 — Absent-target quote digest policy differs (blocking)
+The [refresh consumer](../../src/federation/profile-namespace-refresh.service.ts)
+no longer requires, validates, or copies a remote lifecycle field. New remote
+cache rows use the existing local database default, and conflict updates
+preserve local lifecycle state. Direct publisher rows continue to derive
+lifecycle from our own authoritative registry. Client-facing lifecycle fields
+and local storage are not removed. Actual producer responses for local,
+active-peer, and retired-peer bindings are checked against the closed schema.
 
-The [envelope](../../spec/v1/message/envelope.md#5-conditional-fields) requires
-`quoteDigest` exactly whenever `quoteTarget` exists, including `{ seq: 0 }`.
-The [publisher](../../src/federation/federation-message-feed.service.ts) and
+### F5 — Positive reply coordinates and retained digest (corrected)
+
+User decision: with receiver-relative `originSeq` available, missing target
+bodies do not require a zero-valued wire placeholder. Both coordinates must be
+positive; replies always carry the retained target digest. There is no legacy
+compatibility branch. No database structure change is required.
+
+The [envelope](../../spec/v1/message/envelope.md#7-reference-coordinates), text
+profile, schema, vectors, and pre-freeze review history now express that rule.
+The [publisher](../../src/federation/federation-message-feed.service.ts) no longer
+waives the digest requirement for absent, pending, or not-found target bodies.
+Both envelope validation and
 [inbound page application](../../src/federation/federation-inbound-message-page.service.ts)
-allow an absent-target sentinel without a digest.
+require paired target/digest fields and reject zero coordinates. Local direct
+sends also reject a zero quote sequence rather than storing a digestless reply.
 
-The artifact correction deliberately follows the existing normative rule;
-it does not resolve this semantic difference. Specify whether a sentinel means
-unknown original payload, retained original digest, or a distinct no-target
-case. Then align live sends, re-publication, validation, digest calculation,
-and positive/negative vectors.
+Client read projections may still use local `seq: 0` with a positive `sourceSeq`
+while resolving a remote reference. This is not a federated zero reference or a
+compatibility path. History-forward bundles retain their separate bundle-local
+`quoteTargetId: 0` semantics when the target is not included in the bundle.
+PostgreSQL regressions cover positive unresolved references through persistence
+and re-publication, zero rejection, and preserved forward-bundle semantics.
 
 ### F6 — Origin submission-only queries (contract and implementation corrected)
 
@@ -315,7 +330,39 @@ These are further evidence that the wire cutover is not fully reconciled across 
 
 ## Verification performed
 
-Latest F7 implementation correction:
+Latest F5 implementation correction:
+
+- Full backend unit suite (`npm test`) — **217 files, 1,964 tests passed**.
+- Federation suite plus message service unit tests — **69 files, 677 tests
+  passed**. Zero rejection and target/digest pairing are enforced at the
+  envelope boundary; publication rejects missing digests even for pending or
+  not-found target bodies.
+- PostgreSQL E2E: `federation-quote-coordinates` and
+  `federation-forward-quotes` — **2 files, 11 tests passed**. The coordinate
+  suite covers three persisted node views; the forward suite uses two running
+  servers and checks both stored bundles and authenticated client reads.
+- Updated obsolete test fixtures rather than weakening validation: removed
+  pre-cutover namespace aliases and the outdated publication signature, modeled
+  an unconfirmed local target correctly, and addressed remote bundle reads by
+  their wire bundle ID rather than the local database ID.
+- Production backend type check, `npm run federation:conformance`, changed
+  TypeScript/JSON formatting, and `git diff --check` — PASS.
+- No database schema change, migration, or compatibility path was added.
+
+Earlier F4 implementation correction:
+
+- Namespace feed, refresh, local cache, resolution, and protocol-document
+  unit tests — **5 files, 54 tests passed**. Actual local, active-peer, and
+  retired-peer bindings responses validate against the unchanged closed schema.
+- PostgreSQL E2E: `federation-namespace-demand` and `profile-namespace-feed` —
+  **2 files, 12 tests passed**. Real producer bindings without a lifecycle field
+  flow through the refresh consumer; new rows use the local `ACTIVE` default,
+  and refreshes preserve an existing local `ARCHIVED` status.
+- Production backend type check, `npm run federation:conformance`, changed
+  TypeScript formatting, and `git diff --check` — PASS.
+- No database schema, cache version, or S2S schema change is needed.
+
+Earlier F7 implementation correction:
 
 - `npm test` — **217 files, 1,951 tests passed**.
 - PostgreSQL E2E: `thread-attention` and `mention-mirror-member-resolution` —
@@ -375,8 +422,8 @@ interpret this audit as an approval to freeze.
 
 ## Recommended closeout order
 
-1. Discuss F4/F5 separately. F6/F7 code corrections and focused verification
-   are complete; multi-node acceptance remains V1.
+1. F4–F7 code corrections are complete; continue with the remaining
+   verification items. Independent multi-node acceptance remains V1.
    F1–F3 and F7 documentation now follow user decisions,
    recorded without runtime details in the normative review history.
 2. Resume deferred S1/S2 only when the user requests their review; add focused

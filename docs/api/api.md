@@ -267,7 +267,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 - **Body**: `{ threadId: number, content: string, contentType?: 'PURE_TEXT'|'LINK', clientMessageId?: UUID }`. Media messages use `/send-media` followed by the matching `/upload*` endpoint.
 - **Behavior**: `ThreadAccessGuard` checks membership; allocates a per-thread `seq` atomically from `curSeq`; `MessageFanoutService` publishes each recipient's compacted `THREAD_CONTENT_HEAD`, wakes live clients through `STATE_FEED_UPDATED`, and notifies offline recipients through Push. `clientMessageId` is the send-idempotency key (a retry returns the original message).
-- **Replies**: PURE_TEXT content is `{ "text": "...", "quote": { "seq": n } }`. A positive `n` must identify a visible message in the same local thread when sending; `0` explicitly preserves a reply with no target. Ordinary text omits `quote`. Internal federation namespaces are not client navigation coordinates.
+- **Replies**: PURE_TEXT content is `{ "text": "...", "quote": { "seq": n } }`. `n` must be a positive sequence identifying a visible message in the same local thread when sending; zero is invalid. Replies received through federation retain their positive source coordinate and digest even if the target body has not arrived. Ordinary text omits `quote`. Internal federation namespaces are not client navigation coordinates.
 - **Errors**: `30001` empty · `30002` not approved · `30003` thread not found.
 
 ### POST `/send-contact-card` — Share a contact snapshot

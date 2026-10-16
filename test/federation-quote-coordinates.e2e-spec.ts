@@ -121,26 +121,11 @@ describe('federation quote coordinates across three persisted node views', () =>
   async function seed(
     view: View,
     seq: number,
-    overrides: Partial<typeof tables.message.$inferInsert> & {
-      /** Pre-cutover alias for publisherNamespaceId, kept for test readability. */
-      sourceNamespaceId?: number;
-      /** Pre-cutover alias; a non-local value marks the author as remote. */
-      creatorDomain?: string;
-    } = {},
+    overrides: Partial<typeof tables.message.$inferInsert> = {},
   ) {
-    const {
-      sourceNamespaceId,
-      creatorDomain,
-      publisherNamespaceId,
-      profileNamespaceId,
-      ...rest
-    } = overrides;
-    const remoteCreator =
-      creatorDomain !== undefined && creatorDomain !== 'local';
-    const seededContentType =
-      rest.contentType ?? (ContentType.PURE_TEXT as ContentType);
+    const seededContentType = overrides.contentType ?? ContentType.PURE_TEXT;
     const seededContent =
-      rest.content ?? JSON.stringify({ text: `message ${seq}` });
+      overrides.content ?? JSON.stringify({ text: `message ${seq}` });
     const [row] = await database.db
       .insert(tables.message)
       .values({
@@ -152,16 +137,9 @@ describe('federation quote coordinates across three persisted node views', () =>
         creatorAccount: 'user',
         updatedAt: new Date(),
         payloadDigest: wirePayloadDigest(seededContentType, seededContent),
-        // The squashed 0000_base migration renamed sourceNamespaceId to
-        // publisherNamespaceId and replaced creatorDomain with profileNamespaceId.
-        // Map the pre-cutover aliases so seeded mirrors carry the publisher
-        // coordinate that quote-target resolution and publication rely on.
-        publisherNamespaceId:
-          publisherNamespaceId ?? Number(sourceNamespaceId ?? 0),
-        profileNamespaceId:
-          profileNamespaceId ??
-          (remoteCreator ? Number(sourceNamespaceId ?? 0) : 0),
-        ...rest,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
+        ...overrides,
       })
       .returning();
     return row;
@@ -173,7 +151,6 @@ describe('federation quote coordinates across three persisted node views', () =>
       serializeMessagesInTx(
         tx: DatabaseTransaction,
         rows: unknown[],
-        domain: string,
         namespaceId: number,
         thread: { account: string },
       ): Promise<FederationMessageFeedMessage[]>;
@@ -192,7 +169,6 @@ describe('federation quote coordinates across three persisted node views', () =>
             authorAccount: row.creatorAccount,
           },
         ],
-        peer.domain,
         peer.namespaceId,
         { account: '!quote' },
       ),
@@ -206,14 +182,30 @@ describe('federation quote coordinates across three persisted node views', () =>
     peer: View,
     seq: number,
     quoteTarget: FederationQuoteTarget,
-    quoteDigest?: string,
+    quoteDigest: string | undefined,
   ) {
+    new FederationInboundMessageValidatorService().assertEnvelope({
+      thread: { account: '!quote' },
+      author: { account: 'user', namespaceId: 0 },
+      seq,
+      profileRev: 0,
+      originSeq: null,
+      originCreatedAt: null,
+      contentType: ContentType.PURE_TEXT,
+      content: JSON.stringify({ text: 'reply' }),
+      createdAt: 1_700_000_000_000,
+      assets: [],
+      quoteTarget,
+      quoteDigest,
+    });
     const result = await database.db.transaction((tx) =>
       store.store(tx, {
         threadId: view.threadId,
         creator: { account: 'user', namespaceId: peer.namespaceId },
         fetchedFromDomain: peer.domain,
         namespaceId: peer.namespaceId,
+        profileNamespaceId: peer.namespaceId,
+        federationEnvelopeDigest: 'e'.repeat(64),
         message: {
           originSeq: seq,
           profileRev: 0,
@@ -241,13 +233,13 @@ describe('federation quote coordinates across three persisted node views', () =>
     await seed(alpha, 41);
     await seed(charlie, 8, {
       originSeq: 41,
-      sourceNamespaceId: alpha.namespaceId,
-      creatorDomain: alpha.domain,
+      publisherNamespaceId: alpha.namespaceId,
+      profileNamespaceId: alpha.namespaceId,
     });
     await seed(bravo, 3, {
       originSeq: 41,
-      sourceNamespaceId: alpha.namespaceId,
-      creatorDomain: alpha.domain,
+      publisherNamespaceId: alpha.namespaceId,
+      profileNamespaceId: alpha.namespaceId,
     });
     const reply = await seed(charlie, 10, {
       content: JSON.stringify({
@@ -296,19 +288,17 @@ describe('federation quote coordinates across three persisted node views', () =>
   it('isolates duplicate peer origin sequences and republishes the withdrawn target in authority coordinates', async () => {
     await seed(alpha, 31, {
       originSeq: 8,
-      sourceNamespaceId: bravo.namespaceId,
-      creatorDomain: bravo.domain,
+      publisherNamespaceId: bravo.namespaceId,
+      profileNamespaceId: bravo.namespaceId,
     });
     await seed(alpha, 42, {
       originSeq: 8,
-      sourceNamespaceId: charlie.namespaceId,
-      creatorDomain: charlie.domain,
+      publisherNamespaceId: charlie.namespaceId,
+      profileNamespaceId: charlie.namespaceId,
       isDeleted: true,
     });
-    await seed(charlie, 8, {
-      originSeq: 42,
-      sourceNamespaceId: alpha.namespaceId,
-    });
+    // The mirror's own target has not received its authority coordinates yet.
+    await seed(charlie, 8, { originSeq: null });
     const reply = await seed(charlie, 10, {
       content: JSON.stringify({
         text: 'reply',
@@ -381,33 +371,43 @@ describe('federation quote coordinates across three persisted node views', () =>
     },
   );
 
-  it('keeps an explicit absent quote through receipt, redistribution, and reads', async () => {
-    const reply = await receive(alpha, charlie, 51, { seq: 0 });
-    expect(JSON.parse(reply.content).quote).toMatchObject({
-      seq: 0,
-      namespaceId: 0,
-    });
+  it.each([{ seq: 0 }, { originSeq: 0 }])(
+    'rejects zero coordinate %j before persistence',
+    async (coordinate) => {
+      await expect(
+        receive(alpha, charlie, 51, coordinate, 'd'.repeat(64)),
+      ).rejects.toThrow('invalid federated reply target');
+      expect(await database.db.query.message.findMany()).toEqual([]);
+    },
+  );
+
+  it('retains a missing authority target across receipt and redistribution using originSeq', async () => {
+    const digest = 'd'.repeat(64);
+    const reply = await receive(alpha, charlie, 51, { originSeq: 41 }, digest);
     const distribution = await publish(alpha, bravo, reply);
-    expect(distribution.quoteTarget).toEqual({ seq: 0 });
+    expect(distribution.quoteTarget).toEqual({ seq: 41 });
+    expect(distribution.quoteDigest).toBe(digest);
     const mirrored = await receive(
       bravo,
       alpha,
       distribution.seq,
       distribution.quoteTarget!,
-      distribution.quoteDigest,
+      distribution.quoteDigest!,
     );
     const [projected] = await resolveStoredQuotes(database.db, [mirrored]);
     expect(JSON.parse(projected.content).quote).toMatchObject({
       seq: 0,
-      status: 'NOT_FOUND',
+      sourceSeq: 41,
+      status: 'PENDING',
+      digest,
     });
-    expect((await publish(bravo, alpha, mirrored)).quoteTarget).toEqual({
-      seq: 0,
-    });
+    const returning = await publish(bravo, alpha, mirrored);
+    expect(returning.quoteTarget).toEqual({ originSeq: 41 });
+    expect(returning.quoteDigest).toBe(digest);
   });
 
   it('persists a missing target unchanged and distinguishes unpulled from confirmed absence', async () => {
-    const reply = await receive(bravo, alpha, 51, { seq: 41 });
+    const reply = await receive(bravo, alpha, 51, { seq: 41 }, 'd'.repeat(64));
     expect(JSON.parse(reply.content).quote).toMatchObject({
       seq: 41,
       namespaceId: alpha.namespaceId,
@@ -428,8 +428,8 @@ describe('federation quote coordinates across three persisted node views', () =>
     expect(retained?.content).toBe(reply.content);
     const target = await seed(bravo, 3, {
       originSeq: 41,
-      sourceNamespaceId: alpha.namespaceId,
-      creatorDomain: alpha.domain,
+      publisherNamespaceId: alpha.namespaceId,
+      profileNamespaceId: alpha.namespaceId,
     });
     const [resolved] = await resolveStoredQuotes(database.db, [reply]);
     expect(JSON.parse(resolved.content).quote).toMatchObject({

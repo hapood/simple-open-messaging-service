@@ -207,16 +207,11 @@ export class FederationInboundMessagePageService {
             HttpStatus.BAD_REQUEST,
           );
         }
-        const missingQuoteTarget =
-          item.quoteTarget !== undefined &&
-          item.quoteTarget.seq === 0 &&
-          item.quoteDigest === undefined;
         if (
-          !missingQuoteTarget &&
-          ((item.quoteTarget === undefined) !==
+          (item.quoteTarget === undefined) !==
             (item.quoteDigest === undefined) ||
-            (item.quoteTarget !== undefined &&
-              !isFederationQuoteTarget(item.quoteTarget)))
+          (item.quoteTarget !== undefined &&
+            !isFederationQuoteTarget(item.quoteTarget))
         ) {
           throw new BusinessException(
             BusinessCode.FEDERATION_MALFORMED,

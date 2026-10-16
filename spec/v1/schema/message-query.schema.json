@@ -8,9 +8,7 @@
       "oneOf": [{ "required": ["seq"] }, { "required": ["originSeq"] }],
       "properties": {
         "seq": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740990
+          "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
         },
         "originSeq": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"

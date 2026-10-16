@@ -13,7 +13,7 @@ export function isFederationQuoteTarget(
   const seq = (value as Record<string, unknown>)[keys[0]];
   return (
     Number.isSafeInteger(seq) &&
-    Number(seq) >= (keys[0] === 'seq' ? 0 : 1) &&
+    Number(seq) >= 1 &&
     Number(seq) < Number.MAX_SAFE_INTEGER
   );
 }
@@ -23,7 +23,10 @@ export function storeFederationQuote(
   target: FederationQuoteTarget,
   namespaceId: number,
 ): { seq: number; namespaceId: number } {
-  if (target.seq === 0) return { seq: 0, namespaceId: 0 };
+  if (!isFederationQuoteTarget(target)) {
+    throw new Error('invalid federated reply target');
+  }
+
   return target.seq !== undefined
     ? { seq: target.seq, namespaceId }
     : { seq: target.originSeq, namespaceId: 0 };
@@ -43,7 +46,13 @@ export function publishFederationQuote(
   groupAuthority: boolean,
   peerNamespaceId: number,
 ): FederationQuoteTarget {
-  if (coordinate.seq === 0) return { seq: 0 };
+  if (
+    !Number.isSafeInteger(coordinate.seq) ||
+    coordinate.seq <= 0 ||
+    coordinate.seq >= Number.MAX_SAFE_INTEGER
+  ) {
+    throw new Error('quote coordinate must be a positive thread sequence');
+  }
   if (target) {
     if (groupAuthority) return { seq: target.seq };
     if (

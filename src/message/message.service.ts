@@ -464,8 +464,19 @@ export class MessageService {
           }
           const resolvedQuoteSeq =
             quoteTargetSeq ?? parseMessageContentQuote(content)?.seq;
+          if (
+            resolvedQuoteSeq !== undefined &&
+            (!Number.isSafeInteger(resolvedQuoteSeq) ||
+              resolvedQuoteSeq <= 0 ||
+              resolvedQuoteSeq >= Number.MAX_SAFE_INTEGER)
+          ) {
+            throw new BusinessException(
+              BusinessCode.VALIDATION_FAILED,
+              'quote target must be a positive thread sequence',
+            );
+          }
           const quoteTarget =
-            resolvedQuoteSeq === undefined || resolvedQuoteSeq === 0
+            resolvedQuoteSeq === undefined
               ? null
               : await tx.query.message.findFirst({
                   where: and(
@@ -473,11 +484,7 @@ export class MessageService {
                     eq(message.seq, resolvedQuoteSeq),
                   ),
                 });
-          if (
-            resolvedQuoteSeq !== undefined &&
-            resolvedQuoteSeq > 0 &&
-            !quoteTarget
-          ) {
+          if (resolvedQuoteSeq !== undefined && !quoteTarget) {
             throw new BusinessException(
               BusinessCode.NOT_FOUND,
               'quoted message not found',
@@ -501,7 +508,7 @@ export class MessageService {
           }
           const quoteDigest = quoteTarget?.payloadDigest;
           let storedContent = content;
-          if (resolvedQuoteSeq !== undefined && resolvedQuoteSeq > 0) {
+          if (resolvedQuoteSeq !== undefined) {
             storedContent = withMessageContentQuote(content, {
               seq: resolvedQuoteSeq,
               digest: quoteDigest ?? undefined,
@@ -950,10 +957,7 @@ export class MessageService {
       .update(pendingMedia)
       .set({ contentType, updatedAt: new Date() })
       .where(
-        and(
-          eq(pendingMedia.id, stage.id),
-          eq(pendingMedia.status, 'pending'),
-        ),
+        and(eq(pendingMedia.id, stage.id), eq(pendingMedia.status, 'pending')),
       );
   }
 

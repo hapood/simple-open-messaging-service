@@ -6,11 +6,12 @@ import {
 } from './federation-quote-target.js';
 
 describe('federation quote coordinate contract', () => {
-  it.each([{ seq: 0 }, { seq: 8 }, { originSeq: 8 }])('accepts %j', (value) => {
+  it.each([{ seq: 8 }, { originSeq: 8 }])('accepts %j', (value) => {
     expect(isFederationQuoteTarget(value)).toBe(true);
   });
   it.each([
     {},
+    { seq: 0 },
     { seq: 8, originSeq: 8 },
     { targetSeq: 8 },
     { originSeq: 0 },
@@ -40,15 +41,18 @@ describe('federation quote coordinate contract', () => {
       namespaceId: 0,
     });
   });
-  it('preserves the absent-target sentinel across publication and receipt', () => {
-    const stored = storeFederationQuote({ seq: 0 }, 12);
-    expect(stored).toEqual({ seq: 0, namespaceId: 0 });
-    expect(publishFederationQuote(stored, undefined, true, 19)).toEqual({
-      seq: 0,
-    });
-    expect(publishFederationQuote(stored, undefined, false, 19)).toEqual({
-      seq: 0,
-    });
+  it('rejects zero on receipt and publication instead of inventing an absent target', () => {
+    expect(() => storeFederationQuote({ seq: 0 }, 12)).toThrow();
+    for (const authority of [true, false]) {
+      expect(() =>
+        publishFederationQuote(
+          { seq: 0, namespaceId: 0 },
+          undefined,
+          authority,
+          19,
+        ),
+      ).toThrow();
+    }
   });
   it('rejects null rather than adding an availability state to the wire', () => {
     expect(isFederationQuoteTarget(null)).toBe(false);

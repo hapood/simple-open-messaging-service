@@ -121,10 +121,15 @@ describe('Federation v1 protocol documentation', () => {
     expect(
       validate({
         ...message,
-        quoteTarget: { seq: 0 },
+        quoteTarget: { seq: 8 },
         quoteDigest: 'a'.repeat(64),
       }),
     ).toBe(true);
+    for (const quoteTarget of [{ seq: 0 }, { originSeq: 0 }]) {
+      expect(
+        validate({ ...message, quoteTarget, quoteDigest: 'a'.repeat(64) }),
+      ).toBe(false);
+    }
   });
 
   it('validates namespace-only message authors and rejects legacy or mixed shapes', () => {

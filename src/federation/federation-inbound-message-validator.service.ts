@@ -130,6 +130,13 @@ export class FederationInboundMessageValidatorService {
       ['quoteTarget', 'quoteDigest'],
     );
     const quoteDigest = item.quoteDigest;
+    if ((item.quoteTarget !== undefined) !== (quoteDigest !== undefined)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'quote target and digest must appear together',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     if (
       quoteDigest !== undefined &&
       (typeof quoteDigest !== 'string' || !/^[a-f0-9]{64}$/.test(quoteDigest))

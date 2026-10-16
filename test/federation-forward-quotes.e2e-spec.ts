@@ -136,7 +136,7 @@ describe('federated history-forward reply references', () => {
         .get(`/api/v1/forward-bundles/${bundleId}`)
         .set('Authorization', `Bearer ${tokenA}`),
       request(appB.baseUrl)
-        .get(`/api/v1/forward-bundles/${imported.id}`)
+        .get(`/api/v1/forward-bundles/${imported.sourceBundleId}`)
         .set('Authorization', `Bearer ${tokenB}`),
     ]);
     expect(localView.body.code).toBe(BusinessCode.OK);
@@ -145,17 +145,25 @@ describe('federated history-forward reply references', () => {
     return local!.messages as ForwardWireBundle['messages'];
   }
 
-  it('preserves an explicit missing reference through send, federation, and history forwarding', async () => {
-    const text = `absent-${randomUUID()}`;
-    await send(appB, tokenB, threadB, text, 0);
-    const reply = await mirroredText(text);
-    expect(JSON.parse(reply.content).quote).toEqual({
-      seq: 0,
-      namespaceId: 0,
+  it('rejects an explicit zero reference instead of creating a digestless reply', async () => {
+    const text = `invalid-zero-${randomUUID()}`;
+    const response = await request(appB.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({
+        threadId: threadB,
+        clientMessageId: randomUUID(),
+        contentType: 'PURE_TEXT',
+        content: JSON.stringify({ text, quote: { seq: 0 } }),
+      });
+    expect(response.body.code).toBe(BusinessCode.VALIDATION_FAILED);
+    expect(response.body.message).toContain('positive thread sequence');
+    const rows = await appB.database.query.message.findMany({
+      where: eq(message.threadId, threadB),
     });
-    const bundle = await forwardAndCompare([reply.seq]);
-    expect(bundle[0].quoteTargetId).toBe(0);
-    expect(JSON.parse(bundle[0].content)).toEqual({ text });
+    expect(rows.some((row) => JSON.parse(row.content).text === text)).toBe(
+      false,
+    );
   });
 
   it('marks an unselected target absent and rebuilds a selected original/reply/reply-to-reply chain', async () => {
@@ -197,15 +205,22 @@ describe('federated history-forward reply references', () => {
 
   it('forwards a reply whose positive target coordinate has no stored message', async () => {
     const text = `missing-body-${randomUUID()}`;
-    await send(appB, tokenB, threadB, text, 0);
+    const target = await send(appB, tokenB, threadB, `${text}-target`);
+    await send(appB, tokenB, threadB, text, target.seq);
     const reply = await mirroredText(text);
+    const retainedQuote = JSON.parse(reply.content).quote;
+    expect(retainedQuote.digest).toMatch(/^[a-f0-9]{64}$/);
     // Model retained federated history whose target body has never arrived.
     await appA.database
       .update(message)
       .set({
         content: JSON.stringify({
           text,
-          quote: { seq: 900_000, namespaceId: reply.publisherNamespaceId },
+          quote: {
+            ...retainedQuote,
+            seq: 900_000,
+            namespaceId: reply.publisherNamespaceId,
+          },
         }),
       })
       .where(eq(message.id, reply.id));

@@ -85,12 +85,16 @@ function createMessagePageService() {
 }
 
 describe('federation message context isolation', () => {
-  it.each([{ seq: 0 }, { seq: 8 }, { originSeq: 8 }])(
+  it.each([{ seq: 8 }, { originSeq: 8 }])(
     'accepts a single quote coordinate %j at the envelope boundary',
     (quoteTarget) => {
       const validator = new FederationInboundMessageValidatorService();
       expect(() =>
-        validator.assertEnvelope({ ...item('10'), quoteTarget }),
+        validator.assertEnvelope({
+          ...item('10'),
+          quoteTarget,
+          quoteDigest: 'd'.repeat(64),
+        }),
       ).not.toThrow();
     },
   );
@@ -98,6 +102,8 @@ describe('federation message context isolation', () => {
   it.each([
     null,
     {},
+    { seq: 0 },
+    { originSeq: 0 },
     { seq: 8, originSeq: 8 },
     { targetSeq: 8 },
     { seq: Number.MAX_SAFE_INTEGER },
@@ -106,7 +112,11 @@ describe('federation message context isolation', () => {
     (quoteTarget) => {
       const validator = new FederationInboundMessageValidatorService();
       expect(() =>
-        validator.assertEnvelope({ ...item('10'), quoteTarget } as never),
+        validator.assertEnvelope({
+          ...item('10'),
+          quoteTarget,
+          quoteDigest: 'd'.repeat(64),
+        } as never),
       ).toThrow();
     },
   );
