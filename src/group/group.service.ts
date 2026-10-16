@@ -85,18 +85,34 @@ export class GroupService {
   ): Promise<NamespacedAddress & { name: string }> {
     return this.database.db.transaction(async (tx) => {
       const [thread] = await tx
-        .select({ groupId: messageThread.id })
+        .select({
+          groupId: messageThread.id,
+          authorityNamespaceId: messageThread.authorityNamespaceId,
+        })
         .from(messageThread)
         .where(eq(messageThread.id, threadId))
         .limit(1);
-      const member = thread?.groupId
+      const member = thread
         ? await readCurrentGroupMemberByAddressInTx(
             tx,
             thread.groupId,
             identity,
           )
         : undefined;
-      if (!member || !(await isThreadMutuallyAuthorized(tx, member, threadId)))
+      // Authoritative groups materialize a RelationshipPair for every member,
+      // so the pair check is the local write-authority membership view. A
+      // member-home mirror holds pairs only for its own local members; there
+      // the current Group Meta roster fact (upsert without a later depart) is
+      // the membership authority for mention targets.
+      if (!thread || !member)
+        throw new BusinessException(
+          BusinessCode.GROUP_TARGET_NOT_MEMBER,
+          'target is not an active group member',
+        );
+      const targetActive =
+        thread.authorityNamespaceId > 0 ||
+        (await isThreadMutuallyAuthorized(tx, member, threadId));
+      if (!targetActive)
         throw new BusinessException(
           BusinessCode.GROUP_TARGET_NOT_MEMBER,
           'target is not an active group member',
@@ -104,11 +120,22 @@ export class GroupService {
       const snapshot = await tx.query.profileTable.findFirst({
         where: and(
           eq(profileTable.account, member.account),
+          // Profiles are keyed by the publisher that projected them. The
+          // authority node receives remote members' profiles from their homes
+          // (publisher = the roster namespace, subject namespace 0), while
+          // mirrors receive every member through the group authority's
+          // projection (publisher = the authority namespace, subject
+          // namespace = the roster namespace).
+          thread.authorityNamespaceId === 0
+            ? eq(profileTable.publisherNamespaceId, member.namespaceId)
+            : eq(
+                profileTable.publisherNamespaceId,
+                thread.authorityNamespaceId,
+              ),
           eq(
-            profileTable.publisherNamespaceId,
-            member.namespaceId === 0 ? 0 : member.namespaceId,
+            profileTable.profileNamespaceId,
+            thread.authorityNamespaceId === 0 ? 0 : member.namespaceId,
           ),
-          eq(profileTable.profileNamespaceId, member.namespaceId),
           eq(profileTable.profileRev, member.profileRev),
         ),
         columns: { displayName: true },
