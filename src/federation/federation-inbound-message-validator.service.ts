@@ -82,7 +82,7 @@ export class FederationInboundMessageValidatorService {
     }
   }
 
-  assertEnvelope(item: FederationMessageFeedMessage): void {
+  assertEnvelope(value: unknown): void {
     const assertFields = (
       value: unknown,
       required: string[],
@@ -109,12 +109,8 @@ export class FederationInboundMessageValidatorService {
       }
       return record;
     };
-    const rawThread = item.thread as unknown as Record<string, unknown>;
-    const isGroup =
-      typeof rawThread?.['account'] === 'string' &&
-      rawThread['account'].startsWith('!');
-    assertFields(
-      item,
+    const item = assertFields(
+      value,
       [
         'thread',
         'author',
@@ -129,6 +125,13 @@ export class FederationInboundMessageValidatorService {
       ],
       ['quoteTarget', 'quoteDigest'],
     );
+    const rawThread = item.thread;
+    const isGroup =
+      typeof rawThread === 'object' &&
+      rawThread !== null &&
+      'account' in rawThread &&
+      typeof rawThread.account === 'string' &&
+      rawThread.account.startsWith('!');
     const quoteDigest = item.quoteDigest;
     if ((item.quoteTarget !== undefined) !== (quoteDigest !== undefined)) {
       throw new BusinessException(
@@ -147,11 +150,18 @@ export class FederationInboundMessageValidatorService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const authorNamespaceId = item.author?.namespaceId;
+    const authorNamespaceId =
+      typeof item.author === 'object' &&
+      item.author !== null &&
+      'namespaceId' in item.author
+        ? item.author.namespaceId
+        : undefined;
     if (
+      typeof authorNamespaceId !== 'number' ||
       !Number.isSafeInteger(authorNamespaceId) ||
       authorNamespaceId < 0 ||
       authorNamespaceId > 2_147_483_647 ||
+      typeof item.profileRev !== 'number' ||
       !Number.isSafeInteger(item.profileRev) ||
       item.profileRev < 0 ||
       item.profileRev > 2_147_483_647

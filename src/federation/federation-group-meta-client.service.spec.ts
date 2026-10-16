@@ -39,10 +39,13 @@ describe('FederationGroupMetaClient', () => {
       items: [
         {
           feedId: 5,
-          account: 'alice',
-          domain: 'peer.test',
           operation: 'MEMBER_UPSERT',
-          body: { account: 'alice', namespaceId: 7, role: 'MEMBER', profileRev: 1 },
+          body: {
+            account: 'alice',
+            namespaceId: 7,
+            role: 'MEMBER',
+            profileRev: 1,
+          },
         },
       ],
       scannedThrough: 5,
@@ -85,10 +88,13 @@ describe('FederationGroupMetaClient', () => {
       items: [
         {
           feedId: 5,
-          account: 'alice',
-          domain: 'peer.test',
           operation: 'MEMBER_DEPART',
-          body: { account: 'alice', namespaceId: 7, role: 'MEMBER', profileRev: 3 },
+          body: {
+            account: 'alice',
+            namespaceId: 7,
+            role: 'MEMBER',
+            profileRev: 3,
+          },
         },
         {
           feedId: 4,

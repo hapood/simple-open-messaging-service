@@ -2,7 +2,16 @@ import { describe, expect, it } from 'vitest';
 import type { FederationMessageFeedMessage } from './federation-message-feed.service.js';
 import { FederationInboundMessageValidatorService } from './federation-inbound-message-validator.service.js';
 
-const message = (): FederationMessageFeedMessage => ({
+type P2PMessage = Extract<
+  FederationMessageFeedMessage,
+  { author: { ref: string } }
+>;
+type GroupMessage = Extract<
+  FederationMessageFeedMessage,
+  { author: { account: string } }
+>;
+
+const message = (): P2PMessage => ({
   thread: { account: 'alice', peerAccount: 'bob' },
   author: { ref: 'THREAD_ACCOUNT', namespaceId: 0 },
   seq: 1,
@@ -15,7 +24,7 @@ const message = (): FederationMessageFeedMessage => ({
   assets: [],
 });
 
-const groupMessage = (): FederationMessageFeedMessage => ({
+const groupMessage = (): GroupMessage => ({
   ...message(),
   thread: { account: '!group' },
   author: { account: 'alice', namespaceId: 1 },
@@ -23,6 +32,15 @@ const groupMessage = (): FederationMessageFeedMessage => ({
 
 describe('FederationInboundMessageValidatorService', () => {
   const validator = new FederationInboundMessageValidatorService();
+
+  it.each([null, undefined, [], false, 1, 'message'])(
+    'rejects non-object wire input %j without treating it as a typed envelope',
+    (value) => {
+      expect(() => validator.assertEnvelope(value)).toThrow(
+        'non-object descriptor',
+      );
+    },
+  );
 
   it.each([{ seq: 8 }, { originSeq: 42 }])(
     'requires a digest with positive coordinate %j without requiring a target body',
@@ -79,19 +97,19 @@ describe('FederationInboundMessageValidatorService', () => {
         validator.assertEnvelope({
           ...item,
           namespaceId: 1,
-        } as FederationMessageFeedMessage),
+        }),
       ).toThrow('invalid fields');
       expect(() =>
         validator.assertEnvelope({
           ...item,
           authorRef: 'THREAD_ACCOUNT',
-        } as FederationMessageFeedMessage),
+        }),
       ).toThrow('invalid fields');
       expect(() =>
         validator.assertEnvelope({
           ...item,
           author: { ...item.author, domain: 'peer.test' },
-        } as FederationMessageFeedMessage),
+        }),
       ).toThrow('invalid fields');
       expect(() =>
         validator.assertEnvelope({
@@ -103,7 +121,7 @@ describe('FederationInboundMessageValidatorService', () => {
         validator.assertEnvelope({
           ...item,
           author: { ...item.author, namespaceId: '1' },
-        } as unknown as FederationMessageFeedMessage),
+        }),
       ).toThrow('invalid namespaceId');
     },
   );
@@ -119,11 +137,7 @@ describe('FederationInboundMessageValidatorService', () => {
       },
       { ...message(), author: { ref: ['THREAD_ACCOUNT'], namespaceId: 0 } },
     ]) {
-      expect(() =>
-        validator.assertEnvelope(
-          item as unknown as FederationMessageFeedMessage,
-        ),
-      ).toThrow();
+      expect(() => validator.assertEnvelope(item)).toThrow();
     }
   });
 
@@ -135,7 +149,7 @@ describe('FederationInboundMessageValidatorService', () => {
     );
   });
 
-  it.each([
+  it.each<[string, Partial<P2PMessage>]>([
     ['author', { author: { ref: 'THREAD_PEER_ACCOUNT', namespaceId: 1 } }],
     ['author namespace', { author: { ref: 'THREAD_ACCOUNT', namespaceId: 2 } }],
     ['profile revision', { profileRev: 3 }],
@@ -149,7 +163,7 @@ describe('FederationInboundMessageValidatorService', () => {
       validator.immutableEnvelopeDigest({
         ...message(),
         ...change,
-      } as FederationMessageFeedMessage),
+      }),
     ).not.toBe(validator.immutableEnvelopeDigest(message()));
   });
 });

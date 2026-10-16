@@ -24,7 +24,7 @@ implementation task.
 | 9 | S2 provenance peer binding | **Deferred** by user; no behavior change |
 | 10 | V1 executable interoperability coverage | Pending later review; package/schema checks below are not producer/consumer certification |
 | 11 | V2 standalone validation | Pending later review |
-| 12 | V3 whole-project test typing | Pending later review; no fixture or runtime changes in this pass |
+| 12 | V3 whole-project test typing | Corrected Group Meta fixtures and cast-free malformed message inputs; root project and production type checks pass, with 1,970 backend unit tests passing |
 
 ## Conclusion and scope
 
@@ -319,18 +319,39 @@ SOMS source, but validating the standalone bundle still requires an explicit
 tool distribution/install entry point. Test the eventual release artifact in a
 clean directory before claiming the package is independently distributable.
 
-### V3 — Whole-project type checking still fails
+### V3 — Whole-project test typing (corrected)
 
-`npx tsc --noEmit -p tsconfig.json` fails in two test files not changed by this documentation pass:
+The root project type check now passes. The two original failures were corrected
+without relaxing the wire contract:
 
-- [Group Meta client tests](../../src/federation/federation-group-meta-client.service.spec.ts) still construct item-level `account` fields against the current body-based item type.
-- [Inbound message validator tests](../../src/federation/federation-inbound-message-validator.service.spec.ts) have union narrowing / negative-fixture casts incompatible with the current nested-author type.
+- [Group Meta client tests](../../src/federation/federation-group-meta-client.service.spec.ts)
+  use body-owned namespace/account identities, without legacy item-level
+  `account` or `domain` fields. Their cursor and ordering assertions remain.
+- [Inbound message validator tests](../../src/federation/federation-inbound-message-validator.service.spec.ts)
+  use distinct P2P/GROUP factory types and a typed mutation table for immutable
+  envelope fingerprints. Malformed inputs no longer masquerade as valid
+  envelopes through casts.
+- The [envelope validator](../../src/federation/federation-inbound-message-validator.service.ts)
+  accepts `unknown` at its runtime-validation boundary and narrows object and
+  primitive fields explicitly. It does not assert that input is a fully valid
+  message or replace the other message checks. Non-object inputs receive the
+  existing malformed-descriptor error; six new cases exercise that boundary.
 
-These are further evidence that the wire cutover is not fully reconciled across tests. Fix the fixtures and type-safe malformed-input construction without using casts to conceal a real contract disagreement. A green targeted Vitest run is not a whole-project type-check pass.
+No business rule, database shape, or compatibility path was changed. Passing
+these type checks does not close V1/V2 or the deferred S1/S2 items.
 
 ## Verification performed
 
-Latest F5 implementation correction:
+Latest V3 test-typing correction:
+
+- `npx tsc --noEmit -p tsconfig.json` — PASS.
+- `npx tsc --noEmit -p tsconfig.build.json` — PASS.
+- Group Meta client, message validator, and message isolation tests —
+  **3 files, 74 tests passed**.
+- Full backend unit suite (`npm test`) — **217 files, 1,970 tests passed**.
+- Changed TypeScript formatting and `git diff --check` — PASS.
+
+Earlier F5 implementation correction:
 
 - Full backend unit suite (`npm test`) — **217 files, 1,964 tests passed**.
 - Federation suite plus message service unit tests — **69 files, 677 tests
@@ -381,7 +402,8 @@ Earlier F7 implementation correction:
 - Final `git diff --check`, changed TypeScript formatting, and
   `npm run federation:conformance` — PASS.
 - Production backend type check — PASS. Whole-project check still fails only
-  in the two pre-existing test files under V3; those fixtures remain deferred.
+  in the two pre-existing test files under V3 at that stage; subsequently fixed
+  by the V3 correction above.
 
 Earlier F6 implementation correction:
 
@@ -411,7 +433,9 @@ Earlier closeout pass (retained baseline, not rerun results for this correction)
   message feed, S2S controller, federation profiles, federated content, profile
   resolution, session tokens, SSE, and thread feed.
 - `npx tsc --noEmit -p tsconfig.build.json` — PASS for production backend source.
-- `npx tsc --noEmit -p tsconfig.json` — FAIL in the unchanged test files listed under V3; not reported as a passing build.
+- At the documentation-only stage, `npx tsc --noEmit -p tsconfig.json` failed
+  in the test files listed under V3. That historical run was not reported as a
+  passing build; the later V3 correction above now passes.
 - Prettier applied to the modified validation TypeScript and JSON artifacts.
 - Local Markdown file/heading targets checked across root README, docs, and spec;
   final scan: **101 Markdown files, zero local target/heading issues**.
