@@ -1104,6 +1104,7 @@ describe('MessageService quote previews', () => {
         content: JSON.stringify({
           account: 'alice',
           domain: 'remote.example',
+          publicKey: 'p'.repeat(43) + '=',
           displayName: 'Alice',
           avatar: '/uploads/cas/aa/bb/avatar.webp',
         }),

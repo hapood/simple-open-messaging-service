@@ -29,10 +29,14 @@ function setup(
       async (_userId: number, address: { account: string }) =>
         address.account === '!group12' ? { id: 12 } : null,
     );
-  const activePeerDomainForNamespace = vi
+  const activeContactCardBindingForNamespace = vi
     .fn()
     .mockImplementation(async (namespaceId: number) =>
-      namespaceId === 0 ? 'local' : namespaceId === 4 ? 'bravo.test' : null,
+      namespaceId === 0
+        ? { domain: 'local', publicKey: 'l'.repeat(43) + '=' }
+        : namespaceId === 4
+          ? { domain: 'bravo.test', publicKey: 'r'.repeat(43) + '=' }
+          : null,
     );
   const controller = Object.assign(
     Object.create(MessageController.prototype) as unknown as {
@@ -46,7 +50,7 @@ function setup(
       threadAccess: {
         assertP2PWritable: vi.fn().mockResolvedValue(undefined),
       },
-      federationNamespaces: { activePeerDomainForNamespace },
+      federationNamespaces: { activeContactCardBindingForNamespace },
       participantService: {
         findP2PFriendByAddress: vi
           .fn()
@@ -85,7 +89,7 @@ function setup(
     findUniqueUserByNamespaceAddress,
     findVisibleGroupByAddress,
     snapshotAvatarForMessage,
-    activePeerDomainForNamespace,
+    activeContactCardBindingForNamespace,
   };
 }
 
@@ -118,7 +122,7 @@ describe('send federated contact card', () => {
     });
     await ctx.controller.sendContactCard(ctx.request, ctx.dto);
     expect(ctx.findProfile).toHaveBeenCalledWith(target);
-    expect(ctx.activePeerDomainForNamespace).toHaveBeenCalledWith(4);
+    expect(ctx.activeContactCardBindingForNamespace).toHaveBeenCalledWith(4);
     expect(ctx.snapshotAvatarForMessage).toHaveBeenCalledWith(
       '/uploads/avatars/bob.webp',
     );
@@ -128,6 +132,7 @@ describe('send federated contact card', () => {
       JSON.stringify({
         account: 'bob',
         domain: 'bravo.test',
+        publicKey: 'r'.repeat(43) + '=',
         displayName: 'Bob',
         bio: 'hello',
         avatar: `/uploads/msg-assets/aa/aa/${'a'.repeat(64)}`,
@@ -149,6 +154,7 @@ describe('send federated contact card', () => {
       {
         account: 'bob',
         domain: 'bravo.test',
+        publicKey: 'r'.repeat(43) + '=',
         displayName: 'bob',
         bio: '',
       },
@@ -161,6 +167,10 @@ describe('send federated contact card', () => {
       account: 'bob',
       namespaceId: 0,
       profileRev: 0,
+    };
+    (ctx.controller as unknown as { keypairs: unknown }).keypairs = {
+      localAddress: () => ({ domain: 'local' }),
+      getRootPublicKeyB64: () => 'l'.repeat(43) + '=',
     };
     await ctx.controller.sendContactCard(ctx.request, {
       ...ctx.dto,
@@ -176,6 +186,10 @@ describe('send federated contact card', () => {
       account: '!group12',
       namespaceId: 0,
       profileRev: 0,
+    };
+    (ctx.controller as unknown as { keypairs: unknown }).keypairs = {
+      localAddress: () => ({ domain: 'local' }),
+      getRootPublicKeyB64: () => 'l'.repeat(43) + '=',
     };
     await ctx.controller.sendContactCard(ctx.request, {
       ...ctx.dto,

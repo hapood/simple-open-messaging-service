@@ -2,6 +2,8 @@ import { inject, Injectable } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { ConversationItem, messageCreatorKey } from './model';
+import { namespaceDisplayDomain } from './profile-namespace-domain';
+import { ProfileNamespaceRepository } from './profile-namespace-store.service';
 import { MsgService } from './message.service';
 import { UserService } from './user.service';
 import { PopupType, RouteService } from './route.service';
@@ -18,15 +20,37 @@ export class ContactCardShareService {
   private readonly route = inject(RouteService);
   private readonly toast = inject(ToastService);
   private readonly transloco = inject(TranslocoService);
+  private readonly profileNamespaces = inject(ProfileNamespaceRepository);
 
   open(chat: ConversationItem): void {
     const self = this.users.sessionProfile();
     if (!self) return;
+    void this.openResolved(chat, self);
+  }
+
+  private async openResolved(
+    chat: ConversationItem,
+    self: ReturnType<UserService['sessionProfile']>,
+  ): Promise<void> {
+    if (!self) return;
     const isGroup = chat.type === 'GROUP';
     const target = isGroup ? chat.group : chat.peerUser;
     const bio = isGroup ? chat.group.description : chat.peerUser.bio;
+    const binding = await firstValueFrom(
+      this.profileNamespaces.resolve({
+        publisherNamespaceId: 0,
+        profileNamespaceId: target.namespaceId,
+      }),
+    );
+    const domain = namespaceDisplayDomain(binding);
+    if (!domain || !binding.rootPublicKey) {
+      this.toast.warn(this.transloco.translate('forward.sendFailed'));
+      return;
+    }
     const content = JSON.stringify({
       account: target.account,
+      domain,
+      publicKey: binding.rootPublicKey,
       displayName: target.name,
       bio: bio ?? '',
       ...(target.avatar ? { avatar: target.avatar } : {}),
@@ -50,8 +74,7 @@ export class ContactCardShareService {
     this.route.popupDlg(
       PopupType.FORWARD,
       {
-        purpose: 'CHAT_CARD',
-        mode: 'HISTORY',
+        kind: 'CHAT_CARD',
         recordKind: isGroup ? 'group' : 'chat',
         messages: [
           {

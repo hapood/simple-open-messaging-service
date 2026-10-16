@@ -42,6 +42,7 @@ describe('federated contact-card avatar limits', () => {
     account: 'alice',
     domain: 'peer.test',
     displayName: 'Alice',
+    publicKey: 'p'.repeat(43) + '=',
     bio: '',
     avatarDigest: digest,
   });
@@ -385,7 +386,12 @@ describe('FederationProfileService resource path', () => {
 
     await profiles.fetchRemoteAccount(
       { account: 'alice', domain: 'peer.test' },
-      { kind: 'VOUCH', publisherNamespaceId: 12, profileNamespaceId: 5 },
+      {
+        kind: 'VOUCH',
+        publisherNamespaceId: 12,
+        profileNamespaceId: 5,
+        publicKey: VOUCHED_ROOT,
+      },
     );
     expect(getSigned).toHaveBeenCalledTimes(1);
   });
@@ -409,7 +415,12 @@ describe('FederationProfileService resource path', () => {
     await expect(
       profiles.fetchRemoteAccount(
         { account: 'alice', domain: 'peer.test' },
-        { kind: 'VOUCH', publisherNamespaceId: 12, profileNamespaceId: 5 },
+        {
+          kind: 'VOUCH',
+          publisherNamespaceId: 12,
+          profileNamespaceId: 5,
+          publicKey: 'v'.repeat(43) + '=',
+        },
       ),
     ).rejects.toMatchObject({
       bizCode: BusinessCode.FEDERATION_PEER_IDENTITY_LOST,

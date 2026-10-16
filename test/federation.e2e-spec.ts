@@ -1290,6 +1290,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         content: JSON.stringify({
           account: sourcePeerAccount,
           domain: localIdentityDomain(),
+          publicKey: 'p'.repeat(43) + '=',
           displayName: 'Forward Contact',
           bio: 'Contact-card avatar fixture',
           avatar: cas(contactAvatarDigest),

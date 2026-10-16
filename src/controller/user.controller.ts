@@ -522,15 +522,30 @@ export class UserController {
           // under the root key the publisher's profile-namespace bindings
           // name for the referenced identity, not under the local handshake
           // pin. First contact by address falls back to PIN.
-          const possession: PossessionKey =
-            typeof dto.publisherNamespaceId === 'number' &&
-            typeof dto.profileNamespaceId === 'number'
-              ? {
-                  kind: 'VOUCH',
-                  publisherNamespaceId: dto.publisherNamespaceId,
-                  profileNamespaceId: dto.profileNamespaceId,
-                }
-              : { kind: 'PIN' };
+          const hasVouch =
+            typeof dto.publisherNamespaceId === 'number' ||
+            typeof dto.profileNamespaceId === 'number' ||
+            typeof dto.publicKey === 'string';
+          const possession: PossessionKey = hasVouch
+            ? typeof dto.publicKey === 'string' &&
+              (dto.publisherNamespaceId === undefined) ===
+                (dto.profileNamespaceId === undefined)
+              ? typeof dto.publisherNamespaceId === 'number' &&
+                typeof dto.profileNamespaceId === 'number'
+                ? {
+                    kind: 'VOUCH',
+                    publisherNamespaceId: dto.publisherNamespaceId,
+                    profileNamespaceId: dto.profileNamespaceId,
+                    publicKey: dto.publicKey,
+                  }
+                : { kind: 'CARD', publicKey: dto.publicKey }
+              : (() => {
+                  throw new BusinessException(
+                    BusinessCode.VALIDATION_FAILED,
+                    'contact-card resolve requires publicKey and either both or neither namespace coordinates',
+                  );
+                })()
+            : { kind: 'PIN' };
           const profile = await this.profiles.fetchRemoteAccount(
             { account, domain },
             possession,

@@ -417,19 +417,25 @@ describe('UserController.resolveFederatedUserStream', () => {
           domain: 'peer.example',
           publisherNamespaceId: 12,
           profileNamespaceId: 5,
+          publicKey: 'p'.repeat(43) + '=',
         })
         .pipe(toArray()),
     );
     expect(profiles.fetchRemoteAccount).toHaveBeenCalledWith(
       { account: 'alice', domain: 'peer.example' },
-      { kind: 'VOUCH', publisherNamespaceId: 12, profileNamespaceId: 5 },
+      {
+        kind: 'VOUCH',
+        publisherNamespaceId: 12,
+        profileNamespaceId: 5,
+        publicKey: 'p'.repeat(43) + '=',
+      },
     );
     expect(
       events.find((event) => event.type === 'resolved')?.data,
     ).toMatchObject({ user: { name: 'Alice', namespaceId: 7 } });
   });
 
-  it('falls back to PIN when only one namespace coordinate is provided', async () => {
+  it('rejects incomplete contact-card resolve fields instead of falling back to PIN', async () => {
     const keypairs = {
       localAddress: vi.fn((account: string) => ({
         account,
@@ -480,16 +486,10 @@ describe('UserController.resolveFederatedUserStream', () => {
         })
         .pipe(toArray()),
     );
-    expect(profiles.fetchRemoteAccount).toHaveBeenCalledWith(
-      { account: 'alice', domain: 'peer.example' },
-      { kind: 'PIN' },
+    expect(profiles.fetchRemoteAccount).not.toHaveBeenCalled();
+    expect(events.find((event) => event.type === 'failed')?.data).toMatchObject(
+      { reason: 'UNREACHABLE' },
     );
-    expect(
-      events.find((event) => event.type === 'resolved')?.data,
-    ).toMatchObject({
-      user: { account: 'alice', namespaceId: 7 },
-    });
-    expect(events.some((event) => event.type === 'failed')).toBe(false);
   });
 
   it('reports IDENTITY_LOST when a VOUCH challenge is uncertifiable', async () => {
@@ -540,12 +540,18 @@ describe('UserController.resolveFederatedUserStream', () => {
           domain: 'peer.example',
           publisherNamespaceId: 12,
           profileNamespaceId: 5,
+          publicKey: 'p'.repeat(43) + '=',
         })
         .pipe(toArray()),
     );
     expect(profiles.fetchRemoteAccount).toHaveBeenCalledWith(
       { account: 'alice', domain: 'peer.example' },
-      { kind: 'VOUCH', publisherNamespaceId: 12, profileNamespaceId: 5 },
+      {
+        kind: 'VOUCH',
+        publisherNamespaceId: 12,
+        profileNamespaceId: 5,
+        publicKey: 'p'.repeat(43) + '=',
+      },
     );
     expect(events.find((event) => event.type === 'failed')?.data).toMatchObject(
       { reason: 'IDENTITY_LOST' },

@@ -245,6 +245,7 @@ describe('federated message content projection', () => {
       account: 'carol',
       domain: 'local',
       displayName: 'Carol',
+      publicKey: 'p'.repeat(43) + '=',
       bio: 'Distributed systems enthusiast',
       avatar: cas(digestA),
     };
@@ -252,6 +253,7 @@ describe('federated message content projection', () => {
       account: 'carol',
       domain: 'local',
       displayName: 'Carol',
+      publicKey: 'p'.repeat(43) + '=',
       bio: 'Distributed systems enthusiast',
       avatarDigest: digestA,
     };
@@ -285,6 +287,7 @@ describe('federated message content projection', () => {
           account: 'invalid account',
           domain: 'c.example',
           displayName: 'Group',
+          publicKey: 'p'.repeat(43) + '=',
           bio: '',
         }),
       ),
@@ -296,6 +299,7 @@ describe('federated message content projection', () => {
           account: 'carol',
           domain: 'c.example',
           displayName: 'Carol',
+          publicKey: 'p'.repeat(43) + '=',
           bio: '',
           avatarDigest: 'invalid',
         }),
@@ -308,6 +312,7 @@ describe('federated message content projection', () => {
           account: 'carol',
           domain: 'c.example',
           displayName: 'Carol',
+          publicKey: 'p'.repeat(43) + '=',
           bio: 'x'.repeat(121),
         }),
       ),
@@ -319,6 +324,7 @@ describe('federated message content projection', () => {
       account: '!group123',
       domain: 'groups.test',
       displayName: 'Project Group',
+      publicKey: 'p'.repeat(43) + '=',
       bio: '',
     });
     expect(

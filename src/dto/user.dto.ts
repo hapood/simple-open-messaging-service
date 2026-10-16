@@ -67,6 +67,17 @@ export class UserResolveDto {
   @IsInt()
   @Min(0)
   profileNamespaceId?: number;
+
+  @ApiProperty({
+    required: false,
+    example: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    description:
+      'Mandatory root public key when using the VOUCH path. Contact cards must carry it so resolving never degrades to a naked domain trust decision.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(44)
+  publicKey?: string;
 }
 
 /** Local user discovery (fuzzy). Matches account OR display name case-insensitively; min 2 chars so a

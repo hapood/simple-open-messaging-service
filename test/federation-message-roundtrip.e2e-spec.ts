@@ -401,6 +401,7 @@ describe('federation message round-trip digest fidelity', () => {
       account: 'carol',
       domain: peerDomain,
       displayName: 'Carol',
+      publicKey: 'p'.repeat(43) + '=',
       bio: 'hi',
       avatarDigest: digestA,
     });

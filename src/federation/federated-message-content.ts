@@ -79,7 +79,7 @@ function assertNonEmptyString(value: unknown): asserts value is string {
 function validateContactCard(value: JsonObject): void {
   assertKeys(
     value,
-    ['account', 'domain', 'displayName', 'bio'],
+    ['account', 'domain', 'publicKey', 'displayName', 'bio'],
     ['avatar', 'avatarDigest', 'quote'],
   );
   const account = value['account'];
@@ -88,6 +88,8 @@ function validateContactCard(value: JsonObject): void {
     !isValidAccount(account) ||
     typeof value['domain'] !== 'string' ||
     !isValidSomfpDomain(value['domain']) ||
+    typeof value['publicKey'] !== 'string' ||
+    !/^[A-Za-z0-9+/]{43}=$/.test(value['publicKey']) ||
     typeof value['displayName'] !== 'string' ||
     unicodeCodePointLength(value['displayName']) < 1 ||
     unicodeCodePointLength(value['displayName']) > 31 ||
@@ -336,6 +338,7 @@ export function toFederatedMessageContent(
       return canonicalJson({
         account: value['account'],
         domain: value['domain'],
+        publicKey: value['publicKey'],
         displayName: value['displayName'],
         bio: value['bio'],
         ...(value['avatar'] === undefined
@@ -507,6 +510,7 @@ export function fromFederatedMessageContent(
       return canonicalJson({
         account: value['account'],
         domain: value['domain'],
+        publicKey: value['publicKey'],
         displayName: value['displayName'],
         bio: value['bio'],
         ...(value['avatarDigest'] === undefined

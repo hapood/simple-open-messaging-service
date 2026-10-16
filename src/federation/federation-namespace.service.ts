@@ -52,6 +52,30 @@ export class FederationNamespaceService {
     return peer?.domain ?? null;
   }
 
+  /** Current domain and root key for a contact-card namespace. Unlike the
+   *  display-only domain lookup, this requires a live root key because contact
+   *  cards are portable federation addresses and must be pinned to the identity
+   *  epoch they name. */
+  async activeContactCardBindingForNamespace(namespaceId: number): Promise<{
+    domain: string;
+    publicKey: string;
+  } | null> {
+    if (namespaceId === 0) return null;
+    const [peer] = await this.database.db
+      .select({
+        domain: identityNamespace.domain,
+        rootPublicKey: identityNamespace.rootPublicKey,
+        active: identityNamespace.active,
+        retiredAt: identityNamespace.retiredAt,
+      })
+      .from(identityNamespace)
+      .where(eq(identityNamespace.id, namespaceId))
+      .limit(1);
+    return peer?.active && peer.retiredAt === null && peer.rootPublicKey
+      ? { domain: peer.domain, publicKey: peer.rootPublicKey }
+      : null;
+  }
+
   async captureActive(domain: string): Promise<FederationContext> {
     return this.database.db.transaction((tx) =>
       this.captureActiveInTx(tx, domain),

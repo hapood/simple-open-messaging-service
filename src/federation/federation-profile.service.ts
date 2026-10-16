@@ -24,10 +24,12 @@ import { ProfileNamespaceRefreshService } from './profile-namespace-refresh.serv
 /** Possession-proof key source for `fetchRemoteAccount` (see there). */
 export type PossessionKey =
   | { kind: 'PIN' }
+  | { kind: 'CARD'; publicKey: string }
   | {
       kind: 'VOUCH';
       publisherNamespaceId: number;
       profileNamespaceId: number;
+      publicKey: string;
     };
 import { resolveAuthorizedFederationThreadInTx } from './federation-thread-query-authorization.js';
 
@@ -646,6 +648,7 @@ export class FederationProfileService {
         );
       return row.rootPublicKey;
     }
+    if (possession.kind === 'CARD') return possession.publicKey;
     const pair = {
       publisherNamespaceId: possession.publisherNamespaceId,
       profileNamespaceId: possession.profileNamespaceId,
@@ -663,6 +666,11 @@ export class FederationProfileService {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
         `vouched root key for namespace ${possession.profileNamespaceId} is uncertifiable`,
+      );
+    if (entry.rootPublicKey !== possession.publicKey)
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PROFILE_NOT_DISCLOSED,
+        `vouched root key for namespace ${possession.profileNamespaceId} does not match the contact card`,
       );
     return entry.rootPublicKey;
   }

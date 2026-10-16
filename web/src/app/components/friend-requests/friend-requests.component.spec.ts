@@ -34,19 +34,23 @@ describe('FriendRequestsComponent federated search progress', () => {
       ],
     }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
     const fixture = TestBed.createComponent(FriendRequestsComponent);
-    fixture.componentRef.setInput('initialAddress', { account, domain: 'bravo.test' });
+    fixture.componentRef.setInput('initialAddress', {
+      account,
+      domain: 'bravo.test',
+      publicKey: 'p'.repeat(43) + '=',
+    });
     const component = fixture.componentInstance;
     component.ngOnInit();
     expect(component.searchText()).toBe(`${account}@bravo.test`);
     expect(userService.resolveFederatedUser).toHaveBeenLastCalledWith(
-      { account, domain: 'bravo.test' }, expect.any(Function),
+      { account, domain: 'bravo.test', publicKey: 'p'.repeat(43) + '=' }, expect.any(Function),
     );
     component.cancelSearch();
     expect(component.searchText()).toBe(`${account}@bravo.test`);
     component.searchText.set('someone@other.test');
     component.searchUser();
     expect(userService.resolveFederatedUser).toHaveBeenLastCalledWith(
-      { account, domain: 'bravo.test' }, expect.any(Function),
+      { account, domain: 'bravo.test', publicKey: 'p'.repeat(43) + '=' }, expect.any(Function),
     );
   });
 

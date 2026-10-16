@@ -21,6 +21,7 @@ import { NavStateMachineService } from '../../../services/nav-state.service';
 interface ContactCard {
   account: string;
   domain: string;
+  publicKey: string;
   displayName: string;
   bio: string;
   avatar?: string;
@@ -63,6 +64,8 @@ export class ContactCardRowComponent {
       return typeof value.account === 'string' &&
         typeof value.domain === 'string' &&
         value.domain.trim().length > 0 &&
+        typeof value.publicKey === 'string' &&
+        value.publicKey.trim().length > 0 &&
         typeof value.displayName === 'string' &&
         typeof value.bio === 'string'
         ? (value as ContactCard)
@@ -90,7 +93,11 @@ export class ContactCardRowComponent {
       PopupType.FRIEND_REQUESTS,
       {
         initialTab: 'add',
-        initialAddress: { account: card.account, domain: card.domain },
+        initialAddress: {
+          account: card.account,
+          domain: card.domain,
+          publicKey: card.publicKey,
+        },
       },
       undefined,
       { scopeThreadId: this.nav.chatThreadId() },
