@@ -102,7 +102,10 @@ export class FederationThreadReverseRoundExecutorService {
     if (params.through !== undefined)
       query.set('through', params.through.toString());
     query.set('take', params.take.toString());
-    query.set('includeSelf', 'true');
+    query.set(
+      'includeSelf',
+      source.kind === 'GROUP' && source.localGroupAuthority ? 'false' : 'true',
+    );
 
     let response: FederationThreadResourceResponse<FederationMessageQueryPage>;
     try {

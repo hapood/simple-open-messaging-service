@@ -172,6 +172,89 @@ describe('federation message context isolation', () => {
     },
   );
 
+  it.each(
+    [false, true].flatMap((reverse) =>
+      [12, 13].flatMap((authorNamespaceId) =>
+        [false, true].map((receipt) => ({
+          reverse,
+          authorNamespaceId,
+          receipt,
+        })),
+      ),
+    ),
+  )(
+    'skips non-home group authors without receipt side effects and continues the page (reverse=$reverse, namespace=$authorNamespaceId, receipt=$receipt)',
+    async ({ reverse, authorNamespaceId, receipt }) => {
+      const service = createMessagePageService();
+      const good: FederationMessageFeedMessage = {
+        ...item('70'),
+        thread: { account: '!group' },
+        author: { account: 'alice', namespaceId: 0 },
+        originSeq: null,
+        originCreatedAt: null,
+      };
+      const bad: FederationMessageFeedMessage = {
+        ...good,
+        seq: reverse ? 71 : 69,
+        // Same account as the accepted home author, but a different identity.
+        author: { account: 'alice', namespaceId: authorNamespaceId },
+        originSeq: receipt ? 3 : null,
+        originCreatedAt: receipt ? good.createdAt : null,
+      };
+      const execute = vi.fn(async (statement: SQL) => {
+        const query = dialect.sqlToQuery(statement);
+        return {
+          rows: query.sql.includes('FROM "RelationshipPair" pair')
+            ? [{ threadId: 9, federationVersion: 4, toAccount: '!group' }]
+            : [],
+        };
+      });
+      const findFirst = vi.fn().mockResolvedValue({
+        federationEnvelopeDigest:
+          new FederationInboundMessageValidatorService().immutableEnvelopeDigest(
+            good,
+          ),
+      });
+      const store = vi.fn();
+      const applyProcessingReceipt = vi.fn();
+      Object.assign(service, {
+        inboundMessageStore: { store, applyProcessingReceipt },
+      });
+      await expect(
+        service.apply(
+          { execute, query: { message: { findFirst } } } as never,
+          'peer.test',
+          [bad, good],
+          { namespaceId: 9, peerAssignedLocalNamespaceId: 12 } as never,
+          {
+            expectedThreadId: 9,
+            ...(reverse
+              ? {
+                  sequencePolicy: {
+                    kind: 'MAP_ORIGIN' as const,
+                    beforeSeq: 100,
+                    throughSeq: 40,
+                    messageSeqOffset: 0,
+                  },
+                }
+              : {}),
+          },
+        ),
+      ).resolves.toEqual([]);
+      // The following home-authored replay still reaches message lookup.
+      // The filtered item never reaches receipt association or message writes.
+      expect(findFirst).toHaveBeenCalledOnce();
+      expect(store).not.toHaveBeenCalled();
+      expect(applyProcessingReceipt).not.toHaveBeenCalled();
+      const statements = execute.mock.calls.map(
+        ([statement]) => dialect.sqlToQuery(statement).sql,
+      );
+      expect(
+        statements.filter((query) => query.startsWith('ROLLBACK TO SAVEPOINT')),
+      ).toHaveLength(1);
+    },
+  );
+
   it('does not discard database failures as malformed peer messages', async () => {
     const service = createMessagePageService();
     Object.assign(service, {

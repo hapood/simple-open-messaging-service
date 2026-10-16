@@ -198,7 +198,10 @@ export class FederationThreadForwardRoundExecutorService {
     query.set('after', params.after.toString());
     query.set('through', params.through.toString());
     query.set('take', params.take.toString());
-    query.set('includeSelf', 'true');
+    query.set(
+      'includeSelf',
+      source.kind === 'GROUP' && source.localGroupAuthority ? 'false' : 'true',
+    );
     let response: FederationThreadResourceResponse<FederationMessageQueryPage>;
     try {
       response = await this.threadResources.fetch<FederationMessageQueryPage>(

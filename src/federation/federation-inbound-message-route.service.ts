@@ -162,44 +162,11 @@ export class FederationInboundMessageRouteService {
         // by this server, which return as authoritative-coordinate receipts.
         authority = author.receiverLocal ? 'LOCAL' : 'PEER';
       }
-      if (threadRows.length === 0 && item.originSeq != null) {
-        // A mirror may return any author from this origin's timeline. Resolve only
-        // the local group and current mirror audience here; the consumer associates
-        // the exact author/origin coordinate and warns when its target is absent.
-        const receipt = await tx.execute<{
-          threadId: number;
-          federationVersion: number;
-          toAccount: string;
-        }>(sql`
-          SELECT thread.id AS "threadId", thread."federationVersion",
-                 group_user.account AS "toAccount"
-          FROM "MessageThread" thread
-          JOIN ${groupStateSql} group_user ON group_user.id = thread.id
-          WHERE thread.type = 'GROUP'
-            AND group_user.account = ${normalizeAccount(item.thread.account)}
-            AND group_user."namespaceId" = 0
-            AND EXISTS (
-              SELECT 1 FROM "RelationshipPair" pair
-              WHERE pair."threadId" = thread.id
-                AND pair.kind = 'GROUP_MEMBER' AND pair.active = true
-                AND pair."endpointBType" = 'USER'
-                AND pair."endpointBNamespaceId" = ${namespaceId}
-            )
-          LIMIT 1
-        `);
-        threadRows = receipt.rows;
-        if (threadRows.length > 0) authority = 'LOCAL';
-        if (threadRows.length === 0) {
-          throw new FederationMessageContextError(
-            'group receipt has no local authoritative group or mirror audience',
-          );
-        }
-      }
-      if (
-        threadRows.length === 0 &&
-        !author.publisherLocal &&
-        !author.receiverLocal
-      ) {
+      // A group origin consumes only the member home's own authored submissions.
+      // Returned origin-distributed copies, including this server's own authors,
+      // must be filtered as invalid items, never associated as processing receipts.
+      // The page applier skips malformed items without blocking cursor progress.
+      if (threadRows.length === 0 && !author.publisherLocal) {
         throw new BusinessException(
           BusinessCode.FEDERATION_MALFORMED,
           'group mirror may only submit its locally managed authors',

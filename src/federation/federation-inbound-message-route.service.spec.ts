@@ -197,27 +197,35 @@ describe('FederationInboundMessageRouteService', () => {
     expect(query.params).toContain(9);
   });
 
-  it('routes a mirror receipt by local group and audience before target association', async () => {
-    const execute = vi
-      .fn()
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({
-        rows: [{ threadId: 11, federationVersion: 4, toAccount: '!group' }],
-      })
-      .mockResolvedValueOnce({ rows: [] });
-    const tx = { execute } as unknown as DatabaseTransaction;
-
-    await expect(
-      service().resolveMessage(tx, groupReceipt(), 'peer.test', 9, 12),
-    ).resolves.toMatchObject({
-      threadId: 11,
-      profileNamespaceId: 0,
-      authority: 'LOCAL',
-    });
-    const query = dialect.sqlToQuery(execute.mock.calls[1]![0] as SQL);
-    expect(query.sql).not.toContain('JOIN "Message"');
-    expect(query.sql).toContain('pair.active = true');
-  });
+  it.each(
+    [12, 13].flatMap((authorNamespaceId) =>
+      [false, true].map((receipt) => ({ authorNamespaceId, receipt })),
+    ),
+  )(
+    'filters non-home authors before receipt or member routing (namespace=$authorNamespaceId, receipt=$receipt)',
+    async ({ authorNamespaceId, receipt }) => {
+      const execute = vi.fn().mockResolvedValue({ rows: [] });
+      await expect(
+        service().resolveMessage(
+          { execute } as unknown as DatabaseTransaction,
+          {
+            ...groupMessage(authorNamespaceId),
+            ...(receipt
+              ? { originSeq: 3, originCreatedAt: 1_700_000_000_000 }
+              : {}),
+          },
+          'peer.test',
+          9,
+          12,
+        ),
+      ).rejects.toThrow(
+        'group mirror may only submit its locally managed authors',
+      );
+      // Only the peer-origin lookup runs: no local receipt-target lookup,
+      // membership lookup, or recipient resolution is attempted for this item.
+      expect(execute).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     [13, 13, 'PEER'],

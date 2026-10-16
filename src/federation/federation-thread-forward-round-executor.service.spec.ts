@@ -23,7 +23,7 @@ function response(data: object) {
   };
 }
 
-function harness(localGroupAuthority = false) {
+function harness(localGroupAuthority = false, kind: 'GROUP' | 'P2P' = 'GROUP') {
   const publishMessage = vi.fn().mockResolvedValue(undefined);
   const publishTombstone = vi.fn().mockResolvedValue(undefined);
   const inboundMessageCommits = {
@@ -124,12 +124,15 @@ function harness(localGroupAuthority = false) {
     messageEffects as never,
     {
       resolve: vi.fn().mockResolvedValue({
-        kind: 'GROUP',
+        kind,
         localGroupAuthority,
         threadId: 31,
         namespaceId: 7,
         peerDomain: 'origin.test',
-        selector: { account: '!group' },
+        selector:
+          kind === 'GROUP'
+            ? { account: '!group' }
+            : { account: 'bob', peerAccount: 'alice' },
       }),
     } as never,
     database as never,
@@ -182,20 +185,27 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       expect(h.publishTombstone).not.toHaveBeenCalled();
     },
   );
-  it('includes mirror receipts alongside submissions when the local group is authoritative', async () => {
-    const h = harness(true);
-    h.threadResources.fetch.mockResolvedValueOnce(
-      response({ messages: [], scannedThrough: 100, hasMore: false }),
-    );
-    await h.executor.runMessages(31, 'origin.test', 7, 50);
-    expect(h.threadResources.fetch).toHaveBeenCalledWith(
-      31,
-      '/s2s/v1/messages?account=%21group&after=10&through=100&take=50&includeSelf=true',
-      'origin.test',
-      16 * 1024 * 1024,
-    );
-    expect(h.messageAdvance).toHaveBeenCalledWith(h.tx, 31, 100, 100, 7);
-  });
+  it.each([
+    [true, 'GROUP', 'account=%21group', 'false'],
+    [false, 'GROUP', 'account=%21group', 'true'],
+    [false, 'P2P', 'account=bob&peerAccount=alice', 'true'],
+  ] as const)(
+    'sets the message filter without blocking empty-page progress (authority=%s, kind=%s)',
+    async (authority, kind, selector, includeSelf) => {
+      const h = harness(authority, kind);
+      h.threadResources.fetch.mockResolvedValueOnce(
+        response({ messages: [], scannedThrough: 100, hasMore: false }),
+      );
+      await h.executor.runMessages(31, 'origin.test', 7, 50);
+      expect(h.threadResources.fetch).toHaveBeenCalledWith(
+        31,
+        `/s2s/v1/messages?${selector}&after=10&through=100&take=50&includeSelf=${includeSelf}`,
+        'origin.test',
+        16 * 1024 * 1024,
+      );
+      expect(h.messageAdvance).toHaveBeenCalledWith(h.tx, 31, 100, 100, 7);
+    },
+  );
   it('commits a message page and its cursor independently', async () => {
     const h = harness();
     h.threadResources.fetch.mockResolvedValueOnce(

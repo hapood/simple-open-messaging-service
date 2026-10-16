@@ -142,29 +142,35 @@ describe('FederationThreadReverseRoundExecutorService', () => {
     },
   );
 
-  it('includes mirror receipts during an authoritative reverse scan', async () => {
-    const { source } = harness();
-    if (source.kind !== 'GROUP') throw new Error('expected group fixture');
-    source.localGroupAuthority = true;
-    const fetch = vi.fn().mockResolvedValue({
-      data: { messages: [], scannedThrough: 40, hasMore: false },
-    });
-    const executor = Object.create(
-      FederationThreadReverseRoundExecutorService.prototype,
-    );
-    Object.assign(executor, { threadResources: { fetch } });
-    await executor.fetchMessages(source, {
-      before: 100,
-      through: 40,
-      take: 20,
-    });
-    expect(fetch).toHaveBeenCalledWith(
-      31,
-      '/s2s/v1/messages?account=%21group&before=100&through=40&take=20&includeSelf=true',
-      'origin.test',
-      16 * 1024 * 1024,
-    );
-  });
+  it.each([
+    [true, 'GROUP', 'account=%21group', 'false'],
+    [false, 'GROUP', 'account=%21group', 'true'],
+    [false, 'P2P', 'account=bob&peerAccount=alice', 'true'],
+  ] as const)(
+    'sets the reverse message filter (authority=%s, kind=%s)',
+    async (authority, kind, selector, includeSelf) => {
+      const { source } = harness(kind);
+      if (source.kind === 'GROUP') source.localGroupAuthority = authority;
+      const fetch = vi.fn().mockResolvedValue({
+        data: { messages: [], scannedThrough: 40, hasMore: false },
+      });
+      const executor = Object.create(
+        FederationThreadReverseRoundExecutorService.prototype,
+      );
+      Object.assign(executor, { threadResources: { fetch } });
+      await executor.fetchMessages(source, {
+        before: 100,
+        through: 40,
+        take: 20,
+      });
+      expect(fetch).toHaveBeenCalledWith(
+        31,
+        `/s2s/v1/messages?${selector}&before=100&through=40&take=20&includeSelf=${includeSelf}`,
+        source.peerDomain,
+        16 * 1024 * 1024,
+      );
+    },
+  );
   it('executes one group gap without changing wire boundaries', async () => {
     const { executor, fetchMessages, commit, source, batch } = harness();
 
