@@ -76,9 +76,8 @@ export class AppComponent {
   // WebPushService.init() subscribes the browser/PWA to Web Push (VAPID). Self-guards to a no-op in
   // the Tauri shell and on unsupported browsers; surfaces a toast on permission/subscribe failures.
   private readonly webPush = inject(WebPushService);
-  // SseLifecycleService listens to visibilitychange — disconnects SSE on Android background (graceful
-  // close), reconnects on resume. PC/browser keep SSE alive. Eagerly constructed so the listener is
-  // live for the whole session.
+  // Application-session realtime orchestration is initialized before session restoration. Browser
+  // foreground recovery is renderer-owned; Android/desktop native connections keep their own lifecycle.
   private readonly sseLifecycle = inject(SseLifecycleService);
   // UnreadAttentionService prefixes the window/tab title with "(N)" + posts a system notification
   // when a durable content head advances while the window is unfocused. Covers PC desktop + browser. Eagerly
@@ -145,9 +144,8 @@ export class AppComponent {
       this.route.popupDlg(
         PopupType.FORWARD,
         {
-          purpose: 'NATIVE_SHARE',
+          kind: 'NATIVE_SHARE',
           sharedText: payload.text,
-          mode: 'DIRECT',
         },
         async (result) => {
           this.nativeShareDialogId = null;

@@ -13,6 +13,7 @@ import { SettingsComponent } from '../components/settings/settings.component';
 import { UploadDetailDialogComponent } from '../components/upload-detail-dialog/upload-detail-dialog.component';
 import {
   ForwardDialogComponent,
+  type ForwardDialogKind,
   type ForwardDialogResult,
 } from '../components/forward-dialog/forward-dialog.component';
 import type {
@@ -123,7 +124,7 @@ export interface PopupInput {
     subject?: Subject<any>;
     initialTab?: 'add' | 'pending';
     initialUser?: UserRef;
-    initialAddress?: { account: string; domain: string };
+    initialAddress?: { account: string; domain: string; publicKey: string };
   };
   [PopupType.FRIEND_INVITE]: { user: UserRef; standalone: true };
   [PopupType.NEW_GROUP]: undefined;
@@ -146,8 +147,7 @@ export interface PopupInput {
   [PopupType.FORWARD]: {
     messages?: readonly ForwardMessageItem[];
     recordKind?: ForwardRecordKind;
-    mode?: 'DIRECT' | 'HISTORY';
-    purpose?: 'FORWARD' | 'CHAT_CARD' | 'NATIVE_SHARE';
+    kind?: ForwardDialogKind;
     sharedText?: string;
   };
   [PopupType.FORWARD_DETAIL]: { bundleId: string };

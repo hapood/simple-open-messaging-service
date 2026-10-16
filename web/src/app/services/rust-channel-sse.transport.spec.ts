@@ -5,28 +5,15 @@ import type {
   StandardMessage,
 } from './realtime-transport';
 
-/**
- * RustChannelSseTransport unit tests — the Tauri DESKTOP event-routing seam.
- *
- * This transport is the web-side adapter for the Rust SSE supervisor (src-tauri/src/lib.rs `sse_*`
- * commands): it subscribes to the `soms-sse-*` Tauri events and re-emits them onto the sink, drives
- * `sse_start`/`sse_stop`/`sse_get_state`/`sse_net`, and forwards navigator online/offline. It is pure
- * logic over `window.__TAURI__` (no HttpClient / worker / SSE) — drive the captured event listeners +
- * invoke recorder and assert what the sink received. No Angular surface (mirrors
- * native-event.transport.spec.ts). The Rust half (the supervisor) has no instrumented harness here — it
- * is verified via the manual desktop build.
- */
-
-/** A recording sink: captures every call so each test asserts exactly what the transport emitted. */
 function recordingSink() {
   const events: StandardMessage[] = [];
   const states: ConnectionState[] = [];
-  let reconnects = 0;
-  const forceLogouts: (string | undefined)[] = [];
   const reconnectIns: (number | null)[] = [];
+  const forceLogouts: (string | undefined)[] = [];
+  let reconnects = 0;
   const sink: RealtimeSink = {
-    onEvent: (m) => events.push(m),
-    onState: (s) => states.push(s),
+    onEvent: (event) => events.push(event),
+    onState: (state) => states.push(state),
     onReconnect: () => reconnects++,
     onForceLogout: (reason) => forceLogouts.push(reason),
     onReconnectIn: (ms) => reconnectIns.push(ms),
@@ -35,296 +22,316 @@ function recordingSink() {
     sink,
     events,
     states,
+    reconnectIns,
+    forceLogouts,
     reconnects: () => reconnects,
-    forceLogouts: () => forceLogouts,
-    reconnectIns: () => reconnectIns,
   };
 }
 
-interface FakeTauri {
-  /** Dispatch a Rust→JS event the way the supervisor's `app.emit` would. */
-  emit: (event: string, payload: unknown) => void;
-  /** Every command the transport invoked, in order. */
-  invokes: () => {
-    cmd: string;
-    args?: unknown;
-  }[];
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
-/** Install a minimal `window.__TAURI__` capturing `event.listen` handlers + recording `core.invoke`. */
-function installFakeTauri(initialState: ConnectionState = 'closed'): FakeTauri {
-  const listeners: Record<
-    string,
-    ((e: { payload: unknown }) => void) | undefined
-  > = {};
-  const invokes: {
-    cmd: string;
-    args?: unknown;
-  }[] = [];
-  let nextState = initialState;
-  const w = window as unknown as {
+/** Exercise the real runtime port, not a relative-import mock (unsupported by Angular's runner). */
+function installFakeTauri(
+  state: ConnectionState = 'closed',
+  start?: (sequence: number) => number | Promise<number>,
+  registration?: Promise<void>,
+) {
+  const listeners = new Map<string, (event: { payload: unknown }) => void>();
+  const invokes: { cmd: string; args?: Record<string, unknown> }[] = [];
+  const released: string[] = [];
+  let sequence = 0;
+  const root = window as unknown as {
     __TAURI_INTERNALS__?: unknown;
-    __TAURI__?: {
-      core?: {
-        invoke: (cmd: string, args?: unknown) => Promise<unknown>;
-      };
-      event?: {
-        listen: (
-          event: string,
-          h: (e: { payload: unknown }) => void,
-        ) => Promise<() => void>;
-        emit: (event: string, payload?: unknown) => Promise<void> | void;
-      };
-    };
+    __TAURI__?: unknown;
   };
-  w.__TAURI_INTERNALS__ = {}; // isTauri() truthy
-  w.__TAURI__ = {
+  root.__TAURI_INTERNALS__ = {};
+  root.__TAURI__ = {
     core: {
-      invoke: async (cmd: string, args?: unknown) => {
+      invoke: async (cmd: string, args?: Record<string, unknown>) => {
         invokes.push({ cmd, args });
-        if (cmd === 'sse_get_state') return nextState;
+        if (cmd === 'sse_start') {
+          ++sequence;
+          return start ? start(sequence) : sequence;
+        }
+        if (cmd === 'sse_get_state') return state;
+        if (cmd === 'sse_retry') return args?.['instance'];
         return undefined;
       },
     },
     event: {
-      listen: async (event: string, h: (e: { payload: unknown }) => void) => {
-        listeners[event] = h;
+      listen: async (
+        name: string,
+        callback: (event: { payload: unknown }) => void,
+      ) => {
+        listeners.set(name, callback);
+        if (registration) await registration;
         return () => {
-          if (listeners[event] === h) delete listeners[event];
+          released.push(name);
+          if (listeners.get(name) === callback) listeners.delete(name);
         };
       },
       emit: async () => {},
     },
   };
   return {
-    emit: (event, payload) => listeners[event]?.({ payload }),
-    invokes: () => invokes,
+    invokes,
+    released,
+    emit: (name: string, payload: unknown) =>
+      listeners.get(name)?.({ payload }),
+    handler: (name: string) => listeners.get(name)!,
   };
 }
 
-/** Wait until the transport's async start-up has fully wired itself. `startAsync` registers the event
- *  listeners first and invokes `sse_start` strictly after, so a recorded `sse_start` proves the
- *  transport is ready to receive emitted events. */
-const started = (tauri: ReturnType<typeof installFakeTauri>): Promise<void> =>
+const started = (platform: ReturnType<typeof installFakeTauri>) =>
   vi.waitFor(() =>
-    expect(tauri.invokes().some((i) => i.cmd === 'sse_start')).toBe(true),
+    expect(platform.invokes.some((call) => call.cmd === 'sse_get_state')).toBe(
+      true,
+    ),
   );
 
 describe('RustChannelSseTransport', () => {
-  // Each test's transport is stopped in afterEach so its window online/offline listeners (and the
-  // Tauri-event subscriptions) don't leak into the next test — `tauriInvoke` reads the LIVE
-  // `window.__TAURI__`, so a leaked handler from test N would fire against test N+1's fake.
   let active: RustChannelSseTransport[] = [];
-  const make = (sink: RealtimeSink): RustChannelSseTransport => {
-    const t = new RustChannelSseTransport(sink);
-    active.push(t);
-    return t;
+  const make = (sink: RealtimeSink) => {
+    const transport = new RustChannelSseTransport(sink);
+    active.push(transport);
+    return transport;
   };
-
   afterEach(() => {
-    for (const t of active) t.stop();
+    for (const transport of active) transport.stop();
     active = [];
-    const w = window as unknown as {
-      __TAURI_INTERNALS__?: unknown;
+    const root = window as unknown as {
       __TAURI__?: unknown;
+      __TAURI_INTERNALS__?: unknown;
     };
-    delete w.__TAURI_INTERNALS__;
-    delete w.__TAURI__;
+    delete root.__TAURI__;
+    delete root.__TAURI_INTERNALS__;
   });
 
-  it('starts the supervisor and seeds the banner from sse_get_state', async () => {
-    const t = installFakeTauri('reconnecting');
-    const rec = recordingSink();
-    make(rec.sink).start();
-    // The seed lands right after sse_start (sse_get_state follows it in startAsync) — waiting on the
-    // seeded banner state also proves sse_start was invoked.
-    await vi.waitFor(() => expect(rec.states).toContain('reconnecting'));
-    expect(t.invokes().some((i) => i.cmd === 'sse_start')).toBe(true);
+  it('starts the supervisor and seeds the banner from the owned state', async () => {
+    const platform = installFakeTauri('reconnecting');
+    const output = recordingSink();
+    make(output.sink).start();
+    await vi.waitFor(() => expect(output.states).toContain('reconnecting'));
+    expect(platform.invokes).toContainEqual({
+      cmd: 'sse_get_state',
+      args: { instance: 1 },
+    });
   });
-
-  it('forwards a soms-sse-event frame verbatim into a StandardMessage', async () => {
-    const t = installFakeTauri();
-    const rec = recordingSink();
-    make(rec.sink).start();
-    await started(t);
-    t.emit('soms-sse-event', {
+  it('forwards a business frame verbatim', async () => {
+    const platform = installFakeTauri();
+    const output = recordingSink();
+    make(output.sink).start();
+    await started(platform);
+    const message = {
       event: 'STATE_FEED_UPDATED',
       status: 0,
       message: 'new message',
       data: { id: 5 },
-    });
-    expect(rec.events).toEqual([
-      {
-        event: 'STATE_FEED_UPDATED',
-        status: 0,
-        message: 'new message',
-        data: { id: 5 },
-      },
-    ]);
+    };
+    platform.emit('soms-sse-event', message);
+    expect(output.events).toEqual([message]);
   });
-
-  it('forwards soms-sse-state transitions onto the sink (banner tracks the Rust socket)', async () => {
-    const t = installFakeTauri('closed');
-    const rec = recordingSink();
-    make(rec.sink).start();
-    await started(t);
-    t.emit('soms-sse-state', 'connecting');
-    t.emit('soms-sse-state', 'open');
-    expect(rec.states).toContain('connecting');
-    expect(rec.states).toContain('open');
+  it('forwards connection-state transitions', async () => {
+    const platform = installFakeTauri();
+    const output = recordingSink();
+    make(output.sink).start();
+    await started(platform);
+    platform.emit('soms-sse-state', 'connecting');
+    platform.emit('soms-sse-state', 'open');
+    expect(output.states).toContain('connecting');
+    expect(output.states).toContain('open');
   });
-
-  it('forwards the soms-sse-reconnect pulse (Rust owns the openedOnce logic, not this class)', async () => {
-    const t = installFakeTauri();
-    const rec = recordingSink();
-    make(rec.sink).start();
-    await started(t);
-    t.emit('soms-sse-reconnect', null);
-    expect(rec.reconnects()).toBe(1);
+  it('forwards reconnect pulses without inferring openedOnce', async () => {
+    const platform = installFakeTauri();
+    const output = recordingSink();
+    make(output.sink).start();
+    await started(platform);
+    platform.emit('soms-sse-reconnect', null);
+    expect(output.reconnects()).toBe(1);
   });
-
-  it('forwards soms-sse-reconnect-in (the supervisor backoff deadline) for the countdown chip', async () => {
-    const t = installFakeTauri();
-    const rec = recordingSink();
-    make(rec.sink).start();
-    await started(t);
-    t.emit('soms-sse-reconnect-in', 8000);
-    expect(rec.reconnectIns()).toEqual([8000]);
+  it('forwards scheduled reconnect deadlines', async () => {
+    const platform = installFakeTauri();
+    const output = recordingSink();
+    make(output.sink).start();
+    await started(platform);
+    platform.emit('soms-sse-reconnect-in', 8000);
+    expect(output.reconnectIns).toEqual([8000]);
   });
-
-  it('threads the FORCE_LOGOUT reason from the Rust payload for a tailored notice', async () => {
-    const t = installFakeTauri();
-    const rec = recordingSink();
-    make(rec.sink).start();
-    await started(t);
-    t.emit('soms-sse-force-logout', { reason: 'device_revoke' });
-    expect(rec.forceLogouts()).toEqual(['device_revoke']);
+  it('preserves the forced-logout reason', async () => {
+    const platform = installFakeTauri();
+    const output = recordingSink();
+    make(output.sink).start();
+    await started(platform);
+    platform.emit('soms-sse-force-logout', { reason: 'device_revoke' });
+    expect(output.forceLogouts).toEqual(['device_revoke']);
   });
-
-  it('force-logout with no reason resolves to undefined', async () => {
-    const t = installFakeTauri();
-    const rec = recordingSink();
-    make(rec.sink).start();
-    await started(t);
-    t.emit('soms-sse-force-logout', {});
-    expect(rec.forceLogouts()).toEqual([undefined]);
+  it('preserves an absent forced-logout reason', async () => {
+    const platform = installFakeTauri();
+    const output = recordingSink();
+    make(output.sink).start();
+    await started(platform);
+    platform.emit('soms-sse-force-logout', {});
+    expect(output.forceLogouts).toEqual([undefined]);
   });
-
-  it('navigator offline → sse_net(online:false); online → sse_net(online:true)', async () => {
-    const t = installFakeTauri();
-    const rec = recordingSink();
-    make(rec.sink).start();
-    await started(t);
+  it('forwards navigator facts using the owned lease', async () => {
+    const platform = installFakeTauri();
+    make(recordingSink().sink).start();
+    await started(platform);
     window.dispatchEvent(new Event('offline'));
     window.dispatchEvent(new Event('online'));
-    await vi.waitFor(() => {
-      const nets = t
-        .invokes()
-        .filter((i) => i.cmd === 'sse_net')
-        .map(
-          (i) =>
-            (
-              i.args as
-                | {
-                    online?: boolean;
-                  }
-                | undefined
-            )?.online,
-        );
-      expect(nets).toEqual([false, true]);
+    const facts = platform.invokes
+      .filter((call) => call.cmd === 'sse_net')
+      .slice(-2);
+    expect(facts.map((call) => call.args)).toEqual([
+      { instance: 1, online: false },
+      { instance: 1, online: true },
+    ]);
+  });
+  it('delegates retry while reconnecting to Rust', async () => {
+    const platform = installFakeTauri('reconnecting');
+    const transport = make(recordingSink().sink);
+    transport.start();
+    await started(platform);
+    transport.retryNow();
+    expect(platform.invokes).toContainEqual({
+      cmd: 'sse_retry',
+      args: { instance: 1, force: false },
     });
   });
-
-  it('retryNow() invokes sse_net(online:true) while reconnecting to reset backoff', async () => {
-    const t = installFakeTauri('reconnecting');
-    const rec = recordingSink();
-    const transport = make(rec.sink);
+  it('delegates terminal-worker restart rather than deciding it in the renderer', async () => {
+    const platform = installFakeTauri('closed');
+    const transport = make(recordingSink().sink);
     transport.start();
-    await started(t);
+    await started(platform);
     transport.retryNow();
+    expect(platform.invokes).toContainEqual({
+      cmd: 'sse_retry',
+      args: { instance: 1, force: false },
+    });
+    expect(
+      platform.invokes.filter((call) => call.cmd === 'sse_start'),
+    ).toHaveLength(1);
+    expect(platform.invokes.some((call) => call.cmd === 'sse_stop')).toBe(
+      false,
+    );
+  });
+  it('clears the countdown synchronously on manual retry', async () => {
+    const platform = installFakeTauri();
+    const output = recordingSink();
+    const transport = make(output.sink);
+    transport.start();
+    await started(platform);
+    transport.retryNow();
+    expect(output.reconnectIns).toContain(null);
+  });
+  it('stop releases its lease and detaches every listener', async () => {
+    const platform = installFakeTauri('open');
+    const output = recordingSink();
+    const transport = make(output.sink);
+    transport.start();
+    await started(platform);
+    transport.stop();
+    expect(platform.invokes).toContainEqual({
+      cmd: 'sse_stop',
+      args: { instance: 1 },
+    });
+    expect(output.states.at(-1)).toBe('closed');
+    platform.emit('soms-sse-event', { event: 'HELLO', status: 0, message: '' });
+    expect(output.events).toEqual([]);
+    expect(platform.released).toHaveLength(5);
+  });
+  it('start is idempotent while attached', async () => {
+    const platform = installFakeTauri();
+    const transport = make(recordingSink().sink);
+    transport.start();
+    await started(platform);
+    transport.start();
+    expect(
+      platform.invokes.filter((call) => call.cmd === 'sse_start'),
+    ).toHaveLength(1);
+  });
+  it('delegates force reconnect separately from retry', async () => {
+    const platform = installFakeTauri();
+    const transport = make(recordingSink().sink);
+    transport.start();
+    await started(platform);
+    transport.forceReconnect();
+    expect(platform.invokes).toContainEqual({
+      cmd: 'sse_retry',
+      args: { instance: 1, force: true },
+    });
+  });
+  it('late start completion stops only its obsolete lease', async () => {
+    const first = deferred<number>();
+    const platform = installFakeTauri('open', (sequence) =>
+      sequence === 1 ? first.promise : sequence,
+    );
+    const transport = make(recordingSink().sink);
+    transport.start();
+    await vi.waitFor(() =>
+      expect(platform.invokes.some((call) => call.cmd === 'sse_start')).toBe(
+        true,
+      ),
+    );
+    transport.stop();
+    transport.start();
+    await vi.waitFor(() =>
+      expect(platform.invokes).toContainEqual({
+        cmd: 'sse_replay_hello',
+        args: { instance: 2 },
+      }),
+    );
+    first.resolve(1);
+    await vi.waitFor(() =>
+      expect(platform.invokes).toContainEqual({
+        cmd: 'sse_stop',
+        args: { instance: 1 },
+      }),
+    );
+    expect(platform.invokes).not.toContainEqual({
+      cmd: 'sse_stop',
+      args: { instance: 2 },
+    });
+  });
+  it('queued callbacks from an old attach cannot publish into a new attach', async () => {
+    const platform = installFakeTauri();
+    const output = recordingSink();
+    const transport = make(output.sink);
+    transport.start();
+    await started(platform);
+    const stale = platform.handler('soms-sse-event');
+    transport.stop();
+    transport.start();
     await vi.waitFor(() =>
       expect(
-        t.invokes().some(
-          (i) =>
-            i.cmd === 'sse_net' &&
-            (
-              i.args as {
-                online?: boolean;
-              }
-            )?.online === true,
-        ),
-      ).toBe(true),
+        platform.invokes.filter((call) => call.cmd === 'sse_start'),
+      ).toHaveLength(2),
     );
+    stale({ payload: { event: 'HELLO', status: 0, message: '' } });
+    expect(output.events).toEqual([]);
+    platform.emit('soms-sse-event', { event: 'HELLO', status: 0, message: '' });
+    expect(output.events).toHaveLength(1);
   });
-
-  it('retryNow() restarts a closed supervisor instead of waking an exited task', async () => {
-    const t = installFakeTauri('closed');
-    const rec = recordingSink();
-    const transport = make(rec.sink);
-    transport.start();
-    await started(t);
-    await vi.waitFor(() => expect(rec.states).toContain('closed'));
-    transport.retryNow();
-    await vi.waitFor(() =>
-      expect(t.invokes().filter((i) => i.cmd === 'sse_start')).toHaveLength(2),
+  it('late registrations are disposed without starting a native worker', async () => {
+    const registration = deferred<void>();
+    const platform = installFakeTauri(
+      'closed',
+      undefined,
+      registration.promise,
     );
-    expect(t.invokes().map((i) => i.cmd)).toEqual([
-      'sse_start', 'sse_get_state', 'sse_get_state', 'sse_stop', 'sse_start',
-    ]);
-    expect(t.invokes().some((i) => i.cmd === 'sse_net')).toBe(false);
-  });
-
-  it('retryNow() drops the scheduled countdown (the manual retry voids the backoff deadline)', async () => {
-    const t = installFakeTauri();
-    const rec = recordingSink();
-    const transport = make(rec.sink);
+    const transport = make(recordingSink().sink);
     transport.start();
-    await started(t);
-    transport.retryNow();
-    // retryNow() drops the countdown synchronously via the sink.
-    expect(rec.reconnectIns()).toContain(null);
-  });
-
-  it('stop() invokes sse_stop, detaches the listeners (further emits are no-ops), and emits closed', async () => {
-    const t = installFakeTauri('open');
-    const rec = recordingSink();
-    const transport = make(rec.sink);
-    transport.start();
-    await started(t);
     transport.stop();
-    // Remove from `active` so afterEach doesn't double-stop (stop is idempotent anyway).
-    active = active.filter((x) => x !== transport);
-    // stop() detaches listeners + emits closed synchronously; only the fire-and-forget sse_stop
-    // invoke records a microtask later — wait on that record.
-    await vi.waitFor(() =>
-      expect(t.invokes().some((i) => i.cmd === 'sse_stop')).toBe(true),
+    registration.resolve();
+    await vi.waitFor(() => expect(platform.released).toHaveLength(5));
+    expect(platform.invokes.some((call) => call.cmd === 'sse_start')).toBe(
+      false,
     );
-    expect(rec.states[rec.states.length - 1]).toBe('closed');
-    // Listeners detached → a Rust emit no longer reaches the sink.
-    t.emit('soms-sse-event', {
-      event: 'STATE_FEED_UPDATED',
-      status: 0,
-      message: 'new message',
-      data: { id: 9 },
-    });
-    expect(rec.events.length).toBe(0);
-  });
-
-  it('start() is idempotent — a second start does not re-subscribe or re-spawn', async () => {
-    const t = installFakeTauri();
-    const rec = recordingSink();
-    const transport = make(rec.sink);
-    transport.start();
-    await started(t);
-    const firstStarts = t.invokes().filter((i) => i.cmd === 'sse_start').length;
-    transport.start();
-    // Negative (absence) assertion: the sync idempotence guard already returned before startAsync
-    // could run; a single macrotask turn fully drains the microtask chains (the fakes schedule no
-    // timers), so a would-be second sse_start would be visible here.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const secondStarts = t
-      .invokes()
-      .filter((i) => i.cmd === 'sse_start').length;
-    expect(secondStarts).toBe(firstStarts);
   });
 });

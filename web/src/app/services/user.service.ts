@@ -737,10 +737,23 @@ export class UserService {
   /** One-shot temporary SSE used only for federated exact resolve. Unsubscribing closes the stream;
    * the server emits exactly one resolved/failed terminal and never creates a User stub. */
   resolveFederatedUser(
-    params: { account: string; domain: string },
+    params: {
+      account: string;
+      domain: string;
+      publicKey?: string;
+      publisherNamespaceId?: number;
+      profileNamespaceId?: number;
+    },
     onProgress?: (stage: FederatedResolveStage) => void,
   ): Observable<FederatedResolveResult> {
-    const query = new URLSearchParams(params);
+    const query = new URLSearchParams();
+    query.set('account', params.account);
+    query.set('domain', params.domain);
+    if (params.publicKey) query.set('publicKey', params.publicKey);
+    if (params.publisherNamespaceId !== undefined)
+      query.set('publisherNamespaceId', String(params.publisherNamespaceId));
+    if (params.profileNamespaceId !== undefined)
+      query.set('profileNamespaceId', String(params.profileNamespaceId));
     // HttpClient is intentional: browser requests use the httpOnly cookie and
     // TauriHttpBackend routes native requests through Rust, which injects its
     // in-memory Bearer. The response is terminal and server-closed, so native

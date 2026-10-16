@@ -1264,7 +1264,7 @@ export class WebdbStorage {
     this.ready.set(false);
   }
 
-  private activateMessageLifetime(): void {
+  protected activateMessageLifetime(): void {
     this.messageLifetime = new AbortController();
     this.messageResetting = false;
     this.accountMaintenance = false;

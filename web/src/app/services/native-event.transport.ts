@@ -8,7 +8,7 @@ import { SSE_EVENT_FORCE_LOGOUT } from './sse-worker-protocol';
 
 /**
  * The Android realtime transport: consumes the `/events` frames Kotlin's RealtimeService forwards via
- * `window.__SOMS_EVENT__(type, data)`. The native service owns the single SSE connection (the WebView does
+ * `window.__SOMS_EVENT__(type, data)`. The shared Rust runtime owns the SSE connection (the WebView does
  * NOT open its own worker on Android); this class is a passive listener that re-emits each frame onto the
  * {@link RealtimeSink} in the same `StandardMessage` shape the worker transport produces, so all downstream
  * consumers are identical across platforms.
@@ -18,8 +18,8 @@ import { SSE_EVENT_FORCE_LOGOUT } from './sse-worker-protocol';
  * *transitions* — a freshly-booted WebView (or a renderer-reclaim reload) would otherwise not know the
  * live state until the next transition, leaving the banner stale.
  *
- * There is no token handshake and no reconnect backoff here: Kotlin authenticates `/events` with the
- * session token it already holds and owns its own backoff + `START_STICKY` restart. `stop` only detaches
+ * There is no token handshake and no reconnect backoff here: Rust authenticates and owns connection
+ * policy; Kotlin supplies OS service/connectivity adapters. `stop` only detaches
  * the JS listeners (logout / origin swap) — it does NOT close the native stream, whose lifecycle is
  * independent (driven by `SomsFcm.setSessionToken` + fg/bg).
  */
@@ -59,7 +59,7 @@ export class NativeEventTransport extends RealtimeTransport {
     window.__SOMS_CONN_STATE__ = (state: string) => {
       this.onConnState(state as ConnectionState);
     };
-    // Kotlin → JS: the scheduled-ms-until-next-reconnect from `scheduleReopen`'s backoff, so the chip can
+    // Android adapter → JS: the shared runtime's next-reconnect deadline, so the chip can
     // render a live countdown (the facade owns the clock; this just hands it the deadline).
     window.__SOMS_RECONNECT_IN__ = (ms: number) => {
       this.sink.onReconnectIn(ms);
@@ -110,7 +110,7 @@ export class NativeEventTransport extends RealtimeTransport {
   }
 
   /** User-initiated retry (the disconnected chip). Routes through `SomsFcm.retryNow()` → an ACTION_RETRY
-   *  Intent that cancels Kotlin's pending backoff + reconnects at once (parity with the worker's
+   *  Intent that asks Rust to cancel pending backoff + reconnect at once (parity with the worker's
    *  retry-now and Rust's sse_net). The scheduled backoff is voided, so drop the countdown; a fresh
    *  deadline is pushed on the next failure, success clears it via the state transition. */
   override retryNow(): void {

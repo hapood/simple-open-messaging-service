@@ -32,7 +32,7 @@ import {
 } from './http-resilience.interceptor';
 import { correlationIdInterceptor } from './correlation-id.interceptor';
 import { GlobalErrorHandler } from './global-error.handler';
-import { AuthService } from './services/auth.service';
+import { SseLifecycleService } from './services/sse-lifecycle.service';
 import { routes } from './app.routes';
 import { InlineTranslocoLoader } from './i18n/transloco.loader';
 import { isTauri } from './services/runtime';
@@ -70,8 +70,9 @@ export const appConfig: ApplicationConfig = {
     {
       provide: APP_INITIALIZER,
       multi: true,
-      deps: [AuthService],
-      useFactory: (auth: AuthService) => () => auth.restoreSession(),
+      deps: [SseLifecycleService],
+      useFactory: (coordinator: SseLifecycleService) => () =>
+        coordinator.restoreSession(),
     },
     provideZonelessChangeDetection(),
     {

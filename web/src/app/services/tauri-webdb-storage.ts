@@ -4,7 +4,7 @@ import type { SessionLifecycleService } from './session-lifecycle.service';
 import { WebdbStorage } from './webdb-storage';
 import type { LocalThreadAttention } from '../../../../shared/thread-attention';
 import type { GroupMetaCommitPatch } from './group-meta-model';
-import { WebsocketService } from './websocket.service';
+import { NativeCommitEventsService } from './native-commit-events.service';
 import { tauriInvoke } from './runtime';
 
 /**
@@ -18,7 +18,7 @@ import { tauriInvoke } from './runtime';
  *  - Routes per-thread Group Meta + tombstone drains to the Rust executor via
  *    `tauriInvoke('native_db_drain_thread_misc')` instead of a worker
  *    `postMessage`. No `state-feed-db.worker` is ever created under Tauri.
- *  - Subscribes to the realtime event stream and forwards Rust's local
+ *  - Subscribes to the native executor completion port and forwards Rust's local
  *    completion events (`LOCAL_THREAD_FEED_COMMITTED`,
  *    `LOCAL_STATE_FEED_COMMITTED`, `LOCAL_GROUP_META_COMMITTED`) into the same
  *    `*Committed$` Subjects the browser path drives from worker `postMessage`,
@@ -30,7 +30,7 @@ import { tauriInvoke } from './runtime';
  * they do not belong in a worker.
  */
 export class TauriWebdbStorage extends WebdbStorage {
-  private readonly ws = inject(WebsocketService);
+  private readonly nativeCommits = inject(NativeCommitEventsService);
   private readonly destroyRef = inject(DestroyRef);
 
   constructor(lifecycle: SessionLifecycleService) {
@@ -38,9 +38,10 @@ export class TauriWebdbStorage extends WebdbStorage {
     super(() => null, lifecycle);
     // Rust → renderer local completions feed the same Subjects the browser
     // worker drives, keeping ThreadStoreService platform-agnostic.
-    this.ws.eventSubject
+    this.nativeCommits.committed$
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((m) => {
+        if (this.accountMaintenance || this.currentUserId === null) return;
         if (m.event === 'LOCAL_MESSAGE_DB_COMMITTED') {
           const data = m.data as
             | { userId?: number; threadId?: number }
@@ -125,13 +126,17 @@ export class TauriWebdbStorage extends WebdbStorage {
    *  durable state. We still record the active user and publish `ready` so the
    *  rest of the renderer (which treats `WebdbStorage` uniformly) keeps working. */
   override async openExistingForUser(userId: string): Promise<null> {
+    ++this.cacheEpoch;
     this.currentUserId = userId;
+    this.activateMessageLifetime();
     this.ready.set(true);
     return null;
   }
 
   override async recreateForUser(userId: string): Promise<null> {
+    ++this.cacheEpoch;
     this.currentUserId = userId;
+    this.activateMessageLifetime();
     this.ready.set(true);
     return null;
   }

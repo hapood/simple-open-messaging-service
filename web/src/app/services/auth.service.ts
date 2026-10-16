@@ -1,4 +1,4 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpContext } from '@angular/common/http';
 import {
   EMPTY,
@@ -28,10 +28,7 @@ import { ToastService } from './toast.service';
 import { CALL_SESSION_ENDING_EVENT } from './web-call.adapter';
 import { ThreadSendOutbox } from './thread-send-outbox.service';
 
-// Non-httpOnly presence cookie the backend sets/clears in lockstep with the httpOnly session cookie
-// (name mirrors src/auth/media-token.ts LOGGED_IN_COOKIE). On the pure-httpOnly browser build the
-// session token is JS-unreadable, so this flag is how the SPA tells whether a session exists.
-const LOGGED_IN_COOKIE = 'logged_in';
+import { SessionStateService } from './session-state.service';
 
 /** On-screen duration (ms) for important auth notices (forced-logout / persist-failure) — longer than the
  *  default toast so a user looking away still catches why they're back at the sign-in screen. */
@@ -88,14 +85,13 @@ export class AuthService {
   /** True when this client has a working OS secure store and may therefore be trusted (hold a permanent
    *  token). Probed once at boot by {@link restoreSession}. */
   /** Reactive login state — true while a session is active. Drives the realtime transport's
-   *  connect/disconnect lifecycle (WebsocketService's login effect) + the auth guards. On native this is
+   *  connect/disconnect lifecycle (SseLifecycleService) + the auth guards. On native this is
    *  the single source of truth for login (the token value is never held in JS); on browser it mirrors the
    *  non-httpOnly `logged_in` presence cookie (the session credential itself is JS-unreadable). Initialized
    *  from the cookie on browser so a page refresh while signed in starts `true`; native starts `false` and
    *  {@link restoreSession} flips it after re-establishing the session from secure storage. */
-  readonly loggedIn = signal<boolean>(
-    isTauri() ? false : this.hasPresenceCookie(),
-  );
+  private readonly sessionState = inject(SessionStateService);
+  readonly loggedIn = this.sessionState.loggedIn;
 
   constructor(
     private http: HttpClient,
@@ -117,25 +113,14 @@ export class AuthService {
    *  boolean). Browser (pure httpOnly): the token is JS-unreadable, so login state is the non-httpOnly
    *  `logged_in` presence cookie the backend sets/clears in lockstep with the session cookie. */
   isLoggedIn(): boolean {
-    return isTauri() ? this.loggedIn() : this.hasPresenceCookie();
-  }
-
-  private hasPresenceCookie(): boolean {
-    return (
-      typeof document !== 'undefined' &&
-      document.cookie
-        .split(';')
-        .some((c) => c.trim().startsWith(`${LOGGED_IN_COOKIE}=`))
-    );
+    return this.sessionState.isLoggedIn();
   }
 
   /** Drop the non-httpOnly presence cookie (JS can clear this; the httpOnly session cookie is cleared
    *  server-side on logout, or overwritten on next login). Used on logout / 401 so isLoggedIn() flips
    *  false immediately — avoids a stale-logged-in redirect loop with the guest guard. */
   private clearPresenceCookie() {
-    if (typeof document !== 'undefined') {
-      document.cookie = `${LOGGED_IN_COOKIE}=; Max-Age=0; Path=/; SameSite=Strict`;
-    }
+    this.sessionState.clearPresenceCookie();
   }
 
   /** Run the login-init origin race (once) before the auth request, so login targets a reachable origin
@@ -278,7 +263,7 @@ export class AuthService {
     if (isTauri()) await this.setSessionToken(token);
     // Browser (pure httpOnly): the backend set the httpOnly session cookie + presence cookie; no token is
     // held in JS.
-    this.loggedIn.set(true);
+    this.sessionState.setAuthenticated(true);
     this.push.onLogin();
     void this.webPush.onLogin();
   }
@@ -392,7 +377,7 @@ export class AuthService {
    *  from the keyring / EncryptedSharedPreferences). */
   private async applyRestoredToken(token: string): Promise<void> {
     await this.setSessionToken(token);
-    this.loggedIn.set(true);
+    this.sessionState.setAuthenticated(true);
   }
 
   /** Cold-start native restore reads and validates first. A missing, old, or damaged cache is rebuildable
@@ -411,7 +396,7 @@ export class AuthService {
    *  touch the native token (Rust `ProxyState.token` / OS secure store) — an in-flight authenticated
    *  request must still carry the Bearer, so the native clear is ordered after it (see {@link logout}). */
   private clearLocalSessionState(): void {
-    this.loggedIn.set(false);
+    this.sessionState.setAuthenticated(false);
   }
 
   /** Clear the native token (Rust `ProxyState.token` via `clear_session_token` + the OS secure store).

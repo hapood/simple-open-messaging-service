@@ -1,18 +1,16 @@
 import {
   Injectable,
   signal,
-  effect,
-  untracked,
   OnDestroy,
   isDevMode,
   inject,
 } from '@angular/core';
 import { SessionLifecycleService } from './session-lifecycle.service';
-import { PushRegistrationService } from './push-registration.service';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { BehaviorSubject, Subject } from 'rxjs';
-import { AuthService } from './auth.service';
-import { apiOrigin, isAndroidNative, isTauri } from './runtime';
+import { SessionStateService } from './session-state.service';
+import { NativeCommitEventsService } from './native-commit-events.service';
+import { isAndroidNative, isTauri } from './runtime';
 import {
   RealtimeTransport,
   type ConnectionState,
@@ -40,7 +38,7 @@ export type { StandardMessage, ConnectionState } from './realtime-transport';
  *    supervisor; Rust owns the /events connection (survives renderer reclaim, no plugin-http).
  *  - browser: {@link WorkerSseTransport} — spawns `sse.worker.ts` (same-origin, no plugin-http).
  *
- * The facade owns the public subjects/signal and the FORCE_LOGOUT side-effect (re-login); the transport
+ * The facade owns the public subjects/signal and reports FORCE_LOGOUT to session orchestration; the transport
  * is a pure producer that pushes into them via a {@link RealtimeSink}. Because all three transports
  * speak the same sink contract, downstream consumers are byte-identical across platforms — this class
  * carries no platform branching, only the one-time selection.
@@ -69,7 +67,10 @@ export class WebsocketService implements OnDestroy {
 
   private transport: RealtimeTransport;
   private readonly lifecycle = inject(SessionLifecycleService);
-  private readonly pushRegistration = inject(PushRegistrationService);
+  private readonly sessionState = inject(SessionStateService);
+  private readonly nativeCommits = inject(NativeCommitEventsService);
+  private readonly forcedLogout = new Subject<string | undefined>();
+  readonly forcedLogout$ = this.forcedLogout.asObservable();
   private transportEpoch = this.lifecycle.accountEpoch;
   private readonly createTransport: () => RealtimeTransport;
   /** Wall-clock deadline (ms epoch) of the current backoff sleep; 0 when none scheduled. */
@@ -88,9 +89,9 @@ export class WebsocketService implements OnDestroy {
    *  hang the threadlist forever. */
   private static readonly HELLO_TIMEOUT_MS = 10_000;
   private helloTimeout?: ReturnType<typeof setTimeout>;
-  constructor(private authService: AuthService) {
+  constructor() {
     // The sink funnels every transport's outputs onto this facade's single subjects/signal (+ the dev
-    // trace + the FORCE_LOGOUT re-login side-effect).
+    // trace + the FORCE_LOGOUT notification).
     const sink: RealtimeSink = {
       onEvent: (m) => {
         if (m.event === 'HELLO') {
@@ -140,7 +141,7 @@ export class WebsocketService implements OnDestroy {
           this.helloReady$.next(true);
           this.helloGeneration$.next(this.helloGeneration$.value + 1);
         }
-        this.pushRegistration.onEvent(m.event, m.data);
+        this.nativeCommits.publish(m);
         this.eventSubject.next(m);
       },
       onState: (s) => {
@@ -196,36 +197,6 @@ export class WebsocketService implements OnDestroy {
       this.clearHelloTimeout();
       this.clearReconnectIn();
     });
-    // Reactive realtime lifecycle: open the stream only while authenticated, tear it down on logout.
-    // Replaces the old eager boot connect() — on the browser cookie path that fetched /events with no
-    // session → 401 → force-logout → a redirect that aborted in-flight requests (the "Uncaught
-    // AbortError"). The effect's initial run opens the boot connection when already authenticated;
-    // AuthService.loggedIn is the reactive source (true on login/restore, false on logout/expiry).
-    effect(() => {
-      const online = this.authService.loggedIn();
-      untracked(() => {
-        online ? this.connect() : this.disconnect();
-      });
-    });
-    // A backend-origin swap (server-config save) repoints every URL live via the apiOrigin signal. The
-    // transport captured the OLD sseUrl at its `start`, so reconnect it against the new host: the first
-    // run is skipped (the login effect above already opened the boot connection if authenticated), then
-    // every change tears the transport down and restarts it reading the now-current sseUrl(). (On
-    // Android this is a harmless hook re-register — Kotlin picks up the new origin on its next
-    // reconnect.) untracked so the connect()/disconnect() calls don't themselves get wired into the
-    // reactive graph.
-    let booted = false;
-    effect(() => {
-      apiOrigin();
-      if (!booted) {
-        booted = true;
-        return;
-      }
-      untracked(() => {
-        this.disconnect();
-        this.connect();
-      });
-    });
   }
 
   /** Begin receiving (idempotent). On mobile this is called on every visible transition.
@@ -241,7 +212,7 @@ export class WebsocketService implements OnDestroy {
    *  `RustChannelSseTransport` blocks pre-login in the Rust supervisor's token wait; Android's
    *  `NativeEventTransport` is driven by Kotlin after login.) */
   public connect() {
-    if (!this.authService.isLoggedIn()) return;
+    if (!this.sessionState.isLoggedIn()) return;
     if (this.transportEpoch !== this.lifecycle.accountEpoch) {
       this.transport.stop();
       this.transportEpoch = this.lifecycle.accountEpoch;
@@ -336,14 +307,15 @@ export class WebsocketService implements OnDestroy {
   }
 
   ngOnDestroy(): void {
+    this.disconnect();
     this.clearReconnectIn();
     this.clearHelloTimeout();
   }
 
-  /** Server-initiated kick (all-device logout / password change / app-session replaced): drop the transport
-   *  + re-run login. `reason` (the revoke reason) is threaded to the login page as a one-shot notice. */
+  /** Stop receiving on a server-initiated kick and report it. Session cleanup/navigation belongs to
+   *  the application coordinator, not the transport. */
   private onForceLogout(reason?: string): void {
     this.disconnect();
-    this.authService.redoLoginAuth(reason);
+    this.forcedLogout.next(reason);
   }
 }

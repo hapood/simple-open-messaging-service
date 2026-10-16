@@ -3,7 +3,8 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import type { ConversationItem, Message } from './model';
 import type { ProfileSnapshot } from './webdb.service';
-import { WebdbService } from './webdb.service';
+import { WebdbService, provideWebdbService } from './webdb.service';
+import { SessionLifecycleService } from './session-lifecycle.service';
 
 describe('WebdbService native SQLite routing', () => {
   type TauriWindow = {
@@ -39,7 +40,7 @@ describe('WebdbService native SQLite routing', () => {
       },
     };
     TestBed.configureTestingModule({
-      providers: [provideZonelessChangeDetection(), WebdbService],
+      providers: [provideZonelessChangeDetection(), provideWebdbService()],
     });
     service = TestBed.inject(WebdbService);
     await service.openForUser('42');
@@ -50,6 +51,36 @@ describe('WebdbService native SQLite routing', () => {
     tauriWindow().__TAURI_INTERNALS__ = undefined;
     tauriWindow().__TAURI__ = undefined;
   });
+
+  it.each(['openExistingForUser', 'recreateForUser'] as const)(
+    're-arms the account lifetime on %s after logout without a renderer reload',
+    async (open) => {
+      TestBed.inject(SessionLifecycleService).invalidateSession();
+      await service.closeAndDelete('42');
+      responses.set('native_db_threads', []);
+      responses.set('native_db_get_meta', 7);
+      await service[open]('43');
+      await expect(service.getThreads()).resolves.toEqual([]);
+      await expect(
+        service.getSyncState('relationshipRequestStateRevision'),
+      ).resolves.toBe(7);
+      await expect(
+        service.drainThreadMisc(9, null, null),
+      ).resolves.toBeUndefined();
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          cmd: 'native_db_threads',
+          args: { userId: 43 },
+        }),
+      );
+      expect(calls).toContainEqual(
+        expect.objectContaining({
+          cmd: 'native_db_drain_thread_misc',
+          args: expect.objectContaining({ userId: 43, threadId: 9 }),
+        }),
+      );
+    },
+  );
 
   it('routes thread reads and writes to typed native commands with the active user id', async () => {
     const thread = {

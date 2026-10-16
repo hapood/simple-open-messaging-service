@@ -1,12 +1,9 @@
 import { TestBed } from '@angular/core/testing';
-import {
-  ApplicationRef,
-  provideZonelessChangeDetection,
-  signal,
-} from '@angular/core';
+import { ApplicationRef, provideZonelessChangeDetection } from '@angular/core';
 import { WebsocketService } from './websocket.service';
 import type { StandardMessage } from './realtime-transport';
-import { AuthService } from './auth.service';
+import { SessionStateService } from './session-state.service';
+import { NativeCommitEventsService } from './native-commit-events.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { PushRegistrationService } from './push-registration.service';
 
@@ -23,8 +20,8 @@ import { PushRegistrationService } from './push-registration.service';
  * so `globalThis.Worker` is swapped for {@link FakeWorker} before each test. The fake records itself as the
  * "live" worker so a test can `emit(...)` the exact `ToMain` messages the real worker posts (`state`,
  * `reconnect-in`) and assert what the facade did with them — driving the same sink path the production
- * transport uses, not a mock of it. AuthService is a one-method stub (`isLoggedIn` → true, so the
- * connect-on-boot guard fires and the transport actually starts).
+ * transport uses, not a mock of it. Credential-free session state and its presence cookie are set
+ * authenticated so the connect-on-boot guard fires and the transport actually starts).
  */
 
 /** A drop-in `Worker` stub: captures the instance so a test can push worker→main messages into the
@@ -68,20 +65,20 @@ describe('WebsocketService (reconnect countdown clock)', () => {
         { provide: PushRegistrationService, useValue: { onEvent: vi.fn() } },
         provideZonelessChangeDetection(),
         WebsocketService,
-        {
-          provide: AuthService,
-          useValue: { loggedIn: signal(true), isLoggedIn: () => true },
-        },
       ],
     });
+    document.cookie = 'logged_in=1; Path=/';
+    TestBed.inject(SessionStateService).setAuthenticated(true);
     ws = TestBed.inject(WebsocketService);
-    // Flush the ctor's apiOrigin effect's first (no-op) run so it can't fire during a test.
+    ws.connect();
+    // Transport mechanics are driven explicitly; application lifecycle is tested separately.
     TestBed.inject(ApplicationRef).tick();
   });
 
   afterEach(async () => {
     // Stop any running countdown ticker + tear the transport down so it never leaks into the next spec.
     ws?.disconnect();
+    document.cookie = 'logged_in=; Max-Age=0; Path=/';
     // One bounded task-turn drain of the teardown's pending promises. This is not a timed wait —
     // transport.stop() schedules no timers, so a single turn always suffices.
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -103,6 +100,39 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     expect(ws.state()).toBe('connecting');
     liveWorker!.emit({ type: 'event', payload: { event: 'CURRENT' } });
     expect(events).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports forced logout after stopping transport without constructing AuthService', () => {
+    const revoked = vi.fn(() => expect(ws.state()).toBe('closed'));
+    ws.forcedLogout$.subscribe(revoked);
+    liveWorker!.emit({ type: 'force-logout' });
+    expect(revoked).toHaveBeenCalledOnce();
+  });
+
+  it('publishes native completions only from the current account epoch', () => {
+    const completed = vi.fn();
+    TestBed.inject(NativeCommitEventsService).committed$.subscribe(completed);
+    const old = liveWorker!;
+    const message = {
+      event: 'LOCAL_STATE_FEED_COMMITTED',
+      status: 0,
+      message: '',
+      data: { userId: 42 },
+    };
+    old.emit({ type: 'event', payload: message });
+    expect(completed).toHaveBeenCalledWith(message);
+    TestBed.inject(SessionLifecycleService).invalidateSession();
+    ws.connect();
+    completed.mockClear();
+    old.emit({ type: 'event', payload: message });
+    expect(completed).not.toHaveBeenCalled();
+    liveWorker!.emit({ type: 'event', payload: message });
+    expect(completed).toHaveBeenCalledOnce();
+    liveWorker!.emit({
+      type: 'event',
+      payload: { ...message, event: 'HELLO_OTHER' },
+    });
+    expect(completed).toHaveBeenCalledOnce();
   });
 
   it('transfers the DB port to the active SSE worker', () => {

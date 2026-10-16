@@ -9,9 +9,8 @@ import { RouteService, RoutePage } from './route.service';
  * every logout entry point runs the identical sequence; each host only decides whether to close its own pane
  * first (a dialog must, a section has nothing to close).
  *
- * Lives outside {@link AuthService} because that service must NOT inject {@link WebsocketService} — the
- * websocket owns a login effect that depends on auth state, so auth→ws would be a circular DI. This service
- * is the cycle-free meeting point (nothing injects it back except the logout call sites).
+ * Lives outside {@link AuthService}: explicit logout coordinates authentication, navigation and a
+ * defensive transport disconnect. Infrastructure does not depend on this application action service.
  */
 @Injectable({ providedIn: 'root' })
 export class LogoutService {

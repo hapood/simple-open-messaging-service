@@ -3,7 +3,6 @@ import { installKeyboardInsetBridge } from './app/services/keyboard-inset.servic
 import { installConsoleBuffer } from './app/services/log-buffer';
 import {
   applySafeInsets,
-  installActiveOriginBridge,
   isTauri,
 } from './app/services/runtime';
 
@@ -63,11 +62,6 @@ applySafeInsets();
 // Install the native→JS keyboard-inset push (Android WebView) before bootstrap so the first native frame
 // is never missed. No-op in the browser build (the global is installed but never called there).
 installKeyboardInsetBridge();
-
-// Install the native→JS active-origin push (Android WebView) before bootstrap, so Kotlin's origin decisions
-// for the /events stream reach the Rust set_active_origin command from the very first one (Android is
-// Kotlin-authoritative; Rust follows). No-op in the browser/desktop build.
-installActiveOriginBridge();
 
 // The native launch overlay is already visible at this point. Session restoration is an APP_INITIALIZER,
 // so label that otherwise quiet wait before Angular constructs AppComponent. No-op outside Android.

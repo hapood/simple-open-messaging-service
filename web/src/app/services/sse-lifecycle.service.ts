@@ -1,38 +1,72 @@
-import { Injectable, inject } from '@angular/core';
+import {
+  DestroyRef,
+  Injectable,
+  effect,
+  inject,
+  untracked,
+} from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { AuthService } from './auth.service';
+import { PushRegistrationService } from './push-registration.service';
 import { WebsocketService } from './websocket.service';
-import { isTauri } from './runtime';
+import { ThreadRepository } from './thread-store.service';
+import { apiOrigin, isTauri } from './runtime';
 
-/**
- * Foreground catch-up for the WebView-owned SSE worker (browser only).
- *
- * On the **browser** the realtime transport is the in-WebView SSE worker. A Web Worker is NOT throttled
- * on tab hide, so the stream stays alive when minimized/hidden — but a worker that died while hidden
- * needs reconnecting on resume, so every `visible` transition calls `connect()` (idempotent — a no-op
- * when the worker is already up). The accompanying `reconnect$` pulse then drives
- * `ConversationListService.load()` to backfill anything missed while away.
- *
- * Under **Tauri** (Android + desktop) this is a NO-OP: the realtime connection is owned NATIVELY — by
- * Kotlin's `RealtimeService` on Android, by the Rust `sse_*` supervisor on desktop — both decoupled from
- * the WebView's lifecycle. The native/Rust owner keeps the stream alive across fg/bg (and a webview
- * reclaim), so the WebView must not touch the transport here.
- */
+/** Application-session realtime orchestration. Transport reports events; auth owns session actions.
+ * Browser foreground recovery lives here; native connection owners keep their foreground lifecycle. */
 @Injectable({ providedIn: 'root' })
 export class SseLifecycleService {
+  private readonly auth = inject(AuthService);
   private readonly ws = inject(WebsocketService);
+  // Android may replay cached HELLO synchronously from connect(), before the home route mounts.
+  // Repository consumers must exist before any authentication/origin effect can start receiving.
+  private readonly threads = inject(ThreadRepository);
+  private readonly pushRegistration = inject(PushRegistrationService);
+  private readonly destroyRef = inject(DestroyRef);
 
   constructor() {
-    if (typeof document === 'undefined') return;
-    document.addEventListener('visibilitychange', this.onVisibilityChange);
+    // Install reactions before restoration or any effect can start receiving, including cached HELLO.
+    this.ws.forcedLogout$
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((reason) => this.auth.redoLoginAuth(reason));
+    this.ws.eventSubject
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((message) =>
+        this.pushRegistration.onEvent(message.event, message.data),
+      );
+
+    let previousOrigin: string | undefined;
+    effect(() => {
+      const authenticated = this.auth.loggedIn();
+      const origin = apiOrigin();
+      untracked(() => {
+        if (!authenticated || !this.auth.isLoggedIn()) this.ws.disconnect();
+        else {
+          if (previousOrigin !== undefined && previousOrigin !== origin)
+            this.ws.disconnect();
+          this.ws.connect();
+        }
+        previousOrigin = origin;
+      });
+    });
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', this.onVisibilityChange);
+      this.destroyRef.onDestroy(() =>
+        document.removeEventListener(
+          'visibilitychange',
+          this.onVisibilityChange,
+        ),
+      );
+    }
+  }
+
+  /** Bootstrap awaits restoration only after the transport's session reactions are installed. */
+  restoreSession(): Promise<void> {
+    return this.auth.restoreSession();
   }
 
   private onVisibilityChange = (): void => {
-    // Tauri (Android + desktop): the connection is native/Rust-owned — lifecycle-independent. Do nothing.
-    if (isTauri()) return;
-    if (document.visibilityState === 'visible') {
-      // Resume: ensure the SSE worker is up (idempotent — a no-op when already connected). The
-      // reconnect$ pulse triggers ConversationListService.load() to backfill missed messages.
-      this.ws.connect();
-    }
-    // hidden: the worker stays alive (a Web Worker isn't throttled on tab hide) — nothing to do.
+    if (!isTauri() && document.visibilityState === 'visible') this.ws.connect();
   };
 }
