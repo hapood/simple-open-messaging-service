@@ -211,9 +211,10 @@ async function configureServer(cdp, origin) {
     input.dispatchEvent(new Event('change', { bubbles: true }));
     const submit = document.querySelector('.cfg-form button[type="submit"], button.cfg-action');
     if (!submit) throw new Error('server configuration submit button not found');
-    submit.click();
   })(${JSON.stringify(origin)})`);
-  await delay(1500);
+  await waitFor(cdp, `!!document.querySelector('.cfg-form button[type="submit"], button.cfg-action') && !document.querySelector('.cfg-form button[type="submit"], button.cfg-action').disabled`, 5000);
+  await cdp.eval(`document.querySelector('.cfg-form button[type="submit"], button.cfg-action').click()`);
+  await waitFor(cdp, `!!document.querySelector('.cfg-modal') || location.pathname.startsWith('/auth')`, 30000);
   const autoFill = await cdp.eval(`!!document.querySelector('.cfg-modal')`);
   if (autoFill) {
     await cdp.eval(`(() => {
@@ -282,12 +283,10 @@ async function otpLogin(cdp, account, code) {
     const submit = document.querySelector('app-otp-login-page button[type="submit"], form button[type="submit"]');
     if (!submit) throw new Error('OTP submit button not found');
   })(${JSON.stringify(account)}, ${JSON.stringify(code)})`);
-  const point = await cdp.eval(`(() => {
-    const rect = document.querySelector('app-otp-login-page button[type="submit"]').getBoundingClientRect();
-    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-  })()`);
-  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
-  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+  // Zoneless form validation updates the disabled state after the input events. Wait before clicking;
+  // Android's software keyboard can also move the form between coordinate capture and pointer delivery.
+  await waitFor(cdp, `!!document.querySelector('app-otp-login-page button[type="submit"]') && !document.querySelector('app-otp-login-page button[type="submit"]').disabled`, 5000);
+  await cdp.eval(`document.querySelector('app-otp-login-page button[type="submit"]').click()`);
   try {
     await waitFor(cdp, `!location.href.includes('/auth/otp')`, 30000);
   } catch (error) {
