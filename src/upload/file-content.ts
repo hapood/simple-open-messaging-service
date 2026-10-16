@@ -14,19 +14,13 @@
  * the size cap, a sanitized on-disk extension, a display MIME, and the FILE-content shape guard.
  */
 
-/** Per-file size cap (bytes). The global multipart limit (bootstrap.ts) is the hard ceiling above
- *  this; the service enforces this so raising the multipart limit for files does not also raise it
- *  for images (images stay capped at MAX_IMAGE_BYTES). */
 import { ContentType } from '../database/enums.js';
+import { MAX_MEDIA_FILE_BYTES } from '../../shared/media-upload-limits.js';
 
-export const MAX_FILE_BYTES = 50 * 1024 * 1024;
-
-/** Per-video size cap (bytes). The global multipart ceiling is raised to 100MB in bootstrap.ts to
- *  admit video; this is the per-route cap beneath it, enforced separately from images/files. */
-export const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
-
-/** Per-audio size cap (bytes). */
-export const MAX_AUDIO_BYTES = 50 * 1024 * 1024;
+/** Message attachment caps are uniform; transport-specific request limits remain independent. */
+export const MAX_FILE_BYTES = MAX_MEDIA_FILE_BYTES;
+export const MAX_VIDEO_BYTES = MAX_MEDIA_FILE_BYTES;
+export const MAX_AUDIO_BYTES = MAX_MEDIA_FILE_BYTES;
 
 /** Max display length of a stored filename (the upload path sanitizes/trims to this). */
 export const MAX_FILE_NAME_LEN = 100;

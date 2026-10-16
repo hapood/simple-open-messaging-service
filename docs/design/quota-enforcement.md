@@ -40,6 +40,20 @@ than an in-process counter. An allowance is additive to the base limit for
 that date. The effective limit is the namespace/account override, when set,
 otherwise the configured default, plus that day's allowance.
 
+## Attachment size and transport limits
+
+Message attachments of every media family must be strictly smaller than 1 GiB
+(maximum 1,073,741,823 bytes per file, including each individual gallery part).
+This object limit does not grant quota: daily byte and item admission still
+applies, so an account with less remaining daily budget can be refused earlier.
+Avatar format, dimensions, and byte limits remain separate.
+
+Browser and native message uploads use the resumable protocol, with a maximum
+4 MiB binary request body per chunk. Ordinary JSON requests retain the global
+1 MiB body limit. The buffered multipart compatibility transport retains its
+100 MiB per-file parser ceiling; large message attachments must use resumable
+uploads rather than increasing whole-file buffering.
+
 ## Admission semantics
 
 Federation count admission is authoritative at the transaction boundary. A

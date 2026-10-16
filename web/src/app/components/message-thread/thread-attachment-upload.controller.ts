@@ -16,6 +16,8 @@ import type { DebugToolsService } from '../../services/debug-tools.service';
 import type { ToastService } from '../../services/toast.service';
 import { MEDIA_STAGE_TIMEOUT_MS } from './message-send-timeout';
 
+import { MAX_MEDIA_FILE_BYTES } from '../../../../../shared/media-upload-limits';
+
 type UploadIntent = 'IMAGE' | 'VIDEO' | 'AUDIO';
 
 // Staging has no file transfer; uploads instead time out only after a period without progress.
@@ -79,6 +81,9 @@ export class ThreadAttachmentUploadController {
   ): Promise<void> {
     const threadId = this.host.threadId();
     if (!threadId) return;
+    for (const part of parts) {
+      if (await this.rejectOversized(cid, item, part.file)) return;
+    }
     const total = parts.reduce((sum, part) => sum + part.file.size, 0);
     const loaded = new Map<number, number>();
     this.transfers.start({
@@ -321,7 +326,7 @@ export class ThreadAttachmentUploadController {
     item: CbItem<ChatItemData>,
     retry: boolean,
   ): Promise<void> {
-    return this.uploadPart(cid, partId, file, item, 'IMAGE', 10, retry);
+    return this.uploadPart(cid, partId, file, item, 'IMAGE', retry);
   }
 
   uploadVideo(
@@ -331,7 +336,7 @@ export class ThreadAttachmentUploadController {
     item: CbItem<ChatItemData>,
     retry: boolean,
   ): Promise<void> {
-    return this.uploadPart(cid, partId, file, item, 'VIDEO', 100, retry);
+    return this.uploadPart(cid, partId, file, item, 'VIDEO', retry);
   }
 
   uploadAudio(
@@ -341,7 +346,7 @@ export class ThreadAttachmentUploadController {
     item: CbItem<ChatItemData>,
     retry: boolean,
   ): Promise<void> {
-    return this.uploadPart(cid, partId, file, item, 'AUDIO', 50, retry);
+    return this.uploadPart(cid, partId, file, item, 'AUDIO', retry);
   }
 
   async uploadFile(
@@ -352,7 +357,7 @@ export class ThreadAttachmentUploadController {
     retry: boolean,
   ): Promise<void> {
     const threadId = this.host.threadId();
-    if (!threadId || (await this.rejectOversized(cid, item, file, 50))) return;
+    if (!threadId || (await this.rejectOversized(cid, item, file))) return;
     try {
       const staged = await firstValueFrom(
         this.adapter
@@ -398,12 +403,10 @@ export class ThreadAttachmentUploadController {
     file: File,
     item: CbItem<ChatItemData>,
     intent: UploadIntent,
-    limitMb: number,
     retry: boolean,
   ): Promise<void> {
     const threadId = this.host.threadId();
-    if (!threadId || (await this.rejectOversized(cid, item, file, limitMb)))
-      return;
+    if (!threadId || (await this.rejectOversized(cid, item, file))) return;
     try {
       const staged = await firstValueFrom(
         this.adapter
@@ -480,12 +483,11 @@ export class ThreadAttachmentUploadController {
     cid: string,
     item: CbItem<ChatItemData>,
     file: File,
-    limitMb: number,
   ): Promise<boolean> {
-    if (file.size <= limitMb * 1024 * 1024) return false;
+    if (file.size <= MAX_MEDIA_FILE_BYTES) return false;
     this.transfers.fail(
       cid,
-      this.transloco.translate('transfer.fileTooLarge', { limit: limitMb }),
+      this.transloco.translate('transfer.attachmentTooLarge'),
       false,
     );
     await this.host.failPending(item);

@@ -21,16 +21,17 @@ import type { PublicMessage } from '../message/message.service.js';
 import { MessageService } from '../message/message.service.js';
 import { requireOutboundPendingMedia } from '../message/pending-media-row.js';
 import { UserQuotaService } from '../quota/user-quota.service.js';
-import {
-  MAX_FILE_NAME_LEN,
-  MAX_VIDEO_BYTES,
-  type OutboundFilePayload,
-} from './file-content.js';
+import { MAX_FILE_NAME_LEN, type OutboundFilePayload } from './file-content.js';
 import { ContentType } from '../database/enums.js';
 import { dataDirectory } from '../common/data-directory.js';
 import { UploadService } from './upload.service.js';
 
-export const RESUMABLE_CHUNK_SIZE = 4 * 1024 * 1024;
+import {
+  MAX_MEDIA_FILE_BYTES,
+  MEDIA_UPLOAD_CHUNK_BYTES,
+} from '../../shared/media-upload-limits.js';
+
+export const RESUMABLE_CHUNK_SIZE = MEDIA_UPLOAD_CHUNK_BYTES;
 
 export interface UploadSessionView {
   uploadId: string;
@@ -83,10 +84,8 @@ export class ResumableUploadService {
     dto: InitResumableUploadDto,
   ): Promise<UploadSessionView> {
     const stage = await this.requireStageForPart(userId, dto);
-    // Phase 7 type-agnostic: accept any staged media contentType (IMAGE/FILE/VIDEO/AUDIO/GALLERY).
-    // The per-type size caps are dropped in favor of the global multipart ceiling (MAX_VIDEO_BYTES)
-    // plus the per-account byte quota asserted below.
-    if (dto.totalBytes > MAX_VIDEO_BYTES) {
+    // The complete attachment limit is independent of transport chunk size and daily quota.
+    if (dto.totalBytes > MAX_MEDIA_FILE_BYTES) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'file too large',
@@ -196,7 +195,7 @@ export class ResumableUploadService {
         'empty upload part',
       );
     }
-    if (body.length > MAX_VIDEO_BYTES) {
+    if (body.length > MAX_MEDIA_FILE_BYTES) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
         'file too large',
@@ -712,7 +711,9 @@ export class ResumableUploadService {
           .select()
           .from(uploadSession)
           .where(eq(uploadSession.clientMessageId, clientMessageId));
-        const owned = sessions.filter((session) => session.creatorId === userId);
+        const owned = sessions.filter(
+          (session) => session.creatorId === userId,
+        );
         if (owned.length === 0) {
           const discardedStage = await this.messages.discardStaged(
             userId,
@@ -734,7 +735,9 @@ export class ResumableUploadService {
             409,
           );
         }
-        cleanup.push(...owned.map(({ uploadId, tmpKey }) => ({ uploadId, tmpKey })));
+        cleanup.push(
+          ...owned.map(({ uploadId, tmpKey }) => ({ uploadId, tmpKey })),
+        );
         await this.database.db
           .update(uploadSession)
           .set({
@@ -745,7 +748,10 @@ export class ResumableUploadService {
           })
           .where(
             and(
-              inArray(uploadSession.id, owned.map((session) => session.id)),
+              inArray(
+                uploadSession.id,
+                owned.map((session) => session.id),
+              ),
               inArray(uploadSession.status, ['UPLOADING', 'COMPLETING']),
             ),
           );
@@ -755,7 +761,9 @@ export class ResumableUploadService {
     } finally {
       // Wait out any in-flight append before the final unlink. New append calls observe ABORTED.
       for (const item of cleanup) {
-        await this.exclusive(item.uploadId, () => this.discardStaging(item.tmpKey));
+        await this.exclusive(item.uploadId, () =>
+          this.discardStaging(item.tmpKey),
+        );
       }
     }
   }
@@ -770,7 +778,9 @@ export class ResumableUploadService {
           .from(uploadSession)
           .where(eq(uploadSession.clientMessageId, clientMessageId))
           .orderBy(asc(uploadSession.position));
-        const owned = sessions.filter((session) => session.creatorId === userId);
+        const owned = sessions.filter(
+          (session) => session.creatorId === userId,
+        );
         if (owned.length === 0) {
           throw new BusinessException(
             BusinessCode.NOT_FOUND,
@@ -832,9 +842,12 @@ export class ResumableUploadService {
             );
           // Remove discarded rows before compacting positions. UploadSession has a unique
           // (clientMessageId, position) key, so aborted siblings cannot collide with compaction.
-          await this.database.db
-            .delete(uploadSession)
-            .where(inArray(uploadSession.id, discarded.map((item) => item.id)));
+          await this.database.db.delete(uploadSession).where(
+            inArray(
+              uploadSession.id,
+              discarded.map((item) => item.id),
+            ),
+          );
         }
         if (completed.length === 0) {
           await this.messages.discardStaged(userId, clientMessageId);
@@ -866,7 +879,9 @@ export class ResumableUploadService {
       });
     } finally {
       for (const item of cleanup) {
-        await this.exclusive(item.uploadId, () => this.discardStaging(item.tmpKey));
+        await this.exclusive(item.uploadId, () =>
+          this.discardStaging(item.tmpKey),
+        );
       }
     }
   }
@@ -878,7 +893,10 @@ export class ResumableUploadService {
   ) {
     for (const session of sessions) {
       if (!this.upload.casShardExists(session.digest!)) {
-        await this.upload.landStagedPart(this.partPath(session.tmpKey), session.digest!);
+        await this.upload.landStagedPart(
+          this.partPath(session.tmpKey),
+          session.digest!,
+        );
       }
     }
     const committed = await this.messages.commitOutboundBatch(
@@ -1037,7 +1055,10 @@ export class ResumableUploadService {
   /** Atomically rewrite the sidecar AFTER the bytes landed (write tmp + rename). */
   private async writeSidecar(tmpKey: string, offset: bigint) {
     const tmp = `${this.sidecarPath(tmpKey)}.tmp`;
-    await writeFile(tmp, JSON.stringify({ version: 1, offset: Number(offset) }));
+    await writeFile(
+      tmp,
+      JSON.stringify({ version: 1, offset: Number(offset) }),
+    );
     await rename(tmp, this.sidecarPath(tmpKey));
   }
 

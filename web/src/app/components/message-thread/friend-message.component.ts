@@ -15,13 +15,7 @@ import {
   viewChild,
   ChangeDetectionStrategy,
 } from '@angular/core';
-import {
-  catchError,
-  firstValueFrom,
-  map,
-  of,
-  Subscription,
-} from 'rxjs';
+import { catchError, firstValueFrom, map, of, Subscription } from 'rxjs';
 import { HttpClient } from '@angular/common/http';
 import { TranslocoModule, TranslocoService } from '@jsverse/transloco';
 import {
@@ -134,7 +128,10 @@ import { CallEventService } from '../../services/call-event.service';
 import { CallPresentationService } from '../../services/call-presentation.service';
 import { BusinessCode, translateBizResult } from '../../services/biz-code';
 import { tauriInvoke } from '../../services/runtime';
-import { ProfileRepository, type ResolvedProfile } from '../../services/profile-store.service';
+import {
+  ProfileRepository,
+  type ResolvedProfile,
+} from '../../services/profile-store.service';
 import { ProfileNamespaceRepository } from '../../services/profile-namespace-store.service';
 import { namespaceDisplayDomain } from '../../services/profile-namespace-domain';
 import { PopupType, RouteService } from '../../services/route.service';
@@ -143,6 +140,7 @@ import { GroupAnnouncementComponent } from '../group-announcement/group-announce
 import { ChatboxPopupComponent } from '../chatbox-popup/chatbox-popup.component';
 import { MemberProfileRepository } from '../../services/member-profile-store.service';
 import type { ProfileDemand } from '../../../../../shared/profile-demand';
+import { MAX_MEDIA_FILE_BYTES } from '../../../../../shared/media-upload-limits';
 import { ChatAppearanceService } from '../../services/chat-appearance.service';
 import { ALL_MENTION_ID, escapePlainText } from '../../lib/message-entity';
 import type { ChatMember } from '../chat-editor/chat-editor.component';
@@ -360,7 +358,12 @@ export class MessageThreadComponent implements OnDestroy {
           true,
         ),
       nativeVoice: (cid, resource, item) =>
-        this.nativeVoiceUploads.retry(cid, item, resource.threadId, resource.size),
+        this.nativeVoiceUploads.retry(
+          cid,
+          item,
+          resource.threadId,
+          resource.size,
+        ),
       nativeAttachment: (cid, resource, item) =>
         void this.queueNativeUpload(
           cid,
@@ -832,7 +835,9 @@ export class MessageThreadComponent implements OnDestroy {
         // A cold notification launch or background return can reset the tracker
         // after the kernel's one-time visible-enter events. Sample the current
         // mounted viewport before start() flushes the read cursor.
-        this.stableRead.startFromViewport(this.scroller?.getFullyVisibleIds() ?? []);
+        this.stableRead.startFromViewport(
+          this.scroller?.getFullyVisibleIds() ?? [],
+        );
       }
     });
     // Immunity frame drain: when a route-transition freeze ends, apply any viewport resize the kernel
@@ -1255,7 +1260,9 @@ export class MessageThreadComponent implements OnDestroy {
     this.initialLoadFailed.set(false);
     this.kernelReady = false;
     this.unreadDividerReady.set(false);
-    const initialPosition = this.convList.previewUnreadEntryBoundary(trd.threadId);
+    const initialPosition = this.convList.previewUnreadEntryBoundary(
+      trd.threadId,
+    );
     this.scrollState.open(null);
     const openOptions = messageOpenOptions(
       this.chatAppearance.openPosition(),
@@ -1929,7 +1936,9 @@ export class MessageThreadComponent implements OnDestroy {
     if (!visible) {
       // Commit only what was already visible before leaving the screen. Neither
       // in-flight SSE nor later background mounts may advance the read cursor.
-      this.stableRead.noteFullyVisible(this.scroller?.getFullyVisibleIds() ?? []);
+      this.stableRead.noteFullyVisible(
+        this.scroller?.getFullyVisibleIds() ?? [],
+      );
       this.stableRead.flush();
       this.stableRead.reset();
       this.unreadDividerReady.set(false);
@@ -1950,9 +1959,9 @@ export class MessageThreadComponent implements OnDestroy {
       this.convList.captureUnreadEntryBoundary(threadId)?.firstUnreadSeq ?? null;
     if (previous === next) return;
     this.scrollState.open(next);
-    this.pendingDividerRefresh = [...new Set(
-      [previous, next].filter((seq): seq is number => seq !== null),
-    )];
+    this.pendingDividerRefresh = [
+      ...new Set([previous, next].filter((seq): seq is number => seq !== null)),
+    ];
     this.refreshMountedDivider();
     this.updateStickyOverlays();
   }
@@ -2292,10 +2301,7 @@ export class MessageThreadComponent implements OnDestroy {
     item: CbItem<ChatItemData>,
     retry = false,
   ): Promise<void> {
-    const limitMb =
-      entry.kind === 'image' ? 10 : entry.kind === 'video' ? 100 : 50;
-    if (await this.rejectOversizedUpload(entry.cid, item, entry.file, limitMb))
-      return;
+    if (await this.rejectOversizedUpload(entry.cid, item, entry.file)) return;
     if (entry.kind === 'image') {
       const meta = await entry.probeMeta();
       return this.enqueueAttachmentUpload(entry.cid, () =>
@@ -2747,12 +2753,11 @@ export class MessageThreadComponent implements OnDestroy {
     clientMessageId: string,
     item: CbItem<ChatItemData>,
     file: File,
-    limitMb: number,
   ): Promise<boolean> {
-    if (file.size <= limitMb * 1024 * 1024) return false;
+    if (file.size <= MAX_MEDIA_FILE_BYTES) return false;
     this.transfers.fail(
       clientMessageId,
-      this.transloco.translate('transfer.fileTooLarge', { limit: limitMb }),
+      this.transloco.translate('transfer.attachmentTooLarge'),
       false,
     );
     await this.failPending(item);
@@ -2820,11 +2825,17 @@ export class MessageThreadComponent implements OnDestroy {
         this.transfers.start({
           clientMessageId: cid, threadId, kind: 'file',
           name: resource.parts[0].selection.name,
-          size: resource.parts.reduce((sum, part) => sum + part.selection.size, 0),
+          size: resource.parts.reduce(
+            (sum, part) => sum + part.selection.size,
+            0,
+          ),
         });
       }
     }
-    this.transfers.fail(cid, this.transloco.translate('transfer.confirmationTimeout'));
+    this.transfers.fail(
+      cid,
+      this.transloco.translate('transfer.confirmationTimeout'),
+    );
     this.transfers.registerRetry(cid, () => void this.retrySend(cid));
     this.transfers.registerDiscard(cid, () => this.discardOptimistic(cid));
   }
@@ -2859,7 +2870,9 @@ export class MessageThreadComponent implements OnDestroy {
     if (
       item.clientMessageId &&
       item.data.type === 'msg' &&
-      ['AUDIO', 'IMAGE', 'VIDEO', 'FILE', 'GALLERY'].includes(item.data.contentType)
+      ['AUDIO', 'IMAGE', 'VIDEO', 'FILE', 'GALLERY'].includes(
+        item.data.contentType,
+      )
     ) {
       const cid = item.clientMessageId;
       this.transfers.registerDiscard(cid, () => this.discardOptimistic(cid));

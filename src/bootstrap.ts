@@ -29,12 +29,12 @@ import {
   FEDERATION_WELL_KNOWN_PATH,
 } from './federation/federation-protocol.js';
 import { dataDirectory } from './common/data-directory.js';
+import { MEDIA_UPLOAD_CHUNK_BYTES } from '../shared/media-upload-limits.js';
 
-// Multipart upload size cap — the hard ceiling for any single uploaded part. Raised to 100MB so
-// POST /upload/video can admit video; images stay bounded at UploadService.MAX_IMAGE_BYTES, files at
-// MAX_FILE_BYTES, audio at MAX_AUDIO_BYTES (each enforced in its consumer) so this ceiling does not
-// also raise them. consumeImage/consumeFile/consumeVideo/consumeAudio treat over-limit as a
-// 'too-large' rejection (not a 500).
+// Keep the buffered multipart compatibility transport bounded independently of message file size.
+// Browser and native message attachments use resumable chunks; raising their complete-file limit
+// must not allow a whole GiB to be buffered by a single multipart upload. Avatar validation keeps
+// its separate format, dimension, and byte limits.
 const MULTIPART_LIMIT = 100 * 1024 * 1024;
 
 /** Browser/WebView cache lifetimes for authenticated uploads. Images are useful to retain briefly;
@@ -125,12 +125,12 @@ export async function configureApp(
     limits: { fileSize: MULTIPART_LIMIT },
   });
   // Resumable media chunks are raw binary rather than multipart. Parse exactly one bounded chunk
-  // into a Buffer; the per-route bodyLimit is the advertised chunk size.
+  // into a Buffer. Give this parser its own limit; ordinary JSON retains the global limit.
   adapter
     .getInstance()
     .addContentTypeParser(
       'application/octet-stream',
-      { parseAs: 'buffer' },
+      { parseAs: 'buffer', bodyLimit: MEDIA_UPLOAD_CHUNK_BYTES },
       (_request, body, done) => done(null, body),
     );
   // Cookie parsing for the httpOnly media_token cookie that authenticates same-origin /uploads/*

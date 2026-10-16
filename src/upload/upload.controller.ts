@@ -18,17 +18,13 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
-import { RouteConfig } from '@nestjs/platform-fastify';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { UploadService } from './upload.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MAX_VIDEO_BYTES } from './file-content.js';
 import { InitResumableUploadDto } from '../dto/resumable-upload.dto.js';
-import {
-  RESUMABLE_CHUNK_SIZE,
-  ResumableUploadService,
-} from './resumable-upload.service.js';
+import { ResumableUploadService } from './resumable-upload.service.js';
 import { ContentType } from '../database/enums.js';
 
 /**
@@ -83,7 +79,6 @@ export class UploadController {
 
   @ApiBearerAuth()
   @Put('uploads/resumable/:uploadId')
-  @RouteConfig({ bodyLimit: RESUMABLE_CHUNK_SIZE })
   @ApiConsumes('application/octet-stream')
   @ApiOperation({ summary: 'Append one ordered upload chunk' })
   appendResumable(
@@ -136,7 +131,9 @@ export class UploadController {
   @ApiBearerAuth()
   @Post('uploads/resumable/batch/:clientMessageId/send-completed')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Send completed files and discard unfinished files' })
+  @ApiOperation({
+    summary: 'Send completed files and discard unfinished files',
+  })
   sendCompletedResumableBatch(
     @Request() req: FastifyRequest,
     @Param('clientMessageId', new ParseUUIDPipe()) clientMessageId: string,
@@ -236,12 +233,7 @@ export class UploadController {
         payloads.push(view.result);
       } catch (error) {
         if (error instanceof BusinessException) {
-          return this.failUpload(
-            req,
-            error.bizCode,
-            error.message,
-            error.data,
-          );
+          return this.failUpload(req, error.bizCode, error.message, error.data);
         }
         throw error;
       }

@@ -30,6 +30,7 @@
     "pickFailed": "读取所选文件失败，请重新选择。",
     "confirmationTimeout": "等待发送确认超时，请重试或取消。",
     "fileTooLarge": "文件过大，最大支持 {{limit}} MB",
+    "attachmentTooLarge": "单个文件必须小于 1 GiB",
     "noActiveUploads": "当前没有上传任务",
     "headerUploading": "{{count}} 个文件上传中",
     "headerUploadingFailed": "{{uploading}} 个上传中 · {{failed}} 个失败",

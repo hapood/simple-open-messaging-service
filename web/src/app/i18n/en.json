@@ -30,6 +30,7 @@
     "pickFailed": "Couldn't read the selected file. Please choose it again.",
     "confirmationTimeout": "Delivery confirmation timed out. Retry or cancel.",
     "fileTooLarge": "File is too large. Maximum size: {{limit}} MB",
+    "attachmentTooLarge": "Each file must be smaller than 1 GiB.",
     "noActiveUploads": "No active uploads",
     "headerUploading": "{{count}} files uploading",
     "headerUploadingFailed": "{{uploading}} uploading · {{failed}} failed",
