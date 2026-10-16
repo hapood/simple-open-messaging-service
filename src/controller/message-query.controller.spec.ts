@@ -311,7 +311,15 @@ describe('MessageController.withdrawMessage quota', () => {
       {} as never,
       {} as never,
     );
-    const req = { user: { userId: 7 } } as unknown as FastifyRequest;
+    const req = {
+      user: { userId: 7 },
+      threadAccess: {
+        threadType: 'P2P',
+        friendshipActive: true,
+        membershipActive: true,
+        groupDissolved: false,
+      },
+    } as unknown as FastifyRequest;
 
     await controller.withdrawMessage(req, { threadId: 42, seq: 3 });
 
@@ -321,6 +329,61 @@ describe('MessageController.withdrawMessage quota', () => {
     expect(assertCanSend.mock.invocationCallOrder[0]).toBeLessThan(
       tickLax.mock.invocationCallOrder[0],
     );
+  });
+
+  it('rejects withdrawal when the retained thread is no longer writable', async () => {
+    const withdraw = vi.fn();
+    const controller = new MessageController(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { assertCanSend: vi.fn(), tickLax: vi.fn() } as never,
+      { withdraw } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    await expect(
+      controller.withdrawMessage(
+        {
+          user: { userId: 7 },
+          threadAccess: {
+            threadType: 'GROUP',
+            friendshipActive: true,
+            membershipActive: false,
+            groupDissolved: false,
+          },
+        } as unknown as FastifyRequest,
+        { threadId: 42, seq: 3 },
+      ),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.GROUP_FORBIDDEN });
+
+    await expect(
+      controller.withdrawMessage(
+        {
+          user: { userId: 7 },
+          threadAccess: {
+            threadType: 'P2P',
+            friendshipActive: false,
+            membershipActive: false,
+            groupDissolved: false,
+          },
+        } as unknown as FastifyRequest,
+        { threadId: 42, seq: 3 },
+      ),
+    ).rejects.toMatchObject({ bizCode: BusinessCode.FRIEND_NOT_FOUND });
+
+    expect(withdraw).not.toHaveBeenCalled();
   });
 });
 

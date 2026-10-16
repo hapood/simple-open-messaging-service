@@ -192,6 +192,24 @@ export class MessageController {
     @Request() req: FastifyRequest,
     @Body() dto: WithdrawMessageDto,
   ) {
+    if (
+      req.threadAccess.threadType === 'P2P' &&
+      !req.threadAccess.friendshipActive
+    ) {
+      throw new BusinessException(BusinessCode.FRIEND_NOT_FOUND, 'not friends');
+    }
+    if (
+      req.threadAccess.threadType === 'GROUP' &&
+      !req.threadAccess.membershipActive
+    ) {
+      throw new BusinessException(BusinessCode.GROUP_FORBIDDEN, 'not a member');
+    }
+    if (req.threadAccess.groupDissolved) {
+      throw new BusinessException(
+        BusinessCode.GROUP_DISSOLVED,
+        'group has been dissolved',
+      );
+    }
     const deleted = await this.deletedMessages.withdraw(
       req.user.userId,
       dto.threadId,
@@ -450,18 +468,19 @@ export class MessageController {
     const avatar = profile?.avatar
       ? await this.forwardBundles.snapshotAvatarForMessage(profile.avatar)
       : null;
-    // The wire domain is the truth recorded in IdentityNamespace for the
-    // target's namespace: the local identity domain for namespace 0, the peer's
-    // domain for a positive namespace. The client supplies only namespaceId,
-    // never domain.
-    const domain =
-      (await this.federationNamespaces.activePeerDomainForNamespace(
-        reference.namespaceId,
-      )) ??
-      (reference.namespaceId === 0
-        ? this.keypairs.localAddress(reference.account).domain
-        : null);
-    if (domain === null) {
+    // The card stores a routable address plus a mandatory root public key so
+    // receivers can pin the identity epoch named by account@domain instead of
+    // trusting a naked domain string.
+    const binding =
+      reference.namespaceId === 0
+        ? {
+            domain: this.keypairs.localAddress(reference.account).domain,
+            publicKey: this.keypairs.getRootPublicKeyB64(),
+          }
+        : await this.federationNamespaces.activeContactCardBindingForNamespace(
+            reference.namespaceId,
+          );
+    if (binding === null) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
         'contact target namespace not found',
@@ -473,7 +492,8 @@ export class MessageController {
       dto.threadId,
       JSON.stringify({
         account: reference.account,
-        domain,
+        domain: binding.domain,
+        publicKey: binding.publicKey,
         displayName: profile?.displayName || reference.account,
         bio: profile?.bio ?? '',
         ...(avatar
