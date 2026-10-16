@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 import { TransientOverlayService } from '../../services/transient-overlay.service';
 import { GalleryViewerComponent } from './gallery-viewer.component';
-import type { AlbumImage } from '../message-cards/chat-item';
+import type { AlbumMedia } from '../message-cards/chat-item';
 
 /**
  * Opens the fullscreen image gallery as a transient overlay (CDK Overlay, decoupled from any host template to
@@ -15,18 +15,18 @@ import type { AlbumImage } from '../message-cards/chat-item';
  */
 @Injectable({ providedIn: 'root' })
 export class GalleryViewerService extends TransientOverlayService<{
-  images: AlbumImage[];
+  images: AlbumMedia[];
   startIndex: number;
   threadId: number;
 }> {
   protected readonly kind = 'gallery';
   protected readonly component = GalleryViewerComponent;
   protected readonly presentation = 'viewer';
-  private opened: { images: AlbumImage[]; threadId: number } | null = null;
+  private opened: { images: AlbumMedia[]; threadId: number } | null = null;
 
   /** Open the gallery at `startIndex` within `images`, scoped to `threadId` (so the viewer can call the
    *  backend relocalize retry for the currently-shown image). No-op on an empty album. Replaces any open viewer. */
-  open(images: AlbumImage[], startIndex: number, threadId: number): void {
+  open(images: AlbumMedia[], startIndex: number, threadId: number): void {
     if (images.length === 0) return;
     this.opened = { images, threadId };
     this.pushEntry({ images, startIndex, threadId });

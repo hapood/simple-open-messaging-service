@@ -2,7 +2,7 @@ import type { CbItem, ScrollerApi } from '../../lib/chat-box/chat-box-scroller';
 import { uuid } from '../../lib/uuid';
 import { messageCreatorKey } from '../../services/model';
 import type {
-  AlbumImage,
+  AlbumMedia,
   AuthoredContentType,
   ChatItemData,
   ChatMsgData,
@@ -59,7 +59,7 @@ export class ThreadOptimisticController {
     isGroupConversation: boolean,
     text: string,
     contentType: AuthoredContentType,
-    images: AlbumImage[] | null,
+    images: AlbumMedia[] | null,
     file: FileInfo | null,
   ): CbItem<ChatMsgData> {
     const now = new Date();

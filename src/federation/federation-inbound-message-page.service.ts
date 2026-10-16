@@ -406,20 +406,11 @@ export class FederationInboundMessagePageService {
           },
         });
         if (existingMessage) {
-          const previousOriginTime = existingMessage.originServerTime;
           const exactFingerprint =
             existingMessage.federationEnvelopeDigest !== null &&
             existingMessage.federationEnvelopeDigest ===
               federationEnvelopeDigest;
-          const compatibleLegacyRow =
-            existingMessage.federationEnvelopeDigest === null &&
-            existingMessage.creatorAccount === route.creatorAccount &&
-            existingMessage.profileNamespaceId === profileNamespaceId &&
-            existingMessage.profileRev === item.profileRev &&
-            existingMessage.contentType === item.contentType &&
-            existingMessage.payloadDigest === wireDigest &&
-            previousOriginTime?.getTime() === sourceTime.getTime();
-          if (!exactFingerprint && !compatibleLegacyRow) {
+          if (!exactFingerprint) {
             throw new BusinessException(
               BusinessCode.FEDERATION_MALFORMED,
               'conflicting immutable federated message envelope',

@@ -2,7 +2,7 @@ import type { Mock } from 'vitest';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Observable, Subject } from 'rxjs';
-import type { AlbumImage } from '../components/message-cards/chat-item';
+import type { AlbumMedia } from '../components/message-cards/chat-item';
 import {
   IMAGE_DOWNLOAD_ADAPTER,
   type ImageDownloadEvent,
@@ -14,7 +14,7 @@ import {
 } from './media-save.service';
 
 describe('ImageDownloadService', () => {
-  const media: AlbumImage = {
+  const media: AlbumMedia = {
     kind: 'image',
     src: '/uploads/photo.jpg',
     w: 800,

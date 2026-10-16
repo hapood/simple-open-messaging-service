@@ -11,7 +11,7 @@ import {
   type GroupCtx,
 } from '../../lib/chat-box/group-logic';
 import { shouldShowDateSeparator } from './date-format';
-import type { ChatItemData, ChatMsgData, AlbumImage } from './chat-item';
+import type { ChatItemData, ChatMsgData, AlbumMedia } from './chat-item';
 import { FileRowComponent } from './file-row/file-row.component';
 import { LinkRowComponent } from './link-row/link-row.component';
 import { ContactCardRowComponent } from './contact-card-row/contact-card-row.component';
@@ -172,7 +172,7 @@ export function createMsgCbElement(
   showDate: boolean,
   envInjector: EnvironmentInjector,
   onRetry?: (clientMessageId: string) => void,
-  onOpenImage?: (images: AlbumImage[], index: number) => void,
+  onOpenImage?: (images: AlbumMedia[], index: number) => void,
   onOpenFile?: (data: ChatMsgData) => void,
   onCancel?: (clientMessageId: string) => void,
   unreadDividerLabel?: string,
@@ -557,7 +557,7 @@ export function createMsgCbElement(
     const inst = ref.instance as {
       openImage?: {
         subscribe: (
-          fn: (p: { images: AlbumImage[]; index: number }) => void,
+          fn: (p: { images: AlbumMedia[]; index: number }) => void,
         ) => { unsubscribe(): void };
       };
     };

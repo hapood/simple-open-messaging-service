@@ -35,7 +35,7 @@ describe('group creation authorization', () => {
       .send({
         threadId: created.body.data.threadId,
         contentType: 'PURE_TEXT',
-        content: 'owner message',
+        content: '{"text":"owner message"}',
       });
     expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);
   });
@@ -58,7 +58,7 @@ describe('group creation authorization', () => {
       .send({
         threadId,
         contentType: 'PURE_TEXT',
-        content: 'pair remains authoritative',
+        content: '{"text":"pair remains authoritative"}',
       });
     expect(whileActive.body.code, JSON.stringify(whileActive.body)).toBe(
       BusinessCode.OK,
@@ -74,7 +74,7 @@ describe('group creation authorization', () => {
       .send({
         threadId,
         contentType: 'PURE_TEXT',
-        content: 'must be rejected',
+        content: '{"text":"must be rejected"}',
       });
     expect(whileInactive.body.code).toBe(BusinessCode.GROUP_FORBIDDEN);
   });

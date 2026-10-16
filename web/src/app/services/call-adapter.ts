@@ -220,12 +220,9 @@ class AndroidCallAdapter extends CallAdapter {
     const raw = window.SomsCall!.getSnapshot();
     try {
       const parsed = JSON.parse(raw) as Partial<CallSnapshot>;
-      const legacyVideo = parsed.callType === 'VIDEO';
       return {
         ...IDLE_CALL,
         ...parsed,
-        cameraEnabled: parsed.cameraEnabled ?? legacyVideo,
-        remoteCameraEnabled: parsed.remoteCameraEnabled ?? legacyVideo,
       };
     } catch {
       return { ...IDLE_CALL };

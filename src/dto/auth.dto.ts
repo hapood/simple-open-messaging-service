@@ -178,18 +178,6 @@ export class QrTokenDto {
   qrToken!: string;
 }
 
-/** logout input: the session token to revoke (possession of the token authorizes its own revocation).
- *  Optional so a client with no token held (already logged out) no-ops gracefully. */
-export class LogoutDto {
-  @ApiProperty({
-    required: false,
-    description: 'Session token to revoke (the per-device credential).',
-  })
-  @IsString()
-  @IsOptional()
-  sessionToken?: string;
-}
-
 /** Change-password input (newPassword reuses RegisterDto's 6-20 allowed-character rule). */
 export class ChangePasswordDto {
   @ApiProperty({ example: 'OldP@ss1', description: 'Current password' })

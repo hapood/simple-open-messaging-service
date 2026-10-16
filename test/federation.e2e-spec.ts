@@ -974,7 +974,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .set('Authorization', `Bearer ${tokenA}`)
         .send({
           threadId: await alicesThreadIdOnA(),
-          content: 'hi from alice',
+          content: '{"text":"hi from alice"}',
           contentType: 'PURE_TEXT',
         });
       expect(res.status).toBe(200);
@@ -2424,7 +2424,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .set('Authorization', `Bearer ${tokenA}`)
         .send({
           threadId: groupThreadA,
-          content: 'hello group',
+          content: '{"text":"hello group"}',
           contentType: 'PURE_TEXT',
         });
       expect(send.status).toBe(200);
@@ -2756,7 +2756,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: firstGroupThreadA,
-        content: 'open-recover-1',
+        content: '{"text":"open-recover-1"}',
         contentType: 'PURE_TEXT',
       });
     await request(appA.baseUrl)
@@ -2764,7 +2764,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: firstGroupThreadA,
-        content: 'open-recover-2',
+        content: '{"text":"open-recover-2"}',
         contentType: 'PURE_TEXT',
       });
     await vi.waitFor(
@@ -3108,7 +3108,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .set('Authorization', `Bearer ${tokenA}`)
         .send({
           threadId: firstGroupThreadA,
-          content: 'hi both',
+          content: '{"text":"hi both"}',
           contentType: 'PURE_TEXT',
         });
       expect(sharedSend.body.code, JSON.stringify(sharedSend.body)).toBe(

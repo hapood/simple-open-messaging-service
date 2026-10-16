@@ -123,7 +123,7 @@ describe('POST /thread/mark-read authoritative state', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({
         threadId,
-        content: 'reply without marking history read',
+        content: '{"text":"reply without marking history read"}',
         contentType: 'PURE_TEXT',
       });
     expect(sent.body.code).toBe(0);

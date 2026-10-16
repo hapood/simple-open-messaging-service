@@ -5,7 +5,7 @@ import {
   ALBUM_MAX,
 } from './merge-items';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
-import type { AlbumImage, ChatItemData } from './chat-item';
+import type { AlbumMedia, ChatItemData } from './chat-item';
 
 const creatorKey = (creator: number): string =>
   JSON.stringify([0, 'local', `user-${creator}`]);
@@ -25,7 +25,7 @@ describe('mergeAlbumItems', () => {
   });
 
   /** A single image (its msgId is the owning message's id). */
-  const img = (msgId: number): AlbumImage => ({
+  const img = (msgId: number): AlbumMedia => ({
     kind: 'image',
     src: `data:,${msgId}`,
     w: 100,
@@ -214,7 +214,7 @@ describe('mergeAlbumItems', () => {
 });
 
 describe('absorbAlbumTail (cross-batch absorb hook)', () => {
-  const oneImg = (msgId: number): AlbumImage => ({
+  const oneImg = (msgId: number): AlbumMedia => ({
     kind: 'image',
     src: `data:,${msgId}`,
     w: 100,

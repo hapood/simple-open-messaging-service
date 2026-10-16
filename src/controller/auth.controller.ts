@@ -37,7 +37,6 @@ import {
 } from '../common/public.decorator.js';
 import {
   LoginDto,
-  LogoutDto,
   ChangePasswordDto,
   SetPasswordDto,
   RevokeSessionDto,
@@ -133,17 +132,13 @@ export class AuthController {
   @ApiOperation({ summary: 'Logout (revoke the presented session token)' })
   async logout(
     @Request() req: FastifyRequest,
-    @Body() dto: LogoutDto,
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<void> {
     // @Public (callable even with a dead/expired credential, so logout always clears the cookie).
-    // Identify the session from the body, the cookie, OR the Bearer header — in priority order. The Bearer
+    // Identify the session from the cookie OR the Bearer header — in priority order. The Bearer
     // path is what native clients (the Tauri shell's `api_request` IPC injects it from its held token) now
-    // use: JS no longer places the token in the body, so the backend resolves it from the header instead.
-    // The cookie path covers the pure-httpOnly browser (the token is JS-unreadable there); the body path is
-    // retained for any older client still sending it.
+    // use; the cookie path covers the pure-httpOnly browser (the token is JS-unreadable there).
     const token =
-      dto.sessionToken ??
       req.cookies?.[MEDIA_TOKEN_COOKIE] ??
       extractBearer(req.headers['authorization']);
     if (token) {

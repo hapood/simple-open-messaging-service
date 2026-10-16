@@ -12,7 +12,7 @@ import {
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatIconModule } from '@angular/material/icon';
-import { MEDIA_STATUS, type AlbumImage, type ChatMsgData } from '../chat-item';
+import { MEDIA_STATUS, type AlbumMedia, type ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { QuoteBlockComponent } from '../quote-block/quote-block.component';
 import type { HistoryAnchor } from '../../../services/history-anchor';
@@ -105,7 +105,7 @@ export class MediaRowComponent {
   );
   readonly retry = output<number>();
   readonly cancel = output<number>();
-  readonly openImage = output<{ images: AlbumImage[]; index: number }>();
+  readonly openImage = output<{ images: AlbumMedia[]; index: number }>();
 
   constructor(private readonly thresholdSvc: MediaSizeThresholdService) {
     // Message rows are imperatively mounted outside ApplicationRef. Observe the app-scoped task store
@@ -134,7 +134,7 @@ export class MediaRowComponent {
     this.downloads.thumbnailVersion();
     const visible = items.length > 6 ? items.slice(0, 5) : items.slice(0, 6);
     const icons: Array<{
-      kind: AlbumImage['kind'] | 'more';
+      kind: AlbumMedia['kind'] | 'more';
       index: number;
       localPreview: boolean;
       thumbnail: string;
@@ -340,7 +340,7 @@ export class MediaRowComponent {
     this.cdr.detectChanges();
   }
 
-  private mediaKey(media: AlbumImage | undefined, index: number): string {
+  private mediaKey(media: AlbumMedia | undefined, index: number): string {
     return `${media?.msgId ?? this.data().msgId}:${media?.src ?? ''}:${index}`;
   }
 

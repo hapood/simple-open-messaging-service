@@ -17,7 +17,7 @@ import type {
   CbSourceInitOpts,
 } from '../../lib/chat-box/cb-source';
 import type {
-  AlbumImage,
+  AlbumMedia,
   AuthoredContentType,
   ChatItemData,
   ChatMsgData,
@@ -703,7 +703,7 @@ function buildItems(
         const date = new Date(startMs + day * 86_400_000 + minutes * 60_000);
         const [rw, rh] = RATIOS[Math.floor(rand() * RATIOS.length)];
         const id = items.length + 1;
-        const imgs: AlbumImage[] = [
+        const imgs: AlbumMedia[] = [
           {
             kind: 'image',
             src: placeholderImage(imgSeed++, rw, rh),
@@ -740,7 +740,7 @@ function makeSeedMsg(
   creator: number,
   text: string,
   contentType: AuthoredContentType,
-  images: AlbumImage[] | null,
+  images: AlbumMedia[] | null,
   date: Date,
   id: number,
 ): ChatMsgData {

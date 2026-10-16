@@ -57,7 +57,7 @@ import type {
   CbSourceInitOpts,
 } from '../../lib/chat-box/cb-source';
 import type {
-  AlbumImage,
+  AlbumMedia,
   ChatItemData,
   ChatMsgData,
   FileInfo,
@@ -799,7 +799,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       }
       // Each IMAGE/VIDEO/AUDIO message → a single-element media array (carrying its own msgId); consecutive
       // same-creator IMAGE/VIDEO are merged into an album by the kernel's mergeItems (AUDIO stays standalone).
-      let images: AlbumImage[] | null = null;
+      let images: AlbumMedia[] | null = null;
       if (m.contentType === 'IMAGE') {
         images = [
           {
@@ -981,7 +981,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   private toMsgData(
     m: Message,
-    images: AlbumImage[] | null,
+    images: AlbumMedia[] | null,
     file: FileInfo | null,
   ): ChatMsgData {
     if (m.contentType === 'SYSTEM') {

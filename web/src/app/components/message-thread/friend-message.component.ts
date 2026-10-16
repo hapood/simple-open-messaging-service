@@ -43,7 +43,7 @@ import {
 } from '../message-cards/merge-items';
 import {
   MEDIA_STATUS,
-  type AlbumImage,
+  type AlbumMedia,
   type ChatItemData,
   type ChatMsgData,
   type AuthoredContentType,
@@ -2212,8 +2212,8 @@ export class MessageThreadComponent implements OnDestroy {
       if (previewUrl) previewUrls.push(previewUrl);
       return { file, partId: uuid(), position, intent, previewUrl };
     });
-    const images: AlbumImage[] = parts.map((part) => ({
-      kind: part.intent.toLowerCase() as AlbumImage['kind'],
+    const images: AlbumMedia[] = parts.map((part) => ({
+      kind: part.intent.toLowerCase() as AlbumMedia['kind'],
       src: part.previewUrl,
       w: part.intent === 'AUDIO' ? VOICE_BAR_W : 0,
       h: part.intent === 'AUDIO' ? VOICE_BAR_H : 0,
@@ -2372,7 +2372,7 @@ export class MessageThreadComponent implements OnDestroy {
           : file.kind === 'video'
             ? 'VIDEO'
             : 'FILE';
-      const images: AlbumImage[] | null =
+      const images: AlbumMedia[] | null =
         file.kind === 'file'
           ? null
           : [
@@ -2536,7 +2536,7 @@ export class MessageThreadComponent implements OnDestroy {
       type: mimeType || 'audio/webm',
     });
     const preview = URL.createObjectURL(blob);
-    const images: AlbumImage[] = [
+    const images: AlbumMedia[] = [
       {
         kind: 'audio',
         src: preview,
@@ -2888,7 +2888,7 @@ export class MessageThreadComponent implements OnDestroy {
     clientMessageId: string,
     text: string,
     contentType: AuthoredContentType,
-    images: AlbumImage[] | null,
+    images: AlbumMedia[] | null,
     file: FileInfo | null,
   ): CbItem<ChatMsgData> {
     const profile = this.userService.sessionProfile();

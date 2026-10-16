@@ -20,7 +20,7 @@ export type MediaStatus = (typeof MEDIA_STATUS)[keyof typeof MEDIA_STATUS];
  * background-image (image) / <video> first-frame (video) / download anchor (audio). `kind` drives
  * the render branch; size/duration/name feed the bottom meta bar + overlay.
  */
-interface AlbumMedia {
+export interface AlbumMedia {
   kind: 'image' | 'video' | 'audio' | 'file';
   /** /uploads/... URL (image / video / audio). */
   src: string;
@@ -40,9 +40,6 @@ interface AlbumMedia {
    *  'failed'). Absent = 'ready'. */
   status?: MediaStatus;
 }
-
-/** Legacy alias — gallery-viewer and older call sites still reference AlbumImage. */
-export type AlbumImage = AlbumMedia;
 
 /** FILE message attachment returned by the server's unified upload endpoint (stored as JSON inside Message.content). */
 export interface FileInfo {

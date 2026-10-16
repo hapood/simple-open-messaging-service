@@ -131,7 +131,7 @@ describe('federation durable missed transport (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({
         threadId: bobRelationship.pair!.threadId!,
-        content: 'durable missed only',
+        content: '{"text":"durable missed only"}',
         contentType: 'PURE_TEXT',
         clientMessageId: randomUUID(),
       });

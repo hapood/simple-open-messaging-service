@@ -652,10 +652,14 @@ export class ForwardBundleService {
 
   /** Wire cards carry the bundle's content digest. Resolve it to the local
    *  ULID through the persisted source identity; a locally-created bundle wins
-   *  over an imported mirror with identical content. Legacy cards created
-   *  before the digest migration still pass their local ULID directly. */
+   *  over an imported mirror with identical content. */
   async resolveWireBundleId(bundleId: string): Promise<string> {
-    if (!SHA256_HEX_RE.test(bundleId)) return bundleId;
+    if (!SHA256_HEX_RE.test(bundleId)) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'forward bundle not found',
+      );
+    }
     const local = await this.database.db.query.forwardBundle.findFirst({
       where: and(
         eq(forwardBundle.sourceBundleId, bundleId),

@@ -411,8 +411,7 @@ export class FederationInboundMessageStoreService {
         .returning({ id: tables.message.id });
       // Mapped reverse history occupies reserved slots below the read boundary.
       // It is not a new unread interval, including when media arrives as a stub.
-      if (!sequencePolicy)
-        await this.enqueueFanout(tx, threadLock, threadId, incoming.profileRev);
+      if (!sequencePolicy) await this.enqueueFanout(tx, threadLock, threadId);
       await tx.insert(tables.pendingMedia).values({
         messageId: stub.id,
         direction: 'INBOUND',
@@ -514,8 +513,7 @@ export class FederationInboundMessageStoreService {
           ),
         );
     }
-    if (!sequencePolicy)
-      await this.enqueueFanout(tx, threadLock, threadId, incoming.profileRev);
+    if (!sequencePolicy) await this.enqueueFanout(tx, threadLock, threadId);
     if (localForwardBundleId) {
       await tx.insert(tables.forwardMessage).values({
         messageId: message.id,
@@ -538,7 +536,6 @@ export class FederationInboundMessageStoreService {
     tx: DatabaseTransaction,
     lock: ThreadContentLock,
     threadId: number,
-    profileRev: number,
   ): Promise<void> {
     const head = await tx.query.messageThread.findFirst({
       where: eq(tables.messageThread.id, threadId),
@@ -549,9 +546,6 @@ export class FederationInboundMessageStoreService {
       threadId,
       messageEndSeq: head.curSeq,
       tombstoneEndSeq: head.tombstoneEndSeq,
-      // Only a P2P counterpart's revision decorates the thread feed; group
-      // members carry their own revisions inside roster facts.
-      ...(head.type === 'P2P' && profileRev > 0 ? { profileRev } : {}),
     });
   }
 

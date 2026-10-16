@@ -191,7 +191,6 @@ export class CallEventService implements OnDestroy {
     }
     if (this.callState().phase === 'ended' && snap.phase === 'idle') return;
     const cur = this.callState();
-    const legacyVideo = snap.callType === 'VIDEO';
     this.commit({
       ...cur,
       ...snap,
@@ -199,11 +198,8 @@ export class CallEventService implements OnDestroy {
       peerName: snap.peerName || cur.peerName,
       peerAvatar: snap.peerAvatar || cur.peerAvatar,
       step: snap.step ?? cur.step,
-      cameraEnabled:
-        snap.cameraEnabled ?? (legacyVideo ? true : cur.cameraEnabled),
-      remoteCameraEnabled:
-        snap.remoteCameraEnabled ??
-        (legacyVideo ? true : cur.remoteCameraEnabled),
+      cameraEnabled: snap.cameraEnabled ?? cur.cameraEnabled,
+      remoteCameraEnabled: snap.remoteCameraEnabled ?? cur.remoteCameraEnabled,
     });
   }
 

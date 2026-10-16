@@ -170,7 +170,11 @@ describe('First message after friend-add is delivered (single instance)', () => 
       const send = await request(baseUrl)
         .post('/api/v1/send-message')
         .set('Authorization', `Bearer ${alice.token}`)
-        .send({ threadId, content: 'first!', contentType: 'PURE_TEXT' });
+        .send({
+          threadId,
+          content: '{"text":"first!"}',
+          contentType: 'PURE_TEXT',
+        });
       expect(send.status).toBe(200);
       expect(send.body.code).toBe(0);
 

@@ -12,7 +12,7 @@ import {
 } from '../../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import type {
-  AlbumImage,
+  AlbumMedia,
   AuthoredContentType,
   AuthoredMessageItem,
 } from '../chat-item';
@@ -240,7 +240,7 @@ describe('MediaRowComponent — deferred image loading', () => {
   });
 
   async function render(
-    images: AlbumImage[],
+    images: AlbumMedia[],
     contentType: AuthoredContentType = 'IMAGE',
   ) {
     const fixture = TestBed.createComponent(MediaRowComponent);
@@ -257,29 +257,29 @@ class FakeImageDownloads {
   private readonly byKey = new Map<string, ImageDownloadTask>();
   private readonly cached = new Set<string>();
 
-  key(media: Pick<AlbumImage, 'msgId' | 'src'>): string {
+  key(media: Pick<AlbumMedia, 'msgId' | 'src'>): string {
     return `${media.msgId ?? 0}:${media.src}`;
   }
 
   task(
-    media: Pick<AlbumImage, 'msgId' | 'src'>,
+    media: Pick<AlbumMedia, 'msgId' | 'src'>,
   ): ImageDownloadTask | undefined {
     return this.byKey.get(this.key(media));
   }
 
-  displayUrl(media: AlbumImage): string {
+  displayUrl(media: AlbumMedia): string {
     return this.task(media)?.blobUrl ?? media.src;
   }
 
-  thumbnailUrl(media: AlbumImage): string {
+  thumbnailUrl(media: AlbumMedia): string {
     return media.src;
   }
 
-  cachedThumbnailUrl(media: AlbumImage): string {
+  cachedThumbnailUrl(media: AlbumMedia): string {
     return this.cached.has(this.key(media)) ? `cache:${media.src}` : '';
   }
 
-  cache(media: AlbumImage): void {
+  cache(media: AlbumMedia): void {
     this.cached.add(this.key(media));
     this.thumbnailVersion.update((value) => value + 1);
   }
@@ -290,7 +290,7 @@ class FakeImageDownloads {
   }
 }
 
-function image(msgId: number, size: number): AlbumImage {
+function image(msgId: number, size: number): AlbumMedia {
   return {
     kind: 'image',
     src: `/uploads/${msgId}.jpg`,
@@ -301,7 +301,7 @@ function image(msgId: number, size: number): AlbumImage {
   };
 }
 
-function file(msgId: number, name: string): AlbumImage {
+function file(msgId: number, name: string): AlbumMedia {
   return {
     kind: 'file',
     src: `/uploads/${msgId}`,
@@ -315,7 +315,7 @@ function file(msgId: number, name: string): AlbumImage {
 }
 
 function task(
-  media: AlbumImage,
+  media: AlbumMedia,
   status: ImageDownloadTask['status'],
   loaded: number,
   total: number,
@@ -337,7 +337,7 @@ function task(
 }
 
 function message(
-  images: AlbumImage[],
+  images: AlbumMedia[],
   contentType: AuthoredContentType = 'IMAGE',
 ): AuthoredMessageItem {
   return {

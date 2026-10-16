@@ -3,7 +3,7 @@
  *
  * Deliberately a hand-curated local dataset rather than a dependency (emoji-mart etc.) — it keeps the
  * bundle small, avoids a framework/React dependency, and gives full control over the glyph set. The
- * swap panel renders it as categorized tabs; the legacy popup fallback renders the first category flat.
+ * swap panel renders it as categorized tabs.
  *
  * Glyphs are plain Unicode strings (no shortcodes). Skin-tone variants are omitted to keep the set
  * compact; the platform font renders each codepoint.
@@ -107,6 +107,3 @@ export const EMOJI_CATEGORIES: readonly EmojiCategory[] = [
     ],
   },
 ];
-
-/** Flat ordered list of every glyph (for the popup fallback that shows everything in one grid). */
-const EMOJIS_FLAT: readonly string[] = EMOJI_CATEGORIES.flatMap((c) => c.icons);

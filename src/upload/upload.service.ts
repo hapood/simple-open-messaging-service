@@ -286,7 +286,7 @@ export class UploadService {
    * filename, then gate on a video-container magic-byte signature (detectMedia family === 'video').
    * The client-declared MIME is NOT trusted for the on-disk extension — detectMedia derives ext from
    * the actual bytes. w/h/duration are NOT read server-side; the client probes them via <video>
-   * loadedmetadata and carries them in the VIDEO message content (parseVideoContent validates on send).
+   * loadedmetadata and carries them in the VIDEO message content.
    */
   async consumeVideo(req: FastifyRequest): Promise<ConsumedMedia> {
     return this.consumeMedia(req, 'video', MAX_VIDEO_BYTES);
@@ -301,7 +301,7 @@ export class UploadService {
    * Shared video/audio consumer: drain the multipart (single-file contract via consumeSingle), then
    * detect the container family from magic bytes and gate on the expected family. The on-disk ext is
    * the detected ext (trusted); the display mime is `<family>/<ext>` (display only — @fastify/static
-   * maps ext→Content-Type at serving time, and parseVideo/AudioContent carries this mime for the UI).
+   * maps ext→Content-Type at serving time, and the message content carries this mime for the UI).
    */
   private async consumeMedia(
     req: FastifyRequest,

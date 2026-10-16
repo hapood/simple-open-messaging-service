@@ -18,7 +18,7 @@ import type Artplayer from 'artplayer';
 import PhotoSwipe, { type SlideData } from 'photoswipe';
 import {
   MEDIA_STATUS,
-  type AlbumImage,
+  type AlbumMedia,
   type MediaStatus,
 } from '../message-cards/chat-item';
 import {
@@ -41,7 +41,7 @@ import {
 /** Business metadata kept alongside PhotoSwipe's image data. */
 interface GallerySlideData extends SlideData {
   galleryIndex: number;
-  kind: AlbumImage['kind'];
+  kind: AlbumMedia['kind'];
 }
 
 type VideoPlaybackError = 'network' | 'unsupported';
@@ -60,7 +60,7 @@ type VideoPlaybackError = 'network' | 'unsupported';
   styleUrl: './gallery-viewer.component.scss',
 })
 export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
-  readonly images = input.required<AlbumImage[]>();
+  readonly images = input.required<AlbumMedia[]>();
   readonly startIndex = input<number>(0);
   readonly threadId = input<number>(0);
   readonly close = output<void>();
@@ -286,7 +286,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     this.chromeVisible.update((visible) => !visible);
   }
 
-  mediaUrl(media: AlbumImage): string {
+  mediaUrl(media: AlbumMedia): string {
     if (media.kind === 'video' && this.useNativeVideo)
       return this.nativeVideo.thumbnailUrl(media.src);
     return this.downloads.displayUrl(media);
@@ -369,7 +369,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     }
   }
 
-  private toSlide(image: AlbumImage, galleryIndex: number): GallerySlideData {
+  private toSlide(image: AlbumMedia, galleryIndex: number): GallerySlideData {
     if (image.kind === 'file' || image.kind === 'audio') {
       return {
         html: `<div class="gv-unloaded-slide" aria-label="${escapeHtmlAttribute(image.name ?? 'file')}"><svg viewBox="0 0 24 24" width="72" height="72" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg></div>`,
@@ -401,22 +401,22 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     };
   }
 
-  private imageUrl(image: AlbumImage, index: number): string {
+  private imageUrl(image: AlbumMedia, index: number): string {
     const base = this.downloads.displayUrl(image);
     const retryKey = this.retryKeys.get(index) ?? 0;
     if (retryKey === 0 || /^(blob:|data:)/.test(base)) return base;
     return `${base}${base.includes('?') ? '&' : '?'}_r=${retryKey}`;
   }
 
-  private defaultFilename(media: AlbumImage, index = this.index()): string {
+  private defaultFilename(media: AlbumMedia, index = this.index()): string {
     return `media-${media.msgId ?? index + 1}.${media.kind === 'video' ? 'mp4' : 'jpg'}`;
   }
 
-  isMediaGated(media: AlbumImage): boolean {
+  isMediaGated(media: AlbumMedia): boolean {
     return media.kind === 'image' && this.shouldGate(media);
   }
 
-  private shouldGate(media: AlbumImage): boolean {
+  private shouldGate(media: AlbumMedia): boolean {
     return (
       this.threshold.shouldDefer(media.size ?? 0) &&
       !this.downloads.isLoaded(media)
@@ -575,7 +575,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
 
   private async createVideoPlayer(
     container: HTMLDivElement,
-    media: AlbumImage,
+    media: AlbumMedia,
     index: number,
     localStream: LocalVideoStream | null,
   ): Promise<void> {
@@ -777,7 +777,7 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     if (media?.kind === 'video') await this.saveMedia(media, index);
   }
 
-  private async saveMedia(media: AlbumImage, index: number): Promise<void> {
+  private async saveMedia(media: AlbumMedia, index: number): Promise<void> {
     try {
       await this.mediaSave.save({
         path: media.src,

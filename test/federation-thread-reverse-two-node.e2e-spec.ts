@@ -271,7 +271,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
           .set('Authorization', `Bearer ${tokenA}`)
           .send({
             threadId,
-            content: 'withdraw-before-join',
+            content: '{"text":"withdraw-before-join"}',
             contentType: ContentType.PURE_TEXT,
             clientMessageId: randomUUID(),
           });
@@ -450,7 +450,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({
         threadId: mirrorThreadId,
-        content: 'remote-member-withdrawal-source',
+        content: '{"text":"remote-member-withdrawal-source"}',
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });
@@ -500,7 +500,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenB}`)
       .send({
         threadId: mirrorThreadId,
-        content: 'remote-member-withdrawal-source',
+        content: '{"text":"remote-member-withdrawal-source"}',
         contentType: ContentType.PURE_TEXT,
         clientMessageId: sent.body.data.clientMessageId,
       });
@@ -950,7 +950,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: originThreadId,
-        content: 'current-tail-after-carol-left',
+        content: '{"text":"current-tail-after-carol-left"}',
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });
@@ -1318,7 +1318,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: originThreadId,
-        content: 'after-first-rejoin',
+        content: '{"text":"after-first-rejoin"}',
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });
@@ -1346,7 +1346,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: originThreadId,
-        content: 'unauthorized-second-gap',
+        content: '{"text":"unauthorized-second-gap"}',
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });
@@ -1358,7 +1358,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: originThreadId,
-        content: 'after-second-rejoin',
+        content: '{"text":"after-second-rejoin"}',
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });

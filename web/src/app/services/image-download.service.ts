@@ -1,6 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import type { Subscription } from 'rxjs';
-import type { AlbumImage } from '../components/message-cards/chat-item';
+import type { AlbumMedia } from '../components/message-cards/chat-item';
 import {
   MediaSaveCancelledError,
   MediaSaveService,
@@ -93,23 +93,23 @@ export class ImageDownloadService {
     );
   }
 
-  key(media: Pick<AlbumImage, 'msgId' | 'src'>): string {
+  key(media: Pick<AlbumMedia, 'msgId' | 'src'>): string {
     return `${media.msgId ?? 0}:${media.src}`;
   }
 
   task(
-    media: Pick<AlbumImage, 'msgId' | 'src'>,
+    media: Pick<AlbumMedia, 'msgId' | 'src'>,
   ): ImageDownloadTask | undefined {
     return this.taskMap().get(this.key(media));
   }
 
-  displayUrl(media: Pick<AlbumImage, 'msgId' | 'src'>): string {
+  displayUrl(media: Pick<AlbumMedia, 'msgId' | 'src'>): string {
     return this.task(media)?.blobUrl ?? assetUrl(media.src);
   }
 
   /** Lightweight list-card representation. Detail/gallery/save callers deliberately keep displayUrl(),
    * whose contract is the original media. Optimistic blob/data URLs pass through unchanged. */
-  thumbnailUrl(media: Pick<AlbumImage, 'msgId' | 'src'>): string {
+  thumbnailUrl(media: Pick<AlbumMedia, 'msgId' | 'src'>): string {
     const base = chatThumbnailUrl(media.src);
     const revision = this.thumbnailRevisions().get(media.src) ?? 0;
     if (revision === 0 || !base.includes('/chat-thumbnails/')) return base;
@@ -117,7 +117,7 @@ export class ImageDownloadService {
   }
 
   /** Returns only already-local bytes: an in-memory completed download or a native cache-only URL. */
-  cachedThumbnailUrl(media: Pick<AlbumImage, 'msgId' | 'src'>): string {
+  cachedThumbnailUrl(media: Pick<AlbumMedia, 'msgId' | 'src'>): string {
     const loaded = this.task(media)?.blobUrl;
     if (loaded) return loaded;
     const base = cachedChatThumbnailUrl(media.src);
@@ -126,12 +126,12 @@ export class ImageDownloadService {
     return `${base}${base.includes('?') ? '&' : '?'}v=${revision}`;
   }
 
-  isLoaded(media: Pick<AlbumImage, 'msgId' | 'src'>): boolean {
+  isLoaded(media: Pick<AlbumMedia, 'msgId' | 'src'>): boolean {
     return Boolean(this.task(media)?.blobUrl);
   }
 
   /** Start a load, or upgrade the existing load to "save when ready". */
-  start(media: AlbumImage, threadId: number, saveAfterLoad = false): void {
+  start(media: AlbumMedia, threadId: number, saveAfterLoad = false): void {
     const key = this.key(media);
     const current = this.taskMap().get(key);
     if (current) {
@@ -195,7 +195,7 @@ export class ImageDownloadService {
     this.subscriptions.set(key, subscription);
   }
 
-  cancel(media: Pick<AlbumImage, 'msgId' | 'src'>): void {
+  cancel(media: Pick<AlbumMedia, 'msgId' | 'src'>): void {
     const key = this.key(media);
     const task = this.taskMap().get(key);
     if (!task || task.status !== 'downloading') return;
@@ -209,7 +209,7 @@ export class ImageDownloadService {
     subscription?.unsubscribe();
   }
 
-  retry(media: AlbumImage, threadId: number): void {
+  retry(media: AlbumMedia, threadId: number): void {
     this.start(media, threadId, this.task(media)?.saveAfterLoad ?? false);
   }
 
@@ -237,7 +237,7 @@ export class ImageDownloadService {
     }
   }
 
-  private defaultFilename(media: AlbumImage): string {
+  private defaultFilename(media: AlbumMedia): string {
     return `image-${media.msgId ?? Date.now()}.jpg`;
   }
 

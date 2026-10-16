@@ -15,10 +15,6 @@ export interface ThreadFanoutTarget {
   threadId: number;
   messageEndSeq: number;
   tombstoneEndSeq: number;
-  /** Legacy coalesced message revision hint. It is not a viewer-specific avatar
-   * revision: the head writer derives that from committed counterpart messages
-   * or the group-wide Meta row, so mixed-author fanouts remain safe. */
-  profileRev?: number;
 }
 
 export type ThreadFanoutTaskType =
@@ -87,7 +83,6 @@ function mergeThreadFanoutTargets(
     threadId: next.threadId,
     messageEndSeq: Math.max(previous.messageEndSeq, next.messageEndSeq),
     tombstoneEndSeq: Math.max(previous.tombstoneEndSeq, next.tombstoneEndSeq),
-    profileRev: Math.max(previous.profileRev ?? 0, next.profileRev ?? 0),
   };
 }
 
@@ -106,17 +101,10 @@ export function parseThreadFanoutTarget(
   ) {
     throw new Error('Invalid thread fanout target');
   }
-  let profileRev: number | undefined;
-  if (value.profileRev !== undefined) {
-    if (!integer(value.profileRev, 0))
-      throw new Error('Invalid thread fanout target');
-    profileRev = value.profileRev;
-  }
   return {
     threadId: value.threadId,
     messageEndSeq: value.messageEndSeq,
     tombstoneEndSeq: value.tombstoneEndSeq,
-    ...(profileRev === undefined ? {} : { profileRev }),
   };
 }
 

@@ -3,7 +3,7 @@ import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideTransloco, TranslocoService } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
-import { MEDIA_STATUS, type AlbumImage } from '../message-cards/chat-item';
+import { MEDIA_STATUS, type AlbumMedia } from '../message-cards/chat-item';
 import type { ImageDownloadTask } from '../../services/image-download.service';
 import { ImageDownloadService } from '../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
@@ -16,7 +16,7 @@ import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 import { GalleryViewerComponent } from './gallery-viewer.component';
 
 describe('GalleryViewerComponent — deferred image actions', () => {
-  const media: AlbumImage = {
+  const media: AlbumMedia = {
     kind: 'image',
     src: '/uploads/photo.jpg',
     w: 800,
@@ -206,7 +206,7 @@ describe('GalleryViewerComponent — deferred image actions', () => {
   });
 
   it('destroys video A on image switch and rebuilds it only when returning', () => {
-    const video: AlbumImage = {
+    const video: AlbumMedia = {
       kind: 'video',
       src: '/uploads/a.mp4',
       w: 1280,
@@ -322,7 +322,7 @@ describe('GalleryViewerComponent — deferred image actions', () => {
     expect(save).toHaveBeenCalledWith(0);
   });
 
-  function create(images: AlbumImage[] = [media]): GalleryViewerComponent {
+  function create(images: AlbumMedia[] = [media]): GalleryViewerComponent {
     const fixture = TestBed.createComponent(GalleryViewerComponent);
     fixture.componentRef.setInput('images', images);
     fixture.componentRef.setInput('startIndex', 0);
@@ -359,7 +359,7 @@ class FakeGalleryDownloads {
   readonly retry = vi.fn().mockName('retry');
   private current: ImageDownloadTask | undefined;
 
-  key(media: Pick<AlbumImage, 'msgId' | 'src'>): string {
+  key(media: Pick<AlbumMedia, 'msgId' | 'src'>): string {
     return `${media.msgId ?? 0}:${media.src}`;
   }
 
@@ -368,7 +368,7 @@ class FakeGalleryDownloads {
     return this.current;
   }
 
-  displayUrl(media: AlbumImage): string {
+  displayUrl(media: AlbumMedia): string {
     return this.current?.blobUrl ?? media.src;
   }
 

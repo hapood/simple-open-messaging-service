@@ -291,16 +291,9 @@ export class MessageController {
       );
     }
     if (contentType === ContentType.PURE_TEXT) {
-      // Keep the pre-envelope wire contract working: older clients send the text body directly.
-      // JSON-looking input is still required to be a valid envelope so malformed quote payloads are
-      // not silently converted into visible text. Persistence remains canonical JSON in both cases.
-      const parsedTextContent = parseTextMessageContent(dto.content);
-      const trimmedContent = dto.content.trimStart();
-      const textContent =
-        parsedTextContent ??
-        (!trimmedContent.startsWith('{') && !trimmedContent.startsWith('[')
-          ? { text: dto.content }
-          : null);
+      // The wire contract is the JSON envelope: { text: string }. Persistence
+      // remains canonical JSON.
+      const textContent = parseTextMessageContent(dto.content);
       if (!textContent) {
         throw new BusinessException(
           BusinessCode.VALIDATION_FAILED,

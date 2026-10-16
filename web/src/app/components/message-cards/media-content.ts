@@ -1,4 +1,4 @@
-import type { AlbumImage, FileInfo } from './chat-item';
+import type { AlbumMedia, FileInfo } from './chat-item';
 import { VOICE_BAR_H, VOICE_BAR_W } from './media-row/layout';
 
 export type MediaUrlResolver = (item: Record<string, unknown>) => string;
@@ -43,7 +43,7 @@ export function contextualLinkContent(
 export function parseImageContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
-): AlbumImage {
+): AlbumMedia {
   const item = parseRecord(content);
   return {
     kind: 'image',
@@ -57,24 +57,24 @@ export function parseImageContent(
 export function parseVideoContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
-): AlbumImage | null {
+): AlbumMedia | null {
   return parseSingleMedia('video', content, resolveUrl);
 }
 
 export function parseAudioContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
-): AlbumImage | null {
+): AlbumMedia | null {
   return parseSingleMedia('audio', content, resolveUrl);
 }
 
 export function parseGalleryContent(
   content: string,
   resolveUrl: MediaUrlResolver = defaultUrlResolver,
-): AlbumImage[] {
+): AlbumMedia[] {
   const parsed = parseRecord(content);
   if (!Array.isArray(parsed?.['items'])) return [];
-  return parsed['items'].flatMap((value): AlbumImage[] => {
+  return parsed['items'].flatMap((value): AlbumMedia[] => {
     if (typeof value !== 'object' || value === null || Array.isArray(value))
       return [];
     const item = value as Record<string, unknown>;
@@ -106,7 +106,7 @@ function parseSingleMedia(
   kind: 'video' | 'audio',
   content: string,
   resolveUrl: MediaUrlResolver,
-): AlbumImage | null {
+): AlbumMedia | null {
   const item = parseRecord(content);
   if (!item) return null;
   const src = resolveUrl(item);
@@ -114,10 +114,10 @@ function parseSingleMedia(
 }
 
 function toAlbumImage(
-  kind: AlbumImage['kind'],
+  kind: AlbumMedia['kind'],
   item: Record<string, unknown>,
   src: string,
-): AlbumImage {
+): AlbumMedia {
   return {
     kind,
     src,
@@ -142,6 +142,6 @@ function parseRecord(content: string): Record<string, unknown> | null {
   }
 }
 
-function isMediaKind(value: string): value is AlbumImage['kind'] {
+function isMediaKind(value: string): value is AlbumMedia['kind'] {
   return ['image', 'video', 'audio', 'file'].includes(value);
 }
