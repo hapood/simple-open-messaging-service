@@ -676,15 +676,15 @@
   "createUser": {
     "title": "新建用户",
     "account": "账户名",
-    "accountHint": "3-31 位：字母、数字、点号，须以字母开头",
+    "accountHint": "1-30 位：字母、数字、点号、下划线或连字符，首位须为字母或数字",
     "name": "显示名称",
     "nameHint": "1 到 31 个字符",
     "password": "初始密码",
     "passwordHint": "6-20 位，允许字母数字和 .@!#$%^&*()",
-    "passwordOptional": "可选——留空则创建无密码账号（用登录码登录）",
     "passwordRequired": "密码登录已启用，需设置初始密码",
     "confirm": "创建",
-    "success": "已创建用户 {{account}}"
+    "success": "已创建用户 {{account}}",
+    "accountAlreadyExists": "账号已存在"
   },
   "issueLoginCode": {
     "title": "为 {{name}} 签发登录码",

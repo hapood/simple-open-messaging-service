@@ -14,14 +14,15 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { isPasswordLoginEnabled, PASSWORD_REGEX } from '@/lib/constants'
+import { isPasswordLoginEnabled, PASSWORD_REGEX, CODE } from '@/lib/constants'
+import { ApiError } from '@/lib/api-error'
 import { formatApiError } from '@/lib/format-error'
 import { useCreateUser } from '@/hooks/use-user-mutations'
 import { usePublicConfig } from '@/hooks/use-public-config'
 
-// Account grammar mirrors the backend USER_ACCOUNT_RE (3-31: a leading letter, then letters/digits with
-// single-dot separators). Validated client-side for early UX + again server-side.
-const ACCOUNT_REGEX = /^(?=.{3,31}$)[a-zA-Z][a-zA-Z0-9]*(\.[a-zA-Z0-9]+)*$/
+// Account grammar mirrors the backend USER_ACCOUNT_RE: 1-30 chars, first char alphanumeric,
+// then letters/digits/dot/underscore/hyphen. Validated client-side for early UX + again server-side.
+const ACCOUNT_REGEX = /^[a-z0-9][a-z0-9._-]{0,29}$/i
 
 /** Create-user dialog (admin-provisioned account). The password field is shown — and required — only
  *  when password login is enabled (loginMode ALL / PASSWORD_ONLY); under APP_OTP_AND_QR the account is
@@ -31,8 +32,10 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
   const { t } = useTranslation()
   const create = useCreateUser()
   const { data: config } = usePublicConfig()
+  const configReady = config !== undefined
   const passwordEnabled = config ? isPasswordLoginEnabled(config.loginMode) : false
   const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
 
   const schema = useMemo(
     () =>
@@ -57,22 +60,58 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
     register,
     handleSubmit,
     reset: resetForm,
+    setError,
+    clearErrors,
     formState: { errors },
-  } = useForm<FormValues>()
+  } = useForm<FormValues>({
+    defaultValues: { account: '', name: '', password: '' },
+  })
 
   useEffect(() => {
-    if (open) resetForm({ account: '', name: '', password: '' })
-  }, [open, resetForm])
+    if (open) {
+      resetForm({ account: '', name: '', password: '' })
+      clearErrors()
+      setSubmitError(null)
+    }
+  }, [open, resetForm, clearErrors])
 
   const onSubmit = async (v: FormValues) => {
-    const password = passwordEnabled && v.password ? v.password : undefined
+    if (!configReady) return
+    setSubmitError(null)
+    clearErrors()
+    const parsed = schema.safeParse(v)
+    if (!parsed.success) {
+      const assigned = new Set<string>()
+      for (const issue of parsed.error.issues) {
+        const field = issue.path[0]
+        if (
+          (field === 'account' || field === 'name' || field === 'password') &&
+          !assigned.has(field)
+        ) {
+          setError(field, { type: 'manual', message: issue.message })
+          assigned.add(field)
+        }
+      }
+      return
+    }
+    const password =
+      passwordEnabled && parsed.data.password ? parsed.data.password : undefined
     setSubmitting(true)
     try {
-      const r = await create.mutateAsync({ account: v.account, name: v.name.trim(), password })
+      const r = await create.mutateAsync({
+        account: parsed.data.account,
+        name: parsed.data.name.trim(),
+        password,
+      })
       toast.success(t('createUser.success', { account: r.account }))
       onClose()
     } catch (e) {
-      toast.error(formatApiError(e))
+      const message =
+        e instanceof ApiError && e.code === CODE.ALREADY_EXISTS
+          ? t('createUser.accountAlreadyExists')
+          : formatApiError(e)
+      setSubmitError(message)
+      toast.error(message)
     } finally {
       setSubmitting(false)
     }
@@ -119,11 +158,16 @@ export function CreateUserDialog({ open, onClose }: { open: boolean; onClose: ()
               )}
             </div>
           ) : null}
+          {submitError ? (
+            <p role="alert" className="text-sm text-destructive">
+              {submitError}
+            </p>
+          ) : null}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose} disabled={submitting}>
               {t('common.cancel')}
             </Button>
-            <Button type="submit" disabled={submitting}>
+            <Button type="submit" disabled={submitting || !configReady}>
               {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
               {t('createUser.confirm')}
             </Button>

@@ -675,15 +675,15 @@
   "createUser": {
     "title": "Create user",
     "account": "Account",
-    "accountHint": "3-31 chars: letters, digits, dots; start with a letter",
+    "accountHint": "1-30 chars: letters, digits, dot, underscore or hyphen; start with a letter or digit",
     "name": "Display name",
     "nameHint": "1 to 31 characters",
     "password": "Initial password",
     "passwordHint": "6-20 chars; letters, digits and .@!#$%^&*()",
-    "passwordOptional": "Optional — leave blank for a passwordless account (login via code)",
     "passwordRequired": "Password login is enabled; an initial password is required",
     "confirm": "Create",
-    "success": "User {{account}} created"
+    "success": "User {{account}} created",
+    "accountAlreadyExists": "Account already exists"
   },
   "issueLoginCode": {
     "title": "Issue login code for {{name}}",
