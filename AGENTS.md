@@ -42,6 +42,29 @@ The Angular user client is in `web/`, the Vite administration console in
 `admin-web/`, and Tauri/native code in `src-tauri/`. Deployment templates are
 under `deploy/`; architecture and protocol documentation belongs in `docs/`.
 
+## Native Client Responsibility Boundaries
+
+All native clients must use Rust as the shared owner of business rules and
+cross-platform runtime orchestration. Platform code (Kotlin on Android and the
+corresponding native layer on other clients) must remain a thin adapter for OS
+capabilities: lifecycle notifications, connectivity observations, permissions,
+secure storage, push delivery, notification rendering, and platform media APIs.
+
+Keep connection policy, origin selection, retries, session/account epochs,
+synchronization, event interpretation, and notification/call decisions in Rust.
+Adapters report facts and execute explicit Rust commands; they must not maintain
+parallel business state machines or independently schedule business work.
+Platform-local resource safety, including rejecting callbacks after adapter
+destruction, remains the adapter's responsibility. Rust must own cancellation
+and validate task/session generations before publishing asynchronous results.
+Do not hold lifecycle locks across blocking I/O or platform operations.
+
+Apply this boundary to Android and every future native client. Migrate existing
+duplicated platform orchestration toward shared Rust capabilities rather than
+adding another platform-specific implementation. The browser is a separate host;
+this rule does not change backend ownership or require inventing a browser Rust
+runtime without an explicit design.
+
 ## Build, Test, and Development Commands
 
 - `npm install` installs backend dependencies.
