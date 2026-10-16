@@ -55,6 +55,51 @@ describe('MessageThreadComponent native draft persistence', () => {
   });
 });
 
+describe('MessageThreadComponent blocked presentation', () => {
+  it('settles a blocked cold pane without starting a message kernel, and leaves unblock eligible for reinit', () => {
+    const component = Object.create(MessageThreadComponent.prototype);
+    const destroy = vi.fn();
+    Object.assign(component, {
+      currentTrdId: 42,
+      blockedReadyTrdId: null,
+      scroller: { destroy },
+      source: { destroy: vi.fn() },
+      cancelPaste: vi.fn(),
+      nativeDraft: { reset: vi.fn() },
+      messageInteraction: { reset: vi.fn() },
+      stableRead: { flush: vi.fn(), reset: vi.fn() },
+      unreadDividerReady: signal(true),
+      pendingDividerRefresh: [1],
+      scrollState: { reset: vi.fn() },
+      stickyOverlays: () => ({ clear: vi.fn() }),
+      optimistic: { reset: vi.fn() },
+      initialLoading: signal(true),
+      initialLoadFailed: signal(true),
+      kernelReady: true,
+      ready: { emit: vi.fn() },
+    });
+
+    component['presentBlockedThread'](42);
+
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(component['currentTrdId']).toBeNull();
+    expect(component['scroller']).toBeUndefined();
+    expect(component['source']).toBeUndefined();
+    expect(component.initialLoading()).toBe(false);
+    expect(component.initialLoadFailed()).toBe(false);
+    expect(component['kernelReady']).toBe(false);
+    expect(component['unreadDividerReady']()).toBe(false);
+    expect(component.ready.emit).toHaveBeenCalledWith(42);
+
+    component.ready.emit.mockClear();
+    component['presentBlockedThread'](42);
+    expect(component.ready.emit).not.toHaveBeenCalled();
+
+    component['blockedReadyTrdId'] = null;
+    expect(component['currentTrdId']).toBeNull();
+  });
+});
+
 describe('MessageThreadComponent initial failure presentation', () => {
   it('reveals a reusable retry surface when initialization fails', async () => {
     const error = new Error('history unavailable');

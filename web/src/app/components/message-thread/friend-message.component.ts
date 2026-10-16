@@ -130,6 +130,7 @@ import {
 } from '../../services/native-composer.service';
 import { ThemeService } from '../../services/theme.service';
 import { CallBannerComponent } from '../call-banner/call-banner.component';
+import { CallEventService } from '../../services/call-event.service';
 import { CallPresentationService } from '../../services/call-presentation.service';
 import { BusinessCode, translateBizResult } from '../../services/biz-code';
 import { tauriInvoke } from '../../services/runtime';
@@ -246,6 +247,7 @@ let nativeComposerContextSequence = Date.now() * 1000;
 export class MessageThreadComponent implements OnDestroy {
   private readonly callLayout = inject(LayoutService);
   private readonly callPresentation = inject(CallPresentationService);
+  private readonly callEvents = inject(CallEventService);
   readonly showCallBanner = computed(
     () =>
       this.callLayout.mode() === 'compact' && this.callPresentation.minimized(),
@@ -626,9 +628,14 @@ export class MessageThreadComponent implements OnDestroy {
   );
   /** Native composer is a sibling of the WebView, so CSS stacking cannot place a web overlay above it.
    *  Treat every chat aside/transient pane as a higher semantic layer and unmount the native surface
-   *  while that layer is active. This covers peer profile/group info as well as dialogs and viewers. */
+   *  while that layer is active. This covers peer profile/group info as well as dialogs and viewers.
+   *  A FULLSCREEN call overlay (CallOverlayService, body-level) is likewise above the native surface —
+   *  but it is not part of the chat pane stack, so it must be named here explicitly. A minimized call
+   *  (banner) does NOT occlude: the composer stays usable mid-call. */
   readonly nativeComposerOccluded = computed(
     () =>
+      (this.callEvents.callState().phase !== 'idle' &&
+        !this.callPresentation.minimized()) ||
       this.nav.aside().length > 0 ||
       this.nav
         .paneStack()
