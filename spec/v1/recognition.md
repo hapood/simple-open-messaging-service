@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Peer Recognition
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 Operations:
 
@@ -237,7 +237,7 @@ Operation gates are calculated separately from lifecycle:
 | Operation class                                     | Required gate                                                                                                                                                                                                                                                              |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `recognize`                                         | bootstrap signed and its admission rule; no existing lifecycle required                                                                                                                                                                                                    |
-| `health`                                            | status signed; common authentication failures use the stable error registry; authenticated status/privacy failures project as `unavailable`                                                                                                                                |
+| `health`                                            | status signed; authentication, resolution, and status/privacy failures uniformly project as `200 unavailable`, except the generic transport-level rate limit allowed in Section 9.1                                                                                                                                |
 | `feed-heads`                                        | The recipient's local recognition and prepared lightweight receive path, with a valid signer identity                                                                                                                                                                      |
 | Ordinary recognized data sent by the local node     | Local recognition and prepared path, peer acceptance proven by valid Recognize `recognized`, inbound Recognize, or positive Health, current authenticated reachability without unresolved degradation, compatible version and policy, and operation-specific authorization |
 | Ordinary recognized data received from the peer     | The recipient's local recognition and prepared path, valid signer identity, compatible version and policy, and operation-specific authorization; the sender's earlier Recognize delivery is not a separate receive gate                                                    |

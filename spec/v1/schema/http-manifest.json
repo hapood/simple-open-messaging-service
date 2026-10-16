@@ -139,6 +139,17 @@
       "responseEnvelope": true
     },
     {
+      "id": "messageProvenance",
+      "method": "POST",
+      "path": "/s2s/v1/message-provenance",
+      "authentication": "recognized-http-message-signature",
+      "successStatus": [200],
+      "requestMediaType": "application/json",
+      "requestSchema": "urn:somfp:v1:message-provenance#/$defs/request",
+      "responseSchema": "urn:somfp:v1:message-provenance#/$defs/response",
+      "responseEnvelope": true
+    },
+    {
       "id": "call",
       "method": "POST",
       "path": "/s2s/v1/call",

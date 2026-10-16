@@ -1,6 +1,6 @@
 # Media Messages
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 This document defines `IMAGE`, `VIDEO`, `AUDIO`, `FILE`, and `GALLERY`. See [Message Envelope](./envelope.md) for the shared outer message shape, asset descriptors, coordinates, and receive rules, and [Resources, Section 3](../resources.md#3-media-resources) for media HTTP operations.
 

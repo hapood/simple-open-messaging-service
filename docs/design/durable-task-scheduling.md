@@ -138,7 +138,7 @@ A task is eligible only when no earlier unfinished task exists in its
 `SUCCEEDED`, `REJECTED`, `FAILED`, and `SUPERSEDED` are all terminal and release
 successors; a failed task is not automatically retried.
 
-The [wake migration](../../database/migrations/0002_durable_task_wake.sql) emits
+The task wake triggers in the [SQL baseline](../../database/migrations/0000_base.sql) emit
 `durable_task_work` notifications for pending inserts, pending input changes,
 and status transitions. Database triggers cover admission in caller-owned
 transactions and terminal completions. Rollbacks emit no notifications; repeated

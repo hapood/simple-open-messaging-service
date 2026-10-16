@@ -1,8 +1,8 @@
 # Simple Open Messaging Federation Protocol v1 Call Signaling
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
-This unreleased v1 release-candidate contract revision requires answer correlation
+This unreleased v1 draft contract revision requires answer correlation
 and generation-bound endpoint ICE. It replaces the earlier RC call contract with
 no legacy fallback; `/s2s/v1/call` and federation major 1 remain unchanged under
 this pre-release revision policy. Deployment MUST coordinate servers and all

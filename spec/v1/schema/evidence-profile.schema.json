@@ -3,10 +3,9 @@
   "$id": "urn:somfp:v1:evidence-profile",
   "title": "Federation v1 exact evidence profile response data",
   "type": "object",
-  "required": ["account", "domain", "displayName", "bio", "avatar"],
+  "required": ["account", "displayName", "bio", "avatar"],
   "properties": {
     "account": { "$ref": "urn:somfp:v1:common#/$defs/account" },
-    "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
     "displayName": { "type": "string", "minLength": 1, "maxLength": 31 },
     "bio": { "type": "string", "maxLength": 120 },
     "avatar": {

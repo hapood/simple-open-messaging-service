@@ -54,6 +54,9 @@ async function validateReleaseMetadata(): Promise<void> {
     version?: string;
     major?: number;
     status?: string;
+    reviewStage?: string;
+    language?: string;
+    authoritativeLanguage?: string;
     normativeEntryPoint?: string;
     licenseFile?: string;
     conformance?: string;
@@ -62,7 +65,10 @@ async function validateReleaseMetadata(): Promise<void> {
     protocol: 'Simple Open Messaging Federation Protocol',
     abbreviation: 'SOMFP',
     major: protocolVersion,
-    status: 'release-candidate',
+    status: 'draft',
+    reviewStage: 'final-review',
+    language: 'en',
+    authoritativeLanguage: 'en',
   };
   for (const [key, value] of Object.entries(expected)) {
     if (release[key as keyof typeof release] !== value) {
@@ -71,12 +77,12 @@ async function validateReleaseMetadata(): Promise<void> {
   }
   if (
     typeof release.version !== 'string' ||
-    !new RegExp(`^${protocolVersion}\\.\\d+\\.\\d+-rc\\.(0|[1-9]\\d*)$`).test(
-      release.version,
-    )
+    !new RegExp(
+      `^${protocolVersion}\\.\\d+\\.\\d+-draft\\.(0|[1-9]\\d*)$`,
+    ).test(release.version)
   ) {
     throw new Error(
-      'RELEASE.json version must be a release-candidate SemVer for the wire major',
+      'RELEASE.json version must be a draft SemVer for the wire major',
     );
   }
   for (const path of [
@@ -105,6 +111,25 @@ function validateStrictVersions(value: unknown): boolean {
 }
 
 function semanticValid(schema: string, value: unknown): boolean {
+  if (schema === 'urn:somfp:v1:message-provenance#/$defs/request') {
+    const request = value as {
+      queries: Array<{
+        thread: { account: string; peerAccount?: string };
+        seq: number;
+      }>;
+    };
+    const coordinates = new Set<string>();
+    return request.queries.every(({ thread, seq }) => {
+      const key = JSON.stringify([
+        thread.account,
+        thread.peerAccount ?? null,
+        seq,
+      ]);
+      if (coordinates.has(key)) return false;
+      coordinates.add(key);
+      return true;
+    });
+  }
   if (schema === 'urn:somfp:v1:discovery') {
     if (!validateStrictVersions(value)) return false;
     const doc = value as {
@@ -119,16 +144,15 @@ function semanticValid(schema: string, value: unknown): boolean {
       }>;
     };
     const roots = new Map(
-      doc.roots.map((root) => [root.ed25519, Buffer.from(root.ed25519, 'base64')]),
+      doc.roots.map((root) => [
+        root.ed25519,
+        Buffer.from(root.ed25519, 'base64'),
+      ]),
     );
     const ids = new Set<string>();
     return doc.keys.every((key) => {
       const root = roots.get(key.root);
-      if (
-        !root ||
-        ids.has(key.keyId) ||
-        key.notBefore >= key.notAfter
-      )
+      if (!root || ids.has(key.keyId) || key.notBefore >= key.notAfter)
         return false;
       ids.add(key.keyId);
       const statement = JSON.stringify({
@@ -344,6 +368,7 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     'GET /s2s/v1/group-member-profiles/:groupAccount/:namespaceId/:memberAccount/:profileRev',
     'GET /s2s/v1/messages',
     'GET /s2s/v1/message-tombstones',
+    'POST /s2s/v1/message-provenance',
     'POST /s2s/v1/call',
     'GET /s2s/v1/accounts/:account',
     'GET /s2s/v1/media/:digest',
@@ -355,6 +380,7 @@ async function validateManifest(ajv: Ajv2020Instance): Promise<void> {
     ),
   );
   if (
+    manifest.operations.length !== actual.size ||
     expected.size !== actual.size ||
     [...expected].some((item) => !actual.has(item))
   ) {

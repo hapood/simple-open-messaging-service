@@ -1,6 +1,6 @@
 # `CONTACT_CARD` Message
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 This document defines a `CONTACT_CARD` containing a user or group address and an
 immutable display snapshot. A card may refer to its author, another user, or a
@@ -72,8 +72,10 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
     "account": "alice",
     "peerAccount": "bob"
   },
-  "authorRef": "THREAD_ACCOUNT",
-  "namespaceId": 0,
+  "author": {
+    "ref": "THREAD_ACCOUNT",
+    "namespaceId": 0
+  },
   "seq": 72,
   "profileRev": 7,
   "originSeq": null,

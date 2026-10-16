@@ -52,7 +52,7 @@ Every group has one feed record and one ordered coordinate space. The origin
 authors it; a mirror stores the received coordinates:
 
 ```text
-GroupMeta(groupId)
+GroupMeta(threadId)
   metaEndId                             origin allocation end | mirror applied cursor
   profileRev                            the newest GROUP_PROFILE row's revision
   announcementFeedId                    current announcement id; NULL means unknown
@@ -61,11 +61,14 @@ GroupMeta(groupId)
   metaProcessedThroughId                greatest source feed id durably scanned
   metaRecoveryThroughId                 open recovery drain's fixed through; NULL selects delta
 
-GroupMetaMemberFeed(groupId, feedId)
-  fact subject = account + domain (a member, or the group itself for GROUP_PROFILE)
+GroupMetaMemberFeed(threadId, feedId)
+  stable member subject = account + profileNamespaceId (stored columns)
   operation = MEMBER_UPSERT | MEMBER_DEPART | GROUP_PROFILE
-  body = { role, profileNamespaceId, profileRev } | {} | { profileNamespaceId, profileRev }
+  member body = { account, namespaceId, role, profileRev }
+  group profile body = { account, namespaceId, profileRev }
 ```
+
+`namespaceId` in the stored/published body is the profile-subject namespace; the indexed member column is named `profileNamespaceId`. Departure retains the same complete member body rather than `{}`. The S2S item envelope is `{ feedId, operation, body }` for all four operations, including announcements with body `{ text }`. Subject identity remains in the operation body; no item carries a domain. The final-review draft and schemas now describe these body-based wire shapes.
 
 `GroupMetaMemberFeed` stores member and profile facts. The announcement
 projection resides on `GroupMeta` rather than borrowing a member identity.

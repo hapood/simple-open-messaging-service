@@ -7,7 +7,7 @@ The SOMS backend listens on `http://localhost:3000` with the global prefix `/api
 - [Common Conventions](#common-conventions)
 - [Authentication API](#authentication-api)
 - [User API](#user-api)
-- [Invite API](#invite-api)
+- [Relationship API](#relationship-api)
 - [Message API](#message-api)
 - [Group API](#group-api)
 - [Calls API](#calls-api)
@@ -27,8 +27,8 @@ SOMS authenticates users with a **single opaque session token** — there is **n
 - The token is returned once at login (`{ session_token }`) and stored sha256-hashed in the `SessionToken` table.
 - **Browser / desktop (web shell)**: the server sets it as an **httpOnly cookie** (auto-attached same-origin; JS never reads it). A non-httpOnly `logged_in` presence cookie lets the SPA observe login state.
 - **Native (`app`)**: the client sends `Authorization: Bearer <session_token>` (stored in OS secure storage; under Tauri the Rust transport injects it).
-- Every route is authenticated by the global `SessionAuthGuard` (`APP_GUARD`) unless it opts out with `@Public()` — registration, login, `health`, `config`, `.well-known/*`, and `s2s/*` are public.
-- There is **no token-renewal endpoint**. A long-lived token needs no rotation; a revoked/expired token yields `10007` (`SESSION_REVOKED`) and the client re-logs in. On 401 the web client navigates to login (`redoLoginAuth`).
+- Every route is authenticated by the global `SessionAuthGuard` (`APP_GUARD`) unless it opts out with `@Public()`. S2S routes opt out of user-session authentication but still enforce their own federation signature and authorization context; they are not anonymous business APIs.
+- There is **no token-renewal endpoint**. All clients use a sliding inactivity deadline (30 days by default); client kind does not grant a permanent session. A valid token needs no rotation; a revoked/expired token yields `10007` (`SESSION_REVOKED`) and the client re-logs in. On 401 the web client navigates to login (`redoLoginAuth`).
 - **Admin** routes use a separate opaque session (`AdminSession`, own secret, `AdminAuthGuard`) — physically isolated from user sessions but sharing the `User` account namespace.
 
 ### Response Format
@@ -42,7 +42,7 @@ interface ApiResult<T = any> {
 }
 ```
 
-> Business results always use HTTP 200 + `code`; only unauthenticated (401) / not found (404) / conflict (409) / server error (500) retain HTTP status codes. DTO validation failures are folded into the business flow (200 + `10000`). `Date` → ms timestamp; BigInt → string (global `SerializeInterceptor`).
+> Business results normally use HTTP 200 + `code`. Array-valued DTO validation failures are folded into 200 + `10000`; explicit `BusinessException` statuses and other HTTP exceptions retain their selected status (including 400, 401, 403, 409, 429, and 5xx). S2S has a separate status/code registry. `Date` → ms timestamp; BigInt → string (global `SerializeInterceptor`).
 
 ### Business Error Codes
 
@@ -66,15 +66,15 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 
 ### POST `/auth/login` — Password login `@Public`
 
-- **Body**: `{ account: string, password: string, client?: 'app'|'web'|'desktop', persistent?: boolean, trusted?: boolean, device?: string }`
-  - `client` defaults to `web`. `persistent` (default `true`) = 14-day sliding cookie vs session cookie. `trusted = client==='app' || (client==='desktop' && trusted===true)` → permanent (revocation-only) session.
+- **Body**: `{ account: string, password: string, client?: 'app'|'web'|'desktop', device?: string }`.
+  `client` defaults to `web` and is informational. All clients use the account inactivity policy, 30 days by default. `trusted` and `persistent` are not login inputs. Browser cookies are one-year credential carriers; server-side expiry remains authoritative.
 - **Behavior**: `LocalStrategy` verifies the password (argon2); on success issues a `SessionToken`, sets the session cookies, and returns `{ session_token, mustChangePassword? }`. Native clients use the returned token as `Authorization: Bearer <session_token>`; browser clients use the httpOnly cookie. Failures are counted by the shared `BruteForceService` (ip + user dims, sliding window + graduated ban ladder).
 - **Errors**: `10009` invalid credentials · `10005` banned (`data.bannedUntil`) · `10017` password not set (OTP/QR-only account) · `10018` must change password (admin-generated initial password).
 
 ### POST `/auth/otp/login` — OTP login `@Public`
 
 - **Body**: `{ account: string, code: string, client?: 'app'|'web'|'desktop', device?: string }` — the admin-issued 6-digit one-time login code. `client` defaults to `app`.
-- **Behavior**: verifies the `LoginCode` (argon2, single-use via updateMany guard), sets the session cookies, and returns `{ session_token, mustChangePassword? }`.
+- **Behavior**: verifies the `LoginCode` (argon2, single-use through a conditional database update), sets the session cookies, and returns `{ session_token, mustChangePassword? }`.
 - **Errors**: `10012` OTP invalid · `10013` expired · `10014` consumed.
 
 ### POST `/auth/qr/{create,poll,scan,confirm}` — QR login
@@ -108,7 +108,7 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 - `PUT`: `{ days }` updates that policy for the current user. This affects automatic termination of
   old inactive sessions; it does not revoke the current session immediately.
 
-> Full session-hardening rationale (opaque token, trusted vs sliding lifetime, revocation reasons, SSE coordination) is in [architecture.md → Authentication](../overview/architecture.md#authentication-mechanism).
+> Full session-hardening rationale (opaque token, sliding inactivity lifetime, revocation reasons, SSE coordination) is in [architecture.md → Authentication](../overview/architecture.md#authentication-mechanism).
 
 ---
 
@@ -121,13 +121,13 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 - **Body**: `{ account, password, name? }`. User accounts are 1–30 ASCII characters,
   start with an alphanumeric character, may then contain alphanumerics, `.`, `_`, or `-`,
   and are normalized to lowercase.
-- **Behavior**: creates a `User` (profile columns inline — name defaults to account) with `domain='local'`.
+- **Behavior**: creates a local `Account` and a separate immutable `Profile` snapshot (display name defaults to the account). Foreign identities do not get local login rows.
 - **Errors**: `10002` already exists · `10010` registration disabled (admin-provisioned accounts only — the common mode).
 
 ### POST `/user/my-profile` · `/user/update-profile`
 
 - `my-profile`: current user info (password hash omitted).
-- `update-profile`: `{ name?, bio?, avatarBase64? }` (handle cannot change; bumps `profileRev`).
+- `update-profile`: `{ name, bio, avatarBase64? }` (handle cannot change; creates a complete immutable profile revision and advances `Account.defaultProfileRev`). `name` and `bio` are required.
   Set `avatarBase64` to a validated image payload to replace the avatar, or `null` to remove it.
   Avatar bytes are validated, kept byte-for-byte, and returned through the profile response; there is
   no separate `/user/update-avatar` endpoint.
@@ -135,11 +135,7 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 ### GET `/user/state-feed` — Client state feed
 
 - **Query**: `after`, optional `through`, `take`, and `mode=full|delta`. Returns a bounded page of
-  compacted thread, profile, member-profile, request, and client-state changes after the client's
-  only durable device-feed cursor. `THREAD_CONTENT_HEAD` carries required `messageEndSeq` and
-  `tombstoneEndSeq` high-water marks. It carries no message preview or profile-selection hint: message
-  catch-up owns list presentation, and exact author profiles are resolved only when the client reads the
-  corresponding message. `RELATIONSHIP_INTENT` entries last updated more than seven days ago are
+  compacted relationship/request changes after its independent durable state-feed cursor. Conversation snapshots, content heads, read/unread state, and previews come from `POST /thread-feed`, not this endpoint. `RELATIONSHIP_INTENT` entries last updated more than seven days ago are
   omitted in both full and delta mode; `INCOMING_INVITE_HEAD` remains available regardless of age
   so request read state survives a device rebuild. Filtered ranges still advance the response cursor.
   The response carries the current feed end and the next cursor for deterministic catch-up.
@@ -149,23 +145,21 @@ Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../.
 - The default profile reference remains fixed until the relationship is established again. Revocation
   retains the previous reference; ordinary profile changes do not replace it.
 - `GET /user/group-meta` serves a visible group's full or delta roster feed by `threadId` or account.
-  `MEMBER_UPSERT` and `MEMBER_DEPART` items include `account`, `domain`, and a member body containing `role`, `namespaceId`, and `profileRev`; the wire `namespaceId` is the publisher-scoped profile coordinate.
-  `MEMBER_UPSERT.body` carries role plus profile namespace/revision references; clients resolve profile content separately.
-  `GROUP_PROFILE` carries only `feedId` and `body.profileNamespaceId + body.profileRev`, without a member identity.
+  `MEMBER_UPSERT` and `MEMBER_DEPART` carry `body: { account, namespaceId, role, profileRev }`, with no top-level member account or domain. `namespaceId` is the publisher-scoped subject coordinate; clients resolve profile content separately.
+  `GROUP_PROFILE` carries `body: { account, namespaceId, profileRev }`. These are current client API shapes, not a claim that the S2S implementation matches the independent draft.
 
 ### POST `/user/profile-resolution` — Resolve a profile
 
 The request is a projection-free exact profile demand:
 
-- `ACCOUNT_PROFILE`: `{ publisherNamespaceId, lookup: 'ACCOUNT_PROFILE', target: { profileNamespaceId, account, domain, rev } }`
-- `GROUP_MEMBER_PROFILE`: `{ publisherNamespaceId, lookup: 'GROUP_MEMBER_PROFILE', target: { profileNamespaceId, account, domain, rev }, groupAccount }`
+- `ACCOUNT_PROFILE`: `{ publisherNamespaceId, lookup: 'ACCOUNT_PROFILE', target: { profileNamespaceId, account, rev } }`
+- `GROUP_MEMBER_PROFILE`: `{ publisherNamespaceId, lookup: 'GROUP_MEMBER_PROFILE', target: { profileNamespaceId, account, rev }, groupAccount }`
 
 The request carries no `threadId`, `messageSeq`, Meta feed coordinate, selector, or separate evidence
 object. Clients use the exact identity and revision already present in visible thread, relationship,
-or group-meta records. Before any cache lookup, the server verifies that the authenticated user has a
-matching disclosure grant for the requested lookup. `READY.profile` includes both `publisherNamespaceId`
+or group-meta records. Current implementation returns a cached exact snapshot before checking the caller's disclosure grant; authorization gates new fetch work on a cache miss. The authenticated `{ demand, evidence: null }` wrapper performs cache-only lookup and does not initiate a fetch. This cache-read disclosure policy is an unresolved privacy review item, not a guarantee of per-user authorization before every cache read; see the [closeout audit](../development/documentation-closeout-audit.md). `READY.profile` includes both `publisherNamespaceId`
 and `profileNamespaceId`; `PENDING.key` is the expected `{ publisherNamespaceId, profileNamespaceId,
-account, domain, rev }` tuple. Completion is announced by the authenticated event stream with the same
+account, rev }` tuple. Domain is resolved through the publisher-scoped namespace binding and is not a profile-demand field. Completion is announced by the authenticated event stream with the same
 tuple and clients then reread their local profile store.
 These are client/backend implementation field names. For federation profile
 requests, `publisherNamespaceId` selects the locally recognized peer and is not
@@ -185,16 +179,14 @@ sent as a profile field; `target.profileNamespaceId` becomes the S2S path's
   recognition, while `unavailable` does not. The profile is retrieved after the local readiness gate passes.
 - Emits one terminal `resolved` or `failed` event and closes. Closing the client connection cancels client
   interest; the server-to-peer request keeps its normal bounded timeout.
-- The result contains only an untrusted display card (`user`). It is never persisted and never creates
-  a stub; clients may close it and start another lookup at any time. Clients determine relationship
+- The result contains a transient untrusted display card (`user`) addressed by `{ account, namespaceId }`, with no domain identity field. The card is not persisted and creates no foreign account stub; clients may close it and start another lookup at any time. Clients determine relationship
   state from their synchronized local thread and request projections.
 
-### POST `/message/quote-resolution` — Resolve a message quote
+### Namespace bindings
 
-- **Body**: `{ threadId, messageSeq }`.
-- Starts resolution of a visible message quote for the current user. The response is either immediately
-  usable or indicates a pending result; pending completion is announced on the authenticated `/events`
-  stream. The request is authorized against the caller's access to the referenced thread and message.
+- `POST /profile-namespaces/resolve` accepts exactly `{ publisherNamespaceId, profileNamespaceId }` and returns a `READY` binding or `PENDING` fetch admission.
+- `GET /user/profile-namespace-feed` exposes client namespace invalidations; `PROFILE_NAMESPACE_UPDATED` is its live wake hint.
+- There is no `/message/quote-resolution` endpoint. Quote navigation uses the message-query anchor coordinates and the ordinary message history synchronization path.
 
 ---
 
@@ -213,10 +205,7 @@ the complete transition, pair-folding, and projection-side-effect rules.
 
 ### POST `/relationship/request` — Request a user or group relationship
 
-- **Body**: `{ account, domain, note?: string(≤255), displayName?, avatar? }`. Use the literal domain
-  `local` for a local account. For a federated Address, `displayName` is required and `avatar` is an
-  optional untrusted request-card snapshot obtained by the preceding temporary resolve. Database user
-  ids are not part of the client identity contract.
+- **Body**: `{ account, namespaceId, note?: string(≤255), displayName?, avatar? }`. Namespace `0` selects a local account; a positive server-local identity namespace comes from the preceding federated resolve. For a foreign namespace, `displayName` is required and `avatar` is an optional untrusted request-card snapshot. `domain` and numeric user IDs are not mutation target fields.
 - **Response data**: user intents return `{ status: "OK", threadId? }`; group-member intents return
   `{ status: "APPLIED" }` or an idempotent `{ status: "NO_OP", reason }`. Expected refusal is an
   HTTP-200 business envelope whose data is `{ status: "REJECTED", reason }`.
@@ -224,9 +213,7 @@ the complete transition, pair-folding, and projection-side-effect rules.
   resend after expiry renews the absolute expiry. `20001` friending self · `10001` target not found.
 - A federated request publishes only `RELATIONSHIP_INTENT`, including the author's referenced
   profile namespace and `profileRev`. The receiver resolves that exact reference independently through the global profile
-  resolver; there is no separate `PROFILE` State Feed event. A stable foreign identity shell and its
-  immutable `ProfileVersion` may be materialized by that resolution without changing relationship
-  authorization.
+  resolver; there is no separate `PROFILE` State Feed event. An immutable `Profile` may be cached by that resolution without creating a foreign login/account row or changing relationship authorization.
 - The federated request transaction performs no peer discovery, recognition, or inline network
   operation. The preceding exact-address resolve must already have established an active peer namespace.
   If it has not, the command returns a business rejection and creates no relationship request or State
@@ -236,7 +223,7 @@ the complete transition, pair-folding, and projection-side-effect rules.
 
 ### POST `/relationship/revoke` — Revoke a relationship or pending request
 
-- **Body**: `{ account, domain }`, using the literal domain `local` for a local user.
+- **Body**: `{ account, namespaceId }`; namespace `0` selects a local user.
 - For a user Address, revokes an incoming or outgoing pending friend request, or ends an active P2P
   relationship. The conversation history is retained.
 - For a federated group Address, revokes only the caller's pending group-join request. Leaving an
@@ -245,7 +232,7 @@ the complete transition, pair-folding, and projection-side-effect rules.
 
 ### POST `/relationship/accept` — Accept an incoming relationship request
 
-- **Body**: `{ account, domain }`. Address selection supports local and federated user requests as
+- **Body**: `{ account, namespaceId }`. Namespace-bound selection supports local and federated user requests as
   well as local and federated group invitations. Database intent ids are not part of the API contract.
 - For a friend request, acceptance authors the caller's reverse direction. The P2P relationship is
   active only when both directed intents are effective.
@@ -267,7 +254,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 ### POST `/relationship/requests/read`
 
-- Advances the account's incoming-request read cursor. Request lists are device projections consumed
+- **Body**: `{ readThroughFeedId }`, a durably applied state-feed cursor; returns `{ readThroughFeedId }`. Advances the account-wide incoming-request read cursor, synchronized through `INCOMING_INVITE_HEAD`. Request lists are device projections consumed
   from `ClientStateFeed`; the server exposes no separate incoming/outgoing list API.
 
 ---
@@ -285,7 +272,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 ### POST `/send-contact-card` — Share a contact snapshot
 
-- **Body**: `{ threadId, target: { account, domain, namespaceId, profileRev }, clientMessageId }`. The same four-part target identifies a user or group; no numeric target ID is accepted.
+- **Body**: `{ threadId, target: { account, namespaceId, profileRev }, clientMessageId }`. The same three-part target identifies a user or group; no numeric target ID is accepted.
 - **Behavior**: the server checks that the target is a visible group, an available local user, or an active federated friend, then snapshots the exact stored profile version. If that version is unavailable, the card uses `account` as its display name, an empty bio, and no avatar. Available avatar bytes are copied into message CAS storage. The resulting `CONTACT_CARD` message is immutable.
 
 ### POST `/send-media` — Send media (staged)
@@ -302,7 +289,7 @@ under `/group/*` because the group, rather than the current user, authors that d
 ### POST `/send-forward` — Send an immutable forwarded-message bundle
 
 - **Body**: `{ threadId, sourceMessages: [{ threadId, seq }], clientMessageId }` (1–100 source messages).
-- **Behavior**: the server, never the client, snapshots sender display data and content into a `ForwardBundle.manifest` JSONB document. `manifest.children` is an ordered array of directly nested bundle ids; `ForwardBundleDependency` mirrors it for indexed traversal. Attachment and avatar bytes remain deduplicated CAS objects referenced by `ForwardBundleAsset`. The resulting `Message` has `contentType: 'FORWARD'`; its small JSON content contains only `bundleId`, up to three 100-grapheme summary lines and counts.
+- **Behavior**: the server, never the client, snapshots sender display data and content into the `ForwardBundle.messages` JSONB array. `ForwardBundleDependency` indexes directly nested bundles for closure traversal. Attachment and avatar bytes remain deduplicated CAS objects referenced by `ForwardBundleAsset`. The resulting `Message` has `contentType: 'FORWARD'`; its small JSON content contains only `bundleId`, up to three 100-grapheme summary lines and counts.
 - **Depth**: a leaf bundle is depth 1 and a parent is `1 + max(child.depth)`. Maximum depth is 3. Attempting to forward an existing depth-3 card returns `30004`; the server recomputes this regardless of frontend checks.
 - **History replies**: bundle text contains only `text`; `quoteTargetId` on the entry refers to a message ID in that same bundle array. Selected reply targets are remapped to those IDs; absent or unselected targets are emitted as `0`. Imported positive references without a target entry are also displayed as unavailable. DIRECT mode strips reply context.
 - **Read**: `GET /forward-bundles/:bundleId` returns the visible root and its complete child closure after checking that the caller participates in a thread containing the root card.
@@ -328,6 +315,8 @@ under `/group/*` because the group, rather than the current user, authors that d
   cursors; it does not merge a locally stored clear boundary into the request.
 - The endpoint `through` is clipped to the visible history window in either direction. An endpoint
   beyond that window does not invalidate an otherwise valid starting cursor.
+
+Successful message pages additionally include `gaps` and nullable `resolvedAnchorSeq`. `anchorSeq` selects a local message anchor; `anchorNamespaceId` plus `anchorOriginSeq` selects a source coordinate. Anchor and ordinary direction cursors cannot be combined. Gaps describe recoverable missing intervals, not fabricated messages; see [client history synchronization](../design/client-message-history-sync.md) for the bounded range-walking contract.
 
 ### POST `/deleted-messages/query` — Paginated tombstones
 
@@ -362,13 +351,21 @@ under `/group/*` because the group, rather than the current user, authors that d
 - **Body**: `{ after: number, through?: number, take?: number, previewCount?: number }`; feed cursors are
   nonnegative int32, take defaults to 100 and is limited to 1..200.
 - **Data**: `{ threadFeedEndId, through, scannedThrough, hasMore, items }`.
-- Each item includes `threadId`, `threadFeedId`, `type`, `authorityNamespaceId`,
-  `conversationState`, `blocked`, nullable `role`, and an exact
-  `profile: { account, domain, namespaceId, profileRev }`, plus `messageEndSeq`,
-  `tombstoneEndSeq`, nullable `groupMetaFeedEndId`, `joinRequestEndFeedId`,
-  `joinRequestReadFeedId`, `groupInviteEndFeedId`, `threadProfileRev`, `lastReadSeq`,
-  `unreadCount`, nullable `lastMentionSeq`, and nullable `alias`.
+- Each item includes `threadId`, `threadFeedId`, `type`, `publisherNamespaceId`,
+  required nullable `selfMentionNamespaceId`,
+  `conversationState`, `blocked`, nullable `role`, `profileAccount`, `profileRev`,
+  `messageEndSeq`, `tombstoneEndSeq`, nullable decimal-string `groupMetaFeedEndId`,
+  `joinRequestEndFeedId`, `joinRequestReadFeedId`, `groupInviteEndFeedId`,
+  `lastReadSeq`, `announcementReadFeedId`, `unreadCount`, nullable `lastMentionSeq`, and nullable `alias`.
+  There is no nested `profile` object or wire `threadProfileRev` field.
   `lastMentionSeq` is nullable; clients compare it with their local read position.
+  `selfMentionNamespaceId` places the viewing account's home in the group origin's
+  namespace space: `0` for a local group, the origin's peer-assigned positive
+  namespace for a remote group, or `null` for P2P or an unavailable binding.
+  User mentions match this namespace and the viewer account exactly; unknown
+  mappings never fall back to account-only matching. Clients require the field
+  in snapshots and store it in their typed thread record; no legacy missing-field
+  or cache migration compatibility is provided. Cache schema versions remain `1`.
   `joinRequestReadFeedId` is `-1` for non-managers; otherwise a join-request
   notification is unread when it is smaller than `joinRequestEndFeedId`.
 - `previewCount` defaults to zero and cannot exceed three. When requested,
@@ -395,19 +392,11 @@ task coalescing, and optimistic client correction semantics.
 
 ### POST `/group/create`
 
-- **Body**: `{ name, avatar?, bio?, inviteUserIds?: number[] }`. Creates `MessageThread(GROUP)` + the
-  `!`-User group identity + `Group`; writes a GROUP→USER invitation direction for every selected friend.
-  Returns `{ threadId }`.
+- **Body**: `{ name, avatar?, description? }`. Creates the local `GroupAccount`, `MessageThread(GROUP)`, selected immutable profile, and canonical Group Meta state. Invitations use the separate invite operation; no `inviteUserIds` input is accepted. Returns `{ threadId }`.
 
 ### POST `/group/invite`
 
-- **Body**: `{ groupId, users: [{ account, domain }] }` — author one GROUP invitation per
-  valid addressed user. Friendship is not an invitation prerequisite. The server resolves each
-  address to the current authoritative identity; resolution never selects an identity copied from
-  another peer's group. `local` and this server's public domain both identify local users. Duplicate
-  normalized addresses are coalesced. The synchronous response contains
-  `invited: [{ account, domain }]` and
-  `skipped: [{ account, domain, reason, code, message }]`.
+- **Body**: `{ groupId, users: [{ account, namespaceId }] }` — author one GROUP invitation per valid namespace-bound user. Friendship is not an invitation prerequisite. The server resolves each target to its authoritative identity without selecting an identity copied from another peer's group. Namespace `0` selects local users. Duplicate normalized targets are coalesced; the synchronous response reports `invited` and `skipped` targets with rejection details.
 
 ### Group request projections
 
@@ -416,7 +405,7 @@ task coalescing, and optimistic client correction semantics.
   rows carry the member address and `feedId` rather than a request id.
 - `POST /group/join-request/{accept,reject}` acts on a member-authored application.
 - `POST /group/invitation/revoke` cancels a still-live group-authored invitation.
-- Each manager action uses `{ groupId, account, domain }` to identify the current member relationship.
+- Each manager action uses `{ groupId, account, namespaceId }` to identify the current member relationship.
 - These mutation routes execute their authored business transaction synchronously and return
   `APPLIED`, an idempotent `NO_OP`, or an HTTP-200 business rejection.
 - These lists are backend projections written after the corresponding intent fact and relationship
@@ -460,8 +449,9 @@ task coalescing, and optimistic client correction semantics.
 
 1:1 audio/video calls. The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On a terminal state `CallsService` commits a local `SYSTEM / CALL_ENDED` notice on each participating server.
 
-- `POST /calls/initiate` `{ callSid, calleeUserId, callType }` → `{ callSid, threadId }` (`70001` not friends · `70004` busy).
+- `POST /calls/initiate` `{ callSid, threadId, callType }` → `{ callSid, threadId }` (`70001` not friends · `70004` busy).
 - `POST /calls/{accept, ringing, connected, decline, cancel, end, signal}` drive the FSM (`70002` not found · `70003` not a participant · `70005` invalid transition).
+- `POST /calls/upgrade-video` requests the one-way AUDIO-to-VIDEO upgrade for the existing call.
 - `GET /calls/ice-servers` — TURN/STUN helper (TURN off by default; misconfig throws).
 - `GET /calls/:callSid/signaling` — caller-side answer fetch.
 
@@ -656,9 +646,7 @@ Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, 
 The browser opens the stream via a fetch-backed SSE client inside a Web Worker (the native EventSource API cannot set headers). The credential travels as the **httpOnly cookie** (browser) or `Authorization: Bearer` (native) — never in the URL. Authentication failure → HTTP 401 (no frame); the client reconnects.
 
 On connect the server pushes a **`HELLO`** frame with `userId`, `sessionId`, `pushSubscriptionRev`, `stateFeedEndId`, `threadFeedEndId`, `profileRev`, and `activeCall`.
-`stateFeedEndId` bounds catch-up for hydrated thread state (including group/roster invalidation and per-user
-settings/read state), cached profile changes, source-scoped member profiles, incoming friend requests, and
-paired thread content heads. The stream is push-only; it sends no idle heartbeat.
+`stateFeedEndId` bounds relationship/request metadata catch-up. `threadFeedEndId` independently bounds conversation snapshots, settings/read state, unread counts, and content ends. Profile namespace and Group Meta invalidations use their own synchronization coordinates. The stream is push-only; it sends no idle heartbeat.
 
 ### Frame format
 
@@ -680,10 +668,11 @@ data: <json>
 | `MEDIA_FILE_DOWNLOAD_PROGRESS`    | temporary single-file byte progress `{ threadId, seq, file, loaded, total, status }`                         | terminal frame closes the temporary stream |
 | `CALL_EVENT` / `CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling                       | active-call snapshot/new negotiation         |
 | `FORCE_LOGOUT`               | terminate a revoked session                                         | authentication state                         |
+| `PROFILE_AVAILABLE` / `PROFILE_UNAVAILABLE` | exact profile-resolution result wake, keyed by publisher/subject/account/revision | retry exact profile demand |
+| `PROFILE_NAMESPACE_UPDATED` | profile namespace invalidation `{ end }` | `/user/profile-namespace-feed` |
 | `SSE_REPLACED`               | stop an old connection when its device session opens a new SSE      | new connection's `HELLO`                     |
 
-There are no dedicated group, profile, friend/request, thread-metadata, message-head, or read-state SSE
-events. Changes are committed to durable feeds first; SSE carries only cursor hints.
+Business projections commit before their feed wakes. `PROFILE_AVAILABLE` and `PROFILE_UNAVAILABLE` deliver session-scoped exact-resolution completion keys; `PROFILE_NAMESPACE_UPDATED` carries the namespace invalidation head. They are not message bodies or a substitute for durable feed recovery.
 
 For a message notification candidate, the existing one-second `THREAD_FEED_UPDATED` hint includes
 this device session's current `sseUuid`. Clients collect the highest `threadFeedEndId` during a **fixed
@@ -721,4 +710,4 @@ SSE is unidirectional; **clients do not send business messages over SSE**. All w
 - `POST /api/v1/admin/message-reports/delete` accepts one `{ threadId, seq }` and soft-deletes the report without changing the message.
 - `POST /api/v1/admin/messages/delete` accepts one `{ threadId, seq }` and returns `{ threadId, messageSeq, deletionSeq }` after the deletion transaction commits. Repeated submissions reuse the deletion fact. The same transaction admits client and federation content fanouts. Admin multi-selection submits one request per message and preserves failed selections for retry.
 
-The two administrative mutations require ADMIN or SUPER_ADMIN. Report removal and message deletion are distinct: there is no review status or reporter association. A deletion task uses the shared deletion service to write an idempotent tombstone, remove the message from the preview cache, archive its report, and enqueue thread fanout. The worker then signals federation. Interrupted deletion tasks are recovered at startup. No moderation-result notification is sent to the reporter.
+The two administrative mutations require ADMIN or SUPER_ADMIN. Report removal and message deletion are distinct: there is no review status or reporter association. The synchronous deletion transaction uses the shared deletion service to write an idempotent tombstone, update previews/reports, and admit durable thread fanout. The fanout executor subsequently publishes client and federation heads; deletion itself does not wait for that projection work. No moderation-result notification is sent to the reporter.

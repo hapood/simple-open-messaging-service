@@ -3,12 +3,18 @@
   "$id": "urn:somfp:v1:profile",
   "title": "GET /s2s/v1/accounts/:account response data",
   "type": "object",
-  "required": ["account", "domain", "displayName", "bio", "avatar", "profileRev", "proof"],
+  "required": [
+    "account",
+    "displayName",
+    "bio",
+    "avatar",
+    "profileRev",
+    "proof"
+  ],
   "properties": {
     "account": {
       "$ref": "urn:somfp:v1:common#/$defs/account"
     },
-    "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
     "displayName": { "type": "string", "minLength": 1, "maxLength": 31 },
     "bio": { "type": "string", "maxLength": 120 },
     "avatar": {

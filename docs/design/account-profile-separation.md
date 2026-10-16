@@ -8,8 +8,7 @@ define the account/profile separation.
 `Account` owns local user identity, authentication/control state, and the local
 authoring default `defaultProfileRev`. Its numeric ID remains the key used by
 sessions, preferences, quotas, and per-account delivery state. Its public
-`account` address is unique. Local domain and namespace are always `local` and
-`0`, enforced by constraints on the local account row.
+`account` address is unique. The local namespace is always `0`, enforced by a row constraint. `Account` has no physical domain column; the domain is interpreted through the namespace binding.
 
 `GroupAccount` owns local group identity, the local authoring default
 `defaultProfileRev`, creation time, and authoritative dissolution state. Its
@@ -22,7 +21,7 @@ values belong exclusively to versioned profiles.
 ## Profiles
 
 `Profile` stores immutable complete profile snapshots under the unique key
-`(publisherNamespaceId, profileNamespaceId, account, domain, profileRev)`. The
+`(publisherNamespaceId, account, profileNamespaceId, profileRev)`. Domain is namespace binding metadata, not a physical profile-key column. The
 `!` account prefix distinguishes
 group profiles from user profiles. A snapshot contains a display name, avatar,
 biography/description, and storage timestamp. It has no `userId`, `groupId`,

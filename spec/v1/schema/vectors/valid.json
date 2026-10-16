@@ -1,6 +1,53 @@
 {
   "vectors": [
     {
+      "name": "provenance batch with P2P and group coordinates",
+      "schema": "urn:somfp:v1:message-provenance#/$defs/request",
+      "value": {
+        "queries": [
+          {
+            "thread": { "account": "alice", "peerAccount": "bob" },
+            "seq": 1,
+            "payloadDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "thread": { "account": "!group1" },
+            "seq": 1,
+            "payloadDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      }
+    },
+    {
+      "name": "provenance per-query answer states",
+      "schema": "urn:somfp:v1:message-provenance#/$defs/response",
+      "value": {
+        "results": [
+          { "thread": { "account": "!group1" }, "seq": 1, "known": "yes" },
+          { "thread": { "account": "!group1" }, "seq": 2, "known": "no" },
+          { "thread": { "account": "!group1" }, "seq": 3, "known": "declined" }
+        ]
+      }
+    },
+    {
+      "name": "reply with required payload binding",
+      "schema": "urn:somfp:v1:message-query#/$defs/message",
+      "value": {
+        "thread": { "account": "alice", "peerAccount": "bob" },
+        "author": { "ref": "THREAD_ACCOUNT", "namespaceId": 0 },
+        "seq": 2,
+        "profileRev": 1,
+        "originSeq": null,
+        "originCreatedAt": null,
+        "createdAt": 0,
+        "contentType": "PURE_TEXT",
+        "content": "{\"text\":\"reply\"}",
+        "assets": [],
+        "quoteTarget": { "seq": 1 },
+        "quoteDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
       "name": "group announcement publish and explicit clear",
       "schema": "urn:somfp:v1:group-meta#/$defs/item",
       "values": [
@@ -289,10 +336,9 @@
         "items": [
           {
             "feedId": 7,
-            "account": "alice",
-            "domain": "a.example",
             "operation": "MEMBER_UPSERT",
             "body": {
+              "account": "alice",
               "role": "OWNER",
               "namespaceId": 0,
               "profileRev": 2
@@ -300,12 +346,11 @@
           },
           {
             "feedId": 8,
-            "account": "bob",
-            "domain": "b.example",
             "operation": "MEMBER_UPSERT",
             "body": {
+              "account": "bob",
               "role": "MEMBER",
-              "namespaceId": 0,
+              "namespaceId": 7,
               "profileRev": 1
             }
           },
@@ -313,6 +358,7 @@
             "feedId": 9,
             "operation": "GROUP_PROFILE",
             "body": {
+              "account": "!01arz3ndektsv4rrffq69g5fav",
               "namespaceId": 0,
               "profileRev": 4
             }
@@ -332,10 +378,9 @@
         "items": [
           {
             "feedId": 10,
-            "account": "bob",
-            "domain": "b.example",
             "operation": "MEMBER_DEPART",
             "body": {
+              "account": "bob",
               "role": "MEMBER",
               "namespaceId": 7,
               "profileRev": 3
@@ -357,8 +402,7 @@
               "account": "alice",
               "peerAccount": "bob"
             },
-            "authorRef": "THREAD_ACCOUNT",
-            "namespaceId": 0,
+            "author": { "ref": "THREAD_ACCOUNT", "namespaceId": 0 },
             "seq": 1,
             "profileRev": 3,
             "originSeq": null,
@@ -384,9 +428,8 @@
             },
             "author": {
               "account": "alice",
-              "domain": "a.example"
+              "namespaceId": 0
             },
-            "namespaceId": 0,
             "seq": 2,
             "profileRev": 3,
             "originSeq": null,
@@ -612,14 +655,12 @@
       "values": [
         {
           "account": "alice",
-          "domain": "a.example",
           "displayName": "Alice",
           "bio": "",
           "avatar": null
         },
         {
           "account": "!group",
-          "domain": "a.example",
           "displayName": "Example Group",
           "bio": "",
           "avatar": null
@@ -659,7 +700,6 @@
       "schema": "urn:somfp:v1:profile",
       "value": {
         "account": "alice",
-        "domain": "a.example",
         "displayName": "Alice",
         "bio": "",
         "avatar": {

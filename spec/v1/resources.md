@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Resources
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 This document is entirely normative.
 
@@ -263,10 +263,11 @@ the consumer derives a media request for a needed asset as follows:
 | `toAccount`     | Signer-hosted participant for P2P; `thread.account` for GROUP   |
 | `seq`           | Outer `FederatedMessage.seq` encoded as `PositiveDecimalString` |
 
-For GROUP, the consumer MUST use the outer message's explicit `author` Address.
-For P2P, it MUST reconstruct that Address from `authorRef`, the thread accounts,
-and the authenticated publisher/consumer domains under Message Envelope Section 2;
-a P2P message has no `author` field. The request MUST NOT contain a bundle ID.
+For GROUP, the consumer MUST use `author.account` and resolve the domain through
+`author.namespaceId` in the outer message publisher's namespace bindings.
+For P2P, it MUST reconstruct that Address from `author.ref`, the thread accounts,
+and the authenticated publisher/consumer identities under Message Envelope Section 2.
+Both variants carry a nested `author`, without a domain field. The request MUST NOT contain a bundle ID.
 An inner author, child ID, local
 bundle message ID, and `quoteTargetId` are not authorization coordinates. The
 publisher re-establishes the outer FORWARD binding, durable audience, and the

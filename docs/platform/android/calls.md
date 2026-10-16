@@ -15,7 +15,7 @@ All routes are under the `/api/v1` prefix. Every response is the `ApiResult` env
 | Method | Path                        | Body                                       | Purpose                                                                                                                                                                                                                               |
 | ------ | --------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/calls/ice-servers`        | —                                          | WebRTC ICE config (STUN plus time-limited TURN REST credentials when configured). Call before creating the `RTCPeerConnection`.                                                                                                       |
-| POST   | `/calls/initiate`           | `{ callSid, calleeUserId, callType }`      | Caller starts a call. Returns `{ callSid, threadId }`.                                                                                                                                                                                |
+| POST   | `/calls/initiate`           | `{ callSid, threadId, callType }`      | Caller starts a call. Returns `{ callSid, threadId }`.                                                                                                                                                                                |
 | POST   | `/calls/accept`             | `{ callSid }`                              | Callee answered (negotiating — NOT connected yet).                                                                                                                                                                                    |
 | POST   | `/calls/ringing`            | `{ callSid }`                              | Callee reports that incoming alerting started. Advisory and idempotent.                                                                                                                                                               |
 | POST   | `/calls/connected`          | `{ callSid }`                              | Callee: **the media leg is actually up** (DTLS-SRTP connected). This supplies the connection fact; each server records its local processing time. A caller report after acceptance and a repeated callee report are no-ops.                            |
@@ -113,7 +113,7 @@ See the design for timestamp provenance, legacy data, and failure handling.
 
 The REST/SSE contract is the endpoint-facing projection of the Federation call state machine. Both paths
 use the same transition, signal-direction, signal-phase, end-reason and timeout policy. Their wire formats
-remain intentionally different: local REST authenticates a session and addresses numeric user IDs, while
+remain intentionally different: local REST authenticates a session and selects the peer through an active P2P thread ID, while
 Federation authenticates a server signature and addresses the active `(domain, callSid)` binding.
 
 Signal rules are identical on both paths:

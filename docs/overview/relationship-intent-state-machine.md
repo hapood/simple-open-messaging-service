@@ -175,27 +175,11 @@ Only labels and valid user actions differ.
 
 ## Identity profile publication
 
-Every non-`REVOKED` federated relationship publication MUST include the author's home-owned
-`PROFILE`, irrespective of whether the author is a user account or a `!`-sigil group identity. The
-publisher writes the compacted `RELATIONSHIP_INTENT` first and the compacted `PROFILE` second. A
-receiver can therefore authorize the dependent profile from the preceding request and hydrate the
-request projection before either side accepts the relationship.
+Federated `RELATIONSHIP_INTENT` carries the author's exact publisher-scoped profile namespace and revision. There is no separate `PROFILE` State Feed event, profile-byte push, or required second feed allocation. The same rule applies to user→user, group→member, and member→group directions.
 
-This is one identity rule, not separate friend and group behavior:
+The receiver applies the directional fact first. A matching current intent grant can authorize an exact Account Profile demand before mutual confirmation. Resolution may then cache an immutable `Profile` snapshot; it does not create a foreign `Account` or grant relationship authority. A missing snapshot keeps its addressed reference and display fallback rather than blocking intent convergence.
 
-| Authored relationship publication | Required identity publication |
-| --------------------------------- | ----------------------------- |
-| User → user `REQUESTED`           | Author user `PROFILE`         |
-| Group → member `REQUESTED`        | Author group `PROFILE`        |
-| Member → group `REQUESTED`        | Author member `PROFILE`       |
-| Any non-`REVOKED` confirmation    | Author identity `PROFILE`     |
-
-`PROFILE` is a dependent snapshot and does not create a relationship or grant authority. A receiver
-may temporarily materialize an address-based placeholder while applying an intent, but it MUST fold
-the following PROFILE into every matching live request projection. `REVOKED` publishes no profile;
-the publisher instead removes the profile projection when no other authorized relationship retains
-it. Reindexing a renewed request MUST also reindex PROFILE so an older compacted profile cannot sort
-before the new request.
+Revocation is a durable relationship fact, not a profile-deletion command. Cached display data does not preserve a revoked disclosure grant, and ordinary profile updates do not rewrite the intent-selected revision. See [profile presentation](../design/profile-presentation.md) for client demand keys and [Profiles](../../spec/v1/profiles.md) for the independent wire contract.
 
 ## Group-view request projections
 

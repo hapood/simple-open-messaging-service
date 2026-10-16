@@ -16,8 +16,7 @@
 > only; the namespace-id to bindings resolution it used to carry inline lives
 > on `GET /s2s/v1/profile-namespaces/:nsid`.
 
-Status: `DESIGNED` — the normative changes live in `spec/v1/` (still
-`1.0.0-rc.0`, destructive in-place edit; the protocol was never published).
+Status: historical redesign rationale with the supersession notes above. The current normative working package is the final-review draft under [spec/](../../spec/README.md); this record does not define its release status.
 This document records the threat-model reasoning, the wire decisions, and the
 target shape of the implementation and database. It is documentation, not a
 normative reference.

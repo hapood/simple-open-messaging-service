@@ -102,13 +102,13 @@ interface ThreadFeedState {
   threadId: number;
   threadFeedId: number;
   type: 'P2P' | 'GROUP';
-  authorityNamespaceId: number;
+  publisherNamespaceId: number;
   conversationState: 'ACTIVE' | 'READ_ONLY';
   blocked: boolean;
   role: 'OWNER' | 'ADMIN' | 'MEMBER' | null;
-  profile: { account: string; domain: string; namespaceId: number; profileRev: number };
+  profileAccount: string;
+  profileRev: number;
   alias: string | null;
-  threadProfileRev: number;
   messageEndSeq: number;
   tombstoneEndSeq: number;
   groupMetaFeedEndId: string | null;
@@ -124,7 +124,7 @@ interface ThreadFeedState {
 interface ThreadPreview {
   seq: number;
   createdAt: string;
-  sender: { account: string; domain: string; namespaceId: number; profileRev: number };
+  sender: { account: string; profileNamespaceId: number; profileRev: number };
   status: 'LIVE' | 'USER_RETRACTION' | 'MODERATION_REMOVAL';
   text?: string; // live preview text only; never included for deleted entries
 }
@@ -166,7 +166,7 @@ never copied content, authors, timestamps, or deletion status. Read advancement
 and forced backwards reads leave references unchanged. A newly published eligible
 message rotates the bounded set; an ineligible message does not replace it.
 
-SSE `THREAD_FEED_UPDATED` carries `{ threadFeedEndId }`. HELLO includes both
+SSE `THREAD_FEED_UPDATED` carries `{ threadFeedEndId, sseUuid? }`; the optional UUID enables session-scoped notification receipts, not read acknowledgements. HELLO includes both
 `stateFeedEndId` and `threadFeedEndId`. Remove `ATTENTION_FEED_UPDATED` and the old
 attention head field. State SSE remains independent. SSE only signals a target;
 it does not transport the snapshot bodies.

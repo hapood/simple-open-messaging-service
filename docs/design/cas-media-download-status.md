@@ -33,9 +33,11 @@ active digest, while file-level subscribers receive `MEDIA_FILE_DOWNLOAD_PROGRES
 with byte counts for one digest. Terminal `ready` or `failed` frames close the
 corresponding temporary stream.
 
-### 1.1 Current implementation baseline
+### 1.1 Historical pre-change baseline
 
-The repository already has most of the delivery path:
+The following baseline and gap list describe the state before this design was implemented, not the current behavior. In particular, the removed scroll probe and terminal-job deletion are not current requirements. The implemented model is described from Section 2 onward; later integrity work also added `CONFIRMED` to `Message.localState`.
+
+At that checkpoint the repository already had most of the delivery path:
 
 - `Message.localState` is `STUB | FAILED | READY`;
 - history responses attach `mediaStatus` and the frontend stores the returned

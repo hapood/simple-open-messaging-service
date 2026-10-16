@@ -1,12 +1,12 @@
 # Simple Open Messaging Federation Protocol v1
 
-Status: `RELEASE CANDIDATE`
+Status: `DRAFT` — Final Review
 
-Release: `v1.0.0-rc.0`
+Release: `v1.0.0-draft.0`
 
-This directory contains the Simple Open Messaging Federation Protocol v1.0.0-rc.0 candidate package. The protocol model and mandatory features are closed. The normative text specifies only the observable wire contract, state transitions, and security boundaries between independent implementations. Database tables, workers, queues, user interfaces, deployment parameters, and local product limits are outside the protocol unless the text explicitly constrains a local behavior because it changes a peer-observable result.
+This directory contains the Simple Open Messaging Federation Protocol v1.0.0-draft.0 working package. The intended protocol scope is settled for final review, but the wire contract is not frozen. This is a closeout-review draft, not an early design sketch or a release candidate. Corrections remain possible and peer-observable changes must be recorded in the pre-freeze review history. The normative text specifies only the observable wire contract, state transitions, and security boundaries between independent implementations. Database tables, workers, queues, user interfaces, deployment parameters, and local product limits are outside the protocol unless the text explicitly constrains a local behavior because it changes a peer-observable result.
 
-This English text is the authoritative working text for v1.0.0-rc.0.
+This English text is the authoritative working text for v1.0.0-draft.0.
 
 The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be interpreted as described in RFC 2119 and RFC 8174. Wire fields, enum values, HTTP headers, standard names, and stable error codes retain their original spelling and appear in code formatting. Examples, diagrams, TypeScript notation, and artifacts under `schema/` explain or validate the normative text but do not independently create protocol requirements.
 
@@ -26,8 +26,9 @@ See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and modul
 10. [Message](./message.md): message identity, content types, resource references, replies, and forward closure.
 11. [Resources](./resources.md): parameters, responses, authorization, and errors for media bytes and forward closure.
 12. [Audio and Video Calls](./calls.md): the mandatory end-to-end Call Profile, including S2S frames, endpoint WebRTC/JSEP behavior, lifecycle state, and AUDIO-to-VIDEO upgrade on the same connection.
-13. [Stable Error Registry](./errors.md): stable error codes, HTTP status, retry behavior, and identity actions.
-14. [Machine-readable Release Package](./schema/README.md): JSON Schema, HTTP manifest, positive and negative vectors, and the Conformance CLI.
+13. [Profile Namespace Feed](./profile-namespace-feed.md): publisher-scoped namespace bindings and identity-change synchronization.
+14. [Stable Error Registry](./errors.md): stable error codes, HTTP status, retry behavior, and identity actions.
+15. [Machine-readable Release Package](./schema/README.md): JSON Schema, HTTP manifest, positive and negative vectors, and the Conformance CLI.
 
 The Core Protocol defines shared rules. Transport and Security defines the discovery, TLS, and signature profile shared by all operations. Each remaining operation document defines only its body, authorization, state, and idempotency semantics. Together these documents form one versioned release package, whose status applies to the whole package rather than ordinary chapters.
 

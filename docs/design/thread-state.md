@@ -7,10 +7,9 @@ profile reference together. The client state feed still publishes relationship
 and request events, but no longer publishes `THREAD_STATE` projections.
 
 A snapshot includes `threadId`, `threadFeedId`, `type`,
-`authorityNamespaceId`, `ACTIVE` or `READ_ONLY` `conversationState`, `blocked`,
-nullable group `role`, and `profile: { account, domain, namespaceId,
-profileRev }`. It also carries message and tombstone heads, unread/read state,
-nullable alias, group/request coordinates, `threadProfileRev`, and optionally
+`publisherNamespaceId`, `ACTIVE` or `READ_ONLY` `conversationState`, `blocked`,
+nullable group `role`, `profileAccount`, and `profileRev`. It also carries message and tombstone heads, unread/read state,
+nullable alias, group/request coordinates, `announcementReadFeedId`, and optionally
 bounded previews. No establishment timestamp is sent: the account/thread
 state row's creation time is not necessarily the time a relationship became
 active, and the list orders by `threadFeedId` rather than a timestamp.
@@ -51,10 +50,8 @@ feed, with its own cursor and reset behavior.
 
 ## Exact profile resolution
 
-Clients resolve the thread profile via the existing `EXACT` profile selector.
-The server checks the authenticated account's established relationship,
-matching account/thread state revision, namespace, and profile identity before
-cache lookup; separate request, message-author, and group-member grants remain.
+Clients resolve the thread profile with the projection-free `ACCOUNT_PROFILE` demand, using the publisher-scoped subject reference and exact revision. There is no `EXACT` selector.
+On a cache miss the server checks the applicable exact-reference grant, including relationship, thread, message, and group-member evidence. Current cached snapshots are returned before that check; the cache-only wrapper also performs no new disclosure-grant check. This is an unresolved privacy review item in the [closeout audit](../development/documentation-closeout-audit.md), not proof of per-account cache isolation.
 Different revisions have different in-flight resolution keys. Clients check
 the current session, identity, namespace, and revision before applying results.
 A zero revision is a placeholder and triggers no profile request. Revoked
@@ -62,7 +59,7 @@ conversations may display a locally retained profile without overriding
 federation disclosure policy.
 
 Implementation: [thread feed](../../src/message/thread-feed.service.ts),
-[migration](../../database/migrations/0001_unified_thread_feed.sql),
-[profile authorization](../../src/federation/profile-resolution-coordinator.service.ts),
+[SQL baseline](../../database/migrations/0000_base.sql),
+[profile authorization](../../src/profile-resolution/profile-resolution-coordinator.service.ts),
 [browser projection](../../web/src/app/services/thread-state-projection.ts),
 [native projection](../../src-tauri/src/native_db/attention.rs).

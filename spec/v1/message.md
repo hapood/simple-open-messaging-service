@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Message
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 This document is the entry point for the federation message specification. See [Message Envelope](./message/envelope.md) for the outer message shape, origin coordinates, idempotency, resource descriptors, and processing receipts. The table below links to the sole detailed definition of each content type.
 

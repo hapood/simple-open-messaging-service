@@ -33,7 +33,7 @@
       "type": "object",
       "required": [
         "thread",
-        "namespaceId",
+        "author",
         "seq",
         "profileRev",
         "originSeq",
@@ -47,13 +47,7 @@
         "thread": {
           "$ref": "urn:somfp:v1:common#/$defs/threadAddress"
         },
-        "author": { "$ref": "urn:somfp:v1:common#/$defs/address" },
-        "authorRef": {
-          "enum": ["THREAD_ACCOUNT", "THREAD_PEER_ACCOUNT"]
-        },
-        "namespaceId": {
-          "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
-        },
+        "author": { "type": "object" },
         "seq": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence"
         },
@@ -84,12 +78,23 @@
           "$ref": "urn:somfp:v1:common#/$defs/epochMilliseconds"
         },
         "quoteTarget": { "$ref": "#/$defs/quoteTarget" },
+        "quoteDigest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
         "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } }
       },
       "oneOf": [
         {
-          "required": ["authorRef"],
           "properties": {
+            "author": {
+              "type": "object",
+              "required": ["ref", "namespaceId"],
+              "properties": {
+                "ref": { "enum": ["THREAD_ACCOUNT", "THREAD_PEER_ACCOUNT"] },
+                "namespaceId": {
+                  "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+                }
+              },
+              "additionalProperties": false
+            },
             "thread": {
               "type": "object",
               "required": ["account", "peerAccount"],
@@ -103,12 +108,21 @@
               },
               "additionalProperties": false
             }
-          },
-          "not": { "required": ["author"] }
+          }
         },
         {
-          "required": ["author"],
           "properties": {
+            "author": {
+              "type": "object",
+              "required": ["account", "namespaceId"],
+              "properties": {
+                "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
+                "namespaceId": {
+                  "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
+                }
+              },
+              "additionalProperties": false
+            },
             "thread": {
               "type": "object",
               "required": ["account"],
@@ -119,10 +133,13 @@
               },
               "additionalProperties": false
             }
-          },
-          "not": { "required": ["authorRef"] }
+          }
         }
       ],
+      "dependentRequired": {
+        "quoteTarget": ["quoteDigest"],
+        "quoteDigest": ["quoteTarget"]
+      },
       "allOf": [
         {
           "if": { "required": ["quoteTarget"] },

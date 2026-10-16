@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Message Provenance Query
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 This document is entirely normative.
 
@@ -12,9 +12,8 @@ per-query and one of three states.
 
 ## 1. Purpose and scope
 
-A consumer that received a message over federation holds a copy whose content
-was re-serialized to the canonical form of
-[Core Protocol 6.1.1](./protocol.md#611-canonical-json-jcs-for-stringified-content-fields).
+A consumer that received a message over federation holds its content, asset manifest, and optional quoted-message digest. Canonicalization follows
+[Core Protocol 6.1.1](./protocol.md#611-canonical-json-jcs-for-stringified-content-fields), and the payload digest follows Section 7 below.
 It MAY later want to confirm that the publishing server actually published that
 exact content at the claimed coordinate, for example to detect local data
 corruption, an altered relay, or a stale cache before acting on a message.
@@ -44,8 +43,7 @@ The endpoint requires a recognized, authenticated peer. The request MUST be
 HTTP Message Signed and pass the same
 [HTTP Message Signature validation](./transport-security.md#35-validation-order-and-failure-boundaries) as
 other authenticated operations; an unauthenticated or unrecognized request
-MUST be rejected with `401 FEDERATION_RECOGNITION_REQUIRED` before any query
-is evaluated.
+MUST be rejected before any query is evaluated, using the applicable authentication error from the common error registry. A missing recognition grant uses `401 FEDERATION_RECOGNITION_REQUIRED`; a malformed signature or other transport failure retains its own prescribed error.
 
 Recognition authorizes the requester to ask the question. It does not oblige
 the responder to answer. Authorization to receive a positive answer is a
@@ -79,12 +77,7 @@ interface MessageProvenanceQuery {
   message when it served it to the requester. It is the source-scoped
   coordinate from the direct-origin identity, not the requester's local copy
   coordinate and not the message's nullable `originSeq`.
-- `payloadDigest` is `sha256` over the UTF-8 bytes of the JCS canonical payload object, as defined by
-  [Core Protocol 6.1.1](./protocol.md#611-canonical-json-jcs-for-stringified-content-fields).
-  It is computed as `sha256(JCS(JSON.parse(content)))` over the wire `content`
-  string the requester retained, after the requester re-serialized that content
-  to the canonical form. A requester MUST NOT hash the raw wire bytes it
-  received if those bytes are not already canonical; it MUST normalize first.
+- `payloadDigest` is SHA-256 over the UTF-8 bytes of the JCS canonical payload object defined in Section 7. It covers parsed wire `content`, the sorted asset descriptors, and `quoteDigest` when present. A requester MUST compute it from that complete object, not the content string alone or the raw HTTP body.
 
 The `queries` array MUST contain at least one query and MUST NOT contain more
 than **64** entries in a single request. A request outside this range is
@@ -111,7 +104,7 @@ interface MessageProvenanceResult {
 ```
 
 - `yes`: the responder published a message at `(thread, seq)` whose canonical
-  `content` hashes to the supplied `payloadDigest`.
+  payload object defined in Section 7 hashes to the supplied `payloadDigest`.
 - `no`: the responder did not publish such a message at `(thread, seq)` with
   that `payloadDigest`. This includes the case where a message exists at the
   coordinate but its content hash differs, the case where no message exists at
@@ -187,7 +180,7 @@ recognition fact. It is not a substitute for
 the requester to receive the message, and a `no` does not revoke an existing
 authorization.
 
-The `payloadDigest` value is the SHA-256 digest of the canonical payload object:
+The `payloadDigest` value MUST be the lower-case hexadecimal SHA-256 digest of the UTF-8 JCS serialization of the following payload object:
 
 ```text
 JCS({
@@ -197,5 +190,6 @@ JCS({
 })
 ```
 
-It excludes coordinates, timestamps, author fields, namespace identifiers, and the hop-local
-`quoteTarget`. It is stable across re-publication when the logical payload is unchanged.
+`content` MUST be the parsed wire content object. `assets` MUST always be present, including an empty array, and MUST contain the message's complete `{ digest, bytes }` descriptors sorted by ascending digest in ASCII order. `quoteDigest` MUST be present exactly when the message carries it and MUST be omitted otherwise. An absent quoted-message digest MUST NOT be represented by `null`.
+
+The payload object excludes coordinates, timestamps, author fields, namespace identifiers, `contentType`, and the hop-local `quoteTarget`. It is stable across re-publication when the logical payload is unchanged. It is not an HTTP `Content-Digest`.

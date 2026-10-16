@@ -130,7 +130,7 @@ Decisions applied:
 
 - [x] Inbound profile demand/projection uses publisher namespace, profile namespace, account, rev.
 - [x] Media localization transport domain comes from route/binding/source peer, not `Message.creatorDomain`.
-- [x] Inbound wire `author.domain` is removed. Group messages use `author: { account, namespaceId }`; P2P messages use `authorRef`.
+- [x] Inbound wire `author.domain` is removed. Group messages use `author: { account, namespaceId }`; P2P messages use `author: { ref, namespaceId }`.
 
 Follow-up checks:
 
@@ -301,6 +301,16 @@ Verification:
 
 Goal: keep protocol docs aligned with final model.
 
+The original completed checkboxes overstated specification alignment. The
+user-directed closeout pass has now corrected message authors, Group Meta body
+shapes, profile response objects, and group-origin mention scope. This is not a
+blanket completion claim: the subsequent user-authorized correction now makes
+group-origin message queries submission-only and filters returned mirror copies
+before receipt association, with federation unit regressions passing. Local
+cached-profile disclosure checks remain deferred; remaining decisions and
+multi-node verification are tracked in the temporary
+[closeout audit](../development/documentation-closeout-audit.md).
+
 Files reviewed:
 
 - [x] `spec/v1/protocol.md`
@@ -322,7 +332,7 @@ Specific checks:
 - [x] Group message author namespace is inside `author.namespaceId`, not a top-level message `namespaceId`.
 - [x] No profile/member endpoint path contains `memberDomain`.
 - [x] Forward source domain/root-key optionality documented.
-- [x] Transport target domain remains in transport/discovery sections only.
+- [x] Transport/routing domains and explicit display snapshots remain where needed; domains are not part of exact profile keys or message/Group Meta subject wire objects.
 
 ---
 
@@ -354,10 +364,11 @@ backwards compatibility is retained.
 - [x] `src/federation/federated-message-content.ts`: removed `localDomain` params from `toFederatedMessageContent`/`fromFederatedMessageContent`; removed `domainMapping` from `projectTextContent`; CONTACT_CARD passes through unchanged; removed `allowLocalDomain` switch.
 - [x] `src/controller/message.controller.ts`: mention canonicalization uses `parseSomfpUserMentionEntity` + `serializeUserMention(label, namespaceId, account)`; `resolveActiveMember` takes `{ account, namespaceId }`.
 - [x] `src/message/message.service.ts`: mention validation uses `parseSomfpUserMentionEntity`.
-- [x] `src/message/thread-feed-head.writer.ts`: `mentionsAccount` compares account segment only; removed `ownDomain`.
+- [x] `src/message/thread-feed-head.writer.ts`: removed `ownDomain`.
+- [x] `mentionsAccount` compares the complete group-origin namespace/account pair. Thread attention reads the origin's peer-assigned viewer namespace; PostgreSQL tests cover mirrored same-account identities and unknown mappings.
 - [x] `src/group/group.service.ts`: `resolveActiveMember` identity is `{ account, namespaceId }`.
 - [x] `src/group/meta/current-group-roster.ts`: `readCurrentGroupMemberByAddressInTx` identity is `{ account, namespaceId }`.
-- [x] Frontend `web/src/app/lib/message-entity.ts`: `serializeUserMention(label, namespaceId, account)`; `serializeUserMentionFromChipId`; `toRenderMessageEntities` compares account segments.
+- [x] Frontend `web/src/app/lib/message-entity.ts`: `serializeUserMention(label, namespaceId, account)`; `serializeUserMentionFromChipId`; `toRenderMessageEntities` compares the complete group-origin namespace/account pair, using required nullable `selfMentionNamespaceId` from the thread feed. Optimistic sends and editor self filtering share that coordinate; web/Rust caches persist it without legacy compatibility or schema-version changes.
 - [x] Frontend `web/src/app/components/chat-editor/mention-candidates.ts`: `isSelfMentionMember` uses `namespaceId` only; removed domain fallback.
 - [x] Frontend mention chip id is `namespaceId/account`; specs updated.
 

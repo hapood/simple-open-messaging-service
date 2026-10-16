@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Profiles
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 This document is entirely normative. It defines the three Federation v1 profile
 read operations:
@@ -25,8 +25,8 @@ scoped by the responding publisher and identifies the requested profile subject
 inside that publisher's namespace space. A `namespaceId` of `0` requests the
 responding server's own local subject and is served from its local profile
 store; a positive value selects the namespace that publisher holds for a
-foreign identity. Response `domain` values remain profile content only; request
-identity uses the profile namespace.
+foreign identity. Responses do not carry `domain`; subject identity comes from
+the authenticated publisher, requested account, and profile namespace.
 
 Feed cursors, scan windows, modes, and byte ranges use query parameters in
 their own operations; profile reads have none.
@@ -73,7 +73,6 @@ is a closed object with exactly these fields:
 ```ts
 interface PublicAccountProfile {
   account: Account;
-  domain: Domain;
   displayName: string;
   bio: string;
   avatar: InlineProfileAvatar | null;
@@ -115,7 +114,6 @@ Their success `data` is a closed object with exactly these fields:
 ```ts
 interface EvidenceProfile {
   account: Account;
-  domain: Domain;
   displayName: string;
   bio: string;
   avatar: InlineProfileAvatar | null;
@@ -123,7 +121,7 @@ interface EvidenceProfile {
 ```
 
 The two exact profile-validation operations return only the profile content
-and subject address. Their request path already supplies `namespaceId` and
+and subject account, without a domain. Their request path already supplies `namespaceId` and
 `profileRev`; the caller combines those request values with the returned
 content to reconstruct the complete profile reference. These coordinates are
 not repeated in the response, so a response cannot conflict with its request

@@ -1,6 +1,127 @@
 {
   "vectors": [
     {
+      "name": "legacy top-level message author coordinates are rejected",
+      "schema": "urn:somfp:v1:message-query#/$defs/message",
+      "value": {
+        "thread": { "account": "alice", "peerAccount": "bob" },
+        "authorRef": "THREAD_ACCOUNT",
+        "namespaceId": 0,
+        "seq": 1,
+        "profileRev": 1,
+        "originSeq": null,
+        "originCreatedAt": null,
+        "createdAt": 0,
+        "contentType": "PURE_TEXT",
+        "content": "{\"text\":\"hello\"}",
+        "assets": []
+      }
+    },
+    {
+      "name": "group author rejects a redundant domain",
+      "schema": "urn:somfp:v1:message-query#/$defs/message",
+      "value": {
+        "thread": { "account": "!team" },
+        "author": {
+          "account": "alice",
+          "namespaceId": 7,
+          "domain": "a.example"
+        },
+        "seq": 1,
+        "profileRev": 1,
+        "originSeq": null,
+        "originCreatedAt": null,
+        "createdAt": 0,
+        "contentType": "PURE_TEXT",
+        "content": "{\"text\":\"hello\"}",
+        "assets": []
+      }
+    },
+    {
+      "name": "group member rejects legacy item-level identity",
+      "schema": "urn:somfp:v1:group-meta#/$defs/item",
+      "value": {
+        "feedId": 1,
+        "operation": "MEMBER_UPSERT",
+        "account": "alice",
+        "domain": "a.example",
+        "body": { "namespaceId": 7, "role": "MEMBER", "profileRev": 1 }
+      }
+    },
+    {
+      "name": "group profile requires its body account",
+      "schema": "urn:somfp:v1:group-meta#/$defs/item",
+      "value": {
+        "feedId": 1,
+        "operation": "GROUP_PROFILE",
+        "body": { "namespaceId": 0, "profileRev": 1 }
+      }
+    },
+    {
+      "name": "public profile rejects a redundant domain",
+      "schema": "urn:somfp:v1:profile",
+      "value": {
+        "account": "alice",
+        "domain": "a.example",
+        "displayName": "Alice",
+        "bio": "",
+        "avatar": null,
+        "profileRev": 1,
+        "proof": "challenge"
+      }
+    },
+    {
+      "name": "exact profile rejects a redundant domain",
+      "schema": "urn:somfp:v1:evidence-profile",
+      "value": {
+        "account": "alice",
+        "domain": "a.example",
+        "displayName": "Alice",
+        "bio": "",
+        "avatar": null
+      }
+    },
+    {
+      "name": "empty provenance batch",
+      "schema": "urn:somfp:v1:message-provenance#/$defs/request",
+      "value": { "queries": [] }
+    },
+    {
+      "name": "duplicate provenance coordinate with different digests",
+      "schema": "urn:somfp:v1:message-provenance#/$defs/request",
+      "value": {
+        "queries": [
+          {
+            "thread": { "account": "alice", "peerAccount": "bob" },
+            "seq": 1,
+            "payloadDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "thread": { "peerAccount": "bob", "account": "alice" },
+            "seq": 1,
+            "payloadDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ]
+      }
+    },
+    {
+      "name": "reply missing its quoted payload digest",
+      "schema": "urn:somfp:v1:message-query#/$defs/message",
+      "value": {
+        "thread": { "account": "alice", "peerAccount": "bob" },
+        "author": { "ref": "THREAD_ACCOUNT", "namespaceId": 0 },
+        "seq": 2,
+        "profileRev": 1,
+        "originSeq": null,
+        "originCreatedAt": null,
+        "createdAt": 0,
+        "contentType": "PURE_TEXT",
+        "content": "{\"text\":\"reply\"}",
+        "assets": [],
+        "quoteTarget": { "seq": 1 }
+      }
+    },
+    {
       "name": "full group meta rejects duplicate announcement projections",
       "schema": "urn:somfp:v1:group-meta",
       "value": {
@@ -109,8 +230,7 @@
               "account": "alice",
               "peerAccount": "bob"
             },
-            "authorRef": "THREAD_ACCOUNT",
-            "namespaceId": 0,
+            "author": { "ref": "THREAD_ACCOUNT", "namespaceId": 0 },
             "seq": 3,
             "profileRev": 3,
             "originSeq": null,
@@ -1034,10 +1154,13 @@
         "items": [
           {
             "feedId": 2,
-            "account": "alice",
-            "domain": "a.example",
             "operation": "DELETE",
-            "body": {}
+            "body": {
+              "account": "alice",
+              "namespaceId": 0,
+              "role": "MEMBER",
+              "profileRev": 1
+            }
           }
         ],
         "scannedThrough": 2,
@@ -1062,8 +1185,6 @@
         "items": [
           {
             "feedId": 2,
-            "account": "alice",
-            "domain": "a.example",
             "operation": "MEMBER_DEPART"
           }
         ],
@@ -1134,8 +1255,7 @@
               "account": "alice",
               "peerAccount": "bob"
             },
-            "authorRef": "THREAD_ACCOUNT",
-            "namespaceId": 0,
+            "author": { "ref": "THREAD_ACCOUNT", "namespaceId": 0 },
             "seq": 1,
             "profileRev": 3,
             "originSeq": null,
@@ -1161,12 +1281,11 @@
               "account": "alice",
               "peerAccount": "bob"
             },
-            "authorRef": "THREAD_ACCOUNT",
             "author": {
+              "ref": "THREAD_ACCOUNT",
               "account": "alice",
-              "domain": "a.example"
+              "namespaceId": 0
             },
-            "namespaceId": 0,
             "seq": 1,
             "profileRev": 3,
             "originSeq": null,
@@ -1255,10 +1374,10 @@
       "schema": "urn:somfp:v1:profile",
       "value": {
         "account": "alice",
-        "domain": "a.example",
         "displayName": "Alice",
         "bio": "",
-        "avatar": null
+        "avatar": null,
+        "proof": "challenge"
       }
     },
     {
@@ -1266,13 +1385,12 @@
       "schema": "urn:somfp:v1:evidence-profile",
       "value": {
         "account": "alice",
-        "domain": "a.example",
         "displayName": "Alice",
         "avatar": null
       }
     },
     {
-      "name": "GROUP message query result uses authorRef",
+      "name": "GROUP message query result uses P2P author ref",
       "schema": "urn:somfp:v1:message-query",
       "value": {
         "messages": [
@@ -1280,8 +1398,7 @@
             "thread": {
               "account": "!team"
             },
-            "authorRef": "THREAD_ACCOUNT",
-            "namespaceId": 0,
+            "author": { "ref": "THREAD_ACCOUNT", "namespaceId": 0 },
             "seq": 1,
             "profileRev": 3,
             "originSeq": null,

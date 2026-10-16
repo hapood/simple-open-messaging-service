@@ -1,6 +1,6 @@
 # `LINK` Message
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 This document defines a `LINK` card containing target metadata and optional content-addressed artwork. An ordinary URL in message text remains `PURE_TEXT` and does not use this type. See [Message Envelope](./envelope.md) for the shared outer message shape.
 
@@ -38,8 +38,10 @@ This is a closed schema. `url`, `title`, and `description` are always required. 
     "account": "alice",
     "peerAccount": "bob"
   },
-  "authorRef": "THREAD_ACCOUNT",
-  "namespaceId": 0,
+  "author": {
+    "ref": "THREAD_ACCOUNT",
+    "namespaceId": 0
+  },
   "seq": 61,
   "profileRev": 7,
   "originSeq": null,

@@ -1,10 +1,6 @@
 # Profile Version Resolution: Exact Federation Evidence Cutover
 
-Status: staged implementation design; changes require per-area review. This
-replaces the older local profile-rebase design. The federation wire contract is
-[Profiles](../../spec/v1/profiles.md); this document specifies how this
-repository will select and persist the evidence used to call that contract.
-Do not deploy mixed old/new server and client profile contracts.
+Status: historical cutover design, not the current physical schema or client request contract. The domain-bearing five-tuple, staged migration names, source-coordinate columns, and pending approvals below describe that checkpoint. Current storage and projection-free demands are summarized in [the database model](../overview/database.md), [account/profile separation](./account-profile-separation.md), and [profile presentation](./profile-presentation.md). The federation wire contract remains [Profiles](../../spec/v1/profiles.md). Do not use this historical plan to add removed fields or deploy mixed contracts.
 
 ## 1. Identity, cache, and request boundary
 
@@ -158,9 +154,7 @@ member profile. Group-profile selection never uses a member-authored message.
 
 This is a breaking rebuild, **not a historical data backfill**. The reviewed
 PostgreSQL names and DDL are staged across append-only migrations, including
-[the source-coordinate migration](../../database/migrations/0003_profile_source_coordinates.sql)
-and
-[the publisher/profile namespace migration](../../database/migrations/0004_profile_publisher_namespace.sql),
+the historical source-coordinate and publisher/profile namespace cutovers (now represented in the [current SQL baseline](../../database/migrations/0000_base.sql)),
 and in [Drizzle schema](../../src/database/schema.ts); no deployed migration is
 rewritten. The Web IndexedDB and Tauri SQLite cache changes remain subject to
 separate review before implementation. Keep SQL and Drizzle in sync. Recreate versioned Web IndexedDB and

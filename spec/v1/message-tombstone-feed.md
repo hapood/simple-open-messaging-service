@@ -1,13 +1,13 @@
 # Simple Open Messaging Federation Protocol v1 Message Tombstone Query
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 This document is entirely normative.
 
 This document defines the per-thread authoritative deletion query
 `GET /s2s/v1/message-tombstones`. The compacted `thread + messageEndSeq +
 tombstoneEndSeq` discovery projection is a `THREAD_CONTENT_HEAD` item in
-[State Feed](./state-feed.md#5-threadcontenthead).
+[State Feed](./state-feed.md#5-thread_content_head).
 
 ## 1. Authoritative deletion facts
 

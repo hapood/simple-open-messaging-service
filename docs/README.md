@@ -15,6 +15,7 @@ and client behavior.
 - [Android E2E test plan](./development/android-e2e-test-plan.md)
 - [Cross-platform AI E2E runner](./development/cross-platform-ai-e2e.md)
 - [Browser E2E reusable tools](./development/browser-e2e-tools.md)
+- [Documentation closeout audit and unresolved review gates](./development/documentation-closeout-audit.md)
 
 ## Design
 
@@ -47,7 +48,6 @@ and client behavior.
 - [Authentication rate limiting](./operations/rate-limiting.md)
 - [Business and task execution measurement](./operations/execution-measurement.md)
 
-Completed plans and superseded implementation notes are not retained here. Git
-history remains available when implementation-era context is needed.
+Design records, migration plans, and E2E handoffs have different scopes. A historical or proposed document is not evidence of current implementation or completed testing. Retained superseded records must state that status and point to the current contract; Git history preserves earlier revisions.
 
 - [System messages](design/system-messages.md): reserved sender, event-specific content, participant profiles, and departure boundaries.

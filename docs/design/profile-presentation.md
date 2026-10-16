@@ -23,7 +23,6 @@ is no separate selector/evidence object:
 export interface ProfileTarget {
   profileNamespaceId: number;
   account: string;
-  domain: string;
   rev: number;
 }
 
@@ -45,24 +44,18 @@ The frontend demand is isomorphic with the backend prefetch demand. It carries
 the local publisher namespace, the publisher-scoped exact profile subject, and
 the concrete `lookup`. `publisherNamespaceId` selects the locally recognized
 peer that can answer the request; `target.profileNamespaceId` is serialized as
-the S2S profile path's `:namespaceId`. If it is `0`, any subject-domain path
-variable is serialized as the literal `local`; otherwise the retained target
-domain is used. This conversion occurs only at the transport boundary. The
+the S2S profile path's `:namespaceId`. The S2S profile paths contain no subject-domain variable. Namespace bindings provide routing/display metadata; the demand does not carry a domain or substitute a `local` wire domain. The
 publisher namespace itself is never sent as a profile field. The demand does not carry `threadId`, `messageSeq`,
 Meta feed coordinates, `projection`, or a parallel `evidence` object. The
 display component passes this complete demand to the profile repository.
 
-The immutable profile/cache identity remains:
+The immutable profile/cache identity is:
 
 ```text
-(publisherNamespaceId, profileNamespaceId, account, domain, rev)
+(publisherNamespaceId, profileNamespaceId, account, rev)
 ```
 
-The profile reference is immutable in storage, but its wire address is
-operation-specific: for a profile request with `profileNamespaceId: 0`, the
-request builder serializes every subject-domain path variable as `local`; for a
-positive profile namespace it serializes the retained canonical domain. This
-conversion does not rewrite `target.domain`.
+The profile reference is immutable in storage. The transport selects the peer using `publisherNamespaceId` and emits the publisher-scoped `profileNamespaceId` in the profile path. Neither coordinate is inferred from a domain comparison.
 
 A demand never authorizes a different revision and never permits profile
 rebase. If the requested exact snapshot is unavailable, the component keeps
@@ -140,10 +133,10 @@ profile”.
 ## Wake and cache behavior
 
 `PROFILE_AVAILABLE` and `PROFILE_UNAVAILABLE` are wake events keyed by the
-exact five-tuple:
+exact four-tuple:
 
 ```text
-(publisherNamespaceId, profileNamespaceId, account, domain, rev)
+(publisherNamespaceId, profileNamespaceId, account, rev)
 ```
 
 They do not carry presentation evidence. The repository associates a wake
@@ -151,7 +144,7 @@ with an existing component-owned resolution, rereads the committed local
 snapshot, and completes the component request. A wake cannot create a new
 selector, change the displayed revision, or rebase a message/Meta reference.
 
-The client profile cache and storage use the five-tuple everywhere. A cache
+The client profile cache and storage use the four-tuple everywhere. A cache
 entry for revision 8 cannot satisfy evidence requesting revision 7, even when
 revision 8 is newer, and a snapshot resolved through one publisher namespace
 cannot satisfy a demand for another publisher namespace.
@@ -182,5 +175,5 @@ Backend
 ```
 
 No layer may replace the selected revision with another revision. Evidence
-identifies what the user is looking at; the five-tuple identifies the immutable
+identifies what the user is looking at; the four-tuple identifies the immutable
 profile bytes and the publisher route that disclosed them.

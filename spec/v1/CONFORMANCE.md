@@ -10,6 +10,7 @@ An implementation may claim `SOMFP v1 conformant` and publish `1` in discovery `
 | Transport and Security  | Core                          | Mandatory                                                 |
 | Peer Recognition        | Core, Transport               | Mandatory                                                 |
 | State Feed              | Core, Recognition             | Mandatory                                                 |
+| Profile Namespace Feed  | Core, Recognition             | Mandatory namespace bindings and identity-change synchronization |
 | Group Meta Feed         | Core, Recognition, State Feed | Mandatory canonical group-origin roster                   |
 | Profiles                | Core, Group Meta, Message     | Mandatory public and exact profile lookup                 |
 | Message Query           | Core, Recognition             | Mandatory                                                 |
@@ -107,14 +108,22 @@ observable requirements:
   own authors. The origin applies valid facts and translates their target
   coordinates for distribution. A mirror cannot exercise that authority over
   another home's author or publish directly to another mirror.
-- Returning a copy to its direct publisher supplies that publisher's original
-  coordinates as a receipt, independently of the author's domain. This includes
-  a mirror returning a third-party-authored message to its group origin.
-  Distribution to another mirror uses null origin coordinates. Repeated reads
-  preserve each recipient's projection; receiving a receipt creates no new
-  timeline message or further receipt.
-- A P2P forward asset derives its outer author from `authorRef`; it does not
-  require the GROUP-only `author` field.
+- A P2P returned copy and a group origin's accepted submission returned to its
+  submitting home supply the submitter's original coordinates as a receipt.
+  A group origin uses `includeSelf=false` in both message-query directions and
+  consumes only that home's own authored submissions, not mirror processing
+  receipts. In A→G→B, B does not return A's mirrored copy to G as a receipt.
+  Distribution to B uses null origin coordinates. Repeated reads preserve each
+  recipient's projection; a receipt creates no new timeline message or receipt.
+- Every message carries a closed nested `author`: P2P uses `{ ref, namespaceId }`,
+  GROUP uses `{ account, namespaceId }`. Top-level `authorRef`, top-level
+  `namespaceId`, and an author `domain` are rejected.
+- All Group Meta items use `{ feedId, operation, body }`; subject account and
+  namespace are in the body. Member upsert/depart share a body shape;
+  GROUP_PROFILE names the page's group account; announcement contains only text.
+- Public and exact profile response objects carry no `domain`.
+- Group user mentions retain the group origin's namespace interpretation across
+  submission and mirror hops; the current message publisher never re-scopes a token.
 
 ## Group announcement checks
 

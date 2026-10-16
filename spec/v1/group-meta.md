@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Group Meta Feed
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 This document is entirely normative. `GET /s2s/v1/group-meta` exposes the one
 canonical Group Meta Feed owned by a group's origin. The feed is the origin's
@@ -76,18 +76,16 @@ interface GroupMetaFeedPage {
   hasMore: boolean;
 }
 
-interface GroupMetaMemberItemBase {
+interface GroupMetaItemBase {
   feedId: PositiveSafeInteger;
-  account: UserAccount;
-  domain: Domain;
 }
 
-interface GroupMetaUpsertItem extends GroupMetaMemberItemBase {
+interface GroupMetaUpsertItem extends GroupMetaItemBase {
   operation: 'MEMBER_UPSERT';
   body: GroupMetaMemberBody;
 }
 
-interface GroupMetaDepartItem extends GroupMetaMemberItemBase {
+interface GroupMetaDepartItem extends GroupMetaItemBase {
   operation: 'MEMBER_DEPART';
   body: GroupMetaMemberBody;
 }
@@ -96,6 +94,7 @@ interface GroupMetaProfileItem {
   feedId: PositiveSafeInteger;
   operation: 'GROUP_PROFILE';
   body: {
+    account: GroupAccount;
     namespaceId: SafeNonNegativeInteger;
     profileRev: SafeNonNegativeInteger;
   };
@@ -116,6 +115,7 @@ type GroupMetaItem =
   | GroupMetaAnnouncementItem;
 
 interface GroupMetaMemberBody {
+  account: UserAccount;
   role: 'OWNER' | 'ADMIN' | 'MEMBER';
   namespaceId: SafeNonNegativeInteger;
   profileRev: SafeNonNegativeInteger;
@@ -130,20 +130,20 @@ Closing and later restoring one peer's authorization does not reset the group
 coordinate space or create a peer-specific copy. Reauthorization advances that
 audience's delta visibility floor instead.
 
-Member items have stable key `(member account, member domain)`. Their required,
-non-null `namespaceId` identifies the member profile namespace in the group
-origin's namespace space and follows the publisher-scoped rules of
+Every item has exactly `feedId`, `operation`, and `body`; operation-specific
+fields, including subject identity, are inside `body`. No item carries `domain`.
+Member items have stable key `(body.namespaceId, body.account)` in the group
+origin's namespace space. Their required, non-null `body.namespaceId` follows
 [Core Protocol Section 6.2.1](./protocol.md#621-publisher-scoped-namespace-interpretation):
-the origin serializes its own members with its real domain and `namespaceId: 0`;
-a foreign member carries the real domain as retained by the origin together
-with the origin's positive namespace for that member's home identity. A mirror
-MUST NOT infer member locality from the member domain string; it recognizes its
+the origin serializes its own members with `namespaceId: 0`; a foreign member
+carries the origin's positive namespace for that member's home identity.
+A mirror resolves domains through the origin's namespace bindings; it recognizes its
 own local member when the `namespaceId` equals the
 peer-assigned namespace disclosed by the origin. Their required, non-null `profileRev` selects an
 immutable complete profile snapshot retained by the group origin when positive.
 The value `0` means that the projection has no profile; the consumer MUST NOT
 issue a Group Member Profile request for it. A positive reference identifies the
-selected snapshot `(namespaceId, member account, member domain, profileRev)`,
+selected snapshot `(namespaceId, member account, profileRev)` at that origin,
 not the member's default or numerically newest profile. The item records the
 reference selected at its own feed coordinate. [Group Member Profile](./profiles.md#5-group-member-profile)
 authorizes a read through the current member reference or serviceable
@@ -172,9 +172,9 @@ reference.
 
 The single
 `GROUP_PROFILE` projection has a separate group-wide stable key and carries no
-member identity. Its `namespaceId` identifies the group profile namespace in
-the group origin's namespace space, and `profileRev` applies to the page's group
-`account`. Group Meta does not carry the group name, biography, or avatar bytes.
+member identity. Its body carries `account`, `namespaceId`, and `profileRev`.
+The body `account` MUST equal the page's group `account`; its `namespaceId`
+identifies the group profile namespace in the group origin's namespace space. Group Meta does not carry the group name, biography, or avatar bytes.
 A zero `profileRev` means that the group has no profile and MUST NOT trigger a
 profile query.
 
@@ -186,7 +186,7 @@ rather than retaining or reusing the older item's coordinate. The consumer
 selects the committed `GROUP_PROFILE` item with the greatest `feedId`; it does
 not compare `profileRev` values. To request that exact namespace and revision,
 it uses
-[Account Profile](./profiles.md#4-account-profile-by-current-account-evidence),
+[Account Profile](./profiles.md#4-account-profile-by-account-evidence),
 subject to Group Meta audience authorization and the current group-profile
 reference. The operation resolves the current group reference; a past
 `GROUP_PROFILE` item records historical feed state but does not by itself
@@ -257,7 +257,7 @@ other than the explicitly specified group profile and announcement projections
 are local policy and are not federated facts.
 
 Both `MEMBER_UPSERT` and `MEMBER_DEPART` carry the same `GroupMetaMemberBody`, including
-`role`, `namespaceId`, and `profileRev`. The body on `MEMBER_DEPART` is the last selected
+`account`, `namespaceId`, `role`, and `profileRev`. The body on `MEMBER_DEPART` is the last selected
 member reference and role at the departure coordinate; it is retained for coordinate
 continuity and event rendering, but it MUST NOT trigger a profile fetch. A mirror deletes
 its current member projection when it commits `MEMBER_DEPART`. A later `MEMBER_UPSERT` for
@@ -318,7 +318,7 @@ allocates a new coordinate. Consequently, a delta page may omit compacted
 intermediate operations but MUST carry the newest operation after the cursor.
 Message-author profile
 retention is independent of Group Meta and is defined by
-[Profiles](./profiles.md#8-retention-and-degradation). If `after` is below the
+[Profiles](./profiles.md#7-retention-and-degradation). If `after` is below the
 audience visibility floor or the feed's delta retention floor, the source MUST return
 `FEDERATION_FEED_CURSOR_UNAVAILABLE` with the common exclusive
 `resumeAfter/resumeBefore` boundaries. The consumer restarts with

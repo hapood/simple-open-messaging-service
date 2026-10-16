@@ -1,6 +1,6 @@
 # `PURE_TEXT` Message
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 This document defines parsed `PURE_TEXT` content, quoted replies, and inline entities. See [Message Envelope](./envelope.md) for shared outer fields and receive rules.
 
@@ -20,15 +20,13 @@ v1 does not define a universal maximum length. Publishers and consumers may impo
 
 Ordinary text omits the outer message `quoteTarget`. A quoted reply MUST satisfy all of the following:
 
-- The reply may use any federated message `contentType`; this document describes the
-  `PURE_TEXT` representation used by the current client UI.
+- A reply may use any federated message `contentType`; this document describes the `PURE_TEXT` representation.
 - `quoteTarget` identifies a target in the same thread using exactly
   one of `seq` (sender coordinate, or `0` for an explicitly absent target) or
   positive `originSeq` (receiver coordinate).
 - The outer message `assets` is empty.
 
-A quote carries no author, body, or content-type preview. Its sole content
-binding is the authoritative `quoteTarget`; the protocol defines no secondary
+A quote carries no author, body, or content-type preview. `quoteTarget` supplies its navigation coordinate, while the required `quoteDigest` binds the quoted payload independently of that coordinate. The protocol defines no secondary
 preview that could conflict with the target and does not prescribe presentation
 when that target is unavailable.
 
@@ -54,7 +52,18 @@ somfp-user     = "somfp://user/" namespace-id "/" user-account
 somfp-audience = "somfp://audience/all"
 ```
 
-`namespace-id` is a non-negative decimal integer (`0` for a subject local to the publishing server, a positive integer for a foreign subject's publisher-scoped namespace) and `user-account` strictly uses the `UserAccount` ASCII grammar defined by the [core protocol](../protocol.md#62-shared-federation-types). The `namespace-id` carries the same publisher-scoped meaning as the `namespaceId` field of a profile reference (see [Protocol, Section 6.2.1](../protocol.md#621-publisher-scoped-namespace-interpretation)): `0` denotes a subject hosted by the authenticated publisher, and a positive value is the namespace the publisher allocated for that subject's home-server identity. A sender MUST NOT place a transport `Domain` in a user entity; the entity's identity is `(namespaceId, account)`, never `account@domain`.
+`namespace-id` is a non-negative decimal integer in the **group origin's
+namespace space**, and `user-account` strictly uses the `UserAccount` ASCII
+grammar defined by the [core protocol](../protocol.md#62-shared-federation-types).
+`0` denotes a member hosted by the group origin; a positive value is the namespace
+that origin allocated for the member's home identity. A submitting member home,
+a mirror serving the message, and the receiving consumer MUST all interpret the
+token in that same group-origin space, never in their own namespace space or the
+current message publisher's space. The target matches the Group Meta member key
+`(body.namespaceId, body.account)`. A sender MUST NOT place a transport `Domain`
+in a user entity; its identity is `(group origin, namespaceId, account)`, never
+`account@domain`. The outer message's `author.namespaceId` still uses the current
+message publisher's space; it does not change the scope of a token inside content.
 
 Two v1 entity URIs are equal only when their complete ASCII byte sequences are equal. A consumer MUST NOT use general URL normalization, host case folding, default-port removal, or percent-decoding followed by re-encoding to create another equivalent form. After successful parsing, the semantic identity of a user entity is the decoded `(namespaceId, account)`; the semantic identity of an audience entity is fixed as `all`.
 
@@ -65,18 +74,27 @@ Two v1 entity URIs are equal only when their complete ASCII byte sequences are e
 - A malformed, escaped, or incomplete token is displayed as ordinary readable text and MUST NOT produce mention authorization or attention semantics.
 - A consumer MUST render safely using a text node or component and MUST NOT treat an entity as HTML.
 
-The author server validates that a mention applies to the thread before first persistence. When accepting a submission, the group origin validates the group context again but does not rewrite a valid token.
+The author server validates that a mention applies to the thread before first
+persistence, resolving the target against the group's current roster in the
+origin's namespace space. When accepting a submission, the group origin validates
+the group context again but does not rewrite a valid token. Every subsequent
+publisher preserves that token unchanged, keeping both target interpretation and
+the payload digest stable across hops. For example, if G assigns namespace `12`
+to home A, `somfp://user/12/alice` always identifies Alice at A in G's group,
+even when submitted by B or served from B's mirror. A consumer MUST NOT resolve
+`12` through B's unrelated namespace bindings.
 
 ## 4. Complete ordinary-text example
 
 ```json
 {
   "thread": {
-    "account": "alice",
-    "peerAccount": "bob"
+    "account": "!team"
   },
-  "authorRef": "THREAD_ACCOUNT",
-  "namespaceId": 0,
+  "author": {
+    "account": "alice",
+    "namespaceId": 0
+  },
   "seq": 42,
   "profileRev": 7,
   "originSeq": null,
@@ -96,8 +114,10 @@ The author server validates that a mention applies to the thread before first pe
     "account": "alice",
     "peerAccount": "bob"
   },
-  "authorRef": "THREAD_PEER_ACCOUNT",
-  "namespaceId": 0,
+  "author": {
+    "ref": "THREAD_PEER_ACCOUNT",
+    "namespaceId": 12
+  },
   "seq": 57,
   "profileRev": 9,
   "originSeq": null,
@@ -106,11 +126,14 @@ The author server validates that a mention applies to the thread before first pe
   "quoteTarget": {
     "seq": 42
   },
+  "quoteDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "contentType": "PURE_TEXT",
   "content": "{\"text\":\"Acknowledged\"}",
   "assets": []
 }
 ```
+
+In this example the publisher assigned namespace `12` to the peer hosting `bob`. The `quoteDigest` is an illustrative retained target digest, not a hash of the reply text.
 
 ## 6. Required rejections
 

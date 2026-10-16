@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:somfp:v1:message-provenance",
+  "title": "POST /s2s/v1/message-provenance request and response data",
+  "$defs": {
+    "query": {
+      "type": "object",
+      "required": ["thread", "seq", "payloadDigest"],
+      "properties": {
+        "thread": { "$ref": "urn:somfp:v1:common#/$defs/threadAddress" },
+        "seq": { "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence" },
+        "payloadDigest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" }
+      },
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "required": ["queries"],
+      "properties": {
+        "queries": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/query" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": ["thread", "seq", "known"],
+      "properties": {
+        "thread": { "$ref": "urn:somfp:v1:common#/$defs/threadAddress" },
+        "seq": { "$ref": "urn:somfp:v1:common#/$defs/positiveThreadSequence" },
+        "known": { "enum": ["yes", "no", "declined"] }
+      },
+      "additionalProperties": false
+    },
+    "response": {
+      "type": "object",
+      "required": ["results"],
+      "properties": {
+        "results": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/result" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

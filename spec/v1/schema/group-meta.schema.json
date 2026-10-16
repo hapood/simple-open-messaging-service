@@ -5,8 +5,9 @@
   "$defs": {
     "upsertBody": {
       "type": "object",
-      "required": ["role", "namespaceId", "profileRev"],
+      "required": ["account", "role", "namespaceId", "profileRev"],
       "properties": {
+        "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
         "role": { "enum": ["OWNER", "ADMIN", "MEMBER"] },
         "namespaceId": {
           "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
@@ -19,8 +20,9 @@
     },
     "profileBody": {
       "type": "object",
-      "required": ["namespaceId", "profileRev"],
+      "required": ["account", "namespaceId", "profileRev"],
       "properties": {
+        "account": { "$ref": "urn:somfp:v1:common#/$defs/groupAccount" },
         "namespaceId": {
           "$ref": "urn:somfp:v1:common#/$defs/safeNonNegativeInteger"
         },
@@ -45,13 +47,12 @@
     },
     "memberItemBase": {
       "type": "object",
-      "required": ["feedId", "account", "domain", "operation"],
+      "required": ["feedId", "operation"],
       "properties": {
         "feedId": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
-        "account": { "$ref": "urn:somfp:v1:common#/$defs/userAccount" },
-        "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" },
+
         "operation": { "type": "string" }
       }
     },

@@ -22,6 +22,7 @@ spec/
     profiles.md               Public and exact profile lookup
     message-feed.md           Per-thread message query and skip-mode rules
     message-tombstone-feed.md Authoritative per-thread deletion query
+    message-provenance.md      Batched direct-publisher payload attestation
     message.md                Message content-type overview and entry point
     message/                  Message envelope and content-type specifications
     resources.md              Media and forward bundles
@@ -30,17 +31,18 @@ spec/
     schema/                   JSON Schema, HTTP manifest, and conformance vectors
 ```
 
-Twelve normative documents—the core protocol and eleven subject specifications—jointly define v1. The machine-readable package bearing the same version supports automated validation. If normative text conflicts with a Schema, test vector, or tool, the normative text prevails and the other artifact should be corrected in the same release candidate.
+The core protocol and its referenced subject specifications jointly define v1. The machine-readable package bearing the same version supports automated validation. If normative text conflicts with a Schema, test vector, or tool, the normative text prevails and the other artifact should be corrected in the same review revision.
 
 Protocol changes and releases follow [Governance](./GOVERNANCE.md). Security issues follow the [Security Policy](./SECURITY.md). `RELEASE.json` provides version metadata to release tools but does not alter the normative text.
 
 ## Release status
 
 - `DRAFT`: the protocol scope or model may still change and should not be treated as a stable interoperability target.
+  The current draft is in **Final Review**: the intended protocol scope is settled for closeout review. This is a maturity qualifier within `DRAFT`, not a release candidate, a frozen contract, or a conformance certification. Review may still identify security, interoperability, or specification gaps requiring explicit corrections.
 - `RELEASE CANDIDATE`: the model and mandatory features are closed. Editorial clarifications and consistency corrections are allowed. Protocol gaps found before freezing may still be fixed, but wire-level changes must be identified in the reviewable release history.
 - `FINAL`: the current major version's wire contract is frozen. Incompatible changes require a new URL major version.
 - `SUPERSEDED`: a later major version has replaced this one; it remains available for compatible implementations and historical reference.
 
-The current candidate is [Simple Open Messaging Federation Protocol v1.0.0-rc.0](./v1/README.md). Every implementation claiming compatibility, including SOMS, must demonstrate conformance through tests. Implementation code, implementation-specific reviews, JSON Schema, and examples cannot independently alter the meaning of the normative text.
+The current working package is [Simple Open Messaging Federation Protocol v1.0.0-draft.0 — Draft, Final Review](./v1/README.md). Every implementation claiming compatibility, including SOMS, must demonstrate conformance through tests. Implementation code, implementation-specific reviews, JSON Schema, and examples cannot independently alter the meaning of the normative text.
 
 The conformant discovery identifiers are `/.well-known/somfp` and `_somfp._tcp`. No alternative discovery identifier belongs to the SOMFP v1 surface.

@@ -103,7 +103,7 @@ make queries concurrent: ordinary reads already have that concurrency.
 
 - [Thread content locks](../../src/common/locks/thread-content-lock.ts)
 - [Relationship-pair writes](../../src/relationship/relationship-intent.service.ts)
-- [Trigger lock modes](../../database/migrations/0001_non_key_write_locks.sql)
+- [Trigger lock modes in the SQL baseline](../../database/migrations/0000_base.sql)
 - [Snapshot authorization](../../src/federation/federation-thread-query-authorization.ts)
 - [Atomic epoch validation](../../src/federation/federation-thread-sync-state.service.ts)
 - [Federation rounds and history gaps](./federation-atomic-rounds-and-history-gaps.md)

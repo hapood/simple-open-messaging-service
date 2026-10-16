@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol v1 Profile Namespace Feed
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 Operations:
 

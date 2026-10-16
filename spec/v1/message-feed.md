@@ -1,12 +1,12 @@
 # Simple Open Messaging Federation Protocol v1 Message Query
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 Normative scope: this entire document is normative.
 
 This document defines the per-thread message-content query
 `GET /s2s/v1/messages`. The compacted `thread + messageEndSeq +
 tombstoneEndSeq` discovery projection is a `THREAD_CONTENT_HEAD` item in
-[State Feed](./state-feed.md#5-threadcontenthead). Authorization, message
+[State Feed](./state-feed.md#5-thread_content_head). Authorization, message
 return, and content-retention policy are applied by the query operation. See
 [Message](./message.md) for message schemas and [Protocol](./protocol.md) for
 common rules.
@@ -54,20 +54,21 @@ verified-peer pair, regardless of which users on that peer currently belong to
 the group.
 
 `includeSelf` is optional. Its wire value is lowercase `true` or `false`, and omission defaults to `true`.
-With `includeSelf=false`, P2P omits `authorRef=THREAD_PEER_ACCOUNT`. When a group authority queries a
-member home server's mirror, the mirror returns only messages authored by users managed in its own
-domain; copies of all other group members are excluded, not just authors hosted by the requester.
+With `includeSelf=false`, P2P omits `author.ref=THREAD_PEER_ACCOUNT`. When a group authority queries a
+member home server's mirror, the mirror returns only that home's own authored submissions;
+origin-distributed copies of all other group members are excluded, not just authors hosted by the requester.
 For authoritative group distribution, `false` excludes authors hosted by the requesting member home
-server. Filtering uses canonical author domains and the authenticated group direction, not local user
-IDs or message coordinates. Group authorities MAY use `false` for a submission-only scan;
-they MUST use `true` to consume mirror processing receipts as well as submissions,
-in either forward or reverse scans. Mirrors MUST use `true` when pulling from the authority so their own
+server. Filtering uses publisher-scoped author identity and the authenticated group direction, not local user
+IDs or message coordinates. Group authorities MUST use `false` in both forward and reverse
+message scans: the origin consumes submissions, not mirror processing receipts.
+Mirrors MUST use `true` when pulling from the authority so their own
 submissions can receive authoritative coordinate confirmation.
 
 A filtered sequence is a scannable hole and does not prevent `scannedThrough` from advancing in the
 selected direction. Receivers MUST independently reject unexpected mirror authors in new
-submissions even if the sender ignores the filter. A processing receipt may name any
-author of the origin's previously published target and follows Message Envelope Section 8.
+submissions even if the sender ignores the filter. An origin-distributed copy
+returned by a mirror MUST NOT be accepted as a new submission. Processing
+receipts from the origin to the submitting home follow Message Envelope Section 8.
 Within an otherwise valid ordered page, malformed items are skipped with a bounded
 warning and do not prevent processing later items or advancing the validated scan boundary. No message
 or receipt is created for a skipped item. Invalid page boundaries, authentication failures, and local
@@ -77,19 +78,18 @@ The parameter affects only this page projection and does not delete a processing
 history-policy decision, or message. The fixed query-key order is `account`, optional `peerAccount`,
 `after`, `before`, `through`, `take`, then `includeSelf`; omitted optional fields leave no placeholder.
 
-GROUP message query has exactly three valid directions:
+GROUP message query has exactly two valid directions:
 
 - A member home server returns to the group origin only submissions authored by
   users in its own domain. These feed items are not authoritative group facts
   until the origin validates and durably accepts them.
 - The group origin returns its accepted authoritative timeline to a member home
   server holding a mirror.
-- A mirror MAY return to the group origin only non-authoritative copies pulled
-  directly from that origin, as processing receipts.
 
 Before generating a page, the source MUST distinguish a member submission,
-authoritative distribution, and a processing receipt using the group authority,
-signer domain, author domain, message direct source, and intent direction. A
+authoritative distribution, and an origin's receipt to the submitting home
+using the group authority, authenticated peer identity, publisher-scoped author,
+message direct source, and intent direction. A
 mirror MUST NOT return a group message to a peer other than its group origin.
 A member home server MUST NOT return a submission authored outside its own
 domain. A feed query transports these durable items; it does not turn them into
@@ -230,8 +230,8 @@ distribution query requires at least one effective source-authored
 group-to-member `REQUESTED` or `ACCEPTED` direction whose member belongs to the
 verified signer peer. In the reverse direction, the signer MUST be the exact
 authority of the mirrored group. That authority binding permits the origin to
-query member submissions authored in the source domain and processing receipts
-whose direct federation source is the origin; it does not require a
+query only the member home's own authored submissions, not processing receipts
+for origin-distributed copies; it does not require a
 source-authored member-to-group intent. An effective `REQUESTED` expires at its
 absolute `expiresAt`; an `ACCEPTED` remains effective until superseded.
 
@@ -257,7 +257,7 @@ When the revalidated state still authorizes the denied request, the consumer MUS
 Authorization calculation MAY atomically derive immediately available state from existing authoritative facts, such as request expiration, friendship validity, or group-audience validity. This reconciliation MUST be idempotent and MUST NOT create an invitation, accept a friendship, join a group, or expand the current request's authorization merely because the peer issued a GET.
 
 The consumer receives messages idempotently by `(source domain, thread, seq)`.
-Every message carries required, non-null author `namespaceId` and `profileRev`.
+Every message carries required, non-null `author.namespaceId` and `profileRev`.
 Together they identify the exact immutable profile reference in the message
 publisher's namespace space. A positive `profileRev` is resolvable; `0` means
 no profile and MUST NOT trigger a profile request.
@@ -266,8 +266,8 @@ The author `namespaceId` follows the publisher-scoped rules of
 [Core Protocol Section 6.2.1](./protocol.md#621-publisher-scoped-namespace-interpretation):
 `0` marks an author hosted by the source, and a positive value is the source's
 namespace for the author's home identity. A consumer MUST NOT infer author
-locality from the author domain string. A P2P item with
-`authorRef: THREAD_PEER_ACCOUNT` denotes the authenticated signer's own
+locality from a domain string. A P2P item with
+`author.ref: THREAD_PEER_ACCOUNT` denotes the authenticated signer's own
 account and carries the same self-subject meaning; the consumer processes such
 an item, and a GROUP item whose author `namespaceId` equals the peer-assigned
 namespace disclosed by the source, under the processing-receipt rules of
@@ -277,11 +277,11 @@ consumer MAY fetch a bounded message interval concurrently with its bounded auth
 tombstone drain, but it does not complete reconciliation of that interval until
 both results have been applied. For a GROUP interval, it SHOULD first commit
 the required role-and-profile-reference Group Meta coordinate. If Group Meta has not converged, the
-stable author Address remains valid, the consumer MUST continue Group Meta
+publisher-scoped author identity remains valid, the consumer MUST continue Group Meta
 drain, and it MUST NOT infer a role or current-membership state. For P2P
 thread display, the greatest committed `seq` authored by the peer selects its
 carried `namespaceId` and `profileRev`; the consumer resolves the exact snapshot through
-[Account Profile](./profiles.md#4-account-profile-by-current-account-evidence).
+[Account Profile](./profiles.md#4-account-profile-by-account-evidence).
 While that message remains in the signer's current serviceable interval, its
 message evidence may authorize the exact carried reference even if another
 protocol object now selects a newer reference. The publisher MUST return only

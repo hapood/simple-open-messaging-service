@@ -1,17 +1,12 @@
 # Message Envelope
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 This document defines the outer wire shape, origin coordinates, idempotency rules, and processing receipts shared by every message in a federation message query. See the [Message overview](../message.md#4-contenttype) and its topic documents for each parsed `contentType` shape, and [Message Query](../message-feed.md) for pagination semantics.
 
 ## 1. Wire types
 
 ```ts
-interface Address {
-  account: Account;
-  domain: Domain;
-}
-
 type ThreadAddress =
   | { account: UserAccount; peerAccount: UserAccount }
   | { account: GroupAccount };
@@ -23,9 +18,6 @@ interface BlobDescriptor {
 
 type QuoteTarget = { seq: 0 | ThreadSequence } | { originSeq: ThreadSequence };
 
-A federated message may carry `quoteTarget` and `quoteDigest`. The target is another
-federated message in the same thread and may use any federated `contentType`.
-System messages are local application records and are not part of this protocol.
 type JsonObjectString = string;
 
 interface EncodedMessageContent {
@@ -34,7 +26,6 @@ interface EncodedMessageContent {
 }
 
 interface FederatedMessageBase extends EncodedMessageContent {
-  namespaceId: SafeNonNegativeInteger;
   seq: ThreadSequence;
   profileRev: SafeInteger;
   originSeq: ThreadSequence | null;
@@ -50,11 +41,14 @@ type FederatedMessage = FederatedMessageBase &
   (
     | {
         thread: { account: UserAccount; peerAccount: UserAccount };
-        authorRef: 'THREAD_ACCOUNT' | 'THREAD_PEER_ACCOUNT';
+        author: {
+          ref: 'THREAD_ACCOUNT' | 'THREAD_PEER_ACCOUNT';
+          namespaceId: SafeInteger;
+        };
       }
     | {
         thread: { account: GroupAccount };
-        author: Address;
+        author: { account: UserAccount; namespaceId: SafeInteger };
       }
   );
 ```
@@ -77,23 +71,25 @@ type FederatedMessage = FederatedMessageBase &
 - When `thread.account` is a `GroupAccount`, the thread is GROUP and
   `peerAccount` MUST be absent. Group delivery is scoped to the target peer,
   not to an individual member hosted on that peer.
-- A P2P message MUST contain `authorRef` and MUST NOT contain `author`.
-  `THREAD_ACCOUNT` identifies the source-hosted `thread.account`;
-  `THREAD_PEER_ACCOUNT` identifies the target-hosted `thread.peerAccount`. The two authenticated
-  exchange domains and this discriminator uniquely reconstruct the author
-  address without carrying a second, potentially conflicting identity.
-- A GROUP message MUST contain the explicit `author` address and MUST NOT
-  contain `authorRef`. A group publisher may relay a message authored on
-  another member domain, so direction alone cannot identify its author.
-- `namespaceId` identifies the author profile subject namespace in the current
+- Every message MUST contain a closed `author` object and MUST NOT contain
+  top-level `authorRef` or `namespaceId` fields.
+- A P2P `author` contains exactly `ref` and `namespaceId`.
+  `author.ref: THREAD_ACCOUNT` identifies the source-hosted `thread.account`;
+  `author.ref: THREAD_PEER_ACCOUNT` identifies the target-hosted `thread.peerAccount`.
+  The two authenticated exchange identities and this discriminator uniquely
+  reconstruct the author. No `account` or `domain` is carried in a P2P `author`.
+- A GROUP `author` contains exactly `account` and `namespaceId`. A group
+  publisher may relay a message authored by another member home, so direction
+  alone cannot identify its author. Neither `ref` nor `domain` is carried.
+- `author.namespaceId` identifies the author profile subject namespace in the current
   message publisher's namespace space and follows the publisher-scoped rules of
   [Core Protocol Section 6.2.1](../protocol.md#621-publisher-scoped-namespace-interpretation).
   It is scoped by the publisher serving
   this message page and has no standalone meaning outside that publisher. `0`
   marks an author hosted by the publisher itself; a positive value is the
-  publisher's namespace for the author's home identity. The accompanying author
-  domain is always the author's normalized real domain and MUST NOT be used to
-  infer locality. It is part of the author profile target together with the
+  publisher's namespace for the author's home identity. A domain, when needed,
+  is resolved through that publisher's namespace bindings, not carried as a
+  second author identity. The namespace is part of the profile target together with the
   reconstructed P2P author or explicit GROUP `author` and `profileRev`.
 - `profileRev` identifies the immutable author profile selected when the
   publisher committed this message copy. It applies to the reconstructed P2P
@@ -102,12 +98,11 @@ type FederatedMessage = FederatedMessageBase &
   means that this message has no author-profile snapshot and MUST NOT trigger a
   profile request.
 - A locally authored new message carries the revision selected for its audience
-  with `namespaceId: 0` and the publisher's real domain: the author is hosted
+  with `author.namespaceId: 0`: the author is hosted
   by the publisher itself. A publisher serializing a subject it received from
   another server re-encodes the reference into its own namespace space: the
-  `namespaceId` becomes the publisher's namespace for that subject's home
-  identity, and the subject `domain` is the address as retained by the
-  publisher. The carried `profileRev` remains the exact revision the publisher
+  `author.namespaceId` becomes the publisher's namespace for that subject's home
+  identity. The carried `profileRev` remains the exact revision the publisher
   retained for that subject; an intermediary MUST NOT substitute another
   retained revision or invent a namespace it did not allocate for that
   identity.
@@ -123,16 +118,18 @@ The message wire has no client-authoritative `date` field:
   `SafeInteger - 1`; `SafeInteger` is reserved as the maximum exclusive reverse
   query cursor.
 - `createdAt` is the epoch-millisecond time at which the current publisher first persisted this copy. It is not client send time, device time, or a cross-server ordering time.
-- When a publisher returns a copy to the direct publisher from which it
-  received that message, it MUST send the received `seq/createdAt` as
-  `originSeq/originCreatedAt`. Its outer `seq/createdAt` still identifies its
-  own copy. This is a processing receipt: the direct publisher recognizes the
-  receipt item by the author `namespaceId` equaling the peer-assigned namespace
-  disclosed by this publisher ([Core Protocol Section 6.2.1](../protocol.md#621-publisher-scoped-namespace-interpretation)),
-  never by comparing the author domain with its own configured domain.
-- This rule applies both when a group origin returns an accepted submission to
-  the submitting home and when a mirror returns an origin-published message to
-  that origin, including a message authored on a third domain.
+- In P2P, a publisher returning a copy to its direct source MUST send the
+  received `seq/createdAt` as `originSeq/originCreatedAt`. A group origin MUST
+  do the same when returning an accepted submission to its submitting member
+  home. Its outer `seq/createdAt` still identifies its own copy. This is a
+  processing receipt. The consumer recognizes its own author through
+  `author.ref: THREAD_PEER_ACCOUNT` in P2P, or `author.namespaceId` equaling
+  the peer-assigned namespace disclosed by the group origin in GROUP, then
+  validates the exact original message under Section 8.
+- A group origin queries a member home only for that home's own authored
+  submissions, using `includeSelf=false`. A group mirror MUST NOT return
+  origin-distributed messages as processing receipts to that origin, including
+  messages authored by a third member home.
 - A locally authored submission and authoritative distribution to a peer other
   than the direct source MUST use `originSeq/originCreatedAt: null/null`.
 - A consumer MUST retain the incoming publisher's `seq/createdAt` as the direct
@@ -152,9 +149,9 @@ An application time inside content cannot replace the outer `createdAt`.
 For example, if member home A submits message `seq=7` to group origin G,
 G can expose its accepted copy as `seq=42, originSeq=7` to A and as
 `seq=42, originSeq=null` to another mirror B. If B assigns its copy `seq=99`,
-B returns `seq=99, originSeq=42` to G even though the author belongs to A.
-G associates that receipt with its existing message 42; it does not create a
-new message or return another receipt. The origin time follows the same
+G does not query that copy as a receipt: G queries B with `includeSelf=false`
+and receives only B's own authored submissions, not A's message mirrored by B.
+A uses G's returned copy to confirm its submission. The origin time follows the same
 projection. Each projection is immutable within its source/thread/target-peer
 coordinate space; a publisher MUST NOT switch a previously exposed projection
 between receipt and authoritative distribution on retry.
@@ -176,15 +173,15 @@ A consumer MUST durably store the mapping from this coordinate to its local copy
 All of the following fields are immutable at a given origin coordinate:
 
 - `thread`
-- `authorRef` for P2P, or `author` for GROUP
+- `author`, including its `namespaceId` and matching `ref` or `account`
 - `seq`
-- `namespaceId`
 - `profileRev`
 - `originSeq/originCreatedAt`
 - `createdAt`
 - `contentType`
 - parsed `content`
 - `quoteTarget`
+- `quoteDigest`
 - `assets`
 
 A conflict in any field makes the item invalid. It MUST NOT be overwritten using a newer time, larger sequence, or receive order. v1 does not define message editing; [Message Tombstone Query](../message-tombstone-feed.md) expresses retraction and governance deletion.
@@ -221,10 +218,7 @@ A conflict in any field makes the item invalid. It MUST NOT be overwritten using
 
 ## 7. Reference coordinates
 
-Any federated message type may carry `quoteTarget`. The current client UI may expose
-this capability only for `PURE_TEXT`, but that is a presentation limitation, not a
-wire restriction. The target may be any federated message type. System messages
-are not federated messages and therefore cannot occur as targets.
+Any federated message type may carry `quoteTarget` and the accompanying `quoteDigest`. The target may be any federated message type. Local-only system notices are not federated messages and therefore cannot occur as targets.
 
 - `seq`: zero for an explicitly absent target, otherwise the target's positive sequence in the current sender's thread. The receiver
   resolves it in that sender's coordinate space, not by its own local sequence.
@@ -259,15 +253,17 @@ Consumers MAY distinguish unpulled history from confirmed absence in presentatio
 
 ## 8. Processing receipts
 
-After successfully persisting an incoming message, a consumer SHOULD make its
-copy queryable by its direct publisher as a processing receipt. The copy's
-origin pair equals the publisher's original item `seq/createdAt`. An author's
-domain differing from that publisher MUST NOT suppress the origin pair or
-cause the receipt to be interpreted as a new submission.
+After successfully persisting a P2P message, a consumer SHOULD make its copy
+queryable by its direct publisher as a processing receipt. A group origin
+SHOULD make an accepted submission queryable by the submitting member home in
+the same way. The copy's origin pair equals the submitter's original item
+`seq/createdAt`. A group mirror does not publish processing receipts back to
+the group origin; the origin fetches only that home's own authored submissions.
 
 When reading a receipt, the publisher:
 
-- Reconstructs the author from `authorRef` for P2P, or reads `author` for
+- Reconstructs the author from `author.ref` for P2P, or resolves
+  `(author.namespaceId, author.account)` in the source's namespace space for
   GROUP, then uses `(thread, author, originSeq)` to associate a message it
   previously published.
 - MUST validate the source's authorization for that thread, the exact target

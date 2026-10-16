@@ -1,6 +1,6 @@
 # `FORWARD` Message and Bundle
 
-Status: `RELEASE CANDIDATE` (`v1.0.0-rc.0`)
+Status: `DRAFT` — Final Review (`v1.0.0-draft.0`)
 
 This document defines a timeline `FORWARD` card and the immutable forward bundle it references. The wire card references only the bundle root ID; the complete bundle is fetched through a resource operation, and summaries are derived locally after validation. See [Message Envelope](./envelope.md) for the shared outer message shape and [Resources, Section 4](../resources.md#4-forward-bundles) for HTTP, authorization, and error contracts.
 
@@ -27,8 +27,10 @@ This is a closed schema with no optional fields.
     "account": "alice",
     "peerAccount": "bob"
   },
-  "authorRef": "THREAD_ACCOUNT",
-  "namespaceId": 0,
+  "author": {
+    "ref": "THREAD_ACCOUNT",
+    "namespaceId": 0
+  },
   "seq": 91,
   "profileRev": 7,
   "originSeq": null,

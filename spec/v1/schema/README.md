@@ -1,8 +1,8 @@
 # Federation v1 Machine-readable Release Package
 
-Status: `RELEASE CANDIDATE`
+Status: `DRAFT` — Final Review
 
-Release: `v1.0.0-rc.0`
+Release: `v1.0.0-draft.0`
 
 This directory ships with the v1 normative text as a non-normative validation
 resource and uses JSON Schema Draft 2020-12. The normative text defines atomic
@@ -22,6 +22,7 @@ normative text prevails and the release package must be corrected.
 - `profile.schema.json`: current public account profile response.
 - `evidence-profile.schema.json`: exact profile response selected by account, group-member, or intent evidence.
 - `message-query.schema.json` and `message-tombstone-query.schema.json`: messages and authoritative deletion facts returned by thread queries.
+- `message-provenance.schema.json`: closed provenance batch request and response shapes; duplicate coordinates and response-to-request correlation require semantic validation.
 - `message-content.schema.json`: all parsed core message-content variants selected by `contentType`.
 - `call.schema.json`: every call lifecycle and signal operation with its closed conditional field set.
 - `forward-bundle.schema.json` and `error.schema.json`: the remaining JSON operations.

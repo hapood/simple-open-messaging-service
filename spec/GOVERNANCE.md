@@ -6,7 +6,7 @@ This repository maintains the Simple Open Messaging Federation Protocol (SOMFP),
 
 Protocol issues and changes are accepted through this repository's GitHub Issues and Pull Requests. Contributors need no standards-body application, registration form, or additional process document; a clear description of the problem and proposed change is sufficient. In each Pull Request, maintainers review compatibility, security impact, and whether normative text and tests must change together. Implementation behavior alone does not constitute a protocol change.
 
-Editorial corrections may be merged within the same release candidate. Any addition, removal, or change to observable wire behavior requires a new release candidate and must be identified in the reviewable Pull Request and release notes. After `FINAL`, incompatible changes require a new major URL version.
+Editorial corrections may be merged within the same draft or release candidate. During draft review, peer-observable corrections must be identified in the reviewable Pull Request and pre-freeze review history. Once a release candidate is published, any addition, removal, or change to observable wire behavior requires a new release candidate and release notes. After `FINAL`, incompatible changes require a new major URL version.
 
 ## Decisions and releases
 
