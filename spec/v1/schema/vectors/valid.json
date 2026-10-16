@@ -676,7 +676,7 @@
       "name": "minimal forward closure",
       "schema": "urn:somfp:v1:forward-bundle",
       "value": {
-        "id": "b1",
+        "id": "0b4e1419d48487c928166daa4bf73494fecccdbc64cb6b8db3fa6eb1f9cb2e0d",
         "messages": [
           {
             "id": 1,
