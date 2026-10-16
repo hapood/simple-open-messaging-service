@@ -57,6 +57,13 @@ vi.mock('@/hooks/use-federation', () => ({
       degradationCount: 0,
       addedBy: null,
       degradationReason: null,
+      feedProgress: {
+        namespaceId: 12,
+        outboundStateFeedEndId: '40',
+        inboundStateFeedPulledThrough: '40',
+        remoteProfileNamespaceFeedEndId: '9',
+        inboundProfileNamespaceFeedPulledThrough: '9',
+      },
     },
     isLoading: false,
     error: null,
