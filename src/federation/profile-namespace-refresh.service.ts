@@ -130,7 +130,8 @@ export class ProfileNamespaceRefreshService {
             rootPublicKey: answer.rootPublicKey,
             updateFeedId: end,
             expired: false,
-            status: answer.status,
+            // Lifecycle is local state: new rows use the database default,
+            // and refreshing remote bindings must not overwrite it.
           })
           .onConflictDoUpdate({
             target: [
@@ -142,7 +143,6 @@ export class ProfileNamespaceRefreshService {
               rootPublicKey: answer.rootPublicKey,
               updateFeedId: end,
               expired: false,
-              status: answer.status,
             },
           });
         return this.feed.recordClientChangeInTx(tx, pair);
@@ -173,7 +173,8 @@ export class ProfileNamespaceRefreshService {
       );
     // A reset-retired publisher converges to ARCHIVED with its retained
     // bindings — the identity is gone but historical references keep
-    // rendering the last-known domain (mirrors the s2s answer semantics).
+    // rendering the last-known domain. Lifecycle comes from our registry,
+    // never from the remote bindings response.
     const status: NamespaceStatus =
       row.active && row.retiredAt === null ? 'ACTIVE' : 'ARCHIVED';
     // updateFeedId aligns with the drain progress we have already applied, so
@@ -228,18 +229,13 @@ export class ProfileNamespaceRefreshService {
       publisher.domain,
     );
     try {
-      const answer = await this.trustedPeers.run(context.domain, () =>
+      return await this.trustedPeers.run(context.domain, () =>
         this.peerHttp.get<ProfileNamespaceBindings>(
           `/s2s/v1/profile-namespaces/${nsid}`,
           context.domain,
           64 * 1024,
         ),
       );
-      if (answer.status !== 'ACTIVE' && answer.status !== 'ARCHIVED')
-        throw new Error(
-          `publisher returned an invalid namespace status for nsid ${nsid}`,
-        );
-      return answer;
     } catch (error) {
       if (
         error instanceof S2sResponseError &&

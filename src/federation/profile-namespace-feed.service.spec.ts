@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import Ajv2020Module from 'ajv/dist/2020.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProfileNamespaceFeedService } from './profile-namespace-feed.service.js';
 import { ProfileNamespaceChangeStore } from './profile-namespace-change-store.service.js';
@@ -190,12 +192,36 @@ describe('ProfileNamespaceFeedService', () => {
     });
   });
 
+  it.each([
+    { nsid: 0, active: true, retiredAt: null },
+    { nsid: 12, active: true, retiredAt: null },
+    { nsid: 12, active: false, retiredAt: new Date() },
+  ])('emits schema-valid bindings without local lifecycle: %j', async (row) => {
+    const ajv = new Ajv2020Module.default({ strict: false });
+    const readSchema = (name: string) =>
+      JSON.parse(
+        readFileSync(
+          new URL(`../../spec/v1/schema/${name}`, import.meta.url),
+          'utf8',
+        ),
+      );
+    ajv.addSchema(readSchema('common.schema.json'));
+    const validate = ajv.compile(readSchema('profile-namespace.schema.json'));
+    const { service } = harness([
+      [{ feedEndId: 7n }],
+      [{ ...row, domain: 'peer.test', rootPublicKey: ROOT }],
+    ]);
+    const bindings = await service.resolveBindings(row.nsid);
+    expect(validate(bindings), JSON.stringify(validate.errors)).toBe(true);
+    expect(bindings).not.toHaveProperty('status');
+    expect(validate({ ...bindings, status: 'ACTIVE' })).toBe(false);
+  });
+
   it('answers nsid 0 from local authority', async () => {
     const { service } = harness([[{ feedEndId: 7n }]]);
     await expect(service.resolveBindings(0)).resolves.toEqual({
       domain: 'soms.test',
       rootPublicKey: ROOT,
-      status: 'ACTIVE',
       profileNamespaceFeedEndId: '7',
     });
   });
@@ -215,13 +241,11 @@ describe('ProfileNamespaceFeedService', () => {
     await expect(service.resolveBindings(12)).resolves.toEqual({
       domain: 'peer.test',
       rootPublicKey: ROOT,
-      status: 'ACTIVE',
       profileNamespaceFeedEndId: '7',
     });
 
     // A reset-retired id keeps answering with its last retained bindings so
-    // historical references stay renderable — disclosed as ARCHIVED so the
-    // puller caches the lifecycle instead of assuming ACTIVE.
+    // historical references stay renderable, without exposing local lifecycle.
     const retired = harness([
       [{ feedEndId: 7n }],
       [
@@ -233,10 +257,10 @@ describe('ProfileNamespaceFeedService', () => {
         },
       ],
     ]);
-    await expect(retired.service.resolveBindings(12)).resolves.toMatchObject({
+    await expect(retired.service.resolveBindings(12)).resolves.toEqual({
       domain: 'peer.test',
       rootPublicKey: ROOT,
-      status: 'ARCHIVED',
+      profileNamespaceFeedEndId: '7',
     });
 
     const missing = harness([[{ feedEndId: 7n }], []]);

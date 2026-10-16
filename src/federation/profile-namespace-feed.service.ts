@@ -15,7 +15,6 @@ import {
 } from '../database/schema.js';
 import { KeypairService } from './keypair.service.js';
 import { ProfileNamespaceChangeStore } from './profile-namespace-change-store.service.js';
-import type { NamespaceStatus } from './profile-namespace.service.js';
 
 export interface ProfileNamespaceFeedItem {
   namespaceId: number;
@@ -32,10 +31,6 @@ export interface ProfileNamespaceFeedPage {
 export interface ProfileNamespaceBindings {
   domain: string;
   rootPublicKey: string;
-  /** Lifecycle of the bound namespace at the responder: ACTIVE, or ARCHIVED
-   *  when the responder has reset-retired the id (its last retained bindings
-   *  stay disclosed so historical references keep rendering). */
-  status: NamespaceStatus;
   profileNamespaceFeedEndId: string;
 }
 
@@ -288,7 +283,6 @@ export class ProfileNamespaceFeedService {
       return {
         domain: local.domain,
         rootPublicKey: this.keypair.getRootPublicKeyB64(),
-        status: 'ACTIVE',
         profileNamespaceFeedEndId: feedEndId.toString(),
       };
     }
@@ -296,8 +290,6 @@ export class ProfileNamespaceFeedService {
       .select({
         domain: identityNamespace.domain,
         rootPublicKey: identityNamespace.rootPublicKey,
-        retiredAt: identityNamespace.retiredAt,
-        active: identityNamespace.active,
       })
       .from(identityNamespace)
       .where(eq(identityNamespace.id, nsid))
@@ -317,7 +309,6 @@ export class ProfileNamespaceFeedService {
     return {
       domain: row.domain,
       rootPublicKey: row.rootPublicKey,
-      status: row.active && row.retiredAt === null ? 'ACTIVE' : 'ARCHIVED',
       profileNamespaceFeedEndId: feedEndId.toString(),
     };
   }

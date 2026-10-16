@@ -154,13 +154,11 @@ feedEndId, hasMore }` with decimal-string feed ids.
   `account-profiles/:namespaceId/...` — query parameters are reserved for
   cursors and pagination;
 - `nsid = 0` returns the responder's own current bindings
-  `{ domain, rootPublicKey, status, profileNamespaceFeedEndId }` with
-  `status = ACTIVE`;
+  `{ domain, rootPublicKey, profileNamespaceFeedEndId }`;
 - a positive nsid returns the identity currently bound there; a
-  reset-retired id keeps answering with its last retained bindings
-  disclosed as `status = ARCHIVED` so historical references stay renderable
-  and the puller caches the lifecycle, and only an id that never completed
-  a handshake is a miss;
+  reset-retired id keeps answering with its last retained bindings so
+  historical references stay renderable, and only an id that never completed
+  a handshake is a miss; local lifecycle status is not disclosed;
 - one request per nsid matches the per-`(publisher, nsid)` refresh scheduler
   granularity, so no batch form exists;
 - the answer is display/vouching data only; it never mutates the requester's
@@ -183,8 +181,12 @@ feedEndId, hasMore }` with decimal-string feed ids.
 
 `status` is orthogonal to `expired`: `expired` is a transient freshness
 flag while a refresh converges, `status` is the permanent lifecycle of the
-bound namespace. A reset-retired nsid keeps `status = ARCHIVED` and its last
-bindings so historical references stay renderable; `UNRECOVERABLE` (permanent
+locally tracked namespace. It is implementation state, not a field in the
+S2S bindings response. A remote bindings refresh uses the database default
+`ACTIVE` for a new cache row and preserves any existing local status on
+update; it does not infer the publisher's internal lifecycle. Direct rows
+can derive `ARCHIVED` from our own retired peer registry entry and retain
+bindings for historical rendering. `UNRECOVERABLE` (permanent
 loss) is not a `status` value — it is a federation error code that writes a
 row in the sparse `ProfileNamespaceTombstone` table instead. The companion
 `ProfileTombstone` table records the analogous permanent loss of a profile
@@ -326,7 +328,8 @@ profileNamespaceId]`, value `{ domain, rootPublicKey, updateFeedId,
 changeSeq, expired, status, refreshedAt }`. `updateFeedId` is the publisher's feed
 position from a resolve answer; `changeSeq` is the local change-feed
 coordinate last applied to the row. `status` mirrors the server's
-`ACTIVE` / `ARCHIVED` lifecycle. A null `domain` is a tomb: the feed was
+locally maintained `ACTIVE` / `ARCHIVED` lifecycle, not a lifecycle disclosed
+by the remote publisher. A null `domain` is a tomb: the feed was
 pulled but the cache for that pair was not.
 - IDB stores `profileNamespaceTombs` (key `[publisherNamespaceId,
 profileNamespaceId]`) and `profileTombs` (key `[publisherNamespaceId,

@@ -14,6 +14,8 @@ describe('client namespace demand after prefetch work is absent', () => {
   const domain = `namespace-demand-${Date.now().toString(36)}.test`;
   let database: DatabaseService;
   let controller: ProfileNamespaceController;
+  let refresh: ProfileNamespaceRefreshService;
+  let feed: ProfileNamespaceFeedService;
   let publisherNamespaceId: number;
   const peerGet = vi.fn();
   const notify = vi.fn();
@@ -31,16 +33,16 @@ describe('client namespace demand after prefetch work is absent', () => {
         profileNamespaceFeedEndId: 8n,
       })
       .where(eq(identityNamespace.id, publisherNamespaceId));
-    const feed = new ProfileNamespaceFeedService(
+    feed = new ProfileNamespaceFeedService(
       database,
       {} as never,
       new ProfileNamespaceChangeStore(database),
     );
-    const refresh = new ProfileNamespaceRefreshService(
+    refresh = new ProfileNamespaceRefreshService(
       database,
       { get: peerGet } as never,
-      {} as never,
-      {} as never,
+      { run: (_domain: string, work: () => unknown) => work() } as never,
+      { capturePeerResponseToken: async () => ({ domain }) } as never,
       feed,
       { notifyProfileNamespaceChange: notify } as never,
     );
@@ -74,16 +76,14 @@ describe('client namespace demand after prefetch work is absent', () => {
   }
 
   it('fetches an existing expired binding rather than reporting its database row as READY', async () => {
-    await database.db
-      .insert(profileNamespace)
-      .values({
-        publisherNamespaceId,
-        profileNamespaceId: 0,
-        domain,
-        rootPublicKey: fakeRootPublicKey(domain),
-        expired: true,
-        updateFeedId: 2n,
-      });
+    await database.db.insert(profileNamespace).values({
+      publisherNamespaceId,
+      profileNamespaceId: 0,
+      domain,
+      rootPublicKey: fakeRootPublicKey(domain),
+      expired: true,
+      updateFeedId: 2n,
+    });
     await demand();
     expect(notify).toHaveBeenCalledOnce();
   });
@@ -100,4 +100,49 @@ describe('client namespace demand after prefetch work is absent', () => {
     await demand();
     expect(notify).toHaveBeenCalledTimes(2);
   });
+
+  it.each(['ACTIVE', 'ARCHIVED'] as const)(
+    'refreshes real producer bindings without a wire status and retains local %s lifecycle',
+    async (status) => {
+      const subjectDomain = `${status.toLowerCase()}-${domain}`;
+      const profileNamespaceId = await seedFederatedPeerNamespace(
+        database.db,
+        subjectDomain,
+      );
+      const pair = { publisherNamespaceId, profileNamespaceId };
+      if (status === 'ARCHIVED') {
+        await database.db.insert(profileNamespace).values({
+          ...pair,
+          domain: subjectDomain,
+          rootPublicKey: fakeRootPublicKey(subjectDomain),
+          expired: true,
+          status,
+        });
+      }
+      const bindings = await feed.resolveBindings(profileNamespaceId);
+      expect(bindings).toEqual({
+        domain: subjectDomain,
+        rootPublicKey: fakeRootPublicKey(subjectDomain),
+        profileNamespaceFeedEndId: expect.any(String),
+      });
+      peerGet.mockResolvedValueOnce(bindings);
+      refresh.scheduleRefresh(pair, 0n);
+      await vi.waitFor(async () => {
+        const row = await database.db.query.profileNamespace.findFirst({
+          where: and(
+            eq(profileNamespace.publisherNamespaceId, publisherNamespaceId),
+            eq(profileNamespace.profileNamespaceId, profileNamespaceId),
+          ),
+        });
+        expect(row).toMatchObject({
+          ...pair,
+          domain: subjectDomain,
+          rootPublicKey: fakeRootPublicKey(subjectDomain),
+          updateFeedId: BigInt(bindings.profileNamespaceFeedEndId),
+          expired: false,
+          status,
+        });
+      });
+    },
+  );
 });
