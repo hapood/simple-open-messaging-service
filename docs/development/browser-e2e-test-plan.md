@@ -22,11 +22,8 @@ Browser and Android have separate acceptance plans:
 - Run evidence belongs in local run artifacts, identified by platform, build,
   fixture set, and case ID. Do not accumulate progress dashboards or session
   handoffs in the project documentation.
-- `browser-e2e-bug-*.md` is temporary investigation state for an open defect or
-  a fix awaiting required regression. Retain unresolved findings independently
-  of run progress. Remove a closed investigation only after durable regression
-  coverage and the required browser verification; preserve reusable lessons in
-  the plan or tooling guide.
+- Keep reusable regression cases and investigation lessons in the acceptance
+  plan or tooling guide, not in standalone closed-defect records.
 
 Keep reusable harness instructions in `browser-e2e-tools.md`. This plan does not
 claim any case has passed. New independent runs use fresh fixture prefixes;

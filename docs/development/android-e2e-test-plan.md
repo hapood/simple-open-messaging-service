@@ -44,7 +44,7 @@ AI_TEST_CASE=11.5 AI_TEST_API_KEY=... npm run test:cross-platform
 - Manual execution remains valid for the acceptance suite.
 - Record coverage, build identity, case IDs, and evidence in local run artifacts,
   not a project progress dashboard or session handoff. This plan makes no
-  completion claim; unresolved defect records remain separate.
+  completion claim.
 - Reusable device-independent lessons live in
   [android-lab-testing-notes.md](./android-lab-testing-notes.md); device-specific
   run records sit beside it.
