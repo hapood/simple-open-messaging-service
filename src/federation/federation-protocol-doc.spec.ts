@@ -34,6 +34,53 @@ function documentedUnion(markdown: string, name: string): string[] {
 }
 
 describe('Federation v1 protocol documentation', () => {
+  it('requires image filenames in both standalone and gallery content', () => {
+    const ajv = new Ajv2020Module.default({ strict: false });
+    ajv.addSchema(readSchema('common.schema.json'));
+    const validate = ajv.compile(readSchema('message-content.schema.json'));
+    const image = { digest: 'a'.repeat(64), width: 1, height: 1 };
+    for (const name of ['photo.png', '旅行照片.png', undefined, '', null, 1]) {
+      const fields = { ...image, ...(name === undefined ? {} : { name }) };
+      const expected = typeof name === 'string' && name.length > 0;
+      expect(validate({ contentType: 'IMAGE', content: fields })).toBe(
+        expected,
+      );
+      expect(
+        validate({
+          contentType: 'GALLERY',
+          content: { items: [{ kind: 'IMAGE', ...fields }] },
+        }),
+      ).toBe(expected);
+    }
+  });
+
+  it('requires the contact-card root key without accepting legacy missing-key forms', () => {
+    const ajv = new Ajv2020Module.default({ strict: false });
+    ajv.addSchema(readSchema('common.schema.json'));
+    const validate = ajv.compile(readSchema('message-content.schema.json'));
+    const key = 'A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=';
+    for (const publicKey of [
+      key,
+      undefined,
+      '',
+      null,
+      1,
+      'not-a-key',
+      key.slice(0, -1),
+    ]) {
+      const content = {
+        account: 'alice',
+        domain: 'a.example',
+        displayName: 'Alice',
+        bio: '',
+        ...(publicKey === undefined ? {} : { publicKey }),
+      };
+      expect(validate({ contentType: 'CONTACT_CARD', content })).toBe(
+        publicKey === key,
+      );
+    }
+  });
+
   it('keeps every chapter at the final-review draft version', () => {
     const release = JSON.parse(
       readFileSync(join(process.cwd(), 'spec/RELEASE.json'), 'utf8'),

@@ -266,11 +266,8 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       ? (message.contentType as ChatMsgData['contentType'])
       : 'PURE_TEXT';
     const media = parseMedia(snapshotMessage, id, this.snapshotMediaUrl);
-    const creator = JSON.stringify([
-      bundle.id,
-      message.author.domain,
-      message.author.account,
-    ]);
+    // A snapshot has no author identity. Never merge rows by display name or avatar.
+    const creator = JSON.stringify([bundle.id, message.id]);
     const quoteTarget = message.quoteTargetId
       ? bundle.messages.find(
           (candidate) => candidate.id === message.quoteTargetId,
@@ -295,11 +292,9 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       msgId: id,
       creator,
       isSelf: false,
-      name: message.profile?.displayName || message.author.account,
+      name: message.profile.displayName,
       snapshotAvatarUrl: this.avatarUrl(message),
       avatarIdentityId: creator,
-      avatarAccount: message.author.account,
-      avatarDomainSource: { type: 'snapshot', domain: message.author.domain },
       text:
         hasKnownContentType && contentType === 'PURE_TEXT'
           ? toDisplayText(
@@ -319,8 +314,7 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       createdAtMs: message.sentAt,
       quote: quoteTarget
         ? {
-            author:
-              quoteTarget.profile?.displayName || quoteTarget.author.account,
+            author: quoteTarget.profile.displayName,
             body: snapshotPreview(quoteTarget),
             seq: message.quoteTargetId,
           }
@@ -348,40 +342,59 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
     );
     if (!child) return message.content;
 
-    const seen = new Set<string>();
-    const messages: ForwardManifestMessage[] = [];
-    const collect = (bundle: ForwardWireChild): void => {
-      if (seen.has(bundle.id)) return;
-      seen.add(bundle.id);
+    const bundles = new Map(
+      this.closure()?.children.map((bundle) => [bundle.id, bundle] as const),
+    );
+    const visiting = new Set<string>();
+    const summaries = new Map<
+      string,
+      { messageCount: number; messages: ForwardManifestMessage[] }
+    >();
+    const collect = (
+      bundle: ForwardWireChild,
+    ): { messageCount: number; messages: ForwardManifestMessage[] } => {
+      if (visiting.has(bundle.id))
+        throw new Error('forward bundle dependency cycle');
+      const known = summaries.get(bundle.id);
+      if (known) return known;
+      visiting.add(bundle.id);
+      let messageCount = bundle.messages.length;
+      const messages: ForwardManifestMessage[] = [];
       for (const item of bundle.messages) {
-        messages.push(item);
+        if (messages.length < 2) messages.push(item);
         if (item.childBundleId) {
-          const nested = this.closure()?.children.find(
-            (candidate) => candidate.id === item.childBundleId,
-          );
-          if (nested) collect(nested);
+          const nested = bundles.get(item.childBundleId);
+          if (nested) {
+            const child = collect(nested);
+            messageCount += child.messageCount;
+            messages.push(...child.messages.slice(0, 2 - messages.length));
+          }
         }
       }
+      visiting.delete(bundle.id);
+      const result = { messageCount, messages };
+      summaries.set(bundle.id, result);
+      return result;
     };
-    collect(child);
+    const { messageCount, messages } = collect(child);
     return JSON.stringify({
       bundleId: child.id,
       summaryLines: messages
         .slice(0, 2)
         .map(
           (item) =>
-            `${item.profile?.displayName || item.author.account}：${deriveMessagePreview(
+            `${item.profile.displayName}：${deriveMessagePreview(
               item.contentType,
               item.content,
               toDisplayText,
             )}`,
         ),
-      messageCount: messages.length,
+      messageCount,
     });
   }
 
   private avatarUrl(message: ForwardManifestMessage): string {
-    const digest = message.profile?.avatarDigest;
+    const digest = message.profile.avatarDigest;
     if (!digest || !/^[a-f0-9]{64}$/.test(digest)) return '';
     const closure = this.closure();
     if (!closure?.assets.some((asset) => asset.digest === digest)) return '';

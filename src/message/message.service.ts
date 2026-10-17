@@ -364,7 +364,7 @@ export class MessageService {
     content: string,
     type: ContentType,
     clientMessageId?: string,
-    forwardBundleId?: string,
+    forwardBundleId?: bigint | ((tx: DatabaseTransaction) => Promise<bigint>),
     beforeMessageCreate?: (tx: DatabaseTransaction) => Promise<void>,
     quoteVisibility?: {
       clearedThroughSeq?: number | null;
@@ -554,12 +554,16 @@ export class MessageService {
             })
             .returning();
           if (type === ContentType.FORWARD) {
-            if (!forwardBundleId) {
+            const localBundleId =
+              typeof forwardBundleId === 'function'
+                ? await forwardBundleId(tx)
+                : forwardBundleId;
+            if (localBundleId === undefined) {
               throw new Error('FORWARD message requires forwardBundleId');
             }
             await tx
               .insert(forwardMessage)
-              .values({ messageId: msg.id, bundleId: forwardBundleId });
+              .values({ messageId: msg.id, bundleId: localBundleId });
           }
           await tx
             .update(messageThread)

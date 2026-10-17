@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq, inArray } from 'drizzle-orm';
-import { DatabaseModule } from '../src/database/database.module.js';
+import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
 import { ThreadFeedService } from '../src/message/thread-feed.service.js';
@@ -38,16 +38,10 @@ describe('mention target resolution across group authority modes', () => {
 
   beforeAll(async () => {
     module = await Test.createTestingModule({
-      imports: [DatabaseModule],
+      imports: [AppModule],
     }).compile();
     database = module.get(DatabaseService);
-    groups = new GroupService(
-      database,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+    groups = module.get(GroupService);
     peerNamespaceId = await seedFederatedPeerNamespace(
       database.db,
       `mirror-mention-${suffix}.test`,
@@ -127,7 +121,6 @@ describe('mention target resolution across group authority modes', () => {
         account: `peer-owner-${suffix}`,
         profileRev: 1,
         displayName: 'Peer Owner',
-        updatedAt: new Date(),
       },
       {
         publisherNamespaceId: peerNamespaceId,
@@ -135,15 +128,13 @@ describe('mention target resolution across group authority modes', () => {
         account: `peer-member-${suffix}`,
         profileRev: 1,
         displayName: 'Peer Member',
-        updatedAt: new Date(),
       },
       {
-        publisherNamespaceId: 1,
+        publisherNamespaceId: peerNamespaceId,
         profileNamespaceId: 0,
         account: `authority-pairless-${suffix}`,
         profileRev: 1,
         displayName: 'Authority Pairless',
-        updatedAt: new Date(),
       },
     ]);
 
@@ -302,13 +293,11 @@ describe('mention target resolution across group authority modes', () => {
 
   it('uses namespace zero only for viewers of a locally authoritative group', async () => {
     await database.db.transaction(async (tx) => {
-      await tx
-        .insert(accountThreadState)
-        .values({
-          accountId: senderId,
-          threadId: authorityThreadId,
-          updatedAt: new Date(),
-        });
+      await tx.insert(accountThreadState).values({
+        accountId: senderId,
+        threadId: authorityThreadId,
+        updatedAt: new Date(),
+      });
       const state = await ThreadFeedHeadWriter.readStateInTx(
         tx,
         senderId,

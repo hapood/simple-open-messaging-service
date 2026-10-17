@@ -83,7 +83,7 @@ test('demands raw reference pairs, excluding receiver-local aliases rather than 
         node: { name: 'alpha' },
         client: {
           query: async (sql) => {
-            assert.match(sql, /fact.body ->> 'profileNamespaceId'/);
+            assert.match(sql, /fact.body ->> 'namespaceId'/);
             assert.match(
               sql,
               /message\."publisherNamespaceId", message\."profileNamespaceId"/,

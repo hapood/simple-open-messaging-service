@@ -298,9 +298,23 @@ export async function readNodeProfileAudit(client, node) {
       ];
     },
   );
+  const snapshots = new Map();
+  for (const [key, snapshot] of entries) {
+    const existing = snapshots.get(key);
+    if (existing) {
+      if (
+        existing.displayName !== snapshot.displayName ||
+        existing.bio !== snapshot.bio ||
+        existing.avatarDigest !== snapshot.avatarDigest
+      )
+        throw new Error(`conflicting immutable profile revision: ${key}`);
+      continue;
+    }
+    snapshots.set(key, snapshot);
+  }
   const now = Date.now();
   return {
-    versions: new Map(entries),
+    versions: snapshots,
     intentRefs: intents.rows
       .filter(
         (row) =>

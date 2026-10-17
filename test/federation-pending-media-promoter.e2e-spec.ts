@@ -76,13 +76,16 @@ describe('FederationPendingMediaPromoter', () => {
           threadId: thread.id,
           seq: 1,
           originSeq: 7,
-          sourceNamespaceId: namespace.id,
+          publisherNamespaceId: namespace.id,
           creatorAccount: 'alice',
 
           profileNamespaceId: namespace.id,
           contentType: 'IMAGE',
           content: JSON.stringify({
             url: `/uploads/msg-assets/aa/aa/${digest}`,
+            name: 'pending.png',
+            w: 1,
+            h: 1,
           }),
           localState: 'STUB',
           updatedAt: now,
@@ -97,7 +100,7 @@ describe('FederationPendingMediaPromoter', () => {
         status: 'downloading',
         fileCnt: 1,
         originDomain: 'peer.test',
-        namespaceId: namespace.id,
+        publisherNamespaceId: namespace.id,
         expectedAuthorizationEpoch: 0,
         updatedAt: now,
       })
@@ -106,13 +109,12 @@ describe('FederationPendingMediaPromoter', () => {
     await database.db.insert(fileSyncProgress).values({
       batchId: pending.batchId,
       digest,
-      direction: 'INBOUND',
       kind: 'IMAGE',
       status: 'SUCCEEDED',
       bytesTotal: 4n,
       bytesReceived: 4n,
       originDomain: 'peer.test',
-      namespaceId: namespace.id,
+      publisherNamespaceId: namespace.id,
     });
 
     await expect(promoter.promote(pending.batchId)).resolves.toEqual({

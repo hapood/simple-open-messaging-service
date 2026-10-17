@@ -153,7 +153,7 @@ describe('client state feed + notification feed', () => {
           namespaceId: 0,
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount,
-          subjectDomain: 'local',
+          subjectNamespaceId: 0,
           body: { status: 'REQUESTED' },
         }),
       );
@@ -170,7 +170,7 @@ describe('client state feed + notification feed', () => {
         namespaceId: 0,
         eventType: 'INCOMING_INVITE_HEAD',
         subjectAccount: '',
-        subjectDomain: 'local',
+        subjectNamespaceId: 0,
         body: { readThroughFeedId: 0 },
       }),
     );

@@ -50,6 +50,24 @@ let feedPort: MessagePort | null = null;
  *  checks this after committing a page and before starting the next: a page
  *  already in flight finishes and commits; this only prevents the NEXT page. */
 let openThreadId: number | null = null;
+// The database executor owns this projection of committed lifecycle changes.
+// A departure invalidates flights even if rejoining happens before they return.
+const metaLifecycle = new Map<
+  number,
+  { active: boolean; generation: number }
+>();
+storage.threadFeedCommitted$.subscribe(({ userId, states }) => {
+  for (const state of states) {
+    const previous = metaLifecycle.get(state.threadId);
+    const active =
+      state.type === 'GROUP' && state.conversationState === 'ACTIVE';
+    metaLifecycle.set(state.threadId, {
+      active,
+      generation: (previous?.generation ?? 0) + (active ? 0 : 1),
+    });
+  }
+  postMessage({ type: 'thread-feed-committed', userId, states });
+});
 
 /** Per-thread Group Meta drains. Different threads run concurrently; the same
  *  thread coalesces (one trailing round keeps the newest target). */
@@ -76,6 +94,8 @@ async function acquireUserStorage(userId: string): Promise<StorageRelease> {
       await waitForStorageIdle();
       if (openedUserId !== null) await storage.close();
       await storage.openForUser(userId);
+      metaLifecycle.clear();
+      openThreadId = null;
       openedUserId = userId;
     }
     activeStorageUsers += 1;
@@ -349,12 +369,6 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                     '[thread-feed] wake failed; next wake retries',
                     result.error,
                   );
-                if (feedPort === port)
-                  postMessage({
-                    type: 'thread-feed-committed',
-                    userId: Number(data.userId),
-                    states: result.states,
-                  });
               } catch (error) {
                 console.warn(
                   '[thread-feed] wake unavailable; next wake retries',
@@ -475,6 +489,10 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
           if (!groupMetaFlight) {
             groupMetaFlight = new TrailingSingleFlight<string>(
               async (target) => {
+                const generation = metaLifecycle.get(threadId)?.generation ?? 0;
+                const metaGuard = () =>
+                  metaLifecycle.get(threadId)?.active !== false &&
+                  (metaLifecycle.get(threadId)?.generation ?? 0) === generation;
                 try {
                   const committed = await syncGroupMetaThread(
                     storage,
@@ -482,6 +500,7 @@ addEventListener('message', ({ data }: MessageEvent<Request>) => {
                     threadId,
                     target,
                     guard,
+                    metaGuard,
                   );
                   if (committed.threadIds.length)
                     postMessage({

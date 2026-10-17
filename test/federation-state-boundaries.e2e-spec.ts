@@ -1,11 +1,11 @@
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
 import { FederationThreadSyncStateService } from '../src/federation/federation-thread-sync-state.service.js';
 import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
-import type { AccountTarget } from '../src/user/account-address.js';
+import type { AccountSubjectAddress } from '../src/user/account-address.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq, or, sql } from 'drizzle-orm';
-import { DatabaseModule } from '../src/database/database.module.js';
+import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { MessageThreadType } from '../src/database/enums.js';
 import {
@@ -18,13 +18,8 @@ import {
   messageThread,
   accountThreadState,
 } from '../src/database/schema.js';
-import { RelationshipService } from '../src/relationship/relationship.service.js';
 import { RelationshipIntentService } from '../src/relationship/relationship-intent.service.js';
-import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
-import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
-import { ReceivedUserIntentService } from '../src/user/p2p-intent/received/received-user-intent.service.js';
 import { UserIntentService } from '../src/user/p2p-intent/authored/user-intent.service.js';
-import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { findP2PRelationship, seedFederatedPeerNamespace } from './seed.js';
 
 describe('federation directed-state boundaries', () => {
@@ -50,38 +45,17 @@ describe('federation directed-state boundaries', () => {
     );
   }
 
-  let relationships: RelationshipService;
   let relationshipIntents: RelationshipIntentService;
   let userIntents: UserIntentService;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
-      imports: [DatabaseModule],
+      imports: [AppModule],
     }).compile();
     database = mod.get(DatabaseService);
-    relationshipIntents = new RelationshipIntentService();
-    relationships = new RelationshipService(
-      database,
-      new ClientStateFeedService(database, {
-        onStateFeedUpdated: () => undefined,
-      } as never),
-      relationshipIntents,
-    );
-    Object.assign(relationships, {
-      previews: new ThreadPreviewService(database),
-    });
-    // The local authoring instrument is the production intent family.
-    userIntents = new UserIntentService({
-      database,
-      clientFeed: new ClientStateFeedService(database, {
-        onStateFeedUpdated: () => undefined,
-      } as never),
-      peerFeed: {
-        lockOutboundStateFeedNamespacesInTx: async () => undefined,
-      } as never,
-      federation: { pushStateFeedNamespaces: async () => undefined },
-      namespaces: new FederationNamespaceService(database),
-    });
+    // Compile the real dependency graph without starting schedulers or listeners.
+    relationshipIntents = mod.get(RelationshipIntentService);
+    userIntents = mod.get(UserIntentService);
   });
 
   afterAll(async () => mod.close());
@@ -108,7 +82,7 @@ describe('federation directed-state boundaries', () => {
 
   async function seedIntents(
     localId: number,
-    peerId: AccountTarget,
+    peerId: AccountSubjectAddress,
     rows: Array<{
       author: 'local' | 'peer';
       status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
@@ -141,6 +115,7 @@ describe('federation directed-state boundaries', () => {
           row.author === 'local' ? peerId.account : localIdentity!.account,
         receiverNamespaceId: row.author === 'local' ? peerId.namespaceId : 0,
         profileNamespaceId: 0,
+        profileRev: 0,
         status: row.status,
         messageEndSeq: row.messageEndSeq ?? 0,
         tombstoneEndSeq: row.tombstoneEndSeq ?? 0,
@@ -156,10 +131,7 @@ describe('federation directed-state boundaries', () => {
   /** Every production path that authors an ACCEPTED direction also mints the
    * retained P2P shell; raw SQL seeds skip it, so revocation-route tests
    * restore the invariant explicitly. */
-  async function seedThreadShell(
-    localId: number,
-    peer: { account: string; domain: string; namespaceId: number },
-  ) {
+  async function seedThreadShell(localId: number, peer: AccountSubjectAddress) {
     const relationship = await findP2PRelationship(database.db, localId, peer);
     const [thread] = await database.db
       .insert(messageThread)
@@ -362,29 +334,7 @@ describe('federation directed-state boundaries', () => {
       },
     ]);
     await seedThreadShell(local.id, peer);
-    const feed = new ClientStateFeedService(database, {
-      onStateFeedUpdated: () => undefined,
-    } as never);
-    const stateFeed = {
-      lockOutboundStateFeedNamespacesInTx: async () => undefined,
-      writeManyInTx: async () => new Map(),
-    };
-    const receivedUserIntents = new ReceivedUserIntentService({
-      database,
-      clientFeed: feed,
-      peerFeed: stateFeed as never,
-      federation: { pushStateFeedNamespaces: async () => undefined },
-      userIntents,
-    });
-    const consumer = Object.create(
-      FederationStateFeedConsumerService.prototype,
-    ) as FederationStateFeedConsumerService;
-    Object.assign(consumer, {
-      receivedUserIntents,
-      stateFeed,
-      config: { domain: 'local.test' },
-      logger: { error: () => undefined, warn: () => undefined },
-    });
+    const consumer = mod.get(FederationStateFeedConsumerService);
     await database.db.transaction((tx) =>
       consumer.applyPageInTx(tx, peer.domain, peer.namespaceId, {
         items: [
@@ -395,7 +345,7 @@ describe('federation directed-state boundaries', () => {
             feedId: '1',
             body: {
               status: 'REVOKED',
-              namespaceId: peer.namespaceId,
+              namespaceId: 0,
               profileRev: 1,
               note: '',
               requestedAt: null,
@@ -405,6 +355,7 @@ describe('federation directed-state boundaries', () => {
         ],
         scannedThrough: '1',
         stateFeedEndId: '1',
+        profileNamespaceFeedEndId: '0',
         hasMore: false,
       }),
     );

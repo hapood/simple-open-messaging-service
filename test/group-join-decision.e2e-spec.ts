@@ -4,7 +4,6 @@ import {
   type PairAddressScope,
 } from '../src/common/locks/relationship-pair-business-lock.js';
 import { businessAccountScopeKey } from '../src/common/locks/account-business-lock.js';
-import { localIdentityDomain } from './support/local-domain.js';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../src/federation/federation-history-access-setting.js';
 import {
   admitGroupMembershipProjectionFanoutInTx,
@@ -54,6 +53,7 @@ import { ThreadFeedService } from '../src/message/thread-feed.service.js';
 import { lockBusinessAccountsInTx } from '../src/common/locks/account-business-lock.js';
 import { readCurrentGroupMemberInTx } from '../src/group/meta/current-group-roster.js';
 import { findGroupRelationship, seedUser } from './seed.js';
+import type { AccountSubjectAddress } from '../src/user/account-address.js';
 
 function deferred() {
   let resolve!: () => void;
@@ -231,7 +231,6 @@ describe('group join decision', () => {
         managerUserId: owner.id,
         target: {
           account: applicant.account,
-          domain: localIdentityDomain(),
           namespaceId: 0,
         },
         scope: 'APPLICATION' as const,
@@ -503,7 +502,10 @@ describe('group join decision', () => {
       };
       const domain = `${prefix}.test`;
       const namespaceId = await seedFederatedPeerNamespace(database.db, domain);
-      const member = { account: `${prefix}-member`, domain, namespaceId };
+      const member: AccountSubjectAddress = {
+        account: `${prefix}-member`,
+        namespaceId,
+      };
       await database.db
         .update(tables.messageThread)
         .set({ curSeq: 3 })
@@ -523,7 +525,6 @@ describe('group join decision', () => {
       if (existingFloor !== null)
         await database.db.insert(tables.threadAudience).values({
           threadId: group.threadId,
-          targetDomain: domain,
           targetNamespaceId: namespaceId,
           localUserId: null,
           groupMetaVisibleAfter: 0,
@@ -564,15 +565,13 @@ describe('group join decision', () => {
         await services.mutations.writeGroupRequestEffectsInTx(
           tx,
           group.threadId,
-          group.threadId,
           member,
-          [],
           'REQUESTED',
           'APPLICATION',
           true,
         );
       });
-      const { _pair } = await findGroupRelationship(
+      const { pair: _pair } = await findGroupRelationship(
         database.db,
         group.threadId,
         member,
@@ -1544,7 +1543,10 @@ describe('group join decision', () => {
     };
     const domain = `${prefix}.test`;
     const namespaceId = await seedFederatedPeerNamespace(database.db, domain);
-    const member = { account: `${prefix}-member`, domain, namespaceId };
+    const member: AccountSubjectAddress = {
+      account: `${prefix}-member`,
+      namespaceId,
+    };
     await database.db.insert(tables.profileTable).values({
       account: member.account,
       publisherNamespaceId: member.namespaceId,
@@ -1579,15 +1581,13 @@ describe('group join decision', () => {
       await services.mutations.writeGroupRequestEffectsInTx(
         tx,
         group.threadId,
-        group.threadId,
         member,
-        [],
         'REQUESTED',
         'APPLICATION',
         true,
       );
     });
-    const { _pair } = await findGroupRelationship(
+    const { pair: _pair } = await findGroupRelationship(
       database.db,
       group.threadId,
       member,
@@ -1668,7 +1668,6 @@ describe('group join decision', () => {
       kind: 'SET_ROLE',
       target: {
         account: f.applicant.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       },
       role: GroupRole.ADMIN,
@@ -1691,7 +1690,6 @@ describe('group join decision', () => {
       managerUserId: admin.id,
       target: {
         account: junior.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       },
       scope: 'MEMBER',
@@ -1706,7 +1704,6 @@ describe('group join decision', () => {
           managerUserId: admin.id,
           target: {
             account: target.account,
-            domain: localIdentityDomain(),
             namespaceId: 0,
           },
           scope: 'MEMBER',
@@ -1724,7 +1721,6 @@ describe('group join decision', () => {
       managerUserId: f.owner.id,
       target: {
         account: admin.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       },
       scope: 'MEMBER',
@@ -1797,7 +1793,7 @@ describe('group join decision', () => {
     // The invitee's own outstanding invitation already occupies a slot, so
     // completing it succeeds at the limit (idempotent retries stay safe).
     const invited = await fixture();
-    const { _pair } = await findGroupRelationship(
+    const { pair: _pair } = await findGroupRelationship(
       database.db,
       invited.group.threadId,
       invited.applicant.id,
@@ -1876,7 +1872,7 @@ describe('group join decision', () => {
     // Seed the entry state directly: the group authored an outstanding
     // invitation (side A REQUESTED) and the invitee has already acked (side B
     // ACCEPTED) without any legacy activation having run.
-    const { _pair } = await findGroupRelationship(
+    const { pair: _pair } = await findGroupRelationship(
       database.db,
       f.group.threadId,
       f.applicant.id,
@@ -1945,7 +1941,6 @@ describe('group join decision', () => {
       decision: 'REQUESTED',
       target: {
         account: f.applicant.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       },
       note: 'ignored',
@@ -1980,7 +1975,7 @@ describe('group join decision', () => {
       undefined,
     );
     const f = await fixture();
-    const { _pair } = await findGroupRelationship(
+    const { pair: _pair } = await findGroupRelationship(
       database.db,
       f.group.threadId,
       f.applicant.id,
@@ -2016,7 +2011,6 @@ describe('group join decision', () => {
       decision: 'REQUESTED',
       target: {
         account: f.applicant.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       },
       note: 'ignored',
@@ -2071,7 +2065,6 @@ describe('group join decision', () => {
       decision: 'REQUESTED',
       target: {
         account: invitee.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       },
       note: 'join us',
@@ -2275,7 +2268,6 @@ describe('group join decision', () => {
       decision: 'REQUESTED',
       target: {
         account: f.applicant.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       },
       note: 'again',
@@ -2307,7 +2299,6 @@ describe('group join decision', () => {
       decision: 'REQUESTED',
       target: {
         account: g.applicant.account,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       },
     });
@@ -2337,7 +2328,6 @@ describe('group join decision', () => {
         decision: 'REQUESTED',
         target: {
           account: ghost,
-          domain: localIdentityDomain(),
           namespaceId: 0,
         },
       }),
@@ -2360,7 +2350,6 @@ describe('group join decision', () => {
         decision: 'REQUESTED',
         target: {
           account: f.applicant.account,
-          domain: localIdentityDomain(),
           namespaceId: 0,
         },
       }),
@@ -2386,7 +2375,6 @@ describe('group join decision', () => {
         decision: 'REQUESTED',
         target: {
           account: g.applicant.account,
-          domain: localIdentityDomain(),
           namespaceId: 0,
         },
       }),
@@ -2577,7 +2565,6 @@ describe('group join decision', () => {
         decision: 'REQUESTED',
         target: {
           account: f.member.account,
-          domain: localIdentityDomain(),
           namespaceId: 0,
         },
         note: 'join us',
@@ -2637,7 +2624,6 @@ describe('group join decision', () => {
         decision: 'REQUESTED',
         target: {
           account: f.member.account,
-          domain: localIdentityDomain(),
           namespaceId: 0,
         },
         note: 'join us',
@@ -2687,7 +2673,7 @@ describe('group join decision', () => {
         memberUserId: f.member.id,
         decision: 'REVOKED',
       });
-      const { _pair } = await findGroupRelationship(
+      const { pair: _pair } = await findGroupRelationship(
         database.db,
         f.group.threadId,
         f.member.id,
@@ -2728,7 +2714,6 @@ describe('group join decision', () => {
         decision: 'REQUESTED',
         target: {
           account: f.member.account,
-          domain: localIdentityDomain(),
           namespaceId: 0,
         },
         note: 'join us',
@@ -2738,7 +2723,7 @@ describe('group join decision', () => {
         memberUserId: f.member.id,
         decision: 'REVOKED',
       });
-      const { _pair } = await findGroupRelationship(
+      const { pair: _pair } = await findGroupRelationship(
         database.db,
         f.group.threadId,
         f.member.id,
@@ -2779,7 +2764,6 @@ describe('group join decision', () => {
         managerUserId: f.owner.id,
         target: {
           account: f.member.account,
-          domain: localIdentityDomain(),
           namespaceId: 0,
         },
         scope: 'APPLICATION',
@@ -2884,7 +2868,6 @@ describe('group join decision', () => {
         decision: 'REQUESTED',
         target: {
           account: f.member.account,
-          domain: localIdentityDomain(),
           namespaceId: 0,
         },
       });

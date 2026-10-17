@@ -1,9 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { BusinessCode } from '../src/common/business-code.js';
-import { message } from '../src/database/schema.js';
+import {
+  message,
+  forwardMessage,
+  forwardBundle,
+} from '../src/database/schema.js';
 import type { ForwardWireBundle } from '../src/forward/forward-bundle.service.js';
 import {
   bootFederationPair,
@@ -28,6 +32,12 @@ describe('federated history-forward reply references', () => {
 
   beforeAll(async () => {
     ({ appA, appB, proxy } = await bootFederationPair());
+    await appA.database.execute(
+      sql`SELECT setval(pg_get_serial_sequence('"ForwardBundle"', 'id'), ${9_007_199_254_740_993n}::bigint, false)`,
+    );
+    await appB.database.execute(
+      sql`SELECT setval(pg_get_serial_sequence('"ForwardBundle"', 'id'), ${9_007_199_254_741_993n}::bigint, false)`,
+    );
     const alice = await registerAndLogin(appA, 'bundlealice', 'Bundle Alice');
     const bob = await registerAndLogin(appB, 'bundlebob', 'Bundle Bob');
     tokenA = alice.token;
@@ -112,7 +122,7 @@ describe('federated history-forward reply references', () => {
       where: (row, { eq }) => eq(row.sourceBundleId, bundleId),
     });
     expect(local).toBeDefined();
-    const imported = await vi.waitFor(
+    const { bundle: imported, seq: remoteSeq } = await vi.waitFor(
       async () => {
         const row = await appB.database.query.message.findFirst({
           where: and(
@@ -120,23 +130,51 @@ describe('federated history-forward reply references', () => {
             eq(message.originSeq, sent.body.data.seq),
             eq(message.contentType, 'FORWARD'),
           ),
-          with: { forwardMessages: { with: { forwardBundle: true } } },
         });
         expect(row?.localState).toBe('READY');
-        expect(row?.forwardMessages).toHaveLength(1);
-        return row!.forwardMessages[0].forwardBundle;
+        const bindings = await appB.database
+          .select({ bundle: forwardBundle })
+          .from(forwardMessage)
+          .innerJoin(
+            forwardBundle,
+            eq(forwardBundle.id, forwardMessage.bundleId),
+          )
+          .where(eq(forwardMessage.messageId, row!.id));
+        expect(bindings).toHaveLength(1);
+        return { bundle: bindings[0].bundle, seq: row!.seq };
       },
       { timeout: 15_000, interval: 100 },
     );
     // Compare persisted content as well as public wire views: projecting both reads
     // to the wire alone hid the original local quote-coordinate leak.
     expect(imported.messages).toEqual(local!.messages);
+    expect(typeof local!.id).toBe('bigint');
+    expect(typeof imported.id).toBe('bigint');
+    expect(local!.id).toBeGreaterThan(BigInt(Number.MAX_SAFE_INTEGER));
+    expect(imported.id).not.toBe(local!.id);
+    const page = await request(appB.baseUrl)
+      .post('/api/v1/query-messages')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({
+        threadId: threadB,
+        after: remoteSeq - 1,
+        through: remoteSeq,
+        take: 1,
+      });
+    expect(page.body.code).toBe(BusinessCode.OK);
+    const projectedCard = JSON.parse(page.body.data.messages[0].content);
+    expect(projectedCard.bundleId).toBe(bundleId);
+    expect(projectedCard.bundleId).toMatch(/^[a-f0-9]{64}$/);
+    const localIdRead = await request(appB.baseUrl)
+      .get(`/api/v1/forward-bundles/${imported.id}`)
+      .set('Authorization', `Bearer ${tokenB}`);
+    expect(localIdRead.body.code).toBe(BusinessCode.NOT_FOUND);
     const [localView, remoteView] = await Promise.all([
       request(appA.baseUrl)
         .get(`/api/v1/forward-bundles/${bundleId}`)
         .set('Authorization', `Bearer ${tokenA}`),
       request(appB.baseUrl)
-        .get(`/api/v1/forward-bundles/${imported.sourceBundleId}`)
+        .get(`/api/v1/forward-bundles/${projectedCard.bundleId}`)
         .set('Authorization', `Bearer ${tokenB}`),
     ]);
     expect(localView.body.code).toBe(BusinessCode.OK);
@@ -144,6 +182,170 @@ describe('federated history-forward reply references', () => {
     expect(remoteView.body.data.messages).toEqual(localView.body.data.messages);
     return local!.messages as ForwardWireBundle['messages'];
   }
+
+  it('round trips nested private bigint references without exposing them in client cards or closures', async () => {
+    const first = await send(
+      appA,
+      tokenA,
+      threadA,
+      `bigint-nested-${randomUUID()}`,
+    );
+    let sourceSeq = first.seq;
+    for (let layer = 0; layer < 3; layer++) {
+      const [
+        sender,
+        receiver,
+        senderToken,
+        receiverToken,
+        sourceThread,
+        receiverThread,
+      ] =
+        layer % 2 === 0
+          ? ([appA, appB, tokenA, tokenB, threadA, threadB] as const)
+          : ([appB, appA, tokenB, tokenA, threadB, threadA] as const);
+      const sent = await request(sender.baseUrl)
+        .post('/api/v1/send-forward')
+        .set('Authorization', `Bearer ${senderToken}`)
+        .send({
+          threadId: sourceThread,
+          sourceMessages: [{ threadId: sourceThread, seq: sourceSeq }],
+          mode: 'HISTORY',
+          clientMessageId: randomUUID(),
+        });
+      expect(sent.body.code, JSON.stringify(sent.body)).toBe(BusinessCode.OK);
+      const wireId = JSON.parse(sent.body.data.content).bundleId;
+      const carrier = await vi.waitFor(
+        async () => {
+          const row = await receiver.database.query.message.findFirst({
+            where: and(
+              eq(message.threadId, receiverThread),
+              eq(message.originSeq, sent.body.data.seq),
+              eq(message.contentType, 'FORWARD'),
+              eq(
+                message.creatorAccount,
+                layer % 2 === 0 ? 'bundlealice' : 'bundlebob',
+              ),
+            ),
+          });
+          expect(row?.localState).toBe('READY');
+          const bindings = await receiver.database
+            .select({ bundleId: forwardMessage.bundleId, forwardBundle })
+            .from(forwardMessage)
+            .innerJoin(
+              forwardBundle,
+              eq(forwardBundle.id, forwardMessage.bundleId),
+            )
+            .where(eq(forwardMessage.messageId, row!.id));
+          expect(bindings).toHaveLength(1);
+          return { ...row!, forwardMessages: bindings };
+        },
+        { timeout: 15_000, interval: 100 },
+      );
+      const binding = carrier.forwardMessages[0];
+      expect(typeof binding.bundleId).toBe('bigint');
+      expect(binding.bundleId).toBeGreaterThan(BigInt(Number.MAX_SAFE_INTEGER));
+      if (layer > 0) {
+        const snapshots = binding.forwardBundle.messages;
+        if (!Array.isArray(snapshots))
+          throw new Error('stored snapshots must be an array');
+        expect(snapshots[0].childBundleId).toMatch(/^[1-9][0-9]*$/);
+        expect(BigInt(snapshots[0].childBundleId)).toBeGreaterThan(
+          BigInt(Number.MAX_SAFE_INTEGER),
+        );
+      }
+      const page = await request(receiver.baseUrl)
+        .post('/api/v1/query-messages')
+        .set('Authorization', `Bearer ${receiverToken}`)
+        .send({
+          threadId: receiverThread,
+          after: carrier.seq - 1,
+          through: carrier.seq,
+          take: 1,
+        });
+      expect(page.body.code).toBe(BusinessCode.OK);
+      expect(JSON.parse(page.body.data.messages[0].content).bundleId).toBe(
+        wireId,
+      );
+      const view = await request(receiver.baseUrl)
+        .get(`/api/v1/forward-bundles/${wireId}`)
+        .set('Authorization', `Bearer ${receiverToken}`);
+      expect(view.body.code, JSON.stringify(view.body)).toBe(BusinessCode.OK);
+      expect(view.body.data.id).toBe(wireId);
+      expect(view.body.data.children).toHaveLength(layer);
+      for (const bundle of [view.body.data, ...view.body.data.children]) {
+        expect(bundle.id).toMatch(/^[a-f0-9]{64}$/);
+        for (const snapshot of bundle.messages) {
+          if (snapshot.childBundleId !== undefined) {
+            expect(snapshot.childBundleId).toMatch(/^[a-f0-9]{64}$/);
+            expect(JSON.parse(snapshot.content).bundleId).toBe(
+              snapshot.childBundleId,
+            );
+          }
+        }
+      }
+      sourceSeq = carrier.seq;
+    }
+    // DIRECT can retain a maximum-depth card and must reuse its existing binding.
+    const source = await appB.database.query.message.findFirst({
+      where: and(eq(message.threadId, threadB), eq(message.seq, sourceSeq)),
+    });
+    expect(JSON.parse(source!.content).depth).toBe(3);
+    const sourceBinding = await appB.database.query.forwardMessage.findFirst({
+      where: eq(forwardMessage.messageId, source!.id),
+    });
+    const before = await appB.database.query.forwardBundle.findMany({
+      columns: { id: true },
+    });
+    const direct = await request(appB.baseUrl)
+      .post('/api/v1/send-forward')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({
+        threadId: threadB,
+        sourceMessages: [{ threadId: threadB, seq: sourceSeq }],
+        mode: 'DIRECT',
+        clientMessageId: randomUUID(),
+      });
+    expect(direct.body.code, JSON.stringify(direct.body)).toBe(BusinessCode.OK);
+    expect(direct.body.data.contentType).toBe('FORWARD');
+    expect(direct.body.data.content).toBe(source!.content);
+    const after = await appB.database.query.forwardBundle.findMany({
+      columns: { id: true },
+    });
+    expect(after).toHaveLength(before.length);
+    const directRow = await appB.database.query.message.findFirst({
+      where: and(
+        eq(message.threadId, threadB),
+        eq(message.seq, direct.body.data.seq),
+      ),
+    });
+    const directBinding = await appB.database.query.forwardMessage.findFirst({
+      where: eq(forwardMessage.messageId, directRow!.id),
+    });
+    expect(directBinding?.bundleId).toBe(sourceBinding!.bundleId);
+    await vi.waitFor(
+      async () => {
+        const row = await appA.database.query.message.findFirst({
+          where: and(
+            eq(message.threadId, threadA),
+            eq(message.originSeq, direct.body.data.seq),
+            eq(message.creatorAccount, 'bundlebob'),
+            eq(message.contentType, 'FORWARD'),
+          ),
+        });
+        expect(row?.localState).toBe('READY');
+        expect(JSON.parse(row!.content)).toMatchObject({
+          bundleId: JSON.parse(source!.content).bundleId,
+          depth: 3,
+        });
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    const directView = await request(appA.baseUrl)
+      .get(`/api/v1/forward-bundles/${JSON.parse(source!.content).bundleId}`)
+      .set('Authorization', `Bearer ${tokenA}`);
+    expect(directView.body.code).toBe(BusinessCode.OK);
+    expect(directView.body.data.children).toHaveLength(2);
+  }, 90_000);
 
   it('rejects an explicit zero reference instead of creating a digestless reply', async () => {
     const text = `invalid-zero-${randomUUID()}`;

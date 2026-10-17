@@ -270,7 +270,12 @@ export class FederationMessageFeedService {
                   includeSelf
                     ? undefined
                     : groupQueryDirection === 'MIRROR_TO_ORIGIN'
-                      ? eq(message.profileNamespaceId, 0)
+                      ? and(
+                          // Namespace zero is relative to the stored publisher:
+                          // an origin-authored mirrored copy also has subject zero.
+                          eq(message.profileNamespaceId, 0),
+                          eq(message.publisherNamespaceId, 0),
+                        )
                       : ne(message.profileNamespaceId, namespaceId),
                 ),
               )

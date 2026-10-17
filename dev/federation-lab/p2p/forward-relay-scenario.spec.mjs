@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertRelaySnapshot } from './forward-relay-scenario.mjs';
+import {
+  assertRelaySnapshot,
+  readForwardRelayBundle,
+} from './forward-relay-scenario.mjs';
 
 const digest = 'a'.repeat(64);
 const original = {
   messages: [
     {
       id: 1,
-      author: { account: 'bob', domain: 'bravo.test' },
       profile: { displayName: 'Original Bob', avatarDigest: digest },
       contentType: 'PURE_TEXT',
       content: '{"text":"original"}',
@@ -16,6 +18,43 @@ const original = {
   ],
   assets: [{ digest, bytes: 123 }],
 };
+
+test('uses the client carrier projection rather than a mirror-local stored bundle id', async () => {
+  const row = {
+    threadId: 7,
+    seq: 4,
+    content: JSON.stringify({ bundleId: 'local-database-id' }),
+  };
+  const actor = {
+    async post(endpoint, body) {
+      assert.equal(endpoint, '/query-messages');
+      assert.deepEqual(body, { threadId: 7, after: 3, through: 4, take: 1 });
+      return {
+        messages: [{ seq: 4, content: JSON.stringify({ bundleId: digest }) }],
+      };
+    },
+    async forwardBundle(bundleId) {
+      assert.equal(bundleId, digest);
+      return original;
+    },
+  };
+  assert.equal(await readForwardRelayBundle(actor, row), original);
+});
+
+test('does not fall back to a stored bundle id when the carrier is not visible', async () => {
+  const actor = {
+    async post() {
+      return { messages: [] };
+    },
+    async forwardBundle() {
+      assert.fail('invisible carrier must not authorize a bundle');
+    },
+  };
+  await assert.rejects(
+    readForwardRelayBundle(actor, { threadId: 7, seq: 4 }),
+    /must be visible/,
+  );
+});
 
 function nested() {
   return {
@@ -37,12 +76,6 @@ for (const [label, corrupt] of [
     'rewritten profile',
     (bundle) => {
       bundle.children[0].messages[0].profile.displayName = 'Current Bob';
-    },
-  ],
-  [
-    'lost author',
-    (bundle) => {
-      bundle.children[0].messages[0].author.domain = 'alpha.test';
     },
   ],
   [

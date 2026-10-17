@@ -557,6 +557,20 @@ pub(super) fn delete_thread(
         .map_err(|e| format!("commit delete thread: {e}"))
 }
 
+pub(super) fn group_meta_is_active(
+    conn: &Connection,
+    user_id: i64,
+    thread_id: i64,
+) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM threads WHERE user_id=?1 AND thread_id=?2
+           AND kind='GROUP' AND conversation_state='ACTIVE')",
+        params![user_id, thread_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("read group-meta lifecycle: {e}"))
+}
+
 pub(super) fn begin_group_meta_recovery(
     conn: &mut Connection,
     user_id: i64,
@@ -569,6 +583,9 @@ pub(super) fn begin_group_meta_recovery(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+    if !group_meta_is_active(&tx, user_id, thread_id)? {
+        return tx.commit().map_err(|e| e.to_string());
+    }
     tx.execute(
         "DELETE FROM members WHERE user_id=?1 AND thread_id=?2",
         params![user_id, thread_id],

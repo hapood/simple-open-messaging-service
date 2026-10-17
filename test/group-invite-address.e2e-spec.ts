@@ -35,7 +35,6 @@ describe('group invitations by public address', () => {
       .returning();
     const direct = {
       account: 'friend',
-      domain: 'invite-direct.test',
       namespaceId: directNs,
     };
     const decoy = { ...direct, namespaceId: mirrorNs };
@@ -82,11 +81,14 @@ describe('group invitations by public address', () => {
       user: { userId: local.id },
       threadAccess: { threadId: 9, participant: { role: 'OWNER' } },
     } as never;
-    const address = { account: direct.account, domain: direct.domain };
+    const address = {
+      account: direct.account,
+      namespaceId: direct.namespaceId,
+    };
     const result = await controller.inviteUsers(req, {
       groupId: 9,
       users: [address, address],
-    } as never);
+    });
     // The controller dedupes addresses and delegates each unique one to the
     // group intent family, which owns friend resolution under its locks.
     expect(result.invited).toEqual([address]);

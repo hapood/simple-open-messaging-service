@@ -3,6 +3,7 @@ import {
   type PairAddressScope,
 } from '../src/common/locks/relationship-pair-business-lock.js';
 import { businessAccountScopeKey } from '../src/common/locks/account-business-lock.js';
+import type { ProfiledAddress } from '../shared/profiled-address.js';
 import {
   findP2PRelationship,
   seedAcceptedRelationship,
@@ -454,16 +455,20 @@ describe('user intent decision', () => {
           namespaceId: pair.endpointBNamespaceId,
         },
       ] as const
-    ).map((endpoint) => ({
-      account: endpoint.account,
-      profileNamespaceId: endpoint.namespaceId,
-      profileRev:
-        after.intents.find(
-          (intent) =>
-            intent.authorAccount === endpoint.account &&
-            intent.authorNamespaceId === endpoint.namespaceId,
-        )?.profileRev ?? 0,
-    }));
+    ).map(
+      (endpoint) =>
+        ({
+          account: endpoint.account,
+          publisherNamespaceId: endpoint.namespaceId,
+          profileNamespaceId: endpoint.namespaceId,
+          profileRev:
+            after.intents.find(
+              (intent) =>
+                intent.authorAccount === endpoint.account &&
+                intent.authorNamespaceId === endpoint.namespaceId,
+            )?.profileRev ?? 0,
+        }) satisfies ProfiledAddress,
+    );
   }
 
   it('requests a fresh local friendship with shell-only effects', async () => {
@@ -1192,6 +1197,7 @@ describe('user intent decision', () => {
       receiverNamespaceId: decoyNamespaceId,
       status: 'REQUESTED',
       profileNamespaceId: 0,
+      profileRev: 1,
       note: '',
       requestedAt: new Date(),
       expiresAt: new Date(Date.now() + 86_400_000),

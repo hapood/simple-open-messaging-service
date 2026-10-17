@@ -144,6 +144,7 @@ describe('group business scope and content lock ordering', () => {
                 ],
                 scannedThrough: '1',
                 stateFeedEndId: '1',
+                profileNamespaceFeedEndId: '0',
                 hasMore: false,
               });
             }

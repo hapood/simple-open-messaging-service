@@ -20,31 +20,10 @@
     },
     "bundleMessage": {
       "type": "object",
-      "required": [
-        "id",
-        "author",
-        "profile",
-        "contentType",
-        "content",
-        "sentAt"
-      ],
+      "required": ["id", "profile", "contentType", "content", "sentAt"],
       "properties": {
         "id": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
-        },
-        "author": {
-          "type": "object",
-          "properties": {
-            "account": {
-              "$ref": "urn:somfp:v1:common#/$defs/userAccount"
-            },
-            "domain": { "$ref": "urn:somfp:v1:common#/$defs/domain" }
-          },
-          "dependentRequired": {
-            "account": ["domain"],
-            "domain": ["account"]
-          },
-          "additionalProperties": false
         },
         "profile": {
           "type": "object",

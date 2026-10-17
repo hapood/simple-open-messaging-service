@@ -33,7 +33,7 @@
     "test:cross-platform:unit": "vitest run --config vitest.cross-platform.config.ts",
     "pi:webtest": "env -u npm_config_allow_scripts pi --extension ./tools/pi-web-testing/extension/index.ts --skill ./tools/pi-web-testing/skill --tools +browser_driver",
     "test:cross-platform": "tsx test/cross-platform/run.ts",
-    "federation:conformance": "tsx scripts/federation-conformance.ts",
+    "federation:conformance": "tsx tools/federation-conformance/conformance.ts --spec ./spec",
     "db:migrate": "tsx scripts/migrate-db.ts migrate",
     "db:baseline": "tsx scripts/migrate-db.ts baseline",
     "db:status": "tsx scripts/migrate-db.ts status"

@@ -279,8 +279,22 @@ export class AndroidDriver implements PlatformDriver {
       headers: { 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const json = await response.json().catch(() => ({}));
-    if (!response.ok || (json.value?.error && json.value.error !== ''))
+    const json: unknown = await response.json().catch(() => null);
+    const value =
+      json !== null && typeof json === 'object' && 'value' in json
+        ? json.value
+        : undefined;
+    const error =
+      value !== null && typeof value === 'object' && 'error' in value
+        ? value.error
+        : undefined;
+    if (
+      !response.ok ||
+      json === null ||
+      typeof json !== 'object' ||
+      Array.isArray(json) ||
+      error
+    )
       throw new Error(
         `Appium ${method} ${path}: ${JSON.stringify(json).slice(0, 500)}`,
       );

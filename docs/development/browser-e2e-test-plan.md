@@ -744,9 +744,10 @@ items below remain the acceptance definition for future regressions.
 - **7.8** Check long names, long URLs, long messages, emoji, and narrow widths
   inside quote and forward cards. Overflow or overlap is a **BUG**.
 
-- **7.9** Repeat 7.1-7.8 for local and federated sources separately. A quote
-  or forward must preserve the original author account/domain and must not
-  replace a federated origin with the mirror's local sequence or domain.
+- **7.9** Repeat 7.1-7.8 for local and federated sources separately. Quotes
+  preserve their source coordinates. Forward details retain display snapshots
+  only, without source-author account/domain/key fields; the outer message
+  identifies the forwarder. CONTACT_CARD content keeps its target identity.
 - **7.10** Quote a message containing a local mention, a federated mention,
   multiple mentions, and the all-members mention; then send a new reply with and without a
   new mention. Verify source and new mention identities independently.
@@ -756,8 +757,9 @@ items below remain the acceptance definition for future regressions.
   cleanup.
 - **7.12** Direct-forward and history-forward the same text, image, file,
   audio, gallery, video, contact card, quote, and nested forward to local and
-  federated targets. Verify target availability, item count/order, sender
-  identity, attachment state, and domain labels.
+  federated targets. Verify target availability, item count/order, outer sender
+  identity, attachment state, and frozen display snapshots. Inner snapshot rows
+  must not invent author domain labels.
 - **7.13** Build nested forwards at depth 2 and 3 from local and federated
   sources; attempt depth 4 for both and assert a clear limit error with no
   partial message. Withdraw the source at every depth and compare quote versus
@@ -770,29 +772,31 @@ separately, with local and federated authors and recipients. The entry point
 determines the mode, and each mode has its own expected rendering:
 
 - **Direct forward** (context-menu `转发` on one message, mode `DIRECT`):
-  the recipient sees the ordinary message row re-sent as the forwarder. The
-  forwarder is the sole author; no FORWARD card, inner source identity, or
-  detail view is expected on this branch.
+  the recipient sees the message re-sent as the forwarder. An ordinary source
+  remains ordinary; a FORWARD source retains its complete bundle and detail
+  view without increasing depth.
 - **History forward** (multi-select `合并转发`, mode `HISTORY`): the recipient
-  sees the FORWARD card; the identity and avatar assertions below apply to
-  this branch.
+  sees a new FORWARD card wrapping the selected snapshots. The display and avatar
+  assertions below also apply to a DIRECT-preserved FORWARD card.
 
-- **7.14a** (History branch) Distinguish the outer sending user's avatar from
-  each inner source author's avatar. Verify account, domain, and the revision selected by each
-  card's evidence. Include equal account names on different home domains.
+- **7.14a** Distinguish the outer sending user's avatar from each inner snapshot
+  avatar. Inner rows show frozen names and avatars without an author address or
+  profile lookup. Include equal display names and avatars; they must not merge
+  independent rows into an inferred sender group.
 - **7.14b** Inspect both the collapsed card and opened history/detail view,
   including depth 2/3. Check real image loading, not only an accessible image
   label that can also describe an SVG fallback.
-- **7.14c** Repeat with a warm profile cache and a fresh client cache whose
-  profile becomes available later. Keep the card open during completion;
-  verify the correct avatar appears without reopening or reloading.
+- **7.14c** Repeat with warm and fresh client media caches. Keep the detail view
+  open while snapshot avatar bytes load through the outer message's resource
+  authorization. Verify the captured avatar appears without a source-author
+  profile request or reopening the view.
 - **7.14d** Change the source author's profile before and after forwarding.
-  Judge each surface against its selected revision; an immutable historical
-  reference need not adopt the latest revision. Test a revision with no avatar
-  and confirm the generated fallback replaces any previously rendered image.
+  New HISTORY snapshots use the source message's exact selected profile; later
+  profile changes do not rewrite an existing bundle. DIRECT retains an existing
+  FORWARD bundle unchanged. A snapshot without an avatar uses a display fallback.
 - **7.14e** Scroll the card offscreen and back, switch conversations, open and
   close details repeatedly, and reload. Reused views must not retain another
-  author's image, name, or domain. Include narrow layouts and a recipient who
+  snapshot's image or name. Include narrow layouts and a recipient who
   has no direct friendship with the original author but may view the forward.
 - **7.14f** Repeat the applicable withdrawal, moderation, and access-loss checks
   from 7.7/6.12b; record the permitted snapshot behavior separately from live

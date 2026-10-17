@@ -635,32 +635,7 @@ async fn open_one_stream(
                     if let Some(error) = &result.error {
                         warn!("thread feed wake failed; next wake retries: {error}");
                     }
-                    for alias in result.alias_events(user_id) {
-                        let _ = feed_app.emit(
-                            "soms-sse-event",
-                            SseEventPayload {
-                                event: "THREAD_ALIAS_APPLIED".into(),
-                                status: 0,
-                                message: "thread alias applied".into(),
-                                data: alias,
-                            },
-                        );
-                    }
-                    // Local completion, not a server SSE event. The renderer applies the
-                    // committed states incrementally, exactly like the browser worker's
-                    // `thread-feed-committed` event.
-                    let _ = feed_app.emit(
-                        "soms-sse-event",
-                        SseEventPayload {
-                            event: "LOCAL_THREAD_FEED_COMMITTED".into(),
-                            status: 0,
-                            message: "local data committed".into(),
-                            data: serde_json::json!({
-                                "userId": user_id,
-                                "states": result.states,
-                            }),
-                        },
-                    );
+
                 }
                 Err(error) => warn!("thread feed wake unavailable; next wake retries: {error}"),
             }

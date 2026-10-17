@@ -25,6 +25,9 @@ import { seedFederatedPeerNamespace } from './seed.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
 import { readGroupMetaPageInTx } from '../src/group/meta/group-meta-page.js';
 import { ClientGroupMetaFeedService } from '../src/client-state-feed/client-group-meta-feed.service.js';
+import { FederationGroupMetaClient } from '../src/federation/federation-group-meta-client.service.js';
+import { FederationThreadMetaRoundExecutorService } from '../src/federation/federation-thread-meta-round-executor.service.js';
+import { assertFederationWireSchema } from './support/federation-wire-schema.js';
 
 describe('canonical Group Meta feed', () => {
   const suffix = Date.now().toString(36);
@@ -71,7 +74,6 @@ describe('canonical Group Meta feed', () => {
     ownerUserId = owner.id;
     await database.db.insert(profileTable).values({
       account: ownerAccount,
-      namespaceId: 0,
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,
@@ -106,8 +108,8 @@ describe('canonical Group Meta feed', () => {
       established: true,
     });
 
-    await authorizePeer(peerDomain, peerNamespaceId, memberAccount);
-    await authorizePeer(otherPeerDomain, otherPeerNamespaceId, observerAccount);
+    await authorizePeer(peerNamespaceId, memberAccount);
+    await authorizePeer(otherPeerNamespaceId, observerAccount);
   });
 
   beforeEach(async () => {
@@ -137,7 +139,6 @@ describe('canonical Group Meta feed', () => {
   });
 
   async function authorizePeer(
-    domain: string,
     namespaceId: number,
     remoteAccount: string,
   ): Promise<void> {
@@ -171,7 +172,6 @@ describe('canonical Group Meta feed', () => {
       expiresAt: null,
     });
     await database.db.insert(threadAudience).values({
-      targetDomain: domain,
       targetNamespaceId: namespaceId,
       threadId,
       messageAccessAfterSeq: 0,
@@ -183,11 +183,12 @@ describe('canonical Group Meta feed', () => {
       database,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
     );
     await database.db.insert(profileTable).values(
       [1, 2, 3].map((profileRev) => ({
         account: groupAccount,
-        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev,
@@ -436,6 +437,119 @@ describe('canonical Group Meta feed', () => {
       expect(profile).not.toHaveProperty('namespaceId');
     },
   );
+
+  it('passes actual full and delta producer pages through the published schema and consumer', async () => {
+    await database.db.transaction(async (tx) => {
+      await reconcileDesired(tx, [owner(), member()]);
+      await feed.reconcileAnnouncementInTx(tx, groupId, 'Wire contract');
+    });
+    await database.db.transaction((tx) => reconcileDesired(tx, [owner()]));
+    const operations = new Set<string>();
+    const client = new FederationGroupMetaClient(
+      {
+        get: async (path: string) => {
+          const query = new URL(path, 'https://publisher.invalid').searchParams;
+          const page = await publisher.serve(
+            peerNamespaceId,
+            query.get('account')!,
+            query.get('mode') === 'full' ? 'full' : 'delta',
+            Number(query.get('after')),
+            Number(query.get('take')),
+            Number(query.get('through')),
+          );
+          assertFederationWireSchema('urn:somfp:v1:group-meta', page);
+          return JSON.parse(JSON.stringify(page));
+        },
+      } as never,
+      {
+        runWithRetry: (
+          _domain: string,
+          _name: string,
+          operation: () => Promise<unknown>,
+        ) => operation(),
+      } as never,
+    );
+    for (const mode of ['full', 'delta'] as const) {
+      const page = await client.fetchPage(peerDomain, {
+        account: groupAccount,
+        mode,
+        after: 0,
+        through: 5,
+      });
+      for (const item of page.items) operations.add(item.operation);
+      expect(page.scannedThrough).toBe(5);
+      expect(page.hasMore).toBe(false);
+    }
+    expect([...operations].sort()).toEqual([
+      'GROUP_ANNOUNCEMENT',
+      'GROUP_PROFILE',
+      'MEMBER_DEPART',
+      'MEMBER_UPSERT',
+    ]);
+    const [mirror] = await database.db
+      .insert(messageThread)
+      .values({
+        type: MessageThreadType.GROUP,
+        groupAccount,
+        groupDomain: peerDomain,
+        authorityNamespaceId: peerNamespaceId,
+        federationRoundsEnabled: true,
+        updatedAt: new Date(),
+      })
+      .returning();
+    try {
+      await database.db.insert(groupMeta).values({
+        threadId: mirror.id,
+        metaTargetId: 5,
+        metaRecoveryThroughId: 5,
+      });
+      const executor = new FederationThreadMetaRoundExecutorService(
+        database,
+        client,
+        {} as never,
+        { resolveDemand: async () => undefined } as never,
+        {} as never,
+      );
+      expect(await executor.run(mirror.id, peerDomain, peerNamespaceId)).toBe(
+        false,
+      );
+      const state = await database.db.query.groupMeta.findFirst({
+        where: eq(groupMeta.threadId, mirror.id),
+      });
+      expect(state).toMatchObject({
+        metaProcessedThroughId: 5,
+        metaRecoveryThroughId: null,
+        announcementText: 'Wire contract',
+      });
+      const facts = await database.db.query.groupMetaMemberFeed.findMany({
+        where: eq(groupMetaMemberFeed.threadId, mirror.id),
+      });
+      expect(facts.map(({ operation, body }) => ({ operation, body }))).toEqual(
+        expect.arrayContaining([
+          {
+            operation: 'MEMBER_UPSERT',
+            body: {
+              account: ownerAccount,
+              namespaceId: 0,
+              role: 'OWNER',
+              profileRev: 1,
+            },
+          },
+          {
+            operation: 'GROUP_PROFILE',
+            body: { account: groupAccount, namespaceId: 0, profileRev: 1 },
+          },
+        ]),
+      );
+      expect(facts.some((fact) => fact.body.account === memberAccount)).toBe(
+        false,
+      );
+    } finally {
+      await database.db
+        .delete(messageThread)
+        .where(eq(messageThread.id, mirror.id));
+    }
+  });
 
   it('returns only the current roster in full and MEMBER_DEPART in delta', async () => {
     await database.db.transaction((tx) =>

@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { identityNamespace } from '../src/database/schema.js';
-import { verifySigningCertificate } from '../src/federation/federation-certificate.js';
+import {
+  verifySigningCertificate,
+  type SigningKeyCertificate,
+} from '../src/federation/federation-certificate.js';
 import { parseKeyId } from '../src/federation/key-id.js';
 import {
   bootFederationPair,
@@ -34,13 +37,7 @@ const PREPUBLICATION_MS = '8000';
 const RETENTION_MS = '8000';
 const SKEW_MS = '2000';
 
-interface WellKnownKey {
-  keyId: string;
-  ed25519: string;
-  notBefore: number;
-  notAfter: number;
-  authorizationSignature: string;
-}
+type WellKnownKey = SigningKeyCertificate;
 
 interface WellKnownDocument {
   protocolVersions: number[];

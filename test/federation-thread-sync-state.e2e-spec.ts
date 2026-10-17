@@ -1,5 +1,4 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { localIdentityDomain } from './support/local-domain.js';
 import { withMessageDigest } from './support/message-fixture.js';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
@@ -140,7 +139,6 @@ describe('federation thread synchronization state', () => {
         .where(eq(messageThread.id, threadId));
       await database.db.insert(threadAudience).values({
         threadId,
-        targetDomain: peerDomain,
         targetNamespaceId: namespaceId,
         localUserId: null,
       });
@@ -434,12 +432,17 @@ describe('federation thread synchronization state', () => {
               threadId,
               seq: 99,
               originSeq: 99,
-              sourceNamespaceId: namespaceId,
+              publisherNamespaceId: namespaceId,
               creatorAccount: 'bob',
 
               profileNamespaceId: namespaceId,
               contentType: 'IMAGE',
-              content: JSON.stringify({ digest: 'a'.repeat(64) }),
+              content: JSON.stringify({
+                url: `/uploads/msg-assets/aa/aa/${'a'.repeat(64)}`,
+                name: 'pending.png',
+                w: 1,
+                h: 1,
+              }),
               localState: 'STUB',
               updatedAt: new Date(),
             }),
@@ -482,11 +485,11 @@ describe('federation thread synchronization state', () => {
     const change = (active: boolean, rollback = false) =>
       database.db.transaction(async (tx) => {
         await lockBusinessAccountsInTx(tx, [
-          { account: 'alice', domain: localIdentityDomain(), namespaceId: 0 },
-          { account: 'bob', domain: peerDomain },
+          { account: 'alice', profileNamespaceId: 0 },
+          { account: 'bob', profileNamespaceId: namespaceId },
         ]);
         await tx.execute(
-          sql`SELECT id FROM "RelationshipPair" WHERE id = ${pair.id} FOR UPDATE`,
+          sql`SELECT id FROM "RelationshipPair" WHERE id = ${pair.id} FOR NO KEY UPDATE`,
         );
         const changed = await setLockedP2PPairActiveInTx(tx, pair.id, active);
         if (rollback) throw new Error('abort deactivation');

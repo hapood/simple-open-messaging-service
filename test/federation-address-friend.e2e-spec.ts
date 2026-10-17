@@ -64,7 +64,8 @@ describe('federated Address friend requests', () => {
     expect(lookup.status).toBe(200);
     expect(lookup.text).toContain('event: resolved');
     expect(lookup.text).toContain(`\"id\":${aliceId}`);
-    expect(lookup.text).toContain(`"domain":"${FED_DOMAIN_A}"`);
+    expect(lookup.text).toContain('"namespaceId":0');
+    expect(lookup.text).not.toContain('"domain":');
     expect(lookup.text).not.toContain('"relationship"');
     expect(lookup.text).not.toContain('event: progress');
   });
@@ -86,11 +87,10 @@ describe('federated Address friend requests', () => {
       }),
     ).toBeUndefined();
 
-    const namespaceBOnA = (
-      await appA.database.query.identityNamespace.findFirst({
+    const namespaceBOnA =
+      (await appA.database.query.identityNamespace.findFirst({
         where: eq(identityNamespace.domain, FED_DOMAIN_B),
-      })
-    )!.id;
+      }))!.id;
     const sent = await request(appA.baseUrl)
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${aliceToken}`)
@@ -165,11 +165,10 @@ describe('federated Address friend requests', () => {
         }),
       }),
     });
-    const namespaceAOnB = (
-      await appB.database.query.identityNamespace.findFirst({
+    const namespaceAOnB =
+      (await appB.database.query.identityNamespace.findFirst({
         where: eq(identityNamespace.domain, FED_DOMAIN_A),
-      })
-    )!.id;
+      }))!.id;
     const accepted = await request(appB.baseUrl)
       .post('/api/v1/relationship/accept')
       .set('Authorization', `Bearer ${bobToken}`)
@@ -241,11 +240,13 @@ describe('federated Address friend requests', () => {
           expect.arrayContaining([
             expect.objectContaining({
               account: 'address-alice',
-              profileNamespaceId: remoteNamespaceId,
+              publisherNamespaceId: remoteNamespaceId,
+              profileNamespaceId: 0,
               profileRev: expect.any(Number),
             }),
             expect.objectContaining({
               account: 'address-bob',
+              publisherNamespaceId: 0,
               profileNamespaceId: 0,
               profileRev: expect.any(Number),
             }),
@@ -279,11 +280,9 @@ describe('federated Address friend requests', () => {
     const charlie = await registerAndLogin(appB, 'address-charlie', 'Charlie');
     const target = {
       account: charlie.account,
-      namespaceId: (
-        await appA.database.query.identityNamespace.findFirst({
-          where: eq(identityNamespace.domain, FED_DOMAIN_B),
-        })
-      )!.id,
+      namespaceId: (await appA.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.domain, FED_DOMAIN_B),
+      }))!.id,
     };
     const send = async (note: string) => {
       const response = await request(appA.baseUrl)
@@ -363,10 +362,11 @@ describe('federated Address friend requests', () => {
         await appB.database.query.identityNamespace.findFirst({
           where: eq(identityNamespace.domain, FED_DOMAIN_A),
         });
+      if (!remoteNamespace)
+        throw new Error('Requester namespace fixture missing');
       const mirrored = await findP2PRelationship(appB.database, charlie.id, {
         account: 'address-alice',
-        domain: FED_DOMAIN_A,
-        namespaceId: remoteNamespace!.id,
+        namespaceId: remoteNamespace.id,
       });
       expect(mirrored.pair).toBeDefined();
       return await appB.database.query.relationshipIntent.findFirst({
@@ -438,19 +438,15 @@ describe('federated Address friend requests', () => {
     );
     const target = {
       account: bob.account,
-      namespaceId: (
-        await appA.database.query.identityNamespace.findFirst({
-          where: eq(identityNamespace.domain, FED_DOMAIN_B),
-        })
-      )!.id,
+      namespaceId: (await appA.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.domain, FED_DOMAIN_B),
+      }))!.id,
     };
     const reverseTarget = {
       account: alice.account,
-      namespaceId: (
-        await appB.database.query.identityNamespace.findFirst({
-          where: eq(identityNamespace.domain, FED_DOMAIN_A),
-        })
-      )!.id,
+      namespaceId: (await appB.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.domain, FED_DOMAIN_A),
+      }))!.id,
     };
     const send = async (note: string) => {
       const response = await request(appA.baseUrl)
@@ -725,11 +721,9 @@ describe('federated Address friend requests', () => {
   it('concludes a received revocation inline and permits reauthorization', async () => {
     const target = {
       account: 'address-bob',
-      namespaceId: (
-        await appA.database.query.identityNamespace.findFirst({
-          where: eq(identityNamespace.domain, FED_DOMAIN_B),
-        })
-      )!.id,
+      namespaceId: (await appA.database.query.identityNamespace.findFirst({
+        where: eq(identityNamespace.domain, FED_DOMAIN_B),
+      }))!.id,
     };
     const revoke = await request(appA.baseUrl)
       .post('/api/v1/relationship/revoke')

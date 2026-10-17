@@ -67,7 +67,7 @@ describe('Admin RBAC + revocation + audit', () => {
       .insert(user)
       .values({
         account,
-        domain: 'local',
+        namespaceId: 0,
         updatedAt: now,
       })
       .returning({ id: user.id });
@@ -88,7 +88,7 @@ describe('Admin RBAC + revocation + audit', () => {
       .insert(user)
       .values({
         account,
-        domain: 'local',
+        namespaceId: 0,
         updatedAt: new Date(),
       })
       .returning({ id: user.id });

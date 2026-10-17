@@ -211,9 +211,8 @@
       "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
       "value": {
         "id": 1,
-        "author": {
-          "account": "alice",
-          "domain": "a.example"
+        "profile": {
+          "displayName": "Alice"
         },
         "contentType": "CALL",
         "content": "{\"mediaType\":\"AUDIO\",\"outcome\":\"completed\",\"startedAt\":1,\"endedAt\":2}",
@@ -264,9 +263,8 @@
       "values": [
         {
           "id": 1,
-          "author": {
-            "account": "alice",
-            "domain": "a.example"
+          "profile": {
+            "displayName": "Alice"
           },
           "contentType": "PURE_TEXT",
           "content": "{\"text\":\"reply\"}",
@@ -275,9 +273,8 @@
         },
         {
           "id": 1,
-          "author": {
-            "account": "alice",
-            "domain": "a.example"
+          "profile": {
+            "displayName": "Alice"
           },
           "contentType": "PURE_TEXT",
           "content": "{\"text\":\"reply\"}",
@@ -286,9 +283,8 @@
         },
         {
           "id": 1,
-          "author": {
-            "account": "alice",
-            "domain": "a.example"
+          "profile": {
+            "displayName": "Alice"
           },
           "contentType": "PURE_TEXT",
           "content": "{\"text\":\"reply\"}",
@@ -297,9 +293,8 @@
         },
         {
           "id": 1,
-          "author": {
-            "account": "alice",
-            "domain": "a.example"
+          "profile": {
+            "displayName": "Alice"
           },
           "contentType": "PURE_TEXT",
           "content": "{\"text\":\"reply\"}",
@@ -310,9 +305,8 @@
         },
         {
           "id": 1,
-          "author": {
-            "account": "alice",
-            "domain": "a.example"
+          "profile": {
+            "displayName": "Alice"
           },
           "contentType": "PURE_TEXT",
           "content": "{\"text\":\"reply\"}",
@@ -656,6 +650,81 @@
       }
     },
     {
+      "name": "image filename is required and nonempty",
+      "schema": "urn:somfp:v1:message-content",
+      "values": [
+        {
+          "contentType": "IMAGE",
+          "content": {
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "width": 1,
+            "height": 1
+          }
+        },
+        {
+          "contentType": "IMAGE",
+          "content": {
+            "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "width": 1,
+            "height": 1,
+            "name": ""
+          }
+        },
+        {
+          "contentType": "GALLERY",
+          "content": {
+            "items": [
+              {
+                "kind": "IMAGE",
+                "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "width": 1,
+                "height": 1
+              }
+            ]
+          }
+        },
+        {
+          "contentType": "GALLERY",
+          "content": {
+            "items": [
+              {
+                "kind": "IMAGE",
+                "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "width": 1,
+                "height": 1,
+                "name": ""
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "contact card requires a root public key",
+      "schema": "urn:somfp:v1:message-content",
+      "values": [
+        {
+          "contentType": "CONTACT_CARD",
+          "content": {
+            "account": "alice",
+            "domain": "a.example",
+            "displayName": "Alice",
+            "bio": ""
+          }
+        },
+        {
+          "contentType": "CONTACT_CARD",
+          "content": {
+            "account": "alice",
+            "domain": "a.example",
+            "publicKey": "not-a-key",
+            "displayName": "Alice",
+            "bio": ""
+          }
+        }
+      ]
+    },
+    {
       "name": "unknown message content type",
       "schema": "urn:somfp:v1:message-content",
       "value": {
@@ -670,6 +739,7 @@
         "contentType": "IMAGE",
         "content": {
           "url": "/asset/0",
+          "name": "photo.png",
           "width": 1,
           "height": 1
         }
@@ -682,6 +752,7 @@
         "contentType": "IMAGE",
         "content": {
           "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
+          "name": "photo.png",
           "w": 1,
           "h": 1
         }
@@ -696,6 +767,7 @@
           "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
           "width": 1,
           "height": 1,
+          "name": "photo.png",
           "size": 1
         }
       }
@@ -721,6 +793,7 @@
         "content": {
           "account": "alice",
           "domain": "a.example",
+          "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
           "displayName": "Alice",
           "bio": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         }
@@ -1302,73 +1375,14 @@
       }
     },
     {
-      "name": "forward bundle rejects display fields mixed into author identity",
-      "schema": "urn:somfp:v1:forward-bundle",
-      "value": {
-        "id": "b1",
-        "messages": [
-          {
-            "id": 1,
-            "author": {
-              "account": "alice",
-              "domain": "a.example",
-              "displayName": "Alice"
-            },
-            "profile": {
-              "displayName": "Alice"
-            },
-            "contentType": "PURE_TEXT",
-            "content": "{\"text\":\"hello\"}",
-            "sentAt": 1
-          }
-        ],
-        "children": [],
-        "assets": []
-      }
-    },
-    {
       "name": "forward bundle rejects the old shape without a display name",
       "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
       "value": {
         "id": 1,
-        "author": {
-          "account": "alice",
-          "domain": "a.example"
-        },
         "contentType": "PURE_TEXT",
         "content": "{\"text\":\"hello\"}",
         "sentAt": 1
       }
-    },
-    {
-      "name": "forward bundle rejects a partial optional author address",
-      "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
-      "values": [
-        {
-          "id": 1,
-          "author": {
-            "account": "alice"
-          },
-          "profile": {
-            "displayName": "Alice"
-          },
-          "contentType": "PURE_TEXT",
-          "content": "{\"text\":\"hello\"}",
-          "sentAt": 1
-        },
-        {
-          "id": 1,
-          "author": {
-            "domain": "a.example"
-          },
-          "profile": {
-            "displayName": "Alice"
-          },
-          "contentType": "PURE_TEXT",
-          "content": "{\"text\":\"hello\"}",
-          "sentAt": 1
-        }
-      ]
     },
     {
       "name": "public profile requires revision",

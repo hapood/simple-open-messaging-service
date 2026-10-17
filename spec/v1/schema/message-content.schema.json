@@ -14,9 +14,10 @@
     },
     "image": {
       "type": "object",
-      "required": ["digest", "width", "height"],
+      "required": ["digest", "width", "height", "name"],
       "properties": {
         "digest": { "$ref": "urn:somfp:v1:common#/$defs/sha256Hex" },
+        "name": { "type": "string", "minLength": 1 },
         "width": {
           "$ref": "urn:somfp:v1:common#/$defs/positiveSafeInteger"
         },
@@ -68,9 +69,10 @@
       "oneOf": [
         {
           "type": "object",
-          "required": ["kind", "digest", "width", "height"],
+          "required": ["kind", "digest", "width", "height", "name"],
           "properties": {
             "kind": { "const": "IMAGE" },
+            "name": { "type": "string", "minLength": 1 },
             "digest": {
               "$ref": "urn:somfp:v1:common#/$defs/sha256Hex"
             },
@@ -171,7 +173,7 @@
     },
     "contactCard": {
       "type": "object",
-      "required": ["account", "domain", "displayName", "bio"],
+      "required": ["account", "domain", "publicKey", "displayName", "bio"],
       "properties": {
         "account": {
           "$ref": "urn:somfp:v1:common#/$defs/account"
@@ -179,6 +181,7 @@
         "domain": {
           "$ref": "urn:somfp:v1:common#/$defs/domain"
         },
+        "publicKey": { "$ref": "urn:somfp:v1:common#/$defs/base64Ed25519Key" },
         "displayName": {
           "type": "string",
           "minLength": 1,

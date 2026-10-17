@@ -48,11 +48,19 @@ operation.
 
 ## Validation
 
-Run from the repository root:
+Using the separate SOMFP offline validator **1.0.0-draft.0**, run from its
+directory and point it at the copied specification package:
 
 ```bash
-npm run federation:conformance
+npm ci --ignore-scripts
+npm run conformance -- --spec /path/to/spec
 ```
+
+Node.js 22.18.0 or newer and npm are required. The validator has its own
+dependency lock; it is not embedded in this specification directory. No SOMS
+checkout or backend installation is needed.
+See [independent validation](../CONFORMANCE.md#independent-validation) for the
+complete verification commands and distribution requirements.
 
 The command compiles every schema; validates positive and negative vectors;
 verifies secondary parsing of message `content`; checks strictly increasing
@@ -64,7 +72,8 @@ particular implementation framework, route registry, database, or service.
 Third-party implementations can validate their own JSON:
 
 ```bash
-npm run federation:conformance -- \
+npm run conformance -- \
+  --spec /path/to/spec \
   --schema urn:somfp:v1:call \
   --file ./call-frame.json
 ```

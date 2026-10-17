@@ -326,6 +326,31 @@ describe('UserAvatarComponent (imgSrc branching)', () => {
     );
   });
 
+  it('passes a staged-crop blob preview through an established self profile', async () => {
+    // The profile editor stages the cropped avatar as a blob: preview src while
+    // the session profile already has a committed revision. The preview must
+    // win over the session-profile pin or the editor cannot preview the crop.
+    sessionProfile.set({
+      id: 7,
+      account: 'alice',
+      name: 'Alice',
+      avatar: '/uploads/avatars/self-512.webp',
+      profileRev: 10,
+    });
+    vi.spyOn(TestBed.inject(ProfileRepository), 'resolve').mockReturnValue(
+      new Subject(),
+    );
+    fixture.componentRef.setInput('type', UserAvatarType.SELF);
+    fixture.componentRef.setInput('src', 'blob:http://localhost/preview');
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(fixture.componentInstance.imgSrc()).toBe(
+      'blob:http://localhost/preview',
+    );
+    expect(fixture.componentInstance.showImage()).toBe(true);
+  });
+
   it('uses a supplied server path when there is no profile evidence', () => {
     fixture.componentRef.setInput('src', '/uploads/avatars/g-512.webp');
     expect(fixture.componentInstance.imgSrc()).toContain(

@@ -75,12 +75,32 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
 {
+    spawn_at_then(epoch, operation, |_| {})
+}
+
+/// Deliver successful commits even if the awaiting network task is cancelled.
+/// The lifetime guard is released before callbacks or platform event delivery.
+pub(super) fn spawn_at_then<T, F, C>(
+    epoch: Result<u64, String>,
+    operation: F,
+    committed: C,
+) -> tauri::async_runtime::JoinHandle<Result<T, String>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    C: FnOnce(&T) + Send + 'static,
+{
     let run = crate::realtime::WORK_RUN.try_with(Clone::clone).ok();
     tauri::async_runtime::spawn_blocking(move || {
         if run.as_ref().is_some_and(|run| !run.authenticated()) {
             return Err("realtime work lease expired".into());
         }
-        CACHE_LIFETIME.run(epoch?, operation)
+        let epoch = epoch?;
+        let result = CACHE_LIFETIME.run(epoch, operation)?;
+        if CACHE_LIFETIME.is_current(epoch) && run.as_ref().is_none_or(|run| run.authenticated()) {
+            committed(&result);
+        }
+        Ok(result)
     })
 }
 

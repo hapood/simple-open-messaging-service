@@ -53,6 +53,7 @@ export type { S2sProxy };
 /** The canonical federation-test domains (single source — the spec imports these). */
 export const FED_DOMAIN_A = 'aaa.test';
 export const FED_DOMAIN_B = 'bbb.test';
+export const FED_DOMAIN_C = 'ccc.test';
 
 /** Path to the COMPILED subprocess entry (see ensureCompiledEntry — why it's compiled, not run via tsx). */
 const APP_MAIN = join(
@@ -557,6 +558,80 @@ export async function bootFederationPair(options?: {
   return { appA, appB, proxy };
 }
 
+/** Three independent processes/databases, with observable signed HTTP on every destination. */
+export async function bootFederationTriple(): Promise<{
+  appA: FedApp;
+  appB: FedApp;
+  appC: FedApp;
+  proxyA: S2sProxy;
+  proxyB: S2sProxy;
+  proxyC: S2sProxy;
+}> {
+  ensureCompiledEntry();
+  const { urlA, urlB } = await ensureFederationDbs();
+  const poolId = process.env.VITEST_POOL_ID ?? '0';
+  const urlC = await ensureDatabase(
+    process.env.DATABASE_URL!,
+    e2eWorkerDatabaseName(poolId, 'c'),
+  );
+  const ports = new Set<number>();
+  while (ports.size < 3) ports.add(await pickFreePort());
+  const [portA, portB, portC] = [...ports];
+  const proxies: S2sProxy[] = [];
+  const apps: FedApp[] = [];
+  try {
+    for (const port of [portA, portB, portC]) {
+      proxies.push(await startS2sProxy(port));
+    }
+    const [proxyA, proxyB, proxyC] = proxies;
+    const dataRoot = join(
+      process.env.SOMS_DATA_DIR ?? join(process.cwd(), 'data'),
+      'federation',
+    );
+    const nodes = [
+      { domain: FED_DOMAIN_A, dbUrl: urlA, appPort: portA, suffix: 'a' },
+      { domain: FED_DOMAIN_B, dbUrl: urlB, appPort: portB, suffix: 'b' },
+      { domain: FED_DOMAIN_C, dbUrl: urlC, appPort: portC, suffix: 'c' },
+    ];
+    for (const { domain, dbUrl, appPort, suffix } of nodes) {
+      const dataDir = join(dataRoot, `${poolId}-${suffix}`);
+      rmSync(dataDir, { recursive: true, force: true });
+      apps.push(
+        makeFedApp({
+          domain,
+          dbUrl,
+          appPort,
+          portA: proxyA.port,
+          portB: proxyB.port,
+          dataDir,
+          env: {
+            FED_E2E_EXTRA_ROUTES: JSON.stringify({
+              [FED_DOMAIN_C]: `http://127.0.0.1:${proxyC.port}`,
+            }),
+          },
+        }),
+      );
+    }
+    const [appA, appB, appC] = apps;
+    await assertSeparateDatabases(appA, appB);
+    await assertSeparateDatabases(appA, appC);
+    await assertSeparateDatabases(appB, appC);
+    await resetFederationApps([
+      { app: appA, domain: FED_DOMAIN_A },
+      { app: appB, domain: FED_DOMAIN_B },
+      { app: appC, domain: FED_DOMAIN_C },
+    ]);
+    const startup = await Promise.allSettled(apps.map((app) => app.start()));
+    const failure = startup.find((result) => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+    return { appA, appB, appC, proxyA, proxyB, proxyC };
+  } catch (error) {
+    await Promise.allSettled(apps.map((app) => app.close()));
+    await Promise.allSettled(proxies.map((proxy) => proxy.close()));
+    throw error;
+  }
+}
+
 /** Enforcement guard: the two apps MUST be on different physical databases. Throws loudly if not. */
 export async function assertSeparateDatabases(
   appA: FedApp,
@@ -681,20 +756,24 @@ export async function truncateFederationDbs(
   appA: FedApp,
   appB: FedApp,
 ): Promise<void> {
-  await Promise.all([
-    appA.database.transaction(async (tx) => {
-      await tx.execute(sql.raw(FEDERATION_TRUNCATE_SQL));
-      await tx.execute(sql`DELETE FROM "SystemSetting"
-        WHERE key = ${FEDERATION_HISTORY_ACCESS_SETTING_KEY}`);
-      await tx.execute(sql.raw(FEDERATION_NAMESPACE_RESET_SQL));
-      await tx.execute(resetLocalNamespaceSentinelSql(FED_DOMAIN_A));
-    }),
-    appB.database.transaction(async (tx) => {
-      await tx.execute(sql.raw(FEDERATION_TRUNCATE_SQL));
-      await tx.execute(sql`DELETE FROM "SystemSetting"
-        WHERE key = ${FEDERATION_HISTORY_ACCESS_SETTING_KEY}`);
-      await tx.execute(sql.raw(FEDERATION_NAMESPACE_RESET_SQL));
-      await tx.execute(resetLocalNamespaceSentinelSql(FED_DOMAIN_B));
-    }),
+  await resetFederationApps([
+    { app: appA, domain: FED_DOMAIN_A },
+    { app: appB, domain: FED_DOMAIN_B },
   ]);
+}
+
+async function resetFederationApps(
+  nodes: Array<{ app: FedApp; domain: string }>,
+): Promise<void> {
+  await Promise.all(
+    nodes.map(({ app, domain }) =>
+      app.database.transaction(async (tx) => {
+        await tx.execute(sql.raw(FEDERATION_TRUNCATE_SQL));
+        await tx.execute(sql`DELETE FROM "SystemSetting"
+      WHERE key = ${FEDERATION_HISTORY_ACCESS_SETTING_KEY}`);
+        await tx.execute(sql.raw(FEDERATION_NAMESPACE_RESET_SQL));
+        await tx.execute(resetLocalNamespaceSentinelSql(domain));
+      }),
+    ),
+  );
 }

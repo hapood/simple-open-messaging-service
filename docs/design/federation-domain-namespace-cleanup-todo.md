@@ -1,8 +1,9 @@
 # Federation Domain-to-Namespace Cleanup TODO
 
-This checklist tracks the remaining cleanup after the root-identity and
-profile-demand redesign. Work through it one section at a time and re-run the
-listed verification before moving to the next section.
+This checklist records the domain-to-namespace migration and its historical
+verification. Remaining cleanup is identified separately below; checked entries
+are not evidence that later draft changes have passed runtime validation.
+Automated tests are currently paused at the user's request.
 
 ## Status Summary
 
@@ -19,9 +20,13 @@ resolves the wire `domain` from `IdentityNamespace` by `namespaceId`. Legacy
 compatibility code (`parseSomfpUserAddress`, `allowLocalDomain`, domain
 fallbacks in `isSelfMentionMember`) has been removed.
 
-What remains is **PostgreSQL-backed e2e** (blocked by a pre-existing NestJS DI
-issue unrelated to the migration) and the broader `domain === 'local'` →
-`namespaceId === 0` locality-check cleanup across the codebase.
+The historical PostgreSQL/NestJS DI blockers were resolved. A subsequent full
+PostgreSQL E2E run passed 95 files / 680 tests. That run predates the current
+Forward display-only and shared-child changes and does not validate them.
+See the [implementation handoff](../development/federation-implementation-handoff.md)
+for the verification chronology and operator-owned acceptance boundary.
+Remaining locality/storage cleanup is tracked in Section 15, not as a test
+infrastructure blocker.
 
 ## Ground Rules
 
@@ -31,21 +36,24 @@ issue unrelated to the migration) and the broader `domain === 'local'` →
 - Message rows must not carry `creatorDomain`.
 - Do not reintroduce `displayDomain` or put domain back into profile keys, profile targets, caches, SSE profile wake keys, or profile demand shapes.
 - Keep transport target domain only where an HTTP request or peer routing endpoint actually needs a current domain binding.
-- If a domain field is kept for forward/provenance/display compatibility, it must be optional and must not be used as the identity key.
+- Forward inner snapshots contain display profiles, not author domain/root-key fields. Local import provenance and CONTACT_CARD subject identity remain separate; do not introduce compatibility identity fields.
 
 ## Verification Commands
 
-Run incrementally after each section when practical:
+Reference commands for a future user-authorized verification run; do not treat
+this list as a request to resume testing:
 
 ```bash
 npm run build:be
 npx vitest run shared/ src/
-cd web && npm run build
-cd admin-web && npm test
-cd admin-web && npm run build
+npm run build --prefix web
+npm test --prefix admin-web
+npm run build --prefix admin-web
+npm run test:e2e
 ```
 
-E2E remains blocked until PostgreSQL is available.
+PostgreSQL must be reachable for E2E. Its earlier availability/DI failures are
+historical, not known current blockers.
 
 ---
 
@@ -66,10 +74,8 @@ Goal: remove `Message.creatorDomain` from all message-author identity logic.
 
 Notes:
 - `PendingMedia.creatorDomain` is handled separately in Section 5.
-- `message.service.ts` retains `user.domain === 'local'` (account-locality
-  filter when resolving the local author) and `AccountTarget.domain` (account
-  transport locality for fanout). These are account-locality/transport, not
-  message-author identity.
+- `message.service.ts` resolves local authors with `user.namespaceId = 0`;
+  the earlier note about `user.domain === 'local'` is obsolete.
 
 ---
 
@@ -209,24 +215,18 @@ Applied model:
 
 ---
 
-## 8. Forward Bundle Domain / Root Provenance
+## 8. Forward Bundle Display Snapshots
 
-Goal: forward keeps optional domain provenance and optional public root key, without using either as mandatory identity for profile resolution.
+The reviewed draft removes inner author identity objects. Bundle messages retain
+immutable display names, optional avatar digests, content, timestamps, and
+bundle-local references. No author domain/root lookup is needed to create these
+snapshots. CONTACT_CARD content retains its target address and public key.
 
-- [x] `src/forward/forward-bundle.service.ts`
-- [x] `src/forward/forward-bundle.service.spec.ts`
-- [x] shared forward/message content schemas, if any
-- [x] `spec/v1/message/forward.md` and relevant spec files
-
-Applied model:
-
-- [x] Forward source/provenance carries optional `sourceDomain` (flat field).
-- [x] Optional `publicRootKey` is a wire field on the forward author
-  (`publicRootKeyForNamespace` derivation), not a persisted identity column.
-- [x] Both `sourceDomain` and `publicRootKey` are optional.
-- [x] Profile references inside forwarded content use namespace/profile 4-tuple where applicable.
-- [x] Wire shape decision resolved: `author.publicRootKey?` flat field on the
-  author; `sourceDomain?` provenance field. No structured `source?` wrapper.
+`ForwardBundle.sourceDomain` remains local import provenance; it is not a
+snapshot-author field or a wire profile key. Outer message bindings continue to
+authorize closure and asset retrieval. Web and native WebViews share the detail
+renderer, which presents each snapshot independently rather than grouping by a
+name or inferred identity.
 
 ---
 
@@ -282,7 +282,7 @@ Schema cleanup targets:
 - [x] Rebuild `PeerStateFeed`/`ClientStateFeed` subject identity (`subjectNamespaceId`).
 - [x] Update trigger SQL that compares `creatorDomain` or joins Profile by domain.
 
-Verification:
+Historical verification of the migration stage (not the later Forward changes):
 
 - [x] A fresh database built with the new `0000_base.sql` produces 1488 schema
   objects, matching the reference database built by the previous full migration
@@ -290,10 +290,10 @@ Verification:
 - [x] `npm run build:be` and `npm test` (1740 unit tests) pass.
 - [x] The migration system (`migrate-db.ts`) applies the single `0000_base`
   migration and records its checksum.
-- [ ] PostgreSQL-backed e2e remains blocked by a pre-existing NestJS DI issue
-  (`FederationRecognitionService` undefined at `FederationPeerHttp` index [2],
-  unrelated to this migration rewrite — reproduced with both old and new
-  migration files).
+- [x] The historical PostgreSQL E2E DI blocker is resolved. The subsequent full
+  regression run passed 95 files / 680 tests, before the current Forward changes; see the
+  [implementation handoff](../development/federation-implementation-handoff.md)
+  for verification scope and operator-owned acceptance.
 
 ---
 
@@ -301,15 +301,16 @@ Verification:
 
 Goal: keep protocol docs aligned with final model.
 
-The original completed checkboxes overstated specification alignment. The
-user-directed closeout pass has now corrected message authors, Group Meta body
-shapes, profile response objects, and group-origin mention scope. This is not a
-blanket completion claim: the subsequent user-authorized correction now makes
-group-origin message queries submission-only and filters returned mirror copies
-before receipt association, with federation unit regressions passing. Local
-cached-profile disclosure checks remain deferred; remaining decisions and
-multi-node verification are tracked in the temporary
-[closeout audit](../development/documentation-closeout-audit.md).
+The implementation closeout corrected message authors, Group Meta body shapes,
+profile response objects, and group-origin mention scope. Group-origin message
+queries are submission-only and exclude mirror copies from receipt association.
+Local cached-profile reads intentionally have no per-caller disclosure check;
+new resolution work retains its authorization checks. The current provenance
+scope does not add requester-to-publication identity binding, while ordinary
+federation signature authentication remains in force. See the
+[implementation handoff](../development/federation-implementation-handoff.md)
+for completed verification and the operator-owned acceptance boundary. These
+implementation decisions do not promote the independent draft to a final release.
 
 Files reviewed:
 
@@ -320,7 +321,7 @@ Files reviewed:
 - [x] `spec/v1/message/forward.md`
 - [x] `spec/v1/schema/*.json`
 - [x] `spec/v1/schema/vectors/*.json`
-- [x] `CONFORMANCE.md`
+- [x] `spec/v1/CONFORMANCE.md`
 - [x] `docs/overview/database.md`
 - [x] `docs/design/canonical-group-meta.md`
 - [x] `docs/design/federation-namespaces.md`
@@ -331,7 +332,7 @@ Specific checks:
 - [x] Message author identity is namespace-based.
 - [x] Group message author namespace is inside `author.namespaceId`, not a top-level message `namespaceId`.
 - [x] No profile/member endpoint path contains `memberDomain`.
-- [x] Forward source domain/root-key optionality documented.
+- [x] Forward inner author identity removed; display-only snapshots, retained CONTACT_CARD subject identity, and local import provenance are documented separately.
 - [x] Transport/routing domains and explicit display snapshots remain where needed; domains are not part of exact profile keys or message/Group Meta subject wire objects.
 
 ---
@@ -390,18 +391,25 @@ card target; the server resolves the wire `domain` from `IdentityNamespace`.
 
 ## 15. Remaining: Locality-Check Cleanup
 
-Goal: replace `domain === 'local'` locality checks with `namespaceId === 0`
-across the codebase (~60 sites). `domain` should be used only for
-transport/routing/display, never for identity-locality decisions.
+Goal: use namespace identity for locality decisions; retain domain only for
+transport/routing/display. The earlier estimate of approximately 60
+`domain === 'local'` sites is obsolete: the current static search found no
+literal equality/inequality checks of that form in production TypeScript.
+This is not a complete audit of SQL or indirectly expressed locality logic.
 
 Also pending: remove the `messageThread.groupDomain` column (currently
 participates in a unique index and CHECK constraints; replacement is
 `authorityNamespaceId`).
 
-- [ ] Replace `domain === 'local'` / `domain !== 'local'` with `namespaceId === 0` / `namespaceId !== 0` in quota, user, federation, group, message, controller, relationship, durable-task domains.
+- [ ] Re-audit remaining locality decisions, including SQL and indirect checks; do not carry forward the obsolete literal-check count as outstanding work.
 - [ ] Remove `messageThread.groupDomain` column from schema + base migration; rebuild unique index on `(groupAccount, authorityNamespaceId)`.
 
-## 16. Final Verification
+## 16. Historical Verification
+
+The following results belong to the earlier migration stage. Counts are retained
+as historical evidence, not current suite totals. Later verification is recorded
+in the [implementation handoff](../development/federation-implementation-handoff.md);
+none of these runtime results covers the current Forward draft changes.
 
 - [x] `npm run build:be`
 - [x] `npx vitest run shared/ src/` (1736 passed)
@@ -409,4 +417,4 @@ participates in a unique index and CHECK constraints; replacement is
 - [x] `cd admin-web && npm test` (57 passed)
 - [x] `cd admin-web && npm run build`
 - [x] `node tmp/check-vectors.mjs` (63 checked, all consistent)
-- [ ] PostgreSQL-backed e2e once DB is available.
+- [x] PostgreSQL-backed E2E subsequently passed 95 files / 680 tests; the earlier DB/DI blockage is resolved. No rerun was performed for this documentation correction.

@@ -94,7 +94,6 @@ describe('per-peer state feed', () => {
       .returning();
     await database.db.insert(threadAudience).values({
       threadId: thread.id,
-      targetDomain: peerDomain,
       targetNamespaceId: peerNamespaceId,
     });
     // A Group thread head has no directional subject: the peer is the key.

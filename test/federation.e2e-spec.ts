@@ -243,6 +243,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         pullUntil: messageThread.pullUntil,
         account: groupStateFields.account,
         name: groupStateFields.name,
+        profileRev: groupStateFields.profileRev,
         domain: groupStateFields.domain,
         namespaceId: groupStateFields.namespaceId,
       })
@@ -257,6 +258,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             id: row.groupId!,
             account: row.account,
             name: row.name,
+            profileRev: row.profileRev,
             domain: row.domain,
             namespaceId: row.namespaceId,
           },
@@ -321,6 +323,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         threadId: message.threadId,
         seq: message.seq,
         bundleId: forwardMessage.bundleId,
+        bundleDigest: forwardBundle.sourceBundleId,
         messageCount: forwardBundle.messageCount,
       })
       .from(message)
@@ -342,6 +345,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           seq: row.seq,
           forwardMessage: {
             bundleId: row.bundleId,
+            bundleDigest: row.bundleDigest,
             bundle: { messageCount: row.messageCount },
           },
         }
@@ -1041,7 +1045,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: await alicesThreadIdOnA(),
-        content: marker,
+        content: JSON.stringify({ text: marker }),
         contentType: 'PURE_TEXT',
       });
     expect(sent.body.code).toBe(BusinessCode.OK);
@@ -1080,7 +1084,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: await alicesThreadIdOnA(),
-        content: marker,
+        content: JSON.stringify({ text: marker }),
         contentType: 'PURE_TEXT',
       });
     expect(original.body.code).toBe(BusinessCode.OK);
@@ -1573,7 +1577,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     );
 
     const closureResponse = await request(appB.baseUrl)
-      .get(`/api/v1/forward-bundles/${importedOnB!.forwardMessage!.bundleId}`)
+      .get(
+        `/api/v1/forward-bundles/${importedOnB!.forwardMessage!.bundleDigest}`,
+      )
       .set('Authorization', `Bearer ${tokenB}`);
     expect(closureResponse.body.code).toBe(BusinessCode.OK);
     const closure = closureResponse.body.data as {
@@ -1883,7 +1889,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: await alicesThreadIdOnA(),
-        content: marker,
+        content: JSON.stringify({ text: marker }),
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });
@@ -2634,7 +2640,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           firstGroupThreadA,
           {
             account: 'erin-join-projection',
-            domain: DOM_B,
             namespaceId: await requireActiveNamespaceId(appA, DOM_B),
           },
         );
@@ -2838,7 +2843,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const namespaceAOnB = await requireActiveNamespaceId(appB, DOM_A);
     await appB.database.insert(profileTable).values({
       account: 'stale-roster-member',
-      domain: 'stale.test',
       publisherNamespaceId: namespaceAOnB,
       profileNamespaceId: namespaceAOnB,
       profileRev: 1,
@@ -3928,6 +3932,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       receiverAccount: 'bob',
       receiverNamespaceId: 0,
       profileNamespaceId: 0,
+      profileRev: mirror.group.profileRev,
       messageEndSeq: 0,
       tombstoneEndSeq: 0,
       status: 'REQUESTED',
@@ -4567,7 +4572,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(after?.haltReason).toBeNull();
     expect(after?.trustedAt?.getTime()).toBe(before?.trustedAt?.getTime());
     expect(after?.rootPublicKey).toBe(before?.rootPublicKey);
-    expect(after?.rootKeyFingerprint).toBe(before?.rootKeyFingerprint);
+    expect(after?.identityPinnedAt?.getTime()).toBe(
+      before?.identityPinnedAt?.getTime(),
+    );
 
     const stillLostOnB = await appB.database.query.identityNamespace.findFirst({
       where: and(

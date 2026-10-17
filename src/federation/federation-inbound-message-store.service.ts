@@ -87,7 +87,7 @@ export type FederationInboundMessageStoreResult =
       kind: 'message';
       message: Message;
       storedContent: string;
-      localForwardBundleId?: string;
+      localForwardBundleId?: bigint;
     }
   | { kind: 'pending'; batchId: string; seq: number };
 
@@ -442,7 +442,7 @@ export class FederationInboundMessageStoreService {
     }
 
     let storedContent = incoming.content;
-    let localForwardBundleId: string | undefined;
+    let localForwardBundleId: bigint | undefined;
     // Set iff importClosure accepted the closure below; the card builder and the
     // file-quota tick read the closure only through it.
     let validatedClosure: ForwardWireBundle | undefined;
@@ -458,7 +458,6 @@ export class FederationInboundMessageStoreService {
       validatedClosure = forwardClosure as ForwardWireBundle;
       storedContent = this.forwardBundles.localCardContent(
         validatedClosure,
-        localForwardBundleId,
         imported.depth,
       );
     }

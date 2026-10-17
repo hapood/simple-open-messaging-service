@@ -1,11 +1,10 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
-import { DatabaseModule } from '../src/database/database.module.js';
+import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
 import { seedFederatedPeerNamespace } from './seed.js';
-import { loadFederationConfig } from '../src/federation/federation.config.js';
-import { FederationProfileService } from '../src/federation/federation-profile.service.js';
+import { SseService } from '../src/gateway/sse.service.js';
 import { ProfileResolutionCoordinatorService } from '../src/profile-resolution/profile-resolution-coordinator.service.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import {
@@ -19,20 +18,18 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
   let database: DatabaseService;
   let threadId: number;
   let viewerId: number;
-  let profiles: FederationProfileService;
-  const _domain = loadFederationConfig().domain;
+  let sse: SseService;
   const account = 'local-profile-viewer';
   const groupAccount = '!local-profile-mirror';
-  const sse = { onProfileResolved: vi.fn(), onProfileFailed: vi.fn() };
-  const coordinator = () =>
-    new ProfileResolutionCoordinatorService(database, profiles, sse as never);
+  const coordinator = () => mod.get(ProfileResolutionCoordinatorService);
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
-      imports: [DatabaseModule],
+      imports: [AppModule],
     }).compile();
     database = mod.get(DatabaseService);
-    profiles = new FederationProfileService(database, {} as never, {} as never);
+    sse = mod.get(SseService);
+    vi.spyOn(sse, 'onProfileUnavailable');
     const ns = await seedFederatedPeerNamespace(
       database.db,
       'local-profile-origin.test',
@@ -41,7 +38,6 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
       .insert(tables.account)
       .values({
         account,
-        domain: 'local',
         namespaceId: 0,
         defaultProfileRev: 2,
         updatedAt: new Date(),
@@ -121,7 +117,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
           threadId,
           seq,
           originSeq: seq,
-          sourceNamespaceId: ns,
+          publisherNamespaceId: 0,
           creatorAccount: account,
           profileNamespaceId: 0,
           profileRev: seq === 3 ? 3 : 1,
@@ -188,7 +184,7 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
         },
       } satisfies ProfileClientResolutionDemand),
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
-    expect(sse.onProfileFailed).not.toHaveBeenCalled();
+    expect(sse.onProfileUnavailable).not.toHaveBeenCalled();
   });
 
   it('serves cached snapshots without thread authorization, but rejects an uncached revision', async () => {

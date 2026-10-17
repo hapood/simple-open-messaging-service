@@ -557,7 +557,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: originThreadId,
-        content: text,
+        content: JSON.stringify({ text }),
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });
@@ -640,7 +640,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         .set('Authorization', `Bearer ${tokenA}`)
         .send({
           threadId: originThreadId,
-          content: text,
+          content: JSON.stringify({ text }),
           contentType: ContentType.PURE_TEXT,
           clientMessageId: randomUUID(),
         });
@@ -933,7 +933,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         .set('Authorization', `Bearer ${token}`)
         .send({
           threadId: originThreadId,
-          content: text,
+          content: JSON.stringify({ text }),
           contentType: ContentType.PURE_TEXT,
           clientMessageId: randomUUID(),
         });
@@ -1138,7 +1138,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
         .set('Authorization', `Bearer ${tokenA}`)
         .send({
           threadId: originThreadId,
-          content: text,
+          content: JSON.stringify({ text }),
           contentType: ContentType.PURE_TEXT,
           clientMessageId: randomUUID(),
         });
@@ -1186,7 +1186,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: originThreadId,
-        content: duringRecoveryText,
+        content: JSON.stringify({ text: duringRecoveryText }),
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });
@@ -1421,7 +1421,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
             .set('Authorization', `Bearer ${tokenA}`)
             .send({
               threadId,
-              content: text,
+              content: JSON.stringify({ text }),
               contentType: ContentType.PURE_TEXT,
               clientMessageId: randomUUID(),
             });
@@ -1519,7 +1519,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: originThreadId,
-        content: liveText,
+        content: JSON.stringify({ text: liveText }),
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });
@@ -1555,7 +1555,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
           .set('Authorization', `Bearer ${tokenA}`)
           .send({
             threadId,
-            content: hiddenText,
+            content: JSON.stringify({ text: hiddenText }),
             contentType: ContentType.PURE_TEXT,
             clientMessageId: randomUUID(),
           });
@@ -1587,7 +1587,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: originThreadId,
-        content: liveText,
+        content: JSON.stringify({ text: liveText }),
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });
@@ -1624,7 +1624,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: originThreadId,
-        content: baselineText,
+        content: JSON.stringify({ text: baselineText }),
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });
@@ -1657,7 +1657,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: originThreadId,
-        content: staleText,
+        content: JSON.stringify({ text: staleText }),
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });
@@ -1792,7 +1792,7 @@ describe('federation reverse thread rounds (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: originThreadId,
-        content: liveText,
+        content: JSON.stringify({ text: liveText }),
         contentType: ContentType.PURE_TEXT,
         clientMessageId: randomUUID(),
       });

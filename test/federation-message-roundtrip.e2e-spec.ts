@@ -25,6 +25,10 @@ import {
 import { payloadDigest } from '../src/federation/canonical-json.js';
 import { seedAcceptedRelationship } from './seed.js';
 import { truncateTablesForTest } from './support/truncate';
+import {
+  assertFederationWireSchema,
+  assertFederationMessageWire,
+} from './support/federation-wire-schema.js';
 
 const digestA = 'a'.repeat(64);
 const digestB = 'b'.repeat(64);
@@ -204,15 +208,16 @@ describe('federation message round-trip digest fidelity', () => {
     });
 
     const page = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
       1,
     );
+    assertFederationWireSchema('urn:somfp:v1:message-query', page);
     expect(page.messages).toHaveLength(1);
     const outbound = page.messages[0];
+    assertFederationMessageWire(outbound);
 
     // Provenance: a query for this message's `(thread, seq, payloadDigest)` must answer `yes`,
     // and a query for the same coordinate with a different digest must answer `no`. This is the
@@ -472,13 +477,13 @@ describe('federation message round-trip digest fidelity', () => {
       body: { messageEndSeq: 1, tombstoneEndSeq: 0 },
     });
     const page = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
       1,
     );
+    assertFederationWireSchema('urn:somfp:v1:message-query', page);
     expect(page.messages).toHaveLength(1);
     expect(page.messages[0].originSeq).toBeNull();
     expect(page.messages[0].originCreatedAt).toBeNull();

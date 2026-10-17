@@ -2,7 +2,7 @@ const requiredPairsSql = `
   SELECT DISTINCT reference."publisherNamespaceId", reference."profileNamespaceId"
   FROM (
     SELECT thread."authorityNamespaceId" AS "publisherNamespaceId",
-      (fact.body ->> 'profileNamespaceId')::integer AS "profileNamespaceId"
+      (fact.body ->> 'namespaceId')::integer AS "profileNamespaceId"
     FROM "GroupMetaMemberFeed" fact
     JOIN "MessageThread" thread ON thread.id = fact."threadId"
     WHERE fact.operation = 'MEMBER_UPSERT'

@@ -14,13 +14,16 @@ outer message shape and resource rules.
 interface ContactCardContent {
   account: Account;
   domain: Domain;
+  publicKey: Base64Ed25519Key;
   displayName: string;
   bio: string;
   avatarDigest?: Sha256Hex;
 }
 ```
 
-This is a closed schema. `account`, `domain`, and `displayName` are required.
+This is a closed schema. `account`, `domain`, `publicKey`, and `displayName`
+are required. `publicKey` encodes a 32-byte Ed25519 root public key in padded
+RFC 4648 standard base64.
 `bio` is required and may be empty. `avatarDigest` is optional.
 
 ## 2. Address and snapshot semantics
@@ -28,6 +31,13 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
 - `account` and `domain` MUST form a valid address. A `UserAccount` identifies a
   personal contact and a `GroupAccount` identifies a group contact; the account
   grammar is the discriminator and no additional type field is carried.
+- `publicKey` is the referenced home server's root public key retained when
+  the card was created, not an account-specific key or a rotating HTTP signing
+  key. A later public profile lookup for this card MUST bind its possession
+  proof to that key under [Public Account Profile](../profiles.md#3-public-account-profile).
+  Receiving the card alone proves neither possession nor trust and MUST NOT
+  replace a peer trust pin. Republishing or forwarding MUST retain the key;
+  it MUST NOT silently substitute the home's current key.
 - `displayName` MUST contain 1–31 Unicode code points and MUST NOT contain an
   unpaired surrogate.
 - `bio` MUST contain at most 120 Unicode code points and MUST NOT
@@ -82,7 +92,7 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
   "originCreatedAt": null,
   "createdAt": 1770000020000,
   "contentType": "CONTACT_CARD",
-  "content": "{\"account\":\"carol\",\"domain\":\"c.example\",\"displayName\":\"Carol\",\"bio\":\"Distributed systems enthusiast\",\"avatarDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+  "content": "{\"account\":\"carol\",\"domain\":\"c.example\",\"publicKey\":\"A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\",\"displayName\":\"Carol\",\"bio\":\"Distributed systems enthusiast\",\"avatarDigest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
   "assets": [
     {
       "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -94,10 +104,10 @@ This is a closed schema. `account`, `domain`, and `displayName` are required.
 
 ## 5. Forward bundles
 
-A `CONTACT_CARD` inside a forward bundle retains the same address and display
-snapshot. Forwarding MUST NOT refresh, replace, or reinterpret the snapshot.
+A `CONTACT_CARD` inside a forward bundle retains the same address, root public
+key, and display snapshot. Forwarding MUST NOT refresh, replace, or reinterpret the snapshot.
 Its optional `avatarDigest` participates in the bundle's deduplicated asset set
-under the rules in [Forward, Section 5](./forward.md#5-authors-quotes-and-assets).
+under the rules in [Forward, Section 5](./forward.md#5-display-snapshots-quotes-and-assets).
 
 ## 6. Required rejections
 
@@ -105,6 +115,7 @@ A consumer MUST reject at least the following cases:
 
 - `account` is absent or invalid.
 - `domain` is absent or invalid.
+- `publicKey` is absent or is not a padded base64 32-byte Ed25519 public key.
 - `displayName` is absent, empty, longer than 31 Unicode code points, or contains
   an unpaired surrogate.
 - `bio` is absent, is not a string, is longer than 120 Unicode code points,

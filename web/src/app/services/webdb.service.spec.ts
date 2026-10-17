@@ -37,7 +37,10 @@ const peerProfile = {
   profileRev: 0,
 };
 
-async function seedGroupFeed(webdb: WebdbService, publisherNamespaceId = 0): Promise<void> {
+async function seedGroupFeed(
+  webdb: WebdbService,
+  publisherNamespaceId = 0,
+): Promise<void> {
   await webdb.mergeThreadStates([
     threadFeedSnapshot(9, {
       type: 'GROUP',
@@ -2046,7 +2049,18 @@ describe('WebdbService', () => {
         lastMentionSeq: null,
         previews: [],
       };
-      await webdb.mergeThreadStates([head], 4);
+      const delivered: unknown[] = [];
+      const committedRows: Array<Promise<unknown>> = [];
+      const subscription = webdb.threadFeedCommitted$.subscribe((event) => {
+        delivered.push(event);
+        committedRows.push(db!.get('threads', 9));
+      });
+      const merged = await webdb.mergeThreadStates([head], 4);
+      expect(delivered).toEqual([{ userId: 1, states: merged }]);
+      expect(await Promise.all(committedRows)).toEqual([
+        expect.objectContaining({ threadId: 9, threadFeedId: 4 }),
+      ]);
+      subscription.unsubscribe();
       expect(await webdb.getThreads()).toEqual([
         expect.objectContaining({
           threadId: 9,
@@ -2299,31 +2313,74 @@ describe('WebdbService', () => {
         threadId: 9,
         publisherNamespaceId: 7,
         type: 'GROUP',
-        group: { account: '!team', namespaceId: 7, memberCount: 0, groupMetaFeedId: '0' },
+        group: {
+          account: '!team',
+          namespaceId: 7,
+          memberCount: 0,
+          groupMetaFeedId: '0',
+        },
       } as never);
       await webdb.applyGroupMetaPage({
         threadId: 9,
         namespaceId: 7,
         page: {
-          account: '!team', mode: 'full', hasMore: false,
-          scannedThrough: '1', groupMetaFeedEndId: '1',
-          items: [{ feedId: '1', operation: 'MEMBER_UPSERT', body: {
-            account: 'alice', namespaceId: 2, role: 'MEMBER', profileRev: 3,
-          } }],
+          account: '!team',
+          mode: 'full',
+          hasMore: false,
+          scannedThrough: '1',
+          groupMetaFeedEndId: '1',
+          items: [
+            {
+              feedId: '1',
+              operation: 'MEMBER_UPSERT',
+              body: {
+                account: 'alice',
+                namespaceId: 2,
+                role: 'MEMBER',
+                profileRev: 3,
+              },
+            },
+          ],
         },
       });
       await webdb.commitResolvedProfile({
-        publisherNamespaceId: 2, profileNamespaceId: 2, account: 'alice', rev: 3,
-        name: 'Wrong diagonal', bio: '', avatarBase64: null,
+        publisherNamespaceId: 2,
+        profileNamespaceId: 2,
+        account: 'alice',
+        rev: 3,
+        name: 'Wrong diagonal',
+        bio: '',
+        avatarBase64: null,
       });
-      expect((await webdb.getGroupMember(9, 'alice', 2))?.resolvedProfileRev).toBeUndefined();
+      expect(
+        (await webdb.getGroupMember(9, 'alice', 2))?.resolvedProfileRev,
+      ).toBeUndefined();
       expect(await webdb.getUnresolvedGroupMetaProfiles()).toContainEqual({
-        type: 'GROUP_MEMBER', threadId: 9, account: 'alice', namespaceId: 2, rev: 3,
+        type: 'GROUP_MEMBER',
+        threadId: 9,
+        account: 'alice',
+        namespaceId: 2,
+        rev: 3,
       });
-      expect(await webdb.commitResolvedGroupMetaProfile(
-        { type: 'GROUP_MEMBER', threadId: 9, account: 'alice', namespaceId: 2, rev: 3 },
-        { namespaceId: 2, account: 'alice', rev: 3, name: 'Correct publisher', bio: '', avatarBase64: null },
-      )).toBe(true);
+      expect(
+        await webdb.commitResolvedGroupMetaProfile(
+          {
+            type: 'GROUP_MEMBER',
+            threadId: 9,
+            account: 'alice',
+            namespaceId: 2,
+            rev: 3,
+          },
+          {
+            namespaceId: 2,
+            account: 'alice',
+            rev: 3,
+            name: 'Correct publisher',
+            bio: '',
+            avatarBase64: null,
+          },
+        ),
+      ).toBe(true);
       expect(await webdb.getGroupMember(9, 'alice', 2)).toMatchObject({
         profileName: 'Correct publisher',
         user: { publisherNamespaceId: 7, profileNamespaceId: 2 },
@@ -2332,7 +2389,11 @@ describe('WebdbService', () => {
         expect.objectContaining({ profileName: 'Correct publisher' }),
       ]);
       expect(await webdb.getUnresolvedGroupMetaProfiles()).not.toContainEqual({
-        type: 'GROUP_MEMBER', threadId: 9, account: 'alice', namespaceId: 2, rev: 3,
+        type: 'GROUP_MEMBER',
+        threadId: 9,
+        account: 'alice',
+        namespaceId: 2,
+        rev: 3,
       });
     });
 
@@ -2425,9 +2486,9 @@ describe('WebdbService', () => {
         group: { memberCount: 2, groupMetaFeedId: '2' },
       });
 
-      expect(
-        await webdb.getGroupMember(9, 'alice', 12),
-      ).toMatchObject({ profileRev: 6 });
+      expect(await webdb.getGroupMember(9, 'alice', 12)).toMatchObject({
+        profileRev: 6,
+      });
 
       expect(
         await webdb.commitResolvedGroupMetaProfile(
@@ -2448,9 +2509,7 @@ describe('WebdbService', () => {
           },
         ),
       ).toBe(true);
-      expect(
-        await webdb.getGroupMember(9, 'alice', 12),
-      ).toMatchObject({
+      expect(await webdb.getGroupMember(9, 'alice', 12)).toMatchObject({
         profileRev: 6,
         resolvedProfileRev: 6,
         profileName: 'Alice in team',
@@ -2480,9 +2539,10 @@ describe('WebdbService', () => {
           groupMetaFeedEndId: '3',
         },
       });
-      expect(
-        await webdb.getGroupMember(9, 'alice', 12),
-      ).toMatchObject({ profileRev: 6, role: 'MEMBER' });
+      expect(await webdb.getGroupMember(9, 'alice', 12)).toMatchObject({
+        profileRev: 6,
+        role: 'MEMBER',
+      });
 
       await webdb.applyGroupMetaPage({
         threadId: 9,
@@ -2764,9 +2824,10 @@ describe('WebdbService', () => {
           role: null,
         }),
       ]);
-      expect(
-        await webdb.getGroupMember(12, 'bob', 12),
-      ).toMatchObject({ role: 'MEMBER', left: false });
+      expect(await webdb.getGroupMember(12, 'bob', 12)).toMatchObject({
+        role: 'MEMBER',
+        left: false,
+      });
       expect((await webdb.getThreads())[0]).toMatchObject({
         group: { memberCount: 2, groupMetaFeedId: '2' },
       });
@@ -2784,11 +2845,27 @@ describe('WebdbService', () => {
           target: { profileNamespaceId: 0, account: '!dev', rev: 1 },
         }),
       ).toBeDefined();
+      const retainedThreads = await webdb.getThreads();
+      const retainedMember = await webdb.getGroupMember(12, 'bob', 12);
       await webdb.beginGroupMetaRecovery(12, '3');
-      expect(await webdb.getGroupMember(12, 'bob', 12)).toBeUndefined();
-      expect((await webdb.getThreads())[0]).toMatchObject({
-        group: { memberCount: 0, groupMetaFeedId: '0' },
-      });
+      expect(await webdb.getGroupMember(12, 'bob', 12)).toEqual(retainedMember);
+      expect(await webdb.getThreads()).toEqual(retainedThreads);
+      await expect(
+        webdb.applyGroupMetaPage({
+          threadId: 12,
+          namespaceId: 0,
+          page: {
+            account: '!dev',
+            mode: 'full',
+            items: [],
+            hasMore: false,
+            scannedThrough: '3',
+            groupMetaFeedEndId: '3',
+          },
+        }),
+      ).resolves.toBeNull();
+      expect(await webdb.getGroupMember(12, 'bob', 12)).toEqual(retainedMember);
+      expect(await webdb.getThreads()).toEqual(retainedThreads);
     });
 
     it('keeps a newly created local group visible with independent relationship and thread feeds', async () => {

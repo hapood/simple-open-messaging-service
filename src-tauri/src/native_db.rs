@@ -20,6 +20,7 @@ pub(crate) mod profile_namespaces;
 mod relationship_projection;
 mod request_store;
 pub(crate) mod state_feed_sync;
+mod thread_feed_commits;
 mod thread_store;
 pub(crate) use client_state::chrono_millis;
 #[cfg(test)]

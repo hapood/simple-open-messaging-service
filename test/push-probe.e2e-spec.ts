@@ -15,7 +15,15 @@ const { sendNotification } = vi.hoisted(() => ({
 }));
 vi.mock('web-push', async (importOriginal) => {
   const actual = await importOriginal<typeof import('web-push')>();
-  return { ...actual, default: { ...actual.default, sendNotification } };
+  const defaultExport = 'default' in actual ? actual.default : actual;
+  if (typeof defaultExport !== 'object' || defaultExport === null) {
+    throw new Error('Unexpected web-push module export shape');
+  }
+  return {
+    ...actual,
+    sendNotification,
+    default: { ...defaultExport, sendNotification },
+  };
 });
 
 describe('Session-scoped push probe HTTP flow', () => {

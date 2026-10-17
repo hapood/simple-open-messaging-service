@@ -154,7 +154,7 @@ The publisher MUST classify an error before sending any resource byte:
 | Failed pinned identity, recognition, or signature                                              | Registered `401` code                  | Reject response data and follow the registry.                                               |
 | No current exact-message authorization for the coordinate                                      | `200 FORBIDDEN`                        | Treat as a permanent business refusal; do not guess another coordinate or degrade the peer. |
 | Authorized message exists but the digest is not bound to it                                    | `200 NOT_FOUND`                        | Retry only after relevant message/resource state changes or manual action.                  |
-| A forward root or its complete closure does not bind the digest                                | `200 NOT_FOUND`                        | Do not substitute child IDs, inner authors, or another publisher.                           |
+| A forward root or its complete closure does not bind the digest                                | `200 NOT_FOUND`                        | Do not substitute child IDs, display snapshots, or another publisher.                           |
 | Binding exists but the complete blob is deleted, missing, or unreadable as a complete resource | `200 NOT_FOUND`                        | Keep the message and mark only the asset unavailable under local policy.                    |
 | Media-operation quota is exhausted                                                             | `200 FEDERATION_QUOTA_EXCEEDED`        | Accept no bytes; wait at least `data.retryAfter`; do not alter peer lifecycle.              |
 | Valid single range is outside the resource                                                     | `416 FEDERATION_RANGE_NOT_SATISFIABLE` | Validate `Content-Range` and stop that offset; do not infer absence.                        |
@@ -231,8 +231,10 @@ Success `data` is the closed `ForwardWireBundle` defined by
 
 - `id` equals the path `bundleId` and is the digest of the canonical body. A `children[].id` is not an independent query target.
 - `children` is the flat set of all nested child bundles and has unique IDs in
-  this response. Internal references may form cycles; no recursive-depth test
-  is applied.
+  this response. Multiple messages MAY share a child digest without duplicating
+  its body in `children`. Bundle dependencies MUST be acyclic; self-cycles and mutual
+  cycles MUST be rejected. The flat representation does not exempt dependencies
+  from cycle validation.
 - Each bundle has an independent message-ID space. `quoteTargetId`, when positive, resolves
   only within its enclosing `messages` array.
 - The publisher MUST return its previously published closure in full. v1 sets
@@ -240,8 +242,10 @@ Success `data` is the closed `ForwardWireBundle` defined by
   it under finite local limits but MUST NOT commit a partial closure or block
   the outer FORWARD message/query cursor.
 - `assets` is the deduplicated union of all assets referenced by the root and
-  child messages and authors.
-- Counts are derived from the received arrays and are not wire fields.
+  child messages and profile snapshots.
+- Counts are derived, not wire fields. Message-count limits count every child
+  reference occurrence recursively, even when its body is shared; depth follows
+  the longest reference path. Asset counts use the deduplicated manifest.
 - The consumer retains the binding between the closure and the outer FORWARD
   message through which it was discovered.
 
@@ -268,7 +272,7 @@ For GROUP, the consumer MUST use `author.account` and resolve the domain through
 For P2P, it MUST reconstruct that Address from `author.ref`, the thread accounts,
 and the authenticated publisher/consumer identities under Message Envelope Section 2.
 Both variants carry a nested `author`, without a domain field. The request MUST NOT contain a bundle ID.
-An inner author, child ID, local
+A display snapshot, child ID, local
 bundle message ID, and `quoteTargetId` are not authorization coordinates. The
 publisher re-establishes the outer FORWARD binding, durable audience, and the
 digest's membership in that root's complete closure before returning bytes.
@@ -296,14 +300,13 @@ digest-based retrieval from another publisher.
 imply a tombstone. A saved summary or partial closure MUST NOT be presented as
 the complete bundle. The consumer validates the entire closed shape, flat
 reference closure, local message-ID scopes, its local finite limits, and every
-descriptor before one atomic commit. Internal cycles are valid references; any
-other failure rejects the entire bundle without retaining an authorizing
-partial graph.
+descriptor before one atomic commit. A dependency cycle or any other validation
+failure rejects the entire bundle without retaining an authorizing partial graph.
 
 ### 4.5 Minimal example
 
 ```http
-GET /s2s/v1/forward-bundles/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HTTP/1.1
+GET /s2s/v1/forward-bundles/a1857d82c45ec933fedd5249a6d271a5e63d207f1c7ed55a60fd797cddf79b4a HTTP/1.1
 Host: b.example
 Date: Tue, 14 Nov 2023 22:13:20 GMT
 Content-Digest: sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:
@@ -319,14 +322,10 @@ Content-Type: application/json
   "code": 0,
   "message": "successful",
   "data": {
-    "id": "01hzy3m8x7v6t5r4q2p1n0k9jc",
+    "id": "a1857d82c45ec933fedd5249a6d271a5e63d207f1c7ed55a60fd797cddf79b4a",
     "messages": [
       {
         "id": 1,
-        "author": {
-          "account": "alice",
-          "domain": "b.example"
-        },
         "profile": {
           "displayName": "Alice"
         },

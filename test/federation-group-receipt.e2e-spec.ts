@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
 import { ContentType } from '../src/database/enums.js';
@@ -13,13 +21,24 @@ import { FederationInboundMessageRouteService } from '../src/federation/federati
 import { FederationInboundMessageValidatorService } from '../src/federation/federation-inbound-message-validator.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
 import { FederationThreadAccessService } from '../src/federation/federation-thread-access.service.js';
+import { ProfileNamespaceFeedService } from '../src/federation/profile-namespace-feed.service.js';
+import { ProfileNamespaceChangeStore } from '../src/federation/profile-namespace-change-store.service.js';
+import { ProfileNamespaceService } from '../src/federation/profile-namespace.service.js';
+import { KeypairService } from '../src/federation/keypair.service.js';
+import { SseService } from '../src/gateway/sse.service.js';
+import { CallStateRegistry } from '../src/gateway/call-state.registry.js';
 import { wirePayloadDigest } from '../src/federation/federated-message-content.js';
 import type { FederationMessageFeedMessage } from '../src/federation/federation-message-feed.service.js';
 import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { truncateTablesForTest } from './support/truncate';
+import { FederationMessageFeedService } from '../src/federation/federation-message-feed.service.js';
+import {
+  assertFederationMessageWire,
+  assertFederationWireSchema,
+} from './support/federation-wire-schema.js';
 
-describe('third-party group message processing receipts', () => {
+describe('group origin rejects mirror copies as processing receipts', () => {
   const authorDomain = 'author-a.test';
   const mirrorDomain = 'mirror-b.test';
   const groupAccount = '!receiptgroup';
@@ -27,6 +46,7 @@ describe('third-party group message processing receipts', () => {
   let module: TestingModule;
   let database: DatabaseService;
   let pages: FederationInboundMessagePageService;
+  let store: FederationInboundMessageStoreService;
   let namespaces: FederationNamespaceService;
   let threadId: number;
   let messageId: bigint;
@@ -36,33 +56,44 @@ describe('third-party group message processing receipts', () => {
   beforeAll(async () => {
     module = await Test.createTestingModule({
       imports: [DatabaseModule],
+      providers: [
+        FederationNamespaceService,
+        ProfileNamespaceFeedService,
+        ProfileNamespaceChangeStore,
+        ProfileNamespaceService,
+        KeypairService,
+        SseService,
+        CallStateRegistry,
+      ],
     }).compile();
     database = module.get(DatabaseService);
-    namespaces = new FederationNamespaceService(database);
+    namespaces = module.get(FederationNamespaceService);
     const threadAccess = new FederationThreadAccessService(
       database,
       namespaces,
     );
+    store = new FederationInboundMessageStoreService(
+      threadAccess,
+      undefined as never,
+      undefined as never,
+      new DeletedMessageService(database),
+    );
+    vi.spyOn(store, 'applyProcessingReceipt');
+    vi.spyOn(store, 'store');
     pages = new FederationInboundMessagePageService(
       threadAccess,
       new FederationInboundMessageValidatorService(),
       new FederationInboundMessageRouteService(),
-      // The receipt path delegates to the store; construct a real one so applyProcessingReceipt
-      // runs against the actual tables (insert paths need forwardBundles/quota and stay unused).
-      new FederationInboundMessageStoreService(
-        threadAccess,
-        undefined as never,
-        undefined as never,
-        new DeletedMessageService(database),
-      ),
+      store,
     );
   });
   afterAll(async () => module.close());
 
   beforeEach(async () => {
+    vi.clearAllMocks();
     await truncateTablesForTest(
       database.pool,
-      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "Account", "GroupAccount", "Profile", "MessageThread", "DurableTask", "RelationshipIntent", "PeerStateFeed" RESTART IDENTITY CASCADE',
     );
     authorNamespace = await seedFederatedPeerNamespace(
       database.db,
@@ -88,8 +119,8 @@ describe('third-party group message processing receipts', () => {
       })
       .returning();
     threadId = thread.id;
-    // The receipt sender's member is Bob; the original author Alice need not
-    // still be a member for Bob's mirror to acknowledge a previously published copy.
+    // Bob is a valid member at this home. That does not authorize its mirror
+    // to submit Alice's origin-distributed copy as a processing receipt.
     await database.db.insert(tables.relationshipPair).values({
       kind: 'GROUP_MEMBER',
       endpointAType: 'GROUP',
@@ -179,7 +210,10 @@ describe('third-party group message processing receipts', () => {
       profileNamespaceId: 0,
       content: JSON.stringify({ text: 'from Alice' }),
       updatedAt: createdAt,
+      federationPayloadVerification: 'UNVERIFIED',
     });
+    expect(store.applyProcessingReceipt).not.toHaveBeenCalled();
+    expect(store.store).not.toHaveBeenCalled();
     const thread = await database.db.query.messageThread.findFirst({
       where: eq(tables.messageThread.id, threadId),
     });
@@ -189,7 +223,113 @@ describe('third-party group message processing receipts', () => {
   }
 
   it.each([false, true])(
-    'associates and replays a receipt without creating another message or publication (reverse=%s)',
+    'filters publisher-relative zero on mirror publication in both cursor directions (reverse=%s)',
+    async (reverse) => {
+      const [member] = await database.db
+        .insert(tables.account)
+        .values({ account: 'localmember' })
+        .returning();
+      const [mirror] = await database.db
+        .insert(tables.messageThread)
+        .values({
+          type: 'GROUP',
+          groupAccount,
+          groupDomain: authorDomain,
+          authorityNamespaceId: authorNamespace,
+          curSeq: 5,
+          updatedAt: createdAt,
+        })
+        .returning();
+      await database.db
+        .insert(tables.accountThreadState)
+        .values({ accountId: member.id, threadId: mirror.id, role: 'MEMBER' });
+      await database.db.insert(tables.relationshipPair).values({
+        kind: 'GROUP_MEMBER',
+        threadId: mirror.id,
+        active: true,
+        endpointAType: 'USER',
+        endpointAAccount: member.account,
+        endpointANamespaceId: 0,
+        endpointBType: 'GROUP',
+        endpointBAccount: groupAccount,
+        endpointBNamespaceId: authorNamespace,
+      });
+      await database.db.insert(tables.relationshipIntent).values({
+        authorAccount: groupAccount,
+        authorNamespaceId: authorNamespace,
+        receiverAccount: member.account,
+        receiverNamespaceId: 0,
+        profileNamespaceId: 0,
+        status: 'ACCEPTED',
+        profileRev: 0,
+        messageEndSeq: 5,
+        tombstoneEndSeq: 0,
+        requestedAt: createdAt,
+      });
+      await database.db.insert(tables.peerStateFeed).values({
+        namespaceId: authorNamespace,
+        account: groupAccount,
+        eventType: 'THREAD_CONTENT_HEAD',
+        feedId: 1n,
+        body: { messageEndSeq: 5, tombstoneEndSeq: 0 },
+      });
+      for (const seq of [1, 2, 3, 4, 5]) {
+        const local = seq === 2 || seq === 4;
+        const content = JSON.stringify({ text: `mirror-${seq}` });
+        await database.db.insert(tables.message).values({
+          threadId: mirror.id,
+          seq,
+          creatorAccount: local || seq === 5 ? member.account : 'other',
+          publisherNamespaceId: local ? 0 : authorNamespace,
+          profileNamespaceId: seq === 3 ? mirrorNamespace : 0,
+          originSeq: seq === 2 ? null : seq + 10,
+          originServerTime: seq === 2 ? null : createdAt,
+          contentType: 'PURE_TEXT',
+          content,
+          payloadDigest: wirePayloadDigest(ContentType.PURE_TEXT, content),
+          updatedAt: createdAt,
+        });
+      }
+      const feed = new FederationMessageFeedService(database);
+      const first = await feed.query(
+        authorNamespace,
+        { type: 'GROUP', account: groupAccount },
+        reverse ? undefined : 0,
+        1,
+        reverse ? 1 : 5,
+        false,
+        reverse ? 6 : undefined,
+      );
+      assertFederationWireSchema('urn:somfp:v1:message-query', first);
+      expect(first.messages.map((item) => item.seq)).toEqual([reverse ? 4 : 2]);
+      expect(first.hasMore).toBe(true);
+      const second = await feed.query(
+        authorNamespace,
+        { type: 'GROUP', account: groupAccount },
+        reverse ? undefined : first.scannedThrough,
+        1,
+        reverse ? 1 : 5,
+        false,
+        reverse ? first.scannedThrough : undefined,
+      );
+      assertFederationWireSchema('urn:somfp:v1:message-query', second);
+      expect(second.messages.map((item) => item.seq)).toEqual([
+        reverse ? 2 : 4,
+      ]);
+      expect(second.scannedThrough).toBe(reverse ? 1 : 5);
+      expect(second.hasMore).toBe(false);
+      for (const item of [...first.messages, ...second.messages]) {
+        assertFederationMessageWire(item);
+        expect(item.author).toEqual({
+          account: member.account,
+          namespaceId: 0,
+        });
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'skips a mirror copy and its replay without verifying or changing the original (reverse=%s)',
     async (reverse) => {
       expect(await apply(receipt(), reverse)).toEqual([]);
       expect(await apply(receipt(), reverse)).toEqual([]);
@@ -198,7 +338,7 @@ describe('third-party group message processing receipts', () => {
           where: eq(tables.message.id, messageId),
           columns: { federationPayloadVerification: true },
         }),
-      ).toMatchObject([{ federationPayloadVerification: 'VERIFIED' }]);
+      ).toMatchObject([{ federationPayloadVerification: 'UNVERIFIED' }]);
       await expectOriginalUnchanged();
     },
   );

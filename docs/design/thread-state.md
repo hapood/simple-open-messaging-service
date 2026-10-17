@@ -48,10 +48,28 @@ Relationship-intent events still maintain request UI projections, not the
 conversation list. The group roster remains in the independent group-meta
 feed, with its own cursor and reset behavior.
 
+## Committed lifecycle and Group Meta cancellation
+
+Web and Rust publish each successful durable thread-feed page through one
+committed-state subscription path shared by renderer delivery and Meta guards;
+the synchronization return value does not publish the same state again. Rust
+uses synchronous process-local scoped subscriptions so a departure followed by
+re-entry cannot be coalesced away. Callbacks run outside SQLite transactions and
+cache lifetime locks, with user/session/cache generations fencing stale work.
+
+Switching the open chat permits the current Meta page to commit. A membership
+transition to READ_ONLY instead invalidates the in-flight Meta permission token;
+re-entry cannot revive it. Recovery and page application also check the existing
+local ACTIVE state inside their write transaction, without a per-page full
+thread scan. Departure retains cached roster/history rather than clearing it.
+Tombstone synchronization is independent. The server separately rejects local
+full/delta Meta requests without active membership, reading authorization and
+page data in one read-only repeatable-read snapshot.
+
 ## Exact profile resolution
 
 Clients resolve the thread profile with the projection-free `ACCOUNT_PROFILE` demand, using the publisher-scoped subject reference and exact revision. There is no `EXACT` selector.
-On a cache miss the server checks the applicable exact-reference grant, including relationship, thread, message, and group-member evidence. Current cached snapshots are returned before that check; the cache-only wrapper also performs no new disclosure-grant check. This is an unresolved privacy review item in the [closeout audit](../development/documentation-closeout-audit.md), not proof of per-account cache isolation.
+On a cache miss the server checks the applicable exact-reference grant, including relationship, thread, message, and group-member evidence. Exact cached snapshots are intentionally returned without local per-caller disclosure authorization, including after revocation and for unrelated authenticated callers. The cache-only wrapper follows the same read policy but never initiates resolution; an absent exact snapshot returns `NOT_FOUND`. This does not change federation disclosure authorization.
 Different revisions have different in-flight resolution keys. Clients check
 the current session, identity, namespace, and revision before applying results.
 A zero revision is a placeholder and triggers no profile request. Revoked

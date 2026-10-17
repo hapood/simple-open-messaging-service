@@ -245,7 +245,7 @@ export class SendForwardDto {
   @ApiProperty({
     enum: Object.values(ForwardMode),
     description:
-      'DIRECT re-sends exactly one message as the caller; HISTORY creates a chat-record bundle.',
+      'DIRECT re-sends one message as the caller, retaining a FORWARD bundle without adding a layer; HISTORY creates a chat-record bundle.',
   })
   @IsIn(Object.values(ForwardMode))
   mode!: ForwardMode;

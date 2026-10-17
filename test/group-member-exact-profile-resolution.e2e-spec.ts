@@ -1,11 +1,10 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
-import { DatabaseModule } from '../src/database/database.module.js';
+import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
 import { BusinessCode } from '../src/common/business-code.js';
-import { FederationProfileService } from '../src/federation/federation-profile.service.js';
 import { ProfileResolutionCoordinatorService } from '../src/profile-resolution/profile-resolution-coordinator.service.js';
 import {
   ProfileLookup,
@@ -35,7 +34,7 @@ describe('exact profile completion for a federated group member', () => {
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
-      imports: [DatabaseModule],
+      imports: [AppModule],
     }).compile();
     database = mod.get(DatabaseService);
     namespaceId = await seedFederatedPeerNamespace(database.db, domain);
@@ -111,11 +110,7 @@ describe('exact profile completion for a federated group member', () => {
       payloadDigest: 'profile-proof',
       updatedAt: new Date(),
     });
-    subject = new ProfileResolutionCoordinatorService(
-      database,
-      new FederationProfileService(database, {} as never, {} as never),
-      {} as never,
-    );
+    subject = mod.get(ProfileResolutionCoordinatorService);
   });
   afterAll(async () => {
     await mod.close();

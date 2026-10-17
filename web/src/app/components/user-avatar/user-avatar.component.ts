@@ -177,7 +177,11 @@ export class UserAvatarComponent {
       if (explicit) return explicit;
       if (
         this.type() !== UserAvatarType.SELF ||
-        (this.src() && this.src()!.startsWith('/'))
+        // An explicit src overrides the session-profile pin: server asset paths
+        // ("/uploads/...") and locally staged blob: previews (profile-editor
+        // crop preview) both render directly instead of the committed bytes.
+        (this.src() &&
+          (this.src()!.startsWith('/') || this.src()!.startsWith('blob:')))
       )
         return undefined;
       const self = this.userService.sessionProfile();

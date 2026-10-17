@@ -37,7 +37,7 @@ This is a closed schema with no optional fields.
   "originCreatedAt": null,
   "createdAt": 1770000200000,
   "contentType": "FORWARD",
-  "content": "{\"bundleId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+  "content": "{\"bundleId\":\"4ec5f4dbe0209f7e68279871a32b63cca50799d0501ec8ea5de5fba5e3bd5e0a\"}",
   "assets": []
 }
 ```
@@ -57,12 +57,6 @@ interface ForwardChildBundle {
   messages: ForwardBundleMessage[];
 }
 
-interface ForwardAuthor {
-  account: UserAccount;
-  domain: Domain;
-  publicRootKey?: Base64Ed25519Key;
-}
-
 interface ForwardProfileSnapshot {
   displayName: string;
   avatarDigest?: Sha256Hex;
@@ -70,7 +64,6 @@ interface ForwardProfileSnapshot {
 
 interface ForwardBundleMessageBase {
   id: PositiveSafeInteger;
-  author?: ForwardAuthor;
   profile: ForwardProfileSnapshot;
   sentAt: EpochMilliseconds;
   quoteTargetId?: SafeInteger;
@@ -105,33 +98,50 @@ Every object is a closed schema. Inner `content` uses the corresponding message-
 - A positive `quoteTargetId` is resolved only in the same enclosing `messages[]` and MUST NOT cross a bundle boundary. Zero denotes an absent target and does not reference a message ID.
 - An inner message with `contentType: 'FORWARD'` MUST carry `childBundleId`, which MUST match one `children[].id`.
 - A non-FORWARD inner message MUST omit `childBundleId`.
-- Child references may contain self-cycles and mutual cycles. The consumer does not recursively expand the graph; it scans the parent messages and flat children once each.
+- Multiple messages, in the same or different bundles, MAY reference the same child digest. The child body MUST occur only once in the flat `children[]`; every message reference remains present.
+- Bundle dependencies MUST form a directed acyclic graph. Self-cycles and mutual cycles are invalid; the consumer MUST reject a closure containing either. The flat `children[]` representation does not exempt dependencies from cycle validation.
 
-The canonical bundle body is:
+The canonical body for each bundle is:
 
 ```text
 JCS({
-  messages: messages,
-  children: children[].id sorted lexicographically,
-  assets: root.assets sorted by digest
+  messages: bundleMessages,
+  children: directChildDigests sorted lexicographically,
+  assets: bundleAssets sorted by digest
 })
 ```
 
-For a child bundle, `assets` is an empty array. The bundle's own `id` is not included
-in the body. A child reference in a message is replaced by the referenced child's digest
-before hashing. This recursively defines a DAG; cycles are invalid.
+- `bundleMessages` is that bundle's own `messages[]`, in its published order:
+  the root's messages for the root digest, or the selected child's messages for
+  that child digest. It does not include descendant messages.
+- `directChildDigests` is the list of `childBundleId` values extracted from
+  `bundleMessages`. Each direct reference contributes one entry; sorting does
+  not deduplicate entries, including permitted shared-child references. It is
+  not the list of IDs in the response's flat `children[]` closure.
+- `bundleAssets` is the complete response's `assets` manifest for the root and
+  an empty array for every child bundle.
 
-## 5. Authors, quotes, and assets
+For example, for dependencies A → B → C, A's hash input contains `[B.id]` in
+`children`, B's contains `[C.id]`, and C's contains `[]`. The response for A
+still includes both B and C in its flat `children[]` collection.
+
+The digest is the lowercase hexadecimal SHA-256 of the UTF-8 bytes of this JCS
+body. The bundle's own `id` is not included in the body. Before hashing, each
+inner FORWARD message's `childBundleId` and `content.bundleId` MUST name the
+referenced child's digest. This recursively defines a DAG; cycles are invalid.
+
+## 5. Display snapshots, quotes, and assets
 
 - `profile.displayName` is the required immutable nickname snapshot and contains
-  1–30 Unicode code points. It is untrusted display data, not an authorization
+  1–31 Unicode code points, matching the profile and CONTACT_CARD display-name
+  limits so a valid source name can be retained without truncation. It is
+  untrusted display data, not an authorization
   coordinate.
-- `author` is optional. When present, it is a closed provenance snapshot with
-  required `account` and `domain`; `publicRootKey` is optional. A consumer MUST
-  NOT infer a missing author from the nickname. `publicRootKey`, when present,
-  MUST be a canonical padded-base64 Ed25519 public root key value. It is
-  provenance metadata for the author domain/root snapshot and is not a profile
-  lookup key.
+- An inner message carries no author identity object or author account, domain,
+  or root-key fields. `profile` contains only the immutable display snapshot.
+  A consumer MUST NOT infer an author identity from a nickname or avatar, or
+  treat equal display snapshots as proof of a shared author. The outer message's
+  author remains governed by Message Envelope.
 - When the exact profile selected by the source message is unavailable, the
   publisher MUST still provide a stable display name captured from the source
   message identity; it MUST NOT read or substitute a mutable current/default
@@ -155,13 +165,17 @@ before hashing. This recursively defines a DAG; cycles are invalid.
   An inner reply may itself be the target of another inner reply. Each child
   array has an independent reference space.
 - The filename, MIME type, and media kind come from the inner content that references the digest and are not repeated in the asset descriptor.
-- An inner CONTACT_CARD retains its original address and display snapshot; its optional `avatarDigest` participates in the parent asset set like every other inner-content digest.
+- An inner CONTACT_CARD retains its original target address, root key, and display snapshot; these identify the card's subject, not the snapshot message's author. Its optional `avatarDigest` participates in the parent asset set like every other inner-content digest.
 - The deduplicated set of all profile-avatar and inner-content digests MUST exactly equal the parent `assets`.
 - A child has no independent assets array.
-- The consumer computes any locally needed counts from the actual lengths of
-  the parent messages, all child messages, and assets. The publisher does not
-  declare derivable counts on the wire, and the protocol does not prescribe
-  their storage or local use.
+- Expanded message counts include each reference occurrence, not just unique
+  stored bodies: `count(B) = B.messages.length + sum(count(child))` over every
+  child reference in B. Depth is the longest reference path, counting the root
+  as one. Consumers MAY memoize each node's count and depth, but MUST include
+  its cached count again for every reference. Thus two root cards referencing
+  the same 300-message leaf count as 602 messages, not 302. Assets remain
+  deduplicated by digest. The publisher does not declare derivable counts on
+  the wire; local resource limits apply to these expanded counts.
 
 The same federation content-type set applies to inner and outer messages.
 
@@ -173,14 +187,10 @@ The following is the complete response data referenced by the card in Section 2.
 
 ```json
 {
-  "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "id": "4ec5f4dbe0209f7e68279871a32b63cca50799d0501ec8ea5de5fba5e3bd5e0a",
   "messages": [
     {
       "id": 1,
-      "author": {
-        "account": "alice",
-        "domain": "a.example"
-      },
       "profile": {
         "displayName": "Alice"
       },
@@ -201,17 +211,13 @@ An inner FORWARD in the parent messages:
 ```json
 {
   "id": 2,
-  "author": {
-    "account": "alice",
-    "domain": "a.example"
-  },
   "profile": {
     "displayName": "Alice"
   },
   "sentAt": 1769991000000,
   "contentType": "FORWARD",
-  "content": "{\"bundleId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
-  "childBundleId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  "content": "{\"bundleId\":\"5008452681bc195f364698644302bb162efc765f85bd07c0ffbf2a5a7f02649d\"}",
+  "childBundleId": "5008452681bc195f364698644302bb162efc765f85bd07c0ffbf2a5a7f02649d"
 }
 ```
 
@@ -219,14 +225,10 @@ The same response `children[]` MUST contain:
 
 ```json
 {
-  "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "id": "5008452681bc195f364698644302bb162efc765f85bd07c0ffbf2a5a7f02649d",
   "messages": [
     {
       "id": 1,
-      "author": {
-        "account": "bob",
-        "domain": "b.example"
-      },
       "profile": {
         "displayName": "Bob"
       },
@@ -247,7 +249,7 @@ MUST NOT be made.
 
 A consumer MUST validate the complete bundle's closed shape, reference closure, local IDs, actual counts, and asset set before saving it within one commit boundary. It MUST NOT save a partial bundle that could participate in display or resource authorization.
 
-Bundle and CAS requests are always bound to the outer FORWARD message through which the bundle was discovered. A media request uses that message's thread, author, authoritative-publisher `seq`, and digest. A child ID, inner author, bundle-local message ID, or quote target MUST NOT be used as an authorization coordinate.
+Bundle and CAS requests are always bound to the outer FORWARD message through which the bundle was discovered. A media request uses that message's thread, author, authoritative-publisher `seq`, and digest. A child ID, display snapshot, bundle-local message ID, or quote target MUST NOT be used as an authorization coordinate.
 
 ## 9. Required rejections
 
@@ -256,13 +258,13 @@ A consumer MUST reject at least the following cases:
 - Card `bundleId`, request path, and response `id` are not equal.
 - A card or bundle response carries a summary, version, or count field not permitted on the wire.
 - A child ID is duplicated, equals the parent ID, or a `childBundleId` has no matching child.
+- Bundle dependencies contain a self-cycle or mutual cycle.
 - A FORWARD inner message lacks `childBundleId`.
 - A non-FORWARD inner message carries `childBundleId`.
 - A message ID is duplicated within one messages array.
 - A quote is null, negative, fractional, or nonnumeric.
 - The profile-avatar or content-digest set differs from the parent `assets`.
-- `author` carries display fields, or `profile` carries identity fields or a
-  `profileRev`.
+- `profile` carries fields other than `displayName` and optional `avatarDigest`.
 - Any object contains an unknown field.
 - The bundle can be read, validated, or persisted only partially.
 

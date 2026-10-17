@@ -4,22 +4,22 @@ An implementation may claim `SOMFP v1 conformant` and publish `1` in discovery `
 
 ## Mandatory specification modules
 
-| Module                  | Dependencies                  | v1 requirement                                            |
-| ----------------------- | ----------------------------- | --------------------------------------------------------- |
-| Core Protocol           | None                          | Mandatory                                                 |
-| Transport and Security  | Core                          | Mandatory                                                 |
-| Peer Recognition        | Core, Transport               | Mandatory                                                 |
-| State Feed              | Core, Recognition             | Mandatory                                                 |
+| Module                  | Dependencies                  | v1 requirement                                                   |
+| ----------------------- | ----------------------------- | ---------------------------------------------------------------- |
+| Core Protocol           | None                          | Mandatory                                                        |
+| Transport and Security  | Core                          | Mandatory                                                        |
+| Peer Recognition        | Core, Transport               | Mandatory                                                        |
+| State Feed              | Core, Recognition             | Mandatory                                                        |
 | Profile Namespace Feed  | Core, Recognition             | Mandatory namespace bindings and identity-change synchronization |
-| Group Meta Feed         | Core, Recognition, State Feed | Mandatory canonical group-origin roster                   |
-| Profiles                | Core, Group Meta, Message     | Mandatory public and exact profile lookup                 |
-| Message Query           | Core, Recognition             | Mandatory                                                 |
-| Message Tombstone Query | Core, Message                 | Mandatory                                                 |
-| Message Provenance      | Core, Recognition, Message    | Mandatory batched origin attestation of a content digest   |
-| Message                 | Core                          | Mandatory, including every v1 content type                |
-| Resources               | Core, Message                 | Mandatory                                                 |
-| Call Profile            | Core, Transport, Message      | Mandatory S2S signaling and endpoint WebRTC/JSEP behavior |
-| Stable Error Registry   | Every operation               | Mandatory                                                 |
+| Group Meta Feed         | Core, Recognition, State Feed | Mandatory canonical group-origin roster                          |
+| Profiles                | Core, Group Meta, Message     | Mandatory public and exact profile lookup                        |
+| Message Query           | Core, Recognition             | Mandatory                                                        |
+| Message Tombstone Query | Core, Message                 | Mandatory                                                        |
+| Message Provenance      | Core, Recognition, Message    | Mandatory batched origin attestation of a content digest         |
+| Message                 | Core                          | Mandatory, including every v1 content type                       |
+| Resources               | Core, Message                 | Mandatory                                                        |
+| Call Profile            | Core, Transport, Message      | Mandatory S2S signaling and endpoint WebRTC/JSEP behavior        |
+| Stable Error Registry   | Every operation               | Mandatory                                                        |
 
 JSON Schema, the HTTP manifest, and test vectors are non-normative validation artifacts, but a formal release must not ship with a known conflict between those artifacts and the normative text. Passing these artifacts does not by itself prove compliance with the timing, security, authorization, and durable-state requirements in the normative text.
 
@@ -153,18 +153,42 @@ observable requirements:
 
 ## Independent validation
 
-Run this command from the repository root:
+The specification and its non-normative validator are separate distributions.
+Use the SOMFP offline validator **1.0.0-draft.0**, including its dependency lock
+and CLI regression tests. With Node.js 22.18.0 or newer and npm, run from the
+validator directory; replace `/path/to/spec` with the absolute path to the copied
+specification directory containing `RELEASE.json`:
 
 ```bash
-npm run federation:conformance
+npm ci --ignore-scripts
+npm run conformance -- --spec /path/to/spec
+SOMFP_SPEC_DIR=/path/to/spec npm test
+npm run typecheck
 ```
 
-Validate third-party JSON with:
+No SOMS checkout, database, backend build, or root-package dependency installation
+is required. Dependency installation requires access to the npm registry or an
+appropriately populated npm cache; validation itself performs no network calls.
+The validator bundle must include its `package.json`, `package-lock.json`,
+source, tests, type-check configuration, and license. Those tool files are not
+part of the specification package. Do not distribute `node_modules/` in either
+bundle.
+
+Validate third-party JSON from the validator directory with:
 
 ```bash
-npm run federation:conformance -- \
+npm run conformance -- \
+  --spec /path/to/spec \
   --schema urn:somfp:v1:call \
   --file ./call.json
 ```
 
-The CLI reads only the `spec/v1` release package and does not import the SOMS implementation under `src/`. Each implementation maintains its own route, business-code, and state-machine tests; those tests cannot replace independent validation of this release package.
+`--spec` explicitly selects the specification package; there is no implicit
+checkout-relative default. Relative `--spec` and `--file` paths are resolved
+against the CLI's working directory. Message-page
+and individual-message validation also parses `content` and checks the declared
+content-type schema. The validator rejects incomplete or unknown CLI arguments.
+
+Each implementation maintains its own route, business-code, and state-machine
+tests; those tests cannot replace independent validation of this release package.
+Passing the offline checks does not certify runtime conformance.

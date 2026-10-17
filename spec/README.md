@@ -1,6 +1,6 @@
 # Simple Open Messaging Federation Protocol Specification
 
-This directory publishes the **Simple Open Messaging Federation Protocol** (SOMFP) for independent implementers. The normative text defines only the observable, interoperable wire contract between nodes. SOMS is the reference implementation; its implementation audits, internal design, and operations documentation live in [`docs/`](../docs/) and cannot override this specification.
+This directory publishes the **Simple Open Messaging Federation Protocol** (SOMFP) for independent implementers. The normative text defines only the observable, interoperable wire contract between nodes. SOMS is the reference implementation; its implementation audits, internal design, and operations documentation are outside this release package and cannot override this specification.
 
 ## Directory layout
 
@@ -34,6 +34,18 @@ spec/
 The core protocol and its referenced subject specifications jointly define v1. The machine-readable package bearing the same version supports automated validation. If normative text conflicts with a Schema, test vector, or tool, the normative text prevails and the other artifact should be corrected in the same review revision.
 
 Protocol changes and releases follow [Governance](./GOVERNANCE.md). Security issues follow the [Security Policy](./SECURITY.md). `RELEASE.json` provides version metadata to release tools but does not alter the normative text.
+
+## Independent validation
+
+This specification package contains protocol text, schemas, and vectors, not
+an npm project. The accompanying SOMFP offline validator **1.0.0-draft.0** is a
+separate tool distribution with its own dependency lock and regression tests.
+It accepts the copied specification directory through `--spec`; neither package
+requires a SOMS checkout or a database.
+
+See [conformance](./v1/CONFORMANCE.md#independent-validation) for reproducible
+installation and validation commands. The tool is a non-normative validation
+artifact, not a runtime conformance certification.
 
 ## Release status
 

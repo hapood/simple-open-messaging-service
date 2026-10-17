@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { localIdentityDomain } from './support/local-domain.js';
+import { Test, type TestingModule } from '@nestjs/testing';
+import { AppModule } from '../src/app.module.js';
 import { withMessageDigest } from './support/message-fixture.js';
 import { and, eq } from 'drizzle-orm';
 import { DatabaseService } from '../src/database/database.service.js';
@@ -18,7 +19,6 @@ import {
   threadAudience,
 } from '../src/database/schema.js';
 import { FederationProfileService } from '../src/federation/federation-profile.service.js';
-import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 
 describe('exact account profile by current account evidence', () => {
@@ -28,7 +28,7 @@ describe('exact account profile by current account evidence', () => {
   const signerUser = `peer-${suffix}`;
   const remoteGroup = `!mirror-${suffix}`;
   const localGroup = `!origin-${suffix}`;
-  const ourDomain = loadFederationConfig().domain;
+  let mod: TestingModule;
   let database: DatabaseService;
   let profiles: FederationProfileService;
   let ns: number;
@@ -48,7 +48,7 @@ describe('exact account profile by current account evidence', () => {
     database.db
       .update(peerStateFeed)
       .set({
-        body: { messageEndSeq: end },
+        body: { messageEndSeq: end, tombstoneEndSeq: 0 },
         updatedAt: new Date(),
       })
       .where(
@@ -59,8 +59,10 @@ describe('exact account profile by current account evidence', () => {
       );
 
   beforeAll(async () => {
-    database = new DatabaseService();
-    profiles = new FederationProfileService(database, {} as never, {} as never);
+    // Resolve real dependencies without starting schedulers or listeners.
+    mod = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    database = mod.get(DatabaseService);
+    profiles = mod.get(FederationProfileService);
     ns = await seedFederatedPeerNamespace(database.db, signer);
     outsiderNamespaceId = await seedFederatedPeerNamespace(
       database.db,
@@ -74,7 +76,6 @@ describe('exact account profile by current account evidence', () => {
     await database.db.insert(profileTable).values([
       {
         account: localUser,
-        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 4,
@@ -82,7 +83,6 @@ describe('exact account profile by current account evidence', () => {
       },
       {
         account: localUser,
-        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 7,
@@ -90,8 +90,6 @@ describe('exact account profile by current account evidence', () => {
       },
       {
         account: localGroup,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 3,
@@ -99,8 +97,6 @@ describe('exact account profile by current account evidence', () => {
       },
       {
         account: localGroup,
-        domain: localIdentityDomain(),
-        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 5,
@@ -270,25 +266,21 @@ describe('exact account profile by current account evidence', () => {
     );
     await database.db.insert(peerStateFeed).values([
       {
-        peerDomain: signer,
         namespaceId: ns,
         account: localUser,
-        domain: ourDomain,
         eventType: 'THREAD_CONTENT_HEAD',
         subjectAccount: signerUser,
         subjectNamespaceId: ns,
         feedId: 1n,
-        body: { messageEndSeq: 0 },
+        body: { messageEndSeq: 0, tombstoneEndSeq: 0 },
         updatedAt: new Date(),
       },
       {
-        peerDomain: signer,
         namespaceId: ns,
         account: remoteGroup,
-        domain: ourDomain,
         eventType: 'THREAD_CONTENT_HEAD',
         feedId: 2n,
-        body: { messageEndSeq: 0 },
+        body: { messageEndSeq: 0, tombstoneEndSeq: 0 },
         updatedAt: new Date(),
       },
     ]);
@@ -332,13 +324,16 @@ describe('exact account profile by current account evidence', () => {
     await database.db
       .delete(profileTable)
       .where(eq(profileTable.account, localUser));
-    await database.onApplicationShutdown();
+    await mod.close();
   });
 
   beforeEach(async () => {
     await database.db
       .update(peerStateFeed)
-      .set({ body: { messageEndSeq: 0 }, updatedAt: new Date() })
+      .set({
+        body: { messageEndSeq: 0, tombstoneEndSeq: 0 },
+        updatedAt: new Date(),
+      })
       .where(eq(peerStateFeed.namespaceId, ns));
     await database.db
       .delete(threadAudience)
@@ -401,7 +396,6 @@ describe('exact account profile by current account evidence', () => {
     expect(await userProfile(7)).toBeNull();
     await database.db.insert(threadAudience).values({
       threadId: p2pThreadId,
-      targetDomain: signer,
       targetNamespaceId: ns,
       messageAccessAfterSeq: 1,
     });

@@ -157,7 +157,7 @@ The request is a projection-free exact profile demand:
 
 The request carries no `threadId`, `messageSeq`, Meta feed coordinate, selector, or separate evidence
 object. Clients use the exact identity and revision already present in visible thread, relationship,
-or group-meta records. Current implementation returns a cached exact snapshot before checking the caller's disclosure grant; authorization gates new fetch work on a cache miss. The authenticated `{ demand, evidence: null }` wrapper performs cache-only lookup and does not initiate a fetch. This cache-read disclosure policy is an unresolved privacy review item, not a guarantee of per-user authorization before every cache read; see the [closeout audit](../development/documentation-closeout-audit.md). `READY.profile` includes both `publisherNamespaceId`
+or group-meta records. Exact cached snapshots are returned without local per-caller disclosure authorization; this is intentional policy, including after relationship revocation or for an unrelated authenticated caller. Authorization gates new fetch work on a cache miss, not reads of existing cached snapshots. The authenticated `{ demand, evidence: null }` wrapper performs cache-only lookup, returns `NOT_FOUND` for an absent exact snapshot, and never initiates a fetch. This does not change S2S disclosure authorization or the exact publisher/namespace/account/revision cache key. `READY.profile` includes both `publisherNamespaceId`
 and `profileNamespaceId`; `PENDING.key` is the expected `{ publisherNamespaceId, profileNamespaceId,
 account, rev }` tuple. Domain is resolved through the publisher-scoped namespace binding and is not a profile-demand field. Completion is announced by the authenticated event stream with the same
 tuple and clients then reread their local profile store.
@@ -288,10 +288,14 @@ under `/group/*` because the group, rather than the current user, authors that d
 
 ### POST `/send-forward` — Send an immutable forwarded-message bundle
 
-- **Body**: `{ threadId, sourceMessages: [{ threadId, seq }], clientMessageId }` (1–100 source messages).
-- **Behavior**: the server, never the client, snapshots sender display data and content into the `ForwardBundle.messages` JSONB array. `ForwardBundleDependency` indexes directly nested bundles for closure traversal. Attachment and avatar bytes remain deduplicated CAS objects referenced by `ForwardBundleAsset`. The resulting `Message` has `contentType: 'FORWARD'`; its small JSON content contains only `bundleId`, up to three 100-grapheme summary lines and counts.
-- **Depth**: a leaf bundle is depth 1 and a parent is `1 + max(child.depth)`. Maximum depth is 3. Attempting to forward an existing depth-3 card returns `30004`; the server recomputes this regardless of frontend checks.
+- **Body**: `{ threadId, sourceMessages: [{ threadId, seq }], mode: 'DIRECT'|'HISTORY', clientMessageId, quoteTargetSeq? }` (1–100 source messages).
+- **DIRECT**: requires exactly one visible source and re-sends it as the current caller, removing the source's outer reply context. For a `FORWARD` card, it preserves the complete bound bundle, its historical display snapshots and assets, and its existing depth; it neither flattens the card into summary text nor adds a wrapper. The new message has its own bundle binding and supplies destination readers' authorization.
+- **HISTORY**: the server, never the client, snapshots sender display data and content into the `ForwardBundle.messages` JSONB array. `ForwardBundleDependency` indexes directly nested bundles for closure traversal. Attachment and avatar bytes remain deduplicated CAS objects referenced by `ForwardBundleAsset`. The resulting `Message` has `contentType: 'FORWARD'`; its small JSON content contains `bundleId`, up to two 100-grapheme summary lines and counts.
+- **Depth**: a leaf bundle is depth 1 and a HISTORY parent is `1 + max(child.depth)`. Maximum depth is 3. Wrapping an existing depth-3 card in HISTORY returns `30004`; DIRECT can retain that card without increasing depth. The server validates these limits regardless of frontend checks.
+- **Shared children and counts**: multiple inner messages may reference the same child bundle. The closure carries one body per digest, and stored dependency edges are deduplicated per parent. Every reference contributes to the expanded message count, including descendants: two cards pointing to a 300-message child count as 602. The server's maximum is 500 expanded messages, not 500 unique stored messages. Assets remain deduplicated, and sharing grants no additional resource access.
 - **History replies**: bundle text contains only `text`; `quoteTargetId` on the entry refers to a message ID in that same bundle array. Selected reply targets are remapped to those IDs; absent or unselected targets are emitted as `0`. Imported positive references without a target entry are also displayed as unavailable. DIRECT mode strips reply context.
+- **Snapshot presentation**: inner bundle messages carry only frozen `profile.displayName` and optional `profile.avatarDigest`, not an author account, domain, or public key. Equal names/avatars do not establish a shared author; each detail row is presented independently. CONTACT_CARD content retains its own target address and public key. Browser, desktop, and Android share this detail renderer; native HTTP and media access still use Rust transport.
+- **Identity**: the card's `bundleId` and the read route use the stable 64-character SHA-256 content digest. Local bigint record IDs and private nested-storage references never appear in client cards or public closures, and are not accepted as aliases by the read route.
 - **Read**: `GET /forward-bundles/:bundleId` returns the visible root and its complete child closure after checking that the caller participates in a thread containing the root card.
 
 ### POST `/query-messages` — Paginated history
@@ -658,19 +662,19 @@ data: <json>
 
 ### Event list (backend → frontend)
 
-| Event                        | Purpose                                                             | Recovery source                              |
-| ---------------------------- | ------------------------------------------------------------------- | -------------------------------------------- |
-| `HELLO`                      | connection handshake and current high-water marks                   | sent on every connection                     |
-| `PUSH_SUBSCRIPTION_CHANGED`  | session-specific push recovery `{ sessionId, pushSubscriptionRev }` | `HELLO.pushSubscriptionRev`                  |
-| `STATE_FEED_UPDATED`         | identity-only Client State Feed wake `{ feedId }`                   | `HELLO.stateFeedEndId` + ranged state pull   |
-| `THREAD_FEED_UPDATED`        | one-second thread-feed hint `{ threadFeedEndId, sseUuid? }`         | `HELLO.threadFeedEndId` + ranged thread pull |
-| `MEDIA_MESSAGE_DOWNLOAD_PROGRESS` | temporary media-message download progress `{ threadId, seq, completedFiles, totalFiles, activeFile, status }` | terminal frame closes the temporary stream |
-| `MEDIA_FILE_DOWNLOAD_PROGRESS`    | temporary single-file byte progress `{ threadId, seq, file, loaded, total, status }`                         | terminal frame closes the temporary stream |
-| `CALL_EVENT` / `CALL_SIGNAL` | ephemeral call lifecycle and WebRTC signaling                       | active-call snapshot/new negotiation         |
-| `FORCE_LOGOUT`               | terminate a revoked session                                         | authentication state                         |
-| `PROFILE_AVAILABLE` / `PROFILE_UNAVAILABLE` | exact profile-resolution result wake, keyed by publisher/subject/account/revision | retry exact profile demand |
-| `PROFILE_NAMESPACE_UPDATED` | profile namespace invalidation `{ end }` | `/user/profile-namespace-feed` |
-| `SSE_REPLACED`               | stop an old connection when its device session opens a new SSE      | new connection's `HELLO`                     |
+| Event                                       | Purpose                                                                                                       | Recovery source                              |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `HELLO`                                     | connection handshake and current high-water marks                                                             | sent on every connection                     |
+| `PUSH_SUBSCRIPTION_CHANGED`                 | session-specific push recovery `{ sessionId, pushSubscriptionRev }`                                           | `HELLO.pushSubscriptionRev`                  |
+| `STATE_FEED_UPDATED`                        | identity-only Client State Feed wake `{ feedId }`                                                             | `HELLO.stateFeedEndId` + ranged state pull   |
+| `THREAD_FEED_UPDATED`                       | one-second thread-feed hint `{ threadFeedEndId, sseUuid? }`                                                   | `HELLO.threadFeedEndId` + ranged thread pull |
+| `MEDIA_MESSAGE_DOWNLOAD_PROGRESS`           | temporary media-message download progress `{ threadId, seq, completedFiles, totalFiles, activeFile, status }` | terminal frame closes the temporary stream   |
+| `MEDIA_FILE_DOWNLOAD_PROGRESS`              | temporary single-file byte progress `{ threadId, seq, file, loaded, total, status }`                          | terminal frame closes the temporary stream   |
+| `CALL_EVENT` / `CALL_SIGNAL`                | ephemeral call lifecycle and WebRTC signaling                                                                 | active-call snapshot/new negotiation         |
+| `FORCE_LOGOUT`                              | terminate a revoked session                                                                                   | authentication state                         |
+| `PROFILE_AVAILABLE` / `PROFILE_UNAVAILABLE` | exact profile-resolution result wake, keyed by publisher/subject/account/revision                             | retry exact profile demand                   |
+| `PROFILE_NAMESPACE_UPDATED`                 | profile namespace invalidation `{ end }`                                                                      | `/user/profile-namespace-feed`               |
+| `SSE_REPLACED`                              | stop an old connection when its device session opens a new SSE                                                | new connection's `HELLO`                     |
 
 Business projections commit before their feed wakes. `PROFILE_AVAILABLE` and `PROFILE_UNAVAILABLE` deliver session-scoped exact-resolution completion keys; `PROFILE_NAMESPACE_UPDATED` carries the namespace invalidation head. They are not message bodies or a substitute for durable feed recovery.
 

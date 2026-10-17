@@ -99,17 +99,14 @@ describe('group authority media authorization for a different member peer', () =
     });
     await database.db.insert(tables.threadAudience).values({
       threadId: thread.id,
-      targetDomain: readerDomain,
       targetNamespaceId: readerNs,
     });
     await database.db.insert(tables.peerStateFeed).values({
       namespaceId: readerNs,
-      peerDomain: readerDomain,
       account: groupAccount,
-      domain: loadFederationConfig().domain,
       eventType: 'THREAD_CONTENT_HEAD',
       feedId: BigInt(counter),
-      body: { messageEndSeq: 5 },
+      body: { messageEndSeq: 5, tombstoneEndSeq: 0 },
       updatedAt: new Date(),
     });
     const [message] = await database.db
@@ -173,7 +170,6 @@ describe('group authority media authorization for a different member peer', () =
     const value = await fixture();
     await database.db.insert(tables.threadAudience).values({
       threadId: value.threadId,
-      targetDomain: outsiderDomain,
       targetNamespaceId: outsiderNs,
     });
     await expect(
@@ -334,12 +330,10 @@ describe('group authority media authorization for a different member peer', () =
     });
     await database.db.insert(tables.peerStateFeed).values({
       namespaceId: authorNs,
-      peerDomain: authorDomain,
       account: value.groupAccount,
-      domain: loadFederationConfig().domain,
       eventType: 'THREAD_CONTENT_HEAD',
       feedId: 1n,
-      body: { messageEndSeq: 5 },
+      body: { messageEndSeq: 5, tombstoneEndSeq: 0 },
       updatedAt: new Date(),
     });
     const originTime = new Date('2026-09-01T00:00:00Z');

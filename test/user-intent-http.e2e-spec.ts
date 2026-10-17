@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { localIdentityDomain } from './support/local-domain.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { and, eq, or } from 'drizzle-orm';
@@ -73,7 +72,6 @@ describe('User intent HTTP contract e2e', () => {
       ownerId,
       {
         account: peerAccount,
-        domain: localIdentityDomain(),
         namespaceId: 0,
       },
     );
@@ -188,7 +186,6 @@ describe('User intent HTTP contract e2e', () => {
 
     const { pair } = await findP2PRelationship(database.db, inviter.id, {
       account: 'invitee',
-      domain: localIdentityDomain(),
       namespaceId: 0,
     });
     expect(pair?.active).toBe(true);
@@ -280,7 +277,6 @@ describe('User intent HTTP contract e2e', () => {
 
     const { pair } = await findP2PRelationship(database.db, inviter.id, {
       account: 'invitee',
-      domain: localIdentityDomain(),
       namespaceId: 0,
     });
     expect(pair?.active).toBe(false);
@@ -361,12 +357,11 @@ describe('User intent HTTP contract e2e', () => {
       });
 
     // Expire the pending direction behind the command's back.
-    const { _pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
+    const { firstEndpoint, secondEndpoint } = await findP2PRelationship(
       database.db,
       inviter.id,
       {
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       },
     );
@@ -426,7 +421,6 @@ describe('User intent HTTP contract e2e', () => {
     );
     const refreshed = await findP2PRelationship(database.db, inviter.id, {
       account: 'invitee',
-      domain: localIdentityDomain(),
       namespaceId: 0,
     });
     expect(refreshed.pair?.active).toBe(false);
@@ -444,7 +438,6 @@ describe('User intent HTTP contract e2e', () => {
     expect(typeof crossed.body.data.threadId).toBe('number');
     const activated = await findP2PRelationship(database.db, inviter.id, {
       account: 'invitee',
-      domain: localIdentityDomain(),
       namespaceId: 0,
     });
     expect(activated.pair?.active).toBe(true);
@@ -461,12 +454,11 @@ describe('User intent HTTP contract e2e', () => {
         account: 'invitee',
         namespaceId: 0,
       });
-    const { _pair, firstEndpoint, secondEndpoint } = await findP2PRelationship(
+    const { firstEndpoint, secondEndpoint } = await findP2PRelationship(
       database.db,
       inviter.id,
       {
         account: 'invitee',
-        domain: localIdentityDomain(),
         namespaceId: 0,
       },
     );

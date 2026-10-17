@@ -82,7 +82,7 @@ async function authorizeDigest(
   const seq = advanced.curSeq;
   const author = await database.query.account.findFirst({
     where: eq(user.id, userId),
-    columns: { account: true, domain: true },
+    columns: { account: true },
   });
   if (!author) throw new Error('test message author is missing');
   const [msg] = await database
@@ -93,7 +93,8 @@ async function authorizeDigest(
         content: JSON.stringify({}),
         threadId: thread.id,
         creatorAccount: author.account,
-
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
         seq,
         updatedAt: now,
       }),
@@ -118,9 +119,9 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
   beforeAll(async () => {
     ({ app, database } = await createTestApp((builder) => {
       builder.overrideProvider(MediaMetadataService).useValue({
-        fromBuffer: vi.fn(
+        fromFile: vi.fn(
           async (
-            _input: Buffer,
+            _path: string,
             intent: 'IMAGE' | 'VIDEO' | 'AUDIO' | 'FILE',
           ) =>
             intent === 'IMAGE'
@@ -131,7 +132,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
                   ? { duration: 1 }
                   : {},
         ),
-      });
+      } satisfies Pick<MediaMetadataService, 'fromFile'>);
     }));
     port = (app.getHttpServer().address() as { port: number }).port;
 

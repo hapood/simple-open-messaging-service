@@ -1,7 +1,15 @@
-import { Logger, type INestApplication } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { eq } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+  type MockInstance,
+} from 'vitest';
 import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { messageThread } from '../src/database/schema.js';
@@ -28,7 +36,7 @@ describe('execution measurement with PostgreSQL', () => {
   let groups: GroupService;
   let dispatcher: DurableTaskDispatcherService;
   let disbandHandler: DisbandGroupTaskHandler;
-  let debug: ReturnType<typeof vi.spyOn>;
+  let debug: MockInstance<Logger['debug']>;
 
   beforeAll(async () => {
     debug = vi
@@ -69,10 +77,7 @@ describe('execution measurement with PostgreSQL', () => {
       },
     ]);
 
-    const owner = await seedUser(
-      module as unknown as INestApplication,
-      'measurement-owner',
-    );
+    const owner = await seedUser(module, 'measurement-owner');
     const beforeCreate = measurements().length;
 
     const created = await groups.createNewGroup({

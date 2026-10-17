@@ -321,7 +321,8 @@ describe('federation durable missed transport (two nodes)', () => {
           const received = await appB.database.query.message.findFirst({
             where: and(
               eq(message.creatorAccount, 'missedalice'),
-              eq(message.profileNamespaceId, aliceAddressOnB.namespaceId),
+              eq(message.publisherNamespaceId, aliceAddressOnB.namespaceId),
+              eq(message.profileNamespaceId, 0),
               eq(message.contentType, 'IMAGE'),
             ),
             orderBy: (row, { desc }) => [desc(row.id)],
@@ -474,7 +475,8 @@ describe('federation durable missed transport (two nodes)', () => {
         const received = await appB.database.query.message.findFirst({
           where: and(
             eq(message.creatorAccount, 'missedalice'),
-            eq(message.profileNamespaceId, aliceAddressOnB.namespaceId),
+            eq(message.publisherNamespaceId, aliceAddressOnB.namespaceId),
+            eq(message.profileNamespaceId, 0),
             eq(message.contentType, 'IMAGE'),
           ),
           orderBy: (row, { desc }) => [desc(row.id)],
@@ -526,7 +528,7 @@ describe('federation durable missed transport (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: threadOnA,
-        content: hiddenText,
+        content: JSON.stringify({ text: hiddenText }),
         contentType: 'PURE_TEXT',
         clientMessageId: randomUUID(),
       });
@@ -600,7 +602,7 @@ describe('federation durable missed transport (two nodes)', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({
         threadId: threadOnA,
-        content: liveText,
+        content: JSON.stringify({ text: liveText }),
         contentType: 'PURE_TEXT',
         clientMessageId: randomUUID(),
       });

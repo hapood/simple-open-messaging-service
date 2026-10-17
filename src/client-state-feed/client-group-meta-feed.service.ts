@@ -58,8 +58,9 @@ export class ClientGroupMetaFeedService {
     take: number,
     through?: number,
   ) {
-    return this.database.db.transaction(async (tx) => {
-      const authorized = await tx.execute<{ groupId: number }>(sql`
+    return this.database.db.transaction(
+      async (tx) => {
+        const authorized = await tx.execute<{ groupId: number }>(sql`
         SELECT group_state.id AS "groupId"
         FROM "MessageThread" thread
         JOIN ${groupStateSql} group_state ON group_state.id = thread.id
@@ -83,33 +84,35 @@ export class ClientGroupMetaFeedService {
           )
         LIMIT 1
       `);
-      if (!authorized.rows[0]) return this.forbidden();
-      const [feed] = await tx
-        .select({ metaEndId: groupMeta.metaEndId })
-        .from(groupMeta)
-        .where(eq(groupMeta.threadId, groupId))
-        .limit(1);
-      const page = await readGroupMetaPageInTx(tx, {
-        groupId,
-        account,
-        viewMode: 'client',
-        feedMode: mode,
-        after,
-        take,
-        through,
-        end: feed?.metaEndId ?? 0,
-        visibleAfter: 0,
-      });
-      return {
-        ...page,
-        scannedThrough: String(page.scannedThrough),
-        groupMetaFeedEndId: String(page.groupMetaFeedEndId),
-        items: page.items.map((item) => ({
-          ...item,
-          feedId: String(item.feedId),
-        })),
-      };
-    });
+        if (!authorized.rows[0]) return this.forbidden();
+        const [feed] = await tx
+          .select({ metaEndId: groupMeta.metaEndId })
+          .from(groupMeta)
+          .where(eq(groupMeta.threadId, groupId))
+          .limit(1);
+        const page = await readGroupMetaPageInTx(tx, {
+          groupId,
+          account,
+          viewMode: 'client',
+          feedMode: mode,
+          after,
+          take,
+          through,
+          end: feed?.metaEndId ?? 0,
+          visibleAfter: 0,
+        });
+        return {
+          ...page,
+          scannedThrough: String(page.scannedThrough),
+          groupMetaFeedEndId: String(page.groupMetaFeedEndId),
+          items: page.items.map((item) => ({
+            ...item,
+            feedId: String(item.feedId),
+          })),
+        };
+      },
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
   }
 
   private forbidden(): never {

@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import type { INestApplication } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
 import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
@@ -27,7 +26,7 @@ describe('account controls and exact profiles', () => {
     app = await Test.createTestingModule({ imports: [AppModule] }).compile();
     database = app.get(DatabaseService);
     groups = app.get(GroupService);
-    owner = await seedUser(app as unknown as INestApplication, 'profile-owner');
+    owner = await seedUser(app, 'profile-owner');
   });
   afterAll(async () => app.close());
 
@@ -42,7 +41,6 @@ describe('account controls and exact profiles', () => {
     );
     const address = {
       account: state!.account,
-      domain: state!.domain,
       namespaceId: state!.namespaceId,
     };
     expect(
@@ -51,10 +49,7 @@ describe('account controls and exact profiles', () => {
       id: created.threadId,
       account: state!.account,
     });
-    const outsider = await seedUser(
-      app as unknown as INestApplication,
-      'profile-outsider',
-    );
+    const outsider = await seedUser(app, 'profile-outsider');
     expect(
       await groups.findVisibleGroupByAddress(outsider.id, address),
     ).toBeNull();
@@ -134,7 +129,6 @@ describe('account controls and exact profiles', () => {
     expect(
       await app.get(ContactCardProfileService).findProfile({
         account: state!.account,
-        domain: state!.domain,
         namespaceId: 0,
         profileRev: 1,
       }),
@@ -213,7 +207,6 @@ describe('account controls and exact profiles', () => {
     expect(
       await contactProfiles.findProfile({
         account: address,
-        domain: 'profile-origin.test',
         namespaceId,
         profileRev: 2,
       }),
@@ -221,7 +214,6 @@ describe('account controls and exact profiles', () => {
     expect(
       await contactProfiles.findProfile({
         account: address,
-        domain: 'profile-origin.test',
         namespaceId,
         profileRev: 0,
       }),

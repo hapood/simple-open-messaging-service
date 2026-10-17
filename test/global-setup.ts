@@ -38,6 +38,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       e2eWorkerDatabaseName(String(poolId)),
       e2eWorkerDatabaseName(String(poolId), 'a'),
       e2eWorkerDatabaseName(String(poolId), 'b'),
+      e2eWorkerDatabaseName(String(poolId), 'c'),
     ]) {
       runDatabases.push(database);
       await recreateDatabaseFromTemplate(baseUrl, database, templateDatabase);

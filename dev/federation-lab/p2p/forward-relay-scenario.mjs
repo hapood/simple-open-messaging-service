@@ -64,7 +64,7 @@ export function assertRelaySnapshot(bundle, original, expectedChildren) {
         return false;
       }
     }),
-    'original author/profile/content snapshot must survive every relay',
+    'original profile/content snapshot must survive every relay',
   );
   const digests = bundle.assets.map(({ digest }) => digest);
   assert.equal(
@@ -77,6 +77,23 @@ export function assertRelaySnapshot(bundle, original, expectedChildren) {
       bundle.assets.find(({ digest }) => digest === asset.digest),
       asset,
     );
+}
+
+/** Read through the client projection: stored mirror content holds a local bundle id. */
+export async function readForwardRelayBundle(actor, row) {
+  const page = await actor.post(
+    '/query-messages',
+    {
+      threadId: row.threadId,
+      after: row.seq - 1,
+      through: row.seq,
+      take: 1,
+    },
+    'read forward carrier projection',
+  );
+  const carrier = page.messages.find((message) => message.seq === row.seq);
+  assert(carrier, 'forward carrier must be visible in the client projection');
+  return actor.forwardBundle(parseContent(carrier.content).bundleId);
 }
 
 /** Provision alongside the ordinary workload users under the same OTP rate-limit policy. */
@@ -225,8 +242,7 @@ export async function executeForwardRelayScenario({
       mode,
       clientMessageId: randomUUID(),
     });
-  const view = (actor, row) =>
-    actor.forwardBundle(parseContent(row.content).bundleId);
+  const view = readForwardRelayBundle;
   try {
     const [a, b, c, outsider] = users;
     const [threadA, threadBA] = await befriend(a, b);
@@ -305,18 +321,12 @@ export async function executeForwardRelayScenario({
         displayName: originalName,
         avatarDigest: digest,
       });
-      assert.equal(original.messages[0].author.account, b.account);
-      assert.equal(original.messages[0].author.domain, b.domain);
-      assert.match(
-        original.messages[0].author.publicRootKey,
-        /^[A-Za-z0-9+/]{43}=$/,
-      );
-      assert.equal(original.messages[2].author.account, a.account);
-      assert.equal(original.messages[2].author.domain, a.domain);
-      assert.match(
-        original.messages[2].author.publicRootKey,
-        /^[A-Za-z0-9+/]{43}=$/,
-      );
+      for (const snapshot of original.messages) {
+        assert.equal(Object.hasOwn(snapshot, 'author'), false);
+        assert.equal(Object.hasOwn(snapshot, 'account'), false);
+        assert.equal(Object.hasOwn(snapshot, 'domain'), false);
+        assert.equal(Object.hasOwn(snapshot, 'publicRootKey'), false);
+      }
       assert.deepEqual(original.messages[2].profile, {
         displayName: 'Relay 0',
       });
@@ -384,10 +394,8 @@ export async function executeForwardRelayScenario({
       );
       const imported = await client(c).query(
         `SELECT "sourceDomain" FROM "ForwardBundle"
-         WHERE id = $1 OR "sourceBundleId" = $1
-         ORDER BY CASE WHEN id = $1 THEN 0 ELSE 1 END
-         LIMIT 1`,
-        [bundle.id],
+         WHERE "sourceBundleId" = $1 AND "sourceDomain" = $2`,
+        [bundle.id, b.domain],
       );
       assert.equal(imported.rows.length, 1);
       assert.equal(

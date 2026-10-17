@@ -52,7 +52,7 @@ export class MediaAccessService {
     if (!root) return false;
     const result = await this.database.db.execute(sql<{ allowed: boolean }>`
       WITH RECURSIVE bundle_closure("bundleId") AS (
-        SELECT ${root.bundleId}::varchar
+        SELECT ${root.bundleId}::bigint
         UNION
         SELECT dependency."childBundleId"
         FROM bundle_closure closure

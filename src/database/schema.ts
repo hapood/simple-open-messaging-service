@@ -334,12 +334,12 @@ export const forwardMessage = pgTable(
   {
     // You can use { mode: "bigint" } if numbers are exceeding js number limitations
     messageId: bigint({ mode: 'bigint' }).primaryKey().notNull(),
-    bundleId: varchar({ length: 26 }).notNull(),
+    bundleId: bigint({ mode: 'bigint' }).notNull(),
   },
   (table) => [
     index('ForwardMessage_bundleId_idx').using(
       'btree',
-      table.bundleId.asc().nullsLast().op('text_ops'),
+      table.bundleId.asc().nullsLast().op('int8_ops'),
     ),
     foreignKey({
       columns: [table.bundleId],
@@ -361,7 +361,7 @@ export const forwardMessage = pgTable(
 export const forwardBundle = pgTable(
   'ForwardBundle',
   {
-    id: varchar({ length: 26 }).primaryKey().notNull(),
+    id: bigserial({ mode: 'bigint' }).primaryKey().notNull(),
     messages: jsonb().notNull(),
     messageCount: integer().notNull(),
     assetCount: integer().notNull(),
@@ -2007,11 +2007,13 @@ export const groupMetaMemberFeed = pgTable(
       columns: [table.threadId, table.feedId],
       name: 'GroupMetaMemberFeed_pkey',
     }),
-    uniqueIndex('GroupMetaMemberFeed_member_key').on(
-      table.threadId,
-      sql`(${table.body} ->> 'account')`,
-      sql`(${table.body} -> 'namespaceId')`,
-    ).where(sql`${table.operation} <> 'GROUP_ANNOUNCEMENT'`),
+    uniqueIndex('GroupMetaMemberFeed_member_key')
+      .on(
+        table.threadId,
+        sql`(${table.body} ->> 'account')`,
+        sql`(${table.body} -> 'namespaceId')`,
+      )
+      .where(sql`${table.operation} <> 'GROUP_ANNOUNCEMENT'`),
     foreignKey({
       columns: [table.threadId],
       foreignColumns: [messageThread.id],
@@ -2772,18 +2774,18 @@ export const diagnosticsReport = pgTable(
 export const forwardBundleDependency = pgTable(
   'ForwardBundleDependency',
   {
-    parentBundleId: varchar({ length: 26 }).notNull(),
-    childBundleId: varchar({ length: 26 }).notNull(),
+    parentBundleId: bigint({ mode: 'bigint' }).notNull(),
+    childBundleId: bigint({ mode: 'bigint' }).notNull(),
     ordinal: integer().notNull(),
   },
   (table) => [
     index('ForwardBundleDependency_childBundleId_idx').using(
       'btree',
-      table.childBundleId.asc().nullsLast().op('text_ops'),
+      table.childBundleId.asc().nullsLast().op('int8_ops'),
     ),
     uniqueIndex('ForwardBundleDependency_parentBundleId_ordinal_key').using(
       'btree',
-      table.parentBundleId.asc().nullsLast().op('text_ops'),
+      table.parentBundleId.asc().nullsLast().op('int8_ops'),
       table.ordinal.asc().nullsLast().op('int4_ops'),
     ),
     foreignKey({
@@ -3036,7 +3038,7 @@ export const userQuotaDailyAllowance = pgTable(
 export const forwardBundleAsset = pgTable(
   'ForwardBundleAsset',
   {
-    bundleId: varchar({ length: 26 }).notNull(),
+    bundleId: bigint({ mode: 'bigint' }).notNull(),
     digest: varchar({ length: 64 }).notNull(),
     ordinal: integer().notNull(),
     // You can use { mode: "bigint" } if numbers are exceeding js number limitations
@@ -3045,7 +3047,7 @@ export const forwardBundleAsset = pgTable(
   (table) => [
     uniqueIndex('ForwardBundleAsset_bundleId_digest_key').using(
       'btree',
-      table.bundleId.asc().nullsLast().op('text_ops'),
+      table.bundleId.asc().nullsLast().op('int8_ops'),
       table.digest.asc().nullsLast().op('text_ops'),
     ),
     index('ForwardBundleAsset_digest_idx').using(

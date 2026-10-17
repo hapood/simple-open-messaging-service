@@ -174,6 +174,7 @@ describe('group creation', () => {
       type: 'GROUP_CREATED',
       creator: {
         account: owner.account,
+        publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 1,
       },

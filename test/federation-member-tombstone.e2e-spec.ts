@@ -1,18 +1,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq } from 'drizzle-orm';
-import { DatabaseModule } from '../src/database/database.module.js';
+import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import { MessageDeleteType } from '../src/database/enums.js';
+import { DeletedMessageService } from '../src/message/deleted-message.service.js';
 import * as tables from '../src/database/schema.js';
 import { FederationInboundMessageCommitService } from '../src/federation/federation-inbound-message-commit.service.js';
-import { FederationInboundMessageRouteService } from '../src/federation/federation-inbound-message-route.service.js';
 import { FederationNamespaceService } from '../src/federation/federation-namespace.service.js';
-import { FederationThreadAccessService } from '../src/federation/federation-thread-access.service.js';
-import { DeletedMessageService } from '../src/message/deleted-message.service.js';
 import { wirePayloadDigest } from '../src/federation/federated-message-content.js';
-import { ThreadPreviewModule } from '../src/message/thread-preview.module.js';
-import { MessageService } from '../src/message/message.service.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { truncateTablesForTest } from './support/truncate';
 
@@ -28,22 +24,11 @@ describe('member-home tombstone authority', () => {
 
   beforeAll(async () => {
     module = await Test.createTestingModule({
-      imports: [DatabaseModule, ThreadPreviewModule],
-      providers: [
-        DeletedMessageService,
-        { provide: MessageService, useValue: {} },
-      ],
+      imports: [AppModule],
     }).compile();
     database = module.get(DatabaseService);
-    namespaces = new FederationNamespaceService(database);
-    commit = new FederationInboundMessageCommitService(
-      database,
-      new FederationThreadAccessService(database, namespaces),
-      undefined as never,
-      new FederationInboundMessageRouteService(),
-      module.get(DeletedMessageService),
-      undefined as never,
-    );
+    namespaces = module.get(FederationNamespaceService);
+    commit = module.get(FederationInboundMessageCommitService);
   });
 
   afterAll(async () => module.close());

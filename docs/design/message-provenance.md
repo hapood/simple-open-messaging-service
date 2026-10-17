@@ -34,7 +34,7 @@ Both default to false. Whole-batch refusal is checked first, so the two refusal
 representations cannot be mixed. Default answers use retained digests rather
 than a remote read or a profile lookup.
 
-## Current lookup and review boundary
+## Current lookup and identity-binding scope
 
 The service selects candidates by retained `(payloadDigest, seq)` and then
 checks the local thread. For GROUP it checks the group account; for P2P it
@@ -42,12 +42,17 @@ checks retained `RelationshipPair` endpoints, including a local namespace-0
 source endpoint. `threadMatches` is private; it is not an overridable public
 policy hook.
 
-This description is not a conformance claim. Exact direct-publisher identity
-also depends on the authenticated peer and publication history. The current
-service's `query` input does not carry that peer context. Account-only matching
-must not be assumed sufficient when equal account strings occur under distinct
-peer identities. See the [closeout audit](../development/documentation-closeout-audit.md)
-for the unresolved identity-binding review.
+Ordinary federation signature authentication remains required. The current
+service's `query` input does not carry the authenticated peer context, and this
+implementation scope deliberately does not add a requester-to-publication
+identity-binding check. This is separate from disabling transport authentication.
+
+The retained lookup is not a conformance proof of exact direct-publisher
+identity: equal account strings under distinct peer identities and publication
+history still matter to the protocol's assertion. Do not treat a successful
+same-product provenance test as proof of that stronger property. This limitation
+is accepted for the current implementation scope, not a redefinition of the
+independent wire contract.
 
 ## Local materialization state
 

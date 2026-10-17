@@ -654,14 +654,14 @@ export class WebdbStorage {
     }>;
   }>();
   readonly tombstoneCommitted$ = this.tombstoneCommitted.asObservable();
-  /** Emitted by the database worker after a thread-feed drain commits,
-   *  carrying the changed thread states inline — the renderer applies them
-   *  incrementally and never re-reads the feed database. */
+  /** Emitted after each durable thread-feed page commits. The executor and
+   * renderer consume the same committed states without re-reading storage. */
   protected readonly threadFeedCommitted = new Subject<{
     userId: number;
     states: LocalThreadAttention[];
   }>();
   readonly threadFeedCommitted$ = this.threadFeedCommitted.asObservable();
+
   protected readonly threadAttentionProjectionCommitted = new Subject<{
     userId: number;
     projection: ThreadAttentionProjection;
@@ -1607,7 +1607,12 @@ export class WebdbStorage {
         return [...merged.values()];
       };
       try {
-        return await commit();
+        const result = await commit();
+        this.threadFeedCommitted.next({
+          userId: Number(this.currentUserId),
+          states: result,
+        });
+        return result;
       } catch (error) {
         try {
           tx.abort();
@@ -3152,6 +3157,14 @@ export class WebdbStorage {
         ['threads', 'members'],
         'readwrite',
       );
+      const thread = await tx.objectStore('threads').get(threadId);
+      if (
+        thread?.type !== 'GROUP' ||
+        thread.conversationState === 'READ_ONLY'
+      ) {
+        await tx.done;
+        return;
+      }
       let member = await tx
         .objectStore('members')
         .index('thread')
@@ -3160,16 +3173,14 @@ export class WebdbStorage {
         await member.delete();
         member = await member.continue();
       }
-      const thread = await tx.objectStore('threads').get(threadId);
-      if (thread?.type === 'GROUP')
-        await tx.objectStore('threads').put({
-          ...thread,
-          groupMetaRecoveryThrough: through,
-          recoveryAnnouncementFeedId: null,
-          recoveryAnnouncementText: null,
-          groupMemberCount: 0,
-          groupMetaFeedId: '0',
-        });
+      await tx.objectStore('threads').put({
+        ...thread,
+        groupMetaRecoveryThrough: through,
+        recoveryAnnouncementFeedId: null,
+        recoveryAnnouncementText: null,
+        groupMemberCount: 0,
+        groupMetaFeedId: '0',
+      });
       await tx.done;
     });
   }

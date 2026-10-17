@@ -9,6 +9,7 @@ import {
   relationshipPair,
 } from '../src/database/schema.js';
 import { SseService } from '../src/gateway/sse.service.js';
+import { CallStateRegistry } from '../src/gateway/call-state.registry.js';
 import { ThreadFeedService } from '../src/message/thread-feed.service.js';
 import { ThreadReadPositionService } from '../src/message/thread-read-position.service.js';
 import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
@@ -18,7 +19,7 @@ import { ClientStateFeedService } from '../src/client-state-feed/client-state-fe
 /** Business commits publish through the shared SSE methods without polling. */
 describe('account feed notification delivery', () => {
   const database = new DatabaseService();
-  const sse = new SseService(database, { get: () => null } as never);
+  const sse = new SseService(database, new CallStateRegistry());
   const clientFeed = new ClientStateFeedService(database, sse);
   const feed = new ThreadFeedService(database);
   const readPositions = new ThreadReadPositionService(database, sse);
@@ -67,6 +68,9 @@ describe('account feed notification delivery', () => {
     for (const [index, writes] of devices.entries()) {
       subscriptions.push(
         sse.register(userId, index + 1).subscribe((event) => {
+          if (typeof event.type !== 'string') {
+            throw new Error('Account feed event must have an explicit type');
+          }
           writes.push({
             type: event.type,
             data: event.data as Record<string, unknown>,

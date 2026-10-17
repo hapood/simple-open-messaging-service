@@ -16,7 +16,7 @@ export function e2eTemplateDatabaseName(): string {
 
 export function e2eWorkerDatabaseName(
   poolId: string,
-  node?: 'a' | 'b',
+  node?: 'a' | 'b' | 'c',
 ): string {
   const base = `${e2eTemplateDatabaseName()}_fork${poolId}`;
   return node ? `${base}_${node}` : base;

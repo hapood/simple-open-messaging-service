@@ -253,6 +253,55 @@ describe('Group Meta per-thread fact delivery', () => {
     expect(resumed.mock.calls[0][0].after).toBe('2');
   });
 
+  it.each(['page', 'recovery', 'error'] as const)(
+    'discards an in-flight %s after membership permission is revoked',
+    async (response) => {
+      const { storage } = fixture();
+      let permitted = true;
+      const request = vi.fn(async () => {
+        permitted = false;
+        if (response === 'error') throw new Error('forbidden');
+        return response === 'page'
+          ? page('1', true)
+          : {
+              code: 30006,
+              data: { resumeAfter: '0', resumeBefore: '4' },
+            };
+      });
+      await expect(
+        syncGroupMetaThread(
+          storage,
+          request,
+          12,
+          '3',
+          () => true,
+          () => permitted,
+        ),
+      ).resolves.toEqual({ threadIds: [12], patches: [] });
+      expect(storage.applyGroupMetaPage).not.toHaveBeenCalled();
+      expect(storage.beginGroupMetaRecovery).toHaveBeenCalledTimes(1);
+      expect(storage.getThreads).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not clear cached metadata when permission was already revoked', async () => {
+    const { storage } = fixture();
+    const request = vi.fn();
+    await expect(
+      syncGroupMetaThread(
+        storage,
+        request,
+        12,
+        '3',
+        () => true,
+        () => false,
+      ),
+    ).resolves.toEqual({ threadIds: [], patches: [] });
+    expect(storage.beginGroupMetaRecovery).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it('delivers a committed page when the open-thread guard stops the drain', async () => {
     const { storage } = fixture();
     let active = true;

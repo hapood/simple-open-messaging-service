@@ -1,4 +1,5 @@
 import { and, desc, eq, or, sql } from 'drizzle-orm';
+import type { ProfiledAddress } from '../shared/profiled-address.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
@@ -9,6 +10,8 @@ import { withBusinessLockCapture } from './business-lock-capture.js';
 import { businessAccountScopeKey } from '../src/common/locks/account-business-lock.js';
 import * as tables from '../src/database/schema.js';
 import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
+import { ClientGroupMetaFeedService } from '../src/client-state-feed/client-group-meta-feed.service.js';
+import { BusinessCode } from '../src/common/business-code.js';
 import { FederationStateFeedConsumerService } from '../src/federation/federation-state-feed-consumer.service.js';
 import { FederationStateFeedPushService } from '../src/federation/federation-state-feed-push.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
@@ -120,12 +123,7 @@ describe('mirror group intent application', () => {
     return applier.execute({
       group,
       memberAccount: member.account,
-      body: {
-        profileNamespaceId:
-          item.profileNamespaceId ??
-          (item.status === 'REQUESTED' ? group.namespaceId : 0),
-        ...item,
-      },
+      body: item,
     });
   }
 
@@ -412,7 +410,8 @@ describe('mirror group intent application', () => {
     await freshGroup();
     const bob = await member('collapse');
     await run(bob, invitationBody());
-    const { _pair } = await findPair(bob.account);
+    const { pair } = await findPair(bob.account);
+    expect(pair).toBeDefined();
     // The member applied first; the invitation crossed it in flight.
     await database.db.insert(tables.relationshipIntent).values({
       authorAccount: bob.account,
@@ -479,7 +478,8 @@ describe('mirror group intent application', () => {
     await freshGroup();
     const bob = await member('mismatch');
     await run(bob, invitationBody());
-    const { _pair } = await findPair(bob.account);
+    const { pair } = await findPair(bob.account);
+    expect(pair).toBeDefined();
     // The member withdrew before the origin's acceptance landed.
     await database.db.insert(tables.relationshipIntent).values({
       authorAccount: bob.account,
@@ -767,6 +767,7 @@ describe('mirror group intent application', () => {
         ],
         scannedThrough: '1',
         stateFeedEndId: '1',
+        profileNamespaceFeedEndId: '0',
         hasMore: false,
       }),
     );
@@ -788,6 +789,7 @@ describe('mirror group intent application', () => {
         ],
         scannedThrough: '2',
         stateFeedEndId: '2',
+        profileNamespaceFeedEndId: '0',
         hasMore: false,
       }),
     );
@@ -811,145 +813,178 @@ describe('mirror group intent application', () => {
     expect(state?.messageTargetSeq).toBe(7);
   });
 
-  it('kicks an active member: relationship closes at intent time, epoch on the last member only', async () => {
-    await freshGroup();
-    const alice = await member('kick-a');
-    const bob = await member('kick-b');
-    // Two rostered members on one mirror shell: seed the shell via the first
-    // invitation, then place both pairs on the same thread.
-    await run(alice, invitationBody());
-    const { pair: alicePair } = await findPair(alice.account);
-    const threadId = alicePair!.threadId!;
-    let rosterFeedId = 100n;
-    for (const m of [alice, bob]) {
-      await database.db.insert(tables.groupMetaMemberFeed).values({
-        threadId,
-        feedId: rosterFeedId++,
-        operation: 'MEMBER_UPSERT',
-        body: {
-          account: m.account,
-          namespaceId: 0,
+  it.each(['absent', 'MEMBER_UPSERT', 'MEMBER_DEPART'] as const)(
+    'kicks without depending on Meta (%s): epoch advances only for the last member',
+    async (metaState) => {
+      await freshGroup();
+      const alice = await member('kick-a');
+      const bob = await member('kick-b');
+      // Intent activation does not require a replicated roster. Exercise missing,
+      // active, and already-departed Meta without letting it own the transition.
+      await run(alice, invitationBody());
+      const { pair: alicePair } = await findPair(alice.account);
+      const threadId = alicePair!.threadId!;
+      let rosterFeedId = 100;
+      for (const m of [alice, bob]) {
+        if (metaState !== 'absent')
+          await database.db.insert(tables.groupMetaMemberFeed).values({
+            threadId,
+            feedId: rosterFeedId++,
+            operation: metaState,
+            body: {
+              account: m.account,
+              namespaceId: 0,
+              role: 'MEMBER',
+              profileRev: 99,
+            },
+          });
+        await database.db.insert(tables.accountThreadState).values({
+          accountId: m.id,
+          threadId,
           role: 'MEMBER',
-          profileRev: 1,
-        },
-      });
-      await database.db.insert(tables.accountThreadState).values({
-        accountId: m.id,
+          lastReadSeq: 0,
+        });
+      }
+      await database.db.insert(tables.relationshipPair).values({
+        kind: 'GROUP_MEMBER',
+        endpointAType: 'USER',
+        endpointAAccount: bob.account,
+        endpointANamespaceId: 0,
+        endpointBType: 'GROUP',
+        endpointBAccount: group.account,
+        endpointBNamespaceId: group.namespaceId,
         threadId,
-        role: 'MEMBER',
-        lastReadSeq: 0,
+        active: true,
+        established: true,
       });
-    }
-    await database.db.insert(tables.relationshipPair).values({
-      kind: 'GROUP_MEMBER',
-      endpointAType: 'USER',
-      endpointAAccount: bob.account,
-      endpointANamespaceId: 0,
-      endpointBType: 'GROUP',
-      endpointBAccount: group.account,
-      endpointBNamespaceId: group.namespaceId,
-      threadId,
-      active: true,
-      established: true,
-    });
-    await database.db.insert(tables.relationshipIntent).values([
-      {
-        authorAccount: group.account,
-        authorNamespaceId: group.namespaceId,
-        receiverAccount: bob.account,
-        receiverNamespaceId: 0,
-        profileNamespaceId: group.namespaceId,
-        status: 'ACCEPTED',
-        profileRev: 3,
-        note: '',
-        messageEndSeq: 5,
-        tombstoneEndSeq: 1,
-        requestedAt: new Date(),
-        expiresAt: null,
-      },
-      {
-        authorAccount: bob.account,
+      await database.db.insert(tables.relationshipIntent).values([
+        {
+          authorAccount: group.account,
+          authorNamespaceId: group.namespaceId,
+          receiverAccount: bob.account,
+          receiverNamespaceId: 0,
+          profileNamespaceId: group.namespaceId,
+          status: 'ACCEPTED',
+          profileRev: 3,
+          note: '',
+          messageEndSeq: 5,
+          tombstoneEndSeq: 1,
+          requestedAt: new Date(),
+          expiresAt: null,
+        },
+        {
+          authorAccount: bob.account,
+          authorNamespaceId: 0,
+          receiverAccount: group.account,
+          receiverNamespaceId: group.namespaceId,
+          profileNamespaceId: 0,
+          status: 'ACCEPTED',
+          profileRev: 1,
+          note: '',
+          messageEndSeq: 0,
+          tombstoneEndSeq: 0,
+          requestedAt: new Date(),
+          expiresAt: null,
+        },
+      ]);
+      // Activate Alice's pair the same way for the epoch gate: her acceptance is
+      // pending (side B ACCEPTED seeded), the origin's ACK completes it.
+      const aliceSideB = {
+        authorAccount: alice.account,
         authorNamespaceId: 0,
         receiverAccount: group.account,
         receiverNamespaceId: group.namespaceId,
         profileNamespaceId: 0,
-        status: 'ACCEPTED',
+        status: 'ACCEPTED' as const,
         profileRev: 1,
         note: '',
         messageEndSeq: 0,
         tombstoneEndSeq: 0,
         requestedAt: new Date(),
         expiresAt: null,
-      },
-    ]);
-    // Activate Alice's pair the same way for the epoch gate: her acceptance is
-    // pending (side B ACCEPTED seeded), the origin's ACK completes it.
-    const aliceSideB = {
-      authorAccount: alice.account,
-      authorNamespaceId: 0,
-      receiverAccount: group.account,
-      receiverNamespaceId: group.namespaceId,
-      profileNamespaceId: 0,
-      status: 'ACCEPTED' as const,
-      profileRev: 1,
-      note: '',
-      messageEndSeq: 0,
-      tombstoneEndSeq: 0,
-      requestedAt: new Date(),
-      expiresAt: null,
-    };
-    await database.db.insert(tables.relationshipIntent).values(aliceSideB);
-    await run(alice, acceptanceBody());
-    const epochBefore = (await database.db.query.messageThread.findFirst({
-      where: eq(tables.messageThread.id, threadId),
-    }))!.authorizationEpoch;
+      };
+      await database.db.insert(tables.relationshipIntent).values(aliceSideB);
+      await run(alice, acceptanceBody());
+      const epochBefore = (await database.db.query.messageThread.findFirst({
+        where: eq(tables.messageThread.id, threadId),
+      }))!.authorizationEpoch;
 
-    await run(alice, revocationBody());
-    expect((await findPair(alice.account)).pair!.active).toBe(false);
-    let thread = (await database.db.query.messageThread.findFirst({
-      where: eq(tables.messageThread.id, threadId),
-    }))!;
-    // Bob's pair is still active: the epoch must not advance yet.
-    expect(thread.authorizationEpoch).toBe(epochBefore);
-    // The received REVOKED intent owns the local departure notice and boundary.
-    const aliceNotices = await boundaryMessages(threadId, 'GROUP_LEFT');
-    expect(aliceNotices).toHaveLength(1);
-    expect(JSON.parse(aliceNotices[0]!.content as string).member).toEqual({
-      account: alice.account,
-      profileNamespaceId: 0,
-      profileRev: 1,
-    });
+      const metaBefore = await database.db.query.groupMetaMemberFeed.findMany({
+        where: eq(tables.groupMetaMemberFeed.threadId, threadId),
+      });
+      const metaFeed = app.get(ClientGroupMetaFeedService);
+      await expect(
+        metaFeed.resolveVisibleGroup(alice.id, { threadId }),
+      ).resolves.toMatchObject({ groupId: threadId });
+      // Changing the current local profile must not replace the intent snapshot.
+      await database.db
+        .update(tables.account)
+        .set({ defaultProfileRev: 55 })
+        .where(eq(tables.account.id, alice.id));
+      await run(alice, revocationBody());
+      await expect(
+        metaFeed.resolveVisibleGroup(alice.id, { threadId }),
+      ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
+      for (const mode of ['full', 'delta'] as const) {
+        await expect(
+          metaFeed.serve(alice.id, threadId, group.account, mode, 0, 100),
+        ).rejects.toMatchObject({ bizCode: BusinessCode.FORBIDDEN });
+      }
+      await expect(
+        metaFeed.resolveVisibleGroup(bob.id, { threadId }),
+      ).resolves.toMatchObject({ groupId: threadId });
+      expect((await findPair(alice.account)).pair!.active).toBe(false);
+      let thread = (await database.db.query.messageThread.findFirst({
+        where: eq(tables.messageThread.id, threadId),
+      }))!;
+      // Bob's pair is still active: the epoch must not advance yet.
+      expect(thread.authorizationEpoch).toBe(epochBefore);
+      // The received REVOKED intent owns the local departure notice and boundary.
+      const aliceNotices = await boundaryMessages(threadId, 'GROUP_LEFT');
+      expect(aliceNotices).toHaveLength(1);
+      expect(JSON.parse(aliceNotices[0]!.content).member).toEqual({
+        account: alice.account,
+        publisherNamespaceId: 0,
+        profileNamespaceId: 0,
+        profileRev: 1,
+      } satisfies ProfiledAddress);
 
-    await run(bob, revocationBody());
-    expect((await findPair(bob.account)).pair!.active).toBe(false);
-    thread = (await database.db.query.messageThread.findFirst({
-      where: eq(tables.messageThread.id, threadId),
-    }))!;
-    expect(thread.authorizationEpoch).toBe(epochBefore + 1);
-    expect(thread.federationRoundsEnabled).toBe(false);
-    expect(
-      (await findPair(alice.account)).intents.every(
-        (i) => i.status === 'REVOKED',
-      ),
-    ).toBe(true);
-    expect(
-      (await findPair(bob.account)).intents.every(
-        (i) => i.status === 'REVOKED',
-      ),
-    ).toBe(true);
-    const notices = await boundaryMessages(threadId, 'GROUP_LEFT');
-    expect(notices).toHaveLength(2);
-    expect(
-      notices.map(
-        (notice) => JSON.parse(notice.content as string).member.account,
-      ),
-    ).toEqual([alice.account, bob.account]);
-    // The kick row reads the sticky established flag.
-    const kickFeeds = await feedRows(alice.id);
-    const kickRow = kickFeeds.find((f) => bodyOf(f).status === 'REVOKED');
-    expect(kickRow).toBeDefined();
-    expect((kickRow!.body as any).established).toBe(true);
-  });
+      await run(bob, revocationBody());
+      expect(
+        await database.db.query.groupMetaMemberFeed.findMany({
+          where: eq(tables.groupMetaMemberFeed.threadId, threadId),
+        }),
+      ).toEqual(metaBefore);
+      expect((await findPair(bob.account)).pair!.active).toBe(false);
+      thread = (await database.db.query.messageThread.findFirst({
+        where: eq(tables.messageThread.id, threadId),
+      }))!;
+      expect(thread.authorizationEpoch).toBe(epochBefore + 1);
+      expect(thread.federationRoundsEnabled).toBe(false);
+      expect(
+        (await findPair(alice.account)).intents.every(
+          (i) => i.status === 'REVOKED',
+        ),
+      ).toBe(true);
+      expect(
+        (await findPair(bob.account)).intents.every(
+          (i) => i.status === 'REVOKED',
+        ),
+      ).toBe(true);
+      const notices = await boundaryMessages(threadId, 'GROUP_LEFT');
+      expect(notices).toHaveLength(2);
+      expect(
+        notices.map(
+          (notice) => JSON.parse(notice.content as string).member.account,
+        ),
+      ).toEqual([alice.account, bob.account]);
+      // The kick row reads the sticky established flag.
+      const kickFeeds = await feedRows(alice.id);
+      const kickRow = kickFeeds.find((f) => bodyOf(f).status === 'REVOKED');
+      expect(kickRow).toBeDefined();
+      expect((kickRow!.body as any).established).toBe(true);
+    },
+  );
 
   it('keeps positive origin facts applying to a dissolved mirror and re-forms membership', async () => {
     await freshGroup();

@@ -1,14 +1,16 @@
 import { UserService } from '../src/user/user.service.js';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq, or, sql } from 'drizzle-orm';
-import { DatabaseModule } from '../src/database/database.module.js';
+import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import * as tables from '../src/database/schema.js';
 import { ThreadFeedService } from '../src/message/thread-feed.service.js';
-import { FederationProfileService } from '../src/federation/federation-profile.service.js';
 import { ProfileResolutionCoordinatorService } from '../src/profile-resolution/profile-resolution-coordinator.service.js';
-import { ProfileLookup } from '../src/profile-resolution/profile-resolution-demand.js';
+import {
+  ProfileLookup,
+  type ProfileClientResolutionDemand,
+} from '../src/profile-resolution/profile-resolution-demand.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { resolveAuthorizedFederationThreadInTx } from '../src/federation/federation-thread-query-authorization.js';
@@ -17,16 +19,11 @@ describe('account-owned THREAD_STATE and default profiles', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   let counter = 0;
-  const resolver = () =>
-    new ProfileResolutionCoordinatorService(
-      database,
-      new FederationProfileService(database, {} as never, {} as never),
-      { onProfileResolved: vi.fn(), onProfileFailed: vi.fn() } as never,
-    );
-  const feed = () => new ThreadFeedService(database);
+  const resolver = () => mod.get(ProfileResolutionCoordinatorService);
+  const feed = () => mod.get(ThreadFeedService);
   beforeAll(async () => {
     mod = await Test.createTestingModule({
-      imports: [DatabaseModule],
+      imports: [AppModule],
     }).compile();
     database = mod.get(DatabaseService);
   });
@@ -40,11 +37,10 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         defaultProfileRev: 9,
       })
       .returning();
-    const users = new UserService(database);
+    const users = mod.get(UserService);
     expect(await users.findSelfProfile(owner.id)).toBeNull();
     await database.db.insert(tables.profileTable).values({
       account: owner.account,
-      namespaceId: 0,
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 9,
@@ -76,7 +72,6 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         .values({ account: target, defaultProfileRev: 7 });
     await database.db.insert(tables.profileTable).values({
       account: target,
-      domain,
       publisherNamespaceId: namespaceId,
       profileNamespaceId: namespaceId,
       profileRev: 7,
@@ -295,7 +290,7 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     },
   );
 
-  it('does not authorize request shells; establishment and its snapshot roll back together', async () => {
+  it('serves cached profiles for request shells without establishing thread state; establishment rolls back atomically', async () => {
     const f = await fixture();
     expect(await f.snapshot()).toBeUndefined();
     await expect(
@@ -305,8 +300,29 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         target: {
           profileNamespaceId: f.namespaceId,
           account: f.target,
-          domain: f.domain,
           rev: 7,
+        },
+      }),
+    ).resolves.toEqual({
+      status: 'READY',
+      profile: {
+        account: f.target,
+        publisherNamespaceId: f.namespaceId,
+        profileNamespaceId: f.namespaceId,
+        rev: 7,
+        name: 'Disclosed profile',
+        bio: '',
+        avatarBase64: null,
+      },
+    });
+    await expect(
+      resolver().start(f.owner.id, 1, {
+        publisherNamespaceId: f.namespaceId,
+        lookup: ProfileLookup.ACCOUNT_PROFILE,
+        target: {
+          profileNamespaceId: f.namespaceId,
+          account: f.target,
+          rev: 99,
         },
       }),
     ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
@@ -333,28 +349,45 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       const f = await fixture(foreign);
       await f.activate();
       const coordinator = resolver();
-      const selector = {
+      const selector: ProfileClientResolutionDemand = {
         publisherNamespaceId: f.namespaceId,
         lookup: ProfileLookup.ACCOUNT_PROFILE,
         target: {
           profileNamespaceId: f.namespaceId,
           account: f.target,
-          domain: f.domain,
           rev: 7,
         },
       };
-      await expect(
-        coordinator.start(f.owner.id, 1, selector),
-      ).resolves.toMatchObject({
+      const expected = {
         status: 'READY',
         profile: {
+          account: f.target,
           rev: 7,
           publisherNamespaceId: f.namespaceId,
           profileNamespaceId: f.namespaceId,
+          name: 'Disclosed profile',
+          bio: '',
+          avatarBase64: null,
         },
-      });
+      };
+      const [outsider] = await database.db
+        .insert(tables.account)
+        .values({ account: `cache-reader-${f.owner.id}` })
+        .returning();
+      await expect(coordinator.start(f.owner.id, 1, selector)).resolves.toEqual(
+        expected,
+      );
       await expect(
-        coordinator.start(f.owner.id + 100000, 1, selector),
+        coordinator.start(outsider.id, 1, selector),
+      ).resolves.toEqual(expected);
+      await expect(coordinator.startCacheOnly(selector)).resolves.toEqual(
+        expected,
+      );
+      await expect(
+        coordinator.start(outsider.id, 1, {
+          ...selector,
+          target: { ...selector.target, rev: 99 },
+        }),
       ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
       await database.db
         .update(tables.relationshipPair)
@@ -383,9 +416,12 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         conversationState: 'READ_ONLY',
         profileRev: 7,
       });
-      await expect(
-        resolver().start(f.owner.id, 1, selector),
-      ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
+      await expect(resolver().start(f.owner.id, 1, selector)).resolves.toEqual(
+        expected,
+      );
+      await expect(resolver().start(outsider.id, 1, selector)).resolves.toEqual(
+        expected,
+      );
     },
   );
 
@@ -406,7 +442,6 @@ describe('account-owned THREAD_STATE and default profiles', () => {
     });
     await database.db.insert(tables.profileTable).values({
       account: f.target,
-      namespaceId: 0,
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 8,
@@ -437,22 +472,39 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       }),
     );
   });
-  it('changes the grant only on re-establishment and rejects other revisions even after a cache hit', async () => {
+  it('changes the thread snapshot only on re-establishment while cached revisions remain readable', async () => {
     const f = await fixture();
     await f.activate();
     const first = await f.snapshot();
     const coordinator = resolver();
-    const exact = {
+    const exact: ProfileClientResolutionDemand = {
       publisherNamespaceId: f.namespaceId,
       lookup: ProfileLookup.ACCOUNT_PROFILE,
       target: {
         profileNamespaceId: f.namespaceId,
         account: f.target,
-        domain: f.domain,
         rev: 7,
       },
     };
-    await coordinator.start(f.owner.id, 1, exact);
+    const expectedOld = {
+      status: 'READY',
+      profile: {
+        account: f.target,
+        publisherNamespaceId: f.namespaceId,
+        profileNamespaceId: f.namespaceId,
+        rev: 7,
+        name: 'Disclosed profile',
+        bio: '',
+        avatarBase64: null,
+      },
+    };
+    const expectedNew = {
+      status: 'READY',
+      profile: { ...expectedOld.profile, rev: 8, name: 'New establishment' },
+    };
+    await expect(coordinator.start(f.owner.id, 1, exact)).resolves.toEqual(
+      expectedOld,
+    );
     await database.db
       .update(tables.relationshipPair)
       .set({ active: false })
@@ -470,7 +522,6 @@ describe('account-owned THREAD_STATE and default profiles', () => {
       );
     await database.db.insert(tables.profileTable).values({
       account: f.target,
-      domain: f.domain,
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 8,
@@ -481,22 +532,24 @@ describe('account-owned THREAD_STATE and default profiles', () => {
         ...exact,
         target: { ...exact.target, rev: 8 },
       }),
-    ).rejects.toMatchObject({ bizCode: BusinessCode.NOT_FOUND });
+    ).resolves.toEqual(expectedNew);
+    expect(await f.snapshot()).toMatchObject({
+      conversationState: 'READ_ONLY',
+      profileRev: 7,
+    });
     await f.activate();
     const second = await f.snapshot();
     expect(second?.profileRev).toBe(8);
     expect(second!.threadFeedId).toBeGreaterThan(first!.threadFeedId);
-    await expect(coordinator.start(f.owner.id, 1, exact)).rejects.toMatchObject(
-      {
-        bizCode: BusinessCode.NOT_FOUND,
-      },
+    await expect(coordinator.start(f.owner.id, 1, exact)).resolves.toEqual(
+      expectedOld,
     );
     await expect(
       coordinator.start(f.owner.id, 1, {
         ...exact,
         target: { ...exact.target, rev: 8 },
       }),
-    ).resolves.toMatchObject({ status: 'READY', profile: { rev: 8 } });
+    ).resolves.toEqual(expectedNew);
   });
 
   it('re-establishes a retained P2P state from the new intent even when its revision is lower', async () => {

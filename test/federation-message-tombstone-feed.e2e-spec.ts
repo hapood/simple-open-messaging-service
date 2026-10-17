@@ -16,16 +16,16 @@ import {
   account as user,
 } from '../src/database/schema.js';
 import { FederationMessageTombstoneFeedService } from '../src/federation/federation-message-tombstone-feed.service.js';
-import { loadFederationConfig } from '../src/federation/federation.config.js';
+import type { AccountSubjectAddress } from '../src/user/account-address.js';
 import { seedAcceptedRelationship } from './seed.js';
 import { truncateTablesForTest } from './support/truncate';
+import { assertFederationWireSchema } from './support/federation-wire-schema.js';
 
 describe('FederationMessageTombstoneFeedService query', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   let service: FederationMessageTombstoneFeedService;
   const peerDomain = 'tombstone-feed-peer.test';
-  const _localDomain = loadFederationConfig().domain;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -88,7 +88,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
         updatedAt: now,
       })
       .returning();
-    const bob = { account: 'bob', domain: peerDomain, namespaceId };
+    const bob: AccountSubjectAddress = { account: 'bob', namespaceId };
     const [thread] = await database.db
       .insert(messageThread)
       .values({
@@ -100,7 +100,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
       .returning();
     await seedAcceptedRelationship(database.db, alice.id, bob, thread.id);
     await database.db.insert(threadAudience).values({
-      targetDomain: peerDomain,
       targetNamespaceId: namespaceId,
       threadId: thread.id,
       messageAccessAfterSeq: 0,
@@ -148,13 +147,13 @@ describe('FederationMessageTombstoneFeedService query', () => {
     const { deletion, namespaceId } = await seedDeletion();
 
     const page = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
       undefined,
       deletion.deletionSeq,
     );
+    assertFederationWireSchema('urn:somfp:v1:message-tombstone-query', page);
     expect(page).toMatchObject({
       scannedThrough: deletion.deletionSeq,
       hasMore: false,
@@ -178,7 +177,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
       })
       .where(eq(message.threadId, thread.id));
     const page = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
@@ -192,7 +190,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
   it('omits requester-authored tombstones when includeSelf is false', async () => {
     const { deletion, namespaceId, thread } = await seedDeletion();
     const page = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
@@ -207,7 +204,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
       .set({ profileNamespaceId: namespaceId })
       .where(and(eq(message.threadId, thread.id), eq(message.seq, 1)));
     const filtered = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
@@ -265,7 +261,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
       .where(eq(peerStateFeed.namespaceId, namespaceId));
 
     const page = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
@@ -329,7 +324,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
       .where(eq(peerStateFeed.namespaceId, namespaceId));
 
     const first = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
@@ -339,7 +333,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
       3,
     );
     const second = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       first.scannedThrough,
@@ -349,7 +342,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
       3,
     );
     const third = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       second.scannedThrough,
@@ -359,6 +351,9 @@ describe('FederationMessageTombstoneFeedService query', () => {
       3,
     );
 
+    for (const page of [first, second, third]) {
+      assertFederationWireSchema('urn:somfp:v1:message-tombstone-query', page);
+    }
     expect(first).toMatchObject({
       tombstones: [{ deletionSeq: deletion.deletionSeq, messageSeq: 1 }],
       scannedThrough: 1,
@@ -380,7 +375,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
     const { deletion, namespaceId } = await seedDeletion();
     await expect(
       service.query(
-        peerDomain,
         namespaceId,
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
@@ -402,7 +396,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
 
     await expect(
       service.query(
-        peerDomain,
         namespaceId,
         { type: 'P2P', account: 'alice', peerAccount: 'bob' },
         0,
@@ -418,7 +411,6 @@ describe('FederationMessageTombstoneFeedService query', () => {
       .where(eq(threadAudience.threadId, thread.id));
 
     const page = await service.query(
-      peerDomain,
       namespaceId,
       { type: 'P2P', account: 'alice', peerAccount: 'bob' },
       0,
@@ -439,7 +431,7 @@ describe('FederationMessageTombstoneFeedService query', () => {
   it('uses 0 as the missing-after bootstrap for the thread query', async () => {
     const { namespaceId } = await seedDeletion();
     await expect(
-      service.rejectMissingQueryAfter(peerDomain, namespaceId, {
+      service.rejectMissingQueryAfter(namespaceId, {
         type: 'P2P',
         account: 'alice',
         peerAccount: 'bob',

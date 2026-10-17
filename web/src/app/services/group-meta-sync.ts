@@ -87,9 +87,9 @@ function validatePage(
           entry.operation !== 'GROUP_ANNOUNCEMENT' &&
           entry.operation !== 'MEMBER_UPSERT' &&
           entry.operation !== 'MEMBER_DEPART') ||
-        (typeof entry.body !== 'object' ||
-          entry.body === null ||
-          Array.isArray(entry.body)) ||
+        typeof entry.body !== 'object' ||
+        entry.body === null ||
+        Array.isArray(entry.body) ||
         ((entry.operation === 'MEMBER_UPSERT' ||
           entry.operation === 'MEMBER_DEPART') &&
           (!entry.body.account ||
@@ -176,6 +176,7 @@ async function syncGroupMetaThreadUnchecked(
   committed: GroupMetaCommitPatch[],
   failures: string[],
   guard?: () => boolean,
+  permission?: () => boolean,
 ): Promise<void> {
   const [threads, states] = await Promise.all([
     storage.getThreads(),
@@ -196,6 +197,8 @@ async function syncGroupMetaThreadUnchecked(
   let recoveryThrough = thread.groupMetaRecoveryThrough ?? null;
   if (recoveryThrough === null && BigInt(after) >= BigInt(target)) return;
 
+  const active = () => !permission || permission();
+  if (!active() || (guard && !guard())) return;
   const context = `group ${thread.group.account} (namespace ${thread.group.namespaceId}, thread ${thread.threadId})`;
   try {
     let mode: 'full' | 'delta';
@@ -218,7 +221,7 @@ async function syncGroupMetaThreadUnchecked(
     // server-directed replacement window allowed during this invocation.
     let reopened = false;
     for (;;) {
-      if (guard && !guard()) return;
+      if (!active() || (guard && !guard())) return;
       const envelope = (await request({
         threadId: thread.threadId,
         mode,
@@ -226,6 +229,7 @@ async function syncGroupMetaThreadUnchecked(
         through,
         take: 100,
       })) as GroupMetaEnvelope;
+      if (!active()) return;
       if (envelope?.code === CLIENT_FEED_CURSOR_UNAVAILABLE) {
         const resetThrough = recoveryWindow(envelope.data);
         if (resetThrough === null || reopened)
@@ -269,6 +273,7 @@ async function syncGroupMetaThreadUnchecked(
       }
     }
   } catch (error) {
+    if (!active()) return;
     failures.push(
       `${context}: ${error instanceof Error ? error.message : String(error)}`,
     );
@@ -281,6 +286,7 @@ export async function syncGroupMetaThread(
   threadId: number,
   target: string,
   guard?: () => boolean,
+  permission?: () => boolean,
 ): Promise<{
   /** Committed Group Meta facts, one per thread (latest wins). */
   patches: GroupMetaCommitPatch[];
@@ -299,6 +305,7 @@ export async function syncGroupMetaThread(
     committed,
     failures,
     guard,
+    permission,
   );
   if (failures.length) {
     const visible = failures.slice(0, 5);

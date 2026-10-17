@@ -65,7 +65,7 @@ export type FederationMessagePageEffect = FederationMessagePageEffectContext &
         deletionSeq?: number;
         forwardClosure?: InboundForwardWireBundle;
         remoteForwardBundleId?: string;
-        localForwardBundleId?: string;
+        localForwardBundleId?: bigint;
       }
   );
 

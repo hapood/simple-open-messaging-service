@@ -587,7 +587,7 @@ export class MessageController {
       bundle.content,
       ContentType.FORWARD,
       dto.clientMessageId,
-      bundle.bundleId,
+      (tx) => this.forwardBundles.persistPrepared(tx, bundle),
       async (tx) => {
         // The outer forward is one sent message; each distinct bundled asset is one file.
         await this.userQuota.tickLax(req.user.userId, 'messages', tx, 1);
@@ -599,7 +599,6 @@ export class MessageController {
             bundle.assets.length,
           );
         }
-        await this.forwardBundles.persistPrepared(tx, bundle);
       },
     );
     return data;

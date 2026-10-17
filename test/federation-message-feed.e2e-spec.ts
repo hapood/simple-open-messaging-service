@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { localIdentityDomain } from './support/local-domain.js';
+import type { SystemMessageInput } from '../src/message/system-message.js';
+import type { AccountSubjectAddress } from '../src/user/account-address.js';
 import { withMessageDigest } from './support/message-fixture.js';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { and, eq, isNull } from 'drizzle-orm';
@@ -23,15 +24,24 @@ import {
   openFederatedAudienceInTx,
 } from '../src/federation/federation-audience.js';
 import { seedAcceptedRelationship } from './seed.js';
-import { loadFederationConfig } from '../src/federation/federation.config.js';
 import { truncateTablesForTest } from './support/truncate';
+import {
+  assertFederationMessageWire,
+  assertFederationWireSchema,
+} from './support/federation-wire-schema.js';
+
+function assertMessagePage(
+  page: Awaited<ReturnType<FederationMessageFeedService['query']>>,
+): void {
+  assertFederationWireSchema('urn:somfp:v1:message-query', page);
+  page.messages.forEach(assertFederationMessageWire);
+}
 
 describe('FederationMessageFeedService thread query', () => {
   let mod: TestingModule;
   let database: DatabaseService;
   let service: FederationMessageFeedService;
   const peerDomain = 'message-feed-peer.test';
-  const _localDomain = loadFederationConfig().domain;
 
   beforeAll(async () => {
     mod = await Test.createTestingModule({
@@ -93,14 +103,13 @@ describe('FederationMessageFeedService thread query', () => {
         updatedAt: now,
       })
       .returning();
-    const bob = { account: 'bob', domain: peerDomain, namespaceId };
+    const bob: AccountSubjectAddress = { account: 'bob', namespaceId };
     const [thread] = await database.db
       .insert(messageThread)
       .values({ type: 'P2P', curSeq: 0, updatedAt: now })
       .returning();
     await seedAcceptedRelationship(database.db, alice.id, bob, thread.id);
     await database.db.insert(threadAudience).values({
-      targetDomain: peerDomain,
       targetNamespaceId: namespaceId,
       threadId: thread.id,
       messageAccessAfterSeq: 0,
@@ -110,7 +119,7 @@ describe('FederationMessageFeedService thread query', () => {
 
   async function append(
     threadId: number,
-    creator: { account: string; domain: string },
+    creator: Pick<typeof user.$inferSelect, 'account'>,
     seq: number,
     namespaceId: number,
   ) {
@@ -204,21 +213,21 @@ describe('FederationMessageFeedService thread query', () => {
                 participants: [
                   {
                     account: alice.account,
-                    domain: localIdentityDomain(),
-                    namespaceId: 0,
+                    publisherNamespaceId: 0,
+                    profileNamespaceId: 0,
                     profileRev: 0,
                   },
                   {
                     account: 'bob',
-                    domain: peerDomain,
-                    namespaceId,
+                    publisherNamespaceId: 0,
+                    profileNamespaceId: namespaceId,
                     profileRev: 0,
                   },
                 ],
-              }),
+              } satisfies SystemMessageInput),
               creatorAccount: '$system',
               profileNamespaceId: 0,
-              sourceNamespaceId: 0,
+              publisherNamespaceId: 0,
               profileRev: 0,
             })
             .where(and(eq(message.threadId, thread.id), eq(message.seq, seq)));
@@ -241,6 +250,7 @@ describe('FederationMessageFeedService thread query', () => {
             true,
             forward ? undefined : cursor,
           );
+          assertMessagePage(page);
           expect(page.messages.map((row) => row.seq)).toEqual(
             ordered.length ? [ordered[index]] : [],
           );
@@ -269,6 +279,7 @@ describe('FederationMessageFeedService thread query', () => {
       undefined,
       1,
     );
+    assertMessagePage(page);
     expect(page).toMatchObject({
       scannedThrough: 1,
       hasMore: false,
@@ -410,6 +421,7 @@ describe('FederationMessageFeedService thread query', () => {
       1,
     );
 
+    assertMessagePage(page);
     expect(page.messages).toHaveLength(1);
     expect(JSON.parse(page.messages[0].content)).toEqual({
       url: 'https://example.test/article',

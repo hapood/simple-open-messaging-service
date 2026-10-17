@@ -23,7 +23,9 @@ import { ThreadPreviewService } from '../src/message/thread-preview.service.js';
 import { ThreadFeedHeadWriter } from '../src/message/thread-feed-head.writer.js';
 import { requireThreadContentLockInTx } from '../src/common/locks/thread-content-lock.js';
 import { wirePayloadDigest } from '../src/federation/federated-message-content.js';
-import { payloadDigest } from '../src/federation/canonical-json.js';
+import type { FederationMessageFeedMessage } from '../src/federation/federation-message-feed.service.js';
+import { FederationInboundMessageValidatorService } from '../src/federation/federation-inbound-message-validator.service.js';
+import type { ThreadFanoutTarget } from '../src/message/thread-fanout-task.js';
 import { MessageService } from '../src/message/message.service.js';
 import { FederationInboundMessageStoreService } from '../src/federation/federation-inbound-message-store.service.js';
 import { businessAccountScopeKey } from '../src/common/locks/account-business-lock.js';
@@ -160,26 +162,39 @@ describe('federated message deletion transaction ordering', () => {
                 mimeType: 'text/plain',
               })
             : '{"text":"incoming"}';
+          const item: FederationMessageFeedMessage = {
+            thread: { account: 'bob', peerAccount: reader.account },
+            author: { ref: 'THREAD_ACCOUNT', namespaceId: 0 },
+            seq: originSeq,
+            profileRev: 0,
+            originSeq: null,
+            originCreatedAt: null,
+            createdAt: Date.now(),
+            contentType,
+            content,
+            assets: media ? [{ digest: 'a'.repeat(64), bytes: 1 }] : [],
+          };
           const result = await store.store(tx, {
             threadId,
-            creator: { account: 'bob', domain: peerDomain },
+            creator: { account: 'bob', namespaceId: item.author.namespaceId },
             fetchedFromDomain: peerDomain,
             namespaceId,
+            profileNamespaceId: item.author.namespaceId,
             message: {
               originSeq,
               profileRev: 0,
               contentType: media ? 'FILE' : 'PURE_TEXT',
               content,
-              ts: Date.now(),
+              ts: item.createdAt,
             },
             incomingText: { text: 'incoming' },
             expectedFederationVersion: 0,
-            originTime: new Date(),
-            payloadDigest: wirePayloadDigest(
-              contentType as never,
-              content,
-              media ? [{ digest: 'a'.repeat(64), bytes: 1 }] : [],
-            ),
+            originTime: new Date(item.createdAt),
+            payloadDigest: wirePayloadDigest(contentType, content, item.assets),
+            federationEnvelopeDigest:
+              new FederationInboundMessageValidatorService().immutableEnvelopeDigest(
+                item,
+              ),
             ...(reverse
               ? {
                   sequencePolicy: {
@@ -192,9 +207,18 @@ describe('federated message deletion transaction ordering', () => {
               : {}),
           });
           expect(result.kind).toBe(media ? 'pending' : 'message');
-          results.push(
-            result.kind === 'message' ? result.message.seq : result.seq,
-          );
+          const seq =
+            result.kind === 'message' ? result.message.seq : result.seq;
+          expect(
+            await tx.query.message.findFirst({
+              where: and(eq(message.threadId, threadId), eq(message.seq, seq)),
+            }),
+          ).toMatchObject({
+            creatorAccount: 'bob',
+            publisherNamespaceId: namespaceId,
+            profileNamespaceId: 0,
+          });
+          results.push(seq);
         }
         return results;
       });
@@ -233,8 +257,7 @@ describe('federated message deletion transaction ordering', () => {
           threadId,
           messageEndSeq: reverse ? 8 : 2,
           tombstoneEndSeq: 1,
-          profileRev: 0,
-        });
+        } satisfies ThreadFanoutTarget);
     },
   );
 
@@ -938,10 +961,12 @@ describe('federated message deletion transaction ordering', () => {
           creatorAccount: 'bob',
           profileNamespaceId: namespaceId,
           contentType: 'IMAGE',
-          content: JSON.stringify({ digest: 'a'.repeat(64) }),
-          payloadDigest: payloadDigest(
-            JSON.stringify({ digest: 'a'.repeat(64) }),
-          ),
+          content: JSON.stringify({
+            url: `/uploads/msg-assets/aa/aa/${'a'.repeat(64)}`,
+            name: 'pending.png',
+            w: 1,
+            h: 1,
+          }),
           originSeq: 7,
           publisherNamespaceId: namespaceId,
           localState: 'STUB',
@@ -956,6 +981,7 @@ describe('federated message deletion transaction ordering', () => {
         direction: 'INBOUND',
         fileCnt: 1,
         originDomain: peerDomain,
+        publisherNamespaceId: namespaceId,
         expectedAuthorizationEpoch: 0,
         updatedAt: new Date(),
       })
@@ -963,12 +989,12 @@ describe('federated message deletion transaction ordering', () => {
     await database.db.insert(fileSyncProgress).values({
       batchId: pending.batchId,
       digest: 'a'.repeat(64),
-      direction: 'INBOUND',
       kind: 'IMAGE',
       status: 'DOWNLOADING',
       bytesTotal: 100n,
       bytesReceived: 40n,
       originDomain: peerDomain,
+      publisherNamespaceId: namespaceId,
     });
 
     await apply(13);

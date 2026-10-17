@@ -1,3 +1,5 @@
+/// <reference lib="dom" />
+
 import type { Browser, BrowserContext, Page } from '@playwright/test';
 import type {
   ElementSummary,
@@ -76,8 +78,10 @@ export class BrowserDriver implements PlatformDriver {
     const elements = await page
       .locator('button, input, textarea, [role], [contenteditable="true"]')
       .evaluateAll((nodes): ElementSummary[] =>
-        nodes.slice(0, 160).map((node) => {
-          const element = node as HTMLElement;
+        nodes.slice(0, 160).map((element) => {
+          if (!(element instanceof HTMLElement)) {
+            throw new Error('Expected an HTML observation target');
+          }
           return {
             id: element.id || undefined,
             role: element.getAttribute('role') || element.tagName.toLowerCase(),
@@ -94,9 +98,9 @@ export class BrowserDriver implements PlatformDriver {
               .slice(0, 240),
             value:
               'value' in element
-                ? String((element as HTMLInputElement).value).slice(0, 240)
+                ? String(element.value).slice(0, 240)
                 : undefined,
-            enabled: !(element as HTMLButtonElement).disabled,
+            enabled: !('disabled' in element && element.disabled),
             visible: !!(
               element.offsetWidth ||
               element.offsetHeight ||

@@ -34,7 +34,6 @@ import {
   type SessionClient,
 } from '../src/auth/session-token.service';
 import { PasswordHasher } from '../src/auth/password-hasher.service.js';
-import { localIdentityDomain } from '../src/common/local-identity';
 
 export interface SeededUser {
   id: number;
@@ -160,7 +159,6 @@ export async function findP2PRelationship(
   ]);
   if (
     first.account === second.account &&
-    first.domain === second.domain &&
     first.namespaceId === second.namespaceId
   )
     throw new Error('relationship endpoints must differ');
@@ -204,7 +202,7 @@ export async function seedAcceptedRelationship(
     const endpoints = [first, second].sort(localEndpointFirst);
     const revisions = await Promise.all(
       endpoints.map(async (identity) => {
-        if (identity.domain !== 'local') return 0;
+        if (identity.namespaceId !== 0) return 0;
         const row = await tx.query.account.findFirst({
           where: eq(accountTable.account, identity.account),
           columns: { defaultProfileRev: true },
@@ -240,7 +238,7 @@ export async function seedAcceptedRelationship(
     await tx
       .insert(relationshipIntent)
       .values(
-        [0, 1].map((index) => ({
+        [0, 1].map((index): typeof relationshipIntent.$inferInsert => ({
           authorAccount: endpoints[index].account,
           authorNamespaceId: endpoints[index].namespaceId,
           receiverAccount: endpoints[1 - index].account,
@@ -289,7 +287,7 @@ export async function seedAcceptedRelationship(
  *  (Argon2id + pepper — the exact path /auth/login verifies against); omit it for a passwordless
  *  (OTP/QR-only) account. */
 export async function seedUser(
-  app: INestApplication,
+  app: Pick<INestApplication, 'get'>,
   account: string,
   opts: { name?: string; password?: string } = {},
 ): Promise<SeededUser> {
@@ -309,10 +307,8 @@ export async function seedUser(
         updatedAt: new Date(),
       })
       .returning({ id: user.id, account: user.account });
-    const localDomain = await localIdentityDomain(tx);
     await tx.insert(profileTable).values({
       account: created.account,
-      domain: localDomain,
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 1,
@@ -328,7 +324,7 @@ export async function seedUser(
 /** Issue a session token directly via the in-process SessionTokenService. Returns the plaintext (the
  *  Bearer credential the global SessionAuthGuard validates). */
 export function seedSession(
-  app: INestApplication,
+  app: Pick<INestApplication, 'get'>,
   userId: number,
   client: SessionClient = 'app',
   opts: { device?: string } = {},
@@ -342,7 +338,7 @@ export function seedSession(
 /** Seed a user + an authenticated session — the direct replacement for the old register+login pair.
  *  Returns { id, account, token }. */
 export async function seedUserWithSession(
-  app: INestApplication,
+  app: Pick<INestApplication, 'get'>,
   account: string,
   opts: { name?: string; client?: SessionClient; device?: string } = {},
 ): Promise<SeededUser & { token: string }> {

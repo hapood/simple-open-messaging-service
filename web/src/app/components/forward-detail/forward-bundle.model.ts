@@ -4,13 +4,9 @@ interface ForwardAssetDocument {
 }
 
 export interface ForwardManifestMessage {
-  /** Canonical 1-based Bundle-local id; absent only on legacy v1 snapshots. */
-  id?: number;
-  author: {
-    account: string;
-    domain: string;
-  };
-  profile?: {
+  /** Canonical positive bundle-local message id. */
+  id: number;
+  profile: {
     displayName: string;
     avatarDigest?: string;
   };

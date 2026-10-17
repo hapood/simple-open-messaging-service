@@ -9,6 +9,7 @@ import { ProfileNamespaceFeedService } from '../src/federation/profile-namespace
 import { ProfileNamespaceChangeStore } from '../src/federation/profile-namespace-change-store.service.js';
 import { ProfileNamespaceController } from '../src/controller/profile-namespace.controller.js';
 import { seedFederatedPeerNamespace, fakeRootPublicKey } from './seed.js';
+import { assertFederationWireSchema } from './support/federation-wire-schema.js';
 
 describe('client namespace demand after prefetch work is absent', () => {
   const domain = `namespace-demand-${Date.now().toString(36)}.test`;
@@ -120,6 +121,7 @@ describe('client namespace demand after prefetch work is absent', () => {
         });
       }
       const bindings = await feed.resolveBindings(profileNamespaceId);
+      assertFederationWireSchema('urn:somfp:v1:profile-namespace', bindings);
       expect(bindings).toEqual({
         domain: subjectDomain,
         rootPublicKey: fakeRootPublicKey(subjectDomain),

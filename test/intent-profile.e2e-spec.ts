@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
+import { Test, type TestingModule } from '@nestjs/testing';
+import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   account,
@@ -21,6 +23,7 @@ describe('exact directed intent account-profile disclosure', () => {
   const remoteDomain = `intent-peer-${suffix}.test`;
   const remoteUser = `remote-${suffix}`;
   const groupName = `!intent-group-${suffix}`;
+  let mod: TestingModule;
   let database: DatabaseService;
   let profiles: FederationProfileService;
   let namespaceId: number;
@@ -29,14 +32,10 @@ describe('exact directed intent account-profile disclosure', () => {
   let threadId: number;
 
   beforeAll(async () => {
-    database = new DatabaseService();
-    profiles = new FederationProfileService(
-      database,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+    // Resolve real dependencies without starting schedulers or listeners.
+    mod = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    database = mod.get(DatabaseService);
+    profiles = mod.get(FederationProfileService);
     namespaceId = await seedFederatedPeerNamespace(database.db, remoteDomain);
     const [user] = await database.db
       .insert(account)
@@ -49,7 +48,6 @@ describe('exact directed intent account-profile disclosure', () => {
     await database.db.insert(profileTable).values([
       {
         account: localUser,
-        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 1,
@@ -57,7 +55,6 @@ describe('exact directed intent account-profile disclosure', () => {
       },
       {
         account: localUser,
-        namespaceId: 0,
         publisherNamespaceId: 0,
         profileNamespaceId: 0,
         profileRev: 2,
@@ -75,7 +72,6 @@ describe('exact directed intent account-profile disclosure', () => {
     groupId = group.id;
     await database.db.insert(profileTable).values({
       account: groupName,
-      namespaceId: 0,
       publisherNamespaceId: 0,
       profileNamespaceId: 0,
       profileRev: 3,
@@ -179,7 +175,7 @@ describe('exact directed intent account-profile disclosure', () => {
       .where(eq(messageThread.id, threadId));
     await database.db.delete(groupAccount).where(eq(groupAccount.id, groupId));
     await database.db.delete(account).where(eq(account.id, userId));
-    await database.onApplicationShutdown();
+    await mod.close();
   });
 
   it('serves only the authored exact user intent through account profile lookup', async () => {

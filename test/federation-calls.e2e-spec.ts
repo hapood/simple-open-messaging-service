@@ -17,7 +17,11 @@ import {
   waitForSseEvent,
 } from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
-import { message, account as user } from '../src/database/schema.js';
+import {
+  identityNamespace,
+  message,
+  account as user,
+} from '../src/database/schema.js';
 
 /**
  * Federated 1:1 call e2e — a SELF-CONTAINED two-server suite (own bootFederationPair + own DBs + a
@@ -374,18 +378,27 @@ describe('Federated 1:1 calls e2e (two nodes, real signed S2S call relay)', () =
           ),
         }),
       );
+      const erinHomeOnB = await appB.database.query.identityNamespace.findFirst(
+        {
+          where: and(
+            eq(identityNamespace.domain, DOM_A),
+            eq(identityNamespace.active, true),
+          ),
+        },
+      );
+      expect(erinHomeOnB).toBeDefined();
       expect(JSON.parse(onB.content)).toMatchObject({
         outcome: 'declined',
         type: 'CALL_ENDED',
         caller: {
           account: 'erin',
-          domain: DOM_A,
-          profileNamespaceId: expect.any(Number),
+          publisherNamespaceId: erinHomeOnB!.id,
+          profileNamespaceId: 0,
           profileRev: 0,
         },
         callee: {
           account: 'frank',
-          domain: DOM_B,
+          publisherNamespaceId: 0,
           profileNamespaceId: 0,
           profileRev: 0,
         },

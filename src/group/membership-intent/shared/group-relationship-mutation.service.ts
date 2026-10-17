@@ -195,7 +195,7 @@ export class GroupRelationshipMutationService {
         threadId,
         localMemberId: memberUserId,
         memberAccount: member.account,
-        publisherNamespaceId: group.namespaceId,
+        authorityNamespaceId: group.namespaceId,
         threadLock: locked.threadLock,
       });
     }

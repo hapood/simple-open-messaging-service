@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import Ajv2020Module, {
@@ -7,8 +8,20 @@ import Ajv2020Module, {
   type ErrorObject,
   type ValidateFunction,
 } from 'ajv/dist/2020.js';
-const normativeSpecDir = join(process.cwd(), 'spec', 'v1');
-const releaseSpecDir = join(normativeSpecDir, '..');
+const {
+  values: { spec, schema, file },
+} = parseArgs({
+  options: {
+    spec: { type: 'string' },
+    schema: { type: 'string' },
+    file: { type: 'string' },
+  },
+  strict: true,
+  allowPositionals: false,
+});
+if (!spec) throw new Error('--spec must name the protocol release directory');
+const releaseSpecDir = resolve(spec);
+const normativeSpecDir = join(releaseSpecDir, 'v1');
 const specDir = join(normativeSpecDir, 'schema');
 const protocolVersion = 1;
 const federationApiPrefix = 's2s/v1';
@@ -193,6 +206,22 @@ function semanticValid(schema: string, value: unknown): boolean {
       return true;
     });
   }
+  if (schema === 'urn:somfp:v1:message-query#/$defs/message') {
+    const message = value as {
+      originSeq: number | null;
+      originCreatedAt: number | null;
+      contentType: string;
+      content: string;
+    };
+    return (
+      ((message.originSeq === null && message.originCreatedAt === null) ||
+        (Number.isSafeInteger(message.originSeq) &&
+          message.originSeq! > 0 &&
+          Number.isSafeInteger(message.originCreatedAt) &&
+          message.originCreatedAt! >= 0)) &&
+      parsedContent(message.contentType, message.content) !== null
+    );
+  }
   if (schema === 'urn:somfp:v1:message-query') {
     const page = value as {
       scannedThrough?: number;
@@ -213,12 +242,7 @@ function semanticValid(schema: string, value: unknown): boolean {
       return (
         ordered &&
         message.seq <= page.scannedThrough! &&
-        ((message.originSeq === null && message.originCreatedAt === null) ||
-          (Number.isSafeInteger(message.originSeq) &&
-            message.originSeq! > 0 &&
-            Number.isSafeInteger(message.originCreatedAt) &&
-            message.originCreatedAt! >= 0)) &&
-        parsedContent(message.contentType, message.content) !== null
+        semanticValid('urn:somfp:v1:message-query#/$defs/message', message)
       );
     });
   }
@@ -306,9 +330,6 @@ function parsedContent(contentType: string, encoded: string): unknown | null {
 }
 
 async function validateVectors(ajv: Ajv2020Instance): Promise<void> {
-  contentValidator = ajv.getSchema('urn:somfp:v1:message-content');
-  if (!contentValidator)
-    throw new Error('message content schema was not registered');
   for (const [file, expected] of [
     ['valid.json', true],
     ['invalid.json', false],
@@ -480,18 +501,20 @@ async function validateSignatureVector(file: string): Promise<void> {
   }
 }
 
-function argument(name: string): string | undefined {
-  const index = process.argv.indexOf(name);
-  return index < 0 ? undefined : process.argv[index + 1];
-}
-
 async function main(): Promise<void> {
   await validateReleaseMetadata();
   const ajv = await buildAjv();
-  const schema = argument('--schema');
-  const file = argument('--file');
-  if ((schema && !file) || (!schema && file)) {
-    throw new Error('--schema and --file must be supplied together');
+  contentValidator = ajv.getSchema('urn:somfp:v1:message-content');
+  if (!contentValidator)
+    throw new Error('message content schema was not registered');
+  if (
+    (schema !== undefined) !== (file !== undefined) ||
+    schema === '' ||
+    file === ''
+  ) {
+    throw new Error(
+      '--schema and --file must be supplied together with nonempty values',
+    );
   }
   if (schema && file) {
     const validate = ajv.getSchema(schema);

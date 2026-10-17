@@ -1126,7 +1126,7 @@ ALTER SEQUENCE public."FileSyncProgress_id_seq" OWNED BY public."FileSyncProgres
 --
 
 CREATE TABLE public."ForwardBundle" (
-    id character varying(26) NOT NULL,
+    id bigserial NOT NULL,
     messages jsonb NOT NULL,
     "messageCount" integer NOT NULL,
     "assetCount" integer NOT NULL,
@@ -1148,7 +1148,7 @@ CREATE TABLE public."ForwardBundle" (
 --
 
 CREATE TABLE public."ForwardBundleAsset" (
-    "bundleId" character varying(26) NOT NULL,
+    "bundleId" bigint NOT NULL,
     digest character varying(64) NOT NULL,
     ordinal integer NOT NULL,
     bytes bigint NOT NULL
@@ -1160,8 +1160,8 @@ CREATE TABLE public."ForwardBundleAsset" (
 --
 
 CREATE TABLE public."ForwardBundleDependency" (
-    "parentBundleId" character varying(26) NOT NULL,
-    "childBundleId" character varying(26) NOT NULL,
+    "parentBundleId" bigint NOT NULL,
+    "childBundleId" bigint NOT NULL,
     ordinal integer NOT NULL
 );
 
@@ -1172,7 +1172,7 @@ CREATE TABLE public."ForwardBundleDependency" (
 
 CREATE TABLE public."ForwardMessage" (
     "messageId" bigint NOT NULL,
-    "bundleId" character varying(26) NOT NULL
+    "bundleId" bigint NOT NULL
 );
 
 

@@ -830,6 +830,31 @@ async fn sync_group_meta_thread(
     (changed, patches, result.err())
 }
 
+// Each drain subscribes before reading its initial plan, so a committed
+// departure cannot be missed between the snapshot read and the first request.
+fn subscribe_meta_flight(
+    user_id: i64,
+    thread_id: i64,
+    epoch: u64,
+) -> (std::sync::Arc<std::sync::atomic::AtomicBool>, impl Sized) {
+    let token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let cancelled = token.clone();
+    let subscription = super::thread_feed_commits::THREAD_FEED_COMMITS.subscribe(move |commit| {
+        if commit.user_id == user_id
+            && commit.epoch == epoch
+            && commit.states.iter().any(|state| {
+                i64::from(state.thread_id) == thread_id
+                    && state.server.as_ref().is_some_and(|snapshot| {
+                        snapshot.kind != "GROUP" || snapshot.conversation_state != "ACTIVE"
+                    })
+            })
+        {
+            cancelled.store(false, std::sync::atomic::Ordering::Release);
+        }
+    });
+    (token, subscription)
+}
+
 async fn sync_group_meta_thread_unchecked(
     app: Option<&tauri::AppHandle>,
     proxy: &ServerSessionState,
@@ -839,10 +864,15 @@ async fn sync_group_meta_thread_unchecked(
     changed: &mut Vec<i64>,
     patches: &mut Vec<super::client_state::GroupMetaCommitPatch>,
 ) -> Result<(), String> {
+    let (token, _subscription) = subscribe_meta_flight(user_id, thread_id, epoch);
+    let active = || token.load(std::sync::atomic::Ordering::Acquire);
     let plans = super::lifetime::spawn_at(Ok(epoch), move || group_meta_plans(&open()?, user_id))
         .await
         .map_err(|e| format!("join group-meta plan read: {e}"))??;
     for plan in plans.into_iter().filter(|plan| plan.thread_id == thread_id) {
+        if !active() || open_thread_id() != Some(thread_id) {
+            return Ok(());
+        }
         let target = plan.target.parse::<u64>().map_err(|e| e.to_string())?;
         let mut after = plan
             .processed_through
@@ -879,6 +909,9 @@ async fn sync_group_meta_thread_unchecked(
         }
         let mut reopened = false;
         loop {
+            if !active() || open_thread_id() != Some(thread_id) {
+                return Ok(());
+            }
             drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
             let path = format!(
                 "/api/v1/user/group-meta?threadId={}&mode={mode}&after={after}&take=100&through={through}",
@@ -893,7 +926,11 @@ async fn sync_group_meta_thread_unchecked(
                 None,
                 true,
             )
-            .await?;
+            .await;
+            if !active() {
+                return Ok(());
+            }
+            let response = response?;
             if !(200..300).contains(&response.status) {
                 return Err(format!("group-meta HTTP {}", response.status));
             }
@@ -983,6 +1020,9 @@ async fn sync_group_meta_thread_unchecked(
             }
         }
     }
+    if !active() {
+        return Ok(());
+    }
     let references = super::lifetime::spawn_at(Ok(epoch), move || {
         unresolved_group_meta_profiles(&open()?, user_id)
     })
@@ -992,6 +1032,9 @@ async fn sync_group_meta_thread_unchecked(
         .into_iter()
         .filter(|reference| reference.thread_id == thread_id)
     {
+        if !active() {
+            return Ok(());
+        }
         let changed_thread_id = reference.thread_id;
         // Profile warming is optional: one failed reference must not discard
         // the already-committed Group Meta pages of this drain.
@@ -1193,6 +1236,39 @@ pub(crate) async fn sync_thread_feed(
     }
     let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
     let _sync = THREAD_FEED_SYNC.lock().await;
+    let events = crate::realtime::NativeEvents::capture(app);
+    let _renderer = super::thread_feed_commits::THREAD_FEED_COMMITS.subscribe(move |commit| {
+        if commit.user_id != user_id || commit.epoch != epoch {
+            return;
+        }
+        for snapshot in commit
+            .states
+            .iter()
+            .filter_map(|state| state.server.as_ref())
+        {
+            let _ = events.emit(
+                "soms-sse-event",
+                LocalEventPayload {
+                    event: "THREAD_ALIAS_APPLIED".into(),
+                    status: 0,
+                    message: "thread alias applied".into(),
+                    data: serde_json::json!({
+                        "userId": user_id, "threadId": snapshot.thread_id,
+                        "threadFeedId": snapshot.thread_feed_id, "alias": snapshot.alias,
+                    }),
+                },
+            );
+        }
+        let _ = events.emit(
+            "soms-sse-event",
+            LocalEventPayload {
+                event: "LOCAL_THREAD_FEED_COMMITTED".into(),
+                status: 0,
+                message: "local data committed".into(),
+                data: serde_json::json!({ "userId": user_id, "states": commit.states }),
+            },
+        );
+    });
     drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
     let mut cursor = super::lifetime::spawn_at(Ok(epoch), move || {
         let conn = open()?;
@@ -1239,9 +1315,22 @@ pub(crate) async fn sync_thread_feed(
             validate_sync_page(&page, cursor, through)?;
             let scanned = page.scanned_through;
             let head = page.thread_feed_end_id;
-            let merged = super::lifetime::spawn_at(Ok(epoch), move || {
-                merge_states(&mut open()?, user_id, page.items, Some(scanned))
-            })
+            let renderer = _renderer.clone();
+            let merged = super::lifetime::spawn_at_then(
+                Ok(epoch),
+                move || merge_states(&mut open()?, user_id, page.items, Some(scanned)),
+                move |merged| {
+                    // Keep the subscription alive through a detached blocking commit.
+                    let _renderer = renderer;
+                    super::thread_feed_commits::THREAD_FEED_COMMITS.publish(
+                        &super::thread_feed_commits::ThreadFeedCommit {
+                            user_id,
+                            epoch,
+                            states: merged,
+                        },
+                    );
+                },
+            )
             .await
             .map_err(|e| format!("join thread feed merge: {e}"))??;
             for mut state in merged {
@@ -1267,23 +1356,6 @@ pub(crate) async fn sync_thread_feed(
         cursor,
         error: outcome.err(),
     })
-}
-
-impl ThreadFeedSyncResult {
-    pub(crate) fn alias_events(&self, user_id: i64) -> Vec<Value> {
-        self.states
-            .iter()
-            .filter_map(|state| state.server.as_ref())
-            .map(|snapshot| {
-                serde_json::json!({
-                    "userId": user_id,
-                    "threadId": snapshot.thread_id,
-                    "threadFeedId": snapshot.thread_feed_id,
-                    "alias": snapshot.alias,
-                })
-            })
-            .collect()
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -2133,6 +2205,42 @@ mod tests {
             "text": "message"
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn committed_departure_cancels_only_matching_meta_flights_and_rejoin_cannot_revive_them() {
+        use super::super::thread_feed_commits::{ThreadFeedCommit, THREAD_FEED_COMMITS};
+        use std::sync::atomic::Ordering;
+        let (token, _subscription) = subscribe_meta_flight(98765, 9, 42);
+        let (other_user, _other) = subscribe_meta_flight(98766, 9, 42);
+        let (other_epoch, _epoch) = subscribe_meta_flight(98765, 9, 43);
+        let mut state = snapshot(2, 0);
+        state.thread_id = 9;
+        state.kind = "GROUP".into();
+        state.conversation_state = "READ_ONLY".into();
+        let mut states = vec![LocalThreadAttention {
+            thread_id: 9,
+            local_read_seq: Some(0),
+            server: Some(state),
+            notification_changed: false,
+        }];
+        THREAD_FEED_COMMITS.publish(&ThreadFeedCommit {
+            user_id: 98765,
+            epoch: 42,
+            states: &states,
+        });
+        assert!(!token.load(Ordering::Acquire));
+        assert!(other_user.load(Ordering::Acquire));
+        assert!(other_epoch.load(Ordering::Acquire));
+        states[0].server.as_mut().unwrap().conversation_state = "ACTIVE".into();
+        THREAD_FEED_COMMITS.publish(&ThreadFeedCommit {
+            user_id: 98765,
+            epoch: 42,
+            states: &states,
+        });
+        assert!(!token.load(Ordering::Acquire));
+        let (fresh, _fresh_subscription) = subscribe_meta_flight(98765, 9, 42);
+        assert!(fresh.load(Ordering::Acquire));
     }
 
     fn snapshot(feed: i32, seq: i32) -> ThreadFeedSnapshot {

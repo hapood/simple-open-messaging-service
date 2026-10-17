@@ -157,4 +157,4 @@ See [Reference coordinates](./envelope.md#7-reference-coordinates).
 Inside a history-forward bundle, references are rebuilt in the enclosing
 messages array. A selected target uses its bundle-local message ID; an
 unselected or nonexistent target SHOULD use zero. A positive reference with
-no matching bundle entry is also accepted as absent. See [Forward quotes](./forward.md#5-authors-quotes-and-assets).
+no matching bundle entry is also accepted as absent. See [Forward quotes](./forward.md#5-display-snapshots-quotes-and-assets).

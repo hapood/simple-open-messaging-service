@@ -93,10 +93,6 @@
       "values": [
         {
           "id": 1,
-          "author": {
-            "account": "alice",
-            "domain": "a.example"
-          },
           "profile": {
             "displayName": "Alice"
           },
@@ -107,10 +103,6 @@
         },
         {
           "id": 1,
-          "author": {
-            "account": "alice",
-            "domain": "a.example"
-          },
           "profile": {
             "displayName": "Alice"
           },
@@ -120,6 +112,19 @@
           "quoteTargetId": 1
         }
       ]
+    },
+    {
+      "name": "forward display name retains 31 Unicode code points",
+      "schema": "urn:somfp:v1:forward-bundle#/$defs/bundleMessage",
+      "value": {
+        "id": 1,
+        "profile": {
+          "displayName": "123456789012345678901234567890😀"
+        },
+        "contentType": "PURE_TEXT",
+        "content": "{\"text\":\"unchanged source display name\"}",
+        "sentAt": 1
+      }
     },
     {
       "name": "quote coordinates select sender or receiver timeline",
@@ -454,6 +459,7 @@
         {
           "contentType": "IMAGE",
           "content": {
+            "name": "photo.png",
             "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
             "width": 1,
             "height": 1
@@ -501,6 +507,7 @@
           "content": {
             "account": "carol",
             "domain": "c.example",
+            "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
             "displayName": "Carol",
             "bio": "Distributed systems enthusiast",
             "avatarDigest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa"
@@ -511,6 +518,7 @@
           "content": {
             "account": "!group123",
             "domain": "a.example",
+            "publicKey": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
             "displayName": "Project Group",
             "bio": ""
           }
@@ -527,6 +535,7 @@
             "items": [
               {
                 "kind": "IMAGE",
+                "name": "photo.png",
                 "digest": "d831d6f2797f986eb5453ea3c86e1b6ac7eac94ba35edd17730b939536059afa",
                 "width": 1,
                 "height": 1
@@ -710,14 +719,59 @@
       }
     },
     {
-      "name": "minimal forward closure",
+      "name": "forward closure shares one child across two references",
       "schema": "urn:somfp:v1:forward-bundle",
       "value": {
-        "id": "0b4e1419d48487c928166daa4bf73494fecccdbc64cb6b8db3fa6eb1f9cb2e0d",
+        "id": "4ea318598cc3fc74af11e7bbd5005803890f16ed43bfbacf53f336e1393fecd1",
         "messages": [
           {
             "id": 1,
-            "author": {},
+            "profile": {
+              "displayName": "Bob"
+            },
+            "contentType": "FORWARD",
+            "content": "{\"bundleId\":\"79177df257426c228c0a4c0a59c0c1506859306d75c760a8c21c028232f7788c\"}",
+            "childBundleId": "79177df257426c228c0a4c0a59c0c1506859306d75c760a8c21c028232f7788c",
+            "sentAt": 2
+          },
+          {
+            "id": 2,
+            "profile": {
+              "displayName": "Bob"
+            },
+            "contentType": "FORWARD",
+            "content": "{\"bundleId\":\"79177df257426c228c0a4c0a59c0c1506859306d75c760a8c21c028232f7788c\"}",
+            "childBundleId": "79177df257426c228c0a4c0a59c0c1506859306d75c760a8c21c028232f7788c",
+            "sentAt": 2
+          }
+        ],
+        "children": [
+          {
+            "id": "79177df257426c228c0a4c0a59c0c1506859306d75c760a8c21c028232f7788c",
+            "messages": [
+              {
+                "id": 1,
+                "profile": {
+                  "displayName": "Alice"
+                },
+                "contentType": "PURE_TEXT",
+                "content": "{\"text\":\"shared snapshot\"}",
+                "sentAt": 1
+              }
+            ]
+          }
+        ],
+        "assets": []
+      }
+    },
+    {
+      "name": "minimal forward closure",
+      "schema": "urn:somfp:v1:forward-bundle",
+      "value": {
+        "id": "0af7e60042a206ee758e252d33cba24aa6a754dff6f5c0199dacd6038e1ccc5a",
+        "messages": [
+          {
+            "id": 1,
             "profile": {
               "displayName": "Alice"
             },
@@ -727,15 +781,11 @@
           },
           {
             "id": 2,
-            "author": {
-              "account": "bob",
-              "domain": "b.example"
-            },
             "profile": {
               "displayName": "Bob"
             },
             "contentType": "PURE_TEXT",
-            "content": "{\"text\":\"author address is optional\"}",
+            "content": "{\"text\":\"display snapshot only\"}",
             "sentAt": 2
           }
         ],

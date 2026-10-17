@@ -18,7 +18,6 @@ import {
 import type { AccountTarget } from '../src/user/account-address.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import type { INestApplication } from '@nestjs/common';
 import { eq, and, asc, sql } from 'drizzle-orm';
 import { AppModule } from '../src/app.module.js';
 import { GroupRole } from '../src/database/enums.js';
@@ -36,7 +35,6 @@ import {
 } from '../src/database/schema.js';
 import { GroupService } from '../src/group/group.service.js';
 import { MessageService } from '../src/message/message.service.js';
-import { ClientStateFeedService } from '../src/client-state-feed/client-state-feed.service.js';
 import { applyDeltaMirrorMetaItemInTx } from '../src/group/meta/apply-delta-mirror-meta-item-in-tx.js';
 import { ThreadFanoutTaskHandler } from '../src/message/thread-fanout-task.handler.js';
 import { ThreadFanoutProgressService } from '../src/message/thread-fanout-progress.service.js';
@@ -79,11 +77,7 @@ describe('departure system message paths', () => {
     consumer = app.get(FederationStateFeedConsumerService);
   });
   afterAll(async () => app.close());
-  const identity = () =>
-    seedUserWithSession(
-      app as unknown as INestApplication,
-      `departure-${++serial}`,
-    );
+  const identity = () => seedUserWithSession(app, `departure-${++serial}`);
   async function notices(threadId: number, type = 'GROUP_LEFT') {
     const rows = await database.db
       .select()
@@ -278,6 +272,7 @@ describe('departure system message paths', () => {
         ],
         scannedThrough: '20',
         stateFeedEndId: '20',
+        profileNamespaceFeedEndId: '0',
         hasMore: false,
       }),
     );
@@ -514,6 +509,7 @@ describe('departure system message paths', () => {
         ],
         scannedThrough: revoke!.feedId.toString(),
         stateFeedEndId: revoke!.feedId.toString(),
+        profileNamespaceFeedEndId: '0',
         hasMore: false,
       }),
     );
@@ -603,14 +599,14 @@ describe('departure system message paths', () => {
     // membership, the GROUP_LEFT message, and the read boundary — must
     // roll back together.
     const transaction = database.db.transaction.bind(database.db);
-    const failing = vi.spyOn(database.db, 'transaction').mockImplementation(((
-      run: unknown,
-      config: unknown,
-    ) =>
-      transaction(async (tx: never) => {
-        await (run as (tx: never) => Promise<unknown>)(tx);
-        throw new Error('storage failed');
-      }, config)) as never);
+    const failing = vi
+      .spyOn(database.db, 'transaction')
+      .mockImplementation((run, config) =>
+        transaction(async (tx) => {
+          await run(tx);
+          throw new Error('storage failed');
+        }, config),
+      );
     try {
       await expect(
         memberIntents.execute({
@@ -699,7 +695,6 @@ describe('departure system message paths', () => {
           through: 6,
           reachedBoundary: false,
           messages: app.get(MessageService),
-          clientStateFeed: app.get(ClientStateFeedService),
         }),
       );
       const rows = await notices(h.threadId);
@@ -959,6 +954,8 @@ describe('departure system message paths', () => {
       expect(admitted!.authorizationEpoch).toBe(state!.authorizationEpoch);
       expect(admitted!.federationRoundsEnabled).toBe(true);
       if (path === 'mirror') {
+        if (!('observer' in h))
+          throw new Error('mirror fixture must include an observer');
         expect(
           await database.db.query.durableTask.findFirst({
             where: and(

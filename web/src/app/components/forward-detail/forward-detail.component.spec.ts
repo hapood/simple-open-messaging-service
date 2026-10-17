@@ -9,7 +9,7 @@ import type {
 describe('forward reply display', () => {
   const original: ForwardManifestMessage = {
     id: 1,
-    author: { account: 'alice', domain: 'example.test' },
+    profile: { displayName: 'alice' },
     contentType: 'PURE_TEXT',
     content: '{"text":"original"}',
     sentAt: 1,
@@ -30,6 +30,23 @@ describe('forward reply display', () => {
       messages: [original, message],
     });
   }
+  it('renders equal display names as independent snapshots', () => {
+    const first = project(original);
+    const second = project(reply());
+    expect(first.type).toBe('msg');
+    expect(second.type).toBe('msg');
+    if (first.type !== 'msg' || second.type !== 'msg') {
+      throw new Error('expected ordinary snapshot rows');
+    }
+    expect(first.name).toBe('alice');
+    expect(second.name).toBe('alice');
+    expect(first.creator).toBe(JSON.stringify(['bundle', 1]));
+    expect(second.creator).toBe(JSON.stringify(['bundle', 2]));
+    expect(first.avatarIdentityId).toBe(first.creator);
+    expect(second.avatarIdentityId).toBe(second.creator);
+    expect(first.avatarAccount).toBeUndefined();
+    expect(first.avatarDomainSource).toBeUndefined();
+  });
   it('preserves an absent quote without enabling navigation', () => {
     expect(project(reply(0)).quote).toEqual({ seq: 0, status: 'NOT_FOUND' });
   });
@@ -49,10 +66,49 @@ describe('forward reply display', () => {
 });
 
 describe('forward nested card projection', () => {
+  it('counts shared nested children for every reference without duplicating bodies', () => {
+    const card = (
+      id: number,
+      childBundleId: string,
+    ): ForwardManifestMessage => ({
+      id,
+      profile: { displayName: 'Alice' },
+      contentType: 'FORWARD',
+      content: JSON.stringify({ bundleId: childBundleId }),
+      sentAt: 1,
+      childBundleId,
+    });
+    const leaf: ForwardManifestMessage = {
+      id: 1,
+      profile: { displayName: 'Bob' },
+      contentType: 'PURE_TEXT',
+      content: JSON.stringify({ text: 'hello' }),
+      sentAt: 2,
+    };
+    const message = card(1, 'child');
+    const closure: ForwardWireBundle = {
+      id: 'root',
+      messages: [message],
+      children: [
+        { id: 'child', messages: [card(1, 'leaf'), card(2, 'leaf')] },
+        { id: 'leaf', messages: [leaf] },
+      ],
+      assets: [],
+      accessContext: { threadId: 42, seq: 7 },
+    };
+    const component = Object.create(
+      ForwardDetailComponent.prototype,
+    ) as ForwardDetailComponent;
+    Object.assign(component, { closure: signal(closure) });
+    const data = component['toMsgData'](message, 1, closure);
+    expect(JSON.parse(data.text).messageCount).toBe(4);
+    expect(JSON.parse(data.text).summaryLines).toHaveLength(2);
+    expect(closure.children).toHaveLength(2);
+  });
+
   it('rebuilds a local card from a wire-only nested forward reference', () => {
     const message: ForwardManifestMessage = {
       id: 1,
-      author: { account: 'alice', domain: 'example.test' },
       profile: { displayName: 'Alice' },
       contentType: 'FORWARD',
       content: JSON.stringify({ bundleId: 'child' }),
@@ -61,7 +117,6 @@ describe('forward nested card projection', () => {
     };
     const childMessage: ForwardManifestMessage = {
       id: 1,
-      author: { account: 'bob', domain: 'example.test' },
       profile: { displayName: 'Bob' },
       contentType: 'PURE_TEXT',
       content: JSON.stringify({ text: 'hello' }),
@@ -92,7 +147,7 @@ describe('forward nested card projection', () => {
 describe('forward snapshot avatar', () => {
   const digest = 'a'.repeat(64);
   const message: ForwardManifestMessage = {
-    author: { account: 'alice', domain: 'example.test' },
+    id: 1,
     profile: { displayName: 'Alice', avatarDigest: digest },
     contentType: 'PURE_TEXT',
     content: '{"text":"hello"}',

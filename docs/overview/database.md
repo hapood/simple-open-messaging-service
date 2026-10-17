@@ -207,12 +207,25 @@ See [atomic rounds and history gaps](../design/federation-atomic-rounds-and-hist
 
 ### Forward bundles
 
-`ForwardBundle.messages` is an immutable JSONB array. Its local root ID may
-map to a distinct remote `sourceBundleId` under `publisherNamespaceId`.
+`ForwardBundle.id` is an auto-incrementing PostgreSQL `bigint`; message,
+dependency, and asset associations use matching bigint foreign keys. Application
+code retains these keys as native `bigint`, never JavaScript `number`.
+`ForwardBundle.messages` is an immutable JSONB array. Private nested bundle
+references in that array use exact positive decimal strings because JSON cannot
+encode native bigint. Relational reads fetch bigint keys as native columns,
+not JSON aggregate numbers; closure construction reads the graph in one
+read-only repeatable-read snapshot.
+
+The local root ID maps to the SHA-256 content identity in `sourceBundleId`.
+Timeline cards retain this stable digest at creation and import; client and
+federation reads never expose the local root ID. Closure construction rewrites
+private nested references to wire digests. Imported child IDs remain scoped to
+their enclosing closure rather than becoming global source identities.
 `ForwardMessage` binds the timeline card to its root;
 `ForwardBundleDependency` indexes nested child closure, and
-`ForwardBundleAsset` binds closure assets. Bundle-local IDs and copied author
-snapshots never replace outer message authorization.
+`ForwardBundleAsset` binds closure assets. Inner messages retain display-only
+profile snapshots, not author account/domain/root-key objects. Bundle-local IDs
+and display snapshots never replace outer message authorization.
 
 `CallHistory` journals local call observations and projects the first terminal
 observation to a device-only SYSTEM notice; `messageSeq` records completed

@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { withMessageDigest } from './support/message-fixture.js';
 import { and, eq } from 'drizzle-orm';
+import { Test, type TestingModule } from '@nestjs/testing';
+import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   groupAccount,
@@ -26,6 +28,7 @@ describe('exact group-member profile disclosure', () => {
   const signerAccount = `signer-${suffix}`;
   const memberAccount = `subject-${suffix}`;
   const localDomain = loadFederationConfig().domain;
+  let mod: TestingModule;
   let database: DatabaseService;
   let service: FederationProfileService;
   let signerNs: number;
@@ -44,14 +47,10 @@ describe('exact group-member profile disclosure', () => {
     );
 
   beforeAll(async () => {
-    database = new DatabaseService();
-    service = new FederationProfileService(
-      database,
-      {} as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+    // Resolve real dependencies without starting schedulers or listeners.
+    mod = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    database = mod.get(DatabaseService);
+    service = mod.get(FederationProfileService);
     signerNs = await seedFederatedPeerNamespace(database.db, signerDomain);
     memberNs = await seedFederatedPeerNamespace(database.db, memberDomain);
     const [group] = await database.db
@@ -77,12 +76,11 @@ describe('exact group-member profile disclosure', () => {
     await database.db.insert(groupMetaMemberFeed).values({
       threadId,
       feedId: 1,
-      memberAccount,
-      profileNamespaceId: memberNs,
       operation: 'MEMBER_UPSERT',
       body: {
+        account: memberAccount,
+        namespaceId: memberNs,
         role: 'MEMBER',
-        profileNamespaceId: memberNs,
         profileRev: 4,
       },
       updatedAt: new Date(),
@@ -90,7 +88,6 @@ describe('exact group-member profile disclosure', () => {
     await database.db.insert(profileTable).values([
       {
         account: memberAccount,
-        domain: memberDomain,
         publisherNamespaceId: memberNs,
         profileNamespaceId: 0,
         profileRev: 4,
@@ -98,7 +95,6 @@ describe('exact group-member profile disclosure', () => {
       },
       {
         account: memberAccount,
-        domain: memberDomain,
         publisherNamespaceId: memberNs,
         profileNamespaceId: 0,
         profileRev: 7,
@@ -149,13 +145,11 @@ describe('exact group-member profile disclosure', () => {
       requestedAt: new Date(),
     });
     await database.db.insert(peerStateFeed).values({
-      peerDomain: signerDomain,
       namespaceId: signerNs,
       account: groupName,
-      domain: localDomain,
       eventType: 'THREAD_CONTENT_HEAD',
       feedId: 1n,
-      body: { messageEndSeq: 0 },
+      body: { messageEndSeq: 0, tombstoneEndSeq: 0 },
       updatedAt: new Date(),
     });
   });
@@ -192,7 +186,7 @@ describe('exact group-member profile disclosure', () => {
     await database.db
       .delete(profileTable)
       .where(eq(profileTable.account, memberAccount));
-    await database.onApplicationShutdown();
+    await mod.close();
   });
 
   it('serves exactly the current member reference to a current group audience', async () => {
@@ -226,7 +220,7 @@ describe('exact group-member profile disclosure', () => {
     await database.db
       .update(peerStateFeed)
       .set({
-        body: { messageEndSeq: 1 },
+        body: { messageEndSeq: 1, tombstoneEndSeq: 0 },
         updatedAt: new Date(),
       })
       .where(
@@ -241,7 +235,6 @@ describe('exact group-member profile disclosure', () => {
     });
     await database.db.insert(threadAudience).values({
       threadId,
-      targetDomain: signerDomain,
       targetNamespaceId: signerNs,
       messageAccessAfterSeq: 1,
     });
@@ -273,6 +266,7 @@ describe('exact group-member profile disclosure', () => {
         feedId: 2,
         operation: 'MEMBER_DEPART',
         body: {
+          account: memberAccount,
           role: 'MEMBER',
           namespaceId: memberNs,
           profileRev: 4,
@@ -342,7 +336,7 @@ describe('exact group-member profile disclosure', () => {
     expect(await exact()).toBeNull();
     await database.db
       .update(peerStateFeed)
-      .set({ body: { messageEndSeq: 2 } })
+      .set({ body: { messageEndSeq: 2, tombstoneEndSeq: 0 } })
       .where(head);
     expect(
       await service.getAuthorizedGroupMemberProfile(
@@ -361,7 +355,6 @@ describe('exact group-member profile disclosure', () => {
     });
     await database.db.insert(threadAudience).values({
       threadId,
-      targetDomain: signerDomain,
       targetNamespaceId: signerNs,
       messageAccessAfterSeq: 2,
     });

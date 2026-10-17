@@ -40,31 +40,34 @@ async function readNodeGroupRows(client) {
         ORDER BY thread."id"
       `);
   const roster = await client.query(`
-        SELECT fact."threadId", fact."memberAccount" AS "account",
+        SELECT fact."threadId", fact."body" ->> 'account' AS "account",
           CASE
-            WHEN fact."profileNamespaceId" = 0 THEN authority_ns."domain"
-            WHEN fact."profileNamespaceId" = authority_ns."peerAssignedLocalNamespaceId"
+            WHEN subject."namespaceId" = 0 THEN authority_ns."domain"
+            WHEN subject."namespaceId" = authority_ns."peerAssignedLocalNamespaceId"
               THEN local_ns."domain"
             WHEN thread."authorityNamespaceId" = 0 THEN identity_ns."domain"
             ELSE profile_identity.domain
           END AS "domain",
           CASE
-            WHEN fact."profileNamespaceId" = 0 THEN thread."authorityNamespaceId"
-            WHEN fact."profileNamespaceId" = authority_ns."peerAssignedLocalNamespaceId"
+            WHEN subject."namespaceId" = 0 THEN thread."authorityNamespaceId"
+            WHEN subject."namespaceId" = authority_ns."peerAssignedLocalNamespaceId"
               THEN 0
             ELSE profile_identity.id
           END AS "namespaceId",
-          fact."profileNamespaceId" AS "profileNamespaceId",
+          subject."namespaceId" AS "profileNamespaceId",
           fact."body" ->> 'role' AS "role",
           (fact."body" ->> 'profileRev')::integer AS "profileRev"
         FROM "GroupMetaMemberFeed" fact
+        CROSS JOIN LATERAL (
+          SELECT (fact."body" ->> 'namespaceId')::integer AS "namespaceId"
+        ) subject
         INNER JOIN "MessageThread" thread ON thread."id" = fact."threadId"
         INNER JOIN "IdentityNamespace" authority_ns
           ON authority_ns."id" = thread."authorityNamespaceId"
         INNER JOIN "IdentityNamespace" local_ns ON local_ns."id" = 0
         LEFT JOIN "IdentityNamespace" identity_ns
-          ON identity_ns."id" = fact."profileNamespaceId"
-        ${profileSubjectIdentityJoins('thread."authorityNamespaceId"', 'fact."profileNamespaceId"', 'profile_identity')}
+          ON identity_ns."id" = subject."namespaceId"
+        ${profileSubjectIdentityJoins('thread."authorityNamespaceId"', 'subject."namespaceId"', 'profile_identity')}
         WHERE fact."operation" = 'MEMBER_UPSERT'
       `);
   const relationships = await client.query(`

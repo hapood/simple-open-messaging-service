@@ -29,6 +29,7 @@ import { ForwardBundleService } from '../src/forward/forward-bundle.service.js';
 import { resolveStoredQuotes } from '../src/message/quote-reference.js';
 import { FederationInboundMessageValidatorService } from '../src/federation/federation-inbound-message-validator.service.js';
 import { truncateTablesForTest } from './support/truncate';
+import { assertFederationMessageWire } from './support/federation-wire-schema.js';
 
 type Message = typeof tables.message.$inferSelect;
 type View = {
@@ -173,6 +174,7 @@ describe('federation quote coordinates across three persisted node views', () =>
         { account: '!quote' },
       ),
     );
+    assertFederationMessageWire(wire);
     new FederationInboundMessageValidatorService().assertEnvelope(wire);
     return wire;
   }
@@ -347,7 +349,6 @@ describe('federation quote coordinates across three persisted node views', () =>
       const messages = [
         {
           id: 1,
-          author: { account: 'user', domain: bravo.domain },
           profile: { displayName: 'user' },
           contentType: ContentType.PURE_TEXT,
           content: JSON.stringify({ text: 'reply without a target entry' }),

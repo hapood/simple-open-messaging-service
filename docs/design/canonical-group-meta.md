@@ -253,6 +253,14 @@ construct the current roster.
 
 ### 6.1 Mirror server
 
+Local mirror departure is owned by the membership-intent transaction, not Group
+Meta. It neither reads, writes, nor waits for a canonical roster fact. Its local
+GROUP_LEFT notice uses the member's retained authored intent declaration:
+`publisherNamespaceId: 0`, plus the intent's exact `profileNamespaceId` and
+`profileRev`. The group is located by its authority namespace; that namespace
+must not be substituted for the local member's profile publisher. Revocation
+retains the declaration rather than reading a newer default profile.
+
 The mirror applies Group Meta into its group-scoped replica:
 
 ```text
@@ -387,11 +395,20 @@ group origin
 group mirror
   -> requests only from the group origin
   -> caches the immutable result
-  -> exposes it only to its own authorized local clients
+  -> serves exact cache hits to authenticated local clients without per-caller disclosure authorization
+  -> authorizes new resolution work on a cache miss
 ```
 
 A mirror never serves another federation peer as the profile authority for a
 remote group and never redirects a mirror to the member's home server.
+
+For the local profile-resolution API, an exact cached snapshot returns `READY`
+before evidence authorization, including after relationship revocation or for an
+unrelated authenticated caller. Authorization gates new resolution work on a
+cache miss, not reads of an existing exact snapshot. A cache-only request returns
+`NOT_FOUND` on a miss and never initiates a fetch. This policy does not grant
+access to Group Meta pages or change S2S profile disclosure checks; those retain
+their own authorization requirements.
 
 The application-wide profile coordinator uses the immutable key:
 
@@ -404,7 +421,7 @@ registry and do not consume LRU capacity. Jobs waiting for HTTP capacity remain
 queued behind the global bounded request pool. Only completed cache entries
 participate in LRU eviction.
 
-Authorization for Group Meta Profile requires all of:
+S2S disclosure authorization for a Group Meta Profile request requires all of:
 
 - the responding server owns the group;
 - the signer has a current audience;

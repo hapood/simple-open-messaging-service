@@ -41,10 +41,15 @@ describe('group join request projection', () => {
       // Flow-entry group advisory: the mutation writers hold row locks only.
       const thread = await database.db.query.messageThread.findFirst({
         where: eq(messageThread.id, threadId),
-        columns: { groupAccount: true, groupDomain: true },
+        columns: { groupAccount: true, authorityNamespaceId: true },
       });
+      if (!thread?.groupAccount)
+        throw new Error('Group thread fixture not found');
       await lockBusinessAccountsInTx(tx, [
-        { account: thread!.groupAccount!, domain: thread!.groupDomain! },
+        {
+          account: thread.groupAccount,
+          profileNamespaceId: thread.authorityNamespaceId,
+        },
       ]);
       const updates: Array<{ userId: number; feedId: number }> = [];
       await app
@@ -59,7 +64,7 @@ describe('group join request projection', () => {
         );
       await admitGroupMembershipProjectionFanoutInTx(tx, {
         threadId,
-        groupAccount: thread!.groupAccount!,
+        groupAccount: thread.groupAccount,
       });
     });
   }
@@ -145,7 +150,7 @@ describe('group join request projection', () => {
         groupId: threadId,
         account: applicant.account,
         namespaceId: 0,
-              });
+      });
     expect(rejected.body.code).toBe(BusinessCode.OK);
 
     const history = await request(app.getHttpServer())
@@ -218,7 +223,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         account: member.account,
-                namespaceId: 0,
+        namespaceId: 0,
       });
     expect(friendRequest.body.code).toBe(BusinessCode.OK);
     await waitForLocalRelationshipRequest(
@@ -232,7 +237,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${member.token}`)
       .send({
         account: owner.account,
-                namespaceId: 0,
+        namespaceId: 0,
       });
     expect(accepted.body.code).toBe(BusinessCode.OK);
     expect(accepted.body.data).toMatchObject({ status: 'OK' });
@@ -284,7 +289,7 @@ describe('group join request projection', () => {
         groupId: threadId,
         account: member.account,
         namespaceId: 0,
-              });
+      });
     expect(revoked.body.code).toBe(BusinessCode.OK);
     const history = await request(app.getHttpServer())
       .post('/api/v1/group/invitations')
@@ -332,7 +337,7 @@ describe('group join request projection', () => {
         groupId: threadId,
         account: applicant.account,
         namespaceId: 0,
-              });
+      });
     expect(accepted.body.code).toBe(BusinessCode.OK);
 
     const projections = await database.db.query.groupRequestProjection.findMany(
@@ -359,7 +364,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         account: member.account,
-                namespaceId: 0,
+        namespaceId: 0,
       });
     await waitForLocalRelationshipRequest(
       app.get(DatabaseService).db,
@@ -372,7 +377,7 @@ describe('group join request projection', () => {
       .set('Authorization', `Bearer ${member.token}`)
       .send({
         account: owner.account,
-                namespaceId: 0,
+        namespaceId: 0,
       });
     expect(friendAccepted.body.data).toMatchObject({ status: 'OK' });
     const created = await request(app.getHttpServer())
@@ -514,10 +519,15 @@ describe('group join request projection', () => {
       // Flow-entry group advisory: the mutation writers hold row locks only.
       const thread = await database.db.query.messageThread.findFirst({
         where: eq(messageThread.id, threadId),
-        columns: { groupAccount: true, groupDomain: true },
+        columns: { groupAccount: true, authorityNamespaceId: true },
       });
+      if (!thread?.groupAccount)
+        throw new Error('Group thread fixture not found');
       await lockBusinessAccountsInTx(tx, [
-        { account: thread!.groupAccount!, domain: thread!.groupDomain! },
+        {
+          account: thread.groupAccount,
+          profileNamespaceId: thread.authorityNamespaceId,
+        },
       ]);
       const updates: Array<{ userId: number; feedId: number }> = [];
       const federation = app.get(GroupRelationshipMutationService);

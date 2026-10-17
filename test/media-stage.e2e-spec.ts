@@ -132,7 +132,7 @@ describe('Local media send staging (PendingMedia, Phase 7)', () => {
     for (const id of inviteTargetIds.slice(0, 2)) {
       const target = await database.db.query.account.findFirst({
         where: eq(user.id, id),
-        columns: { account: true, domain: true },
+        columns: { account: true },
       });
       if (!target) throw new Error('invite target is missing');
       targetAccounts.push(target.account);

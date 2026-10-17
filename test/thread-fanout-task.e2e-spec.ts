@@ -1,5 +1,6 @@
 import { parseAccountThreadFanoutTarget } from '../src/message/account-thread-fanout-task.js';
-import { localIdentityDomain } from './support/local-domain.js';
+import type { ProfiledAddress } from '../shared/profiled-address.js';
+import type { SystemMessageInput } from '../src/message/system-message.js';
 import { withMessageDigest } from './support/message-fixture.js';
 import { MessageVisibilityService } from '../src/message/message-visibility.service.js';
 import {
@@ -38,7 +39,6 @@ import { account, message, peerStateFeed } from '../src/database/schema.js';
 import { seedAcceptedRelationship } from './seed.js';
 import { FederationThreadContentHeadService } from '../src/federation/federation-thread-content-head.service.js';
 import { PeerStateFeedService } from '../src/federation/peer-state-feed.service.js';
-import { truncateTablesForTest } from './support/truncate';
 
 describe('transactional thread fanout queue', () => {
   const database = new DatabaseService();
@@ -52,8 +52,9 @@ describe('transactional thread fanout queue', () => {
   beforeAll(() => database.onModuleInit());
   afterAll(() => database.onApplicationShutdown());
   beforeEach(async () => {
-    await truncateTablesForTest(
-      database.pool,
+    // No scheduler runs here. Claimed rows intentionally remain PROCESSING, so
+    // there is no worker to drain before resetting this suite's isolated database.
+    await database.pool.query(
       'TRUNCATE "MessageThread", "DurableTask" RESTART IDENTITY CASCADE',
     );
     const [thread] = await database.db
@@ -90,7 +91,6 @@ describe('transactional thread fanout queue', () => {
       namespaces.push(namespaceId);
       await database.db.insert(threadAudience).values({
         threadId,
-        targetDomain: domain,
         targetNamespaceId: namespaceId,
       });
     }
@@ -135,28 +135,18 @@ describe('transactional thread fanout queue', () => {
   const participant = (user: {
     account: string;
     defaultProfileRev: number;
-  }) => ({
+  }): ProfiledAddress => ({
     account: user.account,
-    domain: localIdentityDomain(),
+    publisherNamespaceId: 0,
     profileNamespaceId: 0,
     profileRev: user.defaultProfileRev,
   });
-  const added = {
-    type: 'FRIEND_ADDED' as const,
+  const added: SystemMessageInput = {
+    type: 'FRIEND_ADDED',
     participants: [
-      {
-        account: 'direct-a',
-        domain: localIdentityDomain(),
-        profileNamespaceId: 0,
-        profileRev: 0,
-      },
-      {
-        account: 'direct-b',
-        domain: localIdentityDomain(),
-        profileNamespaceId: 0,
-        profileRev: 0,
-      },
-    ] as [ReturnType<typeof participant>, ReturnType<typeof participant>],
+      participant({ account: 'direct-a', defaultProfileRev: 0 }),
+      participant({ account: 'direct-b', defaultProfileRev: 0 }),
+    ],
   };
   async function depart(users: Awaited<ReturnType<typeof departingPair>>) {
     await database.db.transaction(async (tx) => {
@@ -370,7 +360,6 @@ describe('transactional thread fanout queue', () => {
         threadId,
         messageEndSeq: 6,
         tombstoneEndSeq: 3,
-        profileRev: 0,
       });
       expect(task.scopeKey).toBe(
         threadFanoutScope(task.taskType as typeof federationType, threadId),
@@ -513,7 +502,6 @@ describe('transactional thread fanout queue', () => {
       threadId,
       messageEndSeq: 2,
       tombstoneEndSeq: 0,
-      profileRev: 0,
     });
     expect(queued[0].status).toBe('PENDING');
   });
@@ -553,14 +541,12 @@ describe('transactional thread fanout queue', () => {
         local.id,
         {
           account: 'remote',
-          domain,
           namespaceId,
         },
         threadId,
       );
       await database.db.insert(threadAudience).values({
         threadId,
-        targetDomain: domain,
         targetNamespaceId: namespaceId,
       });
       await database.db.insert(message).values(
@@ -642,7 +628,6 @@ describe('transactional thread fanout queue', () => {
     });
     await database.db.insert(threadAudience).values({
       threadId,
-      targetDomain: domain,
       targetNamespaceId: namespaceId,
     });
     await enqueueBoth(1);
@@ -684,7 +669,6 @@ describe('transactional thread fanout queue', () => {
       threadId,
       messageEndSeq: 5,
       tombstoneEndSeq: 2,
-      profileRev: 0,
     });
   });
 
@@ -719,7 +703,6 @@ describe('transactional thread fanout queue', () => {
       threadId,
       messageEndSeq: 6,
       tombstoneEndSeq: 3,
-      profileRev: 0,
     });
     expect(successor?.checkpoint).toEqual({});
     expect(

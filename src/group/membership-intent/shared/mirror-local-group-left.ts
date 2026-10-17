@@ -5,7 +5,7 @@ import {
   type ThreadContentLock,
 } from '../../../common/locks/thread-content-lock.js';
 import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fanout-admission-sql.js';
-import { groupMemberProfileAddress } from '../../meta/group-member-profile-address.js';
+import type { ProfiledAddress } from '../../../../shared/profiled-address.js';
 
 /** Announce an active-to-inactive local mirror relationship in the same
  * transaction that consumed or authored its REVOKED intent. The caller holds
@@ -16,7 +16,7 @@ export async function writeMirrorLocalGroupLeftInTx(
     threadId: number;
     localMemberId: number;
     memberAccount: string;
-    publisherNamespaceId: number;
+    authorityNamespaceId: number;
     threadLock: ThreadContentLock;
   },
 ): Promise<number> {
@@ -25,24 +25,29 @@ export async function writeMirrorLocalGroupLeftInTx(
     profileNamespaceId: number;
     profileRev: number;
   }>(sql`
-    SELECT body -> 'namespaceId' AS "profileNamespaceId",
-      body -> 'profileRev' AS "profileRev"
-    FROM "GroupMetaMemberFeed"
-    WHERE "threadId" = ${input.threadId}
-      AND body ->> 'account' = ${input.memberAccount}
-      AND operation = 'MEMBER_UPSERT'
-    ORDER BY "feedId" DESC
-    LIMIT 1
+    SELECT intent."profileNamespaceId", intent."profileRev"
+    FROM "RelationshipIntent" intent
+    JOIN "MessageThread" thread ON thread.id = ${input.threadId}
+    JOIN "Account" member ON member.id = ${input.localMemberId}
+      AND member.account = ${input.memberAccount} AND member."namespaceId" = 0
+    WHERE thread."authorityNamespaceId" = ${input.authorityNamespaceId}
+      AND intent."authorAccount" = member.account
+      AND intent."authorNamespaceId" = 0
+      AND intent."receiverAccount" = thread."groupAccount"
+      AND intent."receiverNamespaceId" = ${input.authorityNamespaceId}
   `);
   const memberProfile = member.rows[0];
   if (!memberProfile)
-    throw new Error('departing member has no current group profile coordinate');
-  const memberAddress = groupMemberProfileAddress({
+    throw new Error('departing member has no authored membership intent');
+  // This is a local intent-owned notice, not a replicated origin roster fact.
+  // Keep the exact profile declaration from that intent; Meta may never have
+  // arrived, or its current member fact may already be MEMBER_DEPART.
+  const memberAddress = {
     account: input.memberAccount,
-    publisherNamespaceId: input.publisherNamespaceId,
+    publisherNamespaceId: 0,
     profileNamespaceId: memberProfile.profileNamespaceId,
     profileRev: memberProfile.profileRev,
-  });
+  } satisfies ProfiledAddress;
   const content = JSON.stringify({
     type: 'GROUP_LEFT',
     member: memberAddress,

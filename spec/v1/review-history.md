@@ -44,6 +44,80 @@ There is no zero-coordinate compatibility form. Bundle-local `quoteTargetId`
 is a separate reference space and retains its existing absent-entry semantics.
 The draft wire major remains `1`.
 
+## Retained image filenames and contact-card root keys
+
+Pre-freeze artifact corrections add fields omitted from the earlier closed
+content schemas and examples:
+
+- IMAGE and GALLERY image items require a nonempty `name`, retained as display
+  metadata across publishers and covered by the message payload digest.
+- CONTACT_CARD requires `publicKey`, the referenced home's retained Ed25519
+  root public key. Later card resolution binds its possession proof to that
+  key; receipt of the card itself establishes neither possession nor trust.
+
+These fields are not optional compatibility extensions. Content schemas,
+examples, and positive/negative vectors describe the same revision. The draft
+wire major remains `1`.
+
+## Acyclic forward-bundle dependencies
+
+A pre-freeze consistency correction removes the earlier permission for self-cycles
+and mutual cycles in forward closures. Bundle dependencies must form a directed
+acyclic graph, consistent with the recursive content-digest definition. Consumers
+must reject dependency cycles before committing a closure, even though children
+are represented as a flat array.
+
+This correction does not define whether multiple messages may reference the same
+child, change the digest input formula, or introduce a common depth limit. The
+draft wire major remains `1`.
+
+## Direct-child inputs to forward-bundle digests
+
+A pre-freeze clarification distinguishes the digest input from the response's
+flat closure. Each bundle hashes its own messages and the sorted direct child
+digest references extracted from those messages, not every descendant ID in the
+response's `children[]`. Each reference contributes one entry without
+deduplication. The root hashes the complete closure asset manifest; children hash
+an empty asset array, as before.
+
+The response still carries the full flat child closure. This clarification does
+not decide whether repeated child references are accepted and does not change
+that graph-validation policy in the reference implementation. The draft wire
+major remains `1`.
+
+## Display-only forward snapshots
+
+A coordinated pre-freeze change removes the inner snapshot message's `author`
+object, including its account, domain, and optional root key. Snapshots retain
+only their required display profile, content, time, bundle-local ID, and optional
+quote/child references. The ordinary outer message author and CONTACT_CARD
+content's target address and public key are unchanged.
+
+Removing identity fields changes the canonical body and therefore the digest.
+Earlier author-bearing bundles are not a compatible wire shape and must not be
+rewritten under their old digest. Display names and avatars do not identify a
+shared author or grant profile/resource access. The draft wire major remains `1`.
+
+## Forward display-name limit
+
+The forward snapshot display-name limit is 1–31 Unicode code points, consistent
+with profile responses and CONTACT_CARD snapshots. This corrects the earlier
+1–30 prose limit; the existing JSON Schema and implementation limit remain 31.
+A valid source display name does not need truncation when captured in a forward.
+The limit counts Unicode code points, not UTF-16 code units or grapheme clusters.
+The draft wire major remains `1`.
+
+## Shared forward children and expanded counts
+
+Multiple messages may reference the same child digest. The flat closure contains
+one body per digest, while every reference contributes to the canonical direct-
+child digest list. Cycle rejection remains mandatory. Depth uses the longest
+reference path; message counts include each reference occurrence recursively,
+not just unique stored bodies. Consumers can memoize node metrics without
+materializing the expansion. Numeric resource limits remain local policy.
+This resolves the shared-reference question left open by the earlier graph and
+digest corrections. The draft wire major remains `1`.
+
 ## Answer correlation and generation-bound ICE
 
 A coordinated pre-freeze Call Profile revision. This entry records the protocol change, not any implementation's completion or conformance status.

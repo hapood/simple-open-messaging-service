@@ -296,6 +296,23 @@ fn native_read_only_and_reestablishment_preserve_group_roster() {
     .unwrap();
     for (feed, lifecycle) in [(6, "READ_ONLY"), (7, "ACTIVE")] {
         commit_test_thread_state(&mut conn, &test_thread_snapshot("GROUP", feed, lifecycle));
+        if lifecycle == "READ_ONLY" {
+            let retained = super::thread_store::read(&conn, 1, 52).unwrap();
+            super::client_state::begin_group_meta_recovery(&mut conn, 1, 52, "21").unwrap();
+            let page = serde_json::from_value(serde_json::json!({
+                "threadId":52,"namespaceId":0,"page":{
+                    "account":"!dev","mode":"full","items":[],
+                    "hasMore":false,"scannedThrough":"21","groupMetaFeedEndId":"21"
+                }
+            }))
+            .unwrap();
+            assert!(
+                super::client_state::apply_group_meta_page(&mut conn, 1, page)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(super::thread_store::read(&conn, 1, 52).unwrap(), retained);
+        }
         let thread = super::thread_store::read(&conn, 1, 52).unwrap().unwrap();
         assert_eq!(thread["group"]["memberCount"], 1);
         assert_eq!(thread["group"]["groupMetaFeedId"], "20");

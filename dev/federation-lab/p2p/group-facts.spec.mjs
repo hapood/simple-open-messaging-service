@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { groupDecisionOptions, chooseGroupAction } from './state-machine.mjs';
 import { SeededRandom } from './scenario.mjs';
 import test from 'node:test';
-import { observeUserGroup } from './group-facts.mjs';
+import { observeUserGroup, readGroupWorkloadSnapshot } from './group-facts.mjs';
 
 const owner = {
   address: 'owner@alpha.test',
@@ -17,6 +17,30 @@ const group = {
   domain: 'alpha.test',
   name: 'Group',
 };
+
+test('reads roster identity from the canonical Group Meta body, not removed columns', async () => {
+  const queries = [];
+  const node = { name: 'alpha' };
+  const client = {
+    query: async (sql) => {
+      queries.push(sql);
+      return { rows: [] };
+    },
+  };
+  await readGroupWorkloadSnapshot(new Map([['alpha', { node, client }]]), {
+    alpha: { pairs: { active: [] } },
+  });
+  const rosterSql = queries.find((sql) =>
+    sql.includes('FROM "GroupMetaMemberFeed"'),
+  );
+  assert.ok(rosterSql);
+  assert.match(rosterSql, /fact\."body" ->> 'account'/);
+  assert.match(rosterSql, /fact\."body" ->> 'namespaceId'/);
+  assert.doesNotMatch(
+    rosterSql,
+    /fact\."(?:memberAccount|profileNamespaceId)"/,
+  );
+});
 
 test('derives manager targets and retractable messages from one database observation', () => {
   const projection = {

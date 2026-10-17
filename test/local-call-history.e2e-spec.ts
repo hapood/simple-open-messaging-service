@@ -12,12 +12,17 @@ import {
   messageThread,
 } from '../src/database/schema.js';
 import { DurableTaskType } from '../src/durable-task/durable-task.constants.js';
+import { seedFederatedPeerNamespace } from './seed.js';
 
 describe('local terminal call history transactions', () => {
   let database: DatabaseService;
   let history: CallHistoryService;
-  beforeAll(() => {
+  let callerNamespaceId: number;
+  let calleeNamespaceId: number;
+  beforeAll(async () => {
     database = new DatabaseService();
+    callerNamespaceId = await seedFederatedPeerNamespace(database.db, 'a.test');
+    calleeNamespaceId = await seedFederatedPeerNamespace(database.db, 'b.test');
     history = new CallHistoryService(database);
   });
   afterAll(async () => {
@@ -37,14 +42,14 @@ describe('local terminal call history transactions', () => {
         callId: `call-${thread.id}`,
         caller: {
           account: 'alice',
-          domain: 'a.test',
-          profileNamespaceId: 1,
+          publisherNamespaceId: callerNamespaceId,
+          profileNamespaceId: callerNamespaceId,
           profileRev: 0,
         },
         callee: {
           account: 'bob',
-          domain: 'b.test',
-          profileNamespaceId: 2,
+          publisherNamespaceId: calleeNamespaceId,
+          profileNamespaceId: calleeNamespaceId,
           profileRev: 0,
         },
         mediaType: 'AUDIO',

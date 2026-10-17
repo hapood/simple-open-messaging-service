@@ -1,8 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
-import { localIdentityDomain } from './support/local-domain.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { Test, type TestingModule } from '@nestjs/testing';
-import { DatabaseModule } from '../src/database/database.module.js';
+import { AppModule } from '../src/app.module.js';
 import { DatabaseService } from '../src/database/database.service.js';
 import {
   accountThreadState,
@@ -52,10 +51,11 @@ describe('mirror Group Meta rounds', () => {
 
   beforeAll(async () => {
     module = await Test.createTestingModule({
-      imports: [DatabaseModule],
+      imports: [AppModule],
     }).compile();
     database = module.get(DatabaseService);
-    messages = new MessageService(database, {} as never, {} as never);
+    // Resolve real collaborators without starting schedulers or network listeners.
+    messages = module.get(MessageService);
     originNamespaceId = await seedFederatedPeerNamespace(
       database.db,
       originDomain,
@@ -151,13 +151,13 @@ describe('mirror Group Meta rounds', () => {
   const memberUpsert = (
     feedId: number,
     memberAccount: string,
-    role = 'MEMBER',
+    role: GroupRole = GroupRole.MEMBER,
   ): MirrorMetaReplicatedItem => ({
     feedId,
     operation: 'MEMBER_UPSERT',
     account: memberAccount,
     namespaceId: originNamespaceId,
-    role: role as 'MEMBER',
+    role,
     profileRev: 1,
   });
 
@@ -228,7 +228,12 @@ describe('mirror Group Meta rounds', () => {
       threadId,
       feedId: 1,
       operation: 'MEMBER_UPSERT',
-      body: { account: 'stale-member', namespaceId: originNamespaceId, role: 'MEMBER', profileRev: 1 },
+      body: {
+        account: 'stale-member',
+        namespaceId: originNamespaceId,
+        role: 'MEMBER',
+        profileRev: 1,
+      },
     });
     const items: MirrorMetaReplicatedItem[] = [
       memberUpsert(2, 'peer-one', 'OWNER'),
@@ -300,7 +305,11 @@ describe('mirror Group Meta rounds', () => {
     expect(rows.find((row) => row.operation === 'GROUP_PROFILE')).toMatchObject(
       {
         feedId: 9,
-        body: { account: groupAccount, namespaceId: originNamespaceId, profileRev: 4 },
+        body: {
+          account: groupAccount,
+          namespaceId: originNamespaceId,
+          profileRev: 4,
+        },
       },
     );
     expect(
@@ -419,7 +428,13 @@ describe('mirror Group Meta rounds', () => {
     await database.db.transaction((tx) =>
       applyDeltaMirrorMetaItemInTx(tx, {
         group,
-        item: { feedId: 5, operation: 'GROUP_PROFILE', profileRev: 7 },
+        item: {
+          feedId: 5,
+          operation: 'GROUP_PROFILE',
+          account: groupAccount,
+          namespaceId: originNamespaceId,
+          profileRev: 7,
+        },
         through: 8,
         reachedBoundary: false,
         messages,
@@ -808,10 +823,8 @@ describe('mirror Group Meta rounds', () => {
           feedId: 1,
           operation: 'MEMBER_UPSERT',
           account: localMemberAccount,
-          domain: localIdentityDomain(),
           namespaceId: 0,
           role: 'MEMBER',
-          profileNamespaceId: 0,
           profileRev: 1,
         },
         through: 5,
@@ -888,10 +901,8 @@ describe('mirror Group Meta rounds', () => {
           feedId: 4,
           operation: 'MEMBER_UPSERT',
           account: localMemberAccount,
-          domain: localIdentityDomain(),
           namespaceId: 0,
           role: 'MEMBER',
-          profileNamespaceId: 0,
           profileRev: 2,
         },
         through: 5,
@@ -916,10 +927,8 @@ describe('mirror Group Meta rounds', () => {
           feedId: 5,
           operation: 'MEMBER_DEPART',
           account: localMemberAccount,
-          domain: localIdentityDomain(),
           namespaceId: 0,
           role: 'MEMBER',
-          profileNamespaceId: 0,
           profileRev: 1,
         },
         through: 5,

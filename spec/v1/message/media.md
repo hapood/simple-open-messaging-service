@@ -15,6 +15,11 @@ Media content carries no publisher display URL. Each resource is associated by `
   other field; the matching outer `BlobDescriptor.bytes` is authoritative.
 - `width/height` are `PositiveSafeInteger` pixel dimensions.
 - `duration` is a positive finite number of seconds.
+- `name` is required for every media kind, including standalone images and
+  GALLERY image items. It is the retained display filename, carried in message
+  content rather than inferred from a CAS URL or download response. Publishers
+  MUST preserve it across synchronization hops; it is covered by the message
+  payload digest. It is not part of the CAS resource identity.
 - `name/mimeType` are non-empty, untrusted display strings. They MUST NOT be used as paths, security assertions, or instructions to execute active content.
 - Every object is a closed schema; fields unrelated to its media kind MUST be omitted.
 
@@ -23,6 +28,7 @@ Media content carries no publisher display URL. Each resource is associated by `
 ```ts
 interface ImageContent {
   digest: Sha256Hex;
+  name: string;
   width: PositiveSafeInteger;
   height: PositiveSafeInteger;
 }
@@ -58,7 +64,8 @@ Each object below is the result of parsing the outer message `content` once as J
 {
   "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "width": 1600,
-  "height": 900
+  "height": 900,
+  "name": "photo.png"
 }
 ```
 
@@ -67,7 +74,7 @@ Corresponding outer message fields:
 ```json
 {
   "contentType": "IMAGE",
-  "content": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"width\":1600,\"height\":900}",
+  "content": "{\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"width\":1600,\"height\":900,\"name\":\"photo.png\"}",
   "assets": [
     {
       "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -122,6 +129,7 @@ interface GalleryItemBase {
 
 interface GalleryImageItem extends GalleryItemBase {
   kind: 'IMAGE';
+  name: string;
   width: PositiveSafeInteger;
   height: PositiveSafeInteger;
 }
@@ -170,7 +178,8 @@ interface GalleryContent {
       "kind": "IMAGE",
       "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "width": 1600,
-      "height": 900
+      "height": 900,
+      "name": "photo.png"
     },
     {
       "kind": "VIDEO",
