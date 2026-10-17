@@ -15,35 +15,22 @@ This document is the canonical acceptance inventory. It contains stable test
 scope, execution rules, matrices, and result semantics; it does not contain run
 history or current completion claims.
 
-Browser and Android E2E documentation has parallel owners per platform:
+Browser and Android have separate acceptance plans:
 
-- `browser-e2e-test-plan.md` defines what must be tested in the browser;
-  `android-e2e-test-plan.md` does the same for Android.
-- `browser-e2e-progress.md` and `android-e2e-progress.md` record only current
-  coverage, current blockers, next work, and concise evidence for the latest
-  authoritative result of their platform.
-- `browser-e2e-handoff.md` and `android-e2e-handoff.md` record only ephemeral
-  state needed to resume the current run of their platform, such as running
-  services, retained fixtures, cleanup obligations, and the exact stop point.
+- `browser-e2e-test-plan.md` defines browser coverage;
+  `android-e2e-test-plan.md` defines Android coverage.
+- Run evidence belongs in local run artifacts, identified by platform, build,
+  fixture set, and case ID. Do not accumulate progress dashboards or session
+  handoffs in the project documentation.
 - `browser-e2e-bug-*.md` is temporary investigation state for an open defect or
-  a fix awaiting required regression. After the fix has durable automated
-  coverage and the required browser regression passes, summarize the outcome in
-  the progress dashboard and delete the bug document. Git history and the
-  regression test preserve closed-defect detail. A corrected observation that
-  was not a product bug is also removed after its harness or contract lesson is
-  incorporated into the plan or tooling guide.
+  a fix awaiting required regression. Retain unresolved findings independently
+  of run progress. Remove a closed investigation only after durable regression
+  coverage and the required browser verification; preserve reusable lessons in
+  the plan or tooling guide.
 
-Do not copy the same narrative among these documents. Replace superseded current
-status instead of appending another session diary. Keep durable reusable harness
-instructions in `browser-e2e-tools.md`, not in progress or handoff.
-
-## Execution Status
-
-Use local `browser-e2e-progress.md` for tested scopes, remaining work, current
-blockers, and links to active defect records. Progress, handoff, and defect
-investigation files are intentionally ignored local run state. New independent
-runs use fresh fixture prefixes; a documented continuation may reuse retained
-fixtures after confirming their current roles and state.
+Keep reusable harness instructions in `browser-e2e-tools.md`. This plan does not
+claim any case has passed. New independent runs use fresh fixture prefixes;
+reuse retained fixtures only after confirming their current roles and state.
 
 ## Test Rules
 
@@ -512,15 +499,11 @@ For each side of the matrix test:
 - Request tabs, counts, unread dots, read watermarks, ordering, stale cards,
   refresh/reconnect, and node restart.
 
-Scope revision, 2026-09-24: invitation expiry, accept/reject and
+Browser scope excludes invitation expiry, accept/reject and
 simultaneous-manager decision races, disabled-account, and remote-node-
-unavailable variants are out of browser scope — the browser cannot
-deterministically stage concurrent decisions or peer-node outages. The
-invitation/application branches verified in the browser (owner
-invitation/accept/reject/revoke, invitee reject, accepted-invite update,
-application apply/approve/reject/cancel, duplicate suppression, re-application
-after rejection/leaving/being kicked, and the federated application round trip)
-are recorded in `browser-e2e-progress.md`.
+unavailable variants: browser execution does not deterministically stage
+concurrent decisions or peer-node outages. These exclusions are not successful
+acceptance results.
 
 - Roster cardinality, role, account/domain labels, group thread count/order,
   composer write permission, and lifecycle system-message uniqueness.

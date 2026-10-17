@@ -126,6 +126,7 @@ broader than its implemented execution capabilities.
   Android `recentErrors` is not a collected logcat/WebView-console feed; an
   empty list does not prove an error-free run.
 
-Record manual Android results in local `android-e2e-progress.md`, using the
-same business case IDs and the Android supplement cases in the
-[Android E2E test plan](./android-e2e-test-plan.md).
+Record manual Android results in local run artifacts with the build identity,
+using the same business case IDs and Android supplement cases in the
+[Android E2E test plan](./android-e2e-test-plan.md). Do not treat a plan or a
+removed progress record as evidence of completed acceptance.
