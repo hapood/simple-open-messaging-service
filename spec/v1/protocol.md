@@ -572,6 +572,6 @@ Diagnostics, recovery, reset, or renewed recognition after `halted` are local ad
 
 ## 11. Conformance and publication
 
-The normative document set in Section 0 defines v1 conformance. JSON Schema, the HTTP manifest, positive and negative vectors, and the offline Conformance CLI ship with the text as non-normative validation resources. If a tool conflicts with the text, the text prevails and the tool must be corrected.
+The normative document set in Section 0 defines v1 conformance. JSON Schema, the HTTP manifest, and positive and negative vectors ship with the text as non-normative validation resources. The offline Conformance CLI is a separate distribution that accepts the specification package through `--spec`. If a tool conflicts with the text, the text prevails and the tool must be corrected.
 
-Conformance is not a v1 endpoint, negotiated capability, or runtime prerequisite, and the protocol does not require implementers to use a particular test facility. The included CLI checks JSON shapes, fixed signature vectors, and the HTTP surface. Implementers remain responsible for validating transactions, identity continuity, and state convergence; a particular test strategy is not part of the protocol.
+Conformance is not a v1 endpoint, negotiated capability, or runtime prerequisite, and the protocol does not require implementers to use a particular test facility. The separate CLI checks JSON shapes, fixed signature vectors, and the HTTP surface. Implementers remain responsible for validating transactions, identity continuity, and state convergence; a particular test strategy is not part of the protocol.

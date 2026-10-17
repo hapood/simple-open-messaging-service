@@ -4,7 +4,7 @@ Status: `DRAFT` — Final Review
 
 Release: `v1.0.0-draft.0`
 
-This directory contains the Simple Open Messaging Federation Protocol v1.0.0-draft.0 working package. The intended protocol scope is settled for final review, but the wire contract is not frozen. This is a closeout-review draft, not an early design sketch or a release candidate. Corrections remain possible and peer-observable changes must be recorded in the pre-freeze review history. The normative text specifies only the observable wire contract, state transitions, and security boundaries between independent implementations. Database tables, workers, queues, user interfaces, deployment parameters, and local product limits are outside the protocol unless the text explicitly constrains a local behavior because it changes a peer-observable result.
+This directory contains the Simple Open Messaging Federation Protocol v1.0.0-draft.0 working package. The intended protocol scope is settled for final review, but the wire contract is not frozen. This is a closeout-review draft, not an early design sketch or a release candidate. Corrections remain possible; the current text and validation artifacts must describe the same draft contract. The normative text specifies only the observable wire contract, state transitions, and security boundaries between independent implementations. Database tables, workers, queues, user interfaces, deployment parameters, and local product limits are outside the protocol unless the text explicitly constrains a local behavior because it changes a peer-observable result.
 
 This English text is the authoritative working text for v1.0.0-draft.0.
 
@@ -12,7 +12,7 @@ The key words `MUST`, `MUST NOT`, `SHOULD`, `SHOULD NOT`, and `MAY` are to be in
 
 ## Reading order
 
-See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and module dependencies, [`RELEASE.json`](../RELEASE.json) for release metadata, and the [pre-freeze review history](./review-history.md) for breaking candidate corrections.
+See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and module dependencies, and [`RELEASE.json`](../RELEASE.json) for package version and status metadata.
 
 1. [Core Protocol](./protocol.md): roles, versioning, HTTP surface, shared types, responses, durable state, and evolution rules.
 2. [Transport and Security](./transport-security.md): well-known discovery, root and signing keys, SRV, TLS, logical authority, digests, and HTTP Message Signatures.
@@ -28,7 +28,7 @@ See [CONFORMANCE](./CONFORMANCE.md) for the complete conformance scope and modul
 12. [Audio and Video Calls](./calls.md): the mandatory end-to-end Call Profile, including S2S frames, endpoint WebRTC/JSEP behavior, lifecycle state, and AUDIO-to-VIDEO upgrade on the same connection.
 13. [Profile Namespace Feed](./profile-namespace-feed.md): publisher-scoped namespace bindings and identity-change synchronization.
 14. [Stable Error Registry](./errors.md): stable error codes, HTTP status, retry behavior, and identity actions.
-15. [Machine-readable Release Package](./schema/README.md): JSON Schema, HTTP manifest, positive and negative vectors, and the Conformance CLI.
+15. [Machine-readable Validation Artifacts](./schema/README.md): JSON Schema, HTTP manifest, positive and negative vectors, and instructions for the separately distributed Conformance CLI.
 
 The Core Protocol defines shared rules. Transport and Security defines the discovery, TLS, and signature profile shared by all operations. Each remaining operation document defines only its body, authorization, state, and idempotency semantics. Together these documents form one versioned release package, whose status applies to the whole package rather than ordinary chapters.
 
@@ -39,7 +39,7 @@ remaining conflict between normative documents is a release defect that must be
 corrected; JSON Schema, examples, and existing implementations must not be used
 to select an alternative meaning.
 
-JSON Schema, the HTTP manifest, positive and negative vectors, and the Conformance CLI ship with the normative text as non-normative validation resources. They are not part of runtime negotiation and cannot alter the normative text. Cross-major discovery selects a common major only through `protocolVersions`.
+JSON Schema, the HTTP manifest, and positive and negative vectors ship with the normative text as non-normative validation resources. The Conformance CLI is distributed separately and accepts this specification package through `--spec`. None of these resources is part of runtime negotiation or can alter the normative text. Cross-major discovery selects a common major only through `protocolVersions`.
 
 ## Authoring and terminology rules
 

@@ -1,18 +1,17 @@
 # Provider Dependency Cleanup
 
 > Checklist-driven cleanup of dependency cycles and DI hygiene across the
-> NestJS provider graph. Modeled on
-> [`federation-domain-namespace-cleanup-todo.md`](./federation-domain-namespace-cleanup-todo.md):
-> work one section at a time and re-run the listed verification before moving
-> on.
+> NestJS provider graph. This is a diagnostic work plan, not a current test
+> status report. Re-establish each finding against the current source before
+> making changes; verification requires operator authorization.
 
-## Status Summary
+## Diagnostic scope
 
-The provider graph has **two real runtime dependency cycles** and a set of
-hygiene defects. The cycles exist at both the Nest instantiation level
-(constructor injection) and the ESM module-load level; the ESM form is the
-live failure — a TDZ crash (`Cannot access 'FederationNamespaceService before
-initialization`) aborts 43 e2e spec files during module load.
+The diagnosis below describes dependency cycles and hygiene defects targeted by
+this plan. It does not establish that those cycles or E2E failures remain in the
+current implementation. In particular, a successful application bootstrap must
+not be described as currently blocked by this diagnosis without reproducing the
+failure against that revision.
 
 **Cycle A (services):**
 
