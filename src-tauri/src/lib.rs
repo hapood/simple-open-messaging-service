@@ -20,6 +20,7 @@ mod android_realtime;
 mod android_runtime;
 mod client_compat;
 mod diagnostics;
+mod login_session_store;
 mod media_cache;
 mod native_db;
 mod native_logout;
@@ -169,6 +170,8 @@ pub(crate) struct ServerSessionState {
     /// adapter cancels through this map; dropping the reqwest stream leaves only a disposable .part file.
     media_download_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
     logout_tasks: native_logout::LogoutTasks,
+    /// The active native login UUID (login-lifetime identity; distinct from the transport token).
+    login_session: Arc<Mutex<Option<login_session_store::LoginSessionId>>>,
 }
 
 impl ServerSessionState {
@@ -235,6 +238,7 @@ impl ServerSessionState {
             native_voice_pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
             media_download_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
             logout_tasks: native_logout::LogoutTasks::default(),
+            login_session: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -499,6 +503,8 @@ pub fn run() {
                     origin_commands::set_active_origin,
                     origin_commands::set_session_token,
                     origin_commands::clear_session_token,
+                    origin_commands::login_session_for_token,
+                    native_db::native_db_begin_login,
                     origin_commands::begin_logout,
                     origin_commands::wait_for_logout,
                     secure_storage::secure_get_token,
@@ -588,6 +594,8 @@ pub fn run() {
                     origin_commands::set_active_origin,
                     origin_commands::set_session_token,
                     origin_commands::clear_session_token,
+                    origin_commands::login_session_for_token,
+                    native_db::native_db_begin_login,
                     origin_commands::begin_logout,
                     origin_commands::wait_for_logout,
                     client_compat::init_check_compat,

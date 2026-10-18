@@ -79,6 +79,12 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       .fn()
       .mockName('invoke')
       .mockImplementation((cmd: string) => {
+        if (cmd === 'begin_login')
+          return Promise.resolve('11111111-2222-4d9e-af01-234567890abc');
+        if (cmd === 'login_session_for_token')
+          return Promise.resolve(
+            keyringToken ? '22222222-3333-4444-8555-666666666666' : null,
+          );
         if (cmd === 'begin_logout')
           return Promise.resolve({
             ticket: 'logout-operation',
@@ -123,7 +129,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     pick: Mock;
     clear: Mock;
   } {
-    invokeSpy = makeInvokeSpy();
+    invokeSpy = makeInvokeSpy({ keyringToken: storedToken });
     const set = vi.fn().mockName('setSessionToken');
     const clear = vi.fn().mockName('clearMessageNotifications');
     const get = vi
@@ -269,9 +275,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         resetNavigation: true,
       });
       const commands = invokeSpy.mock.calls.map(([command]) => command);
-      expect(commands.indexOf('native_db_recreate_cache')).toBeLessThan(
+      // Fresh-login cleanup moved BEFORE the authentication request; the post-auth recreation is gone.
+      expect(commands.indexOf('begin_login')).toBeLessThan(
         commands.indexOf('desktop_notifications_clear'),
       );
+      expect(commands).not.toContain('native_db_recreate_cache');
     });
     it('a trusted login pushes the token to ProxyState and the keyring', async () => {
       desktopGlobals({ secureSetOk: true });
@@ -280,6 +288,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       // Always under Tauri: set_session_token (ProxyState.token, so api_request injects the Bearer).
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
         token: 'st-trusted',
+        sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
       });
       // Trusted → persisted to the OS keyring.
       expect(invokeSpy).toHaveBeenCalledWith('secure_set_token', {
@@ -293,6 +302,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(svc.loggedIn()).toBe(true);
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
         token: 'st-mem',
+        sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
       });
       expect(invokeSpy).toHaveBeenCalledWith('secure_set_token', {
         token: 'st-mem',
@@ -319,6 +329,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(svc.loggedIn()).toBe(true);
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
         token: 'st-keep',
+        sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
       });
       expect(invokeSpy).toHaveBeenCalledWith('secure_set_token', {
         token: 'st-keep',
@@ -363,6 +374,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       });
       expect(invokeSpy).toHaveBeenCalledWith('begin_logout', {
         origin: '',
+        sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
       });
       httpMock.expectNone((r) => /\/auth\/logout$/.test(r.url));
     });
@@ -401,6 +413,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(svc.isLoggedIn()).toBe(true);
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
         token: 'st-restored',
+        sessionUuid: '22222222-3333-4444-8555-666666666666',
       });
     });
 
@@ -430,7 +443,26 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       // Android now ALSO reaches set_session_token (ProxyState.token) — api_request runs on Android too.
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
         token: 'st-android',
+        sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
       });
+    });
+
+    it('a residual credential whose login was ended locally is discarded, never restored', async () => {
+      const { set } = androidGlobals('st-dead');
+      invokeSpy.mockImplementation((cmd: string) =>
+        cmd === 'login_session_for_token'
+          ? Promise.resolve(null)
+          : Promise.resolve(undefined),
+      );
+      await svc.restoreSession();
+      expect(set).toHaveBeenCalledExactlyOnceWith(null);
+      expect(svc.loggedIn()).toBe(false);
+      expect(svc.isLoggedIn()).toBe(false);
+      expect(
+        invokeSpy.mock.calls.some(
+          ([command]) => command === 'set_session_token',
+        ),
+      ).toBe(false);
     });
 
     it('restoreSession reads SomsFcm.getSessionToken → session restored + canTrust true', async () => {
@@ -487,6 +519,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(set).toHaveBeenCalledWith(null);
       expect(invokeSpy).toHaveBeenCalledWith('begin_logout', {
         origin: '',
+        sessionUuid: '11111111-2222-4d9e-af01-234567890abc',
       });
       expect(svc.loggedIn()).toBe(false);
     });

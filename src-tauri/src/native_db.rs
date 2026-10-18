@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub(crate) mod attention;
 #[cfg(any(target_os = "android", test))]
@@ -71,6 +71,14 @@ fn open_preferences() -> Result<Connection, String> {
     )
     .map_err(|e| format!("initialize preference db: {e}"))?;
     Ok(conn)
+}
+
+/// Open an already-initialized account cache. Unlike `Connection::open`, this cannot create a missing
+/// database file and never repairs missing tables during a read/write command.
+/// Login-authority open path: the preferences file exists by the time any login transition runs
+/// (first fresh login creates it here). Never opens or repairs the account cache schema.
+pub(crate) fn open_preferences_for_authority() -> Result<Connection, String> {
+    open_preferences()
 }
 
 /// Open an already-initialized account cache. Unlike `Connection::open`, this cannot create a missing
@@ -364,6 +372,47 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
 
 /// Explicit fresh-login initialization. Device preferences survive; all rebuildable account cache tables
 /// are dropped and recreated as one schema operation.
+/// Fresh-login preparation, run BEFORE the authentication request. Releases admitted cache work,
+/// resets the shared cache schema, performs the deferred deletion of retired login caches recorded by
+/// previous logouts, and mints the new login UUID. Credentials are not involved; `prepare` still
+/// refuses while any retired cache remains undeletable, so a failed cleanup blocks authentication.
+#[tauri::command]
+pub(crate) async fn native_db_begin_login() -> Result<String, String> {
+    let id = tauri::async_runtime::spawn_blocking(move || {
+        // Hold the lifetime write guard until the schema reset and journal transitions finish.
+        let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
+        let mut conn = open_preferences()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .map_err(|e| format!("begin native fresh-login preparation: {e}"))?;
+        drop_cache_schema(&tx)?;
+        create_cache_schema(&tx)?;
+        tx.commit()
+            .map_err(|e| format!("commit native fresh-login preparation: {e}"))?;
+        crate::login_session_store::SessionStore::end_current(&mut conn)?;
+        let retired: Vec<_> = crate::login_session_store::SessionStore::read(&conn)?
+            .map(|journal| journal.pending_cleanup().to_vec())
+            .unwrap_or_default();
+        if let Some(directory) = db_path()?.parent().map(Path::to_path_buf) {
+            for id in retired {
+                crate::login_session_store::SessionStore::delete_retired_cache(
+                    &mut conn,
+                    &directory,
+                    &id,
+                )?;
+            }
+        }
+        crate::login_session_store::SessionStore::finish_ending(&mut conn, None)?;
+        crate::login_session_store::SessionStore::acknowledge_legacy_cleanup(&mut conn)?;
+        profile_avatars::clear()?;
+        crate::login_session_store::SessionStore::prepare(&mut conn).map(String::from)
+    })
+    .await
+    .map_err(|e| format!("join native fresh-login preparation: {e}"))??;
+    crate::realtime::runtime().refresh_account_epoch();
+    Ok(id)
+}
+
 #[tauri::command]
 pub(crate) async fn native_db_recreate_cache() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {

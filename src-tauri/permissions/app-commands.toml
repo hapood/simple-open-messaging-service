@@ -55,13 +55,23 @@ commands.allow = ["set_active_origin"]
 
 [[permission]]
 identifier = "allow-set-session-token"
-description = "Enables the set_session_token command (bearer for the media:// proxy)."
+description = "Activates the native login UUID and installs the bearer for the media:// proxy."
 commands.allow = ["set_session_token"]
 
 [[permission]]
 identifier = "allow-clear-session-token"
-description = "Enables the clear_session_token command."
+description = "Ends the native login locally and detaches the bearer."
 commands.allow = ["clear_session_token"]
+
+[[permission]]
+identifier = "allow-login-session-for-token"
+description = "Validates a persisted credential against the durable native login record before restoration."
+commands.allow = ["login_session_for_token"]
+
+[[permission]]
+identifier = "allow-native-db-begin-login"
+description = "Fresh-login preparation: releases cache work, deletes retired caches, mints the login UUID."
+commands.allow = ["native_db_begin_login"]
 
 [[permission]]
 identifier = "allow-begin-logout"
@@ -206,7 +216,6 @@ description = "Enables the typed native SQLite cache commands used by the bundle
 commands.allow = [
   "native_db_advance_thread_read",
   "native_db_apply_deleted_messages",
-  "native_db_cleanup_relationship_requests",
   "native_db_correct_system_message_profile",
   "native_db_count_messages",
   "native_db_count_unread_message_slots",
@@ -214,9 +223,6 @@ commands.allow = [
   "native_db_get_deleted_hwm",
   "native_db_get_group_member",
   "native_db_get_preference",
-  "native_db_list_relationship_requests",
-  "native_db_mark_relationship_request_accepted",
-  "native_db_page_relationship_requests",
   "native_db_put_cached_messages",
   "native_db_put_message_head",
   "native_db_put_preference",
@@ -230,8 +236,11 @@ commands.allow = [
   "native_db_replace_threads",
   "native_db_delete_thread",
   "native_db_get_profile",
-  "native_db_get_meta",
-  "native_db_put_meta",
+  "native_db_advance_intent_request_read",
+  "native_db_initialize_account_state",
+  "native_db_read_account_state",
+  "native_db_write_self_profile",
+  "native_db_write_composer_drafts",
   "native_db_clear_user",
   "native_db_clear_all",
   "native_db_get_profile_avatar",
@@ -273,6 +282,8 @@ permissions = [
   "allow-set-active-origin",
   "allow-set-session-token",
   "allow-clear-session-token",
+  "allow-login-session-for-token",
+  "allow-native-db-begin-login",
   "allow-begin-logout",
   "allow-secure-set-token",
   "allow-secure-get-token",

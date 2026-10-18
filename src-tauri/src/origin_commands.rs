@@ -122,14 +122,68 @@ pub(crate) fn set_active_origin(
     Ok(normalized)
 }
 
+/// Activate the native login identity captured by the original authentication operation. The expected
+/// UUID never comes from mutable current state: a late completion of a superseded login is rejected.
 #[tauri::command]
-pub(crate) fn set_session_token(token: String, state: tauri::State<'_, ServerSessionState>) {
+pub(crate) async fn set_session_token(
+    token: String,
+    session_uuid: Option<String>,
+    state: tauri::State<'_, ServerSessionState>,
+) -> Result<(), String> {
+    if let Some(uuid) = session_uuid.as_deref() {
+        let id = crate::login_session_store::LoginSessionId::try_from(uuid.to_string())?;
+        let token_for_activation = token.clone();
+        let id_for_state = id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut conn = crate::native_db::open_preferences_for_authority()?;
+            crate::login_session_store::SessionStore::activate(
+                &mut conn,
+                &id,
+                &token_for_activation,
+            )
+        })
+        .await
+        .map_err(|e| format!("join native login activation: {e}"))??;
+        *state.login_session.lock().expect("login session lock") = Some(id_for_state);
+    }
     state.replace_session_token(Some(token));
+    Ok(())
+}
+
+/// Validate a persisted credential against the durable login record before any restoration work.
+/// A credential whose login was ended locally never revives it.
+#[tauri::command]
+pub(crate) async fn login_session_for_token(token: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = crate::native_db::open_preferences_for_authority()?;
+        Ok(crate::login_session_store::SessionStore::restore(&conn, &token)?.map(String::from))
+    })
+    .await
+    .map_err(|e| format!("join native login restoration check: {e}"))?
 }
 
 #[tauri::command]
-pub(crate) fn clear_session_token(state: tauri::State<'_, ServerSessionState>) {
+pub(crate) async fn clear_session_token(
+    state: tauri::State<'_, ServerSessionState>,
+) -> Result<(), String> {
+    // Forced local end (401 / FORCE_LOGOUT): persist the end marker and its cleanup ownership.
+    let ended = state
+        .login_session
+        .lock()
+        .expect("login session lock")
+        .clone();
+    if ended.is_some() {
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut conn = crate::native_db::open_preferences_for_authority()?;
+            crate::login_session_store::SessionStore::end(&mut conn, ended.as_ref())?;
+            crate::login_session_store::SessionStore::finish_ending(&mut conn, ended.as_ref())
+        })
+        .await
+        .map_err(|e| format!("join native local end: {e}"))??;
+    }
+    *state.login_session.lock().expect("login session lock") = None;
     state.replace_session_token(None);
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -145,8 +199,32 @@ pub(crate) struct LogoutAdmission {
 #[tauri::command]
 pub(crate) async fn begin_logout(
     origin: String,
+    session_uuid: Option<String>,
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<LogoutAdmission, String> {
+    // The renderer captures the active UUID at the logout click; a delayed dispatch of a superseded
+    // logout must never end a successor login.
+    let expected = session_uuid
+        .as_deref()
+        .map(|uuid| crate::login_session_store::LoginSessionId::try_from(uuid.to_string()))
+        .transpose()?;
+    {
+        let mut active = state.login_session.lock().expect("login session lock");
+        if *active != expected {
+            return Err("native login superseded".into());
+        }
+        *active = None;
+    }
+    // The guard is dropped before awaiting: never hold the login lock across blocking I/O.
+    if expected.is_some() {
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut conn = crate::native_db::open_preferences_for_authority()?;
+            crate::login_session_store::SessionStore::end(&mut conn, expected.as_ref())?;
+            crate::login_session_store::SessionStore::finish_ending(&mut conn, expected.as_ref())
+        })
+        .await
+        .map_err(|e| format!("join native logout end: {e}"))??;
+    }
     let token = state.replace_session_token(None);
     let ticket = token.and_then(|token| {
         // Never re-read the mutable origin after capturing the ended credential.

@@ -16,11 +16,20 @@ Rust token). Rust starts a non-retrying, ten-second revocation attempt and expos
 a single-use operation ticket for waiting. The ticket is not a login UUID. A
 silent-server transport test verifies actual socket cancellation on timeout.
 
-Native persistent UUID ownership, UUID-named SQLite files, durable logout markers
-and native fresh-login preparation before the authentication HTTP request remain
-unimplemented. Native cache initialization and account-preference cleanup still
-occur after server authentication, before local credential installation; this is
-not yet the target ordering. Existing native login epochs remain in use.
+Native persistent login metadata now exists in Rust: a device-scoped journal in
+the preferences database records the login UUID, a credential fingerprint (never
+the credential), and pending cache cleanup. Fresh-login preparation runs before
+the authentication request: the renderer invokes `begin_login`, Rust drains
+cache work, resets the shared cache schema, deletes retired login caches, and
+mints the UUID; activation and logout transitions validate the UUID captured by
+the original operation, and a persisted credential whose login ended is discarded
+at restoration instead of reviving the session. Login-UUID admission is now
+enforced at these transitions; per-request native command admission still uses
+the existing numeric epochs.
+
+UUID-named SQLite cache files are not implemented: the native cache remains one
+shared schema file, reset at fresh login and retained at logout. Existing native
+login epochs remain in use for admitted work.
 
 ## Purpose and related designs
 

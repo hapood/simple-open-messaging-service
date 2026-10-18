@@ -132,10 +132,17 @@ export class AuthService {
   }
 
   /** Run the login-init origin race (once) before the auth request, so login targets a reachable origin
-   *  (the boot-time pick may be stale if the network changed before login). No-op outside Tauri. */
+   *  (the boot-time pick may be stale if the network changed before login). No-op outside Tauri. On
+   *  Tauri this also performs native fresh-login preparation FIRST: the old cache is released and the
+   *  new login UUID minted before any authentication request is issued. */
   private pickThen<T>(req: Observable<T>): Observable<T> {
     if (isTauri()) {
-      return defer(() => pickLoginOrigin()).pipe(mergeMap(() => req));
+      return defer(() =>
+        from(this.prepareNativeLogin()).pipe(
+          mergeMap(() => pickLoginOrigin()),
+          mergeMap(() => req),
+        ),
+      );
     }
     const browser = this.requireBrowserSession();
     return defer(() =>
@@ -157,6 +164,18 @@ export class AuthService {
       throw new Error('Browser session service is missing on the browser host');
     }
     return this.browserSession;
+  }
+
+  /** The active native login UUID (login-lifetime identity owned by Rust). Set by fresh-login
+   *  preparation or journal-validated restoration; null whenever no native login is admitted. */
+  private nativeLoginUuid: string | null = null;
+
+  /** Native fresh-login boundary, run before the authentication request: Rust releases admitted cache
+   *  work, deletes retired login caches and mints the new UUID. Account-scoped preferences of the
+   *  previous login are removed here too, so nothing of the old login survives into the new one. */
+  private async prepareNativeLogin(): Promise<void> {
+    this.nativeLoginUuid = await tauriInvoke<string>('begin_login');
+    await this.userService.clearSessionPreferences();
   }
 
   login(params: { account: string; password: string }) {
@@ -301,10 +320,8 @@ export class AuthService {
       this.userService.prepareFreshCache();
     }
     if (isTauri()) {
-      // A real login starts a fresh cache generation. Ordinary native DB commands never create or repair
-      // account-cache tables; this is the single explicit initialization boundary.
-      await this.userService.clearSessionPreferences();
-      await tauriInvoke('native_db_recreate_cache');
+      // Fresh-login cache cleanup already ran in begin_login, before the authentication request.
+      await this.setSessionToken(token);
     }
     await clearSessionNotifications().catch((error) =>
       console.warn('[notification] login cleanup failed', error),
@@ -353,7 +370,10 @@ export class AuthService {
       // activateSession → this) then issues its first authenticated request with the Bearer in place.
       // Needed on BOTH desktop AND Android: both route /api/v1 through the `api_request` IPC transport,
       // which reads ProxyState.token. (Awaiting also closes the pre-login/first-request race.)
-      await tauriInvoke('set_session_token', { token });
+      await tauriInvoke('set_session_token', {
+        token,
+        sessionUuid: this.nativeLoginUuid,
+      });
       // Desktop persistence to the OS keyring (Android persists via SomsFcm above). Fire-and-forget: a
       // failure revokes a TRUSTED (permanent) token server-side (no orphan) + bounces to login; a keep-only
       // token gets a toast. set_session_token above already set ProxyState.token to THIS token, so
@@ -437,9 +457,19 @@ export class AuthService {
     this.sessionState.setAuthenticated(true);
   }
 
-  /** Cold-start native restore reads and validates first. A missing, old, or damaged cache is rebuildable
-   *  state, not an authentication failure: recreate the current schema and keep the restored token. */
+  /** Cold-start native restore validates the credential against the durable login record FIRST: a
+   *  residual credential whose login was ended locally is discarded, never restored. A missing, old, or
+   *  damaged cache is rebuildable state, not an authentication failure: recreate the current schema and
+   *  keep the restored token. */
   private async restoreNativeSession(token: string): Promise<void> {
+    const uuid = await tauriInvoke<string | null>('login_session_for_token', {
+      token,
+    });
+    if (!uuid) {
+      await this.discardResidualNativeToken();
+      return;
+    }
+    this.nativeLoginUuid = uuid;
     try {
       await tauriInvoke('native_db_validate_cache');
     } catch {
@@ -447,6 +477,16 @@ export class AuthService {
     }
     await this.userService.restoreWebdb();
     await this.applyRestoredToken(token);
+  }
+
+  /** Drop a credential that no longer belongs to any admitted login, from the store that still holds
+   *  it. Local recovery to a clean signed-out state; the server-side token keeps its own expiry. */
+  private async discardResidualNativeToken(): Promise<void> {
+    if (isAndroidNative()) {
+      window.SomsFcm!.setSessionToken(null);
+    } else if (isTauri()) {
+      await tauriInvoke('secure_clear_token').catch(() => {});
+    }
   }
 
   /** Synchronous local-state clear: flip the login flag + drop the in-memory trust/keep flags. Does NOT
@@ -576,6 +616,8 @@ export class AuthService {
 
   private async endNativeSession(remote: boolean): Promise<boolean> {
     const origin = apiOrigin();
+    const endedLogin = this.nativeLoginUuid;
+    this.nativeLoginUuid = null;
     this.clearLocalSessionState();
     this.sendOutbox.clear();
     // Invalidate admission synchronously, but retain the physical cache and account preferences.
@@ -597,7 +639,7 @@ export class AuthService {
         const admitted = await tauriInvoke<{
           ticket: string | null;
           localClearFailed: boolean;
-        }>('begin_logout', { origin });
+        }>('begin_logout', { origin, sessionUuid: endedLogin });
         ticket = admitted.ticket;
         nativeOk = !admitted.localClearFailed;
       } catch (error) {
