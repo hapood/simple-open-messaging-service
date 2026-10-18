@@ -329,6 +329,13 @@ export class UserService {
     this.resetSessionState();
   }
 
+  /** Release the renderer's native-session resources without deleting retained account data. */
+  async releaseSession(): Promise<void> {
+    this.sessionLifecycle.invalidateSession();
+    this.resetSessionState();
+    await this.webdb.close();
+  }
+
   /** In-memory only. The session owner handles invalidation, connections and physical deletion. */
   resetSessionState(): void {
     this.webdbUserKey = null;

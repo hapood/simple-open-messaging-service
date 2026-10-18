@@ -79,6 +79,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       .fn()
       .mockName('invoke')
       .mockImplementation((cmd: string) => {
+        if (cmd === 'begin_logout')
+          return Promise.resolve({
+            ticket: 'logout-operation',
+            localClearFailed: !secureClearOk,
+          });
         if (cmd === 'secure_get_token')
           return secureGetOk
             ? Promise.resolve(keyringToken)
@@ -209,11 +214,12 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         {
           provide: UserService,
           useValue: {
-            clearSession: vi
+            releaseSession: vi
               .fn()
-              .mockName('clearSession')
+              .mockName('releaseSession')
               .mockResolvedValue(undefined),
             prepareFreshCache: vi.fn().mockName('prepareFreshCache'),
+            clearSessionPreferences: vi.fn().mockResolvedValue(undefined),
             restoreWebdb: vi
               .fn()
               .mockName('restoreWebdb')
@@ -341,7 +347,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       await passwordLogin('st-logout');
       invokeSpy.mockClear();
 
-      // logout() emits only after clearSession resolves; its tap (native teardown) has then run.
+      // Completion waits for resource release and the Rust-owned bounded revoke.
       await firstValueFrom(svc.logout());
 
       expect(svc.loggedIn()).toBe(false);
@@ -349,9 +355,12 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         resetNavigation: true,
       });
       const commands = invokeSpy.mock.calls.map(([command]) => command);
-      expect(commands.indexOf('desktop_notifications_clear')).toBeLessThan(
-        commands.indexOf('begin_logout'),
+      expect(commands.indexOf('begin_logout')).toBeLessThan(
+        commands.indexOf('desktop_notifications_clear'),
       );
+      expect(invokeSpy).toHaveBeenCalledWith('wait_for_logout', {
+        ticket: 'logout-operation',
+      });
       expect(invokeSpy).toHaveBeenCalledWith('begin_logout', {
         origin: '',
       });
@@ -468,11 +477,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(svc.loggedIn()).toBe(false);
     });
 
-    it('logout clears the Android secure token before beginning the captured native revoke', async () => {
+    it('logout clears the Android secure token after Rust captures it for revocation', async () => {
       const { set } = androidGlobals('st-logout');
       await passwordLogin('st-logout');
 
-      // logout() emits only after clearSession resolves; its tap (native teardown) has then run.
+      // Rust must acknowledge capture before the adapter clears both native token copies.
       await firstValueFrom(svc.logout());
 
       expect(set).toHaveBeenCalledWith(null);

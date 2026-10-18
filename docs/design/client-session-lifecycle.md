@@ -2,6 +2,26 @@
 
 Status: accepted target design; implementation is not complete.
 
+## Implementation status
+
+Browser authentication, restoration, logout and push-worker admission use the
+UUID journal and session-owned IndexedDB names. Browser fresh-login preparation
+performs deferred deletion before sending authentication requests. Numeric
+login-epoch consumers have not all been removed.
+
+Native logout now releases the renderer's resources without deleting account
+storage. Rust captures the ended bearer and origin before acknowledging logout;
+only then does the Android adapter clear secure storage (which also clears the
+Rust token). Rust starts a non-retrying, ten-second revocation attempt and exposes
+a single-use operation ticket for waiting. The ticket is not a login UUID. A
+silent-server transport test verifies actual socket cancellation on timeout.
+
+Native persistent UUID ownership, UUID-named SQLite files, durable logout markers
+and native fresh-login preparation before the authentication HTTP request remain
+unimplemented. Native cache initialization and account-preference cleanup still
+occur after server authentication, before local credential installation; this is
+not yet the target ordering. Existing native login epochs remain in use.
+
 ## Purpose and related designs
 
 Replace independent login/account epoch counters with one opaque local login

@@ -5,6 +5,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { Observable, firstValueFrom } from 'rxjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuthService } from '../auth.service';
+import { UserService } from '../user.service';
 import {
   BROWSER_SESSION,
   BrowserSessionService,
@@ -49,6 +50,9 @@ function client(preferences = new Preferences(), provideBrowserSession = true) {
     resetSessionState: vi.fn(),
     clearSession: vi.fn(() => {
       throw new Error('Duplicate legacy cleanup');
+    }),
+    releaseSession: vi.fn<() => Promise<void>>(() => {
+      throw new Error('Native release is forbidden on the browser');
     }),
     prepareFreshCache: vi.fn(() => {
       throw new Error('Duplicate invalidation');
@@ -290,5 +294,119 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     expect(app.requests[1].aborted).toBe(true);
     expect(app.auth.isLoggedIn()).toBe(false);
     expect(app.owner.currentSession).toBeNull();
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe('native logout adapter integration', () => {
+  for (const android of [false, true]) {
+    it(`releases without deleting and waits for Rust revocation (${android ? 'Android' : 'desktop'})`, async () => {
+      const admission = deferred<{
+        ticket: string;
+        localClearFailed: boolean;
+      }>();
+      const remote = deferred<void>();
+      const setToken = vi.fn();
+      const originalAgent = Object.getOwnPropertyDescriptor(
+        navigator,
+        'userAgent',
+      );
+      const invoke = vi.fn(async (command: string) => {
+        if (command === 'begin_logout') return admission.promise;
+        if (command === 'wait_for_logout') return remote.promise;
+        return undefined;
+      });
+      window.__TAURI_INTERNALS__ = {};
+      window.__TAURI__ = { core: { invoke } };
+      if (android) {
+        Object.defineProperty(navigator, 'userAgent', {
+          value: 'Android',
+          configurable: true,
+        });
+        Object.defineProperty(window, 'SomsFcm', {
+          value: {
+            setSessionToken: setToken,
+            clearMessageNotifications: vi.fn(),
+          },
+          configurable: true,
+        });
+      }
+      const app = client(undefined, false);
+      app.state.setAuthenticated(true);
+      app.user.releaseSession.mockResolvedValue(undefined);
+      let finished = false;
+      const done = firstValueFrom(app.auth.logout()).then(() => {
+        finished = true;
+      });
+      try {
+        expect(app.auth.isLoggedIn()).toBe(false);
+        expect(app.user.releaseSession).toHaveBeenCalledTimes(1);
+        expect(app.user.clearSession).not.toHaveBeenCalled();
+        expect(setToken).not.toHaveBeenCalled();
+        expect(finished).toBe(false);
+        admission.resolve({
+          ticket: 'ended-operation',
+          localClearFailed: false,
+        });
+        await vi.waitFor(() =>
+          expect(invoke).toHaveBeenCalledWith('wait_for_logout', {
+            ticket: 'ended-operation',
+          }),
+        );
+        if (android) expect(setToken).toHaveBeenCalledExactlyOnceWith(null);
+        expect(finished).toBe(false);
+        remote.resolve();
+        await done;
+        expect(app.requests).toHaveLength(0);
+        expect(
+          invoke.mock.calls.some(([command]) =>
+            command.startsWith('native_db_'),
+          ),
+        ).toBe(false);
+      } finally {
+        admission.resolve({
+          ticket: 'ended-operation',
+          localClearFailed: false,
+        });
+        remote.resolve();
+        await done;
+        delete window.__TAURI_INTERNALS__;
+        delete window.__TAURI__;
+        delete window.SomsFcm;
+        if (originalAgent)
+          Object.defineProperty(navigator, 'userAgent', originalAgent);
+        else Reflect.deleteProperty(navigator, 'userAgent');
+      }
+    });
+  }
+
+  it('the real release primitive invalidates and closes without touching persistent data', async () => {
+    const invalidateSession = vi.fn();
+    const resetSessionState = vi.fn();
+    const close = vi.fn(async () => {});
+    const closeAndDelete = vi.fn();
+    const clearSessionPreferences = vi.fn();
+    const resourceOwner = {
+      sessionLifecycle: { invalidateSession },
+      resetSessionState,
+      webdb: { close, closeAndDelete },
+      clearSessionPreferences,
+    };
+    const releasing = UserService.prototype.releaseSession.call(
+      resourceOwner as unknown as UserService,
+    );
+    expect(invalidateSession).toHaveBeenCalledTimes(1);
+    expect(resetSessionState).toHaveBeenCalledTimes(1);
+    await releasing;
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(closeAndDelete).not.toHaveBeenCalled();
+    expect(clearSessionPreferences).not.toHaveBeenCalled();
   });
 });

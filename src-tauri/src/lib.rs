@@ -22,6 +22,7 @@ mod client_compat;
 mod diagnostics;
 mod media_cache;
 mod native_db;
+mod native_logout;
 mod native_video;
 mod navigation;
 mod origin_commands;
@@ -167,6 +168,7 @@ pub(crate) struct ServerSessionState {
     /// App-scoped media downloads keyed by the renderer-generated task id. The shared image-download
     /// adapter cancels through this map; dropping the reqwest stream leaves only a disposable .part file.
     media_download_cancels: Arc<Mutex<std::collections::HashMap<String, CancellationToken>>>,
+    logout_tasks: native_logout::LogoutTasks,
 }
 
 impl ServerSessionState {
@@ -232,6 +234,7 @@ impl ServerSessionState {
             #[cfg(not(desktop))]
             native_voice_pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
             media_download_cancels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            logout_tasks: native_logout::LogoutTasks::default(),
         }
     }
 
@@ -497,6 +500,7 @@ pub fn run() {
                     origin_commands::set_session_token,
                     origin_commands::clear_session_token,
                     origin_commands::begin_logout,
+                    origin_commands::wait_for_logout,
                     secure_storage::secure_get_token,
                     secure_storage::secure_set_token,
                     secure_storage::secure_clear_token,
@@ -585,6 +589,7 @@ pub fn run() {
                     origin_commands::set_session_token,
                     origin_commands::clear_session_token,
                     origin_commands::begin_logout,
+                    origin_commands::wait_for_logout,
                     client_compat::init_check_compat,
                     client_compat::init_validate_cert,
                     client_compat::init_compat_status,

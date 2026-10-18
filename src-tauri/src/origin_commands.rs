@@ -3,9 +3,8 @@ use log::warn;
 #[cfg(desktop)]
 use crate::secure_storage;
 use crate::{
-    activate_origin, persist_origin, persist_origin_secondary, pick_origin_race,
-    send_with_headers_deadline, validate_origin, HeadersError, OriginMode, ServerSessionState,
-    API_HEADERS_TIMEOUT, DEFAULT_API_ORIGIN,
+    activate_origin, persist_origin, persist_origin_secondary, pick_origin_race, validate_origin,
+    OriginMode, ServerSessionState, DEFAULT_API_ORIGIN,
 };
 
 // --- frontend-facing commands (origin + token) --------------------------------------------
@@ -133,51 +132,55 @@ pub(crate) fn clear_session_token(state: tauri::State<'_, ServerSessionState>) {
     state.replace_session_token(None);
 }
 
-/// End the currently attached native session without tying UI progress to the old backend.
-///
-/// The token is TAKEN from the global proxy state before this command returns, so requests aimed at a
-/// subsequently configured server can never inherit it. The remote revoke owns the captured token + origin
-/// and runs in the background; it cannot later clear or redirect a newer session. Desktop keyring deletion
-/// is performed synchronously before spawning so a fast account/server switch cannot race a stale delete.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LogoutAdmission {
+    ticket: Option<String>,
+    local_clear_failed: bool,
+}
+
+/// Capture and detach before the platform adapter clears its secure credential. In particular,
+/// Android's secure-store adapter also clears Rust's token, so it must wait for this acknowledgement.
+/// The bounded remote attempt starts here even if the renderer disappears before waiting for it.
 #[tauri::command]
-pub(crate) fn begin_logout(
+pub(crate) async fn begin_logout(
     origin: String,
     state: tauri::State<'_, ServerSessionState>,
-) -> Result<(), String> {
+) -> Result<LogoutAdmission, String> {
     let token = state.replace_session_token(None);
+    let ticket = token.and_then(|token| {
+        // Never re-read the mutable origin after capturing the ended credential.
+        let origin = validate_origin(&origin)?;
+        Some(
+            state
+                .logout_tasks
+                .start(state.api_client(&origin), origin, token),
+        )
+    });
 
     #[cfg(desktop)]
-    secure_storage::secure_clear_token()?;
-
-    // The frontend snapshots the old configured origin before navigating. Never re-read the mutable active
-    // origin here: a delayed IPC dispatch after reconfiguration must not send the old token to the new host.
-    // An empty/invalid origin can occur only in a drifted/first-run shell; local logout still succeeds.
-    let Some(origin) = validate_origin(&origin) else {
-        return Ok(());
+    let local_clear_failed = match secure_storage::secure_clear_token() {
+        Ok(()) => false,
+        Err(error) => {
+            warn!("logout credential clear failed: {error}");
+            true
+        }
     };
-    let client = state.api_client(&origin);
+    #[cfg(not(desktop))]
+    let local_clear_failed = false;
 
-    if let Some(token) = token {
-        tauri::async_runtime::spawn(async move {
-            let target = format!("{origin}/api/v1/auth/logout");
-            let request = client
-                .post(&target)
-                .header("authorization", format!("Bearer {token}"))
-                .json(&serde_json::json!({}));
-            match send_with_headers_deadline(request, API_HEADERS_TIMEOUT).await {
-                Ok(response) if response.status().is_success() => {}
-                Ok(response) => warn!(
-                    "background logout {target} returned HTTP {}",
-                    response.status()
-                ),
-                Err(HeadersError::SendFailed(error)) => {
-                    warn!("background logout {target} failed: {error}")
-                }
-                Err(HeadersError::Timeout) => {
-                    warn!("background logout {target} timed out")
-                }
-            }
-        });
-    }
+    Ok(LogoutAdmission {
+        ticket,
+        local_clear_failed,
+    })
+}
+
+/// Waiting has no credential/cache side effects and cannot mutate a successor session.
+#[tauri::command]
+pub(crate) async fn wait_for_logout(
+    ticket: String,
+    state: tauri::State<'_, ServerSessionState>,
+) -> Result<(), String> {
+    state.logout_tasks.wait(&ticket).await;
     Ok(())
 }

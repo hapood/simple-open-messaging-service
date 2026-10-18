@@ -65,8 +65,8 @@ commands.allow = ["clear_session_token"]
 
 [[permission]]
 identifier = "allow-begin-logout"
-description = "Detaches the native session before remote revocation during logout."
-commands.allow = ["begin_logout"]
+description = "Detaches the native session and waits for its bounded remote revocation."
+commands.allow = ["begin_logout", "wait_for_logout"]
 
 [[permission]]
 identifier = "allow-init-check-compat"

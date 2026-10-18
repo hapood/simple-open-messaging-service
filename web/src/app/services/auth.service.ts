@@ -303,6 +303,7 @@ export class AuthService {
     if (isTauri()) {
       // A real login starts a fresh cache generation. Ordinary native DB commands never create or repair
       // account-cache tables; this is the single explicit initialization boundary.
+      await this.userService.clearSessionPreferences();
       await tauriInvoke('native_db_recreate_cache');
     }
     await clearSessionNotifications().catch((error) =>
@@ -329,13 +330,9 @@ export class AuthService {
       this.routeService.redirect(RoutePage.AUTH_LOGIN);
       return;
     }
-    void this.clearToken();
-    // Drop the in-memory session (sessionProfile / sessionUserId / per-user DB) on the same terms as logout
-    // — a 401 / FORCE_LOGOUT means this session is over, so the next account must not inherit its view state
-    // (open chat, mobile section, dialogs) nor its cached data. Successful cleanup explicitly notifies
-    // in-memory consumers, including when the session ended before HELLO identified the user.
-    void this.userService.clearSession().catch(() => {});
-    this.sendOutbox.clear();
+    void this.clearToken().catch((error) =>
+      console.warn('[session] native local termination failed', error),
+    );
     this.routeService.redirect(RoutePage.AUTH_LOGIN);
   }
 
@@ -508,8 +505,7 @@ export class AuthService {
       await this.endBrowserSession(false);
       return true;
     }
-    this.clearLocalSessionState();
-    return this.clearNativeToken();
+    return this.endNativeSession(false);
   }
 
   /** One browser teardown path for explicit logout, forced logout and local token clear. */
@@ -559,50 +555,82 @@ export class AuthService {
     // Renderer-owned WebRTC must end while this session credential is still usable. Android ignores this
     // DOM signal: its native call owner has its own lifecycle and survives WebView recreation.
     this.announceSessionEnding();
-    // Local cache deletion is a controllable logout precondition. Keep the authenticated UI and token
-    // intact until it succeeds; a failure remains retryable instead of producing a half-logged-out state.
-    let cacheClear: Promise<void>;
-    try {
-      cacheClear = Promise.resolve(this.userService.clearSession()).then(
-        async () => {
-          await clearSessionNotifications().catch((error) =>
-            console.warn('[notification] logout cleanup failed', error),
+    return from(
+      this.endNativeSession(true).then((nativeOk) => {
+        if (!nativeOk)
+          this.toast.warn(
+            this.t('auth.notice.logoutClearFailed'),
+            IMPORTANT_NOTICE_MS,
           );
-        },
-      );
-    } catch (error) {
-      cacheClear = Promise.reject(error);
-    }
-    return from(cacheClear).pipe(
+      }),
+    ).pipe(
       tap({
-        next: () => {
-          this.clearLocalSessionState();
-          this.sendOutbox.clear();
-
-          if (isAndroidNative()) {
-            try {
-              window.SomsFcm!.setSessionToken(null);
-            } catch {
-              this.toast.warn(
-                this.t('auth.notice.logoutClearFailed'),
-                IMPORTANT_NOTICE_MS,
-              );
-            }
-          }
-          void tauriInvoke('begin_logout', { origin: apiOrigin() }).catch(() =>
-            this.toast.warn(
-              this.t('auth.notice.logoutClearFailed'),
-              IMPORTANT_NOTICE_MS,
-            ),
-          );
-        },
         error: () =>
           this.toast.warn(
-            this.t('auth.notice.logoutCacheClearFailed'),
+            this.t('auth.notice.logoutClearFailed'),
             IMPORTANT_NOTICE_MS,
           ),
       }),
     );
+  }
+
+  private async endNativeSession(remote: boolean): Promise<boolean> {
+    const origin = apiOrigin();
+    this.clearLocalSessionState();
+    this.sendOutbox.clear();
+    // Invalidate admission synchronously, but retain the physical cache and account preferences.
+    let release: Promise<void>;
+    try {
+      release = this.userService.releaseSession();
+    } catch (error) {
+      release = Promise.reject(error);
+    }
+    const released = release.then(
+      () => ({ failed: false as const }),
+      (error: unknown) => ({ failed: true as const, error }),
+    );
+    let nativeOk = true;
+    if (remote) {
+      let ticket: string | null = null;
+      let platformCleared = false;
+      try {
+        const admitted = await tauriInvoke<{
+          ticket: string | null;
+          localClearFailed: boolean;
+        }>('begin_logout', { origin });
+        ticket = admitted.ticket;
+        nativeOk = !admitted.localClearFailed;
+      } catch (error) {
+        console.warn('[session] native logout admission failed', error);
+        nativeOk = await this.clearNativeToken();
+        platformCleared = true;
+      }
+      // The acknowledgement proves Rust captured the ended token before Android clears both copies.
+      if (isAndroidNative() && !platformCleared) {
+        try {
+          window.SomsFcm!.setSessionToken(null);
+        } catch {
+          nativeOk = false;
+        }
+      }
+      await Promise.all([
+        platformCleared
+          ? Promise.resolve()
+          : clearSessionNotifications().catch((error) =>
+              console.warn('[notification] logout cleanup failed', error),
+            ),
+        ticket
+          ? tauriInvoke('wait_for_logout', { ticket }).catch((error) =>
+              console.warn('[session] logout wait failed', error),
+            )
+          : Promise.resolve(),
+      ]);
+    } else {
+      nativeOk = await this.clearNativeToken();
+    }
+    const outcome = await released;
+    if (outcome.failed) throw outcome.error;
+    return nativeOk;
   }
 
   private announceSessionEnding(): void {
