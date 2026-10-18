@@ -20,15 +20,20 @@ separate concepts.
 - A successful fresh login creates a new UUID, even for the same account.
 - Refresh, process restart and credential restoration preserve that UUID and its
   cache. They are not fresh logins. Only client/server logout ends this identity.
-- A previous session's cache must be deleted before a new session becomes active.
-  Failed cleanup blocks entry and exposes retry. Failure never reactivates the
-  old session.
+- Physical cache deletion belongs exclusively to fresh-login preparation. Logout
+  releases runtime resources and closes connections, but retains the old cache and
+  its pending-cleanup descriptor. Deletion failure blocks the next authentication
+  attempt and exposes retry; it does not prevent local logout.
+- A logout API request has a bounded deadline, including queue waiting. Success,
+  failure or timeout ends the local login; timeout aborts the actual transport.
 - Browser operation remains single-active-document. Additional tabs wait before
   application bootstrap; they do not run separate accounts or share live stores.
 - Local logout works offline. Server revocation is best effort, not a prerequisite
   for local invalidation.
 - Drafts, outbox entries, uploads, calls and other unfinished session work are
-  discarded at logout. A request already accepted by the server can still succeed.
+  abandoned at logout and never resumed by another login. Their old persisted
+  cache is deleted at fresh login, not necessarily at logout. A request already
+  accepted by the server can still succeed.
 - Only login-lifetime epochs are replaced. Independent ordering/cancellation
   mechanisms must not be removed merely because they use the word generation.
 
@@ -61,11 +66,13 @@ Keep device-level lifecycle metadata outside the deletable session database:
 
 - the recoverable session descriptor and lifecycle phase;
 - pending cache cleanup descriptors, including interrupted preparations;
-- a durable local logout marker and any required server-revocation intent.
+- a durable local logout marker. Do not persist requests to revoke via whatever
+  browser cookie a later login installs.
 
 Persist preparation before creating a cache. Persist ending/logout intent before
-reporting durable local logout completion. On restart, resume unfinished cleanup
-before activating another session. Track all orphan descriptors, not only one
+reporting durable local logout completion. On restart, retain pending cleanup
+without restoring an ended login or physically deleting its caches. Resume
+cleanup only at fresh-login preparation. Track all orphan descriptors, not only one
 previous UUID. Never clear a cleanup record before all of its owned stores have
 been removed. Operations are idempotent and retryable after partial success.
 
@@ -101,8 +108,9 @@ transition cannot publish an active session.
 ### Restore
 
 Acquire browser document ownership first, then load lifecycle metadata and secure
-credentials or cookie-backed login presence. Honor logout markers and finish
-interrupted cleanup. Restore the same UUID/cache only after validating bindings
+credentials or cookie-backed login presence. Honor logout markers: an ended
+session stays signed out and its databases remain pending until fresh login.
+Restore the same active UUID/cache only after validating bindings
 and initialization. A network failure is not evidence that the server logged out;
 remain non-active/recoverable rather than deleting a valid session arbitrarily.
 An authoritative revocation ends the session. WebView recreation does not end a
@@ -110,25 +118,39 @@ Rust-owned session or its calls.
 
 ### End session
 
-1. Synchronously remove active publication/admission authority. Every old task
-   immediately becomes obsolete, including when cleanup later fails.
-2. Record durable ending intent. Stop scheduling and signal cancellation outside
-   lifecycle locks. Release realtime, retry, media, notification and upload work.
-3. Drain/exclude admitted local database operations, close all owned connections,
-   and remove IndexedDB databases or SQLite cache files and sidecars safely.
-4. Clear session credentials, account stores, UI state and device registrations
-   as appropriate. Preserve unrelated device preferences.
-5. Mark local cleanup complete. Report signed-out or cleanup-failed with retry.
+1. Synchronously remove active publication/admission authority and reset the
+   visible session state. Every old task immediately becomes obsolete.
+2. Record durable ending intent with the old database descriptor. Stop scheduling
+   and signal cancellation outside lifecycle locks. Release realtime, retry,
+   media, notification and upload work.
+3. Drain/exclude admitted local database operations and close owned connections.
+   Do not delete IndexedDB databases or SQLite files. Keep them discoverable for
+   cleanup at the next fresh login.
+4. Attempt the logout API with captured old credentials and a deadline. This may
+   run alongside resource release. Success, failure and timeout all finish local
+   logout; timeout must abort the transport. Clear local credentials after the
+   request has captured its old credential, independent of remote success.
+5. Keep the ended UUID and pending database list in device metadata. A new login
+   performs deletion once; neither logout nor restart repeats that work. Local
+   metadata/resource failures remain visible and retryable, without reactivating
+   the ended UUID.
+
+The durable `ending` phase means that an ended session still has caches awaiting
+fresh-login cleanup; it does not retain authentication or require the logout API
+to remain in progress. Deferred deletion intentionally means logged-out cache
+files may remain on disk. Do not claim physical erasure at logout.
 
 A server logout request uses captured old credentials and a specific transition;
 it must never clear or acquire a successor's credentials. New activation cannot
 race an unresolved authentication-cookie mutation.
 
 Offline browser logout cannot directly remove an httpOnly cookie. Persist the
-local logout marker, deny authenticated business admission and restoration, and
-finish server cookie/revocation cleanup before fresh authentication. A late old
-logout response must not clear a successor's cookie. Bound/retry network attempts
-without leaving a new login blocked behind an unbounded request.
+local logout marker and deny authenticated business admission and restoration.
+Fresh authentication replaces the cookie; it does not require a successful old
+server logout or an extra cookie-clearing request. A late old logout response
+must not clear a successor's cookie: serialize already-dispatched mutations,
+abort on deadline, and discard an unissued logout after its deadline or successor
+transition. Never replay a failed old logout with the new browser cookie.
 
 ## Work admission and publication
 
@@ -194,9 +216,13 @@ origin storage. Do not delete caches merely because a valid session restarts.
 ## Verification gates
 
 - Fresh same-account login gets a different UUID; ordinary restore retains it.
-- Logout invalidates synchronously, even when cleanup fails or the network hangs.
-- Partial IndexedDB/SQLite deletion survives restart and retries idempotently;
-  new login stays blocked until cleanup succeeds.
+- Logout invalidates synchronously, closes runtime resources and retains physical
+  caches. Remote failure is tolerated, and a deadline aborts the transport.
+- Partial IndexedDB/SQLite deletion during fresh login survives restart and retries
+  idempotently; new authentication stays blocked until cleanup succeeds. Merely
+  restarting after logout does not perform deletion.
+- Failed server logout does not add a cookie-clearing prerequisite to the next
+  login. An expired queued logout is never dispatched later.
 - Queued old native commands cannot use successor credentials or databases.
 - Old HTTP success, errors and 401s cannot mutate successor state or log it out.
 - A result delayed after an additional await cannot publish to a successor.

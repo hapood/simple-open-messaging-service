@@ -787,6 +787,44 @@ export class WebdbStorage {
     this.sessionCacheUserId = null;
   }
 
+  /** Initialize UUID-owned tables before HELLO identifies the account. No user handle is published. */
+  async initializeSessionCache(): Promise<void> {
+    const descriptor = this.sessionCache;
+    if (!descriptor || !idbAvailable()) {
+      throw new Error('webdb: session cache initialization unavailable');
+    }
+    if (
+      this.currentUserId !== null ||
+      this.accountResetPromise ||
+      this.cacheBindingOperations
+    ) {
+      throw new Error(
+        'webdb: session resources must be closed before initialization',
+      );
+    }
+    this.cacheBindingOperations += 1;
+    const epoch = ++this.cacheEpoch;
+    this.beginAccountMaintenance();
+    try {
+      await this.waitForAccountIdle();
+      await this.closeHandles();
+      const opened = await Promise.allSettled([
+        this.openValidatedOrRecreate(descriptor.indexedDbName),
+        this.openValidatedMessageDbOrRecreate(descriptor.messageIndexedDbName),
+      ]);
+      for (const result of opened) {
+        if (result.status === 'fulfilled') result.value.close();
+      }
+      for (const result of opened) {
+        if (result.status === 'rejected') throw result.reason;
+      }
+      if (epoch !== this.cacheEpoch)
+        throw new Error('webdb: obsolete session initialization');
+    } finally {
+      this.cacheBindingOperations -= 1;
+    }
+  }
+
   private admitSessionUser(userId: string): void {
     if (!this.sessionCache) return;
     if (

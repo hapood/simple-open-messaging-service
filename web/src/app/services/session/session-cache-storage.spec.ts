@@ -30,6 +30,18 @@ describe('UUID-bound browser cache', () => {
     expect(remaining).not.toContain(descriptor.messageIndexedDbName);
   });
 
+  it('initializes UUID tables before HELLO without publishing a user handle', async () => {
+    const cache = storage();
+    const descriptor = createSessionCacheDescriptor();
+    cache.bindSessionCache(descriptor);
+    await cache.initializeSessionCache();
+    expect(cache.ready()).toBe(false);
+    expect((await cache.openExistingForUser('1'))?.name).toBe(
+      descriptor.indexedDbName,
+    );
+    expect(cache.ready()).toBe(true);
+  });
+
   it('retains the same cache on restoration and isolates a fresh same-user login', async () => {
     const descriptor = createSessionCacheDescriptor();
     const original = storage();
