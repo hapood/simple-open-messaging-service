@@ -54,9 +54,15 @@ export class BrowserSessionOwner {
       const signal = this.beginTransition();
       await this.serializeTransition(() => this.cleanup(true));
       this.check(signal);
-      const result = await operation(signal);
-      this.check(signal);
-      return result;
+      try {
+        const result = await operation(signal);
+        this.check(signal);
+        return result;
+      } catch (error) {
+        // A timed-out request may have started asynchronous local preparation.
+        if (this.work.signal === signal) this.work.abort();
+        throw error;
+      }
     });
   }
 

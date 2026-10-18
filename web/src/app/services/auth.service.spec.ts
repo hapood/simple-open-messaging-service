@@ -14,6 +14,14 @@ import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
 import { ToastService } from './toast.service';
+import {
+  WebdbService,
+  provideWebdbService,
+  STATE_FEED_WORKER_FACTORY,
+} from './webdb.service';
+import { PreferenceStore } from './preference-store.service';
+import { SESSION_JOURNAL_KEY } from './session/session-journal';
+import { deleteDB } from 'idb';
 
 /**
  * AuthService session-token contract — BROWSER (pure-httpOnly) path.
@@ -35,7 +43,7 @@ describe('AuthService (session-token contract, browser path)', () => {
   let httpMock: HttpTestingController;
   let closeNotification: Mock;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     closeNotification = vi.fn();
     vi.spyOn(navigator.serviceWorker, 'getRegistration').mockResolvedValue({
       getNotifications: async () => [
@@ -48,6 +56,8 @@ describe('AuthService (session-token contract, browser path)', () => {
         provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         AuthService,
+        provideWebdbService(),
+        { provide: STATE_FEED_WORKER_FACTORY, useValue: () => null },
         // AuthService resolves i18n keys for its rare keyring-failure toasts; stub the translator (returns
         // the key) so the spec has no transloco-config dependency. The browser path never reaches those
         // toasts, but the constructor deps must still resolve.
@@ -88,6 +98,9 @@ describe('AuthService (session-token contract, browser path)', () => {
           useValue: {
             clearSession: vi.fn().mockName('clearSession'),
             prepareFreshCache: vi.fn().mockName('prepareFreshCache'),
+            sessionProfile: () => undefined,
+            resetSessionState: vi.fn(),
+            clearSessionPreferences: vi.fn().mockResolvedValue(undefined),
             restoreWebdb: vi
               .fn()
               .mockName('restoreWebdb')
@@ -96,10 +109,16 @@ describe('AuthService (session-token contract, browser path)', () => {
         },
       ],
     });
+    await TestBed.inject(PreferenceStore).remove('device', SESSION_JOURNAL_KEY);
     svc = TestBed.inject(AuthService);
     httpMock = TestBed.inject(HttpTestingController);
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await TestBed.inject(WebdbService).close();
+    for (const { name } of await indexedDB.databases()) {
+      if (name?.startsWith('soms-session-')) await deleteDB(name);
+    }
+    await TestBed.inject(PreferenceStore).remove('device', SESSION_JOURNAL_KEY);
     TestBed.resetTestingModule();
     vi.restoreAllMocks();
     // Clear any presence cookie a test set (document.cookie survives resetTestingModule).
@@ -110,7 +129,9 @@ describe('AuthService (session-token contract, browser path)', () => {
     expect(svc.isLoggedIn()).toBe(false); // no presence cookie before login
     // login() awaits activateSession BEFORE its observable emits — `done` is the deterministic
     // whole-chain completion signal (logout() and revokeSession() post directly, so they need no wait).
-    const done = firstValueFrom(svc.login({ account: 'alice', password: 'pw' }));
+    const done = firstValueFrom(
+      svc.login({ account: 'alice', password: 'pw' }),
+    );
     // Even on the browser path pickLoginOrigin() defers the POST to the next microtask — waitFor
     // its arrival at the mock instead of sleeping.
     const req = await vi.waitFor(() =>
@@ -156,7 +177,7 @@ describe('AuthService (session-token contract, browser path)', () => {
     expect(svc.isLoggedIn()).toBe(false);
   });
 
-  it('does not clear login state or start remote logout before local cache deletion succeeds', async () => {
+  it('invalidates immediately, releases handles, and never invokes legacy cache deletion', async () => {
     document.cookie = 'logged_in=1; Path=/';
     let finishCacheClear!: () => void;
     const cacheClear = new Promise<void>((resolve) => {
@@ -165,43 +186,46 @@ describe('AuthService (session-token contract, browser path)', () => {
     const user = TestBed.inject(UserService) as unknown as {
       clearSession: Mock;
     };
-    user.clearSession.mockReturnValue(cacheClear);
+    vi.spyOn(TestBed.inject(WebdbService), 'close').mockReturnValueOnce(
+      cacheClear,
+    );
     const exited = vi.fn().mockName('exited');
 
     svc.logout().subscribe(exited);
 
-    expect(svc.isLoggedIn()).toBe(true);
+    expect(svc.isLoggedIn()).toBe(false);
     expect(exited).not.toHaveBeenCalled();
     httpMock.expectNone((request) => /\/auth\/logout$/.test(request.url));
 
     finishCacheClear();
-    // The emission passes the tap (local state clear + remote logout POST) before `exited` fires —
-    // waiting on it means everything below is already settled.
+    const request = await vi.waitFor(() =>
+      httpMock.expectOne((request) => /\/auth\/logout$/.test(request.url)),
+    );
+    request.flush({ code: 0, message: 'ok' });
     await vi.waitFor(() => expect(exited).toHaveBeenCalledTimes(1));
-
     expect(svc.isLoggedIn()).toBe(false);
-    httpMock
-      .expectOne((request) => /\/auth\/logout$/.test(request.url))
-      .flush({ code: 0, message: 'ok' });
+    expect(user.clearSession).not.toHaveBeenCalled();
   });
 
-  it('keeps login state and skips remote logout when local cache deletion fails', async () => {
+  it('stays signed out and reports local resource release failure', async () => {
     document.cookie = 'logged_in=1; Path=/';
-    const user = TestBed.inject(UserService) as unknown as {
-      clearSession: Mock;
-    };
-    user.clearSession.mockRejectedValue(new Error('cache busy'));
+    vi.spyOn(TestBed.inject(WebdbService), 'close').mockRejectedValueOnce(
+      new Error('cache busy'),
+    );
 
     svc.logout().subscribe({ error: () => {} });
     await vi.waitFor(() =>
       expect(TestBed.inject(ToastService).warn).toHaveBeenCalled(),
     );
 
-    expect(svc.isLoggedIn()).toBe(true);
-    httpMock.expectNone((request) => /\/auth\/logout$/.test(request.url));
+    expect(svc.isLoggedIn()).toBe(false);
+    const request = await vi.waitFor(() =>
+      httpMock.expectOne((request) => /\/auth\/logout$/.test(request.url)),
+    );
+    request.flush({ code: 0 });
   });
 
-  it('keeps the authenticated session when local-cache initialization fails', async () => {
+  it('preserves the credential but blocks business admission when local-cache initialization fails', async () => {
     document.cookie = 'logged_in=1; Path=/';
     const user = TestBed.inject(UserService) as unknown as {
       restoreWebdb: Mock;
@@ -217,7 +241,7 @@ describe('AuthService (session-token contract, browser path)', () => {
     expect(TestBed.inject(ToastService).warn).toHaveBeenCalledWith(
       'auth.notice.localCacheUnavailable',
     );
-    expect(svc.isLoggedIn()).toBe(true);
+    expect(svc.isLoggedIn()).toBe(false);
   });
 
   it('revokeSession(id) sends { id } (by row id, not jti)', () => {

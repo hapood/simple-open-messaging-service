@@ -17,6 +17,7 @@
     "postbuild": "node scripts/inline-sourcemaps.mjs",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
+    "test:session-contracts": "vitest run --config test-config/session-contracts.config.mjs",
     "icons:generate": "./scripts/gen-icons.sh",
     "gen:api": "npm ci --prefix tools/openapi-generator --workspaces=false && npm exec --prefix tools/openapi-generator -- openapi-typescript http://localhost:3000/api/v1/docs-json -o src/app/services/api-types.ts"
   },

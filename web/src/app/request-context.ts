@@ -10,6 +10,11 @@ import { HttpContextToken } from '@angular/common/http';
  */
 export const REPLAY_SAFE = new HttpContextToken<boolean>(() => false);
 
+/** Authentication transitions own their failures; their 401 must not recursively end a session. */
+export const AUTHENTICATION_REQUEST = new HttpContextToken<boolean>(
+  () => false,
+);
+
 /** Suppress the global degraded-network toast for requests whose caller owns a persistent, visible error
  * state. Polling endpoints in particular must not enqueue one snackbar per failed attempt during an outage. */
 export const SUPPRESS_HTTP_ERROR_TOAST = new HttpContextToken<boolean>(

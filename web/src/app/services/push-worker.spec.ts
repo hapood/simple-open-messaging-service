@@ -6,6 +6,8 @@ import { PreferenceStorage } from './preference-storage';
 import { syncPushThreads } from './push-thread-sync';
 import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
 import { ACTIVE_PAGE_LOCK } from './active-page';
+import { SessionJournal, SESSION_JOURNAL_KEY } from './session/session-journal';
+import { createSessionCacheDescriptor } from './session/session-identity';
 import { threadStructure } from './thread-feed.test-helper';
 import {
   readNotificationSince,
@@ -28,10 +30,19 @@ describe('Push Service Worker entry', () => {
   beforeEach(async () => {
     await resetNotificationSince();
     storage = new WebdbStorage(() => null, new SessionLifecycleService());
+    await preferences.remove('device', SESSION_JOURNAL_KEY);
+    const cache = createSessionCacheDescriptor();
+    const journal = new SessionJournal(preferences);
+    await journal.prepare(cache);
+    await journal.activate(cache.id);
+    storage.bindSessionCache(cache);
     await storage.openForUser(String(userId));
     await storage.putMeta('selfProfile', { id: userId, account: 'me' });
     await preferences.set('device', 'soms.lastUserId', userId);
-    await preferences.set('device', 'push-registration:/api/v1', { sessionId, phase: 'prepared' });
+    await preferences.set('device', 'push-registration:/api/v1', {
+      sessionId,
+      phase: 'prepared',
+    });
     handlers = new Map();
     show = vi.fn().mockResolvedValue(undefined);
     focus = vi.fn().mockResolvedValue(undefined);
@@ -67,7 +78,11 @@ describe('Push Service Worker entry', () => {
                   {
                     seq: 1,
                     createdAt: '2026-09-09T00:00:00Z',
-                    sender: { account: 'peer', profileNamespaceId: 1, profileRev: 1 },
+                    sender: {
+                      account: 'peer',
+                      profileNamespaceId: 1,
+                      profileRev: 1,
+                    },
                     status: 'LIVE',
                     text: 'Hello',
                   },
@@ -118,6 +133,7 @@ describe('Push Service Worker entry', () => {
     vi.restoreAllMocks();
     await storage.closeAndDelete(String(userId));
     await preferences.remove('device', 'soms.lastUserId');
+    await preferences.remove('device', SESSION_JOURNAL_KEY);
   });
   async function dispatch(type: string, payload: Record<string, unknown>) {
     let pending: Promise<unknown> | undefined;
@@ -129,6 +145,29 @@ describe('Push Service Worker entry', () => {
     });
     await pending;
   }
+
+  it('ignores push work after logout while leaving the old cache on disk', async () => {
+    const journal = new SessionJournal(preferences);
+    const saved = await journal.read();
+    const cache = saved!.session!;
+    await journal.end(cache.id);
+    await dispatch('push', {
+      data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
+    });
+    await dispatch('push', {
+      data: {
+        json: () => ({
+          type: 'PUSH_HEALTH_PROBE',
+          probeId: '12345678-1234-1234-1234-123456789abc',
+        }),
+      },
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(show).not.toHaveBeenCalled();
+    expect((await indexedDB.databases()).map((item) => item.name)).toContain(
+      cache.indexedDbName,
+    );
+  });
 
   it('acknowledges a real probe and displays a test notification without syncing messages', async () => {
     const probeId = '12345678-1234-1234-1234-123456789abc';
@@ -180,7 +219,10 @@ describe('Push Service Worker entry', () => {
     ).toBe(3);
     expect(show).toHaveBeenCalledWith(
       'peer@test',
-      expect.objectContaining({ body: 'Hello', data: { threadId: 7, seq: 1, sessionId } }),
+      expect.objectContaining({
+        body: 'Hello',
+        data: { threadId: 7, seq: 1, sessionId },
+      }),
     );
     expect(await storage.getSyncState('threadFeedCursor')).toBe(1);
     expect(post).toHaveBeenCalledWith({
@@ -399,12 +441,19 @@ describe('Push Service Worker entry', () => {
     await dispatch('notificationclick', {
       notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
     });
-    expect(post).toHaveBeenCalledWith({ type: SOMS_NOTIF_MSG.OPEN, threadId: 7, sessionId });
+    expect(post).toHaveBeenCalledWith({
+      type: SOMS_NOTIF_MSG.OPEN,
+      threadId: 7,
+      sessionId,
+    });
   });
 
   it('does not navigate a notification belonging to a previous session on the same account', async () => {
     await dispatch('notificationclick', {
-      notification: { data: { threadId: 7, sessionId: sessionId + 1 }, close: vi.fn() },
+      notification: {
+        data: { threadId: 7, sessionId: sessionId + 1 },
+        close: vi.fn(),
+      },
     });
     expect(post).not.toHaveBeenCalled();
     expect(openWindow).not.toHaveBeenCalled();
@@ -412,12 +461,21 @@ describe('Push Service Worker entry', () => {
   });
 
   it('rejects legacy thread/account receipts and absent registration metadata', async () => {
-    for (const data of [{ threadId: 7 }, { threadId: 7, userId }, { threadId: 7, sessionId: 0 }]) {
-      await dispatch('notificationclick', { notification: { data, close: vi.fn() } });
+    for (const data of [
+      { threadId: 7 },
+      { threadId: 7, userId },
+      { threadId: 7, sessionId: 0 },
+    ]) {
+      await dispatch('notificationclick', {
+        notification: { data, close: vi.fn() },
+      });
     }
     await preferences.remove('device', 'push-registration:/api/v1');
-    await dispatch('notificationclick', { notification: { data: { threadId: 7, sessionId }, close: vi.fn() } });
-    expect(post).not.toHaveBeenCalled(); expect(openWindow).not.toHaveBeenCalled();
+    await dispatch('notificationclick', {
+      notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
+    });
+    expect(post).not.toHaveBeenCalled();
+    expect(openWindow).not.toHaveBeenCalled();
   });
 
   it('routes a body tap without an action request', async () => {
@@ -582,7 +640,9 @@ describe('Push Service Worker entry', () => {
       notification: { data: { threadId: 7, sessionId }, close: vi.fn() },
     });
 
-    expect(openWindow).toHaveBeenCalledWith('/chat/7?notificationSessionId=' + sessionId);
+    expect(openWindow).toHaveBeenCalledWith(
+      '/chat/7?notificationSessionId=' + sessionId,
+    );
     expect(adminPost).not.toHaveBeenCalled();
     expect(adminFocus).not.toHaveBeenCalled();
   });

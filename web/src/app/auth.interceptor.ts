@@ -9,6 +9,7 @@ import {
 import { Observable, EMPTY, throwError, catchError, defer, tap } from 'rxjs';
 import { AuthService } from './services/auth.service';
 import { SessionLifecycleService } from './services/session-lifecycle.service';
+import { AUTHENTICATION_REQUEST } from './request-context';
 
 /**
  * Session-auth error handling for the HTTP pipeline. The session credential itself is NO LONGER attached
@@ -35,7 +36,9 @@ export class AuthInterceptor implements HttpInterceptor {
         catchError((error) => {
           // Check before handling 401: an old request must not log out its successor.
           this.lifecycle.assertCurrent(owner);
-          return this.on401(error);
+          return req.context.get(AUTHENTICATION_REQUEST)
+            ? throwError(() => error)
+            : this.on401(error);
         }),
       );
     });

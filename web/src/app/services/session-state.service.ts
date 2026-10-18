@@ -11,14 +11,23 @@ export class SessionStateService {
     isTauri() ? false : this.hasPresenceCookie(),
   );
   readonly loggedIn = this.authenticated.asReadonly();
+  private blocked = false;
 
   /** Auth orchestration publishes only after credential restoration/login or local teardown. */
   setAuthenticated(value: boolean): void {
+    this.blocked = !value;
     this.authenticated.set(value);
   }
 
   isLoggedIn(): boolean {
-    return isTauri() ? this.loggedIn() : this.hasPresenceCookie();
+    return isTauri()
+      ? this.loggedIn()
+      : !this.blocked && this.hasPresenceCookie();
+  }
+
+  /** Credential hint only. A durable logout record can still prohibit restoration. */
+  hasBrowserSessionHint(): boolean {
+    return this.hasPresenceCookie();
   }
 
   /** Expiry can clear the readable browser flag before the server clears its httpOnly credential. */

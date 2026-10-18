@@ -7,10 +7,11 @@ import { RoutePage, RouteService } from './route.service';
 import { WebsocketService } from './websocket.service';
 
 describe('LogoutService', () => {
-  it('waits for local cache deletion before disconnecting and redirecting', () => {
+  it('waits for logout completion before disconnecting and redirecting', () => {
     const pending = new Subject<unknown>();
     const auth = {
       logout: vi.fn().mockName('logout').mockReturnValue(pending),
+      isLoggedIn: () => false,
     };
     const ws = { disconnect: vi.fn().mockName('disconnect') };
     const route = { redirect: vi.fn().mockName('redirect') };
@@ -42,6 +43,7 @@ describe('LogoutService', () => {
 
   it('keeps the authenticated UI when local cleanup throws synchronously', () => {
     const auth = {
+      isLoggedIn: () => true,
       logout: vi
         .fn()
         .mockName('logout')
@@ -78,6 +80,7 @@ describe('LogoutService', () => {
     const failed = new Subject<unknown>();
     const auth = {
       logout: vi.fn().mockName('logout').mockReturnValue(failed),
+      isLoggedIn: () => true,
     };
     const ws = { disconnect: vi.fn().mockName('disconnect') };
     const route = { redirect: vi.fn().mockName('redirect') };

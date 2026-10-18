@@ -28,6 +28,7 @@ import { ProfileRepository } from './profile-store.service';
 import { PreferenceStore } from './preference-store.service';
 import { isTauri, tauriInvoke } from './runtime';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { SessionSupersededError } from './session/session-identity';
 import type { FriendRequestProjection } from './friend-request-state';
 
 export type { User } from './model';
@@ -215,7 +216,7 @@ export type ClientStateFeedItem =
  *  of its own userId (the session token is opaque, server-side-lookup only). Set on establishSession,
  *  cleared on clearSession. Read at boot by {@link UserService.restoreWebdb} so the per-user IDB opens +
  *  the threadlist eager-paints the cached list BEFORE the SSE/HELLO round-trip (instant list for
- *  returning users). Cleared on logout by `clearClientPreferences`. */
+ *  returning users). Removed during session preference cleanup. */
 const LAST_USER_ID_KEY = 'soms.lastUserId';
 const CACHE_REBUILD_KEY = 'soms.cacheRebuild';
 
@@ -324,7 +325,12 @@ export class UserService {
     // Keep LAST_USER_ID until the durable cache wipe succeeds. If deletion fails, retaining that key makes
     // the same partition discoverable on retry/restart instead of orphaning undeleted account data.
     if (prev != null) await this.webdb.closeAndDelete(prev);
-    await this.clearClientPreferences(previousUserId);
+    await this.clearSessionPreferences(previousUserId);
+    this.resetSessionState();
+  }
+
+  /** In-memory only. The session owner handles invalidation, connections and physical deletion. */
+  resetSessionState(): void {
     this.webdbUserKey = null;
     this.freshCachePending = false;
     this.cacheRebuildRequest = undefined;
@@ -505,48 +511,67 @@ export class UserService {
    *  round-trip (including an offline cold start). Does NOT set sessionUserId — the session tracker stays
    *  HELLO-driven; {@link establishSession} reconciles on HELLO (idempotent `openForUser` reuse for the same
    *  user, close+reopen on a switch). No-op when no userId was ever persisted (first-ever launch). */
-  async restoreWebdb(): Promise<void> {
+  async restoreWebdb(signal?: AbortSignal): Promise<void> {
+    const check = () => {
+      if (signal?.aborted) throw new SessionSupersededError();
+    };
     try {
-      const userId = await this.readLastUserId();
+      check();
+      const userId = await this.readLastUserId(Boolean(signal));
+      check();
       if (userId === null) return;
       this.webdbUserKey = String(userId);
       const scope = `account:${userId}` as const;
-      const recovery = await this.preferences.get(scope, CACHE_REBUILD_KEY);
+      const recovery = signal
+        ? await this.preferences.getStrict(scope, CACHE_REBUILD_KEY)
+        : await this.preferences.get(scope, CACHE_REBUILD_KEY);
+      check();
       if (recovery !== 'pending') {
         try {
           await this.webdb.openExistingForUser(String(userId));
-          await this.restoreCachedSelfProfile(userId);
+          await this.restoreCachedSelfProfile(userId, signal);
+          check();
           return;
         } catch (error) {
+          check();
           console.warn('[cache-recovery] account cache restore failed', error);
-          if (recovery === 'attempted') return;
+          if (recovery === 'attempted') {
+            if (signal) throw error;
+            return;
+          }
         }
       }
       // Persist before attempting: a failed rebuild must not cause a reload loop.
       await this.preferences.set(scope, CACHE_REBUILD_KEY, 'attempted');
+      check();
       if (isTauri()) await tauriInvoke('native_db_recreate_cache');
       await this.webdb.recreateForUser(String(userId));
-      await this.restoreCachedSelfProfile(userId);
+      await this.restoreCachedSelfProfile(userId, signal);
+      check();
       console.warn(
         '[cache-recovery] account cache rebuilt; awaiting full state replay',
         { userId },
       );
     } catch (error) {
       console.warn('[cache-recovery] account cache rebuild unavailable', error);
+      if (signal) throw error;
     }
   }
 
-  private async restoreCachedSelfProfile(userId: number): Promise<void> {
+  private async restoreCachedSelfProfile(userId: number, signal?: AbortSignal): Promise<void> {
     const cached = (await this.webdb.getMeta('selfProfile')) as
       | User
       | null
       | undefined;
+    if (signal?.aborted) throw new SessionSupersededError();
     if (cached?.id === userId) this.sessionProfile.set(cached);
   }
 
   /** Read the persisted last-logged-in userId, or null when absent / unparseable / storage unavailable. */
-  private async readLastUserId(): Promise<number | null> {
-    const raw = await this.preferences.get<number>('device', LAST_USER_ID_KEY);
+  private async readLastUserId(strict = false): Promise<number | null> {
+    const raw = strict
+      ? await this.preferences.getStrict<number>('device', LAST_USER_ID_KEY)
+      : await this.preferences.get<number>('device', LAST_USER_ID_KEY);
     if (raw == null) return null;
     const userId = Number(raw);
     return Number.isFinite(userId) && userId > 0 ? userId : null;
@@ -559,7 +584,11 @@ export class UserService {
       .catch(() => {});
   }
 
-  private async clearClientPreferences(userId?: number): Promise<void> {
+  async clearSessionPreferences(userId?: number): Promise<void> {
+    if (userId === undefined) {
+      const saved = await this.preferences.getStrict<unknown>('device', LAST_USER_ID_KEY);
+      if (typeof saved === 'number' && Number.isSafeInteger(saved) && saved > 0) userId = saved;
+    }
     await Promise.all([
       this.preferences.remove('device', LAST_USER_ID_KEY),
       ...(userId == null
@@ -570,7 +599,7 @@ export class UserService {
               'soms.chat.emojiRecents',
             ),
           ]),
-    ]).catch(() => {});
+    ]);
   }
 
   /** In-flight profile fetch (dedup): boot calls updateSessionProfile() AND ConversationListService

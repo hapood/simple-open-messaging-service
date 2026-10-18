@@ -11,6 +11,24 @@ function storage(worker?: Worker): WebdbStorage {
   return result;
 }
 
+async function writeProbe(cache: WebdbStorage, name: string): Promise<void> {
+  await (
+    await cache.db()
+  ).put('profiles', {
+    publisherNamespaceId: 1,
+    profileNamespaceId: 1,
+    account: 'probe',
+    profileRev: 1,
+    name,
+    avatarDigest: null,
+    bio: '',
+  });
+}
+
+async function readProbe(cache: WebdbStorage): Promise<string | undefined> {
+  return (await (await cache.db()).get('profiles', [1, 1, 'probe', 1]))?.name;
+}
+
 afterEach(async () => {
   for (const item of owned.splice(0)) await item.closeAndDelete('1');
 });
@@ -47,19 +65,19 @@ describe('UUID-bound browser cache', () => {
     const original = storage();
     original.bindSessionCache(descriptor);
     await original.openForUser('1');
-    await original.putMeta('probe', 'old-session');
+    await writeProbe(original, 'old-session');
     await original.close();
 
     const restored = storage();
     restored.bindSessionCache(descriptor);
     await restored.openExistingForUser('1');
-    expect(await restored.getMeta('probe')).toBe('old-session');
+    expect(await readProbe(restored)).toBe('old-session');
     await restored.close();
 
     const successor = storage();
     successor.bindSessionCache(createSessionCacheDescriptor());
     await successor.openForUser('1');
-    expect(await successor.getMeta('probe')).toBeUndefined();
+    expect(await readProbe(successor)).toBeUndefined();
   });
 
   it('rejects rebinding live or closing resources, then permits rebinding after deletion', async () => {
@@ -85,11 +103,11 @@ describe('UUID-bound browser cache', () => {
     const descriptor = createSessionCacheDescriptor();
     cache.bindSessionCache(descriptor);
     await cache.openForUser('1');
-    await cache.putMeta('probe', 'original-user');
+    await writeProbe(cache, 'original-user');
     await expect(cache.openForUser('2')).rejects.toThrow(
       'bound to another user',
     );
-    expect(await cache.getMeta('probe')).toBe('original-user');
+    expect(await readProbe(cache)).toBe('original-user');
   });
 
   it('rebuilds the bound UUID partition without falling back to user-named databases', async () => {
@@ -97,11 +115,11 @@ describe('UUID-bound browser cache', () => {
     const descriptor = createSessionCacheDescriptor();
     cache.bindSessionCache(descriptor);
     await cache.openForUser('1');
-    await cache.putMeta('probe', 'before-rebuild');
+    await writeProbe(cache, 'before-rebuild');
     expect((await cache.recreateForUser('1'))?.name).toBe(
       descriptor.indexedDbName,
     );
-    expect(await cache.getMeta('probe')).toBeUndefined();
+    expect(await readProbe(cache)).toBeUndefined();
     expect((await indexedDB.databases()).map((item) => item.name)).toContain(
       descriptor.messageIndexedDbName,
     );

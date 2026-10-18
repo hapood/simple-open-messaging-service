@@ -20,7 +20,10 @@ import {
   sessionClient,
   pickLoginOrigin,
 } from './runtime';
-import { SUPPRESS_HTTP_ERROR_TOAST } from '../request-context';
+import {
+  AUTHENTICATION_REQUEST,
+  SUPPRESS_HTTP_ERROR_TOAST,
+} from '../request-context';
 import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
@@ -29,6 +32,9 @@ import { CALL_SESSION_ENDING_EVENT } from './web-call.adapter';
 import { ThreadSendOutbox } from './thread-send-outbox.service';
 
 import { SessionStateService } from './session-state.service';
+import { BROWSER_SESSION } from './browser-session.service';
+import { sessionRequest } from './session/session-request';
+import { SessionSupersededError } from './session/session-identity';
 
 /** On-screen duration (ms) for important auth notices (forced-logout / persist-failure) — longer than the
  *  default toast so a user looking away still catches why they're back at the sign-in screen. */
@@ -91,6 +97,8 @@ export class AuthService {
    *  from the cookie on browser so a page refresh while signed in starts `true`; native starts `false` and
    *  {@link restoreSession} flips it after re-establishing the session from secure storage. */
   private readonly sessionState = inject(SessionStateService);
+  private readonly browserSession = inject(BROWSER_SESSION);
+  private browserAuthenticationSignal: AbortSignal | null = null;
   readonly loggedIn = this.sessionState.loggedIn;
 
   constructor(
@@ -126,7 +134,29 @@ export class AuthService {
   /** Run the login-init origin race (once) before the auth request, so login targets a reachable origin
    *  (the boot-time pick may be stale if the network changed before login). No-op outside Tauri. */
   private pickThen<T>(req: Observable<T>): Observable<T> {
-    return defer(() => pickLoginOrigin()).pipe(mergeMap(() => req));
+    if (isTauri()) {
+      return defer(() => pickLoginOrigin()).pipe(mergeMap(() => req));
+    }
+    const browser = this.requireBrowserSession();
+    return defer(() =>
+      browser.authenticate(async (signal) => {
+        this.browserAuthenticationSignal = signal;
+        try {
+          await pickLoginOrigin();
+          return await sessionRequest(req, signal, 30_000);
+        } finally {
+          if (this.browserAuthenticationSignal === signal)
+            this.browserAuthenticationSignal = null;
+        }
+      }),
+    );
+  }
+
+  private requireBrowserSession() {
+    if (!this.browserSession) {
+      throw new Error('Browser session service is missing on the browser host');
+    }
+    return this.browserSession;
   }
 
   login(params: { account: string; password: string }) {
@@ -137,11 +167,15 @@ export class AuthService {
     const client = this.resolveClient();
     return this.pickThen(
       this.http
-        .post<LoginRes>(`${apiPrefix()}/auth/login`, {
-          ...params,
-          client,
-          device: this.getDeviceLabel(),
-        })
+        .post<LoginRes>(
+          `${apiPrefix()}/auth/login`,
+          {
+            ...params,
+            client,
+            device: this.getDeviceLabel(),
+          },
+          { context: new HttpContext().set(AUTHENTICATION_REQUEST, true) },
+        )
         .pipe(
           mergeMap(async (res) => {
             if (res.code === 0 && res.data?.session_token) {
@@ -163,12 +197,16 @@ export class AuthService {
     const client = sessionClient();
     return this.pickThen(
       this.http
-        .post<LoginRes>(`${apiPrefix()}/auth/otp/login`, {
-          account: params.account,
-          code: params.code,
-          client,
-          device: params.device ?? this.getDeviceLabel(),
-        })
+        .post<LoginRes>(
+          `${apiPrefix()}/auth/otp/login`,
+          {
+            account: params.account,
+            code: params.code,
+            client,
+            device: params.device ?? this.getDeviceLabel(),
+          },
+          { context: new HttpContext().set(AUTHENTICATION_REQUEST, true) },
+        )
         .pipe(
           mergeMap(async (res) => {
             if (res.code === 0 && res.data?.session_token) {
@@ -192,7 +230,9 @@ export class AuthService {
         `${apiPrefix()}/auth/qr/create`,
         { client },
         {
-          context: new HttpContext().set(SUPPRESS_HTTP_ERROR_TOAST, true),
+          context: new HttpContext()
+            .set(AUTHENTICATION_REQUEST, true)
+            .set(SUPPRESS_HTTP_ERROR_TOAST, true),
         },
       ),
     );
@@ -217,7 +257,9 @@ export class AuthService {
             device: device ?? this.getDeviceLabel(),
           },
           {
-            context: new HttpContext().set(SUPPRESS_HTTP_ERROR_TOAST, true),
+            context: new HttpContext()
+              .set(AUTHENTICATION_REQUEST, true)
+              .set(SUPPRESS_HTTP_ERROR_TOAST, true),
           },
         )
         .pipe(
@@ -251,7 +293,13 @@ export class AuthService {
    *  resolves — and fires the push + web-push login hooks. Extracted so the password, OTP, and QR login
    *  paths activate identically. The token is never stored in JS. */
   private async activateSession(token: string): Promise<void> {
-    this.userService.prepareFreshCache();
+    if (!isTauri()) {
+      const signal = this.browserAuthenticationSignal;
+      if (!signal) throw new SessionSupersededError();
+      await this.requireBrowserSession().activate(signal);
+    } else {
+      this.userService.prepareFreshCache();
+    }
     if (isTauri()) {
       // A real login starts a fresh cache generation. Ordinary native DB commands never create or repair
       // account-cache tables; this is the single explicit initialization boundary.
@@ -274,6 +322,13 @@ export class AuthService {
    *  multiple trusted devices became allowed); the login page itself signals the session ended. */
   redoLoginAuth(_reason?: string) {
     this.announceSessionEnding();
+    if (!isTauri()) {
+      void this.endBrowserSession(false).catch((error) =>
+        console.warn('[session] local termination failed', error),
+      );
+      this.routeService.redirect(RoutePage.AUTH_LOGIN);
+      return;
+    }
     void this.clearToken();
     // Drop the in-memory session (sessionProfile / sessionUserId / per-user DB) on the same terms as logout
     // — a 401 / FORCE_LOGOUT means this session is over, so the next account must not inherit its view state
@@ -342,13 +397,18 @@ export class AuthService {
     // the cached list before the SSE/HELLO round-trip — the DB is open before the router resolves, so the
     // list reads it on mount. No-op on a first-ever launch (no userId persisted yet).
     if (!isTauri()) {
+      const browser = this.requireBrowserSession();
+      const hint = this.sessionState.hasBrowserSessionHint();
+      this.sessionState.setAuthenticated(false);
       try {
-        await this.userService.restoreWebdb();
+        const restored = await browser.restore(hint);
+        this.sessionState.setAuthenticated(restored);
+        if (!restored) this.clearPresenceCookie();
       } catch {
-        // Rebuild failure is a local storage fault, not an authentication event. Keep the cookie/session;
-        // HELLO establishment retries the same rebuild and the storage error remains visible to callers.
+        // Preserve the credential for a retry, but admit no business work while local recovery failed.
         this.toast.warn(this.t('auth.notice.localCacheUnavailable'));
       }
+      return;
     }
     if (isAndroidNative()) {
       try {
@@ -444,11 +504,57 @@ export class AuthService {
   /** Full clear (local state + native token). Used by {@link redoLoginAuth} / {@link revokeAndBounce},
    *  where NO authenticated request follows, so the native token can be cleared at once. */
   async clearToken(): Promise<boolean> {
+    if (!isTauri()) {
+      await this.endBrowserSession(false);
+      return true;
+    }
     this.clearLocalSessionState();
     return this.clearNativeToken();
   }
 
+  /** One browser teardown path for explicit logout, forced logout and local token clear. */
+  private async endBrowserSession(remote: boolean): Promise<void> {
+    const browser = this.requireBrowserSession();
+    this.clearLocalSessionState();
+    this.clearPresenceCookie();
+    this.sendOutbox.clear();
+    const ending = remote
+      ? browser.logout((signal) =>
+          sessionRequest(
+            this.http.post<LogoutRes>(
+              `${apiPrefix()}/auth/logout`,
+              {},
+              {
+                context: new HttpContext()
+                  .set(AUTHENTICATION_REQUEST, true)
+                  .set(SUPPRESS_HTTP_ERROR_TOAST, true),
+              },
+            ),
+            signal,
+          ).then(() => undefined),
+        )
+      : browser.end();
+    await Promise.all([
+      ending,
+      clearSessionNotifications().catch((error) =>
+        console.warn('[notification] logout cleanup failed', error),
+      ),
+    ]);
+  }
+
   logout() {
+    if (!isTauri()) {
+      this.announceSessionEnding();
+      return from(this.endBrowserSession(true)).pipe(
+        tap({
+          error: () =>
+            this.toast.warn(
+              this.t('auth.notice.logoutCacheClearFailed'),
+              IMPORTANT_NOTICE_MS,
+            ),
+        }),
+      );
+    }
     if (!this.isLoggedIn()) return EMPTY;
     // Renderer-owned WebRTC must end while this session credential is still usable. Android ignores this
     // DOM signal: its native call owner has its own lifecycle and survives WebView recreation.
@@ -459,12 +565,6 @@ export class AuthService {
     try {
       cacheClear = Promise.resolve(this.userService.clearSession()).then(
         async () => {
-          if (!isTauri()) {
-            const { resetNotificationSince } = await import(
-              './browser-notification-checkpoint'
-            );
-            await resetNotificationSince();
-          }
           await clearSessionNotifications().catch((error) =>
             console.warn('[notification] logout cleanup failed', error),
           );
@@ -479,30 +579,22 @@ export class AuthService {
           this.clearLocalSessionState();
           this.sendOutbox.clear();
 
-          if (isTauri()) {
-            if (isAndroidNative()) {
-              try {
-                window.SomsFcm!.setSessionToken(null);
-              } catch {
-                this.toast.warn(
-                  this.t('auth.notice.logoutClearFailed'),
-                  IMPORTANT_NOTICE_MS,
-                );
-              }
+          if (isAndroidNative()) {
+            try {
+              window.SomsFcm!.setSessionToken(null);
+            } catch {
+              this.toast.warn(
+                this.t('auth.notice.logoutClearFailed'),
+                IMPORTANT_NOTICE_MS,
+              );
             }
-            void tauriInvoke('begin_logout', { origin: apiOrigin() }).catch(
-              () =>
-                this.toast.warn(
-                  this.t('auth.notice.logoutClearFailed'),
-                  IMPORTANT_NOTICE_MS,
-                ),
-            );
-          } else {
-            this.clearPresenceCookie();
-            this.http
-              .post<LogoutRes>(`${apiPrefix()}/auth/logout`, {})
-              .subscribe({ error: () => {} });
           }
+          void tauriInvoke('begin_logout', { origin: apiOrigin() }).catch(() =>
+            this.toast.warn(
+              this.t('auth.notice.logoutClearFailed'),
+              IMPORTANT_NOTICE_MS,
+            ),
+          );
         },
         error: () =>
           this.toast.warn(

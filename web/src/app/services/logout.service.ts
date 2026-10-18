@@ -19,22 +19,26 @@ export class LogoutService {
   private readonly routeService = inject(RouteService);
 
   logout(): void {
-    // AuthService emits only after local cache deletion succeeds. Remote revocation is already launched at
-    // that boundary and deliberately does not delay this UI transition.
+    let exited = false;
+    const exit = () => {
+      if (exited) return;
+      exited = true;
+      try {
+        this.ws.disconnect();
+      } catch {
+        // A stale bridge must not prevent navigation out of an ended session.
+      }
+      this.routeService.redirect(RoutePage.AUTH_LOGIN);
+    };
     try {
       this.auth.logout().subscribe({
-        next: () => {
-          try {
-            this.ws.disconnect();
-          } catch {
-            // The local session is already gone; a stale bridge must not block navigation.
-          }
-          this.routeService.redirect(RoutePage.AUTH_LOGIN);
+        next: exit,
+        error: () => {
+          if (!this.auth.isLoggedIn()) exit();
         },
-        error: () => {},
       });
     } catch {
-      // A synchronous cache failure leaves the authenticated UI intact so logout can be retried.
+      if (!this.auth.isLoggedIn()) exit();
     }
   }
 }
