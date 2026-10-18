@@ -11,7 +11,7 @@ export interface BrowserSessionResources {
   initialize(session: SessionCacheDescriptor): Promise<void>;
   restore(session: SessionCacheDescriptor, signal: AbortSignal): Promise<void>;
   delete(session: SessionCacheDescriptor): Promise<void>;
-  deleteLegacy(): Promise<void>;
+  prepareFreshCache(): Promise<void>;
   resetState(): void;
 }
 
@@ -98,7 +98,8 @@ export class BrowserSessionOwner {
         return false;
       }
       if (!saved) {
-        // One-time migration: preserve the server login but replace legacy local caches.
+        // No recorded login (fresh install or cleared site data): a new journal and caches
+        // start now; the presence cookie alone is not a recoverable session.
         await this.cleanup(false);
         this.check(signal);
         const descriptor = createSessionCacheDescriptor();
@@ -191,7 +192,7 @@ export class BrowserSessionOwner {
       await this.resources.delete(descriptor);
       await this.journal.completeCleanup(descriptor.id);
     }
-    await this.resources.deleteLegacy();
+    await this.resources.prepareFreshCache();
   }
 
   private beginTransition(): AbortSignal {

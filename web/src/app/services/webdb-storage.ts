@@ -93,10 +93,11 @@ import {
  * {@link openForUser} / {@link closeAndDelete}). Repositories read/write through
  * `(await webdb.db()).get/put/...`, which is per-store typed via {@link WebdbSchema}.
  *
- * Per-user partition: the database name embeds the signed-in user (`soms-webdb-u<userId>`), so a second
- * account on the same browser can never read the first's cached peers/avatars/list/history. On logout
- * or account switch the previous user's DB is closed + deleted (`deleteDatabase`) atomically — defense
- * in depth, since the data is physically gone, not just unreachable.
+ * Per-user partition: the database name embeds the active login-session UUID
+ * (`soms-session-<uuid>` / `soms-session-messages-<uuid>`), bound before any open, so a second account
+ * on the same browser can never read the first's cached peers/avatars/list/history. The session owner
+ * owns the lifecycle: logout only closes handles; physical deletion happens before the next fresh
+ * login (see the client session lifecycle design).
  *
  * Prerender safety: every IDB access is guarded by `typeof indexedDB !== 'undefined'` and the database
  * is opened lazily (never at construction / module load), mirroring the existing `window` guards used
@@ -499,8 +500,6 @@ export interface MessageDbSchema extends DBSchema {
   threadSyncState: { key: number; value: ThreadSyncRecord };
 }
 
-const DB_PREFIX = 'soms-webdb-u';
-const MESSAGE_DB_PREFIX = 'soms-msgdb-u';
 export const CACHE_SCHEMA_VERSION = 1;
 export const MESSAGE_CACHE_SCHEMA_VERSION = 1;
 const IDB_FORMAT_VERSION = 1;
@@ -836,14 +835,21 @@ export class WebdbStorage {
     this.sessionCacheUserId = userId;
   }
 
-  private dbName(userId: string): string {
-    return this.sessionCache?.indexedDbName ?? `${DB_PREFIX}${userId}`;
+  /** Cache names come exclusively from the bound login-session descriptor; there is no
+   *  fallback naming scheme, so an unbound open fails instead of touching unknown files. */
+  private dbName(_userId: string): string {
+    return this.requireSessionCache().indexedDbName;
   }
 
-  private messageDbName(userId: string): string {
-    return (
-      this.sessionCache?.messageIndexedDbName ?? `${MESSAGE_DB_PREFIX}${userId}`
-    );
+  private messageDbName(_userId: string): string {
+    return this.requireSessionCache().messageIndexedDbName;
+  }
+
+  private requireSessionCache(): SessionCacheDescriptor {
+    const cache = this.sessionCache;
+    if (!cache)
+      throw new Error('webdb: no login-session cache is bound to this handle');
+    return cache;
   }
 
   /** The userId whose DB is open (or being opened). */

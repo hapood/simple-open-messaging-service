@@ -1,10 +1,7 @@
 import { Injectable, InjectionToken, inject } from '@angular/core';
 import { BrowserSessionOwner } from './session/browser-session-owner';
 import { SessionJournal } from './session/session-journal';
-import {
-  deleteBrowserSessionCache,
-  deleteLegacyBrowserCaches,
-} from './session/browser-session-cache';
+import { deleteBrowserSessionCache } from './session/browser-session-cache';
 import { PreferenceStore } from './preference-store.service';
 import { WebdbService } from './webdb.service';
 import { UserService } from './user.service';
@@ -37,8 +34,7 @@ export class BrowserSessionService extends BrowserSessionOwner {
           await user.restoreWebdb(signal);
         },
         delete: deleteBrowserSessionCache,
-        deleteLegacy: async () => {
-          await deleteLegacyBrowserCaches();
+        prepareFreshCache: async () => {
           await resetNotificationSince();
           await user.clearSessionPreferences(previousUserId);
           previousUserId = undefined;

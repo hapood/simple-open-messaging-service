@@ -24,18 +24,3 @@ export async function deleteBrowserSessionCache(
     deleteDatabase(descriptor.messageIndexedDbName),
   ]);
 }
-
-/** Never delete preference storage or arbitrary same-origin application databases. */
-export async function deleteLegacyBrowserCaches(): Promise<void> {
-  if (typeof indexedDB === 'undefined' || !indexedDB.databases) {
-    throw new Error('Cache discovery is unavailable');
-  }
-  const databases = await indexedDB.databases();
-  await Promise.all(
-    databases.flatMap(({ name }) =>
-      name && /^soms-(?:webdb|msgdb)-u[1-9]\d*$/.test(name)
-        ? [deleteDatabase(name)]
-        : [],
-    ),
-  );
-}

@@ -24,7 +24,7 @@ function setup(storage = new MemoryStorage()) {
     initialize: vi.fn(async () => {}),
     restore: vi.fn(async () => {}),
     delete: vi.fn(async () => {}),
-    deleteLegacy: vi.fn(async () => {}),
+    prepareFreshCache: vi.fn(async () => {}),
     resetState: vi.fn(),
   } satisfies BrowserSessionResources;
   const journal = new SessionJournal(storage);
@@ -58,7 +58,7 @@ describe('browser session owner', () => {
     expect(resources.resetState).toHaveBeenCalledTimes(1);
     expect(resources.close).toHaveBeenCalledTimes(1);
     expect(resources.initialize).toHaveBeenCalledExactlyOnceWith(session);
-    resources.deleteLegacy.mockClear();
+    resources.prepareFreshCache.mockClear();
 
     await owner.end();
     expect(owner.currentSession).toBeNull();
@@ -66,7 +66,7 @@ describe('browser session owner', () => {
     expect(resources.resetState).toHaveBeenCalledTimes(2);
     expect(resources.close).toHaveBeenCalledTimes(2);
     expect(resources.delete).not.toHaveBeenCalled();
-    expect(resources.deleteLegacy).not.toHaveBeenCalled();
+    expect(resources.prepareFreshCache).not.toHaveBeenCalled();
     expect((await journal.read())?.pendingCleanup).toEqual([session]);
   });
 
@@ -118,7 +118,7 @@ describe('browser session owner', () => {
     expect(restored.owner.currentSession).toEqual(session);
     expect(restored.resources.initialize).not.toHaveBeenCalled();
     expect(restored.resources.delete).not.toHaveBeenCalled();
-    expect(restored.resources.deleteLegacy).not.toHaveBeenCalled();
+    expect(restored.resources.prepareFreshCache).not.toHaveBeenCalled();
     expect(restored.resources.restore).toHaveBeenCalledWith(
       session,
       expect.any(AbortSignal),
@@ -134,7 +134,7 @@ describe('browser session owner', () => {
     expect(restored.owner.currentSession).toBeNull();
     expect(restored.resources.restore).not.toHaveBeenCalled();
     expect(restored.resources.delete).not.toHaveBeenCalled();
-    expect(restored.resources.deleteLegacy).not.toHaveBeenCalled();
+    expect(restored.resources.prepareFreshCache).not.toHaveBeenCalled();
     expect((await restored.journal.read())?.pendingCleanup).toEqual([session]);
   });
 
