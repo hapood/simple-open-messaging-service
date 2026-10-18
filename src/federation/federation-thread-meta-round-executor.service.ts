@@ -117,7 +117,6 @@ export class FederationThreadMetaRoundExecutorService {
       LEFT JOIN "GroupMeta" feed ON feed."threadId" = thread.id
       WHERE thread.id = ${threadId}
         AND thread."federationRoundsEnabled" = true
-        AND ${groupStateFields.domain} = ${peerDomain}
         AND ${groupStateFields.namespaceId} = ${namespaceId}
       LIMIT 1
     `);

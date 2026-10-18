@@ -21,10 +21,10 @@ beforeAll(async () => {
       VALUES (92, 7, 'bravo.test', 'test-key-bravo', false);
     INSERT INTO "Account" (id, account) VALUES (101, 'owner');
     INSERT INTO "GroupAccount" (id, account, "defaultProfileRev") VALUES (201, '!native', 1);
-    INSERT INTO "MessageThread" (id, type, "updatedAt", "groupAccount", "groupDomain", "groupAccountId", "authorityNamespaceId")
-      VALUES (301, 'GROUP', now(), '!native', (SELECT domain FROM "IdentityNamespace" WHERE id = 0), 201, 0),
-             (302, 'GROUP', now(), '!mirror', 'bravo.test', NULL, 91),
-             (303, 'P2P', now(), NULL, NULL, NULL, 0);
+    INSERT INTO "MessageThread" (id, type, "updatedAt", "groupAccount", "groupAccountId", "authorityNamespaceId")
+      VALUES (301, 'GROUP', now(), '!native', 201, 0),
+             (302, 'GROUP', now(), '!mirror', NULL, 91),
+             (303, 'P2P', now(), NULL, NULL, 0);
     INSERT INTO "Profile" ("publisherNamespaceId", account, "profileNamespaceId", "profileRev", "displayName", bio)
       VALUES (0, '!native', 0, 1, 'Native group', 'Native bio'),
              (91, '!mirror', 0, 2, 'Mirror group', 'Mirror bio'),

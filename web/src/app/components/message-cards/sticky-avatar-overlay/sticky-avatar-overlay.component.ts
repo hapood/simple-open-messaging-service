@@ -6,67 +6,46 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import type { StickyAvatarView } from '../../../lib/sticky-avatar';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../../user-avatar/user-avatar.component';
+import { AvatarComponent } from '../../user-avatar/avatar.component';
 
-/** Shared viewport-level avatar paint layer; positioning/group selection stays in the shared sticky-avatar helper. */
+/** Positioning belongs to the geometry helper; this layer paints the row's live presentation. */
 @Component({
   selector: 'app-sticky-avatar-overlay',
-  standalone: true,
-  imports: [UserAvatarComponent],
+  imports: [AvatarComponent],
   template: `
     <div
       class="sa-avatar sa-avatar--other"
       [class.sa-avatar--visible]="avatar()?.side === 'other'"
-      [style.top.px]="other().top"
+      [style.top.px]="other()?.top ?? 0"
     >
-      <app-user-avatar
-        [type]="UserAvatarType.OTHER"
-        [name]="other().name"
-        [account]="other().account"
-        [domainSource]="other().domainSource"
-        [profile]="other().avatarProfile"
-        [src]="other().snapshotAvatarUrl"
-      />
+      @if (other(); as current) {
+        <app-avatar [view]="current.presentation()" />
+      }
     </div>
     <div
       class="sa-avatar sa-avatar--self"
       [class.sa-avatar--visible]="avatar()?.side === 'self'"
-      [style.top.px]="self().top"
+      [style.top.px]="self()?.top ?? 0"
     >
-      <app-user-avatar
-        [type]="UserAvatarType.SELF"
-        [name]="self().name"
-        [domainSource]="self().domainSource"
-        [profile]="self().avatarProfile"
-        [src]="self().snapshotAvatarUrl"
-      />
+      @if (self(); as current) {
+        <app-avatar [view]="current.presentation()" />
+      }
     </div>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
   styleUrl: './sticky-avatar-overlay.component.scss',
 })
 export class StickyAvatarOverlayComponent {
-  readonly UserAvatarType = UserAvatarType;
   readonly avatar = input<StickyAvatarView | null>(null);
-  readonly other = signal<StickyAvatarView>({
-    name: '',
-    side: 'other',
-    top: 0,
-  });
-  readonly self = signal<StickyAvatarView>({
-    name: '',
-    side: 'self',
-    top: 0,
-  });
+  readonly other = signal<StickyAvatarView | null>(null);
+  readonly self = signal<StickyAvatarView | null>(null);
 
   constructor() {
     effect(() => {
       const value = this.avatar();
-      if (!value) return;
-      (value.side === 'self' ? this.self : this.other).set(value);
+      // Do not retain a destroyed row's signal or a released image URL while hidden.
+      this.other.set(value?.side === 'other' ? value : null);
+      this.self.set(value?.side === 'self' ? value : null);
     });
   }
 }

@@ -2,6 +2,9 @@ import {
   pickStickyAvatarPlacement,
   resolveStickyAvatar,
 } from './sticky-avatar';
+import { signal } from '@angular/core';
+import { UserAvatarType } from '../components/user-avatar/model';
+import type { AvatarView } from '../components/user-avatar/avatar-view';
 
 describe('pickStickyAvatarPlacement', () => {
   const row = (
@@ -91,8 +94,12 @@ describe('resolveStickyAvatar', () => {
       naturalAvatarTop: avatar ? top : undefined,
       naturalAvatar,
       tailAvatar,
-      name: creator,
-      account,
+      presentation: signal<AvatarView>({
+        name: creator,
+        imageUrl: null,
+        colorKey: account,
+        type: UserAvatarType.OTHER,
+      }),
     };
   }
 
@@ -120,16 +127,19 @@ describe('resolveStickyAvatar', () => {
     ).toBeUndefined();
   });
 
-  // Regression: an omitted account made the overlay's <app-user-avatar> hash the empty string and
-  // pin every float avatar's fallback background to PALETTE[0], diverging from the natural row avatar.
-  // The head must sit above the sticky line while the group bottom holds below it for the overlay
-  // view (not the tail hand-off) to paint.
-  it('forwards the row account so the float avatar hashes the same fallback color', () => {
+  it('shares the live row presentation rather than reconstructing an avatar identity', () => {
     const head = measuredRow('Alice', -30, true, 'alice');
     const next = measuredRow('Alice', 20);
-    expect(
-      resolveStickyAvatar([head, next], 12, 0, true).view?.account,
-    ).toBe('alice');
+    const view = resolveStickyAvatar([head, next], 12, 0, true).view;
+    expect(view?.presentation).toBe(head.presentation);
+    expect(view?.presentation().colorKey).toBe('alice');
+    head.presentation.set({
+      name: 'Updated',
+      imageUrl: 'blob:updated',
+      type: UserAvatarType.OTHER,
+    });
+    expect(view?.presentation().name).toBe('Updated');
+    expect(view?.presentation().imageUrl).toBe('blob:updated');
   });
 
   it('keeps the natural avatar at the viewport scroll origin', () => {

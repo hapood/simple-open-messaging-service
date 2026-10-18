@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { localIdentityDomain } from './support/local-domain.js';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
@@ -39,7 +38,6 @@ describe('incoming invitation read watermark', () => {
       stateFeed.writeInTx(tx, {
         userId: seeded.id,
         account: '',
-        domain: localIdentityDomain(),
         namespaceId: 0,
         eventType: 'INCOMING_INVITE_HEAD',
         subjectAccount: '',
@@ -69,7 +67,6 @@ describe('incoming invitation read watermark', () => {
     });
     expect(head).toMatchObject({
       account: '',
-      domain: localIdentityDomain(),
       namespaceId: 0,
       subjectAccount: '',
       feedId: 2,

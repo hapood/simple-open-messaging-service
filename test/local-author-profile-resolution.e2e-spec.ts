@@ -76,7 +76,6 @@ describe('local-author profiles referenced by a foreign authoritative group', ()
       .values({
         type: 'GROUP',
         groupAccount: group.account,
-        groupDomain: group.domain,
         authorityNamespaceId: ns,
         curSeq: 3,
         updatedAt: new Date(),

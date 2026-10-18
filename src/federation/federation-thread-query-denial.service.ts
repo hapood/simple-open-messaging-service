@@ -122,12 +122,11 @@ export class FederationThreadQueryDenialService {
             ON member_ns.id = 0 AND member_identity.account = member.account
           WHERE member.kind = 'USER' AND thread.id = ${threadId}
             AND thread.type = 'GROUP'
-            AND ((group_profile.domain = ${peerDomain}
-                  AND group_profile."namespaceId" = ${namespaceId}
+            AND ((group_profile."namespaceId" = ${namespaceId}
                   AND member_ns.id = 0
                   AND member_identity.id IS NOT NULL)
               OR (group_profile."namespaceId" = 0
-                  AND member_ns.domain = ${peerDomain}))
+                  AND member_ns.id = ${namespaceId}))
             AND member."namespaceId" IN (0, ${namespaceId})
           ORDER BY member_ns.domain, member.account
           LIMIT 1

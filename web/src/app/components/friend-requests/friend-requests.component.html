@@ -162,7 +162,7 @@
                     (keydown.enter)="activateResult(u)"
                   >
                     <div class="user-avatar">
-                      <app-user-avatar
+                      <app-snapshot-avatar
                         [type]="
                           u.isGroup
                             ? UserAvatarType.GROUP
@@ -172,7 +172,7 @@
                         [account]="u.account"
                         [src]="u.avatar"
                         [domainSource]="{ type: 'namespace', namespaceId: u.namespaceId }"
-                      ></app-user-avatar>
+                      ></app-snapshot-avatar>
                     </div>
                     <div class="result-meta">
                       <app-user-identity-label
@@ -341,20 +341,33 @@
           </div>
         }
         <div class="detail-profile-row">
-          <app-user-avatar
-            [type]="
-              req.kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER
-            "
-            [account]="req.account"
-            [domainSource]="{ type: 'namespace', namespaceId: req.namespaceId }"
-            [profile]="avatarProfile(req)"
-          />
-          <span class="profile-copy">
-            <app-user-identity-label
-              class="detail-identity"
+          @let avatarType = req.kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER;
+          @if (req.snapshot; as snapshot) {
+            <app-snapshot-avatar
+              [type]="avatarType"
+              [name]="snapshot.displayName"
+              [src]="snapshot.avatar"
               [account]="req.account"
-              [profileRef]="avatarProfile(req)"
+              [domainSource]="{ type: 'namespace', namespaceId: req.namespaceId }"
             />
+          } @else {
+            <app-demand-avatar
+              [type]="avatarType"
+              [account]="req.account"
+              [domainSource]="{ type: 'namespace', namespaceId: req.namespaceId }"
+              [profile]="avatarProfile(req)"
+            />
+          }
+          <span class="profile-copy">
+            @if (req.snapshot; as snapshot) {
+              <span class="detail-identity">{{ snapshot.displayName }}</span>
+            } @else {
+              <app-user-identity-label
+                class="detail-identity"
+                [account]="req.account"
+                [profileRef]="avatarProfile(req)"
+              />
+            }
             <span class="profile-description">
               {{ req.reqMessage || ('friend.noMessage' | transloco) }}
             </span>

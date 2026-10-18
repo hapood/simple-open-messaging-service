@@ -244,7 +244,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         account: groupStateFields.account,
         name: groupStateFields.name,
         profileRev: groupStateFields.profileRev,
-        domain: groupStateFields.domain,
         namespaceId: groupStateFields.namespaceId,
       })
       .from(messageThread)
@@ -259,7 +258,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             account: row.account,
             name: row.name,
             profileRev: row.profileRev,
-            domain: row.domain,
             namespaceId: row.namespaceId,
           },
         }
@@ -299,7 +297,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       .select({
         groupId: messageThread.id,
         account: groupStateFields.account,
-        domain: groupStateFields.domain,
       })
       .from(messageThread)
       .innerJoin(group, eq(group.id, messageThread.id))
@@ -2074,7 +2071,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // The independent Group account is the on-wire group address.
     const trdA = await findGroupThreadById(appA, groupThreadA);
     expect(trdA?.group?.account).toBeTruthy();
-    expect(trdA?.group?.domain).toBe(DOM_A);
     const groupAccount = trdA!.group!.account;
 
     // appB mints the mirror + the incoming Invite (handleGroupInvite). Poll for the mirror thread.
@@ -2082,7 +2078,6 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       async () => {
         const m = await findGroupThreadByAccount(appB, groupAccount);
         expect(m).toBeDefined();
-        expect(m!.group?.domain).toBe(DOM_A); // mirror knows the origin
         return m!;
       },
       { timeout: 5000 },

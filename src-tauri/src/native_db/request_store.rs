@@ -15,7 +15,33 @@ fn number(value: &Value, field: &str) -> Result<i64, String> {
         .ok_or_else(|| format!("request projection has no {field}"))
 }
 
+/// Decode only the send-time presentation shape, independently of subject identity.
+fn snapshot_json(projection: &Value) -> Result<Option<String>, String> {
+    let Some(snapshot) = projection.get("snapshot").filter(|value| !value.is_null()) else {
+        if text(projection, "direction")? == "OUTGOING" {
+            return Err("outgoing request requires a snapshot".into());
+        }
+        return Ok(None);
+    };
+    if text(projection, "direction")? != "OUTGOING" {
+        return Err("incoming request cannot carry a receiver snapshot".into());
+    }
+    let object = snapshot.as_object().ok_or("invalid request snapshot")?;
+    let name = text(snapshot, "displayName")?;
+    let avatar_valid = match object.get("avatar") {
+        Some(Value::Null) => true,
+        Some(Value::String(avatar)) => !avatar.trim().is_empty(),
+        _ => false,
+    };
+    if object.len() != 2 || name.trim().is_empty() || name.chars().count() > 31 || !avatar_valid {
+        return Err("invalid request snapshot".into());
+    }
+    Ok(Some(snapshot.to_string()))
+}
+
 /// Persist only the typed request projection, not the state-feed event body.
+/// Subject identity is the namespace/account coordinate; display domains are
+/// resolved separately from namespace bindings and are never stored here.
 pub(super) fn save(
     conn: &Connection,
     user_id: i64,
@@ -33,33 +59,17 @@ pub(super) fn save(
         .get(if kind == "FRIEND" { "peer" } else { "group" })
         .filter(|value| !value.is_null());
     let account = subject.map(|value| text(value, "account")).transpose()?;
-    let domain = subject.map(|value| text(value, "domain")).transpose()?;
     let namespace = subject
         .map(|value| number(value, "namespaceId"))
         .transpose()?;
-    let name = subject.map(|value| text(value, "name")).transpose()?;
-    let avatar = subject.map(|value| text(value, "avatar")).transpose()?;
+    // Group subjects are profile references, not presentation snapshots.
+    let avatar = if kind == "FRIEND" {
+        subject.map(|value| text(value, "avatar")).transpose()?
+    } else {
+        None
+    };
     let bio = if kind == "FRIEND" {
         subject.map(|value| text(value, "bio")).transpose()?
-    } else {
-        None
-    };
-    let description = if kind == "GROUP" {
-        subject
-            .map(|value| text(value, "description"))
-            .transpose()?
-    } else {
-        None
-    };
-    let is_local = if kind == "GROUP" {
-        subject
-            .map(|value| {
-                value
-                    .get("isLocal")
-                    .and_then(Value::as_bool)
-                    .ok_or("request group has no isLocal".to_string())
-            })
-            .transpose()?
     } else {
         None
     };
@@ -88,25 +98,23 @@ pub(super) fn save(
         "INSERT INTO relationship_requests (
            user_id, stable_key, namespace_id, kind, bucket, direction, status,
            expires_at, local_thread_id, note, requested_at, requested_sort,
-           updated_at, source_label, subject_id, subject_account, subject_domain,
-           subject_namespace_id, subject_name, subject_avatar, subject_bio,
-           subject_description, subject_is_local, subject_profile_rev
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)
+           updated_at, source_label, subject_id, subject_account,
+           subject_namespace_id, subject_avatar, subject_bio,
+           subject_profile_rev, snapshot_json
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
          ON CONFLICT(user_id,stable_key) DO UPDATE SET
            (namespace_id, kind, bucket, direction, status, expires_at,
             local_thread_id, note, requested_at, requested_sort, updated_at,
-            source_label, subject_id, subject_account, subject_domain,
-            subject_namespace_id, subject_name, subject_avatar, subject_bio,
-            subject_description, subject_is_local, subject_profile_rev) =
+            source_label, subject_id, subject_account,
+            subject_namespace_id, subject_avatar, subject_bio,
+            subject_profile_rev, snapshot_json) =
            (excluded.namespace_id, excluded.kind, excluded.bucket, excluded.direction,
             excluded.status, excluded.expires_at, excluded.local_thread_id,
             excluded.note, excluded.requested_at, excluded.requested_sort,
             excluded.updated_at, excluded.source_label, excluded.subject_id,
-            excluded.subject_account, excluded.subject_domain,
-            excluded.subject_namespace_id, excluded.subject_name,
+            excluded.subject_account, excluded.subject_namespace_id,
             excluded.subject_avatar, excluded.subject_bio,
-            excluded.subject_description, excluded.subject_is_local,
-            excluded.subject_profile_rev)",
+            excluded.subject_profile_rev, excluded.snapshot_json)",
         params![
             user_id, key, number(projection, "namespaceId")?, kind,
             text(projection, "bucket")?, text(projection, "direction")?,
@@ -115,15 +123,14 @@ pub(super) fn save(
             number(projection, "requestedAt")?, number(projection, "requestedSort")?,
             number(projection, "updatedAt")?,
             projection.get("sourceLabel").and_then(Value::as_str), subject_id,
-            account, domain, namespace, name, avatar, bio, description,
-            is_local, profile_rev,
+            account, namespace, avatar, bio, profile_rev, snapshot_json(projection)?,
         ],
     ).map_err(|e| format!("save request projection: {e}"))?;
     Ok(())
 }
 
-/// Rebuild the wire/IPC view from scalar columns. The JSON expression is evaluated only on read;
-/// the database never stores an opaque object or the original state-feed body.
+/// Rebuild the wire/IPC view from indexed scalar fields and the typed presentation snapshot.
+/// The original state-feed body is never stored here.
 pub(super) fn read(conn: &Connection, user_id: i64, key: &str) -> Result<Option<Value>, String> {
     let payload: Option<String> = conn
         .query_row(
@@ -133,17 +140,16 @@ pub(super) fn read(conn: &Connection, user_id: i64, key: &str) -> Result<Option<
            'expiresAt', expires_at, 'localThreadId', local_thread_id,
            'note', note, 'requestedAt', requested_at, 'requestedSort', requested_sort,
            'updatedAt', updated_at, 'sourceLabel', source_label,
+           'snapshot', json(snapshot_json),
            'peer', json(CASE WHEN kind='FRIEND' AND subject_account IS NOT NULL THEN
              json_object('id', subject_id, 'account', subject_account,
-               'domain', subject_domain, 'namespaceId', subject_namespace_id,
-               'name', subject_name, 'avatar', subject_avatar, 'bio', subject_bio,
+               'namespaceId', subject_namespace_id,
+               'avatar', subject_avatar, 'bio', subject_bio,
                'profileRev', subject_profile_rev)
              ELSE 'null' END),
            'group', json(CASE WHEN kind='GROUP' AND subject_account IS NOT NULL THEN
-             json_object('account', subject_account, 'domain', subject_domain,
-               'namespaceId', subject_namespace_id, 'name', subject_name,
-               'avatar', subject_avatar, 'description', subject_description,
-               'isLocal', json(CASE WHEN subject_is_local THEN 'true' ELSE 'false' END),
+             json_object('account', subject_account,
+               'namespaceId', subject_namespace_id,
                'profileRev', subject_profile_rev)
              ELSE 'null' END)
          ) FROM relationship_requests WHERE user_id=?1 AND stable_key=?2",

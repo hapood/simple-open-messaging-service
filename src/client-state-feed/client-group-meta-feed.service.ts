@@ -7,6 +7,9 @@ import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
 import { groupMeta } from '../database/schema.js';
 import { readGroupMetaPageInTx } from '../group/meta/group-meta-page.js';
+import type { GroupMetaFeedDemand } from '../../shared/group-meta-demand.js';
+
+export type { GroupMetaFeedDemand } from '../../shared/group-meta-demand.js';
 
 @Injectable()
 export class ClientGroupMetaFeedService {
@@ -14,8 +17,13 @@ export class ClientGroupMetaFeedService {
 
   async resolveVisibleGroup(
     userId: number,
-    selector: { threadId?: number; account?: string; domain?: string },
+    demand: GroupMetaFeedDemand,
   ): Promise<{ groupId: number; account: string }> {
+    const coordinate =
+      'threadId' in demand
+        ? sql`AND thread.id = ${demand.threadId}`
+        : sql`AND group_state.account = ${demand.account}
+          AND group_state."namespaceId" = ${demand.namespaceId}`;
     const rows = await this.database.db.execute<{
       groupId: number;
       account: string;
@@ -39,9 +47,7 @@ export class ClientGroupMetaFeedService {
                 AND pair."endpointBNamespaceId" = 0)
             )
         )
-        AND (${selector.threadId ?? null}::integer IS NULL OR thread.id = ${selector.threadId ?? null})
-        AND (${selector.account ?? null}::text IS NULL OR group_state.account = ${selector.account ?? null})
-        AND (${selector.domain ?? null}::text IS NULL OR group_state.domain = ${selector.domain ?? null})
+        ${coordinate}
       LIMIT 1
     `);
     const resolved = rows.rows[0];

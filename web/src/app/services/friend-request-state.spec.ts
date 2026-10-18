@@ -11,6 +11,7 @@ import {
 } from './friend-request-state';
 
 const friendInput: FriendIntentProjectionInput = {
+  snapshot: { displayName: 'Bob at send time', avatar: null },
   namespaceId: 12,
   account: 'alice',
   subjectAccount: 'bob',
@@ -26,13 +27,13 @@ const friendInput: FriendIntentProjectionInput = {
     namespaceId: 12,
     id: 2,
     account: 'bob',
-    domain: 'remote.test',
     avatar: '',
     bio: '',
   },
 };
 
 const groupInput: GroupInviteProjectionInput = {
+  snapshot: null,
   namespaceId: 0,
   feedId: 1,
   status: 'REQUESTED',
@@ -44,13 +45,25 @@ const groupInput: GroupInviteProjectionInput = {
   group: {
     namespaceId: 0,
     account: '!group',
-    avatar: '',
-    description: '',
     profileRev: 1,
   },
 };
 
 describe('request projection effects', () => {
+  it('keeps sent presentation independent of peer profile revisions and preserves it on rejection', () => {
+    const first = applyFriendIntentToProjection(undefined, friendInput, 2_000).record!;
+    const refreshed = applyFriendIntentToProjection(first, {
+      ...friendInput, feedId: 2, peer: { ...friendInput.peer, profileRev: 7 },
+    }, 2_500).record!;
+    expect(refreshed.snapshot).toEqual(first.snapshot);
+    const rejected = applyFriendIntentToProjection(refreshed, {
+      ...friendInput, feedId: 3, status: 'REVOKED', direction: 'INCOMING',
+      requestStatus: 'REJECTED', requestDirection: 'OUTGOING', snapshot: null,
+    }, 3_000).record!;
+    expect(rejected.status).toBe('REJECTED');
+    expect(rejected.snapshot).toEqual(friendInput.snapshot);
+    expect(applyFriendIntentToProjection(rejected, friendInput, 4_000).record).toEqual(rejected);
+  });
   it('upserts a directional friend request without storing the reverse fact', () => {
     const result = applyFriendIntentToProjection(undefined, friendInput, 2_000);
     expect(result.record).toMatchObject({

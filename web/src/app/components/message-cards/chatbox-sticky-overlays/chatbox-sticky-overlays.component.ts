@@ -18,6 +18,7 @@ import {
 } from '../../../lib/sticky-date';
 import {
   resolveStickyAvatar,
+  readStickyAvatarIdentity,
   type StickyAvatarResolution,
   type StickyAvatarView,
 } from '../../../lib/sticky-avatar';
@@ -91,8 +92,8 @@ export class ChatboxStickyOverlaysComponent implements OnDestroy {
         '.msg-has-avatar > .msg-avatar:not(.msg-avatar-tail)',
       );
       const tailAvatar = host.querySelector<HTMLElement>('.msg-avatar-tail');
-      const identity = host.dataset['messageAvatarIdentity'];
-      if (host.dataset['messageCreator'] !== undefined) {
+      const identity = readStickyAvatarIdentity(host);
+      if (host.dataset['messageCreator'] !== undefined && identity) {
         const naturalOffset = Number(
           host.dataset['messageNaturalAvatarOffset'] ?? '0',
         );
@@ -105,17 +106,7 @@ export class ChatboxStickyOverlaysComponent implements OnDestroy {
           naturalAvatarTop: naturalAvatar ? top + naturalOffset : undefined,
           naturalAvatar: naturalAvatar ?? undefined,
           tailAvatar: tailAvatar ?? undefined,
-          name: host.dataset['messageAvatarName'] ?? '',
-          avatarProfile: host.dataset['messageAvatarEvidence']
-            ? JSON.parse(host.dataset['messageAvatarEvidence'])
-            : undefined,
-          snapshotAvatarUrl: host.dataset['messageSnapshotAvatarUrl'],
-          account: host.dataset['messageAvatarAccount'] || undefined,
-          identityId: identity,
-          domain: host.dataset['messageAvatarDomain'] || undefined,
-          domainSource: host.dataset['messageAvatarDomainSource']
-            ? JSON.parse(host.dataset['messageAvatarDomainSource'])
-            : undefined,
+          ...identity,
         });
       }
       const date = host.querySelector<HTMLElement>('.msg-date');
@@ -262,13 +253,8 @@ function sameStickyAvatar(
     a === b ||
     (a !== null &&
       b !== null &&
-      a.name === b.name &&
-      JSON.stringify(a.avatarProfile) === JSON.stringify(b.avatarProfile) &&
-      a.snapshotAvatarUrl === b.snapshotAvatarUrl &&
+      a.presentation === b.presentation &&
       a.identityId === b.identityId &&
-      a.account === b.account &&
-      a.domain === b.domain &&
-      JSON.stringify(a.domainSource) === JSON.stringify(b.domainSource) &&
       a.side === b.side &&
       a.top === b.top)
   );

@@ -13,10 +13,8 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { GroupService } from '../../services/group.service';
 import { ConversationListService } from '../../services/conversation-list.service';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import { apiPrefix } from '../../services/constants';
 import { finalize } from 'rxjs';
@@ -36,7 +34,7 @@ import {
   selector: 'app-new-group',
   imports: [
     PageHeaderComponent,
-    UserAvatarComponent,
+    SnapshotAvatarComponent,
     MatButtonModule,
     MatFormFieldModule,
     MatInputModule,

@@ -1,7 +1,7 @@
 @if (displayQuote(); as quote) {
   <ng-template #copy>
     @if (quote.imageShape === 'avatar') {
-      <app-user-avatar
+      <app-snapshot-avatar
         class="msg-quote-visual msg-quote-avatar"
         [type]="avatarType()"
         [name]="quote.imageLabel"

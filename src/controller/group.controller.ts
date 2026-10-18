@@ -99,9 +99,9 @@ export class GroupController {
     threadId: number,
     users: GroupInviteAddressDto[],
   ): Promise<{
-    invited: GroupInviteAddressDto[];
+    invited: Array<Pick<GroupInviteAddressDto, 'account' | 'namespaceId'>>;
     skipped: Array<
-      GroupInviteAddressDto & {
+      Pick<GroupInviteAddressDto, 'account' | 'namespaceId'> & {
         reason: string;
         code: BusinessCode;
         message: string;
@@ -115,23 +115,24 @@ export class GroupController {
             account: normalizeAccount(user.account),
             namespaceId: user.namespaceId,
           };
-          return [JSON.stringify(address), address];
+          return [JSON.stringify(address), { ...address, snapshot: user.snapshot }];
         }),
       ).values(),
     ];
-    const invited: GroupInviteAddressDto[] = [];
+    const invited: Array<Pick<GroupInviteAddressDto, 'account' | 'namespaceId'>> = [];
     const skipped: Array<
-      GroupInviteAddressDto & {
+      Pick<GroupInviteAddressDto, 'account' | 'namespaceId'> & {
         reason: string;
         code: BusinessCode;
         message: string;
       }
     > = [];
-    for (const address of deduped) {
+    for (const { snapshot, ...address } of deduped) {
       const result = await this.groupIntents.execute({
         threadId,
         managerUserId: inviter,
         decision: 'REQUESTED',
+        snapshot,
         target: address,
       });
       if (isBusinessRejection(result)) {

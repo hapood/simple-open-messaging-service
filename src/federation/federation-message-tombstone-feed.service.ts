@@ -35,12 +35,12 @@ export class FederationMessageTombstoneFeedService {
 
   async rejectMissingQueryAfter(
     namespaceId: number,
-    selector: FederationThreadQuery,
+    demand: FederationThreadQuery,
   ): Promise<never> {
     const currentEnd = await this.database.db.transaction(
       async (tx) => {
-        await resolveAuthorizedFederationThreadInTx(tx, namespaceId, selector);
-        return this.readAdvertisedDeletionEnd(tx, namespaceId, selector);
+        await resolveAuthorizedFederationThreadInTx(tx, namespaceId, demand);
+        return this.readAdvertisedDeletionEnd(tx, namespaceId, demand);
       },
       { isolationLevel: 'repeatable read', accessMode: 'read only' },
     );
@@ -54,7 +54,7 @@ export class FederationMessageTombstoneFeedService {
 
   async query(
     namespaceId: number,
-    selector: FederationThreadQuery,
+    demand: FederationThreadQuery,
     after: number,
     requestedTake?: number,
     through?: number,
@@ -69,12 +69,12 @@ export class FederationMessageTombstoneFeedService {
           await resolveAuthorizedFederationThreadInTx(
             tx,
             namespaceId,
-            selector,
+            demand,
           );
         const currentEnd = await this.readAdvertisedDeletionEnd(
           tx,
           namespaceId,
-          selector,
+          demand,
         );
         const resumeAfter = 0;
         const resumeBefore = currentEnd + 1;
@@ -118,7 +118,7 @@ export class FederationMessageTombstoneFeedService {
                   : undefined,
               ),
               groupQueryDirection !== 'MIRROR_TO_ORIGIN' &&
-                selector.type === 'P2P'
+                demand.type === 'P2P'
                 ? eq(message.profileNamespaceId, 0)
                 : undefined,
               includeSelf
@@ -156,7 +156,7 @@ export class FederationMessageTombstoneFeedService {
   private async readAdvertisedDeletionEnd(
     tx: DatabaseTransaction,
     namespaceId: number,
-    selector: FederationThreadQuery,
+    demand: FederationThreadQuery,
   ): Promise<number> {
     const [row] = await tx
       .select({ body: peerStateFeed.body })
@@ -164,11 +164,11 @@ export class FederationMessageTombstoneFeedService {
       .where(
         and(
           eq(peerStateFeed.namespaceId, namespaceId),
-          eq(peerStateFeed.account, selector.account),
+          eq(peerStateFeed.account, demand.account),
           eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
-          selector.type === 'P2P'
+          demand.type === 'P2P'
             ? and(
-                eq(peerStateFeed.subjectAccount, selector.peerAccount),
+                eq(peerStateFeed.subjectAccount, demand.peerAccount),
                 eq(peerStateFeed.subjectNamespaceId, namespaceId),
               )
             : and(

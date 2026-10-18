@@ -1,3 +1,4 @@
+import type { RequestSnapshot } from '../../shared/request-snapshot.js';
 import {
   pgTable,
   index,
@@ -757,7 +758,6 @@ export const messageThread = pgTable(
     tombstoneEndSeq: integer().default(0).notNull(),
     /** Group subject address; null for a P2P thread. */
     groupAccount: varchar({ length: 31 }),
-    groupDomain: varchar({ length: 63 }),
     /** Only authoritative local groups own a GroupAccount. */
     groupAccountId: integer(),
     /** Dissolution learned from the authority of a mirrored group. */
@@ -767,10 +767,10 @@ export const messageThread = pgTable(
       mode: 'date',
     }),
     pullUntil: integer().default(0).notNull(),
-    /** Identity namespace which owns this thread coordinate space. */
+    /** Identity namespace which owns this thread coordinate space. The
+     * namespace id is the coordinate-space generation: a replaced space is a
+     * new namespace and a new thread row, never an in-place rewrite. */
     authorityNamespaceId: integer().default(0).notNull(),
-    /** Invalidates a response when the retained thread coordinate space itself is replaced. */
-    federationVersion: integer().default(0).notNull(),
     /** Invalidates federation work captured before an effective authorization transition. */
     authorizationEpoch: integer().default(0).notNull(),
     /** Whether this thread can admit federation rounds and incoming content heads. */
@@ -779,7 +779,6 @@ export const messageThread = pgTable(
   (table) => [
     uniqueIndex('MessageThread_group_address_key').on(
       table.groupAccount,
-      table.groupDomain,
       table.authorityNamespaceId,
     ),
     uniqueIndex('MessageThread_groupAccountId_key').on(table.groupAccountId),
@@ -790,7 +789,7 @@ export const messageThread = pgTable(
     }).onDelete('restrict'),
     check(
       'MessageThread_group_type_check',
-      sql`(${table.type} = 'GROUP' AND ${table.groupAccount} IS NOT NULL AND ${table.groupDomain} IS NOT NULL) OR (${table.type} = 'P2P' AND ${table.groupAccount} IS NULL AND ${table.groupDomain} IS NULL AND ${table.groupAccountId} IS NULL AND ${table.groupDissolvedAt} IS NULL)`,
+      sql`(${table.type} = 'GROUP' AND ${table.groupAccount} IS NOT NULL) OR (${table.type} = 'P2P' AND ${table.groupAccount} IS NULL AND ${table.groupAccountId} IS NULL AND ${table.groupDissolvedAt} IS NULL)`,
     ),
     check(
       'MessageThread_group_identity_check',
@@ -801,10 +800,6 @@ export const messageThread = pgTable(
       foreignColumns: [identityNamespace.id],
       name: 'MessageThread_authorityNamespaceId_fkey',
     }).onDelete('restrict'),
-    check(
-      'MessageThread_federationVersion_check',
-      sql`${table.federationVersion} >= 0`,
-    ),
     check(
       'MessageThread_authorizationEpoch_check',
       sql`${table.authorizationEpoch} >= 0`,
@@ -1573,7 +1568,6 @@ export const clientStateFeed = pgTable(
     /** Event-specific stable identity used only for compaction within one local account. */
     compactionKey: text().notNull(),
     account: varchar({ length: 31 }).notNull(),
-    domain: varchar({ length: 63 }).notNull(),
     eventType: varchar({ length: 31 }).notNull(),
     subjectAccount: varchar({ length: 31 }).default('').notNull(),
     subjectNamespaceId: integer().default(0).notNull(),
@@ -1615,6 +1609,8 @@ export const groupRequestProjection = pgTable(
     memberAccount: varchar({ length: 31 }).notNull(),
     profileNamespaceId: integer().notNull(),
     memberProfileRev: integer().notNull(),
+    /** Send-time invitee presentation copied from the group-authored intent. */
+    snapshot: jsonb().$type<RequestSnapshot>(),
     direction: varchar({ length: 15 }).notNull(),
     feedId: integer().notNull(),
     status: requestProjectionStatus()
@@ -1662,6 +1658,19 @@ export const groupRequestProjection = pgTable(
       foreignColumns: [identityNamespace.id],
       name: 'GroupRequestProjection_profileNamespaceId_fkey',
     }).onDelete('cascade'),
+    check(
+      'GroupRequestProjection_snapshot_check',
+      sql`${table.snapshot} IS NULL OR (
+        ${table.direction} = 'INVITATION' AND
+        COALESCE(jsonb_typeof(${table.snapshot}) = 'object'
+          AND (${table.snapshot} - 'displayName' - 'avatar') = '{}'::jsonb
+          AND jsonb_typeof(${table.snapshot}->'displayName') = 'string'
+          AND char_length(btrim(${table.snapshot}->>'displayName')) > 0
+          AND char_length(${table.snapshot}->>'displayName') <= 31
+          AND (${table.snapshot}->'avatar' = 'null'::jsonb OR
+            (jsonb_typeof(${table.snapshot}->'avatar') = 'string'
+              AND char_length(btrim(${table.snapshot}->>'avatar')) > 0)), false))`,
+    ),
     check('GroupRequestProjection_feedId_check', sql`${table.feedId} > 0`),
     check(
       'GroupRequestProjection_direction_check',
@@ -2236,6 +2245,8 @@ export const relationshipIntent = pgTable(
     receiverAccount: varchar({ length: 31 }).notNull(),
     /** The receiver endpoint's own identity namespace; 0 for local receivers. */
     receiverNamespaceId: integer().notNull(),
+    /** Local send-time receiver presentation; never serialized into peer intents. */
+    snapshot: jsonb().$type<RequestSnapshot>(),
     status: relationshipIntentStatus().notNull(),
     /** Immutable author profile reference retained for the current request flow. */
     profileNamespaceId: integer().notNull(),
@@ -2269,6 +2280,19 @@ export const relationshipIntent = pgTable(
       foreignColumns: [identityNamespace.id],
       name: 'RelationshipIntent_receiverNamespaceId_fkey',
     }).onDelete('restrict'),
+    check(
+      'RelationshipIntent_snapshot_check',
+      sql`${table.snapshot} IS NULL OR (
+        ${table.authorNamespaceId} = 0 AND
+        COALESCE(jsonb_typeof(${table.snapshot}) = 'object'
+          AND (${table.snapshot} - 'displayName' - 'avatar') = '{}'::jsonb
+          AND jsonb_typeof(${table.snapshot}->'displayName') = 'string'
+          AND char_length(btrim(${table.snapshot}->>'displayName')) > 0
+          AND char_length(${table.snapshot}->>'displayName') <= 31
+          AND (${table.snapshot}->'avatar' = 'null'::jsonb OR
+            (jsonb_typeof(${table.snapshot}->'avatar') = 'string'
+              AND char_length(btrim(${table.snapshot}->>'avatar')) > 0)), false))`,
+    ),
     check(
       'RelationshipIntent_author_namespace_check',
       sql`${table.authorNamespaceId} >= 0`,

@@ -1,14 +1,13 @@
+import { IsRequestSnapshot, RequestSnapshotDto } from './request-snapshot.dto.js';
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
-  IsDataURI,
   IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
   MaxLength,
   Min,
-  ValidateIf,
 } from 'class-validator';
 
 /** Author a relationship request for an identity already resolved into a namespace.
@@ -40,25 +39,9 @@ export class RequestRelationshipDto {
   @MaxLength(255)
   note?: string;
 
-  @ApiProperty({
-    required: false,
-    description: 'Untrusted pending-card display snapshot.',
-  })
-  @ValidateIf((value: RequestRelationshipDto) => value.namespaceId !== 0)
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(31)
-  displayName?: string;
-
-  @ApiProperty({
-    required: false,
-    description: 'Untrusted pending-card avatar Base64 data URL.',
-  })
-  @IsOptional()
-  @IsString()
-  @IsDataURI()
-  @MaxLength(1_500_000)
-  avatar?: string;
+  @ApiProperty({ type: RequestSnapshotDto })
+  @IsRequestSnapshot()
+  snapshot!: RequestSnapshotDto;
 }
 
 /** Revoke a user relationship/request or a pending federated group-join request by account and identity namespace. */

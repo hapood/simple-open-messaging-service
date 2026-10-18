@@ -102,24 +102,20 @@ describe('FederationThreadAccessService', () => {
     );
   });
 
-  it('captures the peer namespace before reading a thread version', async () => {
-    const { subject, database, namespaces } = makeSubject([
-      [{ federationVersion: 5 }],
-    ]);
+  it('captures the peer namespace before asserting a thread exists', async () => {
+    const { subject, database, namespaces } = makeSubject([[{ id: 11 }]]);
 
     await expect(
-      subject.readFederationVersion(11, 'peer.example'),
-    ).resolves.toBe(5);
+      subject.assertThreadExists(11, 'peer.example'),
+    ).resolves.toBeUndefined();
     expect(namespaces.captureActiveInTx).toHaveBeenCalledWith(
       database.db,
       'peer.example',
     );
   });
 
-  it('checks both peer identity and thread version before persisting', async () => {
-    const { subject, database, namespaces } = makeSubject([
-      [{ federationVersion: 5 }],
-    ]);
+  it('checks both peer identity and thread existence before persisting', async () => {
+    const { subject, database, namespaces } = makeSubject([[{ id: 11 }]]);
     const peerToken = {
       domain: 'peer.example',
       namespaceId: 7,
@@ -132,7 +128,6 @@ describe('FederationThreadAccessService', () => {
       subject.assertResourceResponseWritable(database.db as never, {
         threadId: 11,
         peerDomain: 'peer.example',
-        federationVersion: 5,
         peerToken,
       }),
     ).resolves.toBeUndefined();

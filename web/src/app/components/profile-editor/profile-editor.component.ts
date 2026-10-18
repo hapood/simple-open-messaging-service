@@ -17,10 +17,8 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserService } from '../../services/user.service';
 import { LocalDomainService } from '../../services/local-domain.service';
 import { translateBizResult } from '../../services/biz-code';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { AvatarEditorComponent } from '../avatar-editor/avatar-editor.component';
 import { PageHeaderComponent } from '../page-header/page-header.component';
@@ -48,7 +46,7 @@ import {
     MatButtonModule,
     MatFormFieldModule,
     MatInputModule,
-    UserAvatarComponent,
+    SnapshotAvatarComponent,
     IconComponent,
     AvatarEditorComponent,
     PageHeaderComponent,

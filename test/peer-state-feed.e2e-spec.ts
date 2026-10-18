@@ -88,7 +88,6 @@ describe('per-peer state feed', () => {
         groupAccount: account,
         groupAccountId: group.id,
         updatedAt: new Date(),
-        groupDomain: 'local',
         authorityNamespaceId: 0,
       })
       .returning();

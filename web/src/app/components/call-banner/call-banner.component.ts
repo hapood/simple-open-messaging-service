@@ -9,16 +9,14 @@ import { CallAdapterService } from '../../services/call-adapter';
 import { CallEventService } from '../../services/call-event.service';
 import { CallPresentationService } from '../../services/call-presentation.service';
 import { AppIconType, IconComponent } from '../icon/icon.component';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { callPeerPresentation } from '../../services/call-peer-presentation';
 
 @Component({
   selector: 'app-call-banner',
-  imports: [IconComponent, TranslocoModule, UserAvatarComponent, ],
+  imports: [IconComponent, TranslocoModule, DemandAvatarComponent],
   template: `
     @if (visible()) {
       <div class="call-banner" role="status">
@@ -30,16 +28,15 @@ import { callPeerPresentation } from '../../services/call-peer-presentation';
         >
           <span class="avatar">
             @if (peer(); as identity) {
-              <app-user-avatar
+              <app-demand-avatar
                 [type]="UserAvatarType.OTHER"
                 [name]="peerName() || '?'"
                 [account]="identity.account"
                 [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
-                [src]="peerAvatar()"
                 [profile]="peerProfile()"
               />
             } @else {
-              <app-user-avatar [loading]="true" />
+              <app-demand-avatar [loading]="true" />
             }
           </span>
           <span class="copy"

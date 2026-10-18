@@ -118,14 +118,12 @@ describe('exact account profile by current account evidence', () => {
         {
           type: 'GROUP',
           groupAccount: remoteGroup,
-          groupDomain: signer,
           authorityNamespaceId: ns,
           updatedAt: new Date(),
         },
         {
           type: 'GROUP',
           groupAccount: localGroup,
-          groupDomain: 'local',
           groupAccountId: groupId,
           updatedAt: new Date(),
         },

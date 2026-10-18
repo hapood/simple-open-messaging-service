@@ -1,3 +1,4 @@
+import type { RequestSnapshot } from '../../../../../shared/request-snapshot';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -80,18 +81,28 @@ export class UserIdentityLabelComponent {
   readonly domain = input<string | null | undefined>(undefined);
   /** Pinned profile subject; the label owns the demand form and resolution. */
   readonly profileRef = input<AvatarProfileRef | undefined>(undefined);
+  /** Sent presentation suppresses live profile resolution, including on mode changes. */
+  readonly snapshot = input<RequestSnapshot | null>(null);
+  private readonly profileDemand = computed(() => {
+    if (this.snapshot() !== null) return null;
+    return avatarProfileDemand(this.profileRef());
+  });
   private readonly resolvedProfile = signal<ResolvedProfile | null>(null);
-  readonly effectiveName = computed(
-    () =>
+  readonly effectiveName = computed(() => {
+    const snapshot = this.snapshot();
+    if (snapshot !== null) return snapshot.displayName;
+
+    return (
       this.resolvedProfile()?.name ||
       this.profile()?.name ||
       this.account() ||
-      '',
-  );
+      ''
+    );
+  });
 
   constructor() {
     effect((onCleanup) => {
-      const demand = avatarProfileDemand(this.profileRef());
+      const demand = this.profileDemand();
       this.resolvedProfile.set(null);
       if (!demand) return;
       const subscription = this.profiles.resolve(demand).subscribe({

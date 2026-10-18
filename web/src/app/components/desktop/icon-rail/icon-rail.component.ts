@@ -6,10 +6,8 @@ import {
   ChangeDetectionStrategy,
 } from '@angular/core';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../../user-avatar/user-avatar.component';
+import { DemandAvatarComponent } from '../../user-avatar/demand-avatar.component';
+import { UserAvatarType } from '../../user-avatar/model';
 import { IconComponent, AppIconType } from '../../icon/icon.component';
 import { RouteService, PopupType } from '../../../services/route.service';
 import { UserService } from '../../../services/user.service';
@@ -26,7 +24,7 @@ import { LanguageService } from '../../../services/language.service';
  */
 @Component({
   selector: 'app-icon-rail',
-  imports: [UserAvatarComponent, IconComponent, TranslocoPipe],
+  imports: [DemandAvatarComponent, IconComponent, TranslocoPipe],
   template: `
     <div class="icon-rail">
       <div class="top">
@@ -37,14 +35,14 @@ import { LanguageService } from '../../../services/language.service';
           [attr.aria-label]="'nav.editProfileAria' | transloco"
         >
           @if (sessionProfile(); as self) {
-            <app-user-avatar
+            <app-demand-avatar
               [type]="UserAvatarType.SELF"
               [domainSource]="{ type: 'namespace', namespaceId: 0 }"
               [name]="self.name"
               [account]="self.account"
             />
           } @else {
-            <app-user-avatar [type]="UserAvatarType.SELF" [loading]="true" />
+            <app-demand-avatar [type]="UserAvatarType.SELF" [loading]="true" />
           }
         </button>
         <button

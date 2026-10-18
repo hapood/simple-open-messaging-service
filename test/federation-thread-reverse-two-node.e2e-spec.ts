@@ -193,7 +193,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
           .where(
             and(
               eq(groupStateFields.account, originGroup.account),
-              eq(groupStateFields.domain, FED_DOMAIN_A),
             ),
           )
           .limit(1);
@@ -684,7 +683,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
           .where(
             and(
               eq(groupStateFields.account, originGroup.account),
-              eq(groupStateFields.domain, FED_DOMAIN_A),
             ),
           )
           .limit(1);
@@ -981,7 +979,6 @@ describe('federation reverse thread rounds (two nodes)', () => {
           .where(
             and(
               eq(groupStateFields.account, originGroup.account),
-              eq(groupStateFields.domain, FED_DOMAIN_A),
             ),
           )
           .limit(1);

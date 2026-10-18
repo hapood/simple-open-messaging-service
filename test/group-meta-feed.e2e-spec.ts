@@ -88,7 +88,6 @@ describe('canonical Group Meta feed', () => {
       .values({
         type: MessageThreadType.GROUP,
         groupAccount,
-        groupDomain: 'local',
         groupAccountId: control.id,
         updatedAt: new Date(),
       })
@@ -491,7 +490,6 @@ describe('canonical Group Meta feed', () => {
       .values({
         type: MessageThreadType.GROUP,
         groupAccount,
-        groupDomain: peerDomain,
         authorityNamespaceId: peerNamespaceId,
         federationRoundsEnabled: true,
         updatedAt: new Date(),

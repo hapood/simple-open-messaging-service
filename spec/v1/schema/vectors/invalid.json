@@ -1125,7 +1125,7 @@
       }
     },
     {
-      "name": "group thread selector rejects peer account",
+      "name": "group thread demand rejects peer account",
       "schema": "urn:somfp:v1:http-parameters#/$defs/threadDataQuery",
       "value": {
         "account": "!group",
@@ -1346,7 +1346,7 @@
       }
     },
     {
-      "name": "P2P message query result carries both author selectors",
+      "name": "P2P message query result carries both author references",
       "schema": "urn:somfp:v1:message-query",
       "value": {
         "messages": [

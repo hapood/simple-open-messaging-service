@@ -53,10 +53,9 @@ import {
 } from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
+import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import {
   conversationAvatarAccount,
   conversationAvatarNamespaceId,
@@ -239,7 +238,8 @@ let nativeComposerContextSequence = Date.now() * 1000;
     ChatboxStickyOverlaysComponent,
     ChatboxPopupComponent,
     EmptyStateComponent,
-    UserAvatarComponent,
+    DemandAvatarComponent,
+    SnapshotAvatarComponent,
     TranslocoModule,
   ],
   templateUrl: './friend-message.component.html',

@@ -373,10 +373,10 @@ export class FederationThreadForwardRoundExecutorService {
     source: FederationReverseThreadSource,
   ): boolean {
     return (
-      thread?.account === source.selector.account &&
-      ('peerAccount' in source.selector
+      thread?.account === source.demand.account &&
+      ('peerAccount' in source.demand
         ? 'peerAccount' in thread &&
-          thread.peerAccount === source.selector.peerAccount
+          thread.peerAccount === source.demand.peerAccount
         : !('peerAccount' in thread))
     );
   }
@@ -417,7 +417,7 @@ export class FederationThreadForwardRoundExecutorService {
         if (
           dependency.threadId !== response.threadId ||
           dependency.peerDomain !== response.peerDomain ||
-          dependency.federationVersion !== response.federationVersion ||
+
           dependency.peerToken.domain !== response.peerToken.domain ||
           dependency.peerToken.namespaceId !== response.peerToken.namespaceId ||
           dependency.peerToken.rootPublicKey !==
@@ -434,9 +434,9 @@ export class FederationThreadForwardRoundExecutorService {
 
   private threadQuery(source: FederationReverseThreadSource): URLSearchParams {
     const query = new URLSearchParams();
-    query.set('account', source.selector.account);
-    if ('peerAccount' in source.selector)
-      query.set('peerAccount', source.selector.peerAccount);
+    query.set('account', source.demand.account);
+    if ('peerAccount' in source.demand)
+      query.set('peerAccount', source.demand.peerAccount);
     return query;
   }
 

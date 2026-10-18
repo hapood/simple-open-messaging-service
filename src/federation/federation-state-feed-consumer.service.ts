@@ -355,7 +355,6 @@ export class FederationStateFeedConsumerService {
                 {
                   group: {
                     account: normalizeAccount(item.account),
-                    domain: peerDomain,
                     namespaceId,
                   },
                   memberAccount: normalizeAccount(item.peerAccount),
@@ -493,7 +492,6 @@ export class FederationStateFeedConsumerService {
           }
           let target = await this.resolveStateFeedTargetInTransaction(
             tx,
-            peerDomain,
             namespaceId,
             threadAddress,
           );
@@ -505,7 +503,6 @@ export class FederationStateFeedConsumerService {
           if (!threadLock) continue;
           target = await this.resolveStateFeedTargetInTransaction(
             tx,
-            peerDomain,
             namespaceId,
             threadAddress,
           );
@@ -566,7 +563,6 @@ export class FederationStateFeedConsumerService {
 
   private async resolveStateFeedTargetInTransaction(
     tx: DatabaseTransaction,
-    sourceDomain: string,
     namespaceId: number,
     thread: FederationThreadAddress,
   ): Promise<{ threadId: number; reverseEnabled: boolean } | null> {
@@ -593,10 +589,10 @@ export class FederationStateFeedConsumerService {
     }
     const result = await tx.execute<{
       threadId: number;
-      groupDomain: string;
+      groupNamespaceId: number;
     }>(sql`
       SELECT message_thread.id AS "threadId",
-             group_user.domain AS "groupDomain"
+             group_user."namespaceId" AS "groupNamespaceId"
       FROM "MessageThread" message_thread
       JOIN ${groupStateSql} group_user ON group_user.id = message_thread.id
       WHERE message_thread.type = 'GROUP'
@@ -612,8 +608,7 @@ export class FederationStateFeedConsumerService {
                 AND audience."localUserId" IS NULL
             ))
           OR
-          (group_user.domain = ${sourceDomain}
-            AND group_user."namespaceId" = ${namespaceId}
+          (group_user."namespaceId" = ${namespaceId}
             AND EXISTS (
               SELECT 1
               -- Retained participant history survives departure. Only an active
@@ -633,7 +628,9 @@ export class FederationStateFeedConsumerService {
     return resolved
       ? {
           threadId: resolved.threadId,
-          reverseEnabled: resolved.groupDomain === sourceDomain,
+          // Only the origin of a mirror may push its canonical head; identity
+          // is the authority namespace, not a domain string.
+          reverseEnabled: resolved.groupNamespaceId === namespaceId,
         }
       : null;
   }

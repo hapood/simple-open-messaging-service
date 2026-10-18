@@ -13,7 +13,6 @@ function transaction(pairChanged: boolean) {
         rows: [
           {
             groupAccount: '!group',
-            groupDomain: 'peer.test',
             groupNamespaceId: 9,
             memberAccount: 'alice',
             memberDomain: 'local',

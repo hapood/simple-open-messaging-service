@@ -2,7 +2,7 @@ import { sql, type SQL } from 'drizzle-orm';
 
 /** Relationship-intent client feed writes → body dedupe, one allocation block per recipient, upsert,
  * result. `candidate_bodies` must select "userId", "namespaceId", ordinal,
- * "compactionKey", account, domain, "subjectAccount", "subjectNamespaceId", body —
+ * "compactionKey", account, "subjectAccount", "subjectNamespaceId", body —
  * one row per (recipient, direction); a recipient may hold several. A repeated
  * identical body neither allocates a feed id nor wakes anyone, matching
  * ClientStateFeedService.writeInTx's body-level dedupe. Callers may force a
@@ -23,8 +23,8 @@ export function clientIntentFeedWriteSql(options?: { force?: SQL }): SQL {
       RETURNING a.id AS "userId", a."clientStateFeedEndId" AS "allocatedThrough"
     ), recipient_feed AS (
       INSERT INTO "ClientStateFeed"
-        ("userId", account, domain, "namespaceId", "eventType", "subjectAccount", "subjectNamespaceId", "feedId", "compactionKey", body)
-      SELECT f."userId", f.account, f.domain, f."namespaceId", 'RELATIONSHIP_INTENT',
+        ("userId", account, "namespaceId", "eventType", "subjectAccount", "subjectNamespaceId", "feedId", "compactionKey", body)
+      SELECT f."userId", f.account, f."namespaceId", 'RELATIONSHIP_INTENT',
         f."subjectAccount", f."subjectNamespaceId",
         a."allocatedThrough" - f.total + f.position, f."compactionKey", f.body
       FROM fresh_bodies f JOIN recipient_alloc a ON a."userId" = f."userId"

@@ -142,7 +142,7 @@
                     | transloco: { count: remainingDirectMessageCount() }
                 "
               >
-                <app-user-avatar
+                <app-demand-avatar
                   [type]="UserAvatarType.SELF"
                   [name]="selfProfile()?.name || selfProfile()?.account || ''"
                   [account]="selfProfile()?.account"
@@ -209,13 +209,13 @@
                   (click)="toggleConversation(item)"
                 >
                   <span class="forward-dialog__recent-avatar">
-                    <app-user-avatar
+                    <app-demand-avatar
                       [type]="avatarType(item)"
                       [name]="displayName(item)"
                       [account]="avatarAccount(item)"
                       [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(item) }"
                       [profile]="avatarProfile(item)"
-                    ></app-user-avatar>
+                    />
                     <span
                       class="forward-dialog__recent-check"
                       aria-hidden="true"
@@ -251,13 +251,13 @@
               (click)="toggleConversation(item)"
             >
               <span class="forward-dialog__avatar">
-                <app-user-avatar
+                <app-demand-avatar
                   [type]="avatarType(item)"
                   [name]="displayName(item)"
                   [account]="avatarAccount(item)"
                   [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(item) }"
                   [profile]="avatarProfile(item)"
-                ></app-user-avatar>
+                />
               </span>
               <span class="forward-dialog__recipient-name">{{
                 displayName(item)

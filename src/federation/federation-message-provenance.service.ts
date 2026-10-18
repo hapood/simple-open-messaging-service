@@ -37,8 +37,8 @@ export interface MessageProvenanceResult {
  *
  * Lookup is driven by the indexed `payloadDigest` column: a message whose retained digest matches
  * the query and whose `(threadId, seq)` resolves to the query thread answers `yes`. The thread
- * resolution reuses the same `groupAccount`/`groupDomain` columns the message feed uses, so a
- * GROUP thread is matched by its group account and a P2P thread by its account pair through the
+ * resolution reuses the same group account / account-pair coordinates the message feed uses, so
+ * a GROUP thread is matched by its group account and a P2P thread by its account pair through the
  * relationship that owns the thread.
  */
 @Injectable()
@@ -151,8 +151,8 @@ export class FederationMessageProvenanceService {
       .limit(1);
     if (!thread) return false;
     // GROUP: the wire thread is `{ account: GroupAccount }` and the local thread carries the same
-    // group account. A local authoritative group also sets groupDomain, but the wire address
-    // carries only the account, so matching by account is the contract.
+    // group account; the wire address carries only the account, so matching by account is the
+    // contract.
     if ('peerAccount' in queryThread) {
       if (thread.type !== 'P2P') return false;
       // A retained pair identifies the historical thread even after revocation.

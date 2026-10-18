@@ -14,7 +14,7 @@ function source(threadId: number) {
     kind: 'GROUP' as const,
     threadId,
     peerDomain: threadId === 2 ? 'b.test' : 'a.test',
-    selector: { account: `!group-${threadId}` },
+    demand: { account: `!group-${threadId}` },
   };
 }
 

@@ -1,3 +1,4 @@
+import { parseRequestSnapshot, type RequestSnapshot } from '../../shared/request-snapshot.js';
 import { hasEstablishedThreadRelationship } from '../relationship/shared/relationship-authorization.js';
 
 import { HttpStatus, Injectable, OnModuleDestroy } from '@nestjs/common';
@@ -6,7 +7,6 @@ import { and, asc, eq, gt, lte, sql } from 'drizzle-orm';
 import {
   account,
   clientStateFeed,
-  identityNamespace,
   groupMeta,
   groupRequestProjection,
 } from '../database/schema.js';
@@ -21,7 +21,6 @@ import type { RequestProjectionStatusValue } from '../../shared/request-projecti
 export interface ClientStateFeedWrite {
   userId: number;
   account: string;
-  domain: string;
   eventType: 'RELATIONSHIP_INTENT' | 'INCOMING_INVITE_HEAD';
   /** Federation context owning this fact. If either relationship endpoint is federated, both
    * authored directions use that captured namespace; only wholly local facts use namespace 0. */
@@ -197,6 +196,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
       profileNamespaceId: number;
       memberProfileRev: number;
       direction: 'APPLICATION' | 'INVITATION';
+      snapshot: RequestSnapshot | null;
       status: RequestProjectionStatusValue;
       note: string;
       requestedAt: Date | null;
@@ -206,6 +206,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
     const [current] = await tx
       .select({
         status: groupRequestProjection.status,
+        snapshot: groupRequestProjection.snapshot,
         note: groupRequestProjection.note,
         memberProfileRev: groupRequestProjection.memberProfileRev,
         requestedAt: groupRequestProjection.requestedAt,
@@ -230,10 +231,14 @@ export class ClientStateFeedService implements OnModuleDestroy {
     const expiresAt = write.expiresAt ?? current?.expiresAt;
     if (!requestedAt || !expiresAt) return null;
     const note = write.note || current?.note || '';
+    const snapshot = write.direction === 'INVITATION'
+      ? parseRequestSnapshot(write.status === 'REQUESTED' ? write.snapshot : current?.snapshot)
+      : null;
     if (
       current?.status === write.status &&
       current.memberProfileRev === write.memberProfileRev &&
       current.note === note &&
+      isDeepStrictEqual(current.snapshot, snapshot) &&
       current.requestedAt.getTime() === requestedAt.getTime() &&
       current.expiresAt.getTime() === expiresAt.getTime()
     )
@@ -266,7 +271,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
     const feedId = feed.feedId;
     await tx
       .insert(groupRequestProjection)
-      .values({ ...write, note, requestedAt, expiresAt, feedId })
+      .values({ ...write, snapshot, note, requestedAt, expiresAt, feedId })
       .onConflictDoUpdate({
         target: [
           groupRequestProjection.threadId,
@@ -277,6 +282,7 @@ export class ClientStateFeedService implements OnModuleDestroy {
         set: {
           feedId,
           memberProfileRev: write.memberProfileRev,
+          snapshot,
           status: write.status,
           note,
           requestedAt,
@@ -296,10 +302,8 @@ export class ClientStateFeedService implements OnModuleDestroy {
       const [owner] = await tx
         .select({
           allocatedThrough: account.clientStateFeedEndId,
-          domain: identityNamespace.domain,
         })
         .from(account)
-        .innerJoin(identityNamespace, eq(identityNamespace.id, 0))
         .where(eq(account.id, userId))
         .for('no key update')
         .limit(1);
@@ -318,7 +322,6 @@ export class ClientStateFeedService implements OnModuleDestroy {
           and(
             eq(clientStateFeed.userId, userId),
             eq(clientStateFeed.account, ''),
-            eq(clientStateFeed.domain, owner.domain),
             eq(clientStateFeed.eventType, 'INCOMING_INVITE_HEAD'),
             eq(clientStateFeed.subjectAccount, ''),
             eq(clientStateFeed.subjectNamespaceId, 0),
@@ -336,7 +339,6 @@ export class ClientStateFeedService implements OnModuleDestroy {
       const feedId = await this.writeInTx(tx, {
         userId,
         account: '',
-        domain: owner.domain,
         namespaceId: 0,
         eventType: 'INCOMING_INVITE_HEAD',
         subjectAccount: '',

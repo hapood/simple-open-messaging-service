@@ -189,14 +189,14 @@
             [subtitle]="emptyHintKey() | transloco"
           >
             <span class="msg-empty-avatar">
-              <app-user-avatar
+              <app-demand-avatar
                 [type]="emptyAvatarType()"
                 [name]="emptyTitle()"
                 [account]="emptyAvatarAccount()"
                 [domainSource]="{ type: 'namespace', namespaceId: emptyAvatarNamespaceId() }"
                 [profile]="emptyAvatarProfile()"
               >
-              </app-user-avatar>
+              </app-demand-avatar>
             </span>
           </app-empty-state>
         </div>
@@ -576,7 +576,7 @@
           @if (composingQuote(); as quote) {
             <div composer-prefix class="msg-compose-quote">
               @if (quote.imageShape === 'avatar') {
-                <app-user-avatar
+                <app-snapshot-avatar
                   class="msg-compose-quote-avatar"
                   [type]="quoteAvatarType(quote.imageIdentity)"
                   [name]="quote.imageLabel"

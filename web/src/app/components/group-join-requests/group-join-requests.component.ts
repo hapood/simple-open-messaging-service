@@ -1,3 +1,8 @@
+import { HttpClient } from '@angular/common/http';
+import { avatarBlobDataUrl } from '../../services/profile-avatar-bytes';
+import { assetUrl } from '../../services/runtime';
+import { parseRequestSnapshot } from '../../../../../shared/request-snapshot';
+import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
 import { RequestProjectionStatus } from '../../../../../shared/request-projection-status';
 import {
   ChangeDetectionStrategy,
@@ -21,10 +26,9 @@ import {
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { PageHeaderComponent } from '../page-header/page-header.component';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
+import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import { UserIdentityLabelComponent } from '../user-identity-label/user-identity-label.component';
 import { ToastService } from '../../services/toast.service';
 import { translateBizResult } from '../../services/biz-code';
@@ -52,7 +56,8 @@ type RequestListKind = 'INVITATION' | 'APPLICATION';
     MatTabsModule,
     PageHeaderComponent,
     TranslocoPipe,
-    UserAvatarComponent,
+    DemandAvatarComponent,
+    SnapshotAvatarComponent,
     UserIdentityLabelComponent,
     NamespaceDomainPipe,
   ],
@@ -63,6 +68,7 @@ type RequestListKind = 'INVITATION' | 'APPLICATION';
 export class GroupJoinRequestsComponent implements OnDestroy {
   readonly UserAvatarType = UserAvatarType;
   private readonly groups = inject(GroupService);
+  private readonly http = inject(HttpClient);
   private readonly conversations = inject(ConversationListService);
   private readonly users = inject(UserService);
   private readonly nav = inject(NavStateMachineService);
@@ -108,6 +114,20 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     } else {
       void this.loadRequests('INVITATION', false);
     }
+  }
+
+  invitationSnapshot(request: GroupJoinRequest) {
+    return parseRequestSnapshot(request.snapshot);
+  }
+
+  applicationProfile(request: GroupJoinRequest): AvatarProfileRef {
+    return {
+      account: request.account,
+      publisherNamespaceId: request.namespaceId,
+      profileNamespaceId: 0,
+      rev: request.profileRev,
+      linked: request.status === 'REQUESTED' || request.status === 'ACCEPTED',
+    };
   }
 
   close(): void {
@@ -226,11 +246,19 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       return;
     this.inviting.update((ids) => new Set(ids).add(key));
     try {
+      const avatar = candidate.avatar
+        ? candidate.avatar.startsWith('data:')
+          ? candidate.avatar
+          : await avatarBlobDataUrl(await firstValueFrom(
+              this.http.get(assetUrl(candidate.avatar), { responseType: 'blob' }),
+            ))
+        : null;
+      const snapshot = parseRequestSnapshot({ displayName: candidate.name, avatar });
       const res = await firstValueFrom(
         this.groups.inviteUsers({
           groupId,
           users: [
-            { account: candidate.account, namespaceId: candidate.namespaceId },
+            { account: candidate.account, namespaceId: candidate.namespaceId, snapshot },
           ],
         }),
       );

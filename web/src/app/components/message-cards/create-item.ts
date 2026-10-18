@@ -4,7 +4,10 @@ import {
   EnvironmentInjector,
   InputSignal,
   Type,
+  signal,
 } from '@angular/core';
+import { BehaviorSubject, distinctUntilChanged, switchMap } from 'rxjs';
+import { messageSenderKey } from './message-sender';
 import type { CbElement, CbItem } from '../../lib/chat-box/chat-box-scroller';
 import {
   classifyGroupFlags,
@@ -22,10 +25,10 @@ import { SystemRowComponent } from './system-row/system-row.component';
 import { MessagePressGesture } from './message-press-gesture';
 import { parseForwardCard } from './forward-row/forward-card';
 import { writeStickyAvatarIdentity } from '../../lib/sticky-avatar';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { AvatarComponent } from '../user-avatar/avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
+import type { AvatarView } from '../user-avatar/avatar-view';
+import { MessageSenderService } from './message-sender.service';
 
 /**
  * Common shape of the message-row components: they all bind the same 4 signal inputs. Used to type
@@ -187,7 +190,9 @@ export function createMsgCbElement(
     anchor: import('../../services/history-anchor').HistoryAnchor,
   ) => void,
   onOpenMemberProfile?: (
-    profile: import('../../services/avatar-profile-ref').AvatarProfileRef | undefined,
+    profile:
+      | import('../../services/avatar-profile-ref').AvatarProfileRef
+      | undefined,
     anchor: DOMRect,
   ) => void,
 ): CbElement<ChatItemData> {
@@ -213,8 +218,8 @@ export function createMsgCbElement(
 
   const ref = createComponent(comp, { environmentInjector: envInjector });
   // createComponent() only constructs the view; it does not enroll it in Angular's application view
-  // tree. Message rows contain async, signal-driven children (notably UserAvatarComponent, whose IDB
-  // blob resolves after the first render), so leaving the host view detached freezes those children at
+  // tree. Message rows contain async, signal-driven children (including sender presentation, whose profile
+  // bytes resolve after the first render), so leaving the host view detached freezes those children at
   // their initial fallback until some unrelated scroller update happens to call detectChanges().
   const appRef = envInjector.get(ApplicationRef);
   appRef.attachView(ref.hostView);
@@ -234,7 +239,7 @@ export function createMsgCbElement(
   // Every message keeps a pre-mounted tail avatar. The sticky controller reveals only the tail of the
   // active sender group at the exact fixed-avatar handoff; keeping the image component alive makes the
   // reverse (above→viewport) handoff synchronous as well.
-  const tailAvatarRef = createComponent(UserAvatarComponent, {
+  const tailAvatarRef = createComponent(AvatarComponent, {
     environmentInjector: envInjector,
   });
   appRef.attachView(tailAvatarRef.hostView);
@@ -244,19 +249,20 @@ export function createMsgCbElement(
   (ref.location.nativeElement as HTMLElement)
     .querySelector<HTMLElement>('.msg-row')
     ?.appendChild(tailAvatar);
-  const updateTailAvatar = (message: ChatMsgData): void => {
-    tailAvatarRef.setInput(
-      'type',
-      message.isSelf ? UserAvatarType.SELF : UserAvatarType.OTHER,
-    );
-    tailAvatarRef.setInput('name', message.name);
-    tailAvatarRef.setInput('account', message.avatarAccount);
-    tailAvatarRef.setInput('domainSource', message.avatarDomainSource);
-    tailAvatarRef.setInput('src', message.snapshotAvatarUrl);
-    tailAvatarRef.setInput('profile', message.avatarProfile);
+  const senderView = signal<AvatarView>({
+    name: data.name,
+    imageUrl: null,
+    type: data.isSelf ? UserAvatarType.SELF : UserAvatarType.OTHER,
+  });
+  const senderMessages = new BehaviorSubject(data);
+  const updateSenderView = (view: AvatarView): void => {
+    senderView.set(view);
+    if (data.type !== 'system') ref.setInput('senderView', view);
+    tailAvatarRef.setInput('view', view);
+    ref.changeDetectorRef.detectChanges();
     tailAvatarRef.changeDetectorRef.detectChanges();
   };
-  updateTailAvatar(data);
+  updateSenderView(senderView());
 
   // In-place re-render (CbElement.update): recompute grouping + date from the (possibly new) prev and re-apply all four
   // signal inputs on the SAME component instance + DOM node, then drive change detection synchronously so the kernel's
@@ -280,12 +286,8 @@ export function createMsgCbElement(
       host.dataset['messageCreator'] = String(message.creator);
       host.dataset['messageSide'] = message.isSelf ? 'self' : 'other';
       writeStickyAvatarIdentity(host, {
-        name: message.name,
-        avatarProfile: message.avatarProfile,
-        snapshotAvatarUrl: message.snapshotAvatarUrl,
+        presentation: senderView,
         identityId: message.avatarIdentityId,
-        account: message.avatarAccount,
-        domainSource: message.avatarDomainSource,
       });
       const naturalAvatar = host.querySelector<HTMLElement>(
         '.msg-has-avatar > .msg-avatar:not(.msg-avatar-tail)',
@@ -322,8 +324,8 @@ export function createMsgCbElement(
     if (comp === MediaRowComponent) {
       ref.setInput('clientMessageId', nextItem.clientMessageId ?? '');
     }
+    senderMessages.next(nextItem.data as ChatMsgData);
     ref.changeDetectorRef.detectChanges();
-    updateTailAvatar(nextItem.data as ChatMsgData);
     applyGroupPosition(ref.location.nativeElement, flags.groupPosition);
     interactionItem = nextItem;
     interactionIsShowHead = flags.isShowHead;
@@ -355,7 +357,26 @@ export function createMsgCbElement(
     wrapper.append(divider, ref.location.nativeElement);
     measuredHost = wrapper;
   }
+  const senderSubscription = senderMessages
+    .pipe(
+      distinctUntilChanged(
+        (previous, next) =>
+          messageSenderKey(previous) === messageSenderKey(next),
+      ),
+      switchMap((message) => {
+        // A new subject clears the old presentation synchronously, even while resolution is pending.
+        updateSenderView({
+          name: message.name,
+          imageUrl: null,
+          type: message.isSelf ? UserAvatarType.SELF : UserAvatarType.OTHER,
+        });
+        return envInjector.get(MessageSenderService).resolve(message);
+      }),
+    )
+    .subscribe(updateSenderView);
   const el = wrapEl(ref, update, updateNext, measuredHost, () => {
+    senderSubscription.unsubscribe();
+    senderMessages.complete();
     appRef.detachView(tailAvatarRef.hostView);
     tailAvatarRef.destroy();
     appRef.detachView(ref.hostView);
@@ -372,7 +393,10 @@ export function createMsgCbElement(
       if (!avatar || current.type !== 'msg') return;
       event.preventDefault();
       event.stopPropagation();
-      onOpenMemberProfile(current.avatarProfile, avatar.getBoundingClientRect());
+      onOpenMemberProfile(
+        current.sender?.kind === 'demand' ? current.sender.profile : undefined,
+        avatar.getBoundingClientRect(),
+      );
     };
     el.el.addEventListener('click', openMemberProfile);
     const baseDestroy = el.destroy;

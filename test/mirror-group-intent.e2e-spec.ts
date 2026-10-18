@@ -261,7 +261,6 @@ describe('mirror group intent application', () => {
     expect(thread).toMatchObject({
       type: 'GROUP',
       groupAccount: group.account,
-      groupDomain: group.domain,
       authorityNamespaceId: group.namespaceId,
     });
     expect(sideA).toMatchObject({
@@ -618,6 +617,11 @@ describe('mirror group intent application', () => {
         requestDirection: 'OUTGOING',
       });
 
+    const concluded = (await findPair(bob.account)).intents;
+    const outbound = await peerItems(group.namespaceId);
+    await run(bob, revocationBody());
+    expect((await findPair(bob.account)).intents).toEqual(concluded);
+    expect(await peerItems(group.namespaceId)).toEqual(outbound);
     await database.db.transaction((tx) =>
       app
         .get(GroupRelationshipMutationService)
@@ -628,6 +632,9 @@ describe('mirror group intent application', () => {
           'REQUESTED',
           [],
           'new application',
+          {
+            snapshot: { displayName: 'Group on new application', avatar: null },
+          },
         ),
     );
     const renewed = await findPair(bob.account);
@@ -682,6 +689,7 @@ describe('mirror group intent application', () => {
         threadId: pair!.threadId!,
         memberUserId: bob.id,
         decision: 'REQUESTED',
+        snapshot: { displayName: 'Group at rejoin', avatar: null },
       }),
     ).toMatchObject({ status: 'APPLIED' });
     const rejoined = await findPair(bob.account);
@@ -725,6 +733,7 @@ describe('mirror group intent application', () => {
       threadId,
       memberUserId: bob.id,
       decision: 'REQUESTED',
+      snapshot: { displayName: 'Group at reapplication', avatar: null },
     });
     expect((await findPair(bob.account)).pair?.active).toBe(false);
     const retained = await database.db.query.accountThreadState.findFirst({

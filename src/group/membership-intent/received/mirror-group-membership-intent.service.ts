@@ -62,7 +62,7 @@ interface MirrorGroupMembershipIntentBody {
 /** One command: apply a received group-authored intent to the local mirror
  * inside the State Feed consumer transaction. */
 export interface MirrorGroupMembershipIntentCommand {
-  group: { account: string; domain: string; namespaceId: number };
+  group: { account: string; namespaceId: number };
   /** The item's subject — the local member this group intent addresses. */
   memberAccount: string;
   body: MirrorGroupMembershipIntentBody;
@@ -176,15 +176,14 @@ export class MirrorGroupMembershipIntentService {
     if (!member)
       throw new InvalidMirrorItemError('mirror member does not exist');
 
-    // Lock order: the group ACCOUNT scope at the authority domain, before the
-    // Pair scope, once per transaction (the shell mint's inner acquisition is
+    // Lock order: the group ACCOUNT scope at the authority namespace, before
+    // the Pair scope, once per transaction (the shell mint's inner acquisition is
     // re-entrant).
     let threadId: number;
     const shell = await readGroupState(
       tx,
       and(
         eq(groupStateFields.account, group.account),
-        eq(groupStateFields.domain, group.domain),
         eq(groupStateFields.namespaceId, group.namespaceId),
       ),
     );
@@ -199,7 +198,6 @@ export class MirrorGroupMembershipIntentService {
       threadId = (
         await ensureMirrorGroupShellInTx(tx, {
           account: group.account,
-          domain: group.domain,
           namespaceId: group.namespaceId,
         })
       ).threadId;
@@ -224,7 +222,6 @@ export class MirrorGroupMembershipIntentService {
     const stateInput = {
       threadId,
       groupAccount: group.account,
-      groupDomain: group.domain,
       groupNamespaceId: group.namespaceId,
       memberAccount,
     };
@@ -262,7 +259,6 @@ export class MirrorGroupMembershipIntentService {
     ]);
     const presentation: MirrorGroupPresentationInput = {
       groupAccount: group.account,
-      groupDomain: group.domain,
       groupNamespaceId: group.namespaceId,
     };
     const effective = (
@@ -619,7 +615,6 @@ export class MirrorGroupMembershipIntentService {
         'REVOKED',
         clientUpdates,
         '',
-        undefined,
         {
           clientRequestStatus: requestStatus,
           clientRequestDirection: requestDirection,
@@ -648,7 +643,6 @@ export class MirrorGroupMembershipIntentService {
     input: {
       threadId: number;
       groupAccount: string;
-      groupDomain: string;
       groupNamespaceId: number;
       memberAccount: string;
     },

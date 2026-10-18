@@ -19,8 +19,7 @@ function row(feedId: number, status: GroupJoinRequest['status'] = 'REQUESTED') {
     namespaceId: 0,
     profileRev: 1,
     account: `user-${feedId}`,
-    name: `User ${feedId}`,
-    avatar: '',
+    snapshot: null,
     note: '',
     requestedAt: null,
     expiresAt: null,
@@ -154,7 +153,7 @@ describe('GroupJoinRequestsComponent', () => {
     await component.invite(candidate);
     expect(groups.inviteUsers).toHaveBeenCalledWith({
       groupId: 7,
-      users: [{ account: 'friend', namespaceId: 7 }],
+      users: [{ account: 'friend', namespaceId: 7, snapshot: { displayName: 'Friend', avatar: null } }],
     });
     expect(component.candidates()[0].state).toBe('INVITED');
   });

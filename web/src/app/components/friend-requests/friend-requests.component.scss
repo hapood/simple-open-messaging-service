@@ -530,7 +530,7 @@ $danger: var(--app-danger);
   background: transparent;
   color: var(--app-text);
 
-  app-user-avatar {
+  :is(app-demand-avatar, app-snapshot-avatar) {
     width: 64px;
     height: 64px;
     flex: 0 0 64px;

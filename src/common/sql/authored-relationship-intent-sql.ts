@@ -1,3 +1,8 @@
+import type { RequestSnapshot } from '../../../shared/request-snapshot.js';
+import {
+  authoredRequestSnapshotSql,
+  retainedRequestSnapshotSql,
+} from '../../relationship/shared/request-snapshot-sql.js';
 import { sql } from 'drizzle-orm';
 import type { RelationshipIntentStatus } from '../relationship-intent-state.js';
 
@@ -11,13 +16,15 @@ export function authoredIntentWriteSql(params: {
   author: { account: string; namespaceId: number };
   receiver: { account: string; namespaceId: number };
   threadId: number | null;
-  status: RelationshipIntentStatus;
   note: string;
   requestedAt: Date | null;
   expiresAt: Date | null;
   /** Explicit profile revision selected by an authorized revocation command. */
   profileRev?: number;
-}) {
+} & (
+  | { status: 'REQUESTED'; snapshot: RequestSnapshot }
+  | { status: 'ACCEPTED' | 'REVOKED'; snapshot?: never }
+)) {
   const { status, requestedAt, expiresAt, profileRev } = params;
   const refreshRevocation = profileRev !== undefined;
   if (
@@ -32,7 +39,7 @@ export function authoredIntentWriteSql(params: {
       INSERT INTO "RelationshipIntent" (
         "authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId",
         status, "profileNamespaceId", "profileRev", note, "messageEndSeq", "tombstoneEndSeq",
-        "requestedAt", "expiresAt", "updatedAt"
+        "requestedAt", "expiresAt", "updatedAt", snapshot
       ) VALUES (${params.author.account}, ${params.author.namespaceId},
         ${params.receiver.account}, ${params.receiver.namespaceId},
         ${status}::"RelationshipIntentStatus", 0,
@@ -55,9 +62,11 @@ export function authoredIntentWriteSql(params: {
         COALESCE((SELECT MAX(d."deletionSeq") FROM "DeletedMessage" d
           JOIN "Message" m ON m."threadId" = d."threadId" AND m.seq = d."messageSeq"
           WHERE d."threadId" = ${params.threadId} AND d."publisherNamespaceId" = 0), 0),
-        ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP)
+        ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP,
+        ${authoredRequestSnapshotSql({ authorNamespaceId: params.author.namespaceId, status, snapshot: params.status === 'REQUESTED' ? params.snapshot : null })})
       ON CONFLICT ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId") DO UPDATE SET
         status = EXCLUDED.status, note = EXCLUDED.note,
+        snapshot = ${retainedRequestSnapshotSql()},
         "messageEndSeq" = CASE WHEN EXCLUDED.status = 'REVOKED'
           THEN "RelationshipIntent"."messageEndSeq" ELSE EXCLUDED."messageEndSeq" END,
         "tombstoneEndSeq" = CASE WHEN EXCLUDED.status = 'REVOKED'
@@ -79,6 +88,6 @@ export function authoredIntentWriteSql(params: {
          OR (${refreshRevocation} AND EXCLUDED.status = 'REVOKED'
            AND "RelationshipIntent"."profileRev" IS DISTINCT FROM EXCLUDED."profileRev")
       RETURNING "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
-        "messageEndSeq", "tombstoneEndSeq"
+        "messageEndSeq", "tombstoneEndSeq", snapshot
   `;
 }

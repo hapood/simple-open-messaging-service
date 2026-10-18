@@ -112,7 +112,6 @@ describe('profile wire contracts across isolated federation servers', () => {
       .values({
         type: 'GROUP',
         groupAccount: group,
-        groupDomain: FED_DOMAIN_A,
         groupAccountId: control.id,
         authorityNamespaceId: 0,
         updatedAt: new Date(),

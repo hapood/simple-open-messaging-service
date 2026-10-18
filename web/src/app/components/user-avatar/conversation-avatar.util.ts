@@ -2,7 +2,7 @@ import type { ConversationItem } from '../../services/model';
 import { UserAvatarType } from './model';
 
 /**
- * Derive `<app-user-avatar>` inputs from a {@link ConversationItem}. The single source of truth shared by
+ * Derive `<app-demand-avatar>` inputs from a {@link ConversationItem}. The single source of truth shared by
  * every surface that renders a conversation avatar (the conversation list, the empty-thread hero, …) so the
  * selected profile evidence stays identical across surfaces, so each surface reads
  * the same digest-addressed avatar bytes.
@@ -29,4 +29,4 @@ export function conversationAvatarSrc(
 
 // The thread→profile mapping (pinned revision, ACTIVE-linked authorization) lives in
 // services/avatar-profile-ref.ts as `conversationAvatarProfile`; components pass the returned
-// domain ref to <app-user-avatar [profile]>, which owns the demand form and resolution.
+// domain ref to <app-demand-avatar [profile]>, which owns the demand form and resolution.

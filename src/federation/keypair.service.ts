@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { randomBytes } from 'node:crypto';
-import { and, eq, gt, sql } from 'drizzle-orm';
+import { eq, gt, sql } from 'drizzle-orm';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { DatabaseService } from '../database/database.service.js';
@@ -17,7 +17,6 @@ import {
   localFederationRoot,
   localFederationSigningKey,
   localFederationSigningState,
-  messageThread,
 } from '../database/schema.js';
 import {
   loadFederationConfig,
@@ -673,15 +672,6 @@ export class KeypairService implements OnModuleInit, OnModuleDestroy {
       .update(account)
       .set({ updatedAt: new Date() })
       .where(eq(account.namespaceId, 0));
-    await tx
-      .update(messageThread)
-      .set({ groupDomain: nextDomain, updatedAt: new Date() })
-      .where(
-        and(
-          eq(messageThread.authorityNamespaceId, 0),
-          eq(messageThread.type, 'GROUP'),
-        ),
-      );
     await this.changes.recordNamespaceChangeInTx(tx, 0);
     await this.changes.recordClientChangeInTx(tx, {
       publisherNamespaceId: 0,

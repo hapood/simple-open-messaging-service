@@ -40,12 +40,20 @@ describe('forward reply display', () => {
     }
     expect(first.name).toBe('alice');
     expect(second.name).toBe('alice');
+    expect(first.senderDisplayContext).toBe('forward');
+    expect(second.senderDisplayContext).toBe('forward');
+    expect(first.isGroupConversation).toBeUndefined();
+    expect(second.isGroupConversation).toBeUndefined();
     expect(first.creator).toBe(JSON.stringify(['bundle', 1]));
     expect(second.creator).toBe(JSON.stringify(['bundle', 2]));
     expect(first.avatarIdentityId).toBe(first.creator);
     expect(second.avatarIdentityId).toBe(second.creator);
-    expect(first.avatarAccount).toBeUndefined();
-    expect(first.avatarDomainSource).toBeUndefined();
+    expect(first.sender?.kind).toBe('forward');
+    expect(first.sender).toEqual({
+      kind: 'forward',
+      name: 'alice',
+      imageUrl: null,
+    });
   });
   it('preserves an absent quote without enabling navigation', () => {
     expect(project(reply(0)).quote).toEqual({ seq: 0, status: 'NOT_FOUND' });
@@ -165,16 +173,19 @@ describe('forward snapshot avatar', () => {
       ForwardDetailComponent.prototype,
     ) as ForwardDetailComponent;
     Object.assign(component, { closure: signal(closure) });
-    return component['toMsgData'](message, 1, closure);
+    const item = component['toMsgData'](message, 1, closure);
+    if (item.sender?.kind !== 'forward')
+      throw new Error('expected forward source');
+    return item.sender.imageUrl;
   }
 
   it('resolves an avatar by digest from the wire asset descriptors', () => {
-    expect(project(bundle).snapshotAvatarUrl).toBe(
+    expect(project(bundle)).toBe(
       `/uploads/msg-assets/aa/aa/${digest}?threadId=42&seq=7`,
     );
   });
 
   it('falls back when the snapshot has no matching asset', () => {
-    expect(project({ ...bundle, assets: [] }).snapshotAvatarUrl).toBe('');
+    expect(project({ ...bundle, assets: [] })).toBeNull();
   });
 });

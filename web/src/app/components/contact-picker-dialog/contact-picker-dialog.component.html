@@ -3,7 +3,7 @@
   <div class="contact-picker-list">
     @for (item of items(); track item.threadId) {
       <button type="button" (click)="choose(item)">
-        <app-user-avatar
+        <app-demand-avatar
           [type]="avatarType(item)"
           [name]="displayName(item)"
           [account]="avatarAccount(item)"

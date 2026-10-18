@@ -24,7 +24,7 @@
       <div class="identity">
         <span class="profile-avatar">
           @if (group(); as identity) {
-            <app-user-avatar
+            <app-demand-avatar
               [type]="UserAvatarType.GROUP"
               [name]="identity.name"
               [account]="identity.account"
@@ -200,14 +200,14 @@
         >
           <span class="avatar-stack" aria-hidden="true">
             @for (m of overviewMembers(); track m.identityKey) {
-              <app-user-avatar
+              <app-demand-avatar
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
                 [account]="m.account"
                 [domainSource]="{ type: 'profile-namespace', publisherNamespaceId: m.publisherNamespaceId, profileNamespaceId: m.namespaceId }"
                 [profile]="memberProfileRef(m)"
                 [title]="m.name"
-              ></app-user-avatar>
+              />
             }
             @if (remainingMemberCount() > 0) {
               <span class="more-avatar">+{{ remainingMemberCount() }}</span>
@@ -342,7 +342,7 @@
       <div class="profile-editor-body">
         <label class="avatar-edit">
           @if (group(); as identity) {
-            <app-user-avatar
+            <app-snapshot-avatar
               [type]="UserAvatarType.GROUP"
               [name]="nameEdit()"
               [account]="identity.account"
@@ -409,13 +409,13 @@
         @for (m of filteredRoster(); track m.identityKey) {
           <div class="member">
             <div class="member-main">
-              <app-user-avatar
+              <app-demand-avatar
                 [type]="UserAvatarType.OTHER"
                 [name]="m.name"
                 [account]="m.account"
                 [domainSource]="{ type: 'profile-namespace', publisherNamespaceId: m.publisherNamespaceId, profileNamespaceId: m.namespaceId }"
                 [profile]="memberProfileRef(m)"
-              ></app-user-avatar>
+              />
               <div class="member-info">
                 <span class="member-name"
                   >{{ m.name }}

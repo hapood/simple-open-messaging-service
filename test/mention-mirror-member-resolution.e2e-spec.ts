@@ -63,7 +63,6 @@ describe('mention target resolution across group authority modes', () => {
       .values({
         type: 'GROUP',
         groupAccount: `!mirror-mention-${suffix}`,
-        groupDomain: `mirror-mention-${suffix}.test`,
         authorityNamespaceId: peerNamespaceId,
         updatedAt: new Date(),
       })
@@ -82,7 +81,6 @@ describe('mention target resolution across group authority modes', () => {
       .values({
         type: 'GROUP',
         groupAccount: `!authority-mention-${suffix}`,
-        groupDomain: 'local',
         groupAccountId: authorityGroup.id,
         authorityNamespaceId: 0,
         updatedAt: new Date(),

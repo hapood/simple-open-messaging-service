@@ -52,9 +52,9 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
     ), authored AS (
       ${authoredSql}
     ), accepted AS MATERIALIZED (
-      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt" FROM authored
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt", snapshot FROM authored
       UNION ALL
-      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
+      SELECT "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt", snapshot
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.actorAccount} AND "authorNamespaceId" = ${input.actorNamespaceId}
         AND "receiverAccount" = ${input.targetAccount} AND "receiverNamespaceId" = ${input.targetNamespaceId}
@@ -66,7 +66,7 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
         AND "receiverAccount" = ${input.actorAccount} AND "receiverNamespaceId" = ${input.actorNamespaceId}
         AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
         AND ${remote ? sql`false` : sql`true`} AND EXISTS (SELECT 1 FROM authored)
-      RETURNING "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
+      RETURNING "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt", snapshot
     ), pair_change AS (
       UPDATE "RelationshipPair" SET active = true, established = true,
         "updatedAt" = CURRENT_TIMESTAMP

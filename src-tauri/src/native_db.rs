@@ -254,14 +254,11 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           source_label TEXT,
           subject_id INTEGER,
           subject_account TEXT,
-          subject_domain TEXT,
           subject_namespace_id INTEGER,
-          subject_name TEXT,
           subject_avatar TEXT,
           subject_bio TEXT,
-          subject_description TEXT,
-          subject_is_local INTEGER,
           subject_profile_rev INTEGER,
+          snapshot_json TEXT CHECK(snapshot_json IS NULL OR json_valid(snapshot_json)),
           PRIMARY KEY (user_id, stable_key)
         );
         CREATE INDEX IF NOT EXISTS relationship_requests_direction_status

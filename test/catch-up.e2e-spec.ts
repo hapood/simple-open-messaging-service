@@ -9,7 +9,6 @@ import {
   vi,
 } from 'vitest';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { localIdentityDomain } from './support/local-domain.js';
 import { withMessageDigest } from './support/message-fixture.js';
 import request from 'supertest';
 import { DatabaseService } from '../src/database/database.service';
@@ -149,7 +148,6 @@ describe('client state feed + notification feed', () => {
         feed.writeInTx(tx, {
           userId: recipientId,
           account: 'recip',
-          domain: localIdentityDomain(),
           namespaceId: 0,
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount,
@@ -166,7 +164,6 @@ describe('client state feed + notification feed', () => {
       feed.writeInTx(tx, {
         userId: recipientId,
         account: '',
-        domain: localIdentityDomain(),
         namespaceId: 0,
         eventType: 'INCOMING_INVITE_HEAD',
         subjectAccount: '',

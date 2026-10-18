@@ -17,14 +17,12 @@ export interface FederationInboundMessageRoute {
   creatorAccount: string;
   profileNamespaceId: number;
   authority: 'LOCAL' | 'PEER';
-  federationVersion: number;
   recipients: number[];
   toAccount: string;
 }
 
 export interface FederationInboundTombstoneRoute {
   threadId: number;
-  federationVersion: number;
   recipients: number[];
   authority: 'P2P_HOME' | 'GROUP_ORIGIN' | 'GROUP_MEMBER';
 }
@@ -135,23 +133,19 @@ export class FederationInboundMessageRouteService {
     let authority: FederationInboundMessageRoute['authority'] | undefined;
     let threadRows: Array<{
       threadId: number;
-      federationVersion: number;
       toAccount: string;
     }> = [];
     if (!('peerAccount' in item.thread)) {
       const result = await tx.execute<{
         threadId: number;
-        federationVersion: number;
         toAccount: string;
       }>(sql`
         SELECT thread.id AS "threadId",
-               thread."federationVersion",
                group_user.account AS "toAccount"
         FROM "MessageThread" thread
         JOIN ${groupStateSql} group_user ON group_user.id = thread.id
         WHERE thread.type = 'GROUP'
           AND group_user.account = ${normalizeAccount(item.thread.account)}
-          AND group_user.domain = ${sourceDomain}
           AND group_user."namespaceId" = ${namespaceId}
         LIMIT 1
         FOR SHARE OF thread
@@ -177,11 +171,9 @@ export class FederationInboundMessageRouteService {
       if (threadRows.length === 0) {
         const memberResult = await tx.execute<{
           threadId: number;
-          federationVersion: number;
           toAccount: string;
         }>(sql`
           SELECT thread.id AS "threadId",
-                 thread."federationVersion",
                  group_user.account AS "toAccount"
           FROM "RelationshipPair" pair
           JOIN "MessageThread" thread ON thread.id = pair."threadId"
@@ -222,11 +214,9 @@ export class FederationInboundMessageRouteService {
       }
       const result = await tx.execute<{
         threadId: number;
-        federationVersion: number;
         toAccount: string;
       }>(sql`
         SELECT thread.id AS "threadId",
-               thread."federationVersion",
                local_user.account AS "toAccount"
         FROM "RelationshipPair" pair
         JOIN "MessageThread" thread ON thread.id = pair."threadId"
@@ -323,17 +313,12 @@ export class FederationInboundMessageRouteService {
 
     const rows = await tx.execute<{
       threadId: number;
-      federationVersion: number;
-      groupDomain: string;
     }>(sql`
-      SELECT message_thread.id AS "threadId",
-             message_thread."federationVersion",
-             group_user.domain AS "groupDomain"
+      SELECT message_thread.id AS "threadId"
       FROM "MessageThread" message_thread
       JOIN ${groupStateSql} group_user ON group_user.id = message_thread.id
       WHERE message_thread.type = 'GROUP'
         AND group_user.account = ${normalizeAccount(thread.account)}
-        AND group_user.domain = ${sourceDomain}
         AND group_user."namespaceId" = ${namespaceId}
       LIMIT 1
       FOR SHARE OF message_thread

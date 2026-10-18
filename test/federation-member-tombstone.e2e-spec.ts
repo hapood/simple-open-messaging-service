@@ -48,7 +48,6 @@ describe('member-home tombstone authority', () => {
       .values({
         type: 'GROUP',
         groupAccount,
-        groupDomain: 'local',
         groupAccountId: group.id,
         curSeq: 42,
         updatedAt: new Date(),
@@ -92,7 +91,6 @@ describe('member-home tombstone authority', () => {
           threadId,
           peerDomain,
           peerToken,
-          federationVersion: 0,
           data: {
             tombstones: [
               {
@@ -150,7 +148,6 @@ describe('member-home tombstone authority', () => {
       await database.db
         .update(tables.messageThread)
         .set({
-          groupDomain: peerDomain,
           authorityNamespaceId: namespaceId,
           groupAccountId: null,
         })
@@ -192,7 +189,6 @@ describe('member-home tombstone authority', () => {
     await database.db
       .update(tables.messageThread)
       .set({
-        groupDomain: peerDomain,
         authorityNamespaceId: namespaceId,
         groupAccountId: null,
         tombstoneEndSeq: 1,
@@ -241,7 +237,6 @@ describe('member-home tombstone authority', () => {
       await database.db
         .update(tables.messageThread)
         .set({
-          groupDomain: peerDomain,
           authorityNamespaceId: namespaceId,
           groupAccountId: null,
         })
@@ -270,7 +265,6 @@ describe('member-home tombstone authority', () => {
           namespaceId,
           authority: 'GROUP_ORIGIN',
           resolvedMessage: resolvedMessage!,
-          expectedFederationVersion: 0,
         });
       });
       expect(

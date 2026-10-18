@@ -112,7 +112,6 @@ describe('federated message deletion transaction ordering', () => {
       publisherNamespaceId: namespaceId,
       remoteDeletionSeq,
       type: MessageDeleteType.USER_RETRACTION,
-      expectedFederationVersion: 0,
       authority: 'P2P_HOME',
     });
   }
@@ -188,7 +187,6 @@ describe('federated message deletion transaction ordering', () => {
               ts: item.createdAt,
             },
             incomingText: { text: 'incoming' },
-            expectedFederationVersion: 0,
             originTime: new Date(item.createdAt),
             payloadDigest: wirePayloadDigest(contentType, content, item.assets),
             federationEnvelopeDigest:
@@ -308,7 +306,6 @@ describe('federated message deletion transaction ordering', () => {
       publisherNamespaceId: namespaceId,
       remoteDeletionSeq: 2,
       type: MessageDeleteType.MODERATION_REMOVAL,
-      expectedFederationVersion: 0,
       authority: 'GROUP_ORIGIN' as const,
     };
     expect(await deletions.applyFederated(params)).toEqual({
@@ -360,7 +357,6 @@ describe('federated message deletion transaction ordering', () => {
         publisherNamespaceId: namespaceId,
         remoteDeletionSeq: 2,
         type: MessageDeleteType.MODERATION_REMOVAL,
-        expectedFederationVersion: 0,
         authority: 'GROUP_MEMBER',
       }),
     ).rejects.toThrow(
@@ -696,7 +692,6 @@ describe('federated message deletion transaction ordering', () => {
           .set({
             type: 'GROUP',
             groupAccount: '!lock-parent',
-            groupDomain: peerDomain,
           })
           .where(eq(messageThread.id, threadId));
         scope = { account: '!lock-parent', profileNamespaceId: namespaceId };

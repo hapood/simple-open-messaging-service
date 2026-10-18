@@ -120,11 +120,10 @@ describe('thread-query FORBIDDEN convergence', () => {
     epoch: number,
     members: Array<{
       groupId: number;
-      groupDomain: string;
       memberUserId: number | null;
       memberAccount?: string;
-      memberDomain?: string;
     }>,
+    groupNamespaceId = 0,
   ) {
     const insertedValues = vi.fn(() => ({
       returning: vi.fn().mockResolvedValue([{ taskId: 77n }]),
@@ -137,8 +136,7 @@ describe('thread-query FORBIDDEN convergence', () => {
           rows: [
             {
               groupAccount: '!group',
-              groupDomain: members[0]?.groupDomain ?? 'peer.test',
-              groupNamespaceId: members[0]?.groupDomain === 'peer.test' ? 5 : 0,
+              groupNamespaceId,
             },
           ],
         })
@@ -231,10 +229,14 @@ describe('thread-query FORBIDDEN convergence', () => {
   });
 
   it('leaves a denied mirror unchanged for a later state-feed push', async () => {
-    const harness = groupForbiddenHarness(7, [
-      { groupId: 4, groupDomain: 'peer.test', memberUserId: 1 },
-      { groupId: 4, groupDomain: 'peer.test', memberUserId: 3 },
-    ]);
+    const harness = groupForbiddenHarness(
+      7,
+      [
+        { groupId: 4, memberUserId: 1 },
+        { groupId: 4, memberUserId: 3 },
+      ],
+      5,
+    );
 
     await expect(
       harness.service.handleThreadQueryForbidden(31, 'peer.test', 5, 7),
@@ -260,17 +262,13 @@ describe('thread-query FORBIDDEN convergence', () => {
     const harness = groupForbiddenHarness(7, [
       {
         groupId: 4,
-        groupDomain: 'local',
         memberUserId: null,
         memberAccount: 'remote-2',
-        memberDomain: 'peer.test',
       },
       {
         groupId: 4,
-        groupDomain: 'local',
         memberUserId: null,
         memberAccount: 'remote-5',
-        memberDomain: 'peer.test',
       },
     ]);
 
@@ -304,10 +302,8 @@ describe('thread-query FORBIDDEN convergence', () => {
     const harness = groupForbiddenHarness(8, [
       {
         groupId: 4,
-        groupDomain: 'local',
         memberUserId: null,
         memberAccount: 'remote',
-        memberDomain: 'peer.test',
       },
     ]);
 
@@ -634,12 +630,7 @@ function makeStubs() {
           if (source === messageThread) {
             const row = await store.messageThread.findUnique();
             return row
-              ? [
-                  {
-                    type: row.groupUser ? 'GROUP' : 'P2P',
-                    groupDomain: row.groupUser?.domain ?? null,
-                  },
-                ]
+              ? [{ type: row.groupUser ? 'GROUP' : 'P2P' }]
               : [];
           }
           if (source === threadAudience)
@@ -647,12 +638,12 @@ function makeStubs() {
               ...new Set(
                 (await store.accountThreadState.findMany())
                   .map(
-                    (participant: { user: { domain: string } }) =>
-                      participant.user.domain,
+                    (participant: { user: { namespaceId: number } }) =>
+                      participant.user.namespaceId,
                   )
-                  .filter((domain: string) => domain !== 'local'),
+                  .filter((namespaceId: number) => namespaceId !== 0),
               ),
-            ].map((domain) => ({ domain }));
+            ].map((namespaceId) => ({ namespaceId }));
           return [];
         };
         const query = {
@@ -1177,7 +1168,7 @@ describe('FederationPeerResourceService media authorization gates', () => {
 });
 
 describe('FederationThreadResourceClient preflight', () => {
-  function installPreflight(state?: { federationVersion: number }) {
+  function installPreflight(state?: { id: number }) {
     const { threadResources, trustedPeers, database } = makeStubs();
     const limit = vi.fn().mockResolvedValue(state ? [state] : []);
     const where = vi.fn(() => ({ limit }));
@@ -1193,14 +1184,14 @@ describe('FederationThreadResourceClient preflight', () => {
     return { target: threadResources, getSigned, select, transaction };
   }
 
-  it('captures the active namespace before carrying the thread authorization version', async () => {
+  it('captures the active namespace before asserting the thread exists', async () => {
     const { target, getSigned, select, transaction } = installPreflight({
-      federationVersion: 7,
+      id: 10,
     });
 
     await expect(
       target.read<{ messages: unknown[] }>(10, '/messages', 'peer.test'),
-    ).resolves.toEqual({ data: { messages: [] }, federationVersion: 7 });
+    ).resolves.toEqual({ data: { messages: [] } });
     expect(transaction).toHaveBeenCalledOnce();
     expect(select).toHaveBeenCalledOnce();
     expect(getSigned).toHaveBeenCalledWith('/messages', 'peer.test', undefined);
@@ -1210,13 +1201,13 @@ describe('FederationThreadResourceClient preflight', () => {
     const { target, getSigned } = installPreflight();
 
     await expect(target.read(10, '/messages', 'peer.test')).rejects.toThrow(
-      'federation thread 10 is unavailable',
+      'stale federation response for thread 10 from peer.test',
     );
     expect(getSigned).not.toHaveBeenCalled();
   });
 
-  it('attaches the captured version to an application error response', async () => {
-    const { target, getSigned } = installPreflight({ federationVersion: 7 });
+  it('propagates an application error response unchanged', async () => {
+    const { target, getSigned } = installPreflight({ id: 10 });
     getSigned.mockRejectedValueOnce(
       new S2sResponseError('gone', 200, BusinessCode.GROUP_DISSOLVED),
     );
@@ -1226,12 +1217,11 @@ describe('FederationThreadResourceClient preflight', () => {
     ).rejects.toMatchObject({
       status: 200,
       code: BusinessCode.GROUP_DISSOLVED,
-      federationVersion: 7,
     });
   });
 
-  it('returns the peer token and thread version with a fetched resource', async () => {
-    const { target } = installPreflight({ federationVersion: 7 });
+  it('returns the peer token with a fetched resource', async () => {
+    const { target } = installPreflight({ id: 10 });
 
     await expect(
       target.fetch<{ messages: unknown[] }>(10, '/messages', 'peer.test'),
@@ -1239,7 +1229,6 @@ describe('FederationThreadResourceClient preflight', () => {
       data: { messages: [] },
       threadId: 10,
       peerDomain: 'peer.test',
-      federationVersion: 7,
       peerToken: {
         domain: 'peer.test',
         namespaceId: 1,
@@ -1257,7 +1246,7 @@ describe('FederationInboundMessageRouteService global missed transport', () => {
     const execute = vi
       .fn()
       .mockResolvedValueOnce({
-        rows: [{ threadId: 10, federationVersion: 3, toAccount: 'alice' }],
+        rows: [{ threadId: 10, toAccount: 'alice' }],
       })
       .mockResolvedValueOnce({ rows: [{ userId: 1 }] });
     const tx = {
@@ -1290,7 +1279,6 @@ describe('FederationInboundMessageRouteService global missed transport', () => {
       ),
     ).resolves.toEqual({
       threadId: 10,
-      federationVersion: 3,
       toAccount: 'alice',
       authority: 'PEER',
       creatorAccount: 'bob',
@@ -1303,7 +1291,7 @@ describe('FederationInboundMessageRouteService global missed transport', () => {
 });
 
 describe('FederationThreadAccessService thread-bound response write gate', () => {
-  function installWriteGate(state?: { federationVersion: number }) {
+  function installWriteGate(state?: { id: number }) {
     const { threadAccess } = makeStubs();
     const limit = vi.fn().mockResolvedValue(state ? [state] : []);
     const where = vi.fn(() => ({ limit }));
@@ -1314,7 +1302,6 @@ describe('FederationThreadAccessService thread-bound response write gate', () =>
         tx: unknown,
         threadId: number,
         domain: string,
-        version: number,
       ) => Promise<void>;
     };
     return {
@@ -1324,30 +1311,20 @@ describe('FederationThreadAccessService thread-bound response write gate', () =>
     };
   }
 
-  it('accepts the response while the thread authorization version still matches', async () => {
-    const { target, tx, select } = installWriteGate({
-      federationVersion: 7,
-    });
+  it('accepts the response while the thread still exists', async () => {
+    const { target, tx, select } = installWriteGate({ id: 10 });
 
     await expect(
-      target.assertResponseWritable(tx, 10, 'peer.test', 7),
+      target.assertResponseWritable(tx, 10, 'peer.test'),
     ).resolves.toBeUndefined();
     expect(select).toHaveBeenCalledOnce();
-  });
-
-  it('rejects a response after the thread authorization version changes', async () => {
-    const { target, tx } = installWriteGate({ federationVersion: 8 });
-
-    await expect(
-      target.assertResponseWritable(tx, 10, 'peer.test', 7),
-    ).rejects.toThrow('stale federation response');
   });
 
   it('rejects a response after the thread disappears', async () => {
     const { target, tx } = installWriteGate();
 
     await expect(
-      target.assertResponseWritable(tx, 10, 'peer.test', 7),
+      target.assertResponseWritable(tx, 10, 'peer.test'),
     ).rejects.toThrow('stale federation response');
   });
 });

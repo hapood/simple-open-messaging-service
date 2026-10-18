@@ -7,21 +7,18 @@ import { GroupRole } from '../../database/enums.js';
  * describable; every mutable field is read fresh under the locks. */
 export type GroupRosterRoleAuthorizationRow = {
   groupAccount: string;
-  groupDomain: string;
   namespaceId: number;
   /** Group publisher namespace for member profile coordinates. */
   publisherNamespaceId: number;
   dissolvedAt: string | null;
   /** Local account address of the acting user (the command's operator). */
   operatorAccount: string | null;
-  operatorDomain: string | null;
   /** The operator's canonical roster role, or null when not rostered. */
   operatorRole: GroupRole | null;
   operatorProfileRev: number | null;
   /** Rostered owner/admin with an active member pair and a thread participant row. */
   operatorAuthorized: boolean;
   targetAccount: string | null;
-  targetDomain: string | null;
   targetNamespaceId: number | null;
   /** The target's canonical roster role, or null when not rostered. */
   targetRole: GroupRole | null;
@@ -37,7 +34,7 @@ export type GroupRosterRoleAuthorizationRow = {
  * authorization statement. */
 export function groupRosterRoleLocatorSql(input: { threadId: number }) {
   return sql`
-    SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
+    SELECT g.account AS "groupAccount",
       g."namespaceId" AS "groupNamespaceId"
     FROM ${groupStateSql} g WHERE g.id = ${input.threadId}
   `;
@@ -81,10 +78,9 @@ export function groupRosterRoleAuthorizationSql(input: {
         ORDER BY "feedId" DESC LIMIT 1
       ) latest WHERE latest.operation = 'MEMBER_UPSERT'
     )
-    SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
+    SELECT g.account AS "groupAccount",
       g."namespaceId", g."namespaceId" AS "publisherNamespaceId", g."dissolvedAt",
       operator.account AS "operatorAccount",
-      (SELECT domain FROM "IdentityNamespace" WHERE id = 0) AS "operatorDomain",
       operator_roster.role AS "operatorRole",
       operator_roster."profileRev" AS "operatorProfileRev",
       EXISTS (
@@ -99,7 +95,6 @@ export function groupRosterRoleAuthorizationSql(input: {
           AND participant."accountId" = operator.id
       ) AS "operatorAuthorized",
       target_roster.account AS "targetAccount",
-      target_namespace.domain AS "targetDomain",
       target_roster."namespaceId" AS "targetNamespaceId",
       target_roster.role AS "targetRole",
       target_roster."profileRev" AS "targetProfileRev",
@@ -115,8 +110,6 @@ export function groupRosterRoleAuthorizationSql(input: {
     LEFT JOIN operator_account operator ON true
     LEFT JOIN operator_roster ON true
     LEFT JOIN target_roster ON true
-    LEFT JOIN "IdentityNamespace" target_namespace
-      ON target_namespace.id = target_roster."namespaceId"
     LEFT JOIN "Account" local_target ON target_roster."namespaceId" = 0
       AND local_target.account = target_roster.account
       AND local_target."namespaceId" = 0

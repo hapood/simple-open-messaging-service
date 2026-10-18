@@ -112,7 +112,6 @@ describe('group origin rejects mirror copies as processing receipts', () => {
       .values({
         type: 'GROUP',
         groupAccount,
-        groupDomain: loadFederationConfig().domain,
         groupAccountId: group.id,
         curSeq: 42,
         updatedAt: createdAt,
@@ -234,7 +233,6 @@ describe('group origin rejects mirror copies as processing receipts', () => {
         .values({
           type: 'GROUP',
           groupAccount,
-          groupDomain: authorDomain,
           authorityNamespaceId: authorNamespace,
           curSeq: 5,
           updatedAt: createdAt,

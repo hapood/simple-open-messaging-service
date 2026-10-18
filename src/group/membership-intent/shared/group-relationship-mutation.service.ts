@@ -9,6 +9,10 @@ import {
   localAccountsForTargetsInTx,
   type AccountTarget,
 } from '../../../user/account-address.js';
+import {
+  parseRequestSnapshot,
+  type RequestSnapshot,
+} from '../../../../shared/request-snapshot.js';
 import { Injectable } from '@nestjs/common';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
 import { eq } from 'drizzle-orm';
@@ -20,10 +24,7 @@ import type { DatabaseTransaction } from '../../../database/database.service.js'
 import type { ThreadContentLock } from '../../../common/locks/thread-content-lock.js';
 import { GroupRole } from '../../../database/enums.js';
 import * as tables from '../../../database/schema.js';
-import {
-  RelationshipService,
-  type FederatedPendingProfileSnapshot,
-} from '../../../relationship/relationship.service.js';
+import { RelationshipService } from '../../../relationship/relationship.service.js';
 import {
   buildIntentDirection,
   RelationshipIntentService,
@@ -51,6 +52,7 @@ function groupIntentEndpoints(
 }
 
 export interface GroupRelationshipMutationOptions {
+  snapshot?: RequestSnapshot | null;
   /** Client-visible cause for an authored terminal request transition. */
   clientRequestStatus?: RequestRevocationStatus;
   clientRequestDirection?: 'INCOMING' | 'OUTGOING';
@@ -92,7 +94,7 @@ export class GroupRelationshipMutationService {
   /** Call after the group command lock, before departure messages allocate client state. */
   async lockMemberRelationshipFeedInTx(
     tx: DatabaseTransaction,
-    group: { domain: string; namespaceId: number },
+    group: { namespaceId: number },
   ): Promise<void> {
     if (group.namespaceId === 0) return;
     await this.stateFeed.lockOutboundStateFeedNamespacesInTx(tx, [
@@ -107,7 +109,6 @@ export class GroupRelationshipMutationService {
     status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' = 'REQUESTED',
     clientFeedUpdates?: PendingClientStateFeedUpdate[],
     note = '',
-    groupSnapshot?: FederatedPendingProfileSnapshot,
     options: GroupRelationshipMutationOptions = {},
   ): Promise<Map<number, bigint>> {
     const {
@@ -159,9 +160,6 @@ export class GroupRelationshipMutationService {
     )
       return new Map<number, bigint>();
     if (!lockedGroupPair) await this.lockMemberRelationshipFeedInTx(tx, group);
-    const projectedAvatar = groupSnapshot
-      ? (groupSnapshot.avatar ?? '')
-      : group.avatar;
     const memberDirection = buildIntentDirection(member, group);
     const membership =
       await this.groupRelationships.writeLockedAuthoredIntentInTx(tx, {
@@ -176,6 +174,10 @@ export class GroupRelationshipMutationService {
         author: 'MEMBER',
         hostedLocally: group.namespaceId === 0,
         status,
+        snapshot:
+          status === 'REQUESTED'
+            ? parseRequestSnapshot(options.snapshot)
+            : null,
         note,
         expiresAt:
           status === 'REQUESTED'
@@ -239,7 +241,6 @@ export class GroupRelationshipMutationService {
         const feedId = await this.clientStateFeed.writeInTx(tx, {
           userId: memberUserId,
           account: endpoints.account,
-          domain: group.domain,
           namespaceId: 0,
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: endpoints.subjectAccount,
@@ -256,12 +257,11 @@ export class GroupRelationshipMutationService {
             requestedAt: clientRequestedAt,
             expiresAt: membership.request.expiresAt,
             direction: 'OUTGOING',
+            snapshot: membership.request.snapshot,
             threadId,
             group: {
               account: group.account,
               namespaceId: 0,
-              avatar: projectedAvatar,
-              description: group.description,
               profileRev: group.profileRev,
             },
           },
@@ -297,7 +297,6 @@ export class GroupRelationshipMutationService {
       const feedId = await this.clientStateFeed.writeInTx(tx, {
         userId: memberUserId,
         account: endpoints.account,
-        domain: group.domain,
         namespaceId: group.namespaceId,
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: endpoints.subjectAccount,
@@ -314,12 +313,11 @@ export class GroupRelationshipMutationService {
           requestedAt: clientRequestedAt,
           expiresAt: membership.request.expiresAt,
           direction: 'OUTGOING',
+          snapshot: membership.request.snapshot,
           threadId,
           group: {
             account: group.account,
             namespaceId: group.namespaceId,
-            avatar: projectedAvatar,
-            description: group.description,
             profileRev: group.profileRev,
           },
         },
@@ -357,11 +355,8 @@ export class GroupRelationshipMutationService {
       .select({
         groupId: groupStateTable.id,
         groupAccount: groupStateFields.account,
-        groupAvatar: groupStateFields.avatar,
-        groupDescription: groupStateFields.description,
         groupProfileRev: groupStateFields.profileRev,
         groupNamespaceId: groupStateFields.namespaceId,
-        groupDomain: groupStateFields.domain,
         authorizationEpoch: tables.messageThread.authorizationEpoch,
       })
       .from(tables.messageThread)
@@ -395,6 +390,10 @@ export class GroupRelationshipMutationService {
         author: 'GROUP',
         hostedLocally: true,
         status,
+        snapshot:
+          status === 'REQUESTED'
+            ? parseRequestSnapshot(options.snapshot)
+            : null,
         note,
         expiresAt:
           status === 'REQUESTED'
@@ -440,7 +439,6 @@ export class GroupRelationshipMutationService {
       const feedId = await this.clientStateFeed.writeInTx(tx, {
         userId: localAccount.id,
         account: endpoints.account,
-        domain: state.groupDomain,
         namespaceId: 0,
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: endpoints.subjectAccount,
@@ -460,8 +458,6 @@ export class GroupRelationshipMutationService {
           group: {
             account: state.groupAccount,
             namespaceId: 0,
-            avatar: state.groupAvatar,
-            description: state.groupDescription,
             profileRev: state.groupProfileRev,
           },
         },

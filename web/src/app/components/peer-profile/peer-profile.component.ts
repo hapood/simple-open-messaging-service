@@ -9,10 +9,8 @@ import {
 } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { firstValueFrom, finalize } from 'rxjs';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-editor.component';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
@@ -45,7 +43,7 @@ import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
 @Component({
   selector: 'app-peer-profile',
   imports: [
-    UserAvatarComponent,
+    DemandAvatarComponent,
         TranslocoPipe,
     ThreadAliasEditorComponent,
     MatCardModule,
@@ -80,7 +78,7 @@ import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
         @if (peer(); as identity) {
           <div class="identity">
             <span class="profile-avatar">
-              <app-user-avatar
+              <app-demand-avatar
                 [type]="UserAvatarType.OTHER"
                 [name]="identity.name"
                 [account]="identity.account"
@@ -250,7 +248,7 @@ import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
         gap: 8px;
         padding: 8px 16px 12px;
       }
-      .identity app-user-avatar {
+      .identity app-demand-avatar {
         width: 72px;
         height: 72px;
       }

@@ -5,7 +5,6 @@ import { GroupRole } from '../../../database/enums.js';
 /** Post-lock authorization row for an addressed group member decision. */
 export type GroupMembershipAuthorizationRow = {
   account: string;
-  domain: string;
   namespaceId: number;
   name: string;
   avatar: string;
@@ -15,7 +14,6 @@ export type GroupMembershipAuthorizationRow = {
   updatedAt: string;
   dissolvedAt: string | null;
   memberAccount: string | null;
-  memberDomain: string | null;
   profileNamespaceId: number | null;
   memberNote: string | null;
   memberIntentStatus: 'REQUESTED' | 'ACCEPTED' | 'REVOKED' | null;
@@ -48,7 +46,7 @@ export function groupAuthoredMembershipTargetLocatorSql(input: {
   threadId: number;
 }) {
   return sql`
-    SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
+    SELECT g.account AS "groupAccount",
       g."dissolvedAt" AS "dissolvedAt"
     FROM ${groupStateSql} g WHERE g.id = ${input.threadId}
   `;
@@ -63,7 +61,7 @@ export function groupAuthoredInvitationLocatorSql(input: {
   targetNamespaceId: number;
 }) {
   return sql`
-    SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
+    SELECT g.account AS "groupAccount",
       target."namespaceId" AS "targetNamespaceId"
     FROM ${groupStateSql} g
     LEFT JOIN LATERAL (
@@ -96,9 +94,8 @@ export function groupAuthoredMembershipAddressLocatorSql(input: {
   return sql`
     SELECT pair.id::text AS "pairId",
       pair."endpointBAccount" AS account,
-      (SELECT ns.domain FROM "IdentityNamespace" ns WHERE ns.id = pair."endpointBNamespaceId") AS domain,
       pair."endpointBNamespaceId" AS "namespaceId",
-      g.account AS "groupAccount", g.domain AS "groupDomain"
+      g.account AS "groupAccount"
     FROM ${groupStateSql} g
     JOIN "RelationshipPair" pair ON pair."threadId" = g.id
       AND pair.kind = 'GROUP_MEMBER'
@@ -176,7 +173,6 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
     )
     SELECT g.*, ${input.pairId}::text AS "pairId",
       ${input.targetAccount}::text AS "memberAccount",
-      ns.domain AS "memberDomain",
       ${input.targetNamespaceId}::integer AS "profileNamespaceId",
       rev.note AS "memberNote",
       rev.status AS "memberIntentStatus", rev."profileRev" AS "memberProfileRev",
@@ -215,7 +211,6 @@ export function groupAuthoredMembershipInvitationAuthorizationSql(input: {
     LEFT JOIN side_a ON true
     LEFT JOIN roster member_last ON member_last.body ->> 'account' = ${input.targetAccount}
       AND (member_last.body -> 'namespaceId') = to_jsonb(${input.targetNamespaceId}::integer)
-    LEFT JOIN "IdentityNamespace" ns ON ns.id = ${input.targetNamespaceId}
     LEFT JOIN "Account" local_member ON local_member.account = ${input.targetAccount}
       AND local_member."namespaceId" = 0
       AND ${input.targetNamespaceId} = 0

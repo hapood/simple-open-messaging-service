@@ -14,7 +14,6 @@ function response(data: object) {
     data,
     threadId: 31,
     peerDomain: 'origin.test',
-    federationVersion: 2,
     peerToken: {
       domain: 'origin.test',
       namespaceId: 1,
@@ -129,7 +128,7 @@ function harness(localGroupAuthority = false, kind: 'GROUP' | 'P2P' = 'GROUP') {
         threadId: 31,
         namespaceId: 7,
         peerDomain: 'origin.test',
-        selector:
+        demand:
           kind === 'GROUP'
             ? { account: '!group' }
             : { account: 'bob', peerAccount: 'alice' },
@@ -191,7 +190,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
     [false, 'P2P', 'account=bob&peerAccount=alice', 'true'],
   ] as const)(
     'sets the message filter without blocking empty-page progress (authority=%s, kind=%s)',
-    async (authority, kind, selector, includeSelf) => {
+    async (authority, kind, demand, includeSelf) => {
       const h = harness(authority, kind);
       h.threadResources.fetch.mockResolvedValueOnce(
         response({ messages: [], scannedThrough: 100, hasMore: false }),
@@ -199,7 +198,7 @@ describe('FederationThreadForwardRoundExecutorService', () => {
       await h.executor.runMessages(31, 'origin.test', 7, 50);
       expect(h.threadResources.fetch).toHaveBeenCalledWith(
         31,
-        `/s2s/v1/messages?${selector}&after=10&through=100&take=50&includeSelf=${includeSelf}`,
+        `/s2s/v1/messages?${demand}&after=10&through=100&take=50&includeSelf=${includeSelf}`,
         'origin.test',
         16 * 1024 * 1024,
       );

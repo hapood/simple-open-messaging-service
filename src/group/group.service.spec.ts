@@ -296,7 +296,6 @@ describe('GroupService membership lifecycle', () => {
         [
           {
             groupId: 99,
-            groupDomain: 'local',
             namespaceId: 0,
             dissolvedAt: null,
           },
@@ -352,7 +351,6 @@ describe('GroupService membership lifecycle', () => {
         [
           {
             groupId: 99,
-            groupDomain: 'local',
             namespaceId: 0,
             dissolvedAt: new Date(),
           },

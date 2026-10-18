@@ -22,7 +22,6 @@ import {
 import { FederationThreadContentHeadService } from '../../../federation/federation-thread-content-head.service.js';
 import type { ThreadContentLock } from '../../../common/locks/thread-content-lock.js';
 import { enqueueCurrentThreadFanoutsInTx } from '../../../message/thread-fanout-task.js';
-import { localIdentityDomain } from '../../../common/local-identity.js';
 
 export interface AuthoritativeGroupMembershipFinalization {
   audienceChanged: boolean;
@@ -52,7 +51,6 @@ export class AuthoritativeMembershipFinalizerService {
     const [state] = await tx
       .select({
         account: groupStateFields.account,
-        domain: groupStateFields.domain,
         namespaceId: groupStateFields.namespaceId,
         metaEndId: groupMeta.metaEndId,
       })
@@ -98,20 +96,8 @@ export class AuthoritativeMembershipFinalizerService {
       // REQUESTED may have already opened query authorization without publishing a head.
       // Mutual activation must therefore refresh the compacted content head even when the
       // audience insert is an idempotent no-op.
-      const memberDomain =
-        member.namespaceId === 0
-          ? await localIdentityDomain(tx)
-          : (
-              await tx.execute<{ domain: string }>(sql`
-                SELECT domain FROM "IdentityNamespace"
-                WHERE id = ${member.namespaceId} LIMIT 1
-              `)
-            ).rows[0]?.domain;
-      if (memberDomain === undefined)
-        throw new Error('member namespace does not exist');
       await this.threadContentHeads.projectCurrentInTx(
         tx,
-        memberDomain,
         member.namespaceId,
         params.threadId,
       );

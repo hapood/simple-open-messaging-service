@@ -20,8 +20,6 @@ describe('group departure system message SQL', () => {
         threadId: 41,
         pairId: 60n,
         groupAccount: '!test',
-        groupAvatar: '',
-        groupDescription: '',
         groupProfileRev: 1,
         memberAccount: 'alice',
         profileNamespaceId: 0,

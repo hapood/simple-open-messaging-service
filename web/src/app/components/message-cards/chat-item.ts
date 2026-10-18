@@ -1,5 +1,5 @@
-import type { AvatarDomainSource } from '../user-avatar/model';
-import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
+import type { AvatarSource } from '../user-avatar/avatar-source';
+import type { SenderDisplayContext } from './message-sender';
 
 // Federated media localize status values — the stable wire format (backend serializeBody + MEDIA_STATUS
 // SSE frame + the attachMediaStatus query field carry these exact strings). Defined here (the components
@@ -72,20 +72,16 @@ interface ChatMessageBase {
   threadId?: number;
   /** Whether creator matches the current user's address. */
   isSelf: boolean;
-  /** Sender labels are useful in group chats but redundant beside avatars in a direct conversation. */
+  /** Business thread context for mentions and system-message interpretation, not sender-label policy. */
   isGroupConversation?: boolean;
-  /** Sender display name (profile.account; filled for self too — template decides via showName). */
+  /** Surface policy, independent of identity and message content type. */
+  senderDisplayContext?: SenderDisplayContext;
+  /** Captured sender-name fallback; resolved sender presentation owns the rendered name. */
   name: string;
-  /** Avatar asset embedded in a forwarded snapshot; ordinary profiles use the pinned avatar profile ref. */
-  snapshotAvatarUrl?: string;
-  /** Stable sender/profile identity key. Snapshot sources may use bundle-scoped keys. */
+  /** Mutually exclusive sender source. Missing on system rows and local unprofiled placeholders. */
+  sender?: AvatarSource;
+  /** Stable sender/profile presentation key, never inferred from display data. */
   avatarIdentityId?: string;
-  /** Stable sender account used with the avatar domain source for deterministic fallback colors. */
-  avatarAccount?: string;
-  /** Namespace identity or fixed snapshot address, independent of profile resolution. */
-  avatarDomainSource?: AvatarDomainSource;
-  /** Pinned profile subject facts; the avatar/label components own the demand form. */
-  avatarProfile?: AvatarProfileRef;
   /** PURE_TEXT body / fallback text for unsupported types. */
   text: string;
   /** Canonical inline-entity storage string for an optimistic PURE_TEXT send. The bubble renders `text`;
@@ -149,7 +145,7 @@ export type AuthoredContentType =
   | 'CONTACT_CARD'
   | 'FORWARD';
 
-/** A user-authored message always carries a fully resolved User identity key. */
+/** Authored content uses an explicit grouping key; forward snapshots use independent bundle-local keys. */
 export interface AuthoredMessageItem extends ChatMessageBase {
   type: 'msg';
   creator: string;

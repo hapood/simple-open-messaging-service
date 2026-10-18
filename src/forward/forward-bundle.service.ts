@@ -1506,7 +1506,7 @@ export class ForwardBundleService {
     }
   }
 
-  private async exactProfileForMessage(selector: {
+  private async exactProfileForMessage(key: {
     account: string;
     publisherNamespaceId: number;
     profileNamespaceId: number;
@@ -1518,10 +1518,10 @@ export class ForwardBundleService {
     }>(sql`
       SELECT snapshot."displayName", snapshot.avatar
       FROM "Profile" snapshot
-      WHERE snapshot.account = ${selector.account}
-        AND snapshot."publisherNamespaceId" = ${selector.publisherNamespaceId}
-        AND snapshot."profileNamespaceId" = ${selector.profileNamespaceId}
-        AND snapshot."profileRev" = ${selector.profileRev}
+      WHERE snapshot.account = ${key.account}
+        AND snapshot."publisherNamespaceId" = ${key.publisherNamespaceId}
+        AND snapshot."profileNamespaceId" = ${key.profileNamespaceId}
+        AND snapshot."profileRev" = ${key.profileRev}
       LIMIT 1
     `);
     const profile = result.rows[0];

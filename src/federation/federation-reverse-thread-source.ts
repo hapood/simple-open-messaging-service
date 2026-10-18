@@ -5,12 +5,12 @@ export type FederationReverseThreadSource =
       threadId: number;
       peerDomain: string;
       namespaceId: number;
-      selector: { account: string };
+      demand: { account: string };
     }
   | {
       kind: 'P2P';
       threadId: number;
       peerDomain: string;
       namespaceId: number;
-      selector: { account: string; peerAccount: string };
+      demand: { account: string; peerAccount: string };
     };

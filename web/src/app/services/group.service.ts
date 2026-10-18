@@ -1,3 +1,4 @@
+import type { RequestSnapshot } from '../../../../shared/request-snapshot';
 import type { RequestProjectionStatusValue } from '../../../../shared/request-projection-status';
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
@@ -15,8 +16,7 @@ export interface GroupJoinRequest {
   namespaceId: number;
   profileRev: number;
   account: string;
-  name: string;
-  avatar: string;
+  snapshot: RequestSnapshot | null;
   note: string;
   requestedAt: number | null;
   expiresAt: number | null;
@@ -75,7 +75,7 @@ export class GroupService {
 
   /** Invite each target through the manager-authored membership transaction. */
   inviteUsers(params: {
-    users: { account: string; namespaceId: number }[];
+    users: { account: string; namespaceId: number; snapshot: RequestSnapshot }[];
     groupId: number;
   }) {
     return this.http.post<

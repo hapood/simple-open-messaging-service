@@ -34,9 +34,9 @@ export interface AuthorizedFederationThread {
 export async function resolveAuthorizedFederationThreadInTx(
   tx: DatabaseTransaction,
   namespaceId: number,
-  selector: FederationThreadQuery,
+  demand: FederationThreadQuery,
 ): Promise<AuthorizedFederationThread> {
-  if (selector.type === 'GROUP') {
+  if (demand.type === 'GROUP') {
     const originRows = await tx.execute<{
       threadId: number;
       messageAccessAfterSeq: number;
@@ -65,7 +65,7 @@ export async function resolveAuthorizedFederationThreadInTx(
        AND audience."targetNamespaceId" = ${namespaceId}
        AND audience."localUserId" IS NULL
       WHERE thread.type = 'GROUP'
-        AND group_state.account = ${selector.account}
+        AND group_state.account = ${demand.account}
         AND group_state."namespaceId" = 0
         AND (
           intent.status = 'ACCEPTED'
@@ -79,7 +79,7 @@ export async function resolveAuthorizedFederationThreadInTx(
     `);
     const origin = originRows.rows[0];
     if (origin) {
-      return { ...origin, address: { account: selector.account } };
+      return { ...origin, address: { account: demand.account } };
     }
 
     const mirrorRows = await tx.execute<{
@@ -112,7 +112,7 @@ export async function resolveAuthorizedFederationThreadInTx(
        AND intent."receiverAccount" = pair."endpointAAccount"
        AND intent."receiverNamespaceId" = pair."endpointANamespaceId"
       WHERE thread.type = 'GROUP'
-        AND group_state.account = ${selector.account}
+        AND group_state.account = ${demand.account}
         AND group_state."namespaceId" = ${namespaceId}
         AND (
           intent.status = 'ACCEPTED'
@@ -126,7 +126,7 @@ export async function resolveAuthorizedFederationThreadInTx(
     `);
     const mirror = mirrorRows.rows[0];
     if (mirror) {
-      return { ...mirror, address: { account: selector.account } };
+      return { ...mirror, address: { account: demand.account } };
     }
     return forbidden();
   }
@@ -164,10 +164,10 @@ export async function resolveAuthorizedFederationThreadInTx(
             AND pair.active = true
             AND thread.type = 'P2P'
             AND pair."endpointAType" = 'USER'
-            AND pair."endpointAAccount" = ${selector.account}
+            AND pair."endpointAAccount" = ${demand.account}
             AND pair."endpointANamespaceId" = 0
         AND pair."endpointBType" = 'USER'
-        AND pair."endpointBAccount" = ${selector.peerAccount}
+        AND pair."endpointBAccount" = ${demand.peerAccount}
         AND pair."endpointBNamespaceId" = ${namespaceId}
             AND (
               intent.status = 'ACCEPTED'
@@ -186,8 +186,8 @@ export async function resolveAuthorizedFederationThreadInTx(
   return {
     ...authorized,
     address: {
-      account: selector.account,
-      peerAccount: selector.peerAccount,
+      account: demand.account,
+      peerAccount: demand.peerAccount,
     },
   };
 }

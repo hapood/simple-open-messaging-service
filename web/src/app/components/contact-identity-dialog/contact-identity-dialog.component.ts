@@ -13,10 +13,8 @@ import { NavStateMachineService } from '../../services/nav-state.service';
 import type { UserRef } from '../../services/model';
 import { UserService } from '../../services/user.service';
 import { LocalDomainService } from '../../services/local-domain.service';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import { DialogActionFooterComponent } from '../dialog-action-footer/dialog-action-footer.component';
 
 export interface ContactIdentityDialogData {
@@ -43,7 +41,7 @@ export type RelationshipState =
 @Component({
   selector: 'app-contact-identity-dialog',
   standalone: true,
-  imports: [UserAvatarComponent, TranslocoPipe, DialogActionFooterComponent],
+  imports: [SnapshotAvatarComponent, TranslocoPipe, DialogActionFooterComponent],
   templateUrl: './contact-identity-dialog.component.html',
   styleUrl: './contact-identity-dialog.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

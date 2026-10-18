@@ -1025,19 +1025,35 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       creator: creatorKey,
       isSelf: p.isSelf,
       isGroupConversation: this.conv.type === 'GROUP',
+      senderDisplayContext: this.conv.type === 'GROUP' ? 'group' : 'direct',
       name: p.name,
       ...(p.avatarIdentityId === undefined
         ? {}
         : { avatarIdentityId: p.avatarIdentityId }),
-      avatarAccount: creatorIdentity.account,
-      avatarDomainSource: {
-        type: 'profile-namespace',
-        publisherNamespaceId: m.publisherNamespaceId,
-        profileNamespaceId: m.profileNamespaceId,
-      },
-      ...(m.profileRev > 0
-        ? { avatarProfile: messageAuthorAvatarProfile(m) }
-        : {}),
+      sender:
+        m.profileRev > 0
+          ? {
+              kind: 'demand',
+              profile: messageAuthorAvatarProfile(m)!,
+              fallbackName: p.name,
+              account: creatorIdentity.account,
+              domainSource: {
+                type: 'profile-namespace',
+                publisherNamespaceId: m.publisherNamespaceId,
+                profileNamespaceId: m.profileNamespaceId,
+              },
+            }
+          : {
+              kind: 'snapshot',
+              name: p.name,
+              imageUrl: null,
+              account: creatorIdentity.account,
+              domainSource: {
+                type: 'profile-namespace',
+                publisherNamespaceId: m.publisherNamespaceId,
+                profileNamespaceId: m.profileNamespaceId,
+              },
+            },
       // Non-text cards keep their wire content in `text` as well. In particular, FORWARD content is
       // the JSON card descriptor consumed by parseForwardCard; dropping it here makes every valid
       // forwarded bundle render as "unavailable".

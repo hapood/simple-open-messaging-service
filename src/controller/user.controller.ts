@@ -51,12 +51,12 @@ import { FederationRecognitionService } from '../federation/federation-recogniti
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
 import { GroupService } from '../group/group.service.js';
 import { ProfileNamespaceFeedService } from '../federation/profile-namespace-feed.service.js';
+import { parseGroupMetaFeedDemand } from '../../shared/group-meta-demand.js';
 
 /** One item in the device-facing compacted state feed. */
 type ClientStateFeedItem = {
   feedId: number;
   account: string;
-  domain: string;
   namespaceId: number;
   eventType: 'RELATIONSHIP_INTENT' | 'INCOMING_INVITE_HEAD';
   subjectAccount: string;
@@ -295,7 +295,6 @@ export class UserController {
       await this.clientStateFeed.query(me, mode, after, scanEnd)
     ).map((item) => ({
       account: item.account,
-      domain: item.domain,
       namespaceId: item.namespaceId,
       eventType: item.eventType as ClientStateFeedItem['eventType'],
       subjectAccount: item.subjectAccount,
@@ -338,18 +337,12 @@ export class UserController {
     @Request() req: FastifyRequest,
     @Query('threadId') threadIdParam?: string,
     @Query('account') accountParam?: string,
-    @Query('domain') domainParam?: string,
+    @Query('namespaceId') namespaceIdParam?: string,
     @Query('mode') modeParam?: string,
     @Query('after') afterParam?: string,
     @Query('take') takeParam?: string,
     @Query('through') throughParam?: string,
   ) {
-    if ((threadIdParam === undefined) === (accountParam === undefined))
-      throw new BusinessException(
-        BusinessCode.VALIDATION_FAILED,
-        'exactly one of threadId or account is required',
-        HttpStatus.BAD_REQUEST,
-      );
     const parseCursor = (value: string, name: string): number => {
       if (!/^(0|[1-9]\d*)$/.test(value))
         throw new BusinessException(
@@ -380,27 +373,30 @@ export class UserController {
         HttpStatus.OK,
         { resumeAfter: '0' },
       );
-    const threadId =
-      threadIdParam === undefined
-        ? undefined
-        : Number(parseCursor(threadIdParam, 'threadId'));
-    if (
-      threadId !== undefined &&
-      (!Number.isSafeInteger(threadId) || threadId < 1)
-    )
+    // The closed shared demand parser rejects mixes and partial forms; the
+    // controller never hand-validates the coordinate shape.
+    let target: { groupId: number; account: string };
+    try {
+      const demand = parseGroupMetaFeedDemand({
+        ...(threadIdParam !== undefined ? { threadId: threadIdParam } : {}),
+        ...(accountParam !== undefined ? { account: accountParam } : {}),
+        ...(namespaceIdParam !== undefined
+          ? { namespaceId: namespaceIdParam }
+          : {}),
+      });
+      target = await this.clientGroupMetaFeed.resolveVisibleGroup(
+        req.user.userId,
+        demand,
+      );
+    } catch (error) {
       throw new BusinessException(
         BusinessCode.VALIDATION_FAILED,
-        'threadId must be a positive safe integer',
+        error instanceof Error
+          ? error.message
+          : 'invalid group meta feed demand',
         HttpStatus.BAD_REQUEST,
       );
-    const target = await this.clientGroupMetaFeed.resolveVisibleGroup(
-      req.user.userId,
-      {
-        threadId,
-        account: accountParam,
-        domain: domainParam,
-      },
-    );
+    }
     return this.clientGroupMetaFeed.serve(
       req.user.userId,
       target.groupId,

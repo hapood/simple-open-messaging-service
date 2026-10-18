@@ -46,7 +46,6 @@ const owner = {
 function authorizedRow(overrides: object = {}) {
   return {
     groupAccount: '!group',
-    groupDomain: 'local',
     namespaceId: 0,
     dissolvedAt: null,
     operatorAccount: owner.account,
@@ -114,7 +113,7 @@ function createService(tx: ReturnType<typeof createTx>, overrides = {}) {
 describe('GroupRosterRoleService', () => {
   it('transfers ownership: keeps the previous owner as admin, then emits the event and fan-outs', async () => {
     const tx = createTx([
-      { rows: [{ groupAccount: '!group', groupDomain: 'local' }] },
+      { rows: [{ groupAccount: '!group' }] },
       { rows: [{ ok: true }] },
       { rows: [] },
       { rows: [authorizedRow()] },
@@ -208,7 +207,7 @@ describe('GroupRosterRoleService', () => {
 
   it('preserves manager watermarks when an administrator becomes owner', async () => {
     const tx = createTx([
-      { rows: [{ groupAccount: '!group', groupDomain: 'local' }] },
+      { rows: [{ groupAccount: '!group' }] },
       { rows: [{ ok: true }] },
       { rows: [] },
       { rows: [authorizedRow({ targetRole: GroupRole.ADMIN })] },
@@ -235,7 +234,7 @@ describe('GroupRosterRoleService', () => {
 
   it('grants ADMIN with a single role fact and the granted event', async () => {
     const tx = createTx([
-      { rows: [{ groupAccount: '!group', groupDomain: 'local' }] },
+      { rows: [{ groupAccount: '!group' }] },
       { rows: [{ ok: true }] },
       { rows: [] },
       { rows: [authorizedRow()] },
@@ -270,7 +269,7 @@ describe('GroupRosterRoleService', () => {
 
   it('reports a same-role change as a no-op without writing', async () => {
     const tx = createTx([
-      { rows: [{ groupAccount: '!group', groupDomain: 'local' }] },
+      { rows: [{ groupAccount: '!group' }] },
       { rows: [{ ok: true }] },
       { rows: [] },
       { rows: [authorizedRow({ targetRole: GroupRole.ADMIN })] },
@@ -293,7 +292,7 @@ describe('GroupRosterRoleService', () => {
 
   it('rejects a dissolved group as data and writes nothing', async () => {
     const tx = createTx([
-      { rows: [{ groupAccount: '!group', groupDomain: 'local' }] },
+      { rows: [{ groupAccount: '!group' }] },
       { rows: [{ ok: true }] },
       { rows: [] },
       { rows: [authorizedRow({ dissolvedAt: '2026-09-13T00:00:00Z' })] },
@@ -318,7 +317,7 @@ describe('GroupRosterRoleService', () => {
 
   it('rejects a non-owner operator before reading the target', async () => {
     const tx = createTx([
-      { rows: [{ groupAccount: '!group', groupDomain: 'local' }] },
+      { rows: [{ groupAccount: '!group' }] },
       { rows: [{ ok: true }] },
       { rows: [] },
       {
@@ -349,7 +348,7 @@ describe('GroupRosterRoleService', () => {
 
   it('keeps ownership transfers on the origin', async () => {
     const tx = createTx([
-      { rows: [{ groupAccount: '!group', groupDomain: 'local' }] },
+      { rows: [{ groupAccount: '!group' }] },
       {
         rows: [
           authorizedRow({
@@ -380,7 +379,7 @@ describe('GroupRosterRoleService', () => {
 
   it('refuses ADMIN grants to a peer-hosted member', async () => {
     const tx = createTx([
-      { rows: [{ groupAccount: '!group', groupDomain: 'local' }] },
+      { rows: [{ groupAccount: '!group' }] },
       {
         rows: [
           authorizedRow({
@@ -411,7 +410,7 @@ describe('GroupRosterRoleService', () => {
 
   it('rejects a target that is not an active roster member', async () => {
     const tx = createTx([
-      { rows: [{ groupAccount: '!group', groupDomain: 'local' }] },
+      { rows: [{ groupAccount: '!group' }] },
       { rows: [{ ok: true }] },
       { rows: [] },
       { rows: [authorizedRow({ targetAccount: null, targetActive: false })] },

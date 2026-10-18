@@ -25,7 +25,6 @@ export class S2sResponseError extends Error {
   readonly status: number;
   readonly code?: number;
   readonly data?: unknown;
-  federationVersion?: number;
 
   constructor(message: string, status: number, code?: number, data?: unknown) {
     super(message);

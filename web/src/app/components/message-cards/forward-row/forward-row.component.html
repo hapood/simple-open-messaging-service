@@ -10,22 +10,14 @@
   <span class="msg-highlight-layer" aria-hidden="true"></span>
   @if (showAvatar() && side() === 'other') {
     <div class="msg-avatar">
-      <app-user-avatar
-        [type]="UserAvatarType.OTHER"
-        [name]="data().name"
-        [p2pThreadId]="data().isGroupConversation ? undefined : data().threadId"
-        [account]="data().avatarAccount"
-        [domainSource]="data().avatarDomainSource"
-        [profile]="data().avatarProfile"
-        [src]="data().snapshotAvatarUrl"
-      />
+      <app-avatar [view]="sender.avatar()" />
     </div>
   }
 
   <div class="msg-col msg-{{ side() }}">
     @if (showName()) {
       <div class="msg-name msg-{{ side() }}">
-        {{ data().name || ('common.unknown' | transloco) }}
+        {{ sender.name() || ('common.unknown' | transloco) }}
       </div>
     }
     @if (data().quote; as quote) {
@@ -89,13 +81,7 @@
 
   @if (showAvatar() && side() === 'self') {
     <div class="msg-avatar">
-      <app-user-avatar
-        [type]="UserAvatarType.SELF"
-        [name]="data().name"
-        [account]="data().avatarAccount"
-        [domainSource]="data().avatarDomainSource"
-        [src]="data().snapshotAvatarUrl"
-      />
+      <app-avatar [view]="sender.avatar()" />
     </div>
   }
 </div>

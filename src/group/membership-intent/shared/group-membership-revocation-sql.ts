@@ -13,8 +13,6 @@ export interface GroupMembershipRevocationInput {
   threadId: number;
   pairId: bigint;
   groupAccount: string;
-  groupAvatar: string;
-  groupDescription: string;
   groupProfileRev: number;
   memberAccount: string;
   profileNamespaceId: number;
@@ -41,15 +39,15 @@ function accountFanoutScopeKey(threadId: number, accountId: number): string {
 }
 
 function localRecipientKey(
-  groupAccount: string,
-  memberAccount: string,
+  authorAccount: string,
+  receiverAccount: string,
 ): string {
-  // Matches ClientStateFeedService.compactionKey for the local recipient write.
   return JSON.stringify([
     'RELATIONSHIP_INTENT',
     0,
-    groupAccount,
-    memberAccount,
+    authorAccount,
+    receiverAccount,
+    0,
   ]);
 }
 
@@ -245,23 +243,24 @@ function localRecipient(
           : 'WITHDRAWN');
   return sql`
     recipient_body AS MATERIALIZED (
-      SELECT ${localRecipientKey(input.groupAccount, input.memberAccount)}::text AS "compactionKey",
+      SELECT ${localRecipientKey(input.author.account, input.receiver.account)}::text AS "compactionKey",
         jsonb_build_object('status', v.status, 'note', v.note,
           'requestedAt', floor(extract(epoch FROM v."requestedAt") * 1000)::bigint,
           'expiresAt', CASE WHEN v."expiresAt" IS NULL THEN NULL
             ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END,
+          'direction', ${authorIsMember ? 'OUTGOING' : 'INCOMING'}::text,
           'threadId', ${input.threadId}::integer,
           'established', (SELECT p.established FROM "RelationshipPair" p WHERE p.id = ${input.pairId}),
           'group', jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
-            'description', ${input.groupDescription}::text, 'profileRev', ${input.groupProfileRev}::integer)
+            'profileRev', ${input.groupProfileRev}::integer)
         ) || CASE WHEN ${status === null} THEN '{}'::jsonb
           ELSE jsonb_build_object('requestStatus', ${status}::text,
             'requestDirection', ${direction}::text) END AS body
       FROM revocation v
     ), candidate_bodies AS MATERIALIZED (
       SELECT ${input.localMemberId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
-        b."compactionKey", ${input.groupAccount}::text AS account, (SELECT domain FROM "IdentityNamespace" WHERE id = 0)::text AS domain,
-        ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", b.body
+        b."compactionKey", ${input.author.account}::text AS account,
+        ${input.receiver.account}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", b.body
       FROM recipient_body b
     ), ${clientIntentFeedWriteSql()}
   `;

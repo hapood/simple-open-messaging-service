@@ -91,16 +91,13 @@ export class DeletedMessageService {
     threadId: number,
     peerDomain: string,
     namespaceId: number,
-    expectedFederationVersion: number,
   ): Promise<void> {
     const [state] = await tx
-      .select({
-        federationVersion: messageThread.federationVersion,
-      })
+      .select({ id: messageThread.id })
       .from(messageThread)
       .where(eq(messageThread.id, threadId))
       .limit(1);
-    if (!state || state.federationVersion !== expectedFederationVersion) {
+    if (!state) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
         `stale federation deletion response for thread ${threadId}`,
@@ -363,7 +360,6 @@ export class DeletedMessageService {
     remoteDeletionSeq: number;
     type: MessageDeleteType;
     authorityDeletedAt?: Date;
-    expectedFederationVersion: number;
     authority: 'P2P_HOME' | 'GROUP_ORIGIN' | 'GROUP_MEMBER';
   }) {
     return this.database.db.transaction((tx) =>
@@ -379,7 +375,6 @@ export class DeletedMessageService {
       peerDomain: string;
       namespaceId: number;
       authority: 'P2P_HOME' | 'GROUP_ORIGIN';
-      expectedFederationVersion: number;
       threadLock?: ThreadContentLock;
       resolvedMessage?: typeof message.$inferSelect;
     },
@@ -425,7 +420,6 @@ export class DeletedMessageService {
       type: pending.type,
       authorityDeletedAt: pending.authorityDeletedAt,
       authority: params.authority,
-      expectedFederationVersion: params.expectedFederationVersion,
       threadLock,
       resolvedMessage: params.resolvedMessage,
     });
@@ -442,7 +436,6 @@ export class DeletedMessageService {
       type: MessageDeleteType;
       authorityDeletedAt?: Date;
       authority: 'P2P_HOME' | 'GROUP_ORIGIN' | 'GROUP_MEMBER';
-      expectedFederationVersion: number;
       threadLock?: ThreadContentLock;
       resolvedMessage?: typeof message.$inferSelect;
     },
@@ -452,7 +445,6 @@ export class DeletedMessageService {
       params.threadId,
       params.sourceDomain,
       params.publisherNamespaceId,
-      params.expectedFederationVersion,
     );
     const threadLock = await DeletedMessageService.lockFederatedIdentity(
       tx,

@@ -26,7 +26,7 @@ For a forward query, `after=A&through=T` covers `(A, T]`, requires `T >= A`,
 and returns messages in increasing `seq` order. For a reverse query,
 `before=B&through=T` covers `[T, B)`, requires `T <= B`, and returns messages in
 decreasing `seq` order. An invalid combination or relation returns
-`400 FEDERATION_MALFORMED`. The thread selector always contains `account`. Its
+`400 FEDERATION_MALFORMED`. The thread demand always contains `account`. Its
 account grammar determines the thread kind; no separate type or mode parameter
 is sent:
 
@@ -35,16 +35,16 @@ is sent:
 | `UserAccount`  | `account`, `peerAccount` | `account` is hosted by the source domain; `peerAccount` is hosted by the verified signer domain. |
 | `GroupAccount` | `account`                | The globally unique `!` account identifies the origin thread or an authorized mirror.            |
 
-For a `UserAccount` selector, `peerAccount` MUST be present and MUST be a
-`UserAccount`. For a `GroupAccount` selector, `peerAccount` MUST be absent.
+For a `UserAccount` demand, `peerAccount` MUST be present and MUST be a
+`UserAccount`. For a `GroupAccount` demand, `peerAccount` MUST be absent.
 
-The canonical thread selector MUST exactly identify the authorized stable
+The canonical thread demand MUST exactly identify the authorized stable
 Thread Address. When a committed `THREAD_CONTENT_HEAD` exists, its
 Thread Address MUST match; the absence of a head MUST NOT prevent a passive
 query authorized by an effective intent. The source does not accept any
 domain parameter declared by the
 requester. The peer domain comes only from the validated HTTP Message Signature,
-and the selector MUST NOT address an identity belonging to an unrelated third
+and the demand MUST NOT address an identity belonging to an unrelated third
 domain.
 
 These query shapes use the same stable-key rule as `THREAD_CONTENT_HEAD`. A P2P query
@@ -225,7 +225,7 @@ On every query, the source MUST recompute access from its durable authored
 relationship direction, block state, thread authority, and local policy. The
 presence of a `THREAD_CONTENT_HEAD` item is not authorization proof. A P2P query
 requires an effective source-authored user-to-user
-`REQUESTED` or `ACCEPTED` direction for the exact selector. A GROUP authoritative
+`REQUESTED` or `ACCEPTED` direction for the exact demand. A GROUP authoritative
 distribution query requires at least one effective source-authored
 group-to-member `REQUESTED` or `ACCEPTED` direction whose member belongs to the
 verified signer peer. In the reverse direction, the signer MUST be the exact

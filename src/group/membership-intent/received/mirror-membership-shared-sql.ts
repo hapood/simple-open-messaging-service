@@ -72,7 +72,7 @@ export function mirrorIntentWriteSql(params: {
          OR "RelationshipIntent"."requestedAt" IS DISTINCT FROM EXCLUDED."requestedAt"
          OR "RelationshipIntent"."expiresAt" IS DISTINCT FROM EXCLUDED."expiresAt"
       RETURNING status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
-        "messageEndSeq", "tombstoneEndSeq"
+        "messageEndSeq", "tombstoneEndSeq", snapshot
   `;
 }
 
@@ -99,7 +99,6 @@ export function mirrorIntentReadBackSql(params: {
 
 export interface MirrorGroupPresentationInput {
   groupAccount: string;
-  groupDomain: string;
   groupNamespaceId: number;
 }
 
@@ -108,7 +107,6 @@ export interface MirrorGroupPresentationInput {
 export function mirrorIntentCompactionKey(input: {
   groupNamespaceId: number;
   groupAccount: string;
-  groupDomain: string;
   memberAccount: string;
 }): string {
   return JSON.stringify([
@@ -116,6 +114,7 @@ export function mirrorIntentCompactionKey(input: {
     input.groupNamespaceId,
     input.groupAccount,
     input.memberAccount,
+    0,
   ]);
 }
 

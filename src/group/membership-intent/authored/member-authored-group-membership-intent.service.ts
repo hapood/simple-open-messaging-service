@@ -1,3 +1,5 @@
+import { parseRequestSnapshot } from '../../../../shared/request-snapshot.js';
+import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
 import { lockRelationshipPairsInTx } from '../../../common/locks/relationship-pair-business-lock.js';
 import { completeBusinessAddress } from '../../../common/locks/business-address.js';
 import { lockBusinessAccountsInTx } from '../../../common/locks/account-business-lock.js';
@@ -50,7 +52,6 @@ import type { GroupRelationshipMutationService } from '../shared/group-relations
 import type { FederationStateFeedPusher } from '../../../federation/federation-state-feed.events.js';
 import { normalizeAccount } from '../../../common/account.js';
 import { groupStateSql } from '../../shared/group-state.js';
-import type { FederatedPendingProfileSnapshot } from '../../../relationship/relationship.service.js';
 import { ensureMirrorGroupShellInTx } from '../../shared/ensure-mirror-group-shell-in-tx.js';
 
 /** One command family: a local member's authored intent about their own group
@@ -62,6 +63,7 @@ export type MemberAuthoredGroupMembershipIntentCommand =
       threadId: number;
       memberUserId: number;
       decision: 'REQUESTED';
+      snapshot: RequestSnapshot;
       note?: string;
     }
   | {
@@ -80,7 +82,6 @@ export interface MemberAuthoredGroupMembershipIntentDependencies {
 
 export interface MemberAuthoredGroupMembershipIntentOptions {
   admissionInTx?: (tx: DatabaseTransaction) => Promise<void>;
-  mirrorGroupSnapshot?: FederatedPendingProfileSnapshot;
 }
 
 export type MemberAuthoredGroupMembershipIntentResult =
@@ -154,11 +155,12 @@ export class MemberAuthoredGroupMembershipIntentService {
   async executeByNamespace(params: {
     memberUserId: number;
     target: { account: string; namespaceId: number };
-    decision: 'ACCEPTED' | 'REQUESTED' | 'REVOKED';
     note?: string;
-    snapshot?: FederatedPendingProfileSnapshot;
     admissionInTx?: (tx: DatabaseTransaction) => Promise<void>;
-  }): Promise<MemberAuthoredGroupMembershipIntentResult> {
+  } & (
+    | { decision: 'REQUESTED'; snapshot: RequestSnapshot }
+    | { decision: 'ACCEPTED' | 'REVOKED'; snapshot?: never }
+  )): Promise<MemberAuthoredGroupMembershipIntentResult> {
     const account = normalizeAccount(params.target.account);
     const namespaceId = params.target.namespaceId;
     if (!account.startsWith('!'))
@@ -169,16 +171,17 @@ export class MemberAuthoredGroupMembershipIntentService {
       );
     const clientUpdates: PendingClientStateFeedUpdate[] = [];
     const applied = await this.deps.database.db.transaction(async (tx) => {
-      const storedDomain = (
-        await tx.execute<{ domain: string }>(sql`
-          SELECT ns.domain
+      // The target namespace must be usable before any mirror shell is minted.
+      const namespaceUsable = (
+        await tx.execute<{ id: number }>(sql`
+          SELECT ns.id
           FROM "IdentityNamespace" ns
           WHERE ns.id = ${namespaceId}
             AND ns."retiredAt" IS NULL
             AND (ns.id = 0 OR ns.active = true)
         `)
-      ).rows[0]?.domain;
-      if (!storedDomain)
+      ).rows[0];
+      if (!namespaceUsable)
         return {
           outcome: this.reject(
             'GROUP_NOT_FOUND',
@@ -188,10 +191,9 @@ export class MemberAuthoredGroupMembershipIntentService {
           peers: new Map<number, bigint>(),
         };
       const member = (
-        await tx.execute<{ account: string; domain: string }>(sql`
-          SELECT a.account, ns.domain
+        await tx.execute<{ account: string }>(sql`
+          SELECT a.account
           FROM "Account" a
-          JOIN "IdentityNamespace" ns ON ns.id = 0
           WHERE a.id = ${params.memberUserId} AND a."namespaceId" = 0
         `)
       ).rows[0];
@@ -211,14 +213,13 @@ export class MemberAuthoredGroupMembershipIntentService {
       let located = (
         await tx.execute<{ threadId: number }>(sql`
           SELECT g.id AS "threadId" FROM ${groupStateSql} g
-          WHERE g.account = ${account} AND g.domain = ${storedDomain}
+          WHERE g.account = ${account}
             AND g."namespaceId" = ${namespaceId}
         `)
       ).rows[0];
       if (!located && params.decision === 'REQUESTED' && namespaceId !== 0)
         located = await ensureMirrorGroupShellInTx(tx, {
           account,
-          domain: storedDomain,
           namespaceId,
         });
       if (!located)
@@ -236,6 +237,7 @@ export class MemberAuthoredGroupMembershipIntentService {
               threadId: located.threadId,
               memberUserId: params.memberUserId,
               decision: 'REQUESTED',
+              snapshot: params.snapshot,
               ...(params.note ? { note: params.note } : {}),
             }
           : {
@@ -247,7 +249,6 @@ export class MemberAuthoredGroupMembershipIntentService {
         ...(params.admissionInTx
           ? { admissionInTx: params.admissionInTx }
           : {}),
-        ...(params.snapshot ? { mirrorGroupSnapshot: params.snapshot } : {}),
       });
     });
     this.publishApplied(applied, clientUpdates);
@@ -282,7 +283,6 @@ export class MemberAuthoredGroupMembershipIntentService {
         'REVOKED',
         clientUpdates,
         '',
-        undefined,
         {
           expectedAuthorization: {
             epoch: params.expectedAuthorizationEpoch,
@@ -317,11 +317,7 @@ export class MemberAuthoredGroupMembershipIntentService {
     await options?.admissionInTx?.(tx);
     return {
       outcome: { status: 'APPLIED' },
-      peers: await this.applyInTx(
-        context,
-        clientUpdates,
-        options?.mirrorGroupSnapshot,
-      ),
+      peers: await this.applyInTx(context, clientUpdates),
     };
   }
 
@@ -353,11 +349,9 @@ export class MemberAuthoredGroupMembershipIntentService {
     const located = (
       await tx.execute<{
         groupAccount: string;
-        groupDomain: string;
         groupNamespaceId: number;
         dissolvedAt: string | null;
         memberAccount: string;
-        memberDomain: string;
       }>(
         memberAuthoredMembershipLocatorSql({
           threadId: params.threadId,
@@ -385,7 +379,6 @@ export class MemberAuthoredGroupMembershipIntentService {
       );
     const member = {
       account: located.memberAccount,
-      domain: located.memberDomain,
       // The member endpoint is always local on this server: namespace 0.
       namespaceId: 0,
     };
@@ -527,6 +520,7 @@ export class MemberAuthoredGroupMembershipIntentService {
     )
       return { status: 'NO_OP', reason: 'ALREADY_SATISFIED' };
     if (row.invitationOutstanding) return this.prepareAcceptanceInTx(base);
+    if (base.params.decision !== 'REQUESTED') throw new Error('request command required');
     const requestedAt = new Date();
     const expiresAt = new Date(
       requestedAt.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS,
@@ -543,9 +537,8 @@ export class MemberAuthoredGroupMembershipIntentService {
         threadId: base.params.threadId,
         pairId: BigInt(row.pairId),
         groupAccount: row.account,
-        groupAvatar: row.avatar,
-        groupDescription: row.description,
         groupProfileRev: row.profileRev,
+        snapshot: parseRequestSnapshot(base.params.snapshot),
         memberAccount: row.memberAccount,
         profileNamespaceId: 0,
         localMemberId: row.localMemberId!,
@@ -609,8 +602,6 @@ export class MemberAuthoredGroupMembershipIntentService {
         threadId: base.params.threadId,
         groupAccount: row.account,
         groupProfileRev: row.profileRev,
-        groupAvatar: row.avatar,
-        groupDescription: row.description,
         memberAccount: row.memberAccount,
         profileNamespaceId: row.profileNamespaceId,
         note: row.groupIntentNote ?? '',
@@ -664,8 +655,6 @@ export class MemberAuthoredGroupMembershipIntentService {
         threadId: base.params.threadId,
         pairId: BigInt(row.pairId),
         groupAccount: row.account,
-        groupAvatar: row.avatar,
-        groupDescription: row.description,
         groupProfileRev: row.profileRev,
         memberAccount: row.memberAccount,
         profileNamespaceId: row.profileNamespaceId,
@@ -710,7 +699,6 @@ export class MemberAuthoredGroupMembershipIntentService {
       await this.deps.relationshipMutations.lockMemberRelationshipFeedInTx(
         base.tx,
         {
-          domain: base.row.domain,
           namespaceId: base.row.namespaceId,
         },
       );
@@ -727,7 +715,6 @@ export class MemberAuthoredGroupMembershipIntentService {
   private async applyInTx(
     context: ValidatedMembership,
     clientUpdates: PendingClientStateFeedUpdate[],
-    mirrorGroupSnapshot?: FederatedPendingProfileSnapshot,
   ): Promise<Map<number, bigint>> {
     if (context[validated] !== true || context.threadLock.tx !== context.tx)
       throw new Error('invalid group membership lock context');
@@ -754,7 +741,6 @@ export class MemberAuthoredGroupMembershipIntentService {
         'REVOKED',
         clientUpdates,
         '',
-        undefined,
         {
           lockedGroupPair: {
             pairId: BigInt(context.row.pairId),
@@ -782,9 +768,9 @@ export class MemberAuthoredGroupMembershipIntentService {
         context.authoredStatus,
         clientUpdates,
         context.note,
-        mirrorGroupSnapshot,
         {
           allowDissolvedPositive: true,
+          snapshot: context.params.decision === 'REQUESTED' ? context.params.snapshot : null,
           lockedGroupPair: {
             pairId: BigInt(context.row.pairId),
             threadLock: context.threadLock,

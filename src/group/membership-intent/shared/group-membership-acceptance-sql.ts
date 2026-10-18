@@ -10,8 +10,6 @@ export interface GroupMembershipAcceptanceInput {
   threadId: number;
   groupAccount: string;
   groupProfileRev: number;
-  groupAvatar: string;
-  groupDescription: string;
   memberAccount: string;
   profileNamespaceId: number;
   note: string;
@@ -209,8 +207,8 @@ function localMember(input: GroupMembershipAcceptanceInput): SQL {
     ), branch_done AS MATERIALIZED (
       SELECT count(*) FROM member_state
     ), recipient_feed AS (
-      INSERT INTO "ClientStateFeed" ("userId", account, domain, "namespaceId", "eventType", "subjectAccount", "subjectNamespaceId", "feedId", "compactionKey", body)
-      SELECT a.id, ${input.groupAccount}, (SELECT domain FROM "IdentityNamespace" WHERE id = 0), 0, 'RELATIONSHIP_INTENT', ${input.memberAccount}, 0, a."feedId", b."compactionKey", b.body
+      INSERT INTO "ClientStateFeed" ("userId", account, "namespaceId", "eventType", "subjectAccount", "subjectNamespaceId", "feedId", "compactionKey", body)
+      SELECT a.id, ${input.groupAccount}, 0, 'RELATIONSHIP_INTENT', ${input.memberAccount}, 0, a."feedId", b."compactionKey", b.body
       FROM recipient_allocation a CROSS JOIN recipient_body b CROSS JOIN branch_done
       ON CONFLICT ("userId", "compactionKey") DO UPDATE SET "feedId" = EXCLUDED."feedId", body = EXCLUDED.body, "updatedAt" = CURRENT_TIMESTAMP
       RETURNING "userId", "feedId"
@@ -275,6 +273,7 @@ function prepareRecipient(input: GroupMembershipAcceptanceInput): SQL {
     0,
     input.groupAccount,
     input.memberAccount,
+    0,
   ]);
   return sql`
     recipient_body AS MATERIALIZED (
@@ -282,7 +281,6 @@ function prepareRecipient(input: GroupMembershipAcceptanceInput): SQL {
         'requestedAt', floor(extract(epoch FROM i."requestedAt") * 1000)::bigint, 'expiresAt', NULL,
         'threadId', ${input.threadId}::integer, 'established', true,
         'group', jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
-          'avatar', ${input.groupAvatar}::text, 'description', ${input.groupDescription}::text,
           'profileRev', ${input.groupProfileRev}::integer)) AS body
       FROM accepted_intent i
     ), recipient_allocation AS (

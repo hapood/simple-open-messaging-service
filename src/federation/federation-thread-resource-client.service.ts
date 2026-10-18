@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { S2sResponseError } from './federation-errors.js';
 import type { FederationContext } from './federation-namespace.service.js';
 import { FederationThreadAccessService } from './federation-thread-access.service.js';
 import { FederationTrustedPeerClient } from './federation-trusted-peer-client.service.js';
@@ -8,7 +7,6 @@ export interface FederationThreadResourceResponse<T> {
   data: T;
   threadId: number;
   peerDomain: string;
-  federationVersion: number;
   peerToken: FederationContext;
 }
 
@@ -25,24 +23,14 @@ export class FederationThreadResourceClient {
     path: string,
     peerDomain: string,
     maxResponseBytes?: number,
-  ): Promise<{ data: T; federationVersion: number }> {
-    const federationVersion = await this.threadAccess.readFederationVersion(
-      threadId,
+  ): Promise<{ data: T }> {
+    await this.threadAccess.assertThreadExists(threadId, peerDomain);
+    const data = await this.trustedPeers.get<T>(
+      path,
       peerDomain,
+      maxResponseBytes,
     );
-    try {
-      const data = await this.trustedPeers.get<T>(
-        path,
-        peerDomain,
-        maxResponseBytes,
-      );
-      return { data, federationVersion };
-    } catch (error) {
-      if (error instanceof S2sResponseError) {
-        error.federationVersion = federationVersion;
-      }
-      throw error;
-    }
+    return { data };
   }
 
   async fetch<T>(

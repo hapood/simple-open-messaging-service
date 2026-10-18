@@ -37,7 +37,6 @@ describe('group business scope and content lock ordering', () => {
       .values({
         type: 'GROUP',
         groupAccount: parent.account,
-        groupDomain: 'local',
         groupAccountId: parent.id,
         updatedAt: new Date(),
       })
@@ -88,7 +87,6 @@ describe('group business scope and content lock ordering', () => {
         .values({
           type: 'GROUP',
           groupAccount: parent.account,
-          groupDomain: 'local',
           groupAccountId: parent.id,
           updatedAt: new Date(),
         })
@@ -193,7 +191,6 @@ describe('group business scope and content lock ordering', () => {
       .values({
         type: 'GROUP',
         groupAccount: parent.account,
-        groupDomain: 'local',
         groupAccountId: parent.id,
         updatedAt: new Date(),
       })

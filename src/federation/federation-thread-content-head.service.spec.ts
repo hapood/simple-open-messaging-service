@@ -24,7 +24,6 @@ function transaction(options?: {
         {
           threadType: options?.threadType ?? 'P2P',
           groupAccount: options?.threadType === 'GROUP' ? '!group' : null,
-          groupDomain: options?.threadType === 'GROUP' ? 'peer.test' : null,
           groupNamespaceId: options?.threadType === 'GROUP' ? 7 : null,
         },
       ],
@@ -50,7 +49,7 @@ describe('FederationThreadContentHeadService', () => {
     const service = new FederationThreadContentHeadService(stateFeed as never);
     const tx = transaction();
 
-    await service.projectCurrentInTx(tx as never, 'peer.test', 7, 31);
+    await service.projectCurrentInTx(tx as never, 7, 31);
 
     expect(tx.execute).toHaveBeenCalledTimes(3);
     const snapshotSql = new PgDialect().sqlToQuery(
@@ -75,7 +74,7 @@ describe('FederationThreadContentHeadService', () => {
     const service = new FederationThreadContentHeadService(stateFeed as never);
     const tx = transaction({ threadType: 'GROUP', tombstoneEndSeq: 0 });
 
-    await service.projectCurrentInTx(tx as never, 'peer.test', 7, 31);
+    await service.projectCurrentInTx(tx as never, 7, 31);
 
     expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(tx, [
       expect.objectContaining({
@@ -92,7 +91,7 @@ describe('FederationThreadContentHeadService', () => {
     const service = new FederationThreadContentHeadService(stateFeed as never);
     const tx = transaction({ messageEndSeq: null });
 
-    await service.projectCurrentInTx(tx as never, 'peer.test', 7, 31);
+    await service.projectCurrentInTx(tx as never, 7, 31);
 
     expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(tx, [
       expect.objectContaining({
@@ -110,7 +109,7 @@ describe('FederationThreadContentHeadService', () => {
       tombstoneEndSeq: 0,
     });
 
-    await service.projectCurrentInTx(tx as never, 'peer.test', 7, 31);
+    await service.projectCurrentInTx(tx as never, 7, 31);
 
     expect(stateFeed.writeManyInTx).toHaveBeenCalledWith(tx, [
       expect.objectContaining({

@@ -375,8 +375,7 @@ fn friend_body(direction: &str, status: &str, expires_at: Option<i64>) -> serde_
         "requestedAt": if status == "REQUESTED" { serde_json::Value::from(requested_at.unwrap()) } else { serde_json::Value::Null },
         "expiresAt": expires_at,
         "peer": {
-            "id": 2, "account": "peer", "name": "Peer", "avatar": "", "bio": "",
-            "domain": "peer.test"
+            "account": "peer", "avatar": "", "bio": ""
         }
     })
 }
@@ -395,9 +394,8 @@ fn native_projection_ignores_a_local_revoke_for_a_received_request() {
         10,
         12,
         "peer",
-        "peer.test",
         "me",
-        "local.test",
+        0,
         &friend_body("INCOMING", "REQUESTED", Some(now + 60_000)),
     )
     .unwrap();
@@ -407,9 +405,8 @@ fn native_projection_ignores_a_local_revoke_for_a_received_request() {
         11,
         12,
         "me",
-        "local.test",
         "peer",
-        "peer.test",
+        12,
         &friend_body("OUTGOING", "REVOKED", None),
     )
     .unwrap();
@@ -427,8 +424,7 @@ fn native_projection_ignores_a_local_revoke_for_a_received_request() {
     assert_eq!(
         projection["peer"],
         serde_json::json!({
-            "id":2, "account":"peer", "domain":"peer.test", "namespaceId":12,
-            "name":"Peer", "avatar":"", "bio":"",
+            "account":"peer", "namespaceId":12, "avatar":"", "bio":"",
         })
     );
     assert!(projection.get("group").is_none());
@@ -456,9 +452,8 @@ fn native_projection_persists_a_local_accept_side_effect() {
         10,
         12,
         "peer",
-        "peer.test",
         "me",
-        "local.test",
+        0,
         &friend_body("INCOMING", "REQUESTED", Some(now + 60_000)),
     )
     .unwrap();
@@ -495,9 +490,8 @@ fn native_projection_uses_request_metadata_for_revocation() {
         1,
         12,
         "peer",
-        "peer.test",
         "me",
-        "local.test",
+        0,
         &friend_body("INCOMING", "REQUESTED", Some(now + 60_000)),
     )
     .unwrap();
@@ -510,9 +504,8 @@ fn native_projection_uses_request_metadata_for_revocation() {
         1,
         12,
         "me",
-        "local.test",
         "peer",
-        "peer.test",
+        12,
         &body,
     )
     .unwrap();
@@ -541,13 +534,11 @@ fn native_group_request_projection_reconstructs_typed_subject() {
         4,
         12,
         "!team",
-        "remote.test",
         "INCOMING",
         &serde_json::json!({
             "status": "REQUESTED", "requestedAt": now, "expiresAt": now + 60_000,
             "threadId": 42, "note": "Welcome", "group": {
-                "account": "!team", "domain": "remote.test", "isLocal": false,
-                "name": "Team", "avatar": "", "description": "About",
+                "account": "!team", "namespaceId": 12,
                 "profileRev": 3
             }
         }),
@@ -563,12 +554,12 @@ fn native_group_request_projection_reconstructs_typed_subject() {
     assert_eq!(
         value["group"],
         serde_json::json!({
-            "account":"!team", "domain":"remote.test", "namespaceId":12,
-            "isLocal":false, "name":"Team", "avatar":"", "description":"About",
+            "account":"!team", "namespaceId":12,
             "profileRev":3,
         })
     );
-    assert_eq!(value["sourceLabel"], "remote.test");
+    assert_eq!(value["note"], "Welcome");
+    assert_eq!(value["sourceLabel"], "");
     assert!(value.get("peer").is_none());
     let page = super::client_state::page_relationship_requests(&mut conn, 1, "RECEIVED", None, 10)
         .unwrap();
@@ -583,6 +574,203 @@ fn native_group_request_projection_reconstructs_typed_subject() {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     assert!(!columns.contains(&"payload_json".to_string()));
+}
+
+#[test]
+fn native_request_snapshot_round_trips_without_changing_subject_identity() {
+    let conn = request_connection();
+    let key = serde_json::json!(["group", 12, "!team", "OUTGOING"]).to_string();
+    for avatar in [serde_json::Value::Null, serde_json::json!("/uploads/sent-avatar.webp")] {
+        let snapshot = serde_json::json!({"displayName": "Team at send time", "avatar": avatar});
+        let projection = serde_json::json!({
+            "key": key, "namespaceId": 12, "kind": "GROUP", "bucket": "SENT",
+            "direction": "OUTGOING", "status": "REQUESTED", "expiresAt": 60_001,
+            "localThreadId": null, "note": "Please let me join", "requestedAt": 1,
+            "requestedSort": 1, "updatedAt": 1, "sourceLabel": "",
+            "group": {"account": "!team", "namespaceId": 12, "profileRev": 0},
+            "snapshot": snapshot,
+        });
+        super::request_store::save(&conn, 1, &key, &projection).unwrap();
+        let stored = super::request_store::read(&conn, 1, &key).unwrap().unwrap();
+        assert_eq!(stored["snapshot"], snapshot);
+        assert_eq!(stored["group"], projection["group"]);
+        assert_eq!(stored["note"], projection["note"]);
+    }
+}
+
+#[test]
+fn native_sent_snapshot_survives_rejection_and_feed_replay() {
+    let mut conn = request_connection();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+    let snapshot = serde_json::json!({"displayName": "Peer at send time", "avatar": null});
+    let mut requested = friend_body("OUTGOING", "REQUESTED", Some(now + 60_000));
+    requested["snapshot"] = snapshot.clone();
+    requested["peer"]["profileRev"] = serde_json::json!(0);
+    let mut rejected = friend_body("INCOMING", "REVOKED", None);
+    rejected["requestStatus"] = serde_json::json!("REJECTED");
+    rejected["requestDirection"] = serde_json::json!("OUTGOING");
+    let events = serde_json::json!([
+        {"feedId": 1, "namespaceId": 12, "eventType": "RELATIONSHIP_INTENT",
+         "account": "me", "subjectAccount": "peer", "subjectNamespaceId": 12, "body": requested},
+        {"feedId": 2, "namespaceId": 12, "eventType": "RELATIONSHIP_INTENT",
+         "account": "peer", "subjectAccount": "me", "subjectNamespaceId": 0, "body": rejected}
+    ]);
+    for _ in 0..2 {
+        super::client_state::apply_state_feed_page(
+            &mut conn, 1, serde_json::from_value(events.clone()).unwrap(), 2, vec![], false,
+        ).unwrap();
+        let page = super::client_state::page_relationship_requests(&mut conn, 1, "SENT", None, 10).unwrap();
+        assert_eq!(page["total"], 1);
+        assert_eq!(page["items"][0]["status"], "REJECTED");
+        assert_eq!(page["items"][0]["snapshot"], snapshot);
+        assert_eq!(page["items"][0]["note"], "hello");
+    }
+}
+
+#[test]
+fn native_sent_snapshots_survive_database_reopen_and_projection_rebuild() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("requests.sqlite");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let friend_snapshot = serde_json::json!({
+        "displayName": "Peer at send time", "avatar": null
+    });
+    let group_snapshot = serde_json::json!({
+        "displayName": "Team at send time", "avatar": "/uploads/sent-team.webp"
+    });
+    let mut requested = friend_body("OUTGOING", "REQUESTED", Some(now + 60_000));
+    requested["snapshot"] = friend_snapshot.clone();
+    requested["peer"]["profileRev"] = serde_json::json!(0);
+    let mut rejected = friend_body("INCOMING", "REVOKED", None);
+    rejected["requestStatus"] = serde_json::json!("REJECTED");
+    rejected["requestDirection"] = serde_json::json!("OUTGOING");
+    let events = serde_json::json!([
+        {"feedId": 1, "namespaceId": 12, "eventType": "RELATIONSHIP_INTENT",
+         "account": "me", "subjectAccount": "peer", "subjectNamespaceId": 12,
+         "body": requested},
+        {"feedId": 2, "namespaceId": 12, "eventType": "RELATIONSHIP_INTENT",
+         "account": "peer", "subjectAccount": "me", "subjectNamespaceId": 0,
+         "body": rejected},
+        {"feedId": 3, "namespaceId": 12, "eventType": "RELATIONSHIP_INTENT",
+         "account": "me", "subjectAccount": "!team", "subjectNamespaceId": 12,
+         "body": {
+             "status": "REQUESTED", "direction": "OUTGOING",
+             "requestedAt": now, "expiresAt": now + 60_000,
+             "threadId": 41, "note": "Please let me join", "snapshot": group_snapshot,
+             "group": {"account": "!team", "namespaceId": 12, "profileRev": 0}
+         }},
+        {"feedId": 4, "namespaceId": 12, "eventType": "RELATIONSHIP_INTENT",
+         "account": "!team", "subjectAccount": "me", "subjectNamespaceId": 0,
+         "body": {
+             "status": "REVOKED", "requestStatus": "REJECTED",
+             "requestDirection": "OUTGOING", "threadId": 41,
+             "group": {"account": "!team", "namespaceId": 12, "profileRev": 7}
+         }}
+    ]);
+    let assert_stored = |conn: &mut Connection| {
+        let page = super::client_state::page_relationship_requests(conn, 1, "SENT", None, 10)
+            .unwrap();
+        assert_eq!(page["total"], 2);
+        for (kind, snapshot, note, account) in [
+            ("FRIEND", &friend_snapshot, "hello", "peer"),
+            ("GROUP", &group_snapshot, "Please let me join", "!team"),
+        ] {
+            let item = page["items"].as_array().unwrap().iter()
+                .find(|item| item["kind"] == kind).unwrap();
+            assert_eq!(item["status"], "REJECTED");
+            assert_eq!(item["direction"], "OUTGOING");
+            assert_eq!(item["snapshot"], *snapshot);
+            assert_eq!(item["note"], note);
+            assert_eq!(item["requestedAt"], now);
+            let subject = &item[if kind == "FRIEND" { "peer" } else { "group" }];
+            assert_eq!(subject["account"], account);
+            assert_eq!(subject["namespaceId"], 12);
+        }
+        let cursor: String = conn.query_row(
+            "SELECT value_json FROM sync_state WHERE user_id=1 AND key='stateFeedId'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(cursor, "4");
+    };
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE client_preferences(scope TEXT,key TEXT,value_json TEXT,updated_at INTEGER,PRIMARY KEY(scope,key));").unwrap();
+        super::create_cache_schema(&conn).unwrap();
+        super::client_state::apply_state_feed_page(
+            &mut conn, 1, serde_json::from_value(events.clone()).unwrap(), 4, vec![], false,
+        ).unwrap();
+        assert_stored(&mut conn);
+        conn.close().unwrap();
+    }
+    let mut conn = Connection::open(&path).unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+    super::validate_cache_schema(&conn).unwrap();
+    // Read before applying any events: recovery must not depend on in-memory state.
+    assert_stored(&mut conn);
+    for reset_projection in [false, true] {
+        // Exercise both duplicate delivery and a full projection rebuild from feed rows.
+        super::client_state::apply_state_feed_page(
+            &mut conn, 1, serde_json::from_value(events.clone()).unwrap(), 4, vec![], reset_projection,
+        ).unwrap();
+        assert_stored(&mut conn);
+    }
+    conn.close().unwrap();
+}
+
+#[test]
+fn native_group_request_page_commits_profile_references_and_notes() {
+    let mut conn = profile_cache_db();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let items = serde_json::json!([
+        {
+            "feedId": 1, "namespaceId": 0, "eventType": "RELATIONSHIP_INTENT",
+            "account": "me", "subjectAccount": "!local", "subjectNamespaceId": 0,
+            "body": {
+                "status": "REQUESTED", "direction": "OUTGOING",
+                "requestedAt": now, "expiresAt": now + 60_000,
+                "threadId": 41, "note": "Please let me join",
+                "snapshot": {"displayName": "Local at send time", "avatar": null},
+                "group": {"account": "!local", "namespaceId": 0, "profileRev": 2}
+            }
+        },
+        {
+            "feedId": 2, "namespaceId": 12, "eventType": "RELATIONSHIP_INTENT",
+            "account": "!mirror", "subjectAccount": "me", "subjectNamespaceId": 0,
+            "body": {
+                "status": "REQUESTED", "requestedAt": now, "expiresAt": now + 60_000,
+                "threadId": 42, "note": "Welcome",
+                "group": {"account": "!mirror", "namespaceId": 12, "profileRev": 3}
+            }
+        }
+    ]);
+    super::client_state::apply_state_feed_page(
+        &mut conn, 1, serde_json::from_value(items).unwrap(), 2, vec![], false,
+    ).unwrap();
+    for (namespace, account, direction, note, rev) in [
+        (0, "!local", "OUTGOING", "Please let me join", 2),
+        (12, "!mirror", "INCOMING", "Welcome", 3),
+    ] {
+        let key = serde_json::json!(["group", namespace, account, direction]).to_string();
+        let value = super::request_store::read(&conn, 1, &key).unwrap().unwrap();
+        assert_eq!(value["note"], note);
+        assert_eq!(value["snapshot"], if direction == "OUTGOING" {
+            serde_json::json!({"displayName": "Local at send time", "avatar": null})
+        } else { serde_json::Value::Null });
+        assert_eq!(value["group"], serde_json::json!({
+            "account": account, "namespaceId": namespace, "profileRev": rev,
+        }));
+    }
+    let cursor: String = conn.query_row(
+        "SELECT value_json FROM sync_state WHERE user_id=1 AND key='stateFeedId'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(cursor, "2");
 }
 
 #[test]

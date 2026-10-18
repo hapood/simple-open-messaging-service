@@ -65,11 +65,11 @@ export async function readNodeMessageAudit(
 ) {
   const identityColumns =
     kind === 'GROUP'
-      ? 'thread."groupAccount" AS "account", thread."groupDomain" AS "domain"'
+      ? 'thread."groupAccount" AS "account", authority_ns."domain" AS "domain"'
       : 'pair."endpointAAccount", ns_a."domain" AS "endpointADomain", pair."endpointBAccount", ns_b."domain" AS "endpointBDomain"';
   const identityJoin =
     kind === 'GROUP'
-      ? ''
+      ? 'INNER JOIN "IdentityNamespace" authority_ns ON authority_ns."id" = thread."authorityNamespaceId"'
       : 'INNER JOIN "RelationshipPair" pair ON pair."threadId" = thread."id" AND pair."kind" = \'P2P\' ' +
         'LEFT JOIN "IdentityNamespace" ns_a ON ns_a."id" = pair."endpointANamespaceId" ' +
         'LEFT JOIN "IdentityNamespace" ns_b ON ns_b."id" = pair."endpointBNamespaceId"';

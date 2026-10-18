@@ -1,3 +1,5 @@
+import { parseRequestSnapshot, type RequestSnapshot } from '../../shared/request-snapshot.js';
+import { authoredIntentWriteSql } from '../common/sql/authored-relationship-intent-sql.js';
 import { groupStateSql } from '../group/shared/group-state.js';
 import {
   accountAddressInTx,
@@ -39,6 +41,7 @@ export interface RelationshipIntentState extends Record<string, unknown> {
   tombstoneEndSeq: number;
   requestedAt: Date | null;
   expiresAt: Date | null;
+  snapshot?: RequestSnapshot | null;
 }
 
 /** One relationship endpoint. namespaceId is the endpoint's own identity
@@ -94,6 +97,7 @@ type RawIntent = {
   tombstoneEndSeq: number;
   requestedAt: Date | null;
   expiresAt: Date | null;
+  snapshot?: RequestSnapshot | null;
 };
 
 /** Serializes the two authored directions on a canonical Pair row. Pair.active is updated by the
@@ -223,6 +227,7 @@ export class RelationshipIntentService {
       threadId: number;
       threadLock: ThreadContentLock;
       status: RelationshipIntentStatus;
+      snapshot?: RequestSnapshot | null;
       note?: string;
       expiresAt?: Date | null;
       validatedPairActive?: boolean;
@@ -237,6 +242,7 @@ export class RelationshipIntentService {
       direction: params.direction,
       threadId: params.threadId,
       status: params.status,
+      snapshot: params.snapshot,
       note: params.note,
       expiresAt: params.expiresAt,
       ...(params.validatedPairActive === undefined
@@ -312,11 +318,9 @@ export class RelationshipIntentService {
   ): Promise<{ changed: boolean; threadLock: ThreadContentLock }> {
     const located = await tx.execute<{
       groupAccount: string;
-      groupDomain: string;
       groupNamespaceId: number;
     }>(sql`
       SELECT group_profile.account AS "groupAccount",
-        group_profile.domain AS "groupDomain",
         group_profile."namespaceId" AS "groupNamespaceId"
       FROM ${groupStateSql} group_profile
       WHERE group_profile.id = ${params.groupId}
@@ -334,7 +338,10 @@ export class RelationshipIntentService {
       pair.endpointA.type === 'GROUP' ? pair.endpointA : pair.endpointB;
     const memberEndpoint =
       groupEndpoint === pair.endpointA ? pair.endpointB : pair.endpointA;
-    if (groupEndpoint.account !== group.groupAccount)
+    if (
+      groupEndpoint.account !== group.groupAccount ||
+      groupEndpoint.namespaceId !== group.groupNamespaceId
+    )
       throw new Error('group identity changed while acquiring business lock');
     const changed = await this.setLockedGroupPairActiveInTx(tx, {
       pairId: pair.id,
@@ -462,13 +469,11 @@ export class RelationshipIntentService {
     const member = await accountAddressInTx(tx, params.memberUserId);
     const located = await tx.execute<{
       groupAccount: string;
-      groupDomain: string;
       groupNamespaceId: number;
       memberAccount: string;
       profileNamespaceId: number;
     }>(sql`
       SELECT group_profile.account AS "groupAccount",
-        group_profile.domain AS "groupDomain",
         group_profile."namespaceId" AS "groupNamespaceId",
         ${member.account}::text AS "memberAccount",
         ${member.namespaceId}::integer AS "profileNamespaceId"
@@ -531,6 +536,7 @@ export class RelationshipIntentService {
       direction: IntentDirection;
       threadId: number | null;
       status: RelationshipIntentStatus;
+      snapshot?: RequestSnapshot | null;
       note?: string;
       expiresAt?: Date | null;
       validatedPairActive?: boolean;
@@ -566,50 +572,25 @@ export class RelationshipIntentService {
           new Date(requestedAt!.getTime() + RELATIONSHIP_INTENT_REQUEST_TTL_MS))
         : null;
     const direction = params.direction;
-    const written = await tx.execute(sql`
-      INSERT INTO "RelationshipIntent" (
-        "authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId",
-        status, "profileNamespaceId", "profileRev", note, "messageEndSeq", "tombstoneEndSeq",
-        "requestedAt", "expiresAt", "updatedAt"
-      ) VALUES (${direction.authorAccount}, ${direction.authorNamespaceId},
-        ${direction.receiverAccount}, ${direction.receiverNamespaceId},
-        ${status}::"RelationshipIntentStatus", 0,
-        COALESCE((
-          SELECT CASE WHEN ${direction.authorAccount} LIKE '!%' THEN
-              (SELECT profile."defaultProfileRev" FROM "GroupAccount" profile
-                WHERE profile.account = ${direction.authorAccount} LIMIT 1)
-            ELSE
-              (SELECT profile."defaultProfileRev" FROM "Account" profile
-                WHERE profile.account = ${direction.authorAccount}
-                  AND profile."namespaceId" = 0 LIMIT 1)
-          END
-        ), 0), ${(params.note ?? '').slice(0, 255)},
-        COALESCE((SELECT MAX(m.seq) FROM "Message" m
-          WHERE m."threadId" = ${params.threadId} AND m."contentType" <> 'SYSTEM'), 0),
-        COALESCE((SELECT MAX(d."deletionSeq") FROM "DeletedMessage" d
-          JOIN "Message" m ON m."threadId" = d."threadId" AND m.seq = d."messageSeq"
-          WHERE d."threadId" = ${params.threadId} AND d."publisherNamespaceId" = 0), 0),
-        ${requestedAt}, ${expiresAt}, CURRENT_TIMESTAMP)
-      ON CONFLICT ("authorAccount", "authorNamespaceId", "receiverAccount", "receiverNamespaceId") DO UPDATE SET
-        status = EXCLUDED.status, note = EXCLUDED.note,
-        "messageEndSeq" = CASE WHEN EXCLUDED.status = 'REVOKED'
-          THEN "RelationshipIntent"."messageEndSeq" ELSE EXCLUDED."messageEndSeq" END,
-        "tombstoneEndSeq" = CASE WHEN EXCLUDED.status = 'REVOKED'
-          THEN "RelationshipIntent"."tombstoneEndSeq" ELSE EXCLUDED."tombstoneEndSeq" END,
-        "profileRev" = CASE
-          WHEN "RelationshipIntent".status = 'REVOKED'
-            AND EXCLUDED.status = 'REQUESTED' THEN EXCLUDED."profileRev"
-          ELSE "RelationshipIntent"."profileRev"
-        END,
-        "requestedAt" = CASE
-          WHEN EXCLUDED.status IN ('REQUESTED', 'ACCEPTED') THEN EXCLUDED."requestedAt"
-          ELSE "RelationshipIntent"."requestedAt" END,
-        "expiresAt" = EXCLUDED."expiresAt", "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "RelationshipIntent".status IS DISTINCT FROM EXCLUDED.status
-         OR "RelationshipIntent".note IS DISTINCT FROM EXCLUDED.note
-         OR "RelationshipIntent"."expiresAt" IS DISTINCT FROM EXCLUDED."expiresAt"
-      RETURNING 1
-    `);
+    const written = await tx.execute(
+      authoredIntentWriteSql({
+        author: {
+          account: direction.authorAccount,
+          namespaceId: direction.authorNamespaceId,
+        },
+        receiver: {
+          account: direction.receiverAccount,
+          namespaceId: direction.receiverNamespaceId,
+        },
+        threadId: params.threadId,
+        note: params.note ?? '',
+        requestedAt,
+        expiresAt,
+        ...(status === 'REQUESTED'
+          ? { status: 'REQUESTED' as const, snapshot: parseRequestSnapshot(params.snapshot) }
+          : { status }),
+      }),
+    );
     const raw = await this.readIntentByDirectionInTx(tx, params.direction);
     if (!raw) throw new Error('relationship intent write disappeared');
     return {
@@ -899,6 +880,7 @@ export class RelationshipIntentService {
       ),
       columns: {
         status: true,
+        snapshot: true,
         profileRev: true,
         note: true,
         messageEndSeq: true,

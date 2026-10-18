@@ -280,7 +280,6 @@ describe('transactional thread fanout queue', () => {
         type: 'GROUP',
         groupAccount: group.account,
         groupAccountId: group.id,
-        groupDomain: 'local',
       })
       .where(eq(messageThread.id, threadId));
     const [pair] = await database.db
@@ -405,7 +404,11 @@ describe('transactional thread fanout queue', () => {
     await f.handler.execute(f.task);
     expect(
       f.heads.projectCurrentInTx.mock.calls.map((call) => call[1]),
-    ).toEqual(['fanout-a.test', 'fanout-b.test', 'fanout-b.test']);
+    ).toEqual([
+      f.namespaces[0],
+      f.namespaces[1],
+      f.namespaces[1],
+    ]);
     expect(f.events.emit).toHaveBeenCalledTimes(2);
     expect(
       (
@@ -610,7 +613,6 @@ describe('transactional thread fanout queue', () => {
       .set({
         type: 'GROUP',
         groupAccount: authoredGroup.account,
-        groupDomain: 'local',
         groupAccountId: authoredGroup.id,
         authorityNamespaceId: 0,
       })

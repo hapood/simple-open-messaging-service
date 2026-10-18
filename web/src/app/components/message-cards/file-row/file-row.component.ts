@@ -12,10 +12,9 @@ import { MEDIA_STATUS, type ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { QuoteBlockComponent } from '../quote-block/quote-block.component';
 import type { HistoryAnchor } from '../../../services/history-anchor';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../../user-avatar/user-avatar.component';
+import { AvatarComponent } from '../../user-avatar/avatar.component';
+import type { AvatarView } from '../../user-avatar/avatar-view';
+import { messageSenderPresentation } from '../message-sender';
 import {
   categorize,
   fileExt,
@@ -40,7 +39,7 @@ import {
   imports: [
     QuoteBlockComponent,
     DateRowComponent,
-    UserAvatarComponent,
+    AvatarComponent,
     TranslocoPipe,
     MatProgressSpinnerModule,
     MatIconModule,
@@ -50,7 +49,7 @@ import {
   styleUrl: './file-row.component.scss',
 })
 export class FileRowComponent {
-  readonly UserAvatarType = UserAvatarType;
+  readonly senderView = input<AvatarView>();
   /** Exposed for the template (status comparisons use MEDIA_STATUS.* — no bare literals). */
   readonly MEDIA_STATUS = MEDIA_STATUS;
   readonly data = input.required<ChatMsgData>();
@@ -59,15 +58,15 @@ export class FileRowComponent {
   readonly isGroupStart = input(false);
   readonly showDate = input<boolean>(false);
 
-  readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
-  readonly showAvatar = computed(() => this.isShowHead());
-  readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
-  readonly showName = computed(
-    () =>
-      this.isShowHead() &&
-      this.data().isGroupConversation === true &&
-      !this.data().isSelf,
+  readonly sender = messageSenderPresentation(
+    this.data,
+    this.isShowHead,
+    this.senderView,
   );
+  readonly side = this.sender.side;
+  readonly showAvatar = this.sender.showAvatar;
+  readonly showName = this.sender.showName;
+  readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
   readonly statusTick = computed(
     () => this.data().isSelf && !!this.data().status,
   );

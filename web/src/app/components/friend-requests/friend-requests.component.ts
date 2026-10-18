@@ -34,12 +34,12 @@ import {
 } from '../../services/user.service';
 import type { FriendRequestProjection } from '../../services/friend-request-state';
 import { UserRef } from '../../services/model';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
+import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import { translateBizResult } from '../../services/biz-code';
 import dayjs from 'dayjs';
+import { parseRequestSnapshot, type RequestSnapshot } from '../../../../../shared/request-snapshot';
 import { FriendInviteDialogComponent } from '../friend-invite-dialog/friend-invite-dialog.component';
 import { VirtualInfiniteListComponent } from '../virtual-infinite-list/virtual-infinite-list.component';
 import { FriendRequestCardComponent } from '../friend-request-card/friend-request-card.component';
@@ -76,6 +76,7 @@ type PendingReq = {
   errText: string;
   kind?: 'FRIEND' | 'GROUP';
   profileRev?: number;
+  snapshot: RequestSnapshot | null;
 };
 type RelationshipState =
   | 'NONE'
@@ -87,7 +88,8 @@ type RelationshipState =
   selector: 'app-friend-requests',
   imports: [
     AsyncPipe,
-    UserAvatarComponent,
+    DemandAvatarComponent,
+    SnapshotAvatarComponent,
     FormsModule,
     MatButtonModule,
     MatCardModule,
@@ -696,6 +698,9 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   private projectionToPending(projection: FriendRequestProjection): PendingReq {
+    const snapshot = projection.direction === 'OUTGOING'
+      ? parseRequestSnapshot(projection.snapshot)
+      : null;
     if (projection.kind === 'FRIEND') {
       const peer = projection.peer!;
       return {
@@ -711,6 +716,7 @@ export class FriendRequestsComponent implements OnDestroy {
         errText: '',
         kind: 'FRIEND',
         profileRev: peer.profileRev,
+        snapshot,
       };
     }
     const group = projection.group!;
@@ -725,12 +731,13 @@ export class FriendRequestsComponent implements OnDestroy {
       ]),
       account: group.account,
       namespaceId: group.namespaceId,
-      reqMessage: group.description,
+      reqMessage: projection.note,
       status: projection.status,
       date: projection.requestedAt,
       errText: '',
       kind: 'GROUP',
       profileRev: group.profileRev,
+      snapshot,
     };
   }
 
@@ -842,6 +849,10 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   avatarProfile(request: PendingReq): AvatarProfileRef | undefined {
+    if (request.direction === 'OUTGOING') {
+      parseRequestSnapshot(request.snapshot);
+      return undefined;
+    }
     return request.account && request.profileRev
       ? {
           account: request.account,

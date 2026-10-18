@@ -20,10 +20,8 @@ import {
 } from '../../services/conversation-list.service';
 import { UserService } from '../../services/user.service';
 import { ConversationItem, displayThreadName } from '../../services/model';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import {
   conversationAvatarType,
   conversationAvatarAccount,
@@ -47,7 +45,7 @@ import { hasUnreadGroupJoinRequests } from '../../services/group-join-request-st
 @Component({
   selector: 'app-thread-list',
   imports: [
-    UserAvatarComponent,
+    DemandAvatarComponent,
     NamespaceDomainPipe,
     AsyncPipe,
     IconComponent,

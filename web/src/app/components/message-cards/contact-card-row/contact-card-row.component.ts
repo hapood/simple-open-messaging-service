@@ -11,10 +11,11 @@ import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { QuoteBlockComponent } from '../quote-block/quote-block.component';
 import type { HistoryAnchor } from '../../../services/history-anchor';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../../user-avatar/user-avatar.component';
+import { AvatarComponent } from '../../user-avatar/avatar.component';
+import { SnapshotAvatarComponent } from '../../user-avatar/snapshot-avatar.component';
+import { UserAvatarType } from '../../user-avatar/model';
+import type { AvatarView } from '../../user-avatar/avatar-view';
+import { messageSenderPresentation } from '../message-sender';
 import { RouteService, PopupType } from '../../../services/route.service';
 import { NavStateMachineService } from '../../../services/nav-state.service';
 
@@ -31,7 +32,8 @@ interface ContactCard {
   selector: 'app-msg-contact-card-row',
   standalone: true,
   imports: [
-    UserAvatarComponent,
+    AvatarComponent,
+    SnapshotAvatarComponent,
     DateRowComponent,
     TranslocoPipe,
     QuoteBlockComponent,
@@ -44,20 +46,21 @@ export class ContactCardRowComponent {
   private readonly route = inject(RouteService);
   private readonly nav = inject(NavStateMachineService);
   readonly UserAvatarType = UserAvatarType;
+  readonly senderView = input<AvatarView>();
   readonly data = input.required<ChatMsgData>();
   readonly quoteJump = output<HistoryAnchor>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
   readonly showDate = input(false);
-  readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
-  readonly showAvatar = computed(() => this.isShowHead());
-  readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
-  readonly showName = computed(
-    () =>
-      this.isShowHead() &&
-      this.data().isGroupConversation === true &&
-      !this.data().isSelf,
+  readonly sender = messageSenderPresentation(
+    this.data,
+    this.isShowHead,
+    this.senderView,
   );
+  readonly side = this.sender.side;
+  readonly showAvatar = this.sender.showAvatar;
+  readonly showName = this.sender.showName;
+  readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
   readonly card = computed<ContactCard | null>(() => {
     try {
       const value = JSON.parse(this.data().text) as Partial<ContactCard>;

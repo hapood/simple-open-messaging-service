@@ -19,17 +19,15 @@ import { avatarBlobDataUrl } from '../../services/profile-avatar-bytes';
 import { assetUrl } from '../../services/runtime';
 import { GroupService } from '../../services/group.service';
 import { DialogActionFooterComponent } from '../dialog-action-footer/dialog-action-footer.component';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 
 @Component({
   selector: 'app-friend-invite-dialog',
   imports: [
     FormsModule,
     TranslocoPipe,
-    UserAvatarComponent,
+    SnapshotAvatarComponent,
     DialogActionFooterComponent,
   ],
   templateUrl: './friend-invite-dialog.component.html',
@@ -83,19 +81,16 @@ export class FriendInviteDialogComponent {
               ),
             );
       } catch {
-        avatar = undefined;
+        this.errorText.set(this.transloco.translate('friend.error.unknownError'));
+        this.sending.set(false);
+        return;
       }
     }
     const note = this.note().trim().slice(0, 255);
     const request = this.userService.requestRelationship({
       account: user.account,
       namespaceId: user.namespaceId,
-      ...(user.namespaceId === 0
-        ? {}
-        : {
-            displayName: user.name,
-            avatar,
-          }),
+      snapshot: { displayName: user.name, avatar: avatar ?? null },
       note,
     });
     request.subscribe({

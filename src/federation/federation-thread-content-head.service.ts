@@ -23,13 +23,11 @@ export class FederationThreadContentHeadService {
    * State Feed. A candidate route that cannot publish a head returns false. */
   async projectCurrentInTx(
     tx: DatabaseTransaction,
-    peerDomain: string,
     namespaceId: number,
     threadId: number,
   ): Promise<boolean> {
     const projection = await this.readProjectionInTx(
       tx,
-      peerDomain,
       namespaceId,
       threadId,
     );
@@ -55,19 +53,16 @@ export class FederationThreadContentHeadService {
 
   private async readProjectionInTx(
     tx: DatabaseTransaction,
-    peerDomain: string,
     namespaceId: number,
     threadId: number,
   ): Promise<ThreadContentProjection | null> {
     const threadResult = await tx.execute<{
       threadType: 'P2P' | 'GROUP';
       groupAccount: string | null;
-      groupDomain: string | null;
       groupNamespaceId: number | null;
     }>(sql`
       SELECT thread.type AS "threadType",
              group_state.account AS "groupAccount",
-             group_state.domain AS "groupDomain",
              group_state."namespaceId" AS "groupNamespaceId"
       FROM "MessageThread" thread
       LEFT JOIN ${groupStateSql} group_state ON group_state.id = thread.id
@@ -114,7 +109,6 @@ export class FederationThreadContentHeadService {
                     AND member_pair."endpointANamespaceId" = 0
                 ))))
           OR (${thread.threadType} = 'GROUP'
-            AND ${thread.groupDomain} = ${peerDomain}
             AND ${thread.groupNamespaceId} = ${namespaceId}
             AND EXISTS (
               SELECT 1
@@ -156,9 +150,7 @@ export class FederationThreadContentHeadService {
       };
     }
     if (!route.account || !route.peerAccount)
-      throw new Error(
-        `P2P thread ${threadId} has no address for ${peerDomain}`,
-      );
+      throw new Error(`P2P thread ${threadId} has no address`);
     return {
       account: route.account,
       peerAccount: route.peerAccount,

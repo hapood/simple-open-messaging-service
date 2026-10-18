@@ -1,3 +1,4 @@
+import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
 import { sql, type SQL } from 'drizzle-orm';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../../../federation/federation-history-access-setting.js';
 import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
@@ -10,8 +11,6 @@ export interface GroupAuthoredMembershipRequestInput {
   threadId: number;
   pairId: bigint;
   groupAccount: string;
-  groupAvatar: string;
-  groupDescription: string;
   groupProfileRev: number;
   targetAccount: string;
   targetNamespaceId: number;
@@ -20,6 +19,7 @@ export interface GroupAuthoredMembershipRequestInput {
   note: string;
   requestedAt: Date;
   expiresAt: Date;
+  snapshot: RequestSnapshot;
 }
 
 function localRecipientKey(
@@ -32,6 +32,7 @@ function localRecipientKey(
     0,
     groupAccount,
     targetAccount,
+    0,
   ]);
 }
 
@@ -60,13 +61,14 @@ export function groupAuthoredMembershipRequestSql(
         note: input.note,
         requestedAt: input.requestedAt,
         expiresAt: input.expiresAt,
+        snapshot: input.snapshot,
       })}
     ), request_state AS MATERIALIZED (
       SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
-        "messageEndSeq", "tombstoneEndSeq" FROM authored
+        "messageEndSeq", "tombstoneEndSeq", snapshot FROM authored
       UNION ALL
       SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
-        "messageEndSeq", "tombstoneEndSeq"
+        "messageEndSeq", "tombstoneEndSeq", snapshot
       FROM "RelationshipIntent"
       WHERE "authorAccount" = ${input.groupAccount} AND "authorNamespaceId" = 0
         AND "receiverAccount" = ${input.targetAccount}
@@ -85,16 +87,16 @@ export function groupAuthoredMembershipRequestSql(
     ), request_projection AS (
       INSERT INTO "GroupRequestProjection"
         ("threadId", "memberAccount", "profileNamespaceId",
-          "memberProfileRev", direction, status, note, "requestedAt", "expiresAt", "feedId")
+          "memberProfileRev", direction, status, note, "requestedAt", "expiresAt", "feedId", snapshot)
       SELECT ${input.threadId}, ${input.targetAccount},
         ${input.targetNamespaceId}, (SELECT rev FROM member_rev), 'INVITATION',
         'REQUESTED'::"RequestProjectionStatus", v.note, v."requestedAt", v."expiresAt",
-        (SELECT "feedId" FROM projection_alloc)
+        (SELECT "feedId" FROM projection_alloc), v.snapshot
       FROM request_state v
       WHERE EXISTS (SELECT 1 FROM projection_alloc)
       ON CONFLICT ("threadId", "memberAccount",
         "profileNamespaceId", "direction") DO UPDATE SET
-        "feedId" = EXCLUDED."feedId",
+        "feedId" = EXCLUDED."feedId", snapshot = EXCLUDED.snapshot,
         "memberProfileRev" = EXCLUDED."memberProfileRev", status = EXCLUDED.status,
         note = EXCLUDED.note, "requestedAt" = EXCLUDED."requestedAt",
         "expiresAt" = EXCLUDED."expiresAt"
@@ -137,12 +139,12 @@ function localRecipient(input: GroupAuthoredMembershipRequestInput): SQL {
           'threadId', ${input.threadId}::integer,
           'established', (SELECT p.established FROM "RelationshipPair" p WHERE p.id = ${input.pairId}),
           'group', jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
-            'description', ${input.groupDescription}::text, 'profileRev', ${input.groupProfileRev}::integer)
+            'profileRev', ${input.groupProfileRev}::integer)
         ) AS body
       FROM request_state v
     ), candidate_bodies AS MATERIALIZED (
       SELECT ${input.localTargetId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
-        b."compactionKey", ${input.groupAccount}::text AS account, (SELECT domain FROM "IdentityNamespace" WHERE id = 0)::text AS domain,
+        b."compactionKey", ${input.groupAccount}::text AS account,
         ${input.targetAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", b.body
       FROM recipient_body b
     ), ${clientIntentFeedWriteSql()}

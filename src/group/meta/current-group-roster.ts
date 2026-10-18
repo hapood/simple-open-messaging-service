@@ -58,13 +58,9 @@ export async function readCurrentGroupMemberByAddressInTx(
   const namespaceId = identity.namespaceId;
   const result = await tx.execute<RosterRow>(sql`
     SELECT fact.body ->> 'account' AS account,
-      COALESCE(ns.domain, '') AS domain,
       fact.body -> 'namespaceId' AS "namespaceId", fact.body ->> 'role' AS role,
       fact.body -> 'profileRev' AS "profileRev"
     FROM "GroupMetaMemberFeed" fact
-    LEFT JOIN "IdentityNamespace" ns
-      ON fact."threadId" IN (SELECT id FROM "MessageThread" WHERE "authorityNamespaceId" = 0)
-      AND ns.id = (fact.body -> 'namespaceId')::integer
     WHERE fact."threadId" = ${groupId}
       AND fact.body ->> 'account' = ${identity.account}
       AND fact.body -> 'namespaceId' = to_jsonb(${namespaceId}::integer)
@@ -80,13 +76,9 @@ export async function readCurrentGroupRosterInTx(
   validateGroupId(groupId);
   const result = await tx.execute<RosterRow>(sql`
     SELECT fact.body ->> 'account' AS account,
-      COALESCE(ns.domain, '') AS domain,
       fact.body -> 'namespaceId' AS "namespaceId", fact.body ->> 'role' AS role,
       fact.body -> 'profileRev' AS "profileRev"
     FROM "GroupMetaMemberFeed" fact
-    LEFT JOIN "IdentityNamespace" ns
-      ON fact."threadId" IN (SELECT id FROM "MessageThread" WHERE "authorityNamespaceId" = 0)
-      AND ns.id = (fact.body -> 'namespaceId')::integer
     WHERE fact."threadId" = ${groupId} AND fact.operation = 'MEMBER_UPSERT'
   `);
   return result.rows.map(member);
@@ -103,12 +95,8 @@ export async function readCurrentGroupOwnersInTx(
     Record<string, unknown> & NamespacedAddress & { groupId: number }
   >(sql`
     SELECT fact."threadId" AS "groupId", fact.body ->> 'account' AS account,
-      COALESCE(ns.domain, '') AS domain,
       fact.body -> 'namespaceId' AS "namespaceId"
     FROM "GroupMetaMemberFeed" fact
-    LEFT JOIN "IdentityNamespace" ns
-      ON fact."threadId" IN (SELECT id FROM "MessageThread" WHERE "authorityNamespaceId" = 0)
-      AND ns.id = (fact.body -> 'namespaceId')::integer
     WHERE fact."threadId" = ANY(${sql.param(ids)}::integer[])
       AND fact.operation = 'MEMBER_UPSERT' AND fact.body ->> 'role' = 'OWNER'
   `);

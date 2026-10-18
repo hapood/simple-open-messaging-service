@@ -82,7 +82,6 @@ describe('exact directed intent account-profile disclosure', () => {
       .values({
         type: 'GROUP',
         groupAccount: groupName,
-        groupDomain: loadFederationConfig().domain,
         groupAccountId: groupId,
         updatedAt: new Date(),
       })

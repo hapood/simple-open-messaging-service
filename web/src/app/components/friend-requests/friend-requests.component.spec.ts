@@ -93,6 +93,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       items: [
         {
           key: `friend:${id}`,
+          snapshot: null,
           namespaceId: 0,
           kind: 'FRIEND' as const,
           bucket: 'RECEIVED' as const,
@@ -111,7 +112,6 @@ describe('FriendRequestsComponent federated search progress', () => {
             account: name,
             avatar: '',
             bio: '',
-            domain: 'local',
           },
         },
       ],
@@ -156,6 +156,9 @@ describe('FriendRequestsComponent federated search progress', () => {
               items: [
                 {
                   key: 'request:41',
+                  snapshot: direction === 'OUTGOING'
+                    ? { displayName: 'Sent Peer', avatar: null }
+                    : null,
                   namespaceId: 0,
                   kind,
                   bucket: direction === 'OUTGOING' ? 'SENT' : 'RECEIVED',
@@ -163,12 +166,12 @@ describe('FriendRequestsComponent federated search progress', () => {
                   status: RequestProjectionStatus.REJECTED,
                   expiresAt: null,
                   localThreadId: null,
-                  note: '',
+                  note: 'Please let me join',
                   requestedAt: 1,
                   requestedSort: 1,
                   updatedAt: 2,
                   peer: identity,
-                  group: identity,
+                  group: { account: '!team', namespaceId: 0, profileRev: 3 },
                 },
               ],
               scannedThrough: null,
@@ -202,6 +205,10 @@ describe('FriendRequestsComponent federated search progress', () => {
       expect(component.pendingReqList()[0].status).toBe(
         RequestProjectionStatus.REJECTED,
       );
+      expect(component.sentReqList()[0].snapshot).toEqual({ displayName: 'Sent Peer', avatar: null });
+      expect(component.avatarProfile(component.sentReqList()[0])).toBeUndefined();
+      expect(component.sentReqList()[0].reqMessage).toBe('Please let me join');
+      expect(component.pendingReqList()[0].reqMessage).toBe('Please let me join');
     },
   );
 
@@ -426,7 +433,6 @@ describe('FriendRequestsComponent federated search progress', () => {
       name: 'Bob',
       avatar: '',
       bio: '',
-      domain: 'peer.test',
       namespaceId: 5,
       isGroup: false,
     };
@@ -482,7 +488,6 @@ describe('FriendRequestsComponent federated search progress', () => {
       name: 'Alice',
       avatar: '',
       bio: '',
-      domain: 'local',
       namespaceId: 0,
       isGroup: false,
     };
@@ -528,7 +533,6 @@ describe('FriendRequestsComponent federated search progress', () => {
       name: 'Bob',
       avatar: '',
       bio: '',
-      domain: 'peer.test',
       namespaceId: 5,
       isGroup: false,
     };
@@ -708,6 +712,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     ).componentInstance;
     const request = {
       id: 'friend:41',
+      snapshot: null,
       projectionKey: 'friend:41',
       account: 'alice',
       namespaceId: 0,
@@ -736,6 +741,7 @@ describe('FriendRequestsComponent federated search progress', () => {
       items: [
         {
           key: request.projectionKey,
+          snapshot: null,
           namespaceId: 0,
           kind: 'FRIEND',
           bucket: 'RECEIVED',
@@ -754,7 +760,6 @@ describe('FriendRequestsComponent federated search progress', () => {
             account: 'alice',
             avatar: '',
             bio: '',
-            domain: 'local',
           },
         },
       ],

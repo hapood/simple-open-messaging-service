@@ -28,7 +28,7 @@ import {
   type UserIntentAuthorizationRow,
 } from '../authored/user-intent-authorization-sql.js';
 import { userIntentAcceptanceSql } from '../authored/user-intent-acceptance-sql.js';
-import { userIntentRequestSql } from '../authored/user-intent-request-sql.js';
+import { receivedUserIntentRequestSql } from './received-user-intent-request-sql.js';
 import { userIntentRevocationSql } from '../authored/user-intent-revocation-sql.js';
 import { receivedUserIntentWriteSql } from './received-user-intent-write-sql.js';
 import type { UserIntentService } from '../authored/user-intent.service.js';
@@ -376,10 +376,8 @@ export class ReceivedUserIntentService {
         actorKey,
         targetKey,
         actorAccount: context.peer.account,
-        actorDomain: context.peer.domain,
         actorNamespaceId: namespaceId,
         targetAccount: context.localUser.account,
-        targetDomain: context.localUser.domain,
         targetNamespaceId: 0,
         note: wireIntent.note,
         acceptedAt: new Date(),
@@ -518,17 +516,15 @@ export class ReceivedUserIntentService {
       intentChanged: boolean;
       clientUpdates: Array<{ userId: number; feedId: number }>;
     }>(
-      userIntentRequestSql({
+      receivedUserIntentRequestSql({
         pairId,
         threadId,
         namespaceId,
         actorKey,
         targetKey,
         actorAccount: context.peer.account,
-        actorDomain: context.peer.domain,
         actorNamespaceId: namespaceId,
         targetAccount: context.localUser.account,
-        targetDomain: context.localUser.domain,
         targetNamespaceId: 0,
         note: wireIntent.note,
         requestedAt: intent.requestedAt,
@@ -622,10 +618,8 @@ export class ReceivedUserIntentService {
         actorKey,
         targetKey,
         actorAccount: context.peer.account,
-        actorDomain: context.peer.domain,
         actorNamespaceId: namespaceId,
         targetAccount: context.localUser.account,
-        targetDomain: context.localUser.domain,
         targetNamespaceId: 0,
         localActorId: context.localUserId,
         localTargetId: null,

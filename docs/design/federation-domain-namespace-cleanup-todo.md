@@ -43,19 +43,25 @@ kept consistent with [`schema.ts`](../../src/database/schema.ts).
 - `ThreadAudience` represents local/peer targets with `localUserId` and
   `targetNamespaceId`.
 - `PeerStateFeed` compaction uses namespace-based subject identity.
-- `ClientStateFeed.domain` is account transport metadata, not subject identity.
+- `ClientStateFeed` carries `account`/`namespaceId` coordinates and a
+  namespace-based compaction key; it has no domain column.
 - `PendingMedia` and `FileSyncProgress` use `publisherNamespaceId`.
 
-## Remaining cleanup
+## Completed cleanup
 
-These items are not known PostgreSQL or NestJS DI infrastructure blockers:
-
-- [ ] Audit locality decisions expressed indirectly or in SQL. A literal
-  TypeScript search alone is not a complete locality audit.
-- [ ] Remove `MessageThread.groupDomain` from the schema and baseline, replacing
-  its unique-index and CHECK-constraint responsibilities with
-  `authorityNamespaceId`. Preserve uniqueness on
-  `(groupAccount, authorityNamespaceId)` and the existing concurrency rules.
+- [x] Audited locality decisions expressed indirectly or in SQL. Identity
+  comparisons resolve namespace equality; domains appear only as transport
+  targets for outbound S2S requests and lab-side display.
+- [x] Removed `MessageThread.groupDomain` from the schema and baseline.
+  Uniqueness on group threads is `(groupAccount, authorityNamespaceId)`.
+- [x] Removed `ClientStateFeed.domain`; feed items and intent bodies use
+  namespace coordinates end to end.
+- [x] Removed the `MessageThread.federationVersion` capture/compare fence.
+  Namespace identifiers are permanent; thread existence, peer tokens,
+  `authorizationEpoch`, and commit-time re-reads cover stale-response risks.
+- [x] Replaced legacy all-optional coordinate selectors with closed shared
+  demands (`ProfileDemand`, `GroupMetaFeedDemand`) and renamed the federation
+  thread query flow from `selector` to `demand` terminology.
 
 These are tracked tasks, not authorization to change the business model or
 rewrite stored data.

@@ -112,7 +112,6 @@ export class RelationshipService {
       .select({
         groupId: messageThread.id,
         account: groupStateFields.account,
-        domain: groupStateFields.domain,
         name: groupStateFields.name,
         avatar: groupStateFields.avatar,
         description: groupStateFields.description,
@@ -140,7 +139,6 @@ export class RelationshipService {
     const feedId = await this.clientStateFeed.writeInTx(tx, {
       userId: memberUserId,
       account: state.account,
-      domain: state.domain,
       namespaceId: 0,
       eventType: 'RELATIONSHIP_INTENT',
       subjectAccount: member.account,
@@ -159,9 +157,6 @@ export class RelationshipService {
         group: {
           account: state.account,
           namespaceId: 0,
-          name: state.name,
-          avatar: state.avatar,
-          description: state.description,
           profileRev: state.profileRev,
         },
       },

@@ -53,7 +53,7 @@ describe('resolveAuthorizedFederationThreadInTx', () => {
     const query = executed.sql;
     expect(query).toContain('FROM "RelationshipPair" pair');
     expect(query).toContain('JOIN "RelationshipIntent" intent');
-    // The selector's local account must pin the pair's local endpoint. Without
+    // The demand's local account must pin the pair's local endpoint. Without
     // this predicate any active local pair with the same remote endpoint could
     // satisfy LIMIT 1 and resolve the query to another user's thread.
     expect(query).toContain('pair."endpointAAccount" = $');

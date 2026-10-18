@@ -226,7 +226,6 @@ describe('MessageService committed profile work', () => {
                 {
                   type: 'P2P',
                   groupAccount: null,
-                  groupDomain: null,
                 },
               ],
               true,
@@ -311,7 +310,6 @@ describe('MessageService committed profile work', () => {
                 {
                   type: 'P2P',
                   groupAccount: null,
-                  groupDomain: null,
                 },
               ],
               true,

@@ -132,7 +132,6 @@ describe('federation thread synchronization state', () => {
         .set({
           type: 'GROUP',
           groupAccount: '!authority',
-          groupDomain: 'local',
           groupAccountId: group.id,
           authorityNamespaceId: 0,
         })
@@ -148,7 +147,7 @@ describe('federation thread synchronization state', () => {
         threadId,
         peerDomain,
         namespaceId,
-        selector: { account: '!authority' },
+        demand: { account: '!authority' },
       };
       let ready!: () => void;
       let release!: () => void;
@@ -208,7 +207,6 @@ describe('federation thread synchronization state', () => {
         .set({
           type: 'GROUP',
           groupAccount: '!dissolved',
-          groupDomain: peerDomain,
           groupDissolvedAt: new Date(),
         })
         .where(eq(messageThread.id, threadId));

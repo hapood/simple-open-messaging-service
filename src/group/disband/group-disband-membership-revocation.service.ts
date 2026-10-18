@@ -128,9 +128,8 @@ export class GroupDisbandMembershipRevocationService {
     const located = (
       await tx.execute<{
         groupAccount: string;
-        groupDomain: string;
         groupNamespaceId: number;
-        memberDomain: string | null;
+        memberNamespaceId: number | null;
         dissolvedAt: string | null;
         pairId: string | null;
         localMemberId: number | null;
@@ -153,8 +152,8 @@ export class GroupDisbandMembershipRevocationService {
         profileNamespaceId: located.groupNamespaceId,
       },
     ]);
-    if (located.memberDomain === null)
-      throw new Error('member namespace has no persisted domain');
+    if (located.memberNamespaceId === null)
+      throw new Error('member namespace does not exist');
     await lockRelationshipPairsInTx(tx, [
       {
         kind: 'GROUP_MEMBER',
@@ -177,9 +176,8 @@ export class GroupDisbandMembershipRevocationService {
     const current = (
       await tx.execute<{
         groupAccount: string;
-        groupDomain: string;
         groupNamespaceId: number;
-        memberDomain: string | null;
+        memberNamespaceId: number | null;
         dissolvedAt: string | null;
         pairId: string | null;
         localMemberId: number | null;
@@ -193,7 +191,7 @@ export class GroupDisbandMembershipRevocationService {
     if (
       !current ||
       current.groupAccount !== located.groupAccount ||
-      current.groupDomain !== located.groupDomain
+      current.groupNamespaceId !== located.groupNamespaceId
     )
       throw new Error('group identity changed while acquiring business locks');
     if (!current.dissolvedAt)
@@ -287,8 +285,6 @@ export class GroupDisbandMembershipRevocationService {
         pairId,
         groupAccount: row.account,
         groupName: row.name,
-        groupAvatar: row.avatar,
-        groupDescription: row.description,
         groupProfileRev: row.profileRev,
         memberAccount: member.account,
         profileNamespaceId: row.profileNamespaceId,

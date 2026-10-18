@@ -3,7 +3,7 @@ import { TranslocoPipe } from '@jsverse/transloco';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { displayThreadName, type ConversationItem } from '../../services/model';
 import { RouteService } from '../../services/route.service';
-import { UserAvatarComponent } from '../user-avatar/user-avatar.component';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
 import {
   conversationAvatarAccount,
   conversationAvatarNamespaceId,
@@ -16,7 +16,7 @@ import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
   selector: 'app-contact-picker-dialog',
   standalone: true,
   imports: [
-    UserAvatarComponent,
+    DemandAvatarComponent,
         TranslocoPipe,
   ],
   templateUrl: './contact-picker-dialog.component.html',

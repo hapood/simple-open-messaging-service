@@ -1283,11 +1283,11 @@ describe('WebdbService', () => {
             namespaceId: 0,
             eventType: 'RELATIONSHIP_INTENT',
             account: kind === 'GROUP' ? '!history' : 'alice',
-            domain: 'local',
             subjectAccount: 'bob',
             subjectNamespaceId: 0,
             body: {
               status: 'REVOKED',
+              snapshot: null,
               established,
               note: '',
               requestedAt: null,
@@ -1297,7 +1297,6 @@ describe('WebdbService', () => {
                     threadId: 77,
                     group: {
                       account: '!history',
-                      domain: 'local',
                       namespaceId: 0,
                       name: 'History',
                       avatar: '',
@@ -1310,7 +1309,6 @@ describe('WebdbService', () => {
                     direction: 'INCOMING',
                     peer: {
                       account: 'alice',
-                      domain: 'local',
                       name: 'Alice',
                       avatar: '',
                       bio: '',
@@ -1360,7 +1358,6 @@ describe('WebdbService', () => {
         feedId: 12,
         namespaceId: 12,
         account: 'alice',
-        domain: 'local',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'bob',
         subjectNamespaceId: 12,
@@ -1370,13 +1367,14 @@ describe('WebdbService', () => {
           requestedAt: null,
           expiresAt: null,
           direction: 'OUTGOING',
+          snapshot: { displayName: 'Bob', avatar: null },
           localThreadId: 7,
           peer: {
             id: 2,
             account: 'bob',
+            namespaceId: 12,
             avatar: '',
             bio: '',
-            domain: 'peer.test',
           },
         },
       };
@@ -1414,14 +1412,12 @@ describe('WebdbService', () => {
         name: 'Bob',
         avatar: '',
         bio: '',
-        domain: 'local',
       };
       const items: ClientStateFeedItem[] = [
         {
           feedId: 20,
           namespaceId: 0,
           account: 'alice',
-          domain: 'local',
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: 'bob',
           subjectNamespaceId: 0,
@@ -1431,6 +1427,7 @@ describe('WebdbService', () => {
             requestedAt: 1,
             expiresAt: null,
             direction: 'OUTGOING',
+            snapshot: { displayName: 'Bob', avatar: null },
             localThreadId: 7,
             peer,
           },
@@ -1439,7 +1436,6 @@ describe('WebdbService', () => {
           feedId: 21,
           namespaceId: 0,
           account: 'bob',
-          domain: 'local',
           eventType: 'RELATIONSHIP_INTENT',
           subjectAccount: 'alice',
           subjectNamespaceId: 0,
@@ -1449,6 +1445,7 @@ describe('WebdbService', () => {
             requestedAt: 1,
             expiresAt: null,
             direction: 'INCOMING',
+            snapshot: null,
             localThreadId: 7,
             peer,
           },
@@ -1491,7 +1488,6 @@ describe('WebdbService', () => {
         const now = Date.now();
         const group = {
           account: '!group',
-          domain: 'local',
           namespaceId: 0,
           name: 'Group',
           avatar: '',
@@ -1502,13 +1498,13 @@ describe('WebdbService', () => {
           feedId: 1,
           namespaceId: 0,
           account: 'me',
-          domain: 'local',
           subjectAccount: '!group',
           subjectNamespaceId: 0,
           eventType: 'RELATIONSHIP_INTENT',
           body: {
             status: 'REQUESTED',
             direction: 'OUTGOING',
+            snapshot: { displayName: 'Group', avatar: null },
             requestedAt: now,
             expiresAt: now + 60_000,
             note: '',
@@ -1524,6 +1520,7 @@ describe('WebdbService', () => {
           subjectAccount: 'me',
           body: {
             ...request.body,
+            snapshot: null,
             status: 'REVOKED',
             direction: 'INCOMING',
             requestStatus,
@@ -1585,7 +1582,6 @@ describe('WebdbService', () => {
         feedId,
         namespaceId: 12,
         account: direction === 'OUTGOING' ? 'bravo' : 'admin',
-        domain: direction === 'OUTGOING' ? 'local.test' : 'bravo.test',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: direction === 'OUTGOING' ? 'admin' : 'bravo',
         subjectNamespaceId: direction === 'OUTGOING' ? 12 : 0,
@@ -1595,6 +1591,7 @@ describe('WebdbService', () => {
           requestedAt: status === 'REQUESTED' ? requestedAt : null,
           expiresAt: status === 'REQUESTED' ? requestedAt + 60_000 : null,
           direction,
+          snapshot: direction === 'OUTGOING' ? { displayName: 'admin', avatar: null } : null,
           localThreadId: status === 'ACCEPTED' ? 7 : null,
           peer,
         },
@@ -1622,7 +1619,6 @@ describe('WebdbService', () => {
       const group = {
         namespaceId: 0,
         account: '!group',
-        domain: 'local',
         name: 'Group',
         avatar: '',
         description: '',
@@ -1637,7 +1633,6 @@ describe('WebdbService', () => {
         namespaceId: 0,
         eventType: 'RELATIONSHIP_INTENT',
         account: direction === 'INCOMING' ? '!group' : 'me',
-        domain: 'local',
         subjectAccount: direction === 'INCOMING' ? 'me' : '!group',
         subjectNamespaceId: 0,
         body: {
@@ -1646,6 +1641,7 @@ describe('WebdbService', () => {
           requestedAt,
           expiresAt: status === 'REQUESTED' ? requestedAt + 60_000 : null,
           threadId: 8,
+          snapshot: direction === 'OUTGOING' ? { displayName: 'Group', avatar: null } : null,
           group,
         },
       });
@@ -1679,7 +1675,6 @@ describe('WebdbService', () => {
             feedId: 40,
             namespaceId: 12,
             account: 'alice',
-            domain: 'peer.test',
             eventType: 'RELATIONSHIP_INTENT',
             subjectAccount: 'me',
             subjectNamespaceId: 0,
@@ -1689,13 +1684,14 @@ describe('WebdbService', () => {
               requestedAt,
               expiresAt: requestedAt + 60_000,
               direction: 'INCOMING',
+              snapshot: null,
               localThreadId: null,
               peer: {
                 id: 2,
                 account: 'alice',
+                namespaceId: 12,
                 avatar: '',
                 bio: '',
-                domain: 'peer.test',
               },
             },
           },
@@ -1728,7 +1724,6 @@ describe('WebdbService', () => {
         feedId,
         namespaceId: 12,
         account: direction === 'INCOMING' ? 'alice' : 'me',
-        domain: direction === 'INCOMING' ? 'peer.test' : 'local.test',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: direction === 'INCOMING' ? 'me' : 'alice',
         subjectNamespaceId: direction === 'INCOMING' ? 0 : 12,
@@ -1744,13 +1739,14 @@ describe('WebdbService', () => {
           requestedAt: status === 'REQUESTED' ? requestedAt : null,
           expiresAt: status === 'REQUESTED' ? expiresAt : null,
           direction,
+          snapshot: null,
           localThreadId: 7,
           peer: {
             id: 2,
             account: 'alice',
+            namespaceId: 12,
             avatar: '',
             bio: 'About Alice',
-            domain: 'peer.test',
           },
         },
       });
@@ -1796,7 +1792,6 @@ describe('WebdbService', () => {
         feedId,
         namespaceId: 12,
         account: 'alice',
-        domain: 'peer.test',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'me',
         subjectNamespaceId: 0,
@@ -1806,13 +1801,14 @@ describe('WebdbService', () => {
           requestedAt,
           expiresAt,
           direction: 'INCOMING',
+          snapshot: null,
           localThreadId: null,
           peer: {
             id: 0,
             account: 'alice',
+            namespaceId: 12,
             avatar: peer.avatar,
             bio: '',
-            domain: 'peer.test',
           },
         },
       });
@@ -1852,7 +1848,6 @@ describe('WebdbService', () => {
         feedId: 20,
         namespaceId: 12,
         account: 'me',
-        domain: 'local.test',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'alice',
         subjectNamespaceId: 12,
@@ -1862,13 +1857,14 @@ describe('WebdbService', () => {
           requestedAt: expiresAt - 1_000,
           expiresAt,
           direction: 'OUTGOING',
+          snapshot: { displayName: 'Alice', avatar: 'avatar.webp' },
           localThreadId: 7,
           peer: {
             id: 2,
             account: 'alice',
+            namespaceId: 12,
             avatar: 'avatar.webp',
             bio: 'About Alice',
-            domain: 'peer.test',
           },
         },
       };
@@ -1896,7 +1892,6 @@ describe('WebdbService', () => {
         feedId: 21,
         namespaceId: 12,
         account: '!group',
-        domain: 'groups.test',
         eventType: 'RELATIONSHIP_INTENT',
         subjectAccount: 'me',
         subjectNamespaceId: 12,
@@ -1906,19 +1901,24 @@ describe('WebdbService', () => {
           requestedAt,
           expiresAt,
           direction: 'INCOMING',
+          snapshot: null,
           threadId: 8,
           group: {
             namespaceId: 12,
             account: '!group',
-            avatar: 'group.webp',
-            description: 'About group',
             profileRev: 2,
           },
         },
       };
 
       await webdb.applyStateFeedPage([invite], 21);
-      expect(await db!.getAll('relationshipRequests')).toHaveLength(1);
+      expect(await db!.getAll('relationshipRequests')).toEqual([
+        expect.objectContaining({
+          note: 'join us',
+          group: { account: '!group', namespaceId: 12, profileRev: 2 },
+        }),
+      ]);
+      expect(await webdb.getSyncState('stateFeedId')).toBe(21);
       expect(await db!.getAll('profiles')).toEqual([]);
 
       await webdb.cleanupRelationshipRequests(expiresAt);
@@ -1943,7 +1943,6 @@ describe('WebdbService', () => {
             // Older federated writers used GROUP->MEMBER as the compaction key even for a
             // member-authored request. The body direction is the authoritative authored side.
             account: '!group',
-            domain: 'groups.test',
             eventType: 'RELATIONSHIP_INTENT',
             subjectAccount: 'me',
             subjectNamespaceId: 12,
@@ -1953,12 +1952,11 @@ describe('WebdbService', () => {
               requestedAt,
               expiresAt: requestedAt + 60_000,
               direction: 'OUTGOING',
+              snapshot: { displayName: 'Group', avatar: null },
               threadId: 8,
               group: {
                 namespaceId: 12,
                 account: '!group',
-                avatar: '',
-                description: '',
                 profileRev: 1,
               },
             },
@@ -2678,7 +2676,6 @@ describe('WebdbService', () => {
       });
       const group = {
         account: '!dev',
-        domain: 'local',
         namespaceId: 0,
         name: '!dev',
         avatar: '',
@@ -2689,6 +2686,7 @@ describe('WebdbService', () => {
         eventType: 'RELATIONSHIP_INTENT' as const,
         body: {
           status: 'ACCEPTED' as const,
+          snapshot: null,
           note: '',
           requestedAt: null,
           expiresAt: null,
@@ -2702,7 +2700,6 @@ describe('WebdbService', () => {
           feedId: 1,
           namespaceId: 0,
           account: '!dev',
-          domain: 'local',
           subjectAccount: 'alice',
           subjectNamespaceId: 0,
           body: { ...common.body, direction: 'INCOMING' },
@@ -2712,7 +2709,6 @@ describe('WebdbService', () => {
           feedId: 2,
           namespaceId: 0,
           account: 'alice',
-          domain: 'local',
           subjectAccount: '!dev',
           subjectNamespaceId: 0,
           body: { ...common.body, direction: 'OUTGOING' },
@@ -2787,7 +2783,6 @@ describe('WebdbService', () => {
             namespaceId: 0,
             eventType: 'RELATIONSHIP_INTENT',
             account: 'alice',
-            domain: 'local',
             subjectAccount: '!dev',
             subjectNamespaceId: 0,
             body: {
@@ -2872,7 +2867,6 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       const group = {
         account: '!repro-group',
-        domain: 'local',
         namespaceId: 0,
         name: 'LOCAL-GROUP-REPRO',
         avatar: '',
@@ -2884,12 +2878,12 @@ describe('WebdbService', () => {
         namespaceId: 0,
         eventType: 'RELATIONSHIP_INTENT' as const,
         account: '!repro-group',
-        domain: 'local',
         subjectAccount: 'alice',
         subjectNamespaceId: 0,
         body: {
           status: 'ACCEPTED' as const,
           direction: 'INCOMING' as const,
+          snapshot: null,
           established: true,
           note: '',
           requestedAt: null,

@@ -39,7 +39,6 @@ import { ThreadSendOutbox } from '../../services/thread-send-outbox.service';
 import { ProfileRepository } from '../../services/profile-store.service';
 import { MemberProfileRepository } from '../../services/member-profile-store.service';
 
-
 /** A P2P ConversationItem fixture (only threadId is read by HttpItemSource). */
 function conv(threadId: number): ConversationItem {
   return {
@@ -479,12 +478,15 @@ describe('HttpItemSource (source-owned live demand over MessageRepository)', () 
     );
     const items = await src.init(-1, 50, 0);
     expect(items[0].data).toMatchObject({
-      avatarProfile: {
-        account: 'alice',
-        publisherNamespaceId: 0,
-        profileNamespaceId: 0,
-        rev: 3,
-        linked: true,
+      sender: {
+        kind: 'demand',
+        profile: {
+          account: 'alice',
+          publisherNamespaceId: 0,
+          profileNamespaceId: 0,
+          rev: 3,
+          linked: true,
+        },
       },
     });
     expect(repository.resolve).toHaveBeenCalledWith({

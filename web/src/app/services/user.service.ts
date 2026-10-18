@@ -1,3 +1,4 @@
+import type { RequestSnapshot } from '../../../../shared/request-snapshot';
 import type { RequestRevocationStatus } from '../../../../shared/request-projection-status';
 import {
   Injectable,
@@ -87,17 +88,18 @@ interface ClientIntentUser {
   account: string;
   avatar: string;
   bio: string;
-  domain: string;
+  namespaceId: number;
   profileRev?: number;
 }
 
 interface ClientFriendIntentBase {
+  snapshot: RequestSnapshot | null;
   requestStatus?: RequestRevocationStatus;
   requestDirection?: FriendIntentDirection;
   established?: boolean;
   key: string;
   account: string;
-  domain: string;
+  namespaceId: number;
   subjectAccount: string;
   subjectNamespaceId: number;
   note: string;
@@ -134,13 +136,14 @@ export type ClientFriendIntent = ClientFriendIntentBase &
   );
 
 export interface ClientGroupInviteIntent {
+  snapshot: RequestSnapshot | null;
   requestStatus?: RequestRevocationStatus;
   requestDirection?: FriendIntentDirection;
   established?: boolean;
   key: string;
   kind: 'GROUP_INVITE';
   account: string;
-  domain: string;
+  namespaceId: number;
   subjectAccount: string;
   subjectNamespaceId: number;
   status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
@@ -152,8 +155,6 @@ export interface ClientGroupInviteIntent {
   group: {
     account: string;
     namespaceId: number;
-    avatar: string;
-    description: string;
     profileRev: number;
   };
 }
@@ -165,14 +166,19 @@ type ClientStateBody =
       ClientFriendIntent,
       | 'key'
       | 'account'
-      | 'domain'
+      | 'namespaceId'
       | 'subjectAccount'
       | 'subjectNamespaceId'
       | 'requestedSort'
     >
   | Omit<
       ClientGroupInviteIntent,
-      'key' | 'account' | 'domain' | 'subjectAccount' | 'subjectNamespaceId' | 'kind'
+      | 'key'
+      | 'account'
+      | 'namespaceId'
+      | 'subjectAccount'
+      | 'subjectNamespaceId'
+      | 'kind'
     >;
 
 export interface FriendIntentPage {
@@ -187,7 +193,6 @@ export type ClientStateFeedItem =
   | {
       feedId: number;
       account: string;
-      domain: string;
       namespaceId: number;
       eventType: 'RELATIONSHIP_INTENT';
       subjectAccount: string;
@@ -197,7 +202,6 @@ export type ClientStateFeedItem =
   | {
       feedId: number;
       account: '';
-      domain: string;
       namespaceId: 0;
       eventType: 'INCOMING_INVITE_HEAD';
       subjectAccount: '';
@@ -857,8 +861,7 @@ export class UserService {
   requestRelationship(params: {
     account: string;
     namespaceId: number;
-    displayName?: string;
-    avatar?: string;
+    snapshot: RequestSnapshot;
     note?: string;
   }) {
     return this.http.post<RequestRelationshipResponse>(

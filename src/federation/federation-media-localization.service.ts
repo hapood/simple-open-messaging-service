@@ -157,10 +157,7 @@ export class FederationMediaLocalizationService {
       return this.readInboundMediaJobStatus(msg.id);
     }
 
-    const federationVersion = await this.threadAccess.readFederationVersion(
-      msg.threadId,
-      peerDomain,
-    );
+    await this.threadAccess.assertThreadExists(msg.threadId, peerDomain);
     await this.localizeMedia(
       msg,
       peerDomain,
@@ -168,7 +165,6 @@ export class FederationMediaLocalizationService {
       peerDomain,
       toAccount,
       msg.originSeq ?? msg.seq,
-      federationVersion,
     );
     return (await this.isMessageMediaReady(msg.id, msg.content))
       ? 'ready'
@@ -212,7 +208,6 @@ export class FederationMediaLocalizationService {
     fromDomain: string,
     toAccount: string,
     sourceSeq: number,
-    expectedFederationVersion: number,
   ): Promise<void> {
     for (const { digest } of extractDigestEntries(msg.content)) {
       try {
@@ -243,7 +238,6 @@ export class FederationMediaLocalizationService {
             tx,
             msg.threadId,
             peerDomain,
-            expectedFederationVersion,
           );
           await tx
             .insert(tables.messageAsset)
@@ -433,7 +427,7 @@ export class FederationMediaLocalizationService {
         type: tables.messageThread.type,
         group: {
           account: groupStateFields.account,
-          domain: groupStateFields.domain,
+          authorityDomain: tables.identityNamespace.domain,
         },
       })
       .from(tables.messageThread)
@@ -441,12 +435,21 @@ export class FederationMediaLocalizationService {
         groupStateTable,
         eq(groupStateTable.id, tables.messageThread.id),
       )
+      .leftJoin(
+        tables.identityNamespace,
+        eq(
+          tables.identityNamespace.id,
+          tables.messageThread.authorityNamespaceId,
+        ),
+      )
       .where(eq(tables.messageThread.id, threadId))
       .limit(1);
     if (thread?.type === MessageThreadType.GROUP && thread.group) {
+      // Transport target resolved from the authority namespace binding at
+      // request time; the group itself carries no domain.
       return {
         toAccount: thread.group.account,
-        peerDomain: thread.group.domain,
+        peerDomain: thread.group.authorityDomain,
       };
     }
     const [pair] = await this.database.db

@@ -6282,7 +6282,7 @@ export interface operations {
             query: {
                 threadId: string;
                 account: string;
-                domain: string;
+                namespaceId: string;
                 mode: string;
                 after: string;
                 take: string;

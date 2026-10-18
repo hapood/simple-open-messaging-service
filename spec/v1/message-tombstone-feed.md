@@ -84,7 +84,7 @@ previous hop's `messageSeq` without translating coordinates.
 ## 2. Tombstone query
 
 `GET /s2s/v1/message-tombstones` uses the same account-grammar-discriminated
-thread selector and P2P `peerAccount` as the message query, but it is
+thread demand and P2P `peerAccount` as the message query, but it is
 forward-only. `after` is the exclusive cursor and `through` is the fixed
 inclusive upper bound. Both belong to the thread-local `deletionSeq` space,
 not the State Feed ID or message-sequence space. The selected window is
@@ -191,7 +191,7 @@ source data, or acknowledge processing to the source.
 For every query, the source MUST revalidate its durable authored relationship
 direction, thread authority, local history policy, current blocking, and local
 policy. A P2P query requires an effective source-authored user-to-user
-`REQUESTED` or `ACCEPTED` direction for the exact selector. A GROUP query is
+`REQUESTED` or `ACCEPTED` direction for the exact demand. A GROUP query is
 served by a group origin under at least one effective source-authored
 group-to-member `REQUESTED` or `ACCEPTED` direction whose member belongs to the
 verified signer peer. In the reverse direction, the signer MUST be the exact

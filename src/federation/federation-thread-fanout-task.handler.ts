@@ -116,10 +116,9 @@ export class FederationThreadFanoutTaskHandler
       // Use current direct routes, including the origin of a mirrored group.
       // projectCurrentInTx remains the authority for each peer's visible content window.
       const routes = await tx.execute<{
-        peerDomain: string;
         namespaceId: number;
       }>(sql`
-        SELECT namespace.domain AS "peerDomain", namespace.id AS "namespaceId"
+        SELECT namespace.id AS "namespaceId"
         FROM "IdentityNamespace" namespace
         JOIN "MessageThread" thread ON thread.id = ${target.threadId}
         WHERE namespace."retiredAt" IS NULL
@@ -134,7 +133,6 @@ export class FederationThreadFanoutTaskHandler
                 AND (thread.type = 'P2P' OR thread."authorityNamespaceId" = 0)
             )
             OR (thread.type = 'GROUP'
-              AND thread."groupDomain" = namespace.domain
               AND thread."authorityNamespaceId" = namespace.id
               AND EXISTS (
                 SELECT 1 FROM "AccountThreadState" state
@@ -150,7 +148,6 @@ export class FederationThreadFanoutTaskHandler
       }
       const projected = await this.heads.projectCurrentInTx(
         tx,
-        next.peerDomain,
         next.namespaceId,
         target.threadId,
       );

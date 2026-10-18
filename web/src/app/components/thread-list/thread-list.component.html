@@ -58,13 +58,13 @@
             (click)="onUsrTrdClick(thread)"
           >
             <span class="thread-avatar">
-              <app-user-avatar
+              <app-demand-avatar
                 [type]="avatarType(thread)"
                 [name]="displayName(thread)"
                 [account]="avatarAccount(thread)"
                 [domainSource]="{ type: 'namespace', namespaceId: avatarNamespaceId(thread) }"
                 [profile]="avatarProfile(thread)"
-              ></app-user-avatar>
+              ></app-demand-avatar>
             </span>
             <span class="thread-info">
               <span class="thread-row">

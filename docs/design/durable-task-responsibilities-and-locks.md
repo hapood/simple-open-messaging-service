@@ -96,7 +96,7 @@ There are no dual-write or alternate lock paths.
 
 The mirror membership applier follows the same order from the receiving side:
 the group ACCOUNT scope is taken at the
-**authority domain** (`["business-scope", "ACCOUNT", groupDomain, groupAccount]`)
+**authority namespace** (`["business-scope", "ACCOUNT", profileNamespaceId, account]`)
 before the Pair scope, then the thread content lock, the pair row, the intent
 rows, the member's `AccountThreadState` row, the peer outbound state-feed
 allocator (`lockOutboundStateFeedNamespacesInTx`), and finally the client-feed

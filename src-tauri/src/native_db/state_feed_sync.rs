@@ -212,7 +212,7 @@ mod tests {
                 .iter()
                 .map(|id| {
                     serde_json::from_value(serde_json::json!({
-                        "feedId": id, "namespaceId": 0,
+                        "feedId": id, "namespaceId": 0, "subjectNamespaceId": 0,
                     }))
                     .unwrap()
                 })

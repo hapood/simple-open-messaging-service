@@ -65,7 +65,6 @@ export interface GroupRosterRoleDependencies {
 
 interface RosterRoleChange {
   account: string;
-  domain: string;
   namespaceId: number;
   previousRole: GroupRole;
   role: GroupRole;
@@ -136,7 +135,6 @@ export class GroupRosterRoleService {
     const located = (
       await tx.execute<{
         groupAccount: string;
-        groupDomain: string;
         groupNamespaceId: number;
       }>(groupRosterRoleLocatorSql({ threadId: params.threadId }))
     ).rows[0];
@@ -207,7 +205,6 @@ export class GroupRosterRoleService {
       };
     const operator: RosterRoleChange = {
       account: row.operatorAccount,
-      domain: row.operatorDomain!,
       namespaceId: 0,
       previousRole: GroupRole.OWNER,
       role: GroupRole.ADMIN,
@@ -236,7 +233,6 @@ export class GroupRosterRoleService {
         throw new Error('local roster target is missing');
       const newOwner: RosterRoleChange = {
         account: row.targetAccount,
-        domain: row.targetDomain!,
         namespaceId: row.targetNamespaceId!,
         previousRole: row.targetRole!,
         role: GroupRole.OWNER,
@@ -287,7 +283,6 @@ export class GroupRosterRoleService {
       throw new Error('local roster target is missing');
     const change: RosterRoleChange = {
       account: row.targetAccount,
-      domain: row.targetDomain!,
       namespaceId: row.targetNamespaceId!,
       previousRole: row.targetRole!,
       role: params.role,

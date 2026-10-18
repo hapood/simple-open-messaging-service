@@ -801,7 +801,6 @@ CREATE TABLE public."ClientStateFeed" (
     id bigint NOT NULL,
     "userId" integer NOT NULL,
     account character varying(31) NOT NULL,
-    domain character varying(63) NOT NULL,
     "eventType" character varying(31) NOT NULL,
     "subjectAccount" character varying(31) DEFAULT ''::character varying NOT NULL,
     "subjectNamespaceId" integer DEFAULT 0 NOT NULL,
@@ -1267,6 +1266,7 @@ CREATE TABLE public."GroupRequestProjection" (
     "memberAccount" character varying(31) NOT NULL,
     "profileNamespaceId" integer NOT NULL,
     "memberProfileRev" integer NOT NULL,
+    snapshot jsonb,
     direction character varying(15) NOT NULL,
     "feedId" integer NOT NULL,
     status public."RequestProjectionStatus" NOT NULL,
@@ -1274,6 +1274,16 @@ CREATE TABLE public."GroupRequestProjection" (
     "requestedAt" timestamp(3) with time zone NOT NULL,
     "expiresAt" timestamp(3) with time zone NOT NULL,
     CONSTRAINT "GroupRequestProjection_direction_check" CHECK (((direction)::text = ANY (ARRAY[('APPLICATION'::character varying)::text, ('INVITATION'::character varying)::text]))),
+    CONSTRAINT "GroupRequestProjection_snapshot_check" CHECK (snapshot IS NULL OR (
+      direction = 'INVITATION' AND COALESCE(
+        jsonb_typeof(snapshot) = 'object'
+        AND (snapshot - 'displayName' - 'avatar') = '{}'::jsonb
+        AND jsonb_typeof(snapshot->'displayName') = 'string'
+        AND char_length(btrim(snapshot->>'displayName')) > 0
+        AND char_length(snapshot->>'displayName') <= 31
+        AND (snapshot->'avatar' = 'null'::jsonb OR
+          (jsonb_typeof(snapshot->'avatar') = 'string'
+            AND char_length(btrim(snapshot->>'avatar')) > 0)), false))),
     CONSTRAINT "GroupRequestProjection_feedId_check" CHECK (("feedId" > 0)),
     CONSTRAINT "GroupRequestProjection_retention_check" CHECK ((("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval))))
 );
@@ -1503,19 +1513,16 @@ CREATE TABLE public."MessageThread" (
     "tombstoneEndSeq" integer DEFAULT 0 NOT NULL,
     "pullUntil" integer DEFAULT 0 NOT NULL,
     "authorityNamespaceId" integer DEFAULT 0 NOT NULL,
-    "federationVersion" integer DEFAULT 0 NOT NULL,
     "authorizationEpoch" integer DEFAULT 0 NOT NULL,
     "clearedSeq" integer,
     "groupAccount" character varying(31),
-    "groupDomain" character varying(63),
     "groupAccountId" integer,
     "groupDissolvedAt" timestamp(3) with time zone,
     "federationRoundsEnabled" boolean DEFAULT false NOT NULL,
     CONSTRAINT "MessageThread_authorizationEpoch_check" CHECK (("authorizationEpoch" >= 0)),
     CONSTRAINT "MessageThread_clearedSeq_check" CHECK ((("clearedSeq" IS NULL) OR (("clearedSeq" >= 0) AND ("clearedSeq" <= "curSeq")))),
-    CONSTRAINT "MessageThread_federationVersion_check" CHECK (("federationVersion" >= 0)),
     CONSTRAINT "MessageThread_group_identity_check" CHECK (((type <> 'GROUP'::public."MessageThreadType") OR ((("authorityNamespaceId" = 0) = ("groupAccountId" IS NOT NULL)) AND (("groupAccount")::text ~~ '!%'::text)))),
-    CONSTRAINT "MessageThread_group_type_check" CHECK ((((type = 'GROUP'::public."MessageThreadType") AND ("groupAccount" IS NOT NULL) AND ("groupDomain" IS NOT NULL)) OR ((type = 'P2P'::public."MessageThreadType") AND ("groupAccount" IS NULL) AND ("groupDomain" IS NULL) AND ("groupAccountId" IS NULL) AND ("groupDissolvedAt" IS NULL)))),
+    CONSTRAINT "MessageThread_group_type_check" CHECK ((((type = 'GROUP'::public."MessageThreadType") AND ("groupAccount" IS NOT NULL)) OR ((type = 'P2P'::public."MessageThreadType") AND ("groupAccount" IS NULL) AND ("groupAccountId" IS NULL) AND ("groupDissolvedAt" IS NULL)))),
     CONSTRAINT "MessageThread_tombstoneEndSeq_check" CHECK (("tombstoneEndSeq" >= 0))
 );
 
@@ -1771,6 +1778,7 @@ CREATE TABLE public."QuotaFileByteUsage" (
 --
 
 CREATE TABLE public."RelationshipIntent" (
+    snapshot jsonb,
     status public."RelationshipIntentStatus" NOT NULL,
     note character varying(255) DEFAULT ''::character varying NOT NULL,
     "requestedAt" timestamp(3) with time zone,
@@ -1784,6 +1792,16 @@ CREATE TABLE public."RelationshipIntent" (
     "receiverAccount" character varying(31) NOT NULL,
     "receiverNamespaceId" integer NOT NULL,
     "profileNamespaceId" integer NOT NULL,
+    CONSTRAINT "RelationshipIntent_snapshot_check" CHECK (snapshot IS NULL OR (
+      "authorNamespaceId" = 0 AND COALESCE(
+        jsonb_typeof(snapshot) = 'object'
+        AND (snapshot - 'displayName' - 'avatar') = '{}'::jsonb
+        AND jsonb_typeof(snapshot->'displayName') = 'string'
+        AND char_length(btrim(snapshot->>'displayName')) > 0
+        AND char_length(snapshot->>'displayName') <= 31
+        AND (snapshot->'avatar' = 'null'::jsonb OR
+          (jsonb_typeof(snapshot->'avatar') = 'string'
+            AND char_length(btrim(snapshot->>'avatar')) > 0)), false))),
     CONSTRAINT "RelationshipIntent_author_namespace_check" CHECK (("authorNamespaceId" >= 0)),
     CONSTRAINT "RelationshipIntent_expiry_check" CHECK ((((status = 'REQUESTED'::public."RelationshipIntentStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NOT NULL) AND ("expiresAt" > "requestedAt") AND ("expiresAt" <= ("requestedAt" + '7 days'::interval))) OR ((status = 'ACCEPTED'::public."RelationshipIntentStatus") AND ("requestedAt" IS NOT NULL) AND ("expiresAt" IS NULL)) OR ((status = 'REVOKED'::public."RelationshipIntentStatus") AND ("expiresAt" IS NULL)))),
     CONSTRAINT "RelationshipIntent_head_check" CHECK ((("messageEndSeq" >= 0) AND ("tombstoneEndSeq" >= 0))),
@@ -3195,7 +3213,7 @@ CREATE UNIQUE INDEX "MessageThread_groupAccountId_key" ON public."MessageThread"
 -- Name: MessageThread_group_address_key; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX "MessageThread_group_address_key" ON public."MessageThread" USING btree ("groupAccount", "groupDomain", "authorityNamespaceId");
+CREATE UNIQUE INDEX "MessageThread_group_address_key" ON public."MessageThread" USING btree ("groupAccount", "authorityNamespaceId");
 
 
 --

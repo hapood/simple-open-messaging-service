@@ -25,7 +25,7 @@ import {
   groupAuthoredMembershipTargetLocatorSql,
   type GroupMembershipAuthorizationRow,
 } from '../authored/group-authored-membership-authorization-sql.js';
-import { memberAuthoredMembershipRequestSql } from '../authored/member-authored-membership-request-sql.js';
+import { receivedMemberMembershipRequestSql } from './received-member-membership-request-sql.js';
 import {
   groupMembershipAcceptanceSql,
   type GroupMembershipAcceptanceInput,
@@ -153,7 +153,6 @@ export class RemoteMemberMembershipIntentService {
     const group = (
       await tx.execute<{
         groupAccount: string;
-        groupDomain: string;
         dissolvedAt: string | null;
       }>(
         groupAuthoredMembershipTargetLocatorSql({ threadId: command.threadId }),
@@ -358,7 +357,7 @@ export class RemoteMemberMembershipIntentService {
       pairId: bigint;
       threadId: number;
       threadLock: ThreadContentLock;
-      group: { groupAccount: string; groupDomain: string };
+      group: { groupAccount: string };
       member: { account: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
       clientUpdates: PendingClientStateFeedUpdate[];
@@ -381,12 +380,10 @@ export class RemoteMemberMembershipIntentService {
       intentChanged: boolean;
       projectionChanged: boolean;
     }>(
-      memberAuthoredMembershipRequestSql({
+      receivedMemberMembershipRequestSql({
         threadId: context.command.threadId,
         pairId: context.pairId,
         groupAccount: context.group.groupAccount,
-        groupAvatar: context.row.avatar,
-        groupDescription: context.row.description,
         groupProfileRev: context.row.profileRev,
         memberAccount: context.member.account,
         profileNamespaceId: context.member.namespaceId,
@@ -439,7 +436,7 @@ export class RemoteMemberMembershipIntentService {
       pairId: bigint;
       threadId: number;
       threadLock: ThreadContentLock;
-      group: { groupAccount: string; groupDomain: string };
+      group: { groupAccount: string };
       member: { account: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
       clientUpdates: PendingClientStateFeedUpdate[];
@@ -502,7 +499,7 @@ export class RemoteMemberMembershipIntentService {
       pairId: bigint;
       threadId: number;
       threadLock: ThreadContentLock;
-      group: { groupAccount: string; groupDomain: string };
+      group: { groupAccount: string };
       member: { account: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
       clientUpdates: PendingClientStateFeedUpdate[];
@@ -515,8 +512,6 @@ export class RemoteMemberMembershipIntentService {
       threadId,
       groupAccount: context.group.groupAccount,
       groupProfileRev: context.row.profileRev,
-      groupAvatar: context.row.avatar,
-      groupDescription: context.row.description,
       memberAccount: member.account,
       profileNamespaceId: member.namespaceId,
       // The group's own invitation note survives the completion, exactly like
@@ -577,7 +572,7 @@ export class RemoteMemberMembershipIntentService {
       };
       pairId: bigint;
       threadId: number;
-      group: { groupAccount: string; groupDomain: string };
+      group: { groupAccount: string };
       member: { account: string; namespaceId: number };
       row: GroupMembershipAuthorizationRow & { pairId: string };
       clientUpdates: PendingClientStateFeedUpdate[];
@@ -589,8 +584,6 @@ export class RemoteMemberMembershipIntentService {
       threadId,
       pairId,
       groupAccount: context.group.groupAccount,
-      groupAvatar: context.row.avatar,
-      groupDescription: context.row.description,
       groupProfileRev: context.row.profileRev,
       memberAccount: member.account,
       profileNamespaceId: member.namespaceId,
@@ -671,7 +664,7 @@ export class RemoteMemberMembershipIntentService {
         tombstoneEndSeq: number;
       };
       member: { account: string; namespaceId: number };
-      group: { groupAccount: string; groupDomain: string };
+      group: { groupAccount: string };
     },
   ): Promise<boolean> {
     const result = await tx.execute(

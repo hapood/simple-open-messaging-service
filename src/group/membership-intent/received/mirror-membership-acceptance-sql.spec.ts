@@ -10,7 +10,6 @@ describe('mirror group membership activation profile selection', () => {
         pairId: 4n,
         presentation: {
           groupAccount: '!group',
-          groupDomain: 'origin.example',
           groupNamespaceId: 3,
         },
         memberAccount: 'alice',

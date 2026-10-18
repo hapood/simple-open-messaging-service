@@ -1,3 +1,7 @@
+import {
+  parseRequestSnapshot,
+  type RequestSnapshot,
+} from '../../shared/request-snapshot.js';
 import { assertGroupNameLength } from './group-profile-validation.js';
 import { DurableTaskQueueService } from '../durable-task/durable-task-queue.service.js';
 import {
@@ -24,7 +28,6 @@ import {
   messageThread,
   profileTable,
 } from '../database/schema.js';
-import { localIdentityDomain } from '../common/local-identity.js';
 import { GroupRole, MessageThreadType } from '../database/enums.js';
 import {
   lockBusinessAccountsInTx,
@@ -234,8 +237,7 @@ export class GroupService {
       namespaceId: number;
       profileRev: number;
       account: string;
-      name: string;
-      avatar: string;
+      snapshot: RequestSnapshot | null;
       note: string;
       requestedAt: number | null;
       expiresAt: number | null;
@@ -246,7 +248,7 @@ export class GroupService {
           THEN 'EXPIRED' ELSE projection.status END AS status,
         projection."memberAccount" AS account,
         projection."profileNamespaceId" AS "namespaceId", projection."memberProfileRev" AS "profileRev",
-        projection."memberAccount" AS name, '' AS avatar, projection.note,
+        projection.snapshot, projection.note,
         (EXTRACT(EPOCH FROM projection."requestedAt") * 1000)::bigint AS "requestedAt",
         (EXTRACT(EPOCH FROM projection."expiresAt") * 1000)::bigint AS "expiresAt"
       FROM "GroupRequestProjection" projection
@@ -444,7 +446,6 @@ export class GroupService {
               .values({
                 type: MessageThreadType.GROUP,
                 groupAccount: account,
-                groupDomain: await localIdentityDomain(tx),
                 groupAccountId: ownerAccount.id,
                 federationRoundsEnabled: true,
                 authorityNamespaceId: 0,
@@ -472,6 +473,28 @@ export class GroupService {
               announcementFeedId: 1,
               announcementText: null,
             });
+            const owner = await tx.query.account.findFirst({
+              where: eq(userAccount.id, params.owner),
+              columns: { account: true, defaultProfileRev: true },
+            });
+            if (!owner) throw new Error('group creator account is unavailable');
+            const ownerProfile = await tx.query.profileTable.findFirst({
+              where: and(
+                eq(profileTable.account, owner.account),
+                eq(profileTable.publisherNamespaceId, 0),
+                eq(profileTable.profileNamespaceId, 0),
+                eq(profileTable.profileRev, owner.defaultProfileRev),
+              ),
+              columns: { displayName: true, avatar: true },
+            });
+            if (!ownerProfile)
+              throw new Error('group creator profile is unavailable');
+            // Creation authors a founding invitation before the owner accepts it.
+            // Its target presentation follows the same immutable snapshot contract.
+            const snapshot = parseRequestSnapshot({
+              displayName: ownerProfile.displayName,
+              avatar: ownerProfile.avatar === '' ? null : ownerProfile.avatar,
+            });
             await this.relationshipMutations.writeGroupRelationshipIntentInTx(
               tx,
               thread.id,
@@ -479,18 +502,12 @@ export class GroupService {
               '',
               'REQUESTED',
               clientFeedUpdates,
+              undefined,
+              { snapshot },
             );
             // The creation notice is authority-local history: federation message
             // feeds exclude SYSTEM rows. Write it before owner activation so the
             // new participant's read boundary initializes at this sequence.
-            const owner = await tx.query.account.findFirst({
-              where: eq(userAccount.id, params.owner),
-              columns: {
-                account: true,
-                defaultProfileRev: true,
-              },
-            });
-            if (!owner) throw new Error('group creator account is unavailable');
             await this.messages.writeSystemMessageInTx(tx, thread.id, {
               type: SystemMessageType.GROUP_CREATED,
               creator: {
@@ -507,7 +524,6 @@ export class GroupService {
               'ACCEPTED',
               clientFeedUpdates,
               '',
-              undefined,
               { initialRole: GroupRole.OWNER },
             );
             await this.relationshipMutations.writeGroupRelationshipIntentInTx(
@@ -578,7 +594,6 @@ export class GroupService {
         .select({
           groupId: group.id,
           account: groupStateFields.account,
-          domain: groupStateFields.domain,
           namespaceId: groupStateFields.namespaceId,
         })
         .from(messageThread)
@@ -605,11 +620,10 @@ export class GroupService {
 
   async resolveGroupCommandScope(
     threadId: number,
-  ): Promise<{ account: string; domain: string }> {
+  ): Promise<{ account: string }> {
     const [state] = await this.database.db
       .select({
         account: groupStateFields.account,
-        domain: groupStateFields.domain,
       })
       .from(messageThread)
       .innerJoin(group, eq(group.id, messageThread.id))
@@ -636,7 +650,6 @@ export class GroupService {
       const [located] = await tx
         .select({
           account: groupStateFields.account,
-          domain: groupStateFields.domain,
           namespaceId: groupStateFields.namespaceId,
         })
         .from(messageThread)
@@ -660,7 +673,6 @@ export class GroupService {
         .select({
           groupId: group.id,
           groupAccount: groupStateFields.account,
-          groupDomain: groupStateFields.domain,
           namespaceId: groupStateFields.namespaceId,
           dissolvedAt: groupStateFields.dissolvedAt,
         })
@@ -781,7 +793,6 @@ export class GroupService {
       const [located] = await tx
         .select({
           account: groupStateFields.account,
-          domain: groupStateFields.domain,
           namespaceId: groupStateFields.namespaceId,
         })
         .from(messageThread)
@@ -852,7 +863,6 @@ export class GroupService {
     const [located] = await tx
       .select({
         account: groupStateFields.account,
-        domain: groupStateFields.domain,
         namespaceId: groupStateFields.namespaceId,
       })
       .from(messageThread)

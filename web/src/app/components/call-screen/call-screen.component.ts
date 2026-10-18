@@ -16,10 +16,8 @@ import { CallEventService } from '../../services/call-event.service';
 import { CallAdapterService } from '../../services/call-adapter';
 import { CallRingtoneService } from '../../services/call-ringtone.service';
 import { CallPresentationService } from '../../services/call-presentation.service';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { callPeerPresentation } from '../../services/call-peer-presentation';
@@ -86,19 +84,15 @@ import { callPeerPresentation } from '../../services/call-peer-presentation';
             <div class="remote-camera-off">
               <div class="remote-avatar">
                 @if (peer(); as identity) {
-                  <app-user-avatar
+                  <app-demand-avatar
                     [type]="UserAvatarType.OTHER"
                     [name]="peerName() || '?'"
                     [account]="identity.account"
-                    [domainSource]="{
-                      type: 'namespace',
-                      namespaceId: identity.namespaceId,
-                    }"
-                    [src]="peerAvatar()"
+                    [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
                     [profile]="peerProfile()"
                   />
                 } @else {
-                  <app-user-avatar [loading]="true" />
+                  <app-demand-avatar [loading]="true" />
                 }
               </div>
               <span>
@@ -131,19 +125,15 @@ import { callPeerPresentation } from '../../services/call-peer-presentation';
             @if (snap().swapped && showRemotePlaceholder()) {
               <div class="pip-peer-off">
                 @if (peer(); as identity) {
-                  <app-user-avatar
+                  <app-demand-avatar
                     [type]="UserAvatarType.OTHER"
                     [name]="peerName() || '?'"
                     [account]="identity.account"
-                    [domainSource]="{
-                      type: 'namespace',
-                      namespaceId: identity.namespaceId,
-                    }"
-                    [src]="peerAvatar()"
+                    [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
                     [profile]="peerProfile()"
                   />
                 } @else {
-                  <app-user-avatar [loading]="true" />
+                  <app-demand-avatar [loading]="true" />
                 }
               </div>
             } @else if (!snap().swapped && !snap().cameraEnabled) {
@@ -158,7 +148,7 @@ import { callPeerPresentation } from '../../services/call-peer-presentation';
           @if (snap().swapped && !snap().cameraEnabled) {
             <div class="remote-camera-off local-camera-off">
               <div class="remote-avatar">
-                <app-user-avatar
+                <app-demand-avatar
                   [type]="UserAvatarType.SELF"
                   [domainSource]="{ type: 'namespace', namespaceId: 0 }"
                 />
@@ -190,24 +180,20 @@ import { callPeerPresentation } from '../../services/call-peer-presentation';
 
         @if (!isVideo()) {
           <!-- AUDIO: centered peer avatar. VIDEO: hidden (the avatar would sit behind the full-bleed remote
-               video). UserAvatarComponent reads the IDB cache (no /uploads fetch on every mount); its
+               video). The demand adapter reads the IDB cache (no /uploads fetch on every mount); its
                initial-letter fallback covers a no-avatar / cache-miss peer. -->
           <div class="peer">
             <div class="avatar">
               @if (peer(); as identity) {
-                <app-user-avatar
+                <app-demand-avatar
                   [type]="UserAvatarType.OTHER"
                   [name]="peerName() || '?'"
                   [account]="identity.account"
-                  [domainSource]="{
-                    type: 'namespace',
-                    namespaceId: identity.namespaceId,
-                  }"
-                  [src]="peerAvatar()"
+                  [domainSource]="{ type: 'namespace', namespaceId: identity.namespaceId }"
                   [profile]="peerProfile()"
                 />
               } @else {
-                <app-user-avatar [loading]="true" />
+                <app-demand-avatar [loading]="true" />
               }
             </div>
           </div>
@@ -375,7 +361,7 @@ import { callPeerPresentation } from '../../services/call-peer-presentation';
       </div>
     }
   `,
-  imports: [TranslocoModule, UserAvatarComponent, IconComponent],
+  imports: [TranslocoModule, DemandAvatarComponent, IconComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [
     `

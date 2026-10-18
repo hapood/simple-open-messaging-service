@@ -9,10 +9,9 @@ import {
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../../user-avatar/user-avatar.component';
+import { AvatarComponent } from '../../user-avatar/avatar.component';
+import type { AvatarView } from '../../user-avatar/avatar-view';
+import { messageSenderPresentation } from '../message-sender';
 import { QuoteBlockComponent } from '../quote-block/quote-block.component';
 import { LinkCardService } from '../../../services/link-card.service';
 import { ExternalLinkService } from '../../../services/external-link.service';
@@ -33,7 +32,7 @@ import type { HistoryAnchor } from '../../../services/history-anchor';
   standalone: true,
   imports: [
     DateRowComponent,
-    UserAvatarComponent,
+    AvatarComponent,
     TranslocoPipe,
     QuoteBlockComponent,
   ],
@@ -44,7 +43,7 @@ import type { HistoryAnchor } from '../../../services/history-anchor';
 export class TextRowComponent {
   private readonly linkCards = inject(LinkCardService);
   private readonly externalLinks = inject(ExternalLinkService);
-  readonly UserAvatarType = UserAvatarType;
+  readonly senderView = input<AvatarView>();
   readonly data = input.required<ChatMsgData>();
   /** Group head (shows avatar + other party's name) / mid-group. */
   readonly isShowHead = input(false);
@@ -53,15 +52,15 @@ export class TextRowComponent {
   /** Whether a date-separator pill should render above this row (it is the first message of its day). */
   readonly showDate = input<boolean>(false);
 
-  readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
-  readonly showAvatar = computed(() => this.isShowHead());
-  readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
-  readonly showName = computed(
-    () =>
-      this.isShowHead() &&
-      this.data().isGroupConversation === true &&
-      !this.data().isSelf,
+  readonly sender = messageSenderPresentation(
+    this.data,
+    this.isShowHead,
+    this.senderView,
   );
+  readonly side = this.sender.side;
+  readonly showAvatar = this.sender.showAvatar;
+  readonly showName = this.sender.showName;
+  readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
 
   /** Render a status tick (clock/check/retry) only for self-sent messages that carry a delivery status. */
   readonly statusTick = computed(

@@ -50,12 +50,11 @@ task coalescing and scheduling boundaries; business advisory locks separately
 use the participating account addresses:
 
 ```text
-["task-scope", "USER_PAIR", [domainA, accountA], [domainB, accountB]]
-["business-scope", "ACCOUNT", groupDomain, groupAccount]
+["task-scope", "USER_PAIR", [profileNamespaceIdA, accountA], [profileNamespaceIdB, accountB]]
+["business-scope", "ACCOUNT", profileNamespaceId, account]
 ```
 
-User-pair endpoints are ordered lexicographically by normalized domain and
-account. Enqueue takes both corresponding short-lived account advisory locks;
+User-pair endpoints are ordered lexicographically by namespace and account. Enqueue takes both corresponding short-lived account advisory locks;
 group enqueue takes the group account lock. Committed task IDs therefore
 establish the same order as concurrent accepted requests.
 

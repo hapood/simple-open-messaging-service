@@ -539,7 +539,13 @@ export class MockItemSource implements CbSource<ChatItemData> {
       name: p?.name ?? 'Unknown',
       isSelf: p?.isSelf ?? creatorId === this.userId,
       avatarIdentityId: creator,
-      avatarAccount: it.data.name || String(creatorId),
+      sender: {
+        kind: 'snapshot',
+        name: p?.name ?? 'Unknown',
+        imageUrl: null,
+        account: String(creatorId),
+      },
+      senderDisplayContext: this.isGroupConversation ? 'group' : 'direct',
       isGroupConversation: this.isGroupConversation,
     };
     return it.clientMessageId !== undefined

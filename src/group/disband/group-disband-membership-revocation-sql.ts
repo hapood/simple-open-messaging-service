@@ -17,8 +17,6 @@ export interface GroupDisbandMembershipRevocationInput {
   pairId: bigint;
   groupAccount: string;
   groupName: string;
-  groupAvatar: string;
-  groupDescription: string;
   groupProfileRev: number;
   memberAccount: string;
   profileNamespaceId: number;
@@ -37,9 +35,9 @@ export function groupDisbandMembershipRevocationLocatorSql(input: {
   member: AccountSubjectAddress;
 }): SQL {
   return sql`
-    SELECT g.account AS "groupAccount", g.domain AS "groupDomain",
+    SELECT g.account AS "groupAccount",
       g."namespaceId" AS "groupNamespaceId",
-      member_ns.domain AS "memberDomain",
+      member_ns.id AS "memberNamespaceId",
       g."dissolvedAt" AS "dissolvedAt",
       pair.id::text AS "pairId",
       (SELECT a.id FROM "Account" a WHERE a.account = ${input.member.account}
@@ -185,18 +183,18 @@ function localRecipients(input: GroupDisbandMembershipRevocationInput): SQL {
           'threadId', ${input.threadId}::integer,
           'established', (SELECT p.established FROM "RelationshipPair" p WHERE p.id = ${input.pairId}),
           'group', jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
-            'description', ${input.groupDescription}::text, 'profileRev', ${input.groupProfileRev}::integer)
+            'profileRev', ${input.groupProfileRev}::integer)
         ) AS body
       FROM revocation v
     ), candidate_bodies AS MATERIALIZED (
       SELECT ${input.localMemberId}::integer AS "userId", 0 AS "namespaceId", 1 AS ordinal,
-        b."compactionKey", ${input.groupAccount}::text AS account, (SELECT domain FROM "IdentityNamespace" WHERE id = 0)::text AS domain,
+        b."compactionKey", ${input.groupAccount}::text AS account,
         ${input.memberAccount}::text AS "subjectAccount", 0::integer AS "subjectNamespaceId", b.body
       FROM recipient_bodies b
       UNION ALL
       SELECT ${input.localMemberId}::integer, 0, 2,
         ${memberToGroupKey(input.memberAccount, input.groupAccount)}::text,
-        ${input.memberAccount}::text, (SELECT domain FROM "IdentityNamespace" WHERE id = 0)::text,
+        ${input.memberAccount}::text,
         ${input.groupAccount}::text, 0::integer,
         jsonb_build_object('status', v.status, 'note', '',
           'requestedAt', NULL::bigint,
@@ -204,7 +202,7 @@ function localRecipients(input: GroupDisbandMembershipRevocationInput): SQL {
           'direction', 'OUTGOING',
           'threadId', ${input.threadId}::integer,
           'group', jsonb_build_object('account', ${input.groupAccount}::text, 'namespaceId', 0,
-            'description', ${input.groupDescription}::text, 'profileRev', ${input.groupProfileRev}::integer))
+            'profileRev', ${input.groupProfileRev}::integer))
       FROM revocation v
     ), ${clientIntentFeedWriteSql()}
   `;

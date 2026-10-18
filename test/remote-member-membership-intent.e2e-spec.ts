@@ -90,7 +90,6 @@ describe('remote member membership intents on the authoritative group', () => {
       .values({
         type: 'GROUP',
         groupAccount: group!.account,
-        groupDomain: 'local',
         groupAccountId: group!.id,
         authorityNamespaceId: 0,
         federationRoundsEnabled: true,

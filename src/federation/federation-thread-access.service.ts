@@ -20,7 +20,6 @@ import {
 interface ThreadResourceResponseGate {
   threadId: number;
   peerDomain: string;
-  federationVersion: number;
   peerToken: FederationContext;
 }
 
@@ -67,24 +66,10 @@ export class FederationThreadAccessService {
     }
   }
 
-  async readFederationVersion(
-    threadId: number,
-    peerDomain: string,
-  ): Promise<number> {
-    return this.database.db.transaction(async (tx) => {
+  async assertThreadExists(threadId: number, peerDomain: string): Promise<void> {
+    await this.database.db.transaction(async (tx) => {
       await this.namespaces.captureActiveInTx(tx, peerDomain);
-      const [state] = await tx
-        .select({ federationVersion: tables.messageThread.federationVersion })
-        .from(tables.messageThread)
-        .where(eq(tables.messageThread.id, threadId))
-        .limit(1);
-      if (!state) {
-        throw new BusinessException(
-          BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
-          `federation thread ${threadId} is unavailable for ${peerDomain}`,
-        );
-      }
-      return state.federationVersion;
+      await this.assertResponseWritable(tx, threadId, peerDomain);
     });
   }
 
@@ -92,14 +77,13 @@ export class FederationThreadAccessService {
     tx: DatabaseTransaction,
     threadId: number,
     peerDomain: string,
-    expectedFederationVersion: number,
   ): Promise<void> {
     const [state] = await tx
-      .select({ federationVersion: tables.messageThread.federationVersion })
+      .select({ id: tables.messageThread.id })
       .from(tables.messageThread)
       .where(eq(tables.messageThread.id, threadId))
       .limit(1);
-    if (!state || state.federationVersion !== expectedFederationVersion) {
+    if (!state) {
       throw new BusinessException(
         BusinessCode.FEDERATION_PEER_IDENTITY_LOST,
         `stale federation response for thread ${threadId} from ${peerDomain}`,
@@ -127,7 +111,6 @@ export class FederationThreadAccessService {
       tx,
       response.threadId,
       response.peerDomain,
-      response.federationVersion,
     );
   }
 
@@ -137,7 +120,6 @@ export class FederationThreadAccessService {
     const [state] = await this.database.db
       .select({
         authorityNamespaceId: tables.messageThread.authorityNamespaceId,
-        domain: tables.identityNamespace.domain,
         active: tables.identityNamespace.active,
       })
       .from(tables.messageThread)
@@ -159,7 +141,7 @@ export class FederationThreadAccessService {
     if (state.authorityNamespaceId !== 0 && !state.active) {
       throw new BusinessException(
         BusinessCode.FEDERATION_NAMESPACE_INACTIVE,
-        `thread ${threadId} belongs to an inactive namespace of ${state.domain}`,
+        `thread ${threadId} belongs to inactive namespace ${state.authorityNamespaceId}`,
         HttpStatus.CONFLICT,
       );
     }

@@ -1,10 +1,7 @@
 import {
-  Component,
   createComponent,
   EnvironmentInjector,
-  input,
   provideZonelessChangeDetection,
-  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
@@ -13,8 +10,6 @@ import {
 } from '@jsverse/transloco';
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
-import type { AvatarDomainSource } from '../../user-avatar/model';
-import { UserAvatarComponent } from '../../user-avatar/user-avatar.component';
 import type { AuthoredMessageItem, ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
 import { LinkCardService } from '../../../services/link-card.service';
@@ -30,25 +25,8 @@ import { RouteService } from '../../../services/route.service';
  * so the Angular emulated-`:host-context` cascade is exercised exactly as in production. A regression that
  * broadens the hide selector (e.g. dropping the `.msg-self` qualifier) would fail here.
  *
- * The inner `<app-user-avatar>` is stubbed (its DB/HTTP layer is irrelevant to the slot's visibility, which
- * is owned by this row's own CSS), so the test isolates the cascade under test.
+ * The real avatar is a pure renderer, so these tests need no profile or session providers.
  */
-@Component({
-  selector: 'app-user-avatar',
-  standalone: true,
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  template: '',
-})
-class StubUserAvatarComponent {
-  readonly type = input<unknown>(undefined);
-  readonly name = input<string | undefined | null>('');
-  readonly p2pThreadId = input<number | undefined>(undefined);
-  readonly identityId = input<number | undefined>(undefined);
-  readonly account = input<string | undefined | null>(undefined);
-  readonly domainSource = input<AvatarDomainSource | undefined>(undefined);
-  readonly src = input<string | undefined | null>(undefined);
-  readonly profile = input<unknown>(undefined);
-}
 
 function buildMsg(
   overrides: Partial<AuthoredMessageItem>,
@@ -104,10 +82,6 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
         },
       ],
     });
-    TestBed.overrideComponent(TextRowComponent, {
-      remove: { imports: [UserAvatarComponent] },
-      add: { imports: [StubUserAvatarComponent] },
-    });
   });
 
   afterEach(() => {
@@ -146,10 +120,10 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
     }
   }
 
-  function senderNameShownFor(data: ChatMsgData): boolean {
+  function senderNameShownFor(data: ChatMsgData, isShowHead = true): boolean {
     const fixture = TestBed.createComponent(TextRowComponent);
     fixture.componentRef.setInput('data', data);
-    fixture.componentRef.setInput('isShowHead', true);
+    fixture.componentRef.setInput('isShowHead', isShowHead);
     fixture.detectChanges();
     return fixture.nativeElement.querySelector('.msg-name') !== null;
   }
@@ -181,7 +155,32 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
   it('hides the redundant sender name in a direct conversation', () => {
     expect(
       senderNameShownFor(
-        buildMsg({ isSelf: false, isGroupConversation: false }),
+        buildMsg({ isSelf: false, senderDisplayContext: 'direct' }),
+      ),
+    ).toBe(false);
+  });
+
+  it('shows a snapshot sender name without treating the source as a group conversation', () => {
+    expect(
+      senderNameShownFor(buildMsg({ senderDisplayContext: 'forward' })),
+    ).toBe(true);
+  });
+
+  it('keeps sender labels hidden for non-head rows and self messages', () => {
+    expect(
+      senderNameShownFor(buildMsg({ senderDisplayContext: 'forward' }), false),
+    ).toBe(false);
+    expect(
+      senderNameShownFor(
+        buildMsg({ senderDisplayContext: 'forward', isSelf: true }),
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps sender-label policy separate from group business facts', () => {
+    expect(
+      senderNameShownFor(
+        buildMsg({ isGroupConversation: true, senderDisplayContext: 'direct' }),
       ),
     ).toBe(false);
   });
@@ -189,7 +188,7 @@ describe('TextRowComponent — avatar visibility vs data-show-self-avatar', () =
   it('shows the sender name for an incoming group-conversation head', () => {
     expect(
       senderNameShownFor(
-        buildMsg({ isSelf: false, isGroupConversation: true }),
+        buildMsg({ isSelf: false, senderDisplayContext: 'group' }),
       ),
     ).toBe(true);
   });

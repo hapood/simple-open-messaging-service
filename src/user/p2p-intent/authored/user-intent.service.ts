@@ -1,3 +1,4 @@
+import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
 import { lockRelationshipPairsInTx } from '../../../common/locks/relationship-pair-business-lock.js';
 import { completeBusinessAddress } from '../../../common/locks/business-address.js';
 import { lockBusinessAccountsInTx } from '../../../common/locks/account-business-lock.js';
@@ -65,12 +66,14 @@ import { RELATIONSHIP_INTENT_REQUEST_TTL_MS } from '../../../common/relationship
  * The target is addressed by account and identity namespace; the pair is
  * minted when absent (REQUESTED only). The domain is resolved from the
  * namespace row's current binding — a handshake-only concern. */
-export interface UserIntentCommand {
+export type UserIntentCommand = {
   userId: number;
-  decision: 'ACCEPTED' | 'REVOKED' | 'REQUESTED';
   target: { account: string; namespaceId: number };
   note?: string;
-}
+} & (
+  | { decision: 'REQUESTED'; snapshot: RequestSnapshot }
+  | { decision: 'ACCEPTED' | 'REVOKED'; snapshot?: never }
+);
 
 export interface UserIntentOptions {
   /** Runs inside the intent transaction after branch validation and
@@ -467,6 +470,7 @@ export class UserIntentService {
     base: ValidatedIntentBase,
     row: UserIntentAuthorizationRow,
   ): ValidatedIntent | NoOpIntent | RejectedIntent {
+    if (base.params.decision !== 'REQUESTED') throw new Error('request command required');
     if (reverseEffective(row, base.validationTime))
       return this.validateAcceptanceInTx(base, row);
     if (row.localTargetId === null && base.target.namespaceId === 0)
@@ -483,6 +487,7 @@ export class UserIntentService {
       kind: 'request',
       input: {
         ...feedInput(base),
+        snapshot: base.params.snapshot,
         note: (base.params.note ?? '').slice(0, 255),
         requestedAt,
         expiresAt,
@@ -759,10 +764,8 @@ function feedInput(base: {
     actorKey: userIntentCompactionKey(namespaceId, base.actor, base.target),
     targetKey: userIntentCompactionKey(namespaceId, base.target, base.actor),
     actorAccount: base.actor.account,
-    actorDomain: base.actor.domain,
     actorNamespaceId: base.actor.namespaceId,
     targetAccount: base.target.account,
-    targetDomain: base.target.domain,
     targetNamespaceId: base.target.namespaceId,
     localActorId: base.localActorId,
     localTargetId: base.localTargetId,

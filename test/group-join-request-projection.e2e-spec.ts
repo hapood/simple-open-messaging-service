@@ -218,12 +218,14 @@ describe('group join request projection', () => {
       app,
       'invitation-projection-member',
     );
+    const snapshot = { displayName: 'Member at invitation time', avatar: null };
     const friendRequest = await request(app.getHttpServer())
       .post('/api/v1/relationship/request')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         account: member.account,
         namespaceId: 0,
+        snapshot: { displayName: 'Member', avatar: null },
       });
     expect(friendRequest.body.code).toBe(BusinessCode.OK);
     await waitForLocalRelationshipRequest(
@@ -246,13 +248,16 @@ describe('group join request projection', () => {
       .post('/api/v1/group/create')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ name: 'Invitation projection' });
+    expect(created.body.code, JSON.stringify(created.body)).toBe(
+      BusinessCode.OK,
+    );
     const threadId = created.body.data.threadId as number;
     const invited = await request(app.getHttpServer())
       .post('/api/v1/group/invite')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({
         groupId: threadId,
-        users: [{ account: member.account, namespaceId: 0 }],
+        users: [{ account: member.account, namespaceId: 0, snapshot }],
       });
     expect(invited.body.code).toBe(BusinessCode.OK);
     expect(invited.body.data.invited).toEqual([
@@ -273,14 +278,41 @@ describe('group join request projection', () => {
     );
     expect(requestedRows).toHaveLength(1);
     expect(requestedRows[0]).toMatchObject({
+      snapshot,
       account: member.account,
       namespaceId: 0,
       status: 'REQUESTED',
     });
-    const _pendingRow = requestedRows[0] as {
-      id: string;
-      feedId: number;
-    };
+    const repeated = await request(app.getHttpServer())
+      .post('/api/v1/group/invite')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({
+        groupId: threadId,
+        users: [
+          {
+            account: member.account,
+            namespaceId: 0,
+            snapshot: {
+              displayName: 'Changed during the same request',
+              avatar: null,
+            },
+          },
+        ],
+      });
+    expect(repeated.body.code).toBe(BusinessCode.OK);
+    const repeatedHistory = await request(app.getHttpServer())
+      .post('/api/v1/group/invitations')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ groupId: threadId });
+    expect(repeatedHistory.body.data.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          account: member.account,
+          status: 'REQUESTED',
+          snapshot,
+        }),
+      ]),
+    );
 
     const revoked = await request(app.getHttpServer())
       .post('/api/v1/group/invitation/revoke')
@@ -295,7 +327,10 @@ describe('group join request projection', () => {
       .post('/api/v1/group/invitations')
       .set('Authorization', `Bearer ${owner.token}`)
       .send({ groupId: threadId });
-    expect(history.body.data.data[0].status).toBe('WITHDRAWN');
+    expect(history.body.data.data[0]).toMatchObject({
+      status: 'WITHDRAWN',
+      snapshot,
+    });
 
     const lateJoin = await request(app.getHttpServer())
       .post('/api/v1/group/join-request')
@@ -303,6 +338,53 @@ describe('group join request projection', () => {
       .send({ groupId: threadId });
     expect(lateJoin.body.code).toBe(BusinessCode.NOT_FOUND);
     expect(lateJoin.body.data?.status).not.toBe('APPLIED');
+
+    const nextSnapshot = {
+      displayName: 'Member on the next invitation',
+      avatar: null,
+    };
+    const reinvited = await request(app.getHttpServer())
+      .post('/api/v1/group/invite')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({
+        groupId: threadId,
+        users: [
+          { account: member.account, namespaceId: 0, snapshot: nextSnapshot },
+        ],
+      });
+    expect(reinvited.body.code).toBe(BusinessCode.OK);
+    const joined = await request(app.getHttpServer())
+      .post('/api/v1/group/join-request')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ groupId: threadId });
+    expect(joined.body.code).toBe(BusinessCode.OK);
+    const acceptedHistory = await request(app.getHttpServer())
+      .post('/api/v1/group/invitations')
+      .set('Authorization', `Bearer ${owner.token}`)
+      .send({ groupId: threadId });
+    expect(acceptedHistory.body.data.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          account: member.account,
+          status: 'ACCEPTED',
+          snapshot: nextSnapshot,
+        }),
+      ]),
+    );
+    const stored = await app
+      .get(DatabaseService)
+      .db.query.groupRequestProjection.findFirst({
+        where: and(
+          eq(groupRequestProjection.threadId, threadId),
+          eq(groupRequestProjection.memberAccount, member.account),
+          eq(groupRequestProjection.profileNamespaceId, 0),
+          eq(groupRequestProjection.direction, 'INVITATION'),
+        ),
+      });
+    expect(stored).toMatchObject({
+      status: 'ACCEPTED',
+      snapshot: nextSnapshot,
+    });
   });
 
   it('updates an existing application on manager ACK without creating an invitation projection', async () => {

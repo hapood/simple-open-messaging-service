@@ -103,7 +103,7 @@ export class FederationMessageFeedService {
 
   async rejectMissingQueryAfter(
     namespaceId: number,
-    selector: FederationThreadQuery,
+    demand: FederationThreadQuery,
   ): Promise<never> {
     const { messageAccessAfterSeq, currentEnd } =
       await this.database.db.transaction(
@@ -111,12 +111,12 @@ export class FederationMessageFeedService {
           const authorized = await resolveAuthorizedFederationThreadInTx(
             tx,
             namespaceId,
-            selector,
+            demand,
           );
           return {
             messageAccessAfterSeq: authorized.messageAccessAfterSeq,
             currentEnd: Math.max(
-              await this.readAdvertisedMessageEnd(tx, namespaceId, selector),
+              await this.readAdvertisedMessageEnd(tx, namespaceId, demand),
               authorized.messageAccessAfterSeq,
             ),
           };
@@ -136,7 +136,7 @@ export class FederationMessageFeedService {
 
   async query(
     namespaceId: number,
-    selector: FederationThreadQuery,
+    demand: FederationThreadQuery,
     after: number | undefined,
     requestedTake?: number,
     through?: number,
@@ -145,7 +145,7 @@ export class FederationMessageFeedService {
   ): Promise<FederationMessageQueryPage> {
     const { page } = await this.readPage(
       namespaceId,
-      selector,
+      demand,
       after,
       requestedTake,
       through,
@@ -157,7 +157,7 @@ export class FederationMessageFeedService {
 
   private async readPage(
     namespaceId: number,
-    selector: FederationThreadQuery,
+    demand: FederationThreadQuery,
     after: number | undefined,
     requestedTake?: number,
     through?: number,
@@ -182,10 +182,10 @@ export class FederationMessageFeedService {
         } = await resolveAuthorizedFederationThreadInTx(
           tx,
           namespaceId,
-          selector,
+          demand,
         );
         const currentEnd = Math.max(
-          await this.readAdvertisedMessageEnd(tx, namespaceId, selector),
+          await this.readAdvertisedMessageEnd(tx, namespaceId, demand),
           messageAccessAfterSeq,
         );
         const resumeAfter = messageAccessAfterSeq;
@@ -534,7 +534,7 @@ export class FederationMessageFeedService {
   private async readAdvertisedMessageEnd(
     tx: DatabaseTransaction,
     namespaceId: number,
-    selector: FederationThreadQuery,
+    demand: FederationThreadQuery,
   ): Promise<number> {
     const [row] = await tx
       .select({ body: peerStateFeed.body })
@@ -542,11 +542,11 @@ export class FederationMessageFeedService {
       .where(
         and(
           eq(peerStateFeed.namespaceId, namespaceId),
-          eq(peerStateFeed.account, selector.account),
+          eq(peerStateFeed.account, demand.account),
           eq(peerStateFeed.eventType, 'THREAD_CONTENT_HEAD'),
-          selector.type === 'P2P'
+          demand.type === 'P2P'
             ? and(
-                eq(peerStateFeed.subjectAccount, selector.peerAccount),
+                eq(peerStateFeed.subjectAccount, demand.peerAccount),
                 eq(peerStateFeed.subjectNamespaceId, namespaceId),
               )
             : and(

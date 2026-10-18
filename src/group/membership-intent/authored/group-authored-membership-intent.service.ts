@@ -1,3 +1,4 @@
+import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
 import { lockRelationshipPairsInTx } from '../../../common/locks/relationship-pair-business-lock.js';
 import type { AccountSubjectAddress } from '../../../user/account-address.js';
 import { completeBusinessAddress } from '../../../common/locks/business-address.js';
@@ -58,6 +59,7 @@ export type GroupAuthoredMembershipIntentCommand =
       threadId: number;
       managerUserId: number;
       decision: 'REQUESTED';
+      snapshot: RequestSnapshot;
       target: { account: string; namespaceId: number };
       note?: string;
     }
@@ -403,7 +405,6 @@ export class GroupAuthoredMembershipIntentService {
     const located = (
       await tx.execute<{
         groupAccount: string;
-        groupDomain: string;
         targetNamespaceId: number | null;
       }>(
         groupAuthoredInvitationLocatorSql({
@@ -625,8 +626,6 @@ export class GroupAuthoredMembershipIntentService {
         threadId: params.threadId,
         groupAccount: row.account,
         groupProfileRev: row.profileRev,
-        groupAvatar: row.avatar,
-        groupDescription: row.description,
         memberAccount: member.account,
         profileNamespaceId: member.namespaceId,
         // An application keeps the applicant's note; completing an invitation
@@ -719,8 +718,6 @@ export class GroupAuthoredMembershipIntentService {
         threadId: params.threadId,
         pairId,
         groupAccount: row.account,
-        groupAvatar: row.avatar,
-        groupDescription: row.description,
         groupProfileRev: row.profileRev,
         memberAccount: member.account,
         profileNamespaceId: member.namespaceId,
@@ -803,10 +800,9 @@ export class GroupAuthoredMembershipIntentService {
         threadId: params.threadId,
         pairId,
         groupAccount: row.account,
-        groupAvatar: row.avatar,
-        groupDescription: row.description,
         groupProfileRev: row.profileRev,
         targetAccount: member.account,
+        snapshot: params.snapshot,
         targetNamespaceId: member.namespaceId,
         localTargetId: row.localMemberId,
         note: (params.note ?? '').slice(0, 255),

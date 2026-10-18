@@ -1,5 +1,6 @@
 import type { CbItem, ScrollerApi } from '../../lib/chat-box/chat-box-scroller';
 import { uuid } from '../../lib/uuid';
+import { UserAvatarType } from '../user-avatar/model';
 import { messageCreatorKey } from '../../services/model';
 import type {
   AlbumMedia,
@@ -14,6 +15,7 @@ export interface OptimisticAuthor {
   account: string;
   name: string;
   namespaceId: number;
+  profileRev?: number;
 }
 
 /** Owns pending-message identity, insertion, reconciliation and newest-end queuing. */
@@ -79,11 +81,37 @@ export class ThreadOptimisticController {
         isSelf: true,
         isGroupConversation,
         name: author.name,
-        avatarAccount: author.account,
-        avatarDomainSource: {
-          type: 'namespace',
-          namespaceId: author.namespaceId,
-        },
+        senderDisplayContext: isGroupConversation ? 'group' : 'direct',
+        sender:
+          (author.profileRev ?? 0) > 0
+            ? {
+                kind: 'demand',
+                type: UserAvatarType.SELF,
+                fallbackName: author.name,
+                account: author.account,
+                domainSource: {
+                  type: 'namespace',
+                  namespaceId: author.namespaceId,
+                },
+                profile: {
+                  account: author.account,
+                  publisherNamespaceId: author.namespaceId,
+                  profileNamespaceId: 0,
+                  rev: author.profileRev!,
+                  linked: true,
+                },
+              }
+            : {
+                kind: 'snapshot',
+                type: UserAvatarType.SELF,
+                name: author.name,
+                imageUrl: null,
+                account: author.account,
+                domainSource: {
+                  type: 'namespace',
+                  namespaceId: author.namespaceId,
+                },
+              },
         text,
         time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
         contentType,

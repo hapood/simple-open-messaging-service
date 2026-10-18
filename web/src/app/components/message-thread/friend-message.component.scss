@@ -768,7 +768,7 @@ app-chat-input.msg-composer--dialog-hidden {
   }
 }
 
-// Hero avatar — a sized wrapper around <app-user-avatar> (its :host fills 100% of this box), the same pattern
+// Hero avatar — a sized wrapper around <app-demand-avatar> (its :host fills 100% of this box), the same pattern
 // as the thread-list's .thread-avatar. Integer 64px keeps the rendered box whole; larger than the list's 54px
 // for empty-state prominence (Material recommends prominent imagery in an empty state).
 .msg-empty-avatar {

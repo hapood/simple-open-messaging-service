@@ -126,15 +126,8 @@ export class RelationshipController {
           memberUserId: me,
           target: { account, namespaceId },
           decision: 'REQUESTED',
+          snapshot: dto.snapshot,
           note: dto.note ?? '',
-          ...(namespaceId === 0
-            ? {}
-            : {
-                snapshot: {
-                  displayName: dto.displayName!,
-                  ...(dto.avatar ? { avatar: dto.avatar } : {}),
-                },
-              }),
           admissionInTx: (tx) => this.userQuota.tick(me, 'requests', tx),
         }),
       );
@@ -145,6 +138,7 @@ export class RelationshipController {
       {
         userId: me,
         decision: 'REQUESTED',
+        snapshot: dto.snapshot,
         target: {
           account,
           namespaceId,

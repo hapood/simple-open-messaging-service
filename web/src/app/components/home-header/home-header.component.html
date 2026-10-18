@@ -6,14 +6,14 @@
   >
     <span class="avatar">
       @if (sessionProfile(); as self) {
-        <app-user-avatar
+        <app-demand-avatar
           [type]="UserAvatarType.SELF"
           [domainSource]="{ type: 'namespace', namespaceId: 0 }"
           [name]="self.name"
           [account]="self.account"
         />
       } @else {
-        <app-user-avatar [type]="UserAvatarType.SELF" [loading]="true" />
+        <app-demand-avatar [type]="UserAvatarType.SELF" [loading]="true" />
       }
     </span>
   </button>

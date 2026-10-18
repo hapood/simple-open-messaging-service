@@ -1,3 +1,4 @@
+import { parseRequestSnapshot, type RequestSnapshot } from '../../shared/request-snapshot.js';
 import type { RequestProjectionStatusValue } from '../../shared/request-projection-status.js';
 import {
   accountAddressInTx,
@@ -32,6 +33,7 @@ export class FederationGroupRequestProjectionService {
     const [request] = await tx
       .select({
         status: tables.relationshipIntent.status,
+        snapshot: tables.relationshipIntent.snapshot,
         note: tables.relationshipIntent.note,
         requestedAt: tables.relationshipIntent.requestedAt,
         expiresAt: tables.relationshipIntent.expiresAt,
@@ -107,6 +109,7 @@ export class FederationGroupRequestProjectionService {
       profileNamespaceId: member.namespaceId,
       memberProfileRev: memberIntent?.profileRev ?? 0,
       direction,
+      snapshot: direction === 'INVITATION' ? parseRequestSnapshot(request.snapshot) : null,
       status,
       note: request.note,
       requestedAt: request.requestedAt,

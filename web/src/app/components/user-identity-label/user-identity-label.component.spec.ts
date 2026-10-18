@@ -32,6 +32,61 @@ function createLabel() {
 }
 
 describe('UserIdentityLabelComponent', () => {
+  it('renders a sent snapshot without resolving profile evidence and retains its domain', () => {
+    const { fixture, resolve } = createLabel();
+    fixture.componentRef.setInput('profileRef', {
+      account: 'alice',
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
+      rev: 7,
+      linked: true,
+    });
+    fixture.componentRef.setInput('profile', profile);
+    fixture.componentRef.setInput('snapshot', {
+      displayName: 'Sent Alice',
+      avatar: null,
+    });
+    fixture.detectChanges();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(
+      fixture.nativeElement.querySelector('.identity-name').textContent.trim(),
+    ).toBe('Sent Alice');
+    expect(
+      fixture.nativeElement
+        .querySelector('.identity-domain')
+        .textContent.trim(),
+    ).toBe('alpha.test');
+  });
+
+  it('cancels and clears profile resolution across snapshot mode changes', () => {
+    const { fixture, resolution, resolve } = createLabel();
+    fixture.componentRef.setInput('profileRef', {
+      account: 'alice',
+      publisherNamespaceId: 0,
+      profileNamespaceId: 0,
+      rev: 7,
+      linked: true,
+    });
+    fixture.detectChanges();
+    resolution.next(profile);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.effectiveName()).toBe('Alice');
+    fixture.componentRef.setInput('snapshot', {
+      displayName: 'Sent Alice',
+      avatar: null,
+    });
+    fixture.detectChanges();
+    expect(resolution.observed).toBe(false);
+    resolution.next({ ...profile, name: 'Later Alice' });
+    expect(fixture.componentInstance.effectiveName()).toBe('Sent Alice');
+    fixture.componentRef.setInput('snapshot', null);
+    fixture.detectChanges();
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(fixture.componentInstance.effectiveName()).toBe('alice');
+    resolution.next(profile);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.effectiveName()).toBe('Alice');
+  });
   it('resolves the selected profile name and retains the real local domain', () => {
     const { fixture, resolution, resolve } = createLabel();
     const ref = {

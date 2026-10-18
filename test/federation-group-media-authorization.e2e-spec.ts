@@ -66,7 +66,6 @@ describe('group authority media authorization for a different member peer', () =
         type: 'GROUP',
         groupAccount,
         groupAccountId: group.id,
-        groupDomain: mirror ? authorDomain : loadFederationConfig().domain,
         authorityNamespaceId: mirror ? authorNs : 0,
         curSeq: 5,
         updatedAt: new Date(),

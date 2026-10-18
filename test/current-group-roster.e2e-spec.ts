@@ -1,5 +1,4 @@
 import { UserService } from '../src/user/user.service.js';
-import { localIdentityDomain } from './support/local-domain.js';
 import { withMessageDigest } from './support/message-fixture.js';
 import { seedFederatedPeerNamespace } from './seed.js';
 import { lockBusinessAccountsInTx } from '../src/common/locks/account-business-lock.js';
@@ -68,7 +67,6 @@ describe('current Group Meta roster', () => {
       .values({
         type: 'GROUP',
         groupAccount: `!roster-${suffix}`,
-        groupDomain: 'local',
         groupAccountId: createdGroup.id,
         authorityNamespaceId: 0,
         updatedAt: new Date(),
@@ -146,7 +144,6 @@ describe('current Group Meta roster', () => {
     expect(roster).toEqual([
       expect.objectContaining({
         account: `owner-${suffix}`,
-        domain: localIdentityDomain(),
         namespaceId: 0,
         role: GroupRole.OWNER,
         profileRev: 1,

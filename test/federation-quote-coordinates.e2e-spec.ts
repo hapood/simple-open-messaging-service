@@ -102,7 +102,6 @@ describe('federation quote coordinates across three persisted node views', () =>
         .values({
           type: 'GROUP',
           groupAccount,
-          groupDomain: localGroup ? 'local' : 'alpha.quote.test',
           groupAccountId: localGroup?.id,
           authorityNamespaceId,
           curSeq: 50,
@@ -217,7 +216,6 @@ describe('federation quote coordinates across three persisted node views', () =>
           quoteTarget,
           quoteDigest,
         },
-        expectedFederationVersion: 0,
         incomingText: { text: 'reply' },
         originTime: new Date(1_700_000_000_000),
         payloadDigest: payloadDigest(

@@ -56,6 +56,7 @@ describe('GroupRelationshipFoldService', () => {
       author: 'MEMBER',
       hostedLocally: true,
       status: 'ACCEPTED',
+      snapshot: null,
       initialRole: GroupRole.OWNER,
     });
 
@@ -171,6 +172,7 @@ describe('GroupRelationshipFoldService', () => {
       author: 'GROUP',
       hostedLocally: true,
       status: 'REVOKED',
+      snapshot: null,
     });
 
     expect(

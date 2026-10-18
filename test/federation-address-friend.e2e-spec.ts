@@ -149,7 +149,7 @@ describe('federated Address friend requests', () => {
         where: and(
           eq(clientStateFeed.userId, bobId),
           eq(clientStateFeed.account, 'address-alice'),
-          eq(clientStateFeed.domain, FED_DOMAIN_A),
+          eq(clientStateFeed.namespaceId, aliceNamespaceOnB.id),
           eq(clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
           eq(clientStateFeed.subjectAccount, 'address-bob'),
         ),
@@ -161,7 +161,7 @@ describe('federated Address friend requests', () => {
         direction: 'INCOMING',
         peer: expect.objectContaining({
           account: 'address-alice',
-          domain: FED_DOMAIN_A,
+          namespaceId: aliceNamespaceOnB.id,
         }),
       }),
     });
@@ -258,7 +258,7 @@ describe('federated Address friend requests', () => {
             where: and(
               eq(clientStateFeed.userId, bobId),
               eq(clientStateFeed.account, 'address-alice'),
-              eq(clientStateFeed.domain, FED_DOMAIN_A),
+              eq(clientStateFeed.namespaceId, aliceNamespaceOnB.id),
               eq(clientStateFeed.eventType, 'RELATIONSHIP_INTENT'),
               eq(clientStateFeed.subjectAccount, 'address-bob'),
             ),
@@ -436,6 +436,14 @@ describe('federated Address friend requests', () => {
       'address-reject-bob',
       'Reject Bob',
     );
+    const lookup = await request(appA.baseUrl)
+      .get('/api/v1/user/resolve-federated-stream')
+      .query({ account: bob.account, domain: FED_DOMAIN_B })
+      .set('Authorization', `Bearer ${alice.token}`)
+      .set('Accept', 'text/event-stream');
+    expect(lookup.status).toBe(200);
+    expect(lookup.text).toContain('event: resolved');
+
     const target = {
       account: bob.account,
       namespaceId: (await appA.database.query.identityNamespace.findFirst({
@@ -452,7 +460,7 @@ describe('federated Address friend requests', () => {
       const response = await request(appA.baseUrl)
         .post('/api/v1/relationship/request')
         .set('Authorization', `Bearer ${alice.token}`)
-        .send({ ...target, displayName: 'Reject Bob', note });
+        .send({ ...target, snapshot: { displayName: 'Reject Bob', avatar: null }, note });
       expect(response.body.code, JSON.stringify(response.body)).toBe(
         BusinessCode.OK,
       );
@@ -502,14 +510,6 @@ describe('federated Address friend requests', () => {
         ),
       });
 
-    const lookup = await request(appA.baseUrl)
-      .get('/api/v1/user/resolve-federated-stream')
-      .query({ account: bob.account, domain: FED_DOMAIN_B })
-      .set('Authorization', `Bearer ${alice.token}`)
-      .set('Accept', 'text/event-stream');
-    expect(lookup.status).toBe(200);
-    expect(lookup.text).toContain('event: resolved');
-
     await send('first request');
     await vi.waitFor(
       async () => {
@@ -520,6 +520,11 @@ describe('federated Address friend requests', () => {
       },
       { timeout: 15_000, interval: 100 },
     );
+    const firstPending = (await requesterRequestFeed())!;
+    expect(firstPending.body).toMatchObject({
+      peer: { profileRev: 0 },
+      snapshot: { displayName: 'Reject Bob', avatar: null },
+    });
     await reject();
     const firstTerminal = await vi.waitFor(
       async () => {
@@ -533,6 +538,9 @@ describe('federated Address friend requests', () => {
       },
       { timeout: 15_000, interval: 100 },
     );
+    // Both bodies are committed together: observing the terminal also observes
+    // any erroneous stale REQUESTED republication in that same transaction.
+    expect(await requesterRequestFeed()).toEqual(firstPending);
     const firstPeerRevoke = (await peerRevoke())!;
 
     await send('second request');
@@ -564,6 +572,7 @@ describe('federated Address friend requests', () => {
           requestStatus: 'REJECTED',
           requestDirection: 'OUTGOING',
         });
+        expect(await requesterRequestFeed()).toEqual(secondPending);
       },
       { timeout: 15_000, interval: 100 },
     );
@@ -607,7 +616,6 @@ describe('federated Address friend requests', () => {
         const row = await appB.database.query.messageThread.findFirst({
           where: and(
             eq(messageThread.groupAccount, group.groupAccount!),
-            eq(messageThread.groupDomain, FED_DOMAIN_A),
           ),
         });
         expect(row).toBeDefined();

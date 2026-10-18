@@ -15,7 +15,6 @@ describe('readCurrentGroupRosterInTx', () => {
       {
         userId: 3,
         account: 'alice',
-        domain: 'local',
         namespaceId: 0,
         role: GroupRole.OWNER,
         profileRev: 1,
@@ -36,7 +35,6 @@ describe('readCurrentGroupRosterInTx', () => {
         {
           userId: 3,
           account: 'alice',
-          domain: 'local',
           namespaceId: 0,
           role: GroupRole.MEMBER,
           profileRev: -1,
@@ -56,7 +54,6 @@ describe('readCurrentGroupMemberInTx', () => {
     const row = {
       userId: 3,
       account: 'alice',
-      domain: 'local',
       namespaceId: 0,
       role: GroupRole.MEMBER,
       profileRev: 2,
@@ -90,7 +87,6 @@ describe('readCurrentGroupMemberByAddressInTx', () => {
     const row = {
       userId: 4,
       account: 'member',
-      domain: 'peer.example',
       namespaceId: 7,
       role: GroupRole.MEMBER,
       profileRev: 2,
@@ -150,8 +146,8 @@ describe('readCurrentLocalAuthorizedGroupMemberIdsInTx', () => {
 describe('readCurrentGroupOwnersInTx', () => {
   it('returns one canonical owner per requested group', async () => {
     const rows = [
-      { groupId: 8, account: 'alice', domain: 'local', namespaceId: 0 },
-      { groupId: 9, account: 'bob', domain: 'peer.test', namespaceId: 1 },
+      { groupId: 8, account: 'alice', namespaceId: 0 },
+      { groupId: 9, account: 'bob', namespaceId: 1 },
     ];
     const execute = vi.fn().mockResolvedValue({ rows });
 
@@ -166,7 +162,7 @@ describe('readCurrentGroupOwnersInTx', () => {
   it('rejects multiple current owners for one group', async () => {
     const execute = vi.fn().mockResolvedValue({
       rows: [
-        { groupId: 8, account: 'alice', domain: 'local', namespaceId: 0 },
+        { groupId: 8, account: 'alice', namespaceId: 0 },
         { groupId: 8, userId: 7 },
       ],
     });

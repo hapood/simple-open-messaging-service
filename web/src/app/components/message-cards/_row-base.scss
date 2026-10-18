@@ -148,7 +148,7 @@
 
 // Avatar slot (40px industry standard; appears on group-start, self right / other left).
 // It owns layout only — the size/alignment/col-margin contract is fixed (so virtual-scroll height measurement stays
-// stable); visuals (squircle + colors + initial letter) are delegated to the inner <app-user-avatar>, reusing the
+// stable); visuals (squircle + colors + initial letter) are delegated to the inner <app-avatar>, reusing the
 // same component as the list/drawer/panel.
 .msg-avatar {
   width: 40px;

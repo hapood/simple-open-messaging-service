@@ -39,11 +39,10 @@ use super::relationship_projection::{
 pub(crate) struct ClientStateFeedItem {
     pub(super) feed_id: Option<i64>,
     account: Option<String>,
-    domain: Option<String>,
     namespace_id: i64,
     event_type: Option<String>,
     subject_account: Option<String>,
-    subject_domain: Option<String>,
+    subject_namespace_id: i64,
     body: Option<Value>,
 }
 
@@ -655,14 +654,10 @@ pub(super) fn apply_state_feed_page_with_resume(
             .ok_or_else(|| "relationship intent has no body".to_string())?;
         if account.starts_with('!') || subject_account.starts_with('!') {
             let group_authored = account.starts_with('!');
-            let (group_account, group_domain, direction) = if group_authored {
-                (account, op.domain.as_deref().unwrap_or(""), "INCOMING")
+            let (group_account, direction) = if group_authored {
+                (account, "INCOMING")
             } else {
-                (
-                    subject_account,
-                    op.subject_domain.as_deref().unwrap_or(""),
-                    "OUTGOING",
-                )
+                (subject_account, "OUTGOING")
             };
             apply_group_request_effect(
                 &tx,
@@ -671,7 +666,6 @@ pub(super) fn apply_state_feed_page_with_resume(
                     .ok_or_else(|| "state-feed item has no feedId".to_string())?,
                 op.namespace_id,
                 group_account,
-                group_domain,
                 direction,
                 body,
             )?;
@@ -683,9 +677,8 @@ pub(super) fn apply_state_feed_page_with_resume(
                     .ok_or_else(|| "state-feed item has no feedId".to_string())?,
                 op.namespace_id,
                 account,
-                op.domain.as_deref().unwrap_or(""),
                 subject_account,
-                op.subject_domain.as_deref().unwrap_or(""),
+                op.subject_namespace_id,
                 body,
             )?;
         }

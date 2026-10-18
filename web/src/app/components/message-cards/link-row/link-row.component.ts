@@ -11,10 +11,9 @@ import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { QuoteBlockComponent } from '../quote-block/quote-block.component';
 import type { HistoryAnchor } from '../../../services/history-anchor';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../../user-avatar/user-avatar.component';
+import { AvatarComponent } from '../../user-avatar/avatar.component';
+import type { AvatarView } from '../../user-avatar/avatar-view';
+import { messageSenderPresentation } from '../message-sender';
 import { assetUrl } from '../../../services/runtime';
 import { ExternalLinkService } from '../../../services/external-link.service';
 import { linkCardHost, linkCardSource } from '../../../lib/link-card-display';
@@ -46,7 +45,7 @@ interface LinkCard {
   standalone: true,
   imports: [
     QuoteBlockComponent,
-    UserAvatarComponent,
+    AvatarComponent,
     DateRowComponent,
     TranslocoPipe,
     LinkCardContentComponent,
@@ -57,7 +56,7 @@ interface LinkCard {
 })
 export class LinkRowComponent {
   private readonly externalLinks = inject(ExternalLinkService);
-  readonly UserAvatarType = UserAvatarType;
+  readonly senderView = input<AvatarView>();
   readonly data = input.required<ChatMsgData>();
   readonly quoteJump = output<HistoryAnchor>();
   readonly isShowHead = input(false);
@@ -65,15 +64,15 @@ export class LinkRowComponent {
   /** Whether a date-separator pill should render above this row (first message of its day). */
   readonly showDate = input<boolean>(false);
 
-  readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
-  readonly showAvatar = computed(() => this.isShowHead());
-  readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
-  readonly showName = computed(
-    () =>
-      this.isShowHead() &&
-      this.data().isGroupConversation === true &&
-      !this.data().isSelf,
+  readonly sender = messageSenderPresentation(
+    this.data,
+    this.isShowHead,
+    this.senderView,
   );
+  readonly side = this.sender.side;
+  readonly showAvatar = this.sender.showAvatar;
+  readonly showName = this.sender.showName;
+  readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
   readonly statusTick = computed(
     () => this.data().isSelf && !!this.data().status,
   );

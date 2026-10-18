@@ -85,7 +85,6 @@ describe('FederationInboundMessageRouteService', () => {
       .spyOn(routes, 'resolveMessage')
       .mockResolvedValue({
         threadId: 11,
-        federationVersion: 4,
         toAccount: 'alice',
         creatorAccount: 'bob',
         profileNamespaceId: 7,
@@ -108,7 +107,6 @@ describe('FederationInboundMessageRouteService', () => {
     const routes = service();
     const memberRoute = vi.spyOn(routes, 'resolveMessage').mockResolvedValue({
       threadId: 11,
-      federationVersion: 4,
       toAccount: '!group',
       creatorAccount: 'alice',
       profileNamespaceId: 9,
@@ -171,7 +169,7 @@ describe('FederationInboundMessageRouteService', () => {
       .fn()
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({
-        rows: [{ threadId: 11, federationVersion: 4, toAccount: '!group' }],
+        rows: [{ threadId: 11, toAccount: '!group' }],
       })
       .mockResolvedValueOnce({ rows: [] });
     const tx = { execute } as unknown as DatabaseTransaction;
@@ -180,7 +178,6 @@ describe('FederationInboundMessageRouteService', () => {
       service().resolveMessage(tx, groupMessage(), 'peer.test', 9, 7),
     ).resolves.toEqual({
       threadId: 11,
-      federationVersion: 4,
       toAccount: '!group',
       creatorAccount: 'alice',
       profileNamespaceId: 0,
@@ -236,7 +233,7 @@ describe('FederationInboundMessageRouteService', () => {
       const execute = vi
         .fn()
         .mockResolvedValueOnce({
-          rows: [{ threadId: 11, federationVersion: 4, toAccount: '!group' }],
+          rows: [{ threadId: 11, toAccount: '!group' }],
         })
         .mockResolvedValueOnce({ rows: [] });
 
@@ -283,7 +280,7 @@ describe('FederationInboundMessageRouteService', () => {
     ).rejects.toThrow('tombstone has no retained local group thread');
 
     const query = dialect.sqlToQuery(execute.mock.calls[0]![0] as SQL);
-    expect(query.sql).toMatch(/group_user\.domain = \$\d+/);
-    expect(query.params).toContain('origin.test');
+    expect(query.sql).toMatch(/group_user\."namespaceId" = \$\d+/);
+    expect(query.params).toContain(9);
   });
 });

@@ -19,7 +19,6 @@ import { ForwardBundleService } from '../forward/forward-bundle.service.js';
 
 function currentThreadResourceAuthorizationSql(
   threadId: typeof tables.message.threadId,
-  signerDomain: string,
   signerNamespaceId: number,
 ) {
   return sql`(
@@ -68,7 +67,6 @@ function currentThreadResourceAuthorizationSql(
        AND intent."receiverNamespaceId" = pair."endpointBNamespaceId"
       WHERE mirror_thread.id = ${threadId}
         AND mirror_thread.type = 'GROUP'
-        AND mirror_group.domain = ${signerDomain}
         AND mirror_thread."authorityNamespaceId" = ${signerNamespaceId}
         AND (intent.status = 'ACCEPTED'
           OR (intent.status = 'REQUESTED'
@@ -133,7 +131,6 @@ export class FederationPeerResourceService {
           eq(tables.message.seq, sourceSeq),
           currentThreadResourceAuthorizationSql(
             tables.message.threadId,
-            signerDomain,
             signerNamespaceId,
           ),
         ),
@@ -290,7 +287,6 @@ export class FederationPeerResourceService {
           eq(tables.message.isDeleted, false),
           currentThreadResourceAuthorizationSql(
             tables.message.threadId,
-            signerDomain,
             signerNamespaceId,
           ),
         ),

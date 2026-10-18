@@ -1,6 +1,5 @@
 /** Geometry-only sticky-avatar calculation, kept independent of Angular and the virtual-scroll kernel. */
-import type { AvatarDomainSource } from '../components/user-avatar/model';
-import type { AvatarProfileRef } from '../services/avatar-profile-ref';
+import type { AvatarView } from '../components/user-avatar/avatar-view';
 
 const STICKY_AVATAR_TOP_GAP_PX = 12;
 const STICKY_AVATAR_SIZE_PX = 40;
@@ -23,38 +22,30 @@ interface StickyAvatarPlacement {
   readonly side: 'self' | 'other';
 }
 
-export interface StickyAvatarView {
-  readonly name: string;
-  readonly avatarProfile?: AvatarProfileRef;
-  readonly snapshotAvatarUrl?: string;
+export interface StickyAvatarIdentity {
+  /** The exact same live presentation used by natural and tail avatars. */
+  readonly presentation: () => AvatarView;
   readonly identityId?: string;
-  readonly account?: string;
-  readonly domain?: string;
-  readonly domainSource?: AvatarDomainSource;
+}
+
+export interface StickyAvatarView extends StickyAvatarIdentity {
   readonly side: 'self' | 'other';
   readonly top: number;
 }
 
-export interface StickyAvatarIdentity {
-  readonly name: string;
-  readonly avatarProfile?: AvatarProfileRef;
-  readonly snapshotAvatarUrl?: string;
-  readonly identityId?: string;
-  readonly account?: string;
-  readonly domain?: string;
-  readonly domainSource?: AvatarDomainSource;
-}
-
-export interface StickyAvatarMeasuredRow extends StickyAvatarRow {
-  readonly name: string;
-  readonly avatarProfile?: AvatarProfileRef;
-  readonly snapshotAvatarUrl?: string;
-  readonly identityId?: string;
-  readonly account?: string;
-  readonly domain?: string;
-  readonly domainSource?: AvatarDomainSource;
+export interface StickyAvatarMeasuredRow
+  extends StickyAvatarRow,
+    StickyAvatarIdentity {
   readonly naturalAvatar?: HTMLElement;
   readonly tailAvatar?: HTMLElement;
+}
+
+const identities = new WeakMap<HTMLElement, StickyAvatarIdentity>();
+
+export function readStickyAvatarIdentity(
+  host: HTMLElement,
+): StickyAvatarIdentity | undefined {
+  return identities.get(host);
 }
 
 export interface StickyAvatarResolution {
@@ -68,27 +59,7 @@ export function writeStickyAvatarIdentity(
   host: HTMLElement,
   avatar: StickyAvatarIdentity,
 ): void {
-  host.dataset['messageAvatarName'] = avatar.name;
-  if (avatar.avatarProfile)
-    host.dataset['messageAvatarEvidence'] = JSON.stringify(
-      avatar.avatarProfile,
-    );
-  else delete host.dataset['messageAvatarEvidence'];
-  if (avatar.snapshotAvatarUrl)
-    host.dataset['messageSnapshotAvatarUrl'] = avatar.snapshotAvatarUrl;
-  else delete host.dataset['messageSnapshotAvatarUrl'];
-  host.dataset['messageAvatarAccount'] = avatar.account ?? '';
-  host.dataset['messageAvatarDomain'] = avatar.domain ?? '';
-  if (avatar.domainSource)
-    host.dataset['messageAvatarDomainSource'] = JSON.stringify(
-      avatar.domainSource,
-    );
-  else delete host.dataset['messageAvatarDomainSource'];
-  if (avatar.identityId == null) {
-    delete host.dataset['messageAvatarIdentity'];
-  } else {
-    host.dataset['messageAvatarIdentity'] = String(avatar.identityId);
-  }
+  identities.set(host, avatar);
 }
 
 /**
@@ -183,15 +154,8 @@ export function resolveStickyAvatar(
   return {
     hiddenHead: naturalHead,
     view: {
-      name: row.name,
-      avatarProfile: row.avatarProfile,
-      snapshotAvatarUrl: row.snapshotAvatarUrl,
+      presentation: row.presentation,
       identityId: row.identityId,
-      // The overlay's <app-user-avatar> needs the same account+domain identity key as the natural row
-      // avatar: an omitted account hashes the empty string and pins every float avatar to PALETTE[0].
-      account: row.account,
-      domain: row.domain,
-      domainSource: row.domainSource,
       side: placement.side,
       // DOM rectangles may carry sub-pixel viewport coordinates (device scale, compositor transforms). The
       // natural avatar is laid out on the integer-pixel timeline grid; quantize only the final overlay-local

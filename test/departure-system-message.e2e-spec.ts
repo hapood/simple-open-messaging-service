@@ -186,7 +186,6 @@ describe('departure system message paths', () => {
       .values({
         type: 'GROUP',
         groupAccount: groupAddress,
-        groupDomain: peerDomain,
         updatedAt: new Date(),
         authorityNamespaceId: namespaceId,
       })

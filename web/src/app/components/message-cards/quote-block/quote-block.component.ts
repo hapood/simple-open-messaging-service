@@ -12,16 +12,14 @@ import type { ChatMsgData } from '../chat-item';
 import type { HistoryAnchor } from '../../../services/history-anchor';
 import { ImageDownloadService } from '../../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../../user-avatar/user-avatar.component';
+import { SnapshotAvatarComponent } from '../../user-avatar/snapshot-avatar.component';
+import { UserAvatarType } from '../../user-avatar/model';
 
 /** Presentation-only reply context shared by text and attachment cards. */
 @Component({
   selector: 'app-msg-quote-block',
   standalone: true,
-  imports: [NgTemplateOutlet, TranslocoPipe, UserAvatarComponent],
+  imports: [NgTemplateOutlet, TranslocoPipe, SnapshotAvatarComponent],
   templateUrl: './quote-block.component.html',
   styleUrl: './quote-block.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

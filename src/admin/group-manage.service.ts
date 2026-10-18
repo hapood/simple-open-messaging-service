@@ -39,7 +39,6 @@ export class GroupManageService {
         createdAt: messageThread.createdAt,
         groupAccount: groupStateFields.account,
         groupName: groupStateFields.name,
-        groupDomain: groupStateFields.domain,
         memberCount,
       })
       .from(messageThread)
@@ -63,7 +62,6 @@ export class GroupManageService {
       group: {
         account: row.groupAccount,
         name: row.groupName,
-        domain: row.groupDomain,
       },
       memberCount: row.memberCount,
     }));

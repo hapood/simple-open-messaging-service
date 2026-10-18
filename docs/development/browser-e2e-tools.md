@@ -285,6 +285,36 @@ login helpers for those prerequisites. Pass the target's exact display name
 when requesting or accepting, and keep one-off account data in the temporary
 scenario rather than the reusable module.
 
+### Opening threads and the desktop chat pane
+
+The desktop chat pane keeps two layers (`.pane-layer.pane-fg` foreground plus a
+backgrounded layer), each with its own `.msg-header` and `.msg-container`.
+Always scope message-surface selectors to `.pane-layer.pane-fg`; an unscoped
+`.msg-header` read can come from the stale background thread.
+
+Clicking the already-open thread row is a TOGGLE on non-compact layouts
+(`shouldCloseChatOnThreadSelect`): a step that re-clicks the active row closes
+the chat while the pane keeps rendering the old foreground layer, leaving
+`.pane-empty` covering the composer. Before clicking a thread row, assert the
+foreground header text AND `app-chat-pane .pane-empty:visible` count 0; skip
+the click when the thread is already live. After any open click, wait for the
+`.pane-empty` overlay to disappear before targeting the composer.
+
+Aside overlays (group-info, group-join-requests, member manager) sit above a
+`.drawer-mask` that Escape does not close; walk them down with the last visible
+`.page-header__back` (one level per click) before touching the thread list.
+The forward dialog confirms merged/history forwards through `app-split-button`
+(the header primary action), not a plain button; the single-message
+right-click forward is DIRECT mode and re-sends content as an ordinary
+message, while the card-based snapshot flow requires multi-select → merged
+forward. Multi-select pre-selects the message whose context menu opened it —
+clicking that row again deselects it and disables the selection-bar forward
+action.
+
+The driver resolves a temporary step's relative imports once and caches them:
+after editing a shared step helper, import it under a new filename or the old
+module keeps running.
+
 ### Message context menus and multi-select
 
 Open a message context menu from the message's real interactive content, not

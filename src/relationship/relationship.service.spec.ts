@@ -105,6 +105,7 @@ describe('relationship client profile references', () => {
       expiresAt: null,
       note: '',
       profileRev: 3,
+      snapshot: { displayName: 'Bob at send time', avatar: null },
     };
     const writeInTx = vi.fn().mockResolvedValue(1);
     const service = new RelationshipService(
@@ -124,28 +125,28 @@ describe('relationship client profile references', () => {
     return { service, tx, writeInTx };
   }
 
-  it('uses the peer-authored intent revision in both directions, never either user default', async () => {
+  it('uses the captured snapshot for sent presentation and the author revision for incoming presentation', async () => {
     const { service, tx, writeInTx } = setup(7);
     await service.writeRelationshipRequestClientStateInTx(tx as never, 1, {
       account: 'bob',
       namespaceId: 4,
     });
     expect(writeInTx).toHaveBeenCalledTimes(2);
-    for (const [, event] of writeInTx.mock.calls) {
-      expect(event.body.peer).toMatchObject({
-        account: 'bob',
-        profileRev: 7,
-        avatar: 'avatar-7',
-      });
-    }
+    expect(writeInTx.mock.calls[0][1].body).toMatchObject({
+      direction: 'OUTGOING',
+      snapshot: { displayName: 'Bob at send time', avatar: null },
+      peer: { account: 'bob', profileRev: 0, avatar: '', bio: '' },
+    });
+    expect(writeInTx.mock.calls[1][1].body).toMatchObject({
+      direction: 'INCOMING',
+      snapshot: null,
+      peer: { account: 'bob', profileRev: 7, avatar: 'avatar-7' },
+    });
     expect(
       tx.query.profileTable.findFirst.mock.calls.map(
         ([arg]) => new PgDialect().sqlToQuery(arg.where).params,
       ),
-    ).toEqual([
-      ['bob', 4, 0, 7],
-      ['bob', 4, 0, 7],
-    ]);
+    ).toEqual([['bob', 4, 0, 7]]);
   });
 
   it('retains the exact reference and an empty image when the version is not materialized', async () => {
@@ -154,11 +155,25 @@ describe('relationship client profile references', () => {
       account: 'bob',
       namespaceId: 4,
     });
-    expect(writeInTx.mock.calls[0][1].body.peer).toMatchObject({
+    expect(writeInTx.mock.calls[1][1].body.peer).toMatchObject({
       profileRev: 7,
       avatar: '',
       bio: '',
     });
+  });
+
+  it('keeps the sent body identical when a reverse intent first appears or changes revision', async () => {
+    const bodies = [];
+    for (const peerRev of [undefined, 1, 7]) {
+      const { service, tx, writeInTx } = setup(peerRev);
+      await service.writeRelationshipRequestClientStateInTx(tx as never, 1, {
+        account: 'bob',
+        namespaceId: 4,
+      });
+      bodies.push(writeInTx.mock.calls[0][1].body);
+    }
+    expect(bodies[1]).toEqual(bodies[0]);
+    expect(bodies[2]).toEqual(bodies[0]);
   });
 
   it('does not invent a peer profile reference when only the local intent exists', async () => {
@@ -267,9 +282,6 @@ describe('RelationshipService local relationship client-state projection', () =>
     );
     const tx = {
       select: localRecipientQuery([alice, bob]),
-      execute: vi
-        .fn()
-        .mockResolvedValue({ rows: [{ domain: 'chat.example' }] }),
       query: {
         account: {
           findFirst: vi
@@ -296,7 +308,7 @@ describe('RelationshipService local relationship client-state projection', () =>
       expect.arrayContaining([
         expect.objectContaining({
           account: 'alice',
-          domain: 'chat.example',
+          namespaceId: 0,
           subjectAccount: 'bob',
           subjectNamespaceId: 0,
           body: expect.objectContaining({
@@ -307,7 +319,7 @@ describe('RelationshipService local relationship client-state projection', () =>
         }),
         expect.objectContaining({
           account: 'bob',
-          domain: 'chat.example',
+          namespaceId: 0,
           subjectAccount: 'alice',
           subjectNamespaceId: 0,
           body: expect.objectContaining({
@@ -322,7 +334,7 @@ describe('RelationshipService local relationship client-state projection', () =>
       new Set(
         ownerOne.map(
           (write) =>
-            `${write.domain}\0${write.account}\0${write.subjectNamespaceId}\0${write.subjectAccount}`,
+            `${write.namespaceId}\0${write.account}\0${write.subjectNamespaceId}\0${write.subjectAccount}`,
         ),
       ).size,
     ).toBe(2);
@@ -330,7 +342,11 @@ describe('RelationshipService local relationship client-state projection', () =>
       true,
     );
     expect(
-      ownerOne.every((write) => write.body.peer.domain === 'chat.example'),
+      ownerOne.every(
+        (write) =>
+          write.body.peer.account === 'bob' &&
+          write.body.peer.namespaceId === 0,
+      ),
     ).toBe(true);
   });
 

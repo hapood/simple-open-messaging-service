@@ -498,7 +498,6 @@ describe('group join decision', () => {
       const group = {
         ...created,
         account: createdThread!.groupAccount!,
-        domain: createdThread!.groupDomain!,
       };
       const domain = `${prefix}.test`;
       const namespaceId = await seedFederatedPeerNamespace(database.db, domain);
@@ -597,7 +596,6 @@ describe('group join decision', () => {
         readCurrentGroupMemberInTx(tx, group.threadId, member),
       );
       expect(roster).toMatchObject({
-        domain,
         namespaceId,
         role: 'MEMBER',
         profileRev: 7,
@@ -1539,7 +1537,6 @@ describe('group join decision', () => {
     const group = {
       ...created,
       account: kickThread!.groupAccount!,
-      domain: kickThread!.groupDomain!,
     };
     const domain = `${prefix}.test`;
     const namespaceId = await seedFederatedPeerNamespace(database.db, domain);

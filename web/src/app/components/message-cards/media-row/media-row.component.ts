@@ -16,10 +16,9 @@ import { MEDIA_STATUS, type AlbumMedia, type ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { QuoteBlockComponent } from '../quote-block/quote-block.component';
 import type { HistoryAnchor } from '../../../services/history-anchor';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../../user-avatar/user-avatar.component';
+import { AvatarComponent } from '../../user-avatar/avatar.component';
+import type { AvatarView } from '../../user-avatar/avatar-view';
+import { messageSenderPresentation } from '../message-sender';
 import { layoutAlbum } from './layout';
 import { AudioPlayerComponent } from '../audio-player/audio-player.component';
 import {
@@ -54,7 +53,7 @@ const GALLERY_CARD_W = 280;
   imports: [
     QuoteBlockComponent,
     DateRowComponent,
-    UserAvatarComponent,
+    AvatarComponent,
     TranslocoPipe,
     MatProgressSpinnerModule,
     MatIconModule,
@@ -70,7 +69,7 @@ export class MediaRowComponent {
   private readonly nativeVideo = inject(NativeVideoService);
   readonly isAndroidApp = isTauri() && isAndroid();
   readonly useNativeVideo = this.isAndroidApp && ANDROID_MEDIA3_ENABLED;
-  readonly UserAvatarType = UserAvatarType;
+  readonly senderView = input<AvatarView>();
   /** Exposed for the template (status comparisons use MEDIA_STATUS.* — no bare literals). */
   readonly MEDIA_STATUS = MEDIA_STATUS;
   readonly data = input.required<ChatMsgData>();
@@ -81,15 +80,15 @@ export class MediaRowComponent {
   /** Correlates an optimistic media row with its app-scoped upload task. Empty on persisted rows. */
   readonly clientMessageId = input('');
 
-  readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
-  readonly showAvatar = computed(() => this.isShowHead());
-  readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
-  readonly showName = computed(
-    () =>
-      this.isShowHead() &&
-      this.data().isGroupConversation === true &&
-      !this.data().isSelf,
+  readonly sender = messageSenderPresentation(
+    this.data,
+    this.isShowHead,
+    this.senderView,
   );
+  readonly side = this.sender.side;
+  readonly showAvatar = this.sender.showAvatar;
+  readonly showName = this.sender.showName;
+  readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
   readonly statusTick = computed(
     () => this.data().isSelf && !!this.data().status,
   );

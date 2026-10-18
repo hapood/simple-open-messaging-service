@@ -95,7 +95,6 @@ describe('query-denied authored membership revocation', () => {
       'REVOKED',
       [],
       '',
-      undefined,
       {
         expectedAuthorization: {
           epoch: 8,

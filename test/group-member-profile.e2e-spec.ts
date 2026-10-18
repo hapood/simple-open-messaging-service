@@ -66,7 +66,6 @@ describe('exact group-member profile disclosure', () => {
       .values({
         type: 'GROUP',
         groupAccount: groupName,
-        groupDomain: localDomain,
         groupAccountId: groupId,
         updatedAt: new Date(),
       })

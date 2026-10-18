@@ -7,16 +7,15 @@ import { groupStateFields, readGroupState } from './group-state.js';
 import { lockBusinessAccountsInTx } from '../../common/locks/account-business-lock.js';
 
 /** Mirror-side group anchor: the GROUP MessageThread row carrying the peer
- * group's coordinates (account/domain/authority namespace). Group coordinates
+ * group's coordinates (account and authority namespace). Group coordinates
  * are thread IDs on a mirror, so intent and feed rows need this anchor to
- * exist. The group ACCOUNT scope is taken at the authority domain and is
+ * exist. The group ACCOUNT scope is taken at the authority namespace and is
  * re-entrant, so callers that already hold it lose nothing. */
 export async function ensureMirrorGroupShellInTx(
   tx: DatabaseTransaction,
-  group: { account: string; domain: string; namespaceId: number },
+  group: { account: string; namespaceId: number },
 ): Promise<{ threadId: number }> {
   const account = normalizeAccount(group.account);
-  const domain = group.domain.trim().toLowerCase();
   await lockBusinessAccountsInTx(tx, [
     { account, profileNamespaceId: group.namespaceId },
   ]);
@@ -24,7 +23,6 @@ export async function ensureMirrorGroupShellInTx(
     tx,
     and(
       eq(groupStateFields.account, account),
-      eq(groupStateFields.domain, domain),
       eq(groupStateFields.namespaceId, group.namespaceId),
     ),
   );
@@ -34,7 +32,6 @@ export async function ensureMirrorGroupShellInTx(
     .values({
       type: MessageThreadType.GROUP,
       groupAccount: account,
-      groupDomain: domain,
       authorityNamespaceId: group.namespaceId,
       updatedAt: new Date(),
     })

@@ -1,10 +1,7 @@
 import {
-  Component,
   createComponent,
   EnvironmentInjector,
-  input,
   provideZonelessChangeDetection,
-  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
@@ -17,23 +14,8 @@ import { ImageDownloadService } from '../../../services/image-download.service';
 import { LinkCardService } from '../../../services/link-card.service';
 import { ExternalLinkService } from '../../../services/external-link.service';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
-import { UserAvatarComponent } from '../../user-avatar/user-avatar.component';
 import type { ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
-
-@Component({
-  selector: 'app-user-avatar',
-  standalone: true,
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  template: '',
-})
-class StubUserAvatarComponent {
-  readonly type = input<unknown>(undefined);
-  readonly name = input<string | undefined | null>('');
-  readonly identityId = input<number | string | undefined>(undefined);
-  readonly account = input<string | undefined | null>(undefined);
-  readonly src = input<string | undefined | null>(undefined);
-}
 
 describe('TextRowComponent — inline link', () => {
   const url = 'https://example.com/article';
@@ -79,10 +61,6 @@ describe('TextRowComponent — inline link', () => {
           useValue: { shouldDefer: (size: number) => size > 1024 },
         },
       ],
-    });
-    TestBed.overrideComponent(TextRowComponent, {
-      remove: { imports: [UserAvatarComponent] },
-      add: { imports: [StubUserAvatarComponent] },
     });
   });
 

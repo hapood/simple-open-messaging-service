@@ -1,3 +1,4 @@
+import { parseRequestSnapshot, type RequestSnapshot } from '../../../../shared/request-snapshot';
 import type { RequestRevocationStatus } from '../../../../shared/request-projection-status';
 import {
   RequestProjectionStatus,
@@ -15,7 +16,6 @@ interface FriendRequestPeer {
   account: string;
   avatar: string;
   bio: string;
-  domain: string;
   namespaceId: number;
   profileRev?: number;
 }
@@ -37,11 +37,11 @@ export interface FriendRequestProjection {
   group?: {
     account: string;
     namespaceId: number;
-    avatar: string;
-    description: string;
     profileRev: number;
   };
   sourceLabel?: string;
+  /** Present only for send-time receiver presentation; suppresses profile resolution. */
+  snapshot: RequestSnapshot | null;
   requestedSort: number;
   updatedAt: number;
   sourceFeedId: number;
@@ -62,6 +62,7 @@ export interface FriendIntentProjectionInput {
   requestedAt: number | null;
   expiresAt: number | null;
   peer: FriendRequestPeer;
+  snapshot: unknown;
 }
 
 export interface GroupInviteProjectionInput {
@@ -76,6 +77,7 @@ export interface GroupInviteProjectionInput {
   direction?: FriendRequestDirection;
   threadId: number;
   group: NonNullable<FriendRequestProjection['group']>;
+  snapshot: unknown;
 }
 
 export function projectionDirectionForFact(input: {
@@ -181,6 +183,7 @@ export function applyFriendIntentToProjection(
     note: input.note,
     requestedAt: input.requestedAt ?? 0,
     peer: input.peer,
+    snapshot: input.direction === 'OUTGOING' ? parseRequestSnapshot(input.snapshot) : null,
     requestedSort: input.requestedAt ?? 0,
     updatedAt: now,
     sourceFeedId: input.feedId,
@@ -244,6 +247,7 @@ export function applyGroupIntentToProjection(
     requestedAt: input.requestedAt ?? 0,
     group: input.group,
     sourceLabel: input.group.namespaceId === 0 ? 'local' : '',
+    snapshot: direction === 'OUTGOING' ? parseRequestSnapshot(input.snapshot) : null,
     requestedSort: input.requestedAt ?? 0,
     updatedAt: now,
     sourceFeedId: input.feedId,

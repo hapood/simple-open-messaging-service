@@ -281,7 +281,7 @@ The absence of an observed receipt does not prove processing failure and cannot 
 
 ## 9. Common receive order
 
-1. Validate the thread, its matching author selector, query sequence, and every
+1. Validate the thread, its matching author reference, query sequence, and every
    outer field.
 2. Parse and validate `content` according to `contentType`.
 3. Validate that `assets` exactly matches the set of content digests.

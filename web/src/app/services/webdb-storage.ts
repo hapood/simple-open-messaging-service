@@ -2456,7 +2456,7 @@ export class WebdbStorage {
             ClientGroupInviteIntent,
             | 'key'
             | 'account'
-            | 'domain'
+            | 'namespaceId'
             | 'subjectAccount'
             | 'subjectNamespaceId'
             | 'kind'
@@ -2519,7 +2519,7 @@ export class WebdbStorage {
           ClientFriendIntent,
           | 'key'
           | 'account'
-          | 'domain'
+          | 'namespaceId'
           | 'subjectAccount'
           | 'subjectNamespaceId'
           | 'requestedSort'

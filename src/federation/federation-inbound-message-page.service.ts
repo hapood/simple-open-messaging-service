@@ -354,7 +354,7 @@ export class FederationInboundMessagePageService {
             threadId: route.threadId,
             creatorAccount: route.creatorAccount,
             profileNamespaceId: route.profileNamespaceId,
-            federationVersion: route.federationVersion,
+
             fetchedFromDomain: domain,
             namespaceId: token.namespaceId,
             peerSeq: item.seq,
@@ -433,7 +433,7 @@ export class FederationInboundMessagePageService {
             quoteTarget: item.quoteTarget,
             quoteDigest: item.quoteDigest,
           },
-          expectedFederationVersion: route.federationVersion,
+
           incomingText,
           forwardCard,
           forwardClosure,

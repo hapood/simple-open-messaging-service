@@ -38,10 +38,9 @@ import { GroupService } from '../../services/group.service';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { ConversationItem } from '../../services/model';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
+import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-editor.component';
 import { apiPrefix } from '../../services/constants';
 import { finalize } from 'rxjs';
@@ -88,7 +87,8 @@ type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
     MatInputModule,
     MatMenuModule,
     FormsModule,
-    UserAvatarComponent,
+    DemandAvatarComponent,
+    SnapshotAvatarComponent,
     TranslocoPipe,
     ThreadAliasEditorComponent,
     PageHeaderComponent,

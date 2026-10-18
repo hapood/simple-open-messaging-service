@@ -695,7 +695,7 @@ export class FederationProfileService {
     groupAccount: string,
     memberAccount: string,
     rev: number,
-    groupDomain: string,
+    peerDomain: string,
     expectedProfileNamespaceId = 0,
   ): Promise<S2SProfile | null> {
     return this.fetchExactProfile(
@@ -704,7 +704,7 @@ export class FederationProfileService {
         `/${encodeFederationResourceComponent(memberAccount)}/${rev}`,
       memberAccount,
       rev,
-      groupDomain,
+      peerDomain,
       expectedProfileNamespaceId,
     );
   }

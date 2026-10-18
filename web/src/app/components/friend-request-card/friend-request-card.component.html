@@ -7,22 +7,30 @@
 >
   <span class="avatar">
     @let resolvedDomain = requestItem().namespaceId | namespaceDomain | async;
-    <app-user-avatar
-      [type]="
-        requestItem().kind === 'GROUP'
-          ? UserAvatarType.GROUP
-          : UserAvatarType.OTHER
-      "
-      [account]="requestItem().account"
-      [domainSource]="{ type: 'namespace', namespaceId: requestItem().namespaceId }"
-      [profile]="avatarProfile()"
-    />
+    @let avatarType = requestItem().kind === 'GROUP' ? UserAvatarType.GROUP : UserAvatarType.OTHER;
+    @if (sentSnapshot(); as snapshot) {
+      <app-snapshot-avatar
+        [type]="avatarType"
+        [name]="snapshot.displayName"
+        [src]="snapshot.avatar"
+        [account]="requestItem().account"
+        [domainSource]="{ type: 'namespace', namespaceId: requestItem().namespaceId }"
+      />
+    } @else {
+      <app-demand-avatar
+        [type]="avatarType"
+        [account]="requestItem().account"
+        [domainSource]="{ type: 'namespace', namespaceId: requestItem().namespaceId }"
+        [profile]="avatarProfile()"
+      />
+    }
   </span>
   <span class="content">
     <span class="heading">
       <app-user-identity-label
         [account]="requestItem().account"
         [domain]="resolvedDomain"
+        [snapshot]="sentSnapshot()"
         [profileRef]="avatarProfile()"
       />
     </span>

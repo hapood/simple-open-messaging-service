@@ -23,7 +23,7 @@ import {
   conversationAvatarType,
 } from '../user-avatar/conversation-avatar.util';
 import { conversationAvatarProfile } from '../../services/avatar-profile-ref';
-import { UserAvatarComponent } from '../user-avatar/user-avatar.component';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
 import { UserAvatarType } from '../user-avatar/model';
 import {
   ForwardMessageCardComponent,
@@ -75,7 +75,7 @@ export interface ForwardDialogResult {
     ForwardMessageCardComponent,
     ThreadSearchInputComponent,
     TranslocoPipe,
-    UserAvatarComponent,
+    DemandAvatarComponent,
     // TextRowComponent opens dialogs through RouteService. RouteService also registers this
     // forwarding dialog, so defer resolving the row until the module cycle has initialized.
     forwardRef(() => TextRowComponent),

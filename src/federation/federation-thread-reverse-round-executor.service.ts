@@ -95,9 +95,9 @@ export class FederationThreadReverseRoundExecutorService {
     batch: BufferedReverseMessageBatch | null;
   }> {
     const query = new URLSearchParams();
-    query.set('account', source.selector.account);
-    if ('peerAccount' in source.selector)
-      query.set('peerAccount', source.selector.peerAccount);
+    query.set('account', source.demand.account);
+    if ('peerAccount' in source.demand)
+      query.set('peerAccount', source.demand.peerAccount);
     query.set('before', params.before.toString());
     if (params.through !== undefined)
       query.set('through', params.through.toString());
@@ -190,7 +190,7 @@ export class FederationThreadReverseRoundExecutorService {
     }
     let previousSeq = params.before;
     for (const item of page.messages) {
-      const expectedThread = source.selector;
+      const expectedThread = source.demand;
       const threadMatches =
         item &&
         typeof item.thread === 'object' &&
@@ -276,7 +276,7 @@ export class FederationThreadReverseRoundExecutorService {
     if (
       dependency.threadId !== message.threadId ||
       dependency.peerDomain !== message.peerDomain ||
-      dependency.federationVersion !== message.federationVersion ||
+
       dependency.peerToken.domain !== message.peerToken.domain ||
       dependency.peerToken.namespaceId !== message.peerToken.namespaceId ||
       dependency.peerToken.rootPublicKey !== message.peerToken.rootPublicKey

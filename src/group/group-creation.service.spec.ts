@@ -43,6 +43,11 @@ describe('GroupService creation', () => {
         identityNamespace: {
           findFirst: vi.fn().mockResolvedValue({ domain: 'local.example' }),
         },
+        profileTable: {
+          findFirst: vi
+            .fn()
+            .mockResolvedValue({ displayName: 'Owner', avatar: '' }),
+        },
         account: {
           findFirst: vi.fn().mockResolvedValue({
             account: 'owner',
@@ -123,7 +128,6 @@ describe('GroupService creation', () => {
       'ACCEPTED',
       [],
       '',
-      undefined,
       { initialRole: GroupRole.OWNER },
     );
     expect(messages.writeSystemMessageInTx).toHaveBeenCalledWith(tx, 7, {
@@ -135,6 +139,17 @@ describe('GroupService creation', () => {
         profileRev: 2,
       },
     });
+    expect(writeGroupRelationshipIntentInTx).toHaveBeenNthCalledWith(
+      1,
+      tx,
+      7,
+      11,
+      '',
+      'REQUESTED',
+      [],
+      undefined,
+      { snapshot: { displayName: 'Owner', avatar: null } },
+    );
     expect(writeGroupRelationshipIntentInTx).toHaveBeenCalledTimes(2);
     expect(
       writeGroupRelationshipIntentInTx.mock.invocationCallOrder[0],

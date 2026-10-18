@@ -15,7 +15,6 @@ const query = new QueryBuilder()
   .select({
     id: messageThread.id,
     account: sql<string>`${messageThread.groupAccount}`.as('account'),
-    domain: sql<string>`${messageThread.groupDomain}`.as('domain'),
     namespaceId: sql<number>`${messageThread.authorityNamespaceId}`.as(
       'namespaceId',
     ),
@@ -56,7 +55,6 @@ export const groupStateSql = sql`(${query.getSQL()})`;
 export const groupStateFields = {
   id: groupState.id,
   account: sql<string>`"group_state"."account"`,
-  domain: sql<string>`"group_state"."domain"`,
   namespaceId: sql<number>`"group_state"."namespaceId"`,
   name: sql<string>`"group_state"."name"`,
   avatar: sql<string>`"group_state"."avatar"`,

@@ -28,7 +28,6 @@ export async function mergeMirrorGroupMetaTargetInTx(
     tx,
     and(
       eq(groupStateFields.account, account),
-      eq(groupStateFields.domain, input.group.domain),
       eq(groupStateFields.namespaceId, input.group.publisherNamespaceId),
     ),
   );

@@ -185,7 +185,6 @@ describe('account controls and exact profiles', () => {
       .values({
         type: 'GROUP',
         groupAccount: address,
-        groupDomain: 'profile-origin.test',
         authorityNamespaceId: namespaceId,
         updatedAt: new Date(),
       })

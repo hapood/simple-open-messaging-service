@@ -442,7 +442,6 @@ describe('federation directed-state boundaries', () => {
       .values({
         type: MessageThreadType.GROUP,
         groupAccount: `!boundary-${suffix}`,
-        groupDomain: 'local',
         groupAccountId: groupState.id,
         updatedAt: new Date(),
       })

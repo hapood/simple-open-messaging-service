@@ -48,7 +48,6 @@ export class FederationThreadSourceService {
     const [groupThread] = await this.database.db
       .select({
         account: groupStateFields.account,
-        domain: groupStateFields.domain,
         namespaceId: groupStateFields.namespaceId,
         federationRoundsEnabled: messageThread.federationRoundsEnabled,
       })
@@ -66,13 +65,10 @@ export class FederationThreadSourceService {
         throw new FederationThreadSourceInactiveError(
           `group thread ${threadId} has federation rounds disabled`,
         );
-      if (groupThread.namespaceId > 0 && groupThread.domain !== peerDomain) {
-        throw new FederationMessageContextError(
-          `group thread ${threadId} is not sourced by ${peerDomain}`,
-        );
-      }
+      // A mirror's only federated source is its origin, identified by the
+      // authority namespace; domain strings never select the source.
       if (
-        groupThread.domain === peerDomain &&
+        groupThread.namespaceId !== 0 &&
         groupThread.namespaceId !== namespaceId
       ) {
         throw new FederationMessageContextError(
@@ -99,7 +95,7 @@ export class FederationThreadSourceService {
         threadId,
         peerDomain,
         namespaceId,
-        selector: { account: groupThread.account },
+        demand: { account: groupThread.account },
       };
     }
 
@@ -132,7 +128,7 @@ export class FederationThreadSourceService {
       threadId,
       peerDomain: p2p.remoteDomain,
       namespaceId,
-      selector: {
+      demand: {
         account: p2p.remoteAccount,
         peerAccount: p2p.localAccount,
       },

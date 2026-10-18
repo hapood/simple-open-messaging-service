@@ -196,7 +196,6 @@ describe('AuthoritativeMembershipFinalizerService', () => {
     expect(audience.open).toHaveBeenCalledWith(target.tx, 9, 7, 12n);
     expect(target.projectCurrentInTx).toHaveBeenCalledWith(
       target.tx,
-      'peer.test',
       9,
       7,
     );
@@ -222,7 +221,6 @@ describe('AuthoritativeMembershipFinalizerService', () => {
 
     expect(target.projectCurrentInTx).toHaveBeenCalledWith(
       target.tx,
-      'peer.test',
       9,
       7,
     );

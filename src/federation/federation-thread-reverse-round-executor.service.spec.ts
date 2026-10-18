@@ -23,14 +23,14 @@ function harness(kind: 'GROUP' | 'P2P' = 'GROUP') {
           namespaceId: 12,
           threadId: 31,
           peerDomain: 'origin.test',
-          selector: { account: '!group' },
+          demand: { account: '!group' },
         }
       : {
           kind: 'P2P',
           namespaceId: 12,
           threadId: 31,
           peerDomain: 'peer.test',
-          selector: { account: 'bob', peerAccount: 'alice' },
+          demand: { account: 'bob', peerAccount: 'alice' },
         };
   const rounds = new FederationThreadReverseRoundService(states as never);
   const executor = new FederationThreadReverseRoundExecutorService(
@@ -148,7 +148,7 @@ describe('FederationThreadReverseRoundExecutorService', () => {
     [false, 'P2P', 'account=bob&peerAccount=alice', 'true'],
   ] as const)(
     'sets the reverse message filter (authority=%s, kind=%s)',
-    async (authority, kind, selector, includeSelf) => {
+    async (authority, kind, demand, includeSelf) => {
       const { source } = harness(kind);
       if (source.kind === 'GROUP') source.localGroupAuthority = authority;
       const fetch = vi.fn().mockResolvedValue({
@@ -165,7 +165,7 @@ describe('FederationThreadReverseRoundExecutorService', () => {
       });
       expect(fetch).toHaveBeenCalledWith(
         31,
-        `/s2s/v1/messages?${selector}&before=100&through=40&take=20&includeSelf=${includeSelf}`,
+        `/s2s/v1/messages?${demand}&before=100&through=40&take=20&includeSelf=${includeSelf}`,
         source.peerDomain,
         16 * 1024 * 1024,
       );

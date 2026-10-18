@@ -34,9 +34,8 @@ pub(super) fn apply_relationship_request_effect(
     revision: i64,
     namespace_id: i64,
     account: &str,
-    domain: &str,
     subject_account: &str,
-    subject_domain: &str,
+    subject_namespace_id: i64,
     body: &Value,
 ) -> Result<(), String> {
     let now = chrono_millis();
@@ -57,23 +56,29 @@ pub(super) fn apply_relationship_request_effect(
         }
     });
     let reverse = target_direction != direction;
+    // Same key model as the web projection: the author's home namespace is
+    // the item namespace when the subject is the local user, and zero when
+    // the subject is the remote peer. Display domains never enter the key.
+    let author_namespace_id = if subject_namespace_id == 0 {
+        namespace_id
+    } else {
+        0
+    };
     let key = if reverse {
         serde_json::json!([
             "friend",
-            namespace_id,
-            subject_domain,
+            subject_namespace_id,
             subject_account,
-            domain,
+            author_namespace_id,
             account
         ])
         .to_string()
     } else {
         serde_json::json!([
             "friend",
-            namespace_id,
-            domain,
+            author_namespace_id,
             account,
-            subject_domain,
+            subject_namespace_id,
             subject_account
         ])
         .to_string()
@@ -131,6 +136,7 @@ pub(super) fn apply_relationship_request_effect(
         "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
         "requestedAt": requested_at,
         "peer": peer,
+        "snapshot": if direction == "OUTGOING" { body.get("snapshot").cloned().unwrap_or(Value::Null) } else { Value::Null },
         "requestedSort": requested_at,
         "updatedAt": now,
     });
@@ -152,7 +158,6 @@ pub(super) fn apply_group_request_effect(
     revision: i64,
     namespace_id: i64,
     group_account: &str,
-    group_domain: &str,
     direction: &str,
     body: &Value,
 ) -> Result<(), String> {
@@ -173,7 +178,6 @@ pub(super) fn apply_group_request_effect(
     let key = serde_json::json!([
         "group",
         namespace_id,
-        group_domain,
         group_account,
         target_direction
     ])
@@ -220,7 +224,8 @@ pub(super) fn apply_group_request_effect(
         "note": body.get("note").cloned().unwrap_or(Value::String(String::new())),
         "requestedAt": requested_at,
         "group": group,
-        "sourceLabel": group_domain,
+        "snapshot": if direction == "OUTGOING" { body.get("snapshot").cloned().unwrap_or(Value::Null) } else { Value::Null },
+        "sourceLabel": if namespace_id == 0 { "local" } else { "" },
         "requestedSort": requested_at,
         "updatedAt": now,
     });

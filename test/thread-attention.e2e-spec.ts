@@ -182,7 +182,6 @@ describe('transactional thread attention', () => {
       .values({
         type: 'GROUP',
         groupAccount: control.account,
-        groupDomain: 'local',
         groupAccountId: control.id,
         updatedAt: new Date(),
       })
@@ -388,7 +387,6 @@ describe('transactional thread attention', () => {
         type: 'GROUP',
         curSeq: 2000,
         groupAccount: group.account,
-        groupDomain: localIdentityDomain(),
         groupAccountId: group.id,
         authorityNamespaceId: 0,
         updatedAt: new Date(),

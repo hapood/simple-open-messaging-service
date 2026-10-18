@@ -206,7 +206,7 @@ export class FederationInboundMessageCommitService {
         type: item.type,
         authorityDeletedAt: new Date(item.deletedAt),
         authority: route.authority,
-        expectedFederationVersion: route.federationVersion,
+
       });
       if (deletion) deletions.push(deletion);
       satisfied.push({

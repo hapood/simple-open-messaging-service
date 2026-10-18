@@ -57,7 +57,6 @@ describe('exact profile completion for a federated group member', () => {
         type: 'GROUP',
         curSeq: 1,
         groupAccount: '!exact-profile-group',
-        groupDomain: domain,
         authorityNamespaceId: namespaceId,
         updatedAt: new Date(),
       })

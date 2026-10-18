@@ -27,7 +27,6 @@ describe('FederationInboundMessageCommitService', () => {
         routes: {
           resolveTombstone: vi.fn().mockResolvedValue({
             threadId: 11,
-            federationVersion: 4,
             recipients: [],
             authority: 'GROUP_MEMBER',
           }),

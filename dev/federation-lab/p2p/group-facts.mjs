@@ -22,7 +22,7 @@ async function readNodeGroupRows(client) {
   // instead of relying on the deprecated concurrent-query queueing behavior.
   const groups = await client.query(`
         SELECT thread."id" AS "groupId", thread."groupAccount" AS "account",
-               thread."groupDomain" AS "domain", thread."authorityNamespaceId" AS "namespaceId",
+               authority_ns."domain" AS "domain", thread."authorityNamespaceId" AS "namespaceId",
                COALESCE(profile."displayName", thread."groupAccount") AS "name",
                COALESCE(profile."bio", '') AS "description",
                COALESCE(profile."avatar", '') AS "avatar",
@@ -30,6 +30,8 @@ async function readNodeGroupRows(client) {
                COALESCE(account."dissolvedAt", thread."groupDissolvedAt") AS "dissolvedAt",
                thread."id" AS "threadId"
         FROM "MessageThread" thread
+        INNER JOIN "IdentityNamespace" authority_ns
+          ON authority_ns."id" = thread."authorityNamespaceId"
         LEFT JOIN "GroupAccount" account ON account."id" = thread."groupAccountId"
         LEFT JOIN "GroupMeta" meta ON meta."threadId" = thread."id"
         LEFT JOIN "Profile" profile ON profile."account" = thread."groupAccount"

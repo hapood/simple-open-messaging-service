@@ -72,8 +72,7 @@ export class GroupRevokeFanoutService {
           return false;
         if (
           group.namespaceId !== 0 &&
-          (group.domain !== denial.peerDomain ||
-            group.namespaceId !== denial.namespaceId)
+          group.namespaceId !== denial.namespaceId
         )
           return false;
       }

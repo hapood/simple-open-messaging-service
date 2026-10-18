@@ -1,10 +1,7 @@
 import {
-  Component,
   createComponent,
   EnvironmentInjector,
-  input,
   provideZonelessChangeDetection,
-  ChangeDetectionStrategy,
 } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import {
@@ -13,27 +10,12 @@ import {
 } from '@jsverse/transloco';
 import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
-import { UserAvatarComponent } from '../../user-avatar/user-avatar.component';
 import { ImageDownloadService } from '../../../services/image-download.service';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
 import { LinkCardService } from '../../../services/link-card.service';
 import { RouteService } from '../../../services/route.service';
 import type { ChatMsgData } from '../chat-item';
 import { TextRowComponent } from './text-row.component';
-
-@Component({
-  selector: 'app-user-avatar',
-  standalone: true,
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  template: '',
-})
-class StubUserAvatarComponent {
-  readonly type = input<unknown>(undefined);
-  readonly name = input<string | undefined | null>('');
-  readonly identityId = input<number | string | undefined>(undefined);
-  readonly account = input<string | undefined | null>(undefined);
-  readonly src = input<string | undefined | null>(undefined);
-}
 
 function message(quote: ChatMsgData['quote']): ChatMsgData {
   return {
@@ -92,10 +74,6 @@ describe('TextRowComponent — forwarded quote navigation', () => {
         },
       ],
     });
-    TestBed.overrideComponent(TextRowComponent, {
-      remove: { imports: [UserAvatarComponent] },
-      add: { imports: [StubUserAvatarComponent] },
-    });
   });
 
   function mount(data: ChatMsgData) {
@@ -151,7 +129,7 @@ describe('TextRowComponent — forwarded quote navigation', () => {
     ref.changeDetectorRef.detectChanges();
     const quote = host.querySelector<HTMLElement>('.msg-quote')!;
     expect(quote.textContent?.trim()).toBe('Click to view quoted message');
-    expect(quote.querySelector('img, strong, app-user-avatar')).toBeNull();
+    expect(quote.querySelector('img, strong, app-snapshot-avatar')).toBeNull();
     const button = host.querySelector<HTMLButtonElement>('button.msg-quote')!;
     expect(button).not.toBeNull();
     button.click();

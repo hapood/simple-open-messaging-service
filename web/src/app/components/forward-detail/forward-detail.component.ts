@@ -48,6 +48,7 @@ import type {
   ForwardWireBundle,
 } from './forward-bundle.model';
 import { ForwardSnapshotSource } from './forward-snapshot-source';
+import { forwardAvatarSource } from './forward-avatar-source';
 import { AppIconType, IconComponent } from '../icon/icon.component';
 import { jumpToMessage } from '../message-thread/message-jump';
 import { PageHeaderComponent } from '../page-header/page-header.component';
@@ -293,7 +294,8 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
       creator,
       isSelf: false,
       name: message.profile.displayName,
-      snapshotAvatarUrl: this.avatarUrl(message),
+      senderDisplayContext: 'forward',
+      sender: forwardAvatarSource(message.profile, this.closure()),
       avatarIdentityId: creator,
       text:
         hasKnownContentType && contentType === 'PURE_TEXT'
@@ -391,16 +393,6 @@ export class ForwardDetailComponent implements OnInit, OnDestroy {
         ),
       messageCount,
     });
-  }
-
-  private avatarUrl(message: ForwardManifestMessage): string {
-    const digest = message.profile.avatarDigest;
-    if (!digest || !/^[a-f0-9]{64}$/.test(digest)) return '';
-    const closure = this.closure();
-    if (!closure?.assets.some((asset) => asset.digest === digest)) return '';
-    const context = closure.accessContext;
-    if (!context) return '';
-    return `/uploads/msg-assets/${digest.slice(0, 2)}/${digest.slice(2, 4)}/${digest}?threadId=${context.threadId}&seq=${context.seq}`;
   }
 }
 

@@ -1,3 +1,4 @@
+import { IsRequestSnapshot, RequestSnapshotDto } from './request-snapshot.dto.js';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
@@ -54,6 +55,9 @@ export class CreateGroupDto {
 }
 
 export class GroupInviteAddressDto {
+  @ApiProperty({ type: RequestSnapshotDto })
+  @IsRequestSnapshot()
+  snapshot!: RequestSnapshotDto;
   @ApiProperty({ example: 'alice' })
   @IsString()
   @IsNotEmpty()

@@ -18,9 +18,9 @@ describe('group invitation admission', () => {
       {
         groupId: 7,
         users: [
-          { account: 'Friend', namespaceId: 0 },
-          { account: 'friend', namespaceId: 0 },
-          { account: 'friend', namespaceId: 7 },
+          { account: 'Friend', namespaceId: 0, snapshot: { displayName: 'Friend', avatar: null } },
+          { account: 'friend', namespaceId: 0, snapshot: { displayName: 'Friend', avatar: null } },
+          { account: 'friend', namespaceId: 7, snapshot: { displayName: 'Remote Friend', avatar: null } },
         ],
       },
     );
@@ -29,12 +29,14 @@ describe('group invitation admission', () => {
       threadId: 7,
       managerUserId: 3,
       decision: 'REQUESTED',
+      snapshot: { displayName: 'Friend', avatar: null },
       target: { account: 'friend', namespaceId: 0 },
     });
     expect(execute).toHaveBeenNthCalledWith(2, {
       threadId: 7,
       managerUserId: 3,
       decision: 'REQUESTED',
+      snapshot: { displayName: 'Remote Friend', avatar: null },
       target: { account: 'friend', namespaceId: 7 },
     });
     expect(result).toEqual({
@@ -66,7 +68,7 @@ describe('group invitation admission', () => {
           user: { userId: 3 },
           threadAccess: { threadId: 7, participant: { role: 'OWNER' } },
         } as never,
-        { groupId: 7, users: [{ account: 'friend', namespaceId: 0 }] },
+        { groupId: 7, users: [{ account: 'friend', namespaceId: 0, snapshot: { displayName: 'Friend', avatar: null } }] },
       ),
     ).resolves.toEqual({
       invited: [],

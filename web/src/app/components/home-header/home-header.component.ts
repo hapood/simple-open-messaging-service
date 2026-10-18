@@ -16,10 +16,8 @@ import {
 import { RouteService, PopupType } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
 import { ThemeService } from '../../services/theme.service';
-import {
-  UserAvatarComponent,
-  UserAvatarType,
-} from '../user-avatar/user-avatar.component';
+import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
+import { UserAvatarType } from '../user-avatar/model';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import {
@@ -39,7 +37,7 @@ import { formatBytes } from '../message-cards/file-meta.util';
   imports: [
     OverlayModule,
     IconComponent,
-    UserAvatarComponent,
+    DemandAvatarComponent,
     ChatActionMenuComponent,
     TranslocoPipe,
   ],

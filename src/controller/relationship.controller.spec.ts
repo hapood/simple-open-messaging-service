@@ -240,12 +240,14 @@ describe('RelationshipController.requestRelationship', () => {
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: '!local-group',
         namespaceId: 0,
+        snapshot: { displayName: 'Local Group', avatar: null },
         note: 'hello',
       }),
     ).resolves.toEqual({ status: 'APPLIED' });
     expect(memberIntents.executeByNamespace).toHaveBeenCalledWith({
       memberUserId: 7,
       target: { account: '!local-group', namespaceId: 0 },
+      snapshot: { displayName: 'Local Group', avatar: null },
       decision: 'REQUESTED',
       note: 'hello',
       admissionInTx: expect.any(Function),
@@ -270,8 +272,7 @@ describe('RelationshipController.requestRelationship', () => {
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: '!remote-group',
         namespaceId: 5,
-        displayName: 'Remote Group',
-        avatar: 'avatar',
+        snapshot: { displayName: 'Remote Group', avatar: 'avatar' },
         note: 'let me in',
       }),
     ).resolves.toEqual({ status: 'APPLIED' });
@@ -302,6 +303,7 @@ describe('RelationshipController.requestRelationship', () => {
         account: ' Bob ',
         namespaceId: 0,
         note: 'hello',
+        snapshot: { displayName: 'Bob', avatar: null },
       }),
     ).resolves.toEqual({ status: 'OK' });
     expect(userIntents.execute).toHaveBeenCalledWith(
@@ -310,6 +312,7 @@ describe('RelationshipController.requestRelationship', () => {
         decision: 'REQUESTED',
         target: { account: 'bob', namespaceId: 0 },
         note: 'hello',
+        snapshot: { displayName: 'Bob', avatar: null },
       },
       expect.objectContaining({ admissionInTx: expect.any(Function) }),
     );
@@ -329,6 +332,7 @@ describe('RelationshipController.requestRelationship', () => {
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
         namespaceId: 0,
+        snapshot: { displayName: 'Bob', avatar: null },
       }),
     ).resolves.toEqual({ status: 'OK', threadId: 33 });
   });
@@ -351,7 +355,7 @@ describe('RelationshipController.requestRelationship', () => {
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
         namespaceId: 5,
-        displayName: 'Bob',
+        snapshot: { displayName: 'Bob', avatar: null },
         note: 'across servers',
       }),
     ).resolves.toEqual({ status: 'OK' });
@@ -361,13 +365,14 @@ describe('RelationshipController.requestRelationship', () => {
         decision: 'REQUESTED',
         target: { account: 'bob', namespaceId: 5 },
         note: 'across servers',
+        snapshot: { displayName: 'Bob', avatar: null },
       },
       expect.objectContaining({ admissionInTx: expect.any(Function) }),
     );
     expect(userQuota.tick).toHaveBeenCalledWith(7, 'requests', admissionTx);
   });
 
-  it('runs a federated request without optional display metadata', async () => {
+  it('runs a federated request with an explicit no-avatar snapshot', async () => {
     const userIntents = {
       execute: vi.fn().mockResolvedValue({ status: 'APPLIED' }),
     };
@@ -377,7 +382,7 @@ describe('RelationshipController.requestRelationship', () => {
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
         namespaceId: 5,
-        displayName: 'Bob',
+        snapshot: { displayName: 'Bob', avatar: null },
       }),
     ).resolves.toEqual({ status: 'OK' });
     expect(userIntents.execute).toHaveBeenCalledWith(
@@ -386,6 +391,7 @@ describe('RelationshipController.requestRelationship', () => {
         decision: 'REQUESTED',
         target: { account: 'bob', namespaceId: 5 },
         note: '',
+        snapshot: { displayName: 'Bob', avatar: null },
       },
       expect.objectContaining({ admissionInTx: expect.any(Function) }),
     );
@@ -406,7 +412,7 @@ describe('RelationshipController.requestRelationship', () => {
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
         namespaceId: 5,
-        displayName: 'Bob',
+        snapshot: { displayName: 'Bob', avatar: null },
       }),
     ).resolves.toMatchObject({
       code: BusinessCode.UNAUTHENTICATED,
@@ -424,7 +430,7 @@ describe('RelationshipController.requestRelationship', () => {
       controller.requestRelationship({ user: { userId: 7 } } as never, {
         account: 'bob',
         namespaceId: 5,
-        displayName: 'Bob',
+        snapshot: { displayName: 'Bob', avatar: null },
         note: 'nsid-first',
       }),
     ).resolves.toEqual({ status: 'OK', threadId: 42 });
@@ -434,6 +440,7 @@ describe('RelationshipController.requestRelationship', () => {
         decision: 'REQUESTED',
         target: { account: 'bob', namespaceId: 5 },
         note: 'nsid-first',
+        snapshot: { displayName: 'Bob', avatar: null },
       },
       expect.objectContaining({ admissionInTx: expect.any(Function) }),
     );
@@ -467,6 +474,7 @@ describe('RelationshipController.requestRelationship', () => {
         controller.requestRelationship({ user: { userId: 7 } } as never, {
           account: reason === 'SELF_TARGET' ? 'alice' : 'bob',
           namespaceId: 0,
+          snapshot: { displayName: 'Target', avatar: null },
         }),
       ).resolves.toMatchObject({
         code: expectedCode,

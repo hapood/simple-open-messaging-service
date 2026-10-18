@@ -240,7 +240,7 @@ export class S2sController {
       'includeSelf',
       'maxMessageSeq',
     ]);
-    const selector = this.parseThreadQuery(account, peerAccount);
+    const demand = this.parseThreadDemand(account, peerAccount);
     if (
       includeSelfParam !== undefined &&
       includeSelfParam !== 'true' &&
@@ -266,7 +266,7 @@ export class S2sController {
       }
       return this.tombstoneFeed.rejectMissingQueryAfter(
         req.peer!.namespaceId,
-        selector,
+        demand,
       );
     }
     const after = this.parseThreadSequence(afterParam, 'after');
@@ -298,7 +298,7 @@ export class S2sController {
     }
     return this.tombstoneFeed.query(
       req.peer!.namespaceId,
-      selector,
+      demand,
       after,
       take,
       through,
@@ -327,7 +327,7 @@ export class S2sController {
       'through',
       'includeSelf',
     ]);
-    const selector = this.parseThreadQuery(account, peerAccount);
+    const demand = this.parseThreadDemand(account, peerAccount);
     if (
       includeSelfParam !== undefined &&
       includeSelfParam !== 'true' &&
@@ -357,7 +357,7 @@ export class S2sController {
       }
       return this.messageFeed.rejectMissingQueryAfter(
         req.peer!.namespaceId,
-        selector,
+        demand,
       );
     }
     const after =
@@ -378,7 +378,7 @@ export class S2sController {
         : this.parseThreadSequence(throughParam, 'through');
     return this.messageFeed.query(
       req.peer!.namespaceId,
-      selector,
+      demand,
       after,
       take,
       through,
@@ -686,7 +686,7 @@ export class S2sController {
     return parsed;
   }
 
-  private parseThreadQuery(account?: string, peerAccount?: string) {
+  private parseThreadDemand(account?: string, peerAccount?: string) {
     if (account === undefined) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,

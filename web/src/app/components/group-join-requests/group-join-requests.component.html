@@ -18,18 +18,19 @@
           <p class="state">{{ 'group.noSentInvitations' | transloco }}</p>
         } @else {
           @for (request of invitations(); track candidateKey(request)) {
+            @let snapshot = invitationSnapshot(request);
             @let resolvedDomain = request.namespaceId | namespaceDomain | async;
             <article class="request-row">
-              <app-user-avatar
+              <app-snapshot-avatar
                 class="avatar"
                 [type]="UserAvatarType.OTHER"
-                [name]="request.name"
+                [name]="snapshot.displayName"
+                [src]="snapshot.avatar"
                 [account]="request.account"
-                [src]="request.avatar"
                 [domainSource]="{ type: 'namespace', namespaceId: request.namespaceId }"
               />
               <div class="request-copy">
-                <div class="request-name">{{ request.name }}</div>
+                <div class="request-name">{{ snapshot.displayName }}</div>
                 <div class="request-account">
                   {{ request.account
                   }}{{ resolvedDomain ? '@' + resolvedDomain : '' }}
@@ -85,16 +86,16 @@
           @for (request of applications(); track candidateKey(request)) {
             @let resolvedDomain = request.namespaceId | namespaceDomain | async;
             <article class="request-row">
-              <app-user-avatar
+              <app-demand-avatar
                 class="avatar"
                 [type]="UserAvatarType.OTHER"
-                [name]="request.name"
                 [account]="request.account"
-                [src]="request.avatar"
+                [profile]="applicationProfile(request)"
                 [domainSource]="{ type: 'namespace', namespaceId: request.namespaceId }"
               />
               <div class="request-copy">
-                <div class="request-name">{{ request.name }}</div>
+                <app-user-identity-label class="request-name"
+                  [account]="request.account" [profileRef]="applicationProfile(request)" />
                 <div class="request-account">
                   {{ request.account
                   }}{{ resolvedDomain ? '@' + resolvedDomain : '' }}
@@ -176,7 +177,7 @@
               @let resolvedDomain =
                 candidate.namespaceId | namespaceDomain | async;
               <article class="candidate-row">
-                <app-user-avatar
+                <app-snapshot-avatar
                   class="avatar"
                   [type]="UserAvatarType.OTHER"
                   [name]="candidate.name"

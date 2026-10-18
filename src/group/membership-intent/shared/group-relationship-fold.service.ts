@@ -1,3 +1,4 @@
+import type { RequestSnapshot } from '../../../../shared/request-snapshot.js';
 import { initializeRelationshipThreadStateInTx } from '../../../federation/federation-relationship-thread-state.js';
 import type { AccountTarget } from '../../../user/account-address.js';
 import { Inject, Injectable } from '@nestjs/common';
@@ -54,6 +55,7 @@ export class GroupRelationshipFoldService {
       author: 'GROUP' | 'MEMBER';
       hostedLocally: boolean;
       status: RelationshipIntentStatus;
+      snapshot: RequestSnapshot | null;
       note?: string;
       expiresAt?: Date | null;
       initialRole?: typeof GroupRole.OWNER;
@@ -99,6 +101,7 @@ export class GroupRelationshipFoldService {
       hostedLocally: boolean;
       status: RelationshipIntentStatus;
       note?: string;
+      snapshot: RequestSnapshot | null;
       expiresAt?: Date | null;
       initialRole?: typeof GroupRole.OWNER;
       allowOwnerDeactivation?: boolean;
@@ -112,6 +115,7 @@ export class GroupRelationshipFoldService {
         threadId: params.threadId,
         threadLock: params.threadLock,
         status: params.status,
+        snapshot: params.snapshot,
         note: params.note,
         expiresAt: params.expiresAt,
         ...(params.validatedPairActive === undefined

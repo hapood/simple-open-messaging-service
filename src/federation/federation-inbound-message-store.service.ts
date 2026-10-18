@@ -66,7 +66,6 @@ export interface FederationInboundMessageStoreParams {
   payloadDigest: string;
   /** Canonical fingerprint of every immutable field in the received wire envelope. */
   federationEnvelopeDigest: string;
-  expectedFederationVersion: number;
   incomingText: ReturnType<typeof parseTextMessageContent>;
   forwardCard?: FederatedForwardCard;
   /** Raw peer bundle — untrusted until importClosure validates it inside store(). */
@@ -115,7 +114,6 @@ export class FederationInboundMessageStoreService {
       threadId: number;
       creatorAccount: string;
       profileNamespaceId: number;
-      federationVersion: number;
       fetchedFromDomain: string;
       namespaceId: number;
       /** The peer's own coordinate for the accepted message (`item.seq`). */
@@ -145,7 +143,6 @@ export class FederationInboundMessageStoreService {
       threadId,
       creatorAccount,
       profileNamespaceId,
-      federationVersion,
       fetchedFromDomain: domain,
       namespaceId,
       peerSeq,
@@ -230,7 +227,6 @@ export class FederationInboundMessageStoreService {
       peerDomain: domain,
       namespaceId,
       authority: isP2PThread ? 'P2P_HOME' : 'GROUP_ORIGIN',
-      expectedFederationVersion: federationVersion,
       threadLock,
       resolvedMessage: localSourceMessage as Message,
     });
@@ -249,7 +245,6 @@ export class FederationInboundMessageStoreService {
             .where(
               and(
                 eq(tables.messageThread.id, threadId),
-                eq(groupStateFields.domain, domain),
                 eq(groupStateFields.namespaceId, namespaceId),
               ),
             )
@@ -301,7 +296,6 @@ export class FederationInboundMessageStoreService {
       fetchedFromDomain,
       namespaceId,
       message: incoming,
-      expectedFederationVersion,
       forwardCard,
       forwardClosure,
       originTime,
@@ -319,7 +313,6 @@ export class FederationInboundMessageStoreService {
       tx,
       threadId,
       fetchedFromDomain,
-      expectedFederationVersion,
     );
     const threadLock = await DeletedMessageService.lockFederatedIdentity(
       tx,

@@ -96,7 +96,6 @@ async function readMirrorMetaInTx(
     JOIN "MessageThread" thread ON thread.id = group_state.id
     LEFT JOIN "GroupMeta" feed ON feed."threadId" = thread.id
     WHERE ${groupStateFields.account} = ${normalizeAccount(group.account)}
-      AND ${groupStateFields.domain} = ${group.domain}
       AND ${groupStateFields.namespaceId} = ${group.publisherNamespaceId}
     LIMIT 1
   `);

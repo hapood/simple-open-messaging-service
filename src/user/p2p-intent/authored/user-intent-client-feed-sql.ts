@@ -17,10 +17,8 @@ export interface UserIntentFeedInput {
   /** Compaction key of the direction authored by the addressed target. */
   targetKey: string;
   actorAccount: string;
-  actorDomain: string;
   actorNamespaceId: number;
   targetAccount: string;
-  targetDomain: string;
   targetNamespaceId: number;
 }
 
@@ -92,18 +90,16 @@ export function userIntentClientBodiesSql(
   return sql`
     sides AS MATERIALIZED (
       SELECT ${input.actorAccount}::text AS "authorAccount",
-        ${input.actorDomain}::text AS "authorDomain",
         ${input.actorNamespaceId}::int AS "authorNamespaceId",
         ${input.targetAccount}::text AS "peerAccount",
-        ${input.targetDomain}::text AS "peerDomain",
         ${input.targetNamespaceId}::int AS "peerNamespaceId",
         1 AS ordinal
       UNION ALL
-      SELECT ${input.targetAccount}, ${input.targetDomain}, ${input.targetNamespaceId},
-        ${input.actorAccount}, ${input.actorDomain}, ${input.actorNamespaceId}, 2
+      SELECT ${input.targetAccount}, ${input.targetNamespaceId},
+        ${input.actorAccount}, ${input.actorNamespaceId}, 2
     ), directions AS MATERIALIZED (
-      SELECT s."authorAccount", s."authorDomain", s."authorNamespaceId", s."peerAccount", s."peerDomain",
-        s."peerNamespaceId", s.ordinal, ${reverseState},
+      SELECT s."authorAccount", s."authorNamespaceId", s."peerAccount",
+        s."peerNamespaceId", s.ordinal, ${reverseState}, i.snapshot,
         p."threadId" AS "localThreadId", ${established} AS established
       FROM sides s
       JOIN "RelationshipPair" p ON p.id = ${input.pairId}
@@ -113,11 +109,12 @@ export function userIntentClientBodiesSql(
       ${reverseJoin}
       WHERE s."authorAccount" <> ${input.actorAccount}
       UNION ALL
-      SELECT s."authorAccount", s."authorDomain", s."authorNamespaceId", s."peerAccount", s."peerDomain",
+      SELECT s."authorAccount", s."authorNamespaceId", s."peerAccount",
         s."peerNamespaceId", s.ordinal, v.status, v.note, v."profileRev",
         floor(extract(epoch FROM v."requestedAt") * 1000)::bigint AS "requestedAt",
         CASE WHEN v."expiresAt" IS NULL THEN NULL
           ELSE floor(extract(epoch FROM v."expiresAt") * 1000)::bigint END AS "expiresAt",
+        v.snapshot,
         p."threadId" AS "localThreadId", ${established} AS established
       FROM sides s
       JOIN "RelationshipPair" p ON p.id = ${input.pairId}
@@ -128,8 +125,8 @@ export function userIntentClientBodiesSql(
         CASE WHEN o.account = d."authorAccount" THEN 'OUTGOING' ELSE 'INCOMING' END AS direction,
         CASE WHEN o.account = d."authorAccount" THEN d."peerAccount" ELSE d."authorAccount" END
           AS "clientPeerAccount",
-        CASE WHEN o.account = d."authorAccount" THEN d."peerDomain" ELSE d."authorDomain" END
-          AS "clientPeerDomain"
+        CASE WHEN o.account = d."authorAccount" THEN d."peerNamespaceId" ELSE d."authorNamespaceId" END
+          AS "clientPeerNamespaceId"
       FROM directions d
       JOIN (VALUES (${input.actorAccount}::text, ${input.actorKey}::text),
                    (${input.targetAccount}::text, ${input.targetKey}::text))
@@ -142,22 +139,28 @@ export function userIntentClientBodiesSql(
       SELECT rd.*, COALESCE(peer_intent."profileRev", 0) AS "clientPeerProfileRev"
       FROM recipient_directions rd
       LEFT JOIN directions peer_intent
-        ON peer_intent."authorAccount" = rd."clientPeerAccount"
-        AND peer_intent."authorDomain" = rd."clientPeerDomain"
+        ON rd.direction = 'INCOMING'
+        AND peer_intent."authorAccount" = rd."clientPeerAccount"
+        AND peer_intent."authorNamespaceId" = rd."clientPeerNamespaceId"
     ), candidate_bodies AS MATERIALIZED (
       SELECT cp."userId", ${input.namespaceId}::integer AS "namespaceId", cp.ordinal,
         cp."compactionKey",
-        cp."authorAccount" AS account, cp."authorDomain" AS domain,
-        cp."peerAccount" AS "subjectAccount", cp."peerNamespaceId" AS "subjectNamespaceId",
+        cp."authorAccount" AS account, cp."peerAccount" AS "subjectAccount", cp."peerNamespaceId" AS "subjectNamespaceId",
         jsonb_build_object(
           'status', cp.status, 'note', cp.note,
           'requestedAt', cp."requestedAt", 'expiresAt', cp."expiresAt",
           'direction', cp.direction,
           'localThreadId', cp."localThreadId", 'established', cp.established,
           'peer', jsonb_build_object('account', cp."clientPeerAccount",
-            'avatar', '', 'bio', '', 'domain', cp."clientPeerDomain",
-            'profileRev', cp."clientPeerProfileRev")
-        )${requestOutcome} AS body
+            'avatar', '', 'bio', '', 'namespaceId', cp."clientPeerNamespaceId",
+            -- Sent presentation belongs to the captured snapshot. Do not let a
+            -- newly received reverse intent change and republish a stale REQUESTED
+            -- body after the rejection that already settled its request card.
+            'profileRev', CASE WHEN cp.direction = 'OUTGOING'
+              THEN 0 ELSE cp."clientPeerProfileRev" END)
+        ) || CASE WHEN cp.direction = 'OUTGOING' AND cp."authorNamespaceId" = 0
+          AND cp.snapshot IS NOT NULL THEN jsonb_build_object('snapshot', cp.snapshot)
+          ELSE '{}'::jsonb END${requestOutcome} AS body
       FROM client_peers cp
     ), ${clientIntentFeedWriteSql(
       input.requestRevocation

@@ -156,9 +156,9 @@ export class RelationshipIntentExpiryService {
                 groupIsAuthor ? request.authorAccount : request.subjectAccount,
               ),
               eq(
-                groupStateFields.domain,
+                groupStateFields.namespaceId,
                 groupIsAuthor
-                  ? request.authorDomain
+                  ? request.authorNamespaceId
                   : request.subjectNamespaceId,
               ),
             ),

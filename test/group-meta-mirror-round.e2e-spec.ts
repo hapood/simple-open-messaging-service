@@ -83,7 +83,6 @@ describe('mirror Group Meta rounds', () => {
       .values({
         type: MessageThreadType.GROUP,
         groupAccount,
-        groupDomain: originDomain,
         authorityNamespaceId: originNamespaceId,
         federationRoundsEnabled: true,
         updatedAt: new Date(),

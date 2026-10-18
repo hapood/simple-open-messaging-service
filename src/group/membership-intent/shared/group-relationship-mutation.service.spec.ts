@@ -189,6 +189,11 @@ describe('GroupRelationshipMutationService', () => {
           status: 'REVOKED',
           requestedAt: null,
           expiresAt: null,
+          group: {
+            account: '!remote-group',
+            namespaceId: 12,
+            profileRev: 4,
+          },
         }),
       }),
     );
@@ -267,9 +272,9 @@ describe('GroupRelationshipMutationService', () => {
       'REQUESTED',
       [],
       'join',
-      undefined,
       {
         allowDissolvedPositive: true,
+        snapshot: { displayName: 'Group at request time', avatar: null },
         lockedGroupPair: { pairId: 1n, threadLock: {} as never },
         validatedPairActive: false,
       },
@@ -326,24 +331,15 @@ describe('GroupRelationshipMutationService', () => {
     );
 
     await expect(
-      service.writeMemberRelationshipIntentInTx(
-        tx,
-        4,
-        7,
-        'REVOKED',
-        [],
-        '',
-        undefined,
-        {
-          expectedAuthorization: {
-            epoch: 9,
-            group: {
-              account: '!group',
-              namespaceId: 5,
-            },
+      service.writeMemberRelationshipIntentInTx(tx, 4, 7, 'REVOKED', [], '', {
+        expectedAuthorization: {
+          epoch: 9,
+          group: {
+            account: '!group',
+            namespaceId: 5,
           },
         },
-      ),
+      }),
     ).resolves.toEqual(new Map());
     expect(
       groupRelationships.writeLockedAuthoredIntentInTx,
@@ -360,7 +356,6 @@ describe('GroupRelationshipMutationService', () => {
             {
               groupId: 9,
               groupAccount: '!group',
-              groupDomain: 'local',
               groupNamespaceId: 0,
               authorizationEpoch: 10,
             },

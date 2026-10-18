@@ -215,7 +215,7 @@ describe('federation message context isolation', () => {
         const query = dialect.sqlToQuery(statement);
         return {
           rows: query.sql.includes('FROM "RelationshipPair" pair')
-            ? [{ threadId: 9, federationVersion: 4, toAccount: '!group' }]
+            ? [{ threadId: 9, toAccount: '!group' }]
             : [],
         };
       });
@@ -364,7 +364,6 @@ describe('federation message context isolation', () => {
           ),
           ts: 1_700_000_000_000,
         },
-        expectedFederationVersion: 4,
         payloadDigest: 'a'.repeat(64),
         federationEnvelopeDigest: 'b'.repeat(64),
         incomingText: null,
@@ -589,7 +588,6 @@ describe('federation message context isolation', () => {
         threadId: 9,
         creatorId: 7,
         authority: 'LOCAL',
-        federationVersion: 0,
         recipients: [7],
         toAccount: 'alice',
       }),
@@ -645,7 +643,6 @@ describe('federation message context isolation', () => {
         creatorAccount: 'bob',
         profileNamespaceId: 0,
         authority: 'LOCAL',
-        federationVersion: 0,
         recipients: [7],
         toAccount: 'alice',
       }),
@@ -679,7 +676,6 @@ describe('federation message context isolation', () => {
         creatorAccount: 'alice',
         profileNamespaceId: 12,
         authority: 'PEER',
-        federationVersion: 0,
         recipients: [7],
         toAccount: 'alice',
       }),
@@ -712,7 +708,6 @@ describe('federation message context isolation', () => {
         threadId: 9,
         creatorId: 7,
         authority: 'LOCAL',
-        federationVersion: 0,
         recipients: [7],
         toAccount: 'alice',
       }),
@@ -797,7 +792,6 @@ describe('federation message context isolation', () => {
         creatorAccount: 'bob',
         profileNamespaceId: 12,
         authority: 'PEER',
-        federationVersion: 0,
         recipients: [7],
         toAccount: 'alice',
       }),
@@ -834,7 +828,6 @@ describe('federation message context isolation', () => {
         creatorAccount: 'bob',
         profileNamespaceId: 12,
         authority: 'PEER',
-        federationVersion: 0,
         recipients: [7],
         toAccount: 'alice',
       }),
@@ -914,7 +907,6 @@ describe('federation message context isolation', () => {
         threadId: 9,
         creatorId: 7,
         authority: 'LOCAL',
-        federationVersion: 0,
         recipients: [7],
         toAccount: 'alice',
       });
@@ -991,7 +983,6 @@ describe('federation message context isolation', () => {
         creatorAccount: 'bob',
         profileNamespaceId: 0,
         authority: 'PEER',
-        federationVersion: 1,
         recipients: [7],
         toAccount: 'alice',
       }),
