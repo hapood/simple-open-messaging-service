@@ -1,10 +1,19 @@
 import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
 import { InjectionToken, inject } from '@angular/core';
-import { Observable, catchError, retry, throwError, timer } from 'rxjs';
+import {
+  Observable,
+  catchError,
+  defer,
+  retry,
+  tap,
+  throwError,
+  timer,
+} from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { ToastService } from './services/toast.service';
 import { BusinessCode } from './services/biz-code';
 import { SUPPRESS_HTTP_ERROR_TOAST } from './request-context';
+import { SessionLifecycleService } from './services/session-lifecycle.service';
 
 /**
  * Retry + surface policy for transient/server HTTP failures. `retryDelay` is a function (not a number) so
@@ -71,8 +80,9 @@ function localizeHttpError(
 }
 
 /**
- * Functional interceptor — registered INNERMOST (after httpTrace in `app.config.ts`), so on the way back
- * it sees the error first and can retry into the backend (httpTrace still logs first on each attempt).
+ * Functional interceptor — registered INNERMOST (after httpTrace in `app.config.ts`). It validates
+ * login ownership before backend admission, retry decisions, result delivery and user-facing errors.
+ * This prevents obsolete work from retrying or surfacing errors before the outer auth guard sees it.
  *
  *  - Retry the burst rate-limit (429 / code 10005) with backoff. Safe — see {@link isBurstRateLimit}.
  *  - After retries are exhausted OR on a non-retryable failure, surface 5xx / final-429 / network via a
@@ -86,16 +96,26 @@ export const httpResilienceInterceptor: HttpInterceptorFn = (req, next) => {
   const config = inject(HTTP_RETRY_CONFIG);
   const toast = inject(ToastService);
   const transloco = inject(TranslocoService);
-  return next(req).pipe(
+  const lifecycle = inject(SessionLifecycleService);
+  const owner = lifecycle.accountEpoch;
+  return defer(() => {
+    // Recheck on every retry, including after a backoff timer has elapsed.
+    lifecycle.assertCurrent(owner);
+    return next(req);
+  }).pipe(
+    tap(() => lifecycle.assertCurrent(owner)),
     // Non-retryable errors throw from `delay`, which stops retry and falls through to catchError.
     retry({
       count: config.maxRetries,
-      delay: (err, retryCount) =>
-        isBurstRateLimit(err)
+      delay: (err, retryCount) => {
+        lifecycle.assertCurrent(owner);
+        return isBurstRateLimit(err)
           ? config.retryDelay(retryCount)
-          : throwError(() => err),
+          : throwError(() => err);
+      },
     }),
     catchError((err) => {
+      lifecycle.assertCurrent(owner);
       if (isSurfaceable(err) && !req.context.get(SUPPRESS_HTTP_ERROR_TOAST)) {
         toast.warn(localizeHttpError(err as HttpErrorResponse, transloco));
       }

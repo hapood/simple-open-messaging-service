@@ -6,8 +6,9 @@ import {
   HttpEvent,
   HttpErrorResponse,
 } from '@angular/common/http';
-import { Observable, EMPTY, throwError, catchError } from 'rxjs';
+import { Observable, EMPTY, throwError, catchError, defer, tap } from 'rxjs';
 import { AuthService } from './services/auth.service';
+import { SessionLifecycleService } from './services/session-lifecycle.service';
 
 /**
  * Session-auth error handling for the HTTP pipeline. The session credential itself is NO LONGER attached
@@ -18,10 +19,26 @@ import { AuthService } from './services/auth.service';
  */
 @Injectable()
 export class AuthInterceptor implements HttpInterceptor {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+    private readonly lifecycle: SessionLifecycleService,
+  ) {}
 
-  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<Object>> {
-    return next.handle(req).pipe(catchError((error) => this.on401(error)));
+  intercept(
+    req: HttpRequest<any>,
+    next: HttpHandler,
+  ): Observable<HttpEvent<Object>> {
+    return defer(() => {
+      const owner = this.lifecycle.accountEpoch;
+      return next.handle(req).pipe(
+        tap(() => this.lifecycle.assertCurrent(owner)),
+        catchError((error) => {
+          // Check before handling 401: an old request must not log out its successor.
+          this.lifecycle.assertCurrent(owner);
+          return this.on401(error);
+        }),
+      );
+    });
   }
 
   /** A 401 = the session is revoked/expired (there is no renew). Re-login + drop the request so the

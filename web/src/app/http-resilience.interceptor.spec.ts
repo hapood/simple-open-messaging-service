@@ -9,7 +9,7 @@ import {
 } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
-import { Observable, defer, of, throwError } from 'rxjs';
+import { Observable, Subject, defer, of, throwError } from 'rxjs';
 import {
   httpResilienceInterceptor,
   HTTP_RETRY_CONFIG,
@@ -18,6 +18,8 @@ import { ToastService } from './services/toast.service';
 import { BusinessCode } from './services/biz-code';
 import { TranslocoService } from '@jsverse/transloco';
 import { SUPPRESS_HTTP_ERROR_TOAST } from './request-context';
+import { SessionLifecycleService } from './services/session-lifecycle.service';
+import { SessionSupersededError } from './services/session/session-identity';
 
 /**
  * httpResilienceInterceptor — 429 burst rate-limit backoff-retry + 5xx/network degraded-notice.
@@ -52,9 +54,7 @@ describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
     });
   });
 
-  /** A next-handler modeling HttpClient's cold observable: `next(req)` is called once, but retry
-   *  RE-SUBSCRIBES to the returned observable, so each subscription (initial + each retry) must advance the
-   *  queue — hence `defer`, which re-runs its factory per subscription. */
+  /** Model a cold backend observable; each attempt advances the response queue. */
   function nextQueue(obs: Observable<HttpEvent<unknown>>[]): HttpHandlerFn {
     let i = 0;
     return () =>
@@ -162,6 +162,38 @@ describe('httpResilienceInterceptor (429 retry + 5xx/network surface)', () => {
     const request = req(new HttpContext().set(SUPPRESS_HTTP_ERROR_TOAST, true));
     const s = run(nextQueue([throwError(() => e0)]), request);
     expect(s.err).toBe(e0);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 429, 500])(
+    'does not toast or retry an obsolete %i response',
+    (status) => {
+      const response = new Subject<HttpEvent<unknown>>();
+      const state = run(nextQueue([response]));
+      TestBed.inject(SessionLifecycleService).invalidateSession();
+      response.error(err(status, { code: BusinessCode.RATE_LIMITED }));
+      expect(state.err).toBeInstanceOf(SessionSupersededError);
+      expect(nextCalls).toBe(1);
+      expect(warnSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not dispatch a retry when its owner expires during backoff', () => {
+    const delay = new Subject<number>();
+    TestBed.overrideProvider(HTTP_RETRY_CONFIG, {
+      useValue: { maxRetries: 4, retryDelay: () => delay },
+    });
+    const state = run(
+      nextQueue([
+        throwError(() => err(429, { code: BusinessCode.RATE_LIMITED })),
+        of(new HttpResponse({ status: 200 })),
+      ]),
+    );
+    expect(nextCalls).toBe(1);
+    TestBed.inject(SessionLifecycleService).invalidateSession();
+    delay.next(0);
+    expect(nextCalls).toBe(1);
+    expect(state.err).toBeInstanceOf(SessionSupersededError);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 

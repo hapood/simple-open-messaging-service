@@ -55,15 +55,22 @@ describe('UserService.localRelationship', () => {
     const service = Object.create(UserService.prototype) as UserService;
     Object.assign(service, {
       webdb: {
-        getThreads: async () => [{
-          type: 'GROUP',
-          conversationState: value.state,
-          group: { account: '!team', namespaceId: value.namespaceId, dissolvedAt: value.dissolvedAt },
-        }],
+        getThreads: async () => [
+          {
+            type: 'GROUP',
+            conversationState: value.state,
+            group: {
+              account: '!team',
+              namespaceId: value.namespaceId,
+              dissolvedAt: value.dissolvedAt,
+            },
+          },
+        ],
       },
     });
-    await expect(service.localRelationship({ id: 0, account: '!team', namespaceId: 7 }))
-      .resolves.toBe(value.expected);
+    await expect(
+      service.localRelationship({ id: 0, account: '!team', namespaceId: 7 }),
+    ).resolves.toBe(value.expected);
   });
 
   it('matches transient federated users by exact Address across request pages', async () => {
@@ -622,6 +629,19 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     expect(
       await TestBed.inject(PreferenceStore).get('device', 'soms.lastUserId'),
     ).toBeUndefined();
+  });
+
+  it('invalidates old work synchronously when a fresh login replaces credentials', () => {
+    const lifecycle = TestBed.inject(SessionLifecycleService);
+    const previous = lifecycle.accountEpoch;
+    const ended = vi.fn();
+    const subscription = lifecycle.ended$.subscribe(ended);
+
+    svc.prepareFreshCache();
+
+    expect(lifecycle.isCurrent(previous)).toBe(false);
+    expect(ended).not.toHaveBeenCalled();
+    subscription.unsubscribe();
   });
 
   it('announces completed cleanup even when the session ended before HELLO', async () => {

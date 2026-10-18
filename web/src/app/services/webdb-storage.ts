@@ -79,6 +79,10 @@ import {
   type ProfileKey,
 } from '../../../../shared/profile-demand';
 import { TrailingSingleFlight } from '../../../../shared/trailing-single-flight';
+import {
+  restoreSessionCacheDescriptor,
+  type SessionCacheDescriptor,
+} from './session/session-identity';
 
 /**
  * The IndexedDB primitive for the frontend persistence layer ("webdb") — the storage half of the
@@ -515,14 +519,6 @@ export class LocalCacheVersionMismatchError extends Error {
   }
 }
 
-function dbName(userId: string): string {
-  return `${DB_PREFIX}${userId}`;
-}
-
-function messageDbName(userId: string): string {
-  return `${MESSAGE_DB_PREFIX}${userId}`;
-}
-
 function idbAvailable(): boolean {
   return typeof indexedDB !== 'undefined';
 }
@@ -769,6 +765,49 @@ export class WebdbStorage {
    * back when entering a write operation, so a response from the old cache lifetime cannot populate the
    * replacement database. */
   private messageLifetime = new AbortController();
+  private sessionCache: SessionCacheDescriptor | null = null;
+  private sessionCacheUserId: string | null = null;
+  private cacheBindingOperations = 0;
+
+  /** Bind UUID names only after the owning session has closed its old resources. */
+  bindSessionCache(value: SessionCacheDescriptor): void {
+    const descriptor = restoreSessionCacheDescriptor(value);
+    if (this.sessionCache?.id === descriptor.id) return;
+    if (
+      this.currentUserId !== null ||
+      this.dbPromise ||
+      this.messageDbPromise ||
+      this.accountResetPromise ||
+      this.messageResetPromise ||
+      this.cacheBindingOperations !== 0
+    ) {
+      throw new Error('webdb: close session resources before rebinding cache');
+    }
+    this.sessionCache = descriptor;
+    this.sessionCacheUserId = null;
+  }
+
+  private admitSessionUser(userId: string): void {
+    if (!this.sessionCache) return;
+    if (
+      this.sessionCacheUserId !== null &&
+      this.sessionCacheUserId !== userId
+    ) {
+      throw new Error('webdb: login cache is bound to another user');
+    }
+    this.sessionCacheUserId = userId;
+  }
+
+  private dbName(userId: string): string {
+    return this.sessionCache?.indexedDbName ?? `${DB_PREFIX}${userId}`;
+  }
+
+  private messageDbName(userId: string): string {
+    return (
+      this.sessionCache?.messageIndexedDbName ?? `${MESSAGE_DB_PREFIX}${userId}`
+    );
+  }
+
   /** The userId whose DB is open (or being opened). */
   protected currentUserId: string | null = null;
   /** Whether `navigator.storage.persist()` has been requested for this origin. */
@@ -794,6 +833,7 @@ export class WebdbStorage {
    * (null when IndexedDB is unavailable — prerender / SSR). Driven by the session owner (UserService).
    */
   async openForUser(userId: string): Promise<IDBPDatabase<WebdbSchema> | null> {
+    this.admitSessionUser(userId);
     if (!idbAvailable()) return null;
     if (this.accountResetPromise) await this.accountResetPromise;
     const epoch = this.cacheEpoch;
@@ -802,9 +842,9 @@ export class WebdbStorage {
       await this.closeAndDelete(this.currentUserId);
     }
     this.currentUserId = userId;
-    this.dbPromise = this.openValidatedOrRecreate(dbName(userId));
+    this.dbPromise = this.openValidatedOrRecreate(this.dbName(userId));
     this.messageDbPromise = this.openValidatedMessageDbOrRecreate(
-      messageDbName(userId),
+      this.messageDbName(userId),
     );
     try {
       const [db, messages] = await Promise.all([
@@ -833,6 +873,7 @@ export class WebdbStorage {
   async openExistingForUser(
     userId: string,
   ): Promise<IDBPDatabase<WebdbSchema> | null> {
+    this.admitSessionUser(userId);
     if (!idbAvailable()) return null;
     if (this.accountResetPromise) await this.accountResetPromise;
     const epoch = this.cacheEpoch;
@@ -840,8 +881,10 @@ export class WebdbStorage {
     if (this.currentUserId != null && this.currentUserId !== userId)
       await this.close();
     this.currentUserId = userId;
-    this.dbPromise = this.openExistingCore(dbName(userId));
-    this.messageDbPromise = this.openExistingMessages(messageDbName(userId));
+    this.dbPromise = this.openExistingCore(this.dbName(userId));
+    this.messageDbPromise = this.openExistingMessages(
+      this.messageDbName(userId),
+    );
     try {
       const [db, messages] = await Promise.all([
         this.dbPromise,
@@ -866,6 +909,7 @@ export class WebdbStorage {
   async recreateForUser(
     userId: string,
   ): Promise<IDBPDatabase<WebdbSchema> | null> {
+    this.admitSessionUser(userId);
     if (!idbAvailable()) return null;
     if (this.accountResetPromise) {
       if (this.accountResetUserId === userId) return this.accountResetPromise;
@@ -891,14 +935,14 @@ export class WebdbStorage {
     await this.waitForAccountIdle();
     await this.closeHandles();
     await Promise.all([
-      deleteDB(dbName(userId)),
-      deleteDB(messageDbName(userId)),
+      deleteDB(this.dbName(userId)),
+      deleteDB(this.messageDbName(userId)),
     ]);
     if (epoch !== this.cacheEpoch) return null;
     this.currentUserId = userId;
-    const core = this.openValidatedOrRecreate(dbName(userId));
+    const core = this.openValidatedOrRecreate(this.dbName(userId));
     const message = this.openValidatedMessageDbOrRecreate(
-      messageDbName(userId),
+      this.messageDbName(userId),
     );
     this.dbPromise = core;
     this.messageDbPromise = message;
@@ -1174,7 +1218,15 @@ export class WebdbStorage {
    *  head nulls `currentUserId` too, so a `db()` call racing in before the new user's effect re-fires
    *  cannot re-open THIS user's database via the stale id (`db()`'s lazy re-open reads `currentUserId`).
    *  The actual handle close + on-disk delete are awaited below. */
-  async closeAndDelete(userId: string): Promise<void> {
+  closeAndDelete(userId: string): Promise<void> {
+    this.admitSessionUser(userId);
+    this.cacheBindingOperations += 1;
+    return this.doCloseAndDelete(userId).finally(() => {
+      this.cacheBindingOperations -= 1;
+    });
+  }
+
+  private async doCloseAndDelete(userId: string): Promise<void> {
     ++this.cacheEpoch;
     this.beginAccountMaintenance();
     const closing = this.dbPromise;
@@ -1207,15 +1259,22 @@ export class WebdbStorage {
         /* deletion below remains authoritative */
       }
     }
-    if (idbAvailable()) await deleteDB(dbName(userId));
-    if (idbAvailable()) await deleteDB(messageDbName(userId));
+    if (idbAvailable()) await deleteDB(this.dbName(userId));
+    if (idbAvailable()) await deleteDB(this.messageDbName(userId));
     if (isTauri()) {
       await tauriInvoke('native_db_clear_user', { userId: Number(userId) });
     }
   }
 
   /** Close the live WebView handle without deleting durable data (normal app/page teardown). */
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    this.cacheBindingOperations += 1;
+    return this.doClose().finally(() => {
+      this.cacheBindingOperations -= 1;
+    });
+  }
+
+  private async doClose(): Promise<void> {
     ++this.cacheEpoch;
     this.beginAccountMaintenance();
     const closing = this.dbPromise;
@@ -1425,10 +1484,10 @@ export class WebdbStorage {
         /* already closed */
       }
     }
-    await deleteDB(messageDbName(userId));
+    await deleteDB(this.messageDbName(userId));
     if (this.currentUserId !== userId) return;
     this.messageDbPromise = this.openValidatedMessageDbOrRecreate(
-      messageDbName(userId),
+      this.messageDbName(userId),
     );
     await this.messageDbPromise;
   }
@@ -2369,6 +2428,7 @@ export class WebdbStorage {
       this.stateFeedWorker!.postMessage(
         {
           ...request,
+          cacheDescriptor: this.sessionCache,
           id,
         },
         transfer,

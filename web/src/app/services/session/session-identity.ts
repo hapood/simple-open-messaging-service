@@ -8,6 +8,7 @@ export type SessionCacheDescriptor = Readonly<{
   version: 1;
   id: LoginSessionId;
   indexedDbName: string;
+  messageIndexedDbName: string;
   sqliteFileName: string;
 }>;
 
@@ -27,6 +28,7 @@ function descriptorFor(id: LoginSessionId): SessionCacheDescriptor {
     version: 1,
     id,
     indexedDbName: `soms-session-${id}`,
+    messageIndexedDbName: `soms-session-messages-${id}`,
     sqliteFileName: `soms-session-${id}.sqlite`,
   });
 }
@@ -54,6 +56,7 @@ export function restoreSessionCacheDescriptor(
   const descriptor = descriptorFor(parseLoginSessionId(saved['id']));
   if (
     saved['indexedDbName'] !== descriptor.indexedDbName ||
+    saved['messageIndexedDbName'] !== descriptor.messageIndexedDbName ||
     saved['sqliteFileName'] !== descriptor.sqliteFileName
   ) {
     throw new Error('Session cache names do not match login identity');

@@ -309,6 +309,9 @@ export class UserService {
 
   /** Mark the next HELLO-established user partition for drop + clean v1 initialization. */
   prepareFreshCache(): void {
+    // Credential replacement is a login boundary even without a preceding logout.
+    // Reject old requests and callbacks before initializing the successor cache.
+    this.sessionLifecycle.invalidateSession();
     this.freshCachePending = true;
   }
 

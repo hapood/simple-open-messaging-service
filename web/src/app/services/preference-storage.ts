@@ -31,20 +31,28 @@ export class PreferenceStorage {
   private dbPromise: Promise<IDBPDatabase<PreferenceSchema>> | null = null;
 
   async get<T>(scope: PreferenceScope, key: string): Promise<T | undefined> {
-    if (isTauri()) {
-      try {
-        return (await tauriInvoke<T | null>('native_db_get_preference', { scope, key })) ?? undefined;
-      } catch {
-        return undefined;
-      }
-    }
     try {
-      return (await (await this.db()).get('preferences', recordId(scope, key)))?.value as
-        | T
-        | undefined;
+      return await this.getStrict<T>(scope, key);
     } catch {
       return undefined;
     }
+  }
+
+  /** Safety-critical metadata must distinguish a missing record from failed storage. */
+  async getStrict<T>(
+    scope: PreferenceScope,
+    key: string,
+  ): Promise<T | undefined> {
+    if (isTauri()) {
+      return (
+        (await tauriInvoke<T | null>('native_db_get_preference', {
+          scope,
+          key,
+        })) ?? undefined
+      );
+    }
+    return (await (await this.db()).get('preferences', recordId(scope, key)))
+      ?.value as T | undefined;
   }
 
   async set<T>(scope: PreferenceScope, key: string, value: T): Promise<void> {
@@ -52,7 +60,9 @@ export class PreferenceStorage {
       await tauriInvoke('native_db_put_preference', { scope, key, value });
       return;
     }
-    await (await this.db()).put('preferences', {
+    await (
+      await this.db()
+    ).put('preferences', {
       id: recordId(scope, key),
       scope,
       key,
@@ -71,7 +81,8 @@ export class PreferenceStorage {
 
   private db(): Promise<IDBPDatabase<PreferenceSchema>> {
     if (this.dbPromise) return this.dbPromise;
-    if (typeof indexedDB === 'undefined') return Promise.reject(new Error('IndexedDB unavailable'));
+    if (typeof indexedDB === 'undefined')
+      return Promise.reject(new Error('IndexedDB unavailable'));
     this.dbPromise = openDB<PreferenceSchema>(DB_NAME, DB_VERSION, {
       upgrade(db) {
         if (!db.objectStoreNames.contains('preferences')) {

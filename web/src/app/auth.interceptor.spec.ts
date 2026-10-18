@@ -4,18 +4,20 @@ import {
   HttpErrorResponse,
   HttpEvent,
 } from '@angular/common/http';
-import { Observable, of, throwError } from 'rxjs';
+import { Observable, Subject, of, throwError } from 'rxjs';
 import { AuthInterceptor } from './auth.interceptor';
 import { AuthService } from './services/auth.service';
+import { SessionLifecycleService } from './services/session-lifecycle.service';
+import { SessionSupersededError } from './services/session/session-identity';
 
 /**
  * AuthInterceptor — the session-auth ERROR handler (401 → re-login).
  *
  * The session credential is NO LONGER attached here: under the Tauri shell the Rust `api_request`
  * transport injects `Authorization: Bearer` from its held `ProxyState.token` (JS never touches the token),
- * and in the browser the httpOnly session cookie auto-attaches same-origin. So this interceptor is now a
- * pure pass-through whose only side-effect is reacting to a 401 (revoked/expired session) by re-logging in
- * and DROPPING the failed request.
+ * and in the browser the httpOnly session cookie auto-attaches same-origin. Responses are bound to
+ * their originating login lifetime. Only a current 401 can trigger re-login; obsolete responses
+ * produce a typed session-superseded error.
  *
  * Pure unit (AuthInterceptor + a stub AuthService, no TestBed):
  *  - a protected request passes through UNCHANGED (no header added by the interceptor — auth is the
@@ -29,7 +31,8 @@ describe('AuthInterceptor (401 → re-login)', () => {
     const auth = {
       redoLoginAuth: vi.fn().mockName('redoLoginAuth'),
     } as unknown as AuthService;
-    return { ic: new AuthInterceptor(auth), auth };
+    const lifecycle = new SessionLifecycleService();
+    return { ic: new AuthInterceptor(auth, lifecycle), auth, lifecycle };
   }
 
   /** Run the interceptor against `req` and capture the request handed to the handler. */
@@ -76,6 +79,49 @@ describe('AuthInterceptor (401 → re-login)', () => {
     expect(nexted).toBe(false);
     expect(errored).toBe(false); // EMPTY → complete, not propagated
     expect(completed).toBe(true);
+  });
+
+  it.each([401, 500])(
+    'rejects an old %i without logging out the successor',
+    (status) => {
+      const { ic, auth, lifecycle } = makeInterceptor();
+      const response = new Subject<HttpEvent<unknown>>();
+      const error = vi.fn();
+      ic.intercept(new HttpRequest('GET', '/api/v1/messages'), {
+        handle: () => response,
+      }).subscribe({ error });
+      lifecycle.invalidateSession();
+      response.error(new HttpErrorResponse({ status }));
+      expect(error).toHaveBeenCalledWith(expect.any(SessionSupersededError));
+      expect(auth.redoLoginAuth).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects old successful responses before delivering them downstream', () => {
+    const { ic, lifecycle } = makeInterceptor();
+    const response = new Subject<HttpEvent<unknown>>();
+    const next = vi.fn();
+    const error = vi.fn();
+    ic.intercept(new HttpRequest('GET', '/api/v1/messages'), {
+      handle: () => response,
+    }).subscribe({ next, error });
+    lifecycle.invalidateSession();
+    response.next({} as HttpEvent<unknown>);
+    expect(next).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.any(SessionSupersededError));
+  });
+
+  it('binds the lifetime at subscription rather than observable construction', () => {
+    const { ic, lifecycle } = makeInterceptor();
+    const handled = vi.fn(() => of({} as HttpEvent<unknown>));
+    const request = ic.intercept(new HttpRequest('GET', '/api/v1/messages'), {
+      handle: handled,
+    });
+    lifecycle.invalidateSession();
+    const next = vi.fn();
+    request.subscribe(next);
+    expect(handled).toHaveBeenCalledTimes(1);
+    expect(next).toHaveBeenCalledTimes(1);
   });
 
   it('a non-401 error propagates unchanged (no re-login)', () => {

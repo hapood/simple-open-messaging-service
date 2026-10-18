@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
+import { SessionSupersededError } from './session/session-identity';
 
 /** Explicit local-session boundaries, including logout before HELLO identifies the user. */
 @Injectable({ providedIn: 'root' })
@@ -17,6 +18,11 @@ export class SessionLifecycleService {
 
   isCurrent(epoch: number): boolean {
     return epoch === this.epoch;
+  }
+
+  /** Boundary assertion shared by transports; does not replace resource admission locks. */
+  assertCurrent(epoch: number): void {
+    if (!this.isCurrent(epoch)) throw new SessionSupersededError();
   }
 
   /** Invalidate old work synchronously, before waiting for durable cleanup. */

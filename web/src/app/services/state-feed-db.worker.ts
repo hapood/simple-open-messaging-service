@@ -9,6 +9,11 @@ import { syncTombstoneThread } from './tombstone-sync';
 import { synchronizeStateFeed } from './worker-state-feed-sync';
 import { syncPushThreads, type PushThreadResult } from './push-thread-sync';
 import { PreferenceStorage } from './preference-storage';
+import {
+  restoreSessionCacheDescriptor,
+  type LoginSessionId,
+  type SessionCacheDescriptor,
+} from './session/session-identity';
 import { apiPrefix } from './constants';
 import en from '../i18n/en.json';
 import zh from '../i18n/zh-CN.json';
@@ -40,6 +45,8 @@ storage.profileWake$.subscribe((wake) =>
   postMessage({ type: 'profile-wake', wake }),
 );
 let openedUserId: string | null = null;
+// A worker is assigned once. It can never be rebound to a successor session.
+let workerCacheId: LoginSessionId | null | undefined;
 let storageLifecycle = Promise.resolve();
 let activeStorageUsers = 0;
 const idleWaiters: Array<() => void> = [];
@@ -93,7 +100,8 @@ async function acquireUserStorage(userId: string): Promise<StorageRelease> {
     if (openedUserId !== userId) {
       await waitForStorageIdle();
       if (openedUserId !== null) await storage.close();
-      await storage.openForUser(userId);
+      if (workerCacheId) await storage.openExistingForUser(userId);
+      else await storage.openForUser(userId);
       metaLifecycle.clear();
       openThreadId = null;
       openedUserId = userId;
@@ -321,7 +329,7 @@ const requestTombstone = async (input: {
   return response.json();
 };
 
-type Request =
+type Request = { cacheDescriptor?: SessionCacheDescriptor | null } & (
   | {
       id: number;
       type: 'bind-thread-feed';
@@ -342,11 +350,24 @@ type Request =
       threadId: number | null;
       groupMetaEndId: string | null;
       tombstoneEndSeq: number | null;
-    };
+    }
+);
 
 addEventListener('message', ({ data }: MessageEvent<Request>) => {
   void (async () => {
     try {
+      const descriptor =
+        data.cacheDescriptor == null
+          ? null
+          : restoreSessionCacheDescriptor(data.cacheDescriptor);
+      const id = descriptor?.id ?? null;
+      if (workerCacheId !== undefined && workerCacheId !== id) {
+        throw new Error('database worker belongs to a different login session');
+      }
+      if (workerCacheId === undefined) {
+        if (descriptor) storage.bindSessionCache(descriptor);
+        workerCacheId = id;
+      }
       const release = await acquireUserStorage(data.userId);
       try {
         if (data.type === 'bind-thread-feed') {
