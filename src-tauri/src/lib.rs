@@ -695,6 +695,7 @@ pub fn run() {
 
             let data_dir = app.path().app_data_dir()?;
             native_db::location::initialize(&data_dir)?;
+            native_db::initialize_preferences()?;
             fs::create_dir_all(&data_dir)?;
             // Android resources were restored by Application; do not overwrite live background state.
             #[cfg(not(target_os = "android"))]

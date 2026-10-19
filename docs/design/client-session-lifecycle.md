@@ -21,7 +21,7 @@ silent-server transport test verifies actual socket cancellation on timeout.
 Native persistent login metadata now exists in Rust: a device-scoped journal in
 the preferences database records the login UUID, a credential fingerprint (never
 the credential), and pending cache cleanup. Fresh-login preparation runs before
-the authentication request: the renderer invokes `begin_login`, Rust drains
+the authentication request: the renderer invokes `native_db_begin_login`, Rust drains
 cache work, deletes retired per-login cache files, mints the UUID, and creates
 the dedicated `soms-session-<uuid>.sqlite` cache file; cache schema metadata
 lives inside that file. Activation and logout transitions validate the UUID
@@ -43,6 +43,16 @@ file. This core has unit coverage in the main Cargo package, but it is not yet
 wired into application initialization or existing native command entry points.
 Those entry points still open caches through the current-path API and must be
 migrated; UUID-named files alone do not establish connection ownership.
+
+Device preferences and durable session metadata now share one physical
+process-scoped `DeviceConnection`, explicitly initialized by the shell or
+headless Android bootstrap. Repeated shell attachment does not reconnect.
+Preference IPC commands and journal transitions capture this existing owner
+before scheduling, then borrow its SQLite connection only for local work.
+Uninitialized access fails rather than opening a database. Connection-local TEMP
+state tests verify physical reuse, including concurrent initialization and
+ordinary preference IPC. This device-database integration does not yet migrate
+the UUID-owned login cache commands or make runtime credential transitions atomic.
 
 ## Purpose and related designs
 

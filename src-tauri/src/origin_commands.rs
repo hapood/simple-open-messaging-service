@@ -134,13 +134,11 @@ pub(crate) async fn set_session_token(
         let id = crate::login_session_store::LoginSessionId::try_from(uuid.to_string())?;
         let token_for_activation = token.clone();
         let id_for_state = id.clone();
+        let preferences = crate::native_db::preferences_connection()?;
         tauri::async_runtime::spawn_blocking(move || {
-            let mut conn = crate::native_db::open_preferences_for_authority()?;
-            crate::login_session_store::SessionStore::activate(
-                &mut conn,
-                &id,
-                &token_for_activation,
-            )
+            preferences.with_database(|conn| {
+                crate::login_session_store::SessionStore::activate(conn, &id, &token_for_activation)
+            })
         })
         .await
         .map_err(|e| format!("join native login activation: {e}"))??;
@@ -154,9 +152,11 @@ pub(crate) async fn set_session_token(
 /// A credential whose login was ended locally never revives it.
 #[tauri::command]
 pub(crate) async fn login_session_for_token(token: String) -> Result<Option<String>, String> {
+    let preferences = crate::native_db::preferences_connection()?;
     tauri::async_runtime::spawn_blocking(move || {
-        let conn = crate::native_db::open_preferences_for_authority()?;
-        Ok(crate::login_session_store::SessionStore::restore(&conn, &token)?.map(String::from))
+        preferences.with_database(|conn| {
+            Ok(crate::login_session_store::SessionStore::restore(conn, &token)?.map(String::from))
+        })
     })
     .await
     .map_err(|e| format!("join native login restoration check: {e}"))?
@@ -173,10 +173,12 @@ pub(crate) async fn clear_session_token(
         .expect("login session lock")
         .clone();
     if ended.is_some() {
+        let preferences = crate::native_db::preferences_connection()?;
         tauri::async_runtime::spawn_blocking(move || {
-            let mut conn = crate::native_db::open_preferences_for_authority()?;
-            crate::login_session_store::SessionStore::end(&mut conn, ended.as_ref())?;
-            crate::login_session_store::SessionStore::finish_ending(&mut conn, ended.as_ref())
+            preferences.with_database(|conn| {
+                crate::login_session_store::SessionStore::end(conn, ended.as_ref())?;
+                crate::login_session_store::SessionStore::finish_ending(conn, ended.as_ref())
+            })
         })
         .await
         .map_err(|e| format!("join native local end: {e}"))??;
@@ -217,10 +219,12 @@ pub(crate) async fn begin_logout(
     }
     // The guard is dropped before awaiting: never hold the login lock across blocking I/O.
     if expected.is_some() {
+        let preferences = crate::native_db::preferences_connection()?;
         tauri::async_runtime::spawn_blocking(move || {
-            let mut conn = crate::native_db::open_preferences_for_authority()?;
-            crate::login_session_store::SessionStore::end(&mut conn, expected.as_ref())?;
-            crate::login_session_store::SessionStore::finish_ending(&mut conn, expected.as_ref())
+            preferences.with_database(|conn| {
+                crate::login_session_store::SessionStore::end(conn, expected.as_ref())?;
+                crate::login_session_store::SessionStore::finish_ending(conn, expected.as_ref())
+            })
         })
         .await
         .map_err(|e| format!("join native logout end: {e}"))??;

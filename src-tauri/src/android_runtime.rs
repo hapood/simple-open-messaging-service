@@ -258,6 +258,7 @@ pub extern "system" fn Java_com_soms_client_RustRuntimeBridge_initializeRuntime(
             .map_err(|e| format!("read database directory: {e}"))?
             .into();
         let path = crate::native_db::location::initialize(std::path::Path::new(&directory))?;
+        crate::native_db::initialize_preferences()?;
         let origins: String = env
             .get_string(&origins_json)
             .map_err(|e| e.to_string())?

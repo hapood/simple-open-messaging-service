@@ -86,13 +86,15 @@ pub(super) fn reset_active_cache_for_tests() {
 }
 
 fn resolve_active_cache_from_journal() -> Result<PathBuf, String> {
-    let conn = super::open_preferences()?;
-    let journal = crate::login_session_store::SessionStore::read(&conn)?
-        .ok_or("native login journal is missing: no active login cache")?;
-    let id = journal
-        .active_session()
-        .ok_or("native login is signed out: no active login cache")?;
-    Ok(directory()?.join(id.sqlite_filename()))
+    let preferences = super::preferences_connection()?;
+    preferences.with_database(|conn| {
+        let journal = crate::login_session_store::SessionStore::read(conn)?
+            .ok_or("native login journal is missing: no active login cache")?;
+        let id = journal
+            .active_session()
+            .ok_or("native login is signed out: no active login cache")?;
+        Ok(directory()?.join(id.sqlite_filename()))
+    })
 }
 
 #[cfg(test)]

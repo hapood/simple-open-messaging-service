@@ -1,6 +1,8 @@
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, Connection, OpenFlags, TransactionBehavior};
 use serde_json::Value;
 use std::path::PathBuf;
+
+use device_connection::DeviceConnection;
 
 pub(crate) mod account_state;
 pub(crate) mod attention;
@@ -10,6 +12,7 @@ pub(crate) mod client_state;
 pub(crate) mod contacts;
 #[cfg(desktop)]
 pub(crate) mod desktop_notifications;
+mod device_connection;
 mod lifetime;
 pub(crate) mod location;
 pub(crate) mod messages;
@@ -59,28 +62,14 @@ fn configure(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("configure native db: {e}"))
 }
 
-/// Device preferences must be available before authentication. This is the only ordinary open path
-/// allowed to create the SQLite file, and it creates only the device-scoped preference table.
-fn open_preferences() -> Result<Connection, String> {
-    let conn = Connection::open(db_path()?).map_err(|e| format!("open preference db: {e}"))?;
-    configure(&conn)?;
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS client_preferences (
-           scope TEXT NOT NULL,
-           key TEXT NOT NULL,
-           value_json TEXT NOT NULL,
-           updated_at INTEGER NOT NULL,
-           PRIMARY KEY (scope, key)
-         );",
-    )
-    .map_err(|e| format!("initialize preference db: {e}"))?;
-    Ok(conn)
+/// Explicit application initialization, shared by the shell and headless Android bootstrap.
+/// Capturing or using device preferences later never creates a connection.
+pub(crate) fn initialize_preferences() -> Result<(), String> {
+    device_connection::DEVICE_CONNECTION.initialize(&db_path()?)
 }
 
-/// Login-authority open path: the preferences file exists by the time any login transition runs
-/// (first fresh login creates it here). Never opens or repairs the account cache schema.
-pub(crate) fn open_preferences_for_authority() -> Result<Connection, String> {
-    open_preferences()
+pub(crate) fn preferences_connection() -> Result<&'static DeviceConnection, String> {
+    device_connection::DEVICE_CONNECTION.capture()
 }
 
 /// Open an already-initialized account cache. Unlike `Connection::open`, this cannot create a missing
@@ -381,39 +370,41 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
 /// refuses while any retired cache remains undeletable, so a failed cleanup blocks authentication.
 #[tauri::command]
 pub(crate) async fn native_db_begin_login() -> Result<String, String> {
-    let id = tauri::async_runtime::spawn_blocking(prepare_fresh_login)
+    let preferences = preferences_connection()?;
+    let id = tauri::async_runtime::spawn_blocking(move || prepare_fresh_login(preferences))
         .await
         .map_err(|e| format!("join native fresh-login preparation: {e}"))??;
     crate::realtime::runtime().refresh_account_epoch();
     Ok(id)
 }
 
-fn prepare_fresh_login() -> Result<String, String> {
+fn prepare_fresh_login(preferences: &DeviceConnection) -> Result<String, String> {
     // Hold the lifetime write guard until the new cache file is active and the journal is settled.
     let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
-    let mut preferences = open_preferences()?;
-    // End any still-admitted login: its cache file becomes pending cleanup, deleted below.
-    crate::login_session_store::SessionStore::end_current(&mut preferences)?;
-    let retired: Vec<_> = crate::login_session_store::SessionStore::read(&preferences)?
-        .map(|journal| journal.pending_cleanup().to_vec())
-        .unwrap_or_default();
-    let directory = location::directory()?;
-    for id in &retired {
-        crate::login_session_store::SessionStore::delete_retired_cache(
-            &mut preferences,
-            &directory,
-            id,
-        )?;
-    }
-    crate::login_session_store::SessionStore::finish_ending(&mut preferences, None)?;
-    let id = crate::login_session_store::SessionStore::prepare(&mut preferences)?;
-    let cache = directory.join(id.sqlite_filename());
-    let conn = Connection::open(&cache).map_err(|e| format!("create login cache file: {e}"))?;
-    configure(&conn)?;
-    create_cache_schema(&conn)?;
-    location::activate_cache(cache);
-    profile_avatars::clear()?;
-    Ok(String::from(id))
+    preferences.with_database(|preferences| {
+        // End any still-admitted login: its cache file becomes pending cleanup, deleted below.
+        crate::login_session_store::SessionStore::end_current(preferences)?;
+        let retired: Vec<_> = crate::login_session_store::SessionStore::read(preferences)?
+            .map(|journal| journal.pending_cleanup().to_vec())
+            .unwrap_or_default();
+        let directory = location::directory()?;
+        for id in &retired {
+            crate::login_session_store::SessionStore::delete_retired_cache(
+                preferences,
+                &directory,
+                id,
+            )?;
+        }
+        crate::login_session_store::SessionStore::finish_ending(preferences, None)?;
+        let id = crate::login_session_store::SessionStore::prepare(preferences)?;
+        let cache = directory.join(id.sqlite_filename());
+        let conn = Connection::open(&cache).map_err(|e| format!("create login cache file: {e}"))?;
+        configure(&conn)?;
+        create_cache_schema(&conn)?;
+        location::activate_cache(cache);
+        profile_avatars::clear()?;
+        Ok(String::from(id))
+    })
 }
 
 /// Repair the ACTIVE login's cache file (damaged/missing schema): same UUID, fresh tables.
@@ -599,6 +590,7 @@ fn shared_test_location() -> &'static tempfile::TempDir {
     static DIRECTORY: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
     let directory = DIRECTORY.get_or_init(|| tempfile::tempdir().unwrap());
     location::initialize(directory.path()).unwrap();
+    initialize_preferences().unwrap();
     directory
 }
 
@@ -615,33 +607,94 @@ mod login_cache_tests {
         let temp = shared_test_location();
         location::reset_active_cache_for_tests();
 
+        // Startup creates only the device connection, even without a login journal. A TEMP trigger
+        // proves that ordinary IPC preference commands use this same physical connection.
+        let startup = preferences_connection().unwrap();
+        startup
+            .with_database(|conn| {
+                assert!(SessionStore::read(conn)?.is_none());
+                conn.execute_batch(
+                    "CREATE TEMP TABLE connection_events(key TEXT);
+                 CREATE TEMP TRIGGER preference_connection_proof
+                 AFTER INSERT ON main.client_preferences
+                 BEGIN INSERT INTO connection_events VALUES(NEW.key); END;",
+                )
+                .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        initialize_preferences().unwrap(); // Shell attachment must not reconnect after headless init.
+        tauri::async_runtime::block_on(async {
+            preferences::native_db_put_preference(
+                "device".into(),
+                "connection-proof".into(),
+                Value::Bool(true),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                preferences::native_db_get_preference("device".into(), "connection-proof".into())
+                    .await
+                    .unwrap(),
+                Some(Value::Bool(true))
+            );
+            preferences::native_db_delete_preference("device".into(), "connection-proof".into())
+                .await
+                .unwrap();
+        });
+        startup
+            .with_database(|conn| {
+                let events: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM connection_events WHERE key='connection-proof'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|e| e.to_string())?;
+                assert_eq!(events, 1);
+                conn.execute_batch(
+                    "DROP TRIGGER preference_connection_proof; DROP TABLE connection_events;",
+                )
+                .map_err(|e| e.to_string())
+            })
+            .unwrap();
+
         // Fresh login #1: a UUID-named cache file is created and activated.
-        let first = LoginSessionId::try_from(prepare_fresh_login().unwrap()).unwrap();
+        let first = LoginSessionId::try_from(
+            prepare_fresh_login(preferences_connection().unwrap()).unwrap(),
+        )
+        .unwrap();
         let first_file = temp.path().join(first.sqlite_filename());
         assert!(first_file.exists());
         assert_eq!(location::active_cache_path().unwrap(), first_file);
         open().unwrap(); // cache commands validate the active file's schema.
 
         // Preferences live in the shared file and survive every cache transition.
-        let mut conn = open_preferences().unwrap();
-        conn.execute(
-            "INSERT INTO client_preferences(scope,key,value_json,updated_at)
+        let preferences = preferences_connection().unwrap();
+        preferences
+            .with_database(|conn| {
+                conn.execute(
+                    "INSERT INTO client_preferences(scope,key,value_json,updated_at)
              VALUES('device','theme','\"dark\"',0)",
-            [],
-        )
-        .unwrap();
-        SessionStore::activate(&mut conn, &first, "secret-one").unwrap();
+                    [],
+                )
+                .unwrap();
+                SessionStore::activate(conn, &first, "secret-one").unwrap();
 
-        // Logout: the journal records cleanup ownership, the cache file stays on disk.
-        SessionStore::end(&mut conn, Some(&first)).unwrap();
-        SessionStore::finish_ending(&mut conn, Some(&first)).unwrap();
-        drop(conn);
+                // Logout: the journal records cleanup ownership, the cache file stays on disk.
+                SessionStore::end(conn, Some(&first)).unwrap();
+                SessionStore::finish_ending(conn, Some(&first)).unwrap();
+                Ok(())
+            })
+            .unwrap();
         assert!(first_file.exists());
         location::reset_active_cache_for_tests();
         assert!(location::active_cache_path().is_err()); // signed out: no active cache
 
         // Fresh login #2: deletes the retired file, mints a new UUID and file.
-        let second = LoginSessionId::try_from(prepare_fresh_login().unwrap()).unwrap();
+        let second = LoginSessionId::try_from(
+            prepare_fresh_login(preferences_connection().unwrap()).unwrap(),
+        )
+        .unwrap();
         assert_ne!(first, second);
         assert!(!first_file.exists());
         assert!(temp.path().join(second.sqlite_filename()).exists());
@@ -654,32 +707,36 @@ mod login_cache_tests {
             temp.path().join(second.sqlite_filename())
         );
 
-        let conn = open_preferences().unwrap();
-        let theme: String = conn
+        preferences
+            .with_database(|conn| {
+                let theme: String = conn
             .query_row(
                 "SELECT value_json FROM client_preferences WHERE scope='device' AND key='theme'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(theme, "\"dark\"");
-        let raw: String = conn
-            .query_row(
-                "SELECT value_json FROM client_preferences
+                assert_eq!(theme, "\"dark\"");
+                let raw: String = conn
+                    .query_row(
+                        "SELECT value_json FROM client_preferences
                  WHERE scope='device' AND key='soms.native-login-session.v1'",
-                [],
-                |row| row.get(0),
-            )
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(!raw.contains("secret-one"));
+                // The cache schema lives in the login's own file, not the shared preferences file.
+                let cache_tables: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(cache_tables, 0);
+                Ok(())
+            })
             .unwrap();
-        assert!(!raw.contains("secret-one"));
-        // The cache schema lives in the login's own file, not the shared preferences file.
-        let cache_tables: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(cache_tables, 0);
     }
 }
