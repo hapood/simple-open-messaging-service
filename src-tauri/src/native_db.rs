@@ -465,6 +465,8 @@ fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
 /// deletes the retired per-login cache files recorded by previous logouts, mints the new login
 /// UUID, and creates its dedicated cache file. Credentials are not involved; `prepare` still
 /// refuses while any retired cache remains undeletable, so a failed cleanup blocks authentication.
+/// While the journal still holds an unactivated preparation, the command is idempotent:
+/// authentication retries and QR polling reuse that UUID, its file and its connection.
 #[tauri::command]
 pub(crate) async fn native_db_begin_login() -> Result<String, String> {
     let preferences = preferences_connection()?;
@@ -476,6 +478,53 @@ pub(crate) async fn native_db_begin_login() -> Result<String, String> {
 }
 
 fn prepare_fresh_login(preferences: &DeviceConnection) -> Result<String, String> {
+    // Authentication retries and QR polling reuse one unactivated preparation: the same UUID,
+    // the same cache file and, while still installed, the same physical connection. Only an
+    // ended or activated login, or an undeletable retired cache, runs the full boundary below.
+    // The durable journal owns the preparing identity; activation always writes the journal
+    // before committing an owner credential, so a preparing journal admits no credential.
+    let preparing = preferences.with_database(|conn| {
+        Ok(crate::login_session_store::SessionStore::read(conn)?
+            .and_then(|journal| journal.preparing_session().cloned()))
+    })?;
+    if let Some(id) = preparing {
+        let current = login_connections::LOGIN_CONNECTIONS.current()?;
+        if current.as_ref().is_some_and(|owner| owner.id() == &id) {
+            return Ok(String::from(id));
+        }
+        if let Some(owner) = current {
+            // A mismatched handle is stale and admits no business work; end it before draining
+            // under the lifetime guard, exactly like the full boundary.
+            owner.end().map_err(|e| e.to_string())?;
+        }
+        let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
+        if let Some(owner) = login_connections::LOGIN_CONNECTIONS.current()? {
+            login_connections::LOGIN_CONNECTIONS.release(&owner)?;
+        }
+        // Re-establish the preparation's own file: an existing file is restored as-is, exactly
+        // like shell initialization (its schema came from the first preparation); a missing
+        // file — a crash between the journal write and file creation — is healed by creating
+        // it and applying the schema. No retired cache exists to delete and no avatar of this
+        // login was written while it stayed unactivated.
+        let directory = location::directory()?;
+        let cache = directory.join(id.sqlite_filename());
+        let existed = cache
+            .try_exists()
+            .map_err(|e| format!("inspect preparing login cache: {e}"))?;
+        let conn = Connection::open_with_flags(
+            &cache,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_CREATE,
+        )
+        .map_err(|e| format!("open preparing login cache: {e}"))?;
+        configure(&conn)?;
+        if !existed {
+            create_cache_schema(&conn)?;
+        }
+        login_connections::LOGIN_CONNECTIONS.install(id.clone(), conn)?;
+        return Ok(String::from(id));
+    }
     // Hold the lifetime write guard until the new cache file is active and the journal is settled.
     if let Some(owner) = login_connections::LOGIN_CONNECTIONS.current()? {
         owner.end().map_err(|e| e.to_string())?;
@@ -1001,5 +1050,72 @@ mod login_cache_tests {
             .unwrap();
         restored_owner.end().unwrap();
         release_login_connection(&restored_owner).unwrap();
+
+        // The journal never activated the second login, so the next authentication attempt —
+        // a password retry or a QR poll — reuses that preparation instead of minting another
+        // login: the same UUID, and its file is re-established after the released connection.
+        assert_eq!(
+            prepare_fresh_login(preferences_connection().unwrap()).unwrap(),
+            String::from(second.clone())
+        );
+
+        // Authentication retries and QR polling keep reusing the unactivated preparation: the
+        // same UUID, the same cache file, the same physical connection, no retired entries.
+        let session_files = |dir: &std::path::Path| -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with("soms-session-") && name.ends_with(".sqlite"))
+                .collect();
+            names.sort();
+            names
+        };
+        let second_owner = login_connection(&second).unwrap();
+        let files_at_preparation = session_files(temp.path());
+        assert_eq!(files_at_preparation.len(), 1);
+        for _ in 0..3 {
+            assert_eq!(
+                prepare_fresh_login(preferences_connection().unwrap()).unwrap(),
+                String::from(second.clone())
+            );
+            assert!(std::sync::Arc::ptr_eq(
+                &second_owner,
+                &login_connection(&second).unwrap()
+            ));
+            assert_eq!(session_files(temp.path()), files_at_preparation);
+        }
+        preferences
+            .with_database(|conn| {
+                let journal = SessionStore::read(conn)?.unwrap();
+                assert_eq!(journal.active_session(), Some(&second));
+                assert!(journal.pending_cleanup().is_empty());
+                Ok(())
+            })
+            .unwrap();
+
+        // Once activated, the next preparation runs the full boundary again: a fresh UUID,
+        // the activated file retired and deleted.
+        second_owner
+            .begin_activation()
+            .unwrap()
+            .commit("secret-two".into())
+            .unwrap();
+        preferences
+            .with_database(|conn| {
+                SessionStore::activate(conn, &second, "secret-two").unwrap();
+                Ok(())
+            })
+            .unwrap();
+        let third = LoginSessionId::try_from(
+            prepare_fresh_login(preferences_connection().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(second, third);
+        assert!(!temp.path().join(second.sqlite_filename()).exists());
+        assert!(temp.path().join(third.sqlite_filename()).exists());
+        let third_owner = login_connection(&third).unwrap();
+        third_owner.end().unwrap();
+        release_login_connection(&third_owner).unwrap();
     }
 }

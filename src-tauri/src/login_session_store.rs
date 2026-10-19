@@ -168,6 +168,14 @@ impl Journal {
         }
     }
 
+    /// The UUID an unactivated preparation owns. Authentication retries and QR polling reuse it
+    /// instead of minting another UUID and cache file per attempt.
+    pub(crate) fn preparing_session(&self) -> Option<&LoginSessionId> {
+        (self.phase == Phase::Preparing)
+            .then(|| self.session.as_ref())
+            .flatten()
+    }
+
     pub(crate) fn pending_cleanup(&self) -> &[LoginSessionId] {
         &self.pending_cleanup
     }

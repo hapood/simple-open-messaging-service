@@ -40,10 +40,15 @@ the dedicated `soms-session-<uuid>.sqlite` cache file; cache schema metadata
 lives inside that file. The native journal validates supplied UUIDs for activation
 and logout, and a persisted credential whose login ended is discarded at
 restoration instead of reviving the session. Runtime credential transitions are
-not yet immutable-owner-scoped. Native cache command admission now captures the
-existing owner and its cancellable cache view instead of a numeric login epoch.
-Native QR polling and authentication retries still need a separate review to
-verify that they reuse one preparing owner rather than repeat fresh preparation.
+strictly owner-scoped: setting and clearing a token requires the caller's login
+UUID, and admission validates it against the active connection. Native cache
+command admission captures the existing owner and its cancellable cache view
+instead of a numeric login epoch. Fresh-login preparation is idempotent while
+the journal holds an unactivated preparation: authentication retries and QR
+polling reuse that UUID, its cache file and its installed physical connection
+instead of minting a login per attempt; a retry after the connection was
+released re-establishes the same file, and only an activated or ended login
+runs the full boundary again.
 
 UUID-named SQLite cache files are implemented: the shared preferences file keeps
 only device/account preferences, and each login owns `soms-session-<uuid>.sqlite`
