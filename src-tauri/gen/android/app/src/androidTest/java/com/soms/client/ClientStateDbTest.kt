@@ -29,6 +29,6 @@ class ClientStateDbTest {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         SomsSecureStore.setCurrentUserId(context, 41)
 
-        assertNull(ClientStateDb.getCallPeer(context, "missing", "local", 999999))
+        assertNull(ClientStateDb.getCallPeer(context, "missing", 0, 999999))
     }
 }

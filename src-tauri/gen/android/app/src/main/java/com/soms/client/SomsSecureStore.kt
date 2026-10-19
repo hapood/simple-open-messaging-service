@@ -64,7 +64,7 @@ object SomsSecureStore {
     private var cachedPrefs: SharedPreferences? = null
 
     @Synchronized
-    private fun prefs(ctx: Context): SharedPreferences {
+    internal fun prefs(ctx: Context): SharedPreferences {
         cachedPrefs?.let { return it }
         val p = EncryptedSharedPreferences.create(
             ctx.applicationContext,

@@ -131,7 +131,8 @@ captured UUID at delivery before publishing any event or acting on force logout;
 missing or mismatched UUIDs are rejected without adopting the current identity.
 Replay snapshots carry both the transport generation and a complete owned HELLO.
 Main-package Rust tests, Angular bridge/storage tests and Android Rust/Kotlin
-compilation cover these contracts; device instrumentation has not been run.
+compilation cover these contracts; device instrumentation and on-device native
+unit tests have been run and passed on arm64 hardware.
 
 Thread-feed wakes now capture a `NativeThreadFeedIntent` before returning a
 future. Its structural state-feed barrier, thread pages and Android notification
