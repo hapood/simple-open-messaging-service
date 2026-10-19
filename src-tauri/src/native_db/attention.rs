@@ -2054,6 +2054,10 @@ pub(crate) async fn native_db_advance_thread_read(
 mod owner_tests;
 
 #[cfg(test)]
+#[path = "../tests/native_drain_owner_tests.rs"]
+mod drain_owner_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

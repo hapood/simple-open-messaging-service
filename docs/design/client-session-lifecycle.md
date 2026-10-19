@@ -145,10 +145,16 @@ barrier and two thread pages, connection-local TEMP trigger evidence, and
 preservation of an earlier committed cursor when a later page is invalid.
 
 Profile materialization, group-meta drains and tombstone drains also use captured
-cache views and request contexts rather than implicit cache opening. Their
-capture timing and partial-page publication semantics still need dedicated
-cross-network regression review; the thread-feed tests do not establish those
-separate boundaries.
+cache views and request contexts rather than implicit cache opening. Dedicated
+cross-network regression tests now cover them: a drain future first polled after
+end or repair fails without touching any cache; a stalled Group Meta GET or
+tombstone POST closes its actual socket; a page commit queued behind maintenance
+rejects the superseded view without applying its roster, cursor, tomb or
+high-water mark; the full Group Meta drain retains the original bearer, endpoint
+and physical connection across pages, materializes referenced group and member
+profiles through the same owner, and a failed profile reference cannot discard
+already-committed pages; a tombstone drain commits its tombs and high-water mark
+through the captured connection with the original bearer and endpoint.
 
 Filesystem avatar reads and desktop notification scheduling no longer borrow a
 dummy SQLite connection. They check their captured cache view before execution
@@ -175,10 +181,7 @@ strictly owner-atomic:
   only via dedicated `discardResidualToken` / `secure_clear_residual_token`
   entry points, which fail closed if any login session is active.
 
-This is a partial integration, not complete native ownership. Profile
-materialization, group-meta drains and tombstone drains use captured cache
-views and request contexts, but their cross-network cancellation and partial-page
-semantics still need dedicated regression tests.
+This is a partial integration, not complete native ownership.
 Native voice/upload orchestration also remains outside the completed ownership
 migration and requires a separate review of its desktop/mobile split.
 These remaining areas must be resolved before connection isolation holds for all native work.
