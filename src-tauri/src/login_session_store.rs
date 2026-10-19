@@ -48,6 +48,12 @@ impl TryFrom<String> for LoginSessionId {
     }
 }
 
+impl std::fmt::Display for LoginSessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 impl From<LoginSessionId> for String {
     fn from(value: LoginSessionId) -> Self {
         value.0.to_string()
@@ -150,10 +156,6 @@ impl Journal {
             credential_fingerprint: None,
             pending_cleanup: Vec::new(),
         }
-    }
-
-    pub(crate) fn phase(&self) -> Phase {
-        self.phase
     }
 
     /// The login UUID a cache command may target: only a prepared or active login owns a cache file.
@@ -481,7 +483,7 @@ mod tests {
         SessionStore::finish_ending(&mut owner, Some(&old)).unwrap();
         // Duplicate logout is idempotent and leaves its cleanup record intact.
         assert_eq!(
-            SessionStore::end(&mut stale, Some(&old)).unwrap().phase(),
+            SessionStore::end(&mut stale, Some(&old)).unwrap().phase,
             Phase::SignedOut
         );
         SessionStore::delete_retired_cache(&mut owner, dir.path(), &old).unwrap();
@@ -518,7 +520,7 @@ mod tests {
         .unwrap();
         assert!(SessionStore::activate(&mut conn, &id, "secret").is_err());
         assert_eq!(
-            SessionStore::read(&conn).unwrap().unwrap().phase(),
+            SessionStore::read(&conn).unwrap().unwrap().phase,
             Phase::Preparing
         );
         assert_eq!(SessionStore::restore(&conn, "secret").unwrap(), None);
@@ -542,7 +544,7 @@ mod tests {
         let id = prepare(&mut conn);
         SessionStore::activate(&mut conn, &id, "secret").unwrap();
         let journal = SessionStore::read(&conn).unwrap().unwrap();
-        assert_eq!(journal.phase(), Phase::Active);
+        assert_eq!(journal.phase, Phase::Active);
         let mut raw = serde_json::to_value(journal).unwrap();
         raw["pendingCleanup"] = serde_json::json!([id]);
         conn.execute(

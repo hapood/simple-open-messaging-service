@@ -2,9 +2,9 @@ use base64::Engine;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
-use super::{contacts, profile_avatars};
 #[cfg(target_os = "android")]
-use super::{lifetime::CACHE_LIFETIME, open};
+use super::capture_database_work;
+use super::{contacts, profile_avatars};
 
 /// Resolve only the exact P2P identity selected by this local thread. The Android call surface
 /// must never open the Rust-owned SQLite file with the OS SQLite library, which may be older.
@@ -20,9 +20,11 @@ pub(crate) fn read_call_peer(
     if user_id <= 0 || thread_id <= 0 {
         return Ok(None);
     }
-    let epoch = CACHE_LIFETIME.capture()?;
-    let _guard = CACHE_LIFETIME.admit(epoch)?;
-    read_call_peer_from_connection(&open()?, user_id, thread_id, account, namespace_id)
+    // The JNI thread borrows the admitted login's own connection; it never opens a file.
+    let work = capture_database_work()?;
+    super::with_owned_database(&work, |conn| {
+        read_call_peer_from_connection(conn, user_id, thread_id, account, namespace_id)
+    })
 }
 
 fn read_call_peer_from_connection(

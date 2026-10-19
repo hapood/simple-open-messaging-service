@@ -4,7 +4,7 @@ use super::attention::LocalThreadAttention;
 
 pub(super) struct ThreadFeedCommit<'a> {
     pub user_id: i64,
-    pub epoch: u64,
+    pub login: &'a crate::login_session_store::LoginSessionId,
     pub states: &'a [LocalThreadAttention],
 }
 
@@ -55,14 +55,19 @@ mod tests {
         let count = Arc::new(AtomicUsize::new(0));
         let observed = count.clone();
         let registry = commits.clone();
+        let login =
+            crate::login_session_store::LoginSessionId::try_from(uuid::Uuid::new_v4().to_string())
+                .unwrap();
+        let expected_login = login.clone();
         let subscription = commits.subscribe(move |commit| {
-            assert_eq!((commit.user_id, commit.epoch), (7, 3));
+            assert_eq!(commit.user_id, 7);
+            assert_eq!(commit.login, &expected_login);
             assert!(registry.0.try_lock().is_ok());
             observed.fetch_add(1, Ordering::SeqCst);
         });
         let commit = ThreadFeedCommit {
             user_id: 7,
-            epoch: 3,
+            login: &login,
             states: &[],
         };
         commits.publish(&commit);

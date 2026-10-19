@@ -33,6 +33,7 @@ object SomsSecureStore {
     const val API_PREFIX = "/api/v1"
 
     private const val KEY_SESSION_TOKEN = "session_token"
+    private const val KEY_LOGIN_SESSION_ID = "login_session_id"
     private const val KEY_CURRENT_USER_ID = "current_user_id"
     private const val KEY_API_ORIGIN = "api_origin"
     private const val KEY_API_ORIGIN_SECONDARY = "api_origin_secondary"
@@ -81,16 +82,21 @@ object SomsSecureStore {
      *  (FGS / FCM / WorkManager). Supersedes the scoped 30-day notification token; revocation-only (no
      *  client-side expiry), mirroring Telegram's auth_key model. JS pushes it via SomsFcm.setSessionToken
      *  on login and clears it on logout. */
-    fun setSessionToken(ctx: Context, token: String?) {
+    fun setSessionToken(ctx: Context, token: String?, sessionUuid: String) {
+        require(sessionUuid.isNotBlank()) { "sessionUuid must not be blank" }
         var releaseResources: (() -> Unit)? = null
         try {
             synchronized(this) {
                 val previous = getSessionToken(ctx)
+                val currentUuid = getLoginSessionId(ctx)
+                if (token.isNullOrEmpty() && currentUuid != null && currentUuid != sessionUuid) {
+                    return
+                }
                 val changed = token.isNullOrEmpty() || token != previous
                 if (!previous.isNullOrEmpty() && previous != token) {
                     releaseResources = CallController.prepareSessionResourceRelease()
                 }
-                RustRuntimeBridge.setSessionToken(token)
+                RustRuntimeBridge.setSessionToken(token, sessionUuid)
                 val ed = prefs(ctx).edit()
                 if (changed) {
                     ed.remove("session_id")
@@ -98,9 +104,11 @@ object SomsSecureStore {
                 }
                 if (token.isNullOrEmpty()) {
                     ed.remove(KEY_SESSION_TOKEN)
+                    ed.remove(KEY_LOGIN_SESSION_ID)
                     ed.remove(KEY_CURRENT_USER_ID)
                 } else {
                     ed.putString(KEY_SESSION_TOKEN, token)
+                    ed.putString(KEY_LOGIN_SESSION_ID, sessionUuid)
                 }
                 ed.apply()
                 if (changed) {
@@ -113,7 +121,31 @@ object SomsSecureStore {
         }
     }
 
+    /** Clear an unauthenticated/residual credential that failed Rust restoration on cold start. */
+    fun discardResidualToken(ctx: Context) {
+        var releaseResources: (() -> Unit)? = null
+        try {
+            synchronized(this) {
+                if (getSessionToken(ctx) != null) {
+                    releaseResources = CallController.prepareSessionResourceRelease()
+                }
+                RustRuntimeBridge.discardResidualToken()
+                prefs(ctx).edit()
+                    .remove(KEY_SESSION_TOKEN)
+                    .remove(KEY_LOGIN_SESSION_ID)
+                    .remove(KEY_CURRENT_USER_ID)
+                    .remove("session_id")
+                    .apply()
+                SomsMessagingService.clearSessionMessageNotifs(ctx)
+            }
+        } finally {
+            releaseResources?.invoke()
+        }
+    }
+
     @Synchronized fun getSessionToken(ctx: Context): String? = prefs(ctx).getString(KEY_SESSION_TOKEN, null)
+
+    @Synchronized fun getLoginSessionId(ctx: Context): String? = prefs(ctx).getString(KEY_LOGIN_SESSION_ID, null)
 
     @Synchronized fun setHelloIdentity(ctx: Context, token: String?, sessionId: Int, userId: Int): Boolean {
         if (token.isNullOrEmpty() || token != getSessionToken(ctx) || sessionId <= 0 || userId <= 0) return false

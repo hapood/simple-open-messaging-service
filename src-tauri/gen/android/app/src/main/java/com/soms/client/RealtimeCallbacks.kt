@@ -6,10 +6,10 @@ import androidx.annotation.Keep
  * The service's owner handle stays stable when Rust replaces an account/cache worker. */
 @Keep
 interface RealtimeCallbacks {
-    fun onEvent(generation: Long, type: String, dataJson: String)
+    fun onEvent(generation: Long, envelopeJson: String)
     fun onState(generation: Long, state: String)
     fun onReconnectIn(generation: Long, ms: Long)
-    fun onForceLogout(generation: Long, reason: String?)
+    fun onForceLogout(generation: Long, envelopeJson: String)
     fun onOriginActive(generation: Long, origin: String, mode: String)
     fun onIdentity(generation: Long, userId: Int, sessionId: Long)
     fun onNotifications(generation: Long, batch: NativeNotificationBatch)

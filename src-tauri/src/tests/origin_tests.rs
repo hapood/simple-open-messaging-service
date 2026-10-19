@@ -1,6 +1,109 @@
 use super::*;
 
 #[test]
+fn admitted_token_updates_require_matching_owner_and_do_not_clear_successor() {
+    let _lock = crate::native_db::FILESYSTEM_TEST_LOCK.lock().unwrap();
+    let state = ServerSessionState::new();
+    let id1 =
+        crate::login_session_store::LoginSessionId::try_from(uuid::Uuid::new_v4().to_string())
+            .unwrap();
+    let id2 =
+        crate::login_session_store::LoginSessionId::try_from(uuid::Uuid::new_v4().to_string())
+            .unwrap();
+
+    let owner1 = crate::native_db::install_test_login_connection(
+        id1.clone(),
+        rusqlite::Connection::open_in_memory().unwrap(),
+    )
+    .unwrap();
+    owner1
+        .begin_activation()
+        .unwrap()
+        .commit("token-1".into())
+        .unwrap();
+
+    // Setting token without setting state.login_session fails with superseded.
+    assert_eq!(
+        state
+            .update_session_token_admitted(Some("token-1".into()), &id1.to_string())
+            .unwrap_err(),
+        "native login superseded"
+    );
+
+    // Set state.login_session to id1.
+    *state.login_session.lock().unwrap() = Some(id1.clone());
+
+    // Mismatched token fails.
+    assert_eq!(
+        state
+            .update_session_token_admitted(Some("wrong-token".into()), &id1.to_string())
+            .unwrap_err(),
+        "credential mismatch"
+    );
+
+    // Matching token succeeds.
+    state
+        .update_session_token_admitted(Some("token-1".into()), &id1.to_string())
+        .unwrap();
+    assert_eq!(state.token.lock().unwrap().as_deref(), Some("token-1"));
+
+    // Residual token clear while active session is present fails.
+    assert_eq!(
+        state.clear_residual_token().unwrap_err(),
+        "cannot clear residual token while a login session is active"
+    );
+
+    // Transition to successor id2.
+    owner1.end().unwrap();
+    crate::native_db::release_login_connection(&owner1).unwrap();
+
+    let owner2 = crate::native_db::install_test_login_connection(
+        id2.clone(),
+        rusqlite::Connection::open_in_memory().unwrap(),
+    )
+    .unwrap();
+    owner2
+        .begin_activation()
+        .unwrap()
+        .commit("token-2".into())
+        .unwrap();
+    *state.login_session.lock().unwrap() = Some(id2.clone());
+    state
+        .update_session_token_admitted(Some("token-2".into()), &id2.to_string())
+        .unwrap();
+    assert_eq!(state.token.lock().unwrap().as_deref(), Some("token-2"));
+
+    // A delayed clear for old id1 arrives: it must NOT clear successor id2's token or session!
+    state
+        .update_session_token_admitted(None, &id1.to_string())
+        .unwrap();
+    assert_eq!(state.token.lock().unwrap().as_deref(), Some("token-2"));
+    assert_eq!(state.login_session.lock().unwrap().as_ref(), Some(&id2));
+
+    // A delayed set for old id1 arrives: it must fail and not overwrite id2!
+    assert_eq!(
+        state
+            .update_session_token_admitted(Some("token-1".into()), &id1.to_string())
+            .unwrap_err(),
+        "native login superseded"
+    );
+    assert_eq!(state.token.lock().unwrap().as_deref(), Some("token-2"));
+
+    // Clear matching id2 succeeds.
+    state
+        .update_session_token_admitted(None, &id2.to_string())
+        .unwrap();
+    assert!(state.token.lock().unwrap().is_none());
+    assert!(state.login_session.lock().unwrap().is_none());
+
+    // Residual token clear now succeeds when signed out.
+    assert!(state.clear_residual_token().is_ok());
+
+    owner2.end().unwrap();
+    crate::native_db::release_login_connection(&owner2).unwrap();
+}
+
+#[test]
 fn runtime_clone_shares_session_pool_and_shell_resources() {
     let background = ServerSessionState::new();
     background.replace_session_token(Some("test-session".into()));

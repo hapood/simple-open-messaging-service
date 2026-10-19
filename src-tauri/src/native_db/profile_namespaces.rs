@@ -1,8 +1,6 @@
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
-use super::open;
-
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProfileNamespacePair {
@@ -300,7 +298,7 @@ pub(crate) async fn native_db_profile_namespace_bindings(
     user_id: i64,
     pairs: Vec<ProfileNamespacePair>,
 ) -> Result<Vec<ProfileNamespaceBinding>, String> {
-    super::lifetime::spawn(move || read_bindings(&open()?, user_id, &pairs))
+    super::spawn_login_database(move |conn| read_bindings(conn, user_id, &pairs))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -311,9 +309,9 @@ pub(crate) async fn native_db_commit_profile_namespace_bindings(
     entries: Vec<ProfileNamespaceEntry>,
     round_end: i64,
 ) -> Result<(), String> {
-    super::lifetime::spawn(move || {
+    super::spawn_login_database(move |conn| {
         commit_bindings(
-            &mut open()?,
+            conn,
             user_id,
             &entries,
             round_end,
@@ -329,7 +327,7 @@ pub(crate) async fn native_db_apply_profile_namespace_changes(
     user_id: i64,
     items: Vec<ProfileNamespaceChange>,
 ) -> Result<Vec<ProfileNamespacePair>, String> {
-    super::lifetime::spawn(move || apply_changes(&mut open()?, user_id, &items))
+    super::spawn_login_database(move |conn| apply_changes(conn, user_id, &items))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -339,13 +337,8 @@ pub(crate) async fn native_db_write_profile_namespace_tomb(
     user_id: i64,
     pair: ProfileNamespacePair,
 ) -> Result<(), String> {
-    super::lifetime::spawn(move || {
-        write_namespace_tomb(
-            &open()?,
-            user_id,
-            &pair,
-            super::client_state::chrono_millis(),
-        )
+    super::spawn_login_database(move |conn| {
+        write_namespace_tomb(conn, user_id, &pair, super::client_state::chrono_millis())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -356,13 +349,8 @@ pub(crate) async fn native_db_write_profile_tomb(
     user_id: i64,
     key: ProfileTombKey,
 ) -> Result<(), String> {
-    super::lifetime::spawn(move || {
-        write_profile_tomb(
-            &open()?,
-            user_id,
-            &key,
-            super::client_state::chrono_millis(),
-        )
+    super::spawn_login_database(move |conn| {
+        write_profile_tomb(conn, user_id, &key, super::client_state::chrono_millis())
     })
     .await
     .map_err(|error| error.to_string())?

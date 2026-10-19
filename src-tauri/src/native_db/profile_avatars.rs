@@ -81,7 +81,9 @@ pub(crate) async fn native_db_get_profile_avatar(
     user_id: i64,
     digest: String,
 ) -> Result<Option<Vec<u8>>, String> {
-    super::lifetime::spawn(move || read(user_id, &digest))
+    // Avatar bytes live on the filesystem; the captured cache view only fences the login.
+    let work = super::capture_database_work()?;
+    super::spawn_owned_work(work, move || read(user_id, &digest))
         .await
         .map_err(|e| format!("join profile avatar read: {e}"))?
 }

@@ -107,17 +107,16 @@ pub(super) fn read(conn: &Connection, user_id: i64) -> Result<AccountState, Stri
 /** Explicit initialization is separate from strict reads; it creates no observed heads. */
 #[tauri::command]
 pub(crate) async fn native_db_initialize_account_state(user_id: i64) -> Result<(), String> {
-    super::lifetime::spawn(move || {
+    super::spawn_login_database(move |conn| {
         if user_id <= 0 {
             return Err("invalid account ID".into());
         }
-        super::open()?
-            .execute(
-                "INSERT INTO account_state(user_id) VALUES(?1)
+        conn.execute(
+            "INSERT INTO account_state(user_id) VALUES(?1)
             ON CONFLICT(user_id) DO NOTHING",
-                [user_id],
-            )
-            .map_err(|error| format!("initialize account state: {error}"))?;
+            [user_id],
+        )
+        .map_err(|error| format!("initialize account state: {error}"))?;
         Ok(())
     })
     .await
@@ -126,7 +125,7 @@ pub(crate) async fn native_db_initialize_account_state(user_id: i64) -> Result<(
 
 #[tauri::command]
 pub(crate) async fn native_db_read_account_state(user_id: i64) -> Result<AccountState, String> {
-    super::lifetime::spawn(move || read(&super::open()?, user_id))
+    super::spawn_login_database(move |conn| read(conn, user_id))
         .await
         .map_err(|error| format!("join account read: {error}"))?
 }
@@ -136,14 +135,14 @@ pub(crate) async fn native_db_write_self_profile(
     user_id: i64,
     profile: AccountSelfProfile,
 ) -> Result<(), String> {
-    super::lifetime::spawn(move || {
+    super::spawn_login_database(move |conn| {
         if profile.id != user_id || user_id <= 0 {
             return Err("profile account mismatch".into());
         }
         let identity = AccountSelfIdentity {
             account: profile.account.clone(),
         };
-        let changed = super::open()?.execute(
+        let changed = conn.execute(
             "UPDATE account_state SET self_profile_json=?2,self_identity_json=?3 WHERE user_id=?1",
             params![user_id, serde_json::to_string(&profile).map_err(|e| e.to_string())?,
                 serde_json::to_string(&identity).map_err(|e| e.to_string())?],
@@ -164,8 +163,7 @@ pub(crate) async fn native_db_advance_intent_request_read(
     observed_end_id: String,
 ) -> Result<AccountState, String> {
     let target = request_id_to_sqlite(&observed_end_id)?;
-    super::lifetime::spawn(move || {
-        let mut conn = super::open()?;
+    super::spawn_login_database(move |conn| {
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|error| format!("begin request read intent: {error}"))?;
@@ -194,14 +192,14 @@ pub(crate) async fn native_db_write_composer_drafts(
     user_id: i64,
     drafts: Vec<AccountComposerDraft>,
 ) -> Result<(), String> {
-    super::lifetime::spawn(move || {
+    super::spawn_login_database(move |conn| {
         if drafts
             .iter()
             .any(|draft| draft.thread_id <= 0 || draft.updated_at < 0)
         {
             return Err("invalid composer draft".into());
         }
-        let changed = super::open()?
+        let changed = conn
             .execute(
                 "UPDATE account_state SET composer_drafts_json=?2 WHERE user_id=?1",
                 params![

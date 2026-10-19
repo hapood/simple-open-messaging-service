@@ -378,23 +378,23 @@ pub(crate) async fn desktop_notification_update(
     {
         return Err("invalid desktop notification coordinates".into());
     }
-    // Share the account-cache lifetime: queued work cannot post after session invalidation.
-    let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
+    // Share the admitted login's cache view: queued work cannot post after its login ends.
+    let work = super::capture_database_work()?;
+    if notification.count > 0
+        && *app
+            .state::<crate::ServerSessionState>()
+            .api_origin_primary
+            .lock()
+            .expect("primary origin lock")
+            != notification.origin
+    {
+        return Err("notification origin expired".into());
+    }
     #[cfg(target_os = "macos")]
     if notification.count > 0 {
         macos_platform::authorize().await?;
     }
-    super::lifetime::spawn_at(Ok(epoch), move || {
-        if notification.count > 0
-            && *app
-                .state::<crate::ServerSessionState>()
-                .api_origin_primary
-                .lock()
-                .expect("primary origin lock")
-                != notification.origin
-        {
-            return Err("notification origin expired".into());
-        }
+    super::spawn_owned_work(work, move || {
         #[cfg(target_os = "linux")]
         {
             platform::update(app, notification)

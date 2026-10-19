@@ -517,7 +517,6 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         vec![],
         99,
         serde_json::from_value(page).unwrap(),
-        false,
     )
     .unwrap();
     let local_ns: i64 = conn
@@ -576,7 +575,6 @@ fn native_group_meta_preserves_member_addresses_and_commits_cursor() {
         vec![],
         100,
         serde_json::from_value(delta).unwrap(),
-        false,
     )
     .unwrap();
     // A Meta fact selects the profile revision directly; no message anchor

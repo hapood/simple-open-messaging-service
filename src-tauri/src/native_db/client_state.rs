@@ -29,8 +29,6 @@ fn preserve_thread_profile(incoming: &mut Value, current: &Value) {
     }
 }
 
-use super::open;
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientStateFeedItem {
@@ -149,7 +147,7 @@ pub(super) fn read_threads(conn: &Connection, user_id: i64) -> Result<Vec<Value>
 
 #[tauri::command]
 pub(crate) async fn native_db_threads(user_id: i64) -> Result<Vec<Value>, String> {
-    super::lifetime::spawn(move || read_threads(&open()?, user_id))
+    super::spawn_login_database(move |conn| read_threads(conn, user_id))
         .await
         .map_err(|e| format!("join thread read: {e}"))?
 }
@@ -160,8 +158,7 @@ pub(crate) async fn native_db_put_thread(
     thread_id: i64,
     item: Value,
 ) -> Result<(), String> {
-    super::lifetime::spawn(move || {
-        let mut conn = open()?;
+    super::spawn_login_database(move |conn| {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin thread write: {e}"))?;
@@ -292,8 +289,7 @@ pub(crate) async fn native_db_replace_threads(
     user_id: i64,
     items: Vec<Value>,
 ) -> Result<(), String> {
-    super::lifetime::spawn(move || {
-        let mut conn = open()?;
+    super::spawn_login_database(move |conn| {
         let tx = conn
             .transaction()
             .map_err(|e| format!("begin replace threads: {e}"))?;
@@ -343,12 +339,9 @@ pub(crate) async fn native_db_replace_threads(
 
 #[tauri::command]
 pub(crate) async fn native_db_delete_thread(user_id: i64, thread_id: i64) -> Result<(), String> {
-    super::lifetime::spawn(move || {
-        let mut conn = open()?;
-        delete_thread(&mut conn, user_id, thread_id)
-    })
-    .await
-    .map_err(|e| format!("join delete thread: {e}"))?
+    super::spawn_login_database(move |conn| delete_thread(conn, user_id, thread_id))
+        .await
+        .map_err(|e| format!("join delete thread: {e}"))?
 }
 
 pub(super) fn delete_thread(
@@ -429,17 +422,8 @@ pub(super) fn apply_state_feed_page(
     items: Vec<ClientStateFeedItem>,
     feed_id: i64,
     group_meta: Vec<ClientGroupMetaApply>,
-    reset_projection: bool,
 ) -> Result<Vec<GroupMetaCommitPatch>, String> {
-    apply_state_feed_page_with_resume(
-        conn,
-        user_id,
-        items,
-        feed_id,
-        group_meta,
-        reset_projection,
-        None,
-    )
+    apply_state_feed_page_with_resume(conn, user_id, items, feed_id, group_meta, None)
 }
 
 /// The native executor persists its full-snapshot boundary with the page and cursor. `None`
@@ -451,7 +435,6 @@ pub(super) fn apply_state_feed_page_with_resume(
     items: Vec<ClientStateFeedItem>,
     feed_id: i64,
     group_meta: Vec<ClientGroupMetaApply>,
-    reset_projection: bool,
     full_through: Option<Option<i64>>,
 ) -> Result<Vec<GroupMetaCommitPatch>, String> {
     let tx = conn
@@ -692,7 +675,7 @@ pub(super) fn apply_group_meta_page(
         .optional()
         .map_err(|e| format!("read state-feed cursor for group meta: {e}"))?
         .unwrap_or(0);
-    let patches = apply_state_feed_page(conn, user_id, Vec::new(), feed_id, vec![update], false)?;
+    let patches = apply_state_feed_page(conn, user_id, Vec::new(), feed_id, vec![update])?;
     Ok(patches.into_iter().next())
 }
 

@@ -11,7 +11,7 @@ import java.util.TimeZone
 class NativeNotificationBatch(
     val metadata: String,
     val avatars: Array<ByteArray>,
-    val accountEpoch: Long,
+    val loginSessionId: String,
 ) {
     fun descriptors(mode: String, privateBody: String, retracted: String, removed: String): List<NotifDescriptor> {
         val payload = JSONObject(metadata)

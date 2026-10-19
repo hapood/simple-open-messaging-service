@@ -3,8 +3,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::client_state::{apply_state_feed_page_with_resume, ClientStateFeedItem};
-use super::{lifetime, open};
-use crate::{proxy::perform_api_request_with_events, ServerSessionState};
+use super::{capture_database_work, spawn_owned_database};
+use crate::{login_request::LoginRequest, ServerSessionState};
 
 // This lane owns the persisted state-feed cursor. Network waits do not hold the cache-lifetime lock.
 static STATE_FEED_SYNC: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -71,44 +71,81 @@ fn validate(page: &Page, mode: &str, after: i64, through: i64) -> Result<(), Str
 
 /// Consume one native state-feed wake. Rust fetches and validates pages before atomically applying
 /// each page with its cursor. A concurrent wake observes the new cursor after this lane finishes.
-pub(crate) async fn synchronize(
+pub(crate) fn synchronize(
     proxy: &ServerSessionState,
+    user_id: i64,
+    target: i64,
+) -> impl std::future::Future<Output = Result<i64, String>> + Send + 'static {
+    // Capture before returning a future: callers may schedule/poll it after the login changes.
+    let intent = (|| {
+        if user_id <= 0 || target < 0 {
+            return Err("invalid state-feed target".to_string());
+        }
+        let (work, request) = match crate::realtime::WORK_RUN.try_with(|run| run.login_request()) {
+            Ok(intent) => intent?,
+            Err(_) => {
+                let work = capture_database_work()?;
+                let request = LoginRequest::capture(proxy, work.owner().clone())?;
+                (work, request)
+            }
+        };
+        work.assert_current().map_err(|e| e.to_string())?;
+        Ok((work, request))
+    })();
+    async move {
+        let (work, request) = intent?;
+        synchronize_owned(work, request, user_id, target).await
+    }
+}
+
+/// A caller coordinating several feeds passes its original binding instead of recapturing globals.
+pub(crate) async fn synchronize_owned(
+    work: crate::login_connection::DatabaseWork,
+    mut request: LoginRequest,
     user_id: i64,
     target: i64,
 ) -> Result<i64, String> {
     if user_id <= 0 || target < 0 {
         return Err("invalid state-feed target".into());
     }
-    let epoch = lifetime::CACHE_LIFETIME.capture()?;
-    let _lane = STATE_FEED_SYNC.lock().await;
-    drop(lifetime::CACHE_LIFETIME.admit(epoch)?);
+    work.assert_current().map_err(|e| e.to_string())?;
+    request.assert_owner(work.owner())?;
+    let cancellation = work.cancellation();
+    let _lane = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => {
+            work.assert_current().map_err(|e| e.to_string())?;
+            return Err("native cache work superseded".into());
+        },
+        lane = STATE_FEED_SYNC.lock() => lane,
+    };
+    work.assert_current().map_err(|e| e.to_string())?;
     let (mut after, persisted_full) =
-        lifetime::spawn_at(Ok(epoch), move || cursor(&open()?, user_id))
+        spawn_owned_database(Ok(work.clone()), move |conn| cursor(conn, user_id))
             .await
             .map_err(|e| format!("join state-feed cursor read: {e}"))??;
     let mut target = target;
     let mut full_through = persisted_full.or_else(|| (after == 0 && target > 0).then_some(target));
     target = target.max(full_through.unwrap_or(0));
-    let mut reset_projection = after == 0 && full_through.is_some();
     let mut recovery_attempted = false;
     while after < target {
-        drop(lifetime::CACHE_LIFETIME.admit(epoch)?);
+        work.assert_current().map_err(|e| e.to_string())?;
         let through = full_through.unwrap_or(target);
         let mode = if full_through.is_some() {
             "full"
         } else {
             "delta"
         };
-        let response = perform_api_request_with_events(
-            None,
-            proxy,
-            "GET".into(),
-            format!("/api/v1/user/state-feed?mode={mode}&after={after}&through={through}&take=100"),
-            Default::default(),
-            None,
-            true,
-        )
-        .await?;
+        let response = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                work.assert_current().map_err(|e| e.to_string())?;
+                return Err("native cache work superseded".into());
+            }
+            response = request.get(format!(
+                "/api/v1/user/state-feed?mode={mode}&after={after}&through={through}&take=100"
+            )) => response?,
+        };
         if !(200..300).contains(&response.status) {
             return Err(format!("state-feed HTTP {}", response.status));
         }
@@ -127,17 +164,15 @@ pub(crate) async fn synchronize(
             after = recovery.resume_after;
             target = recovery.resume_before - 1;
             full_through = (after < target).then_some(target);
-            reset_projection = true;
             recovery_attempted = true;
             if target == after {
-                lifetime::spawn_at(Ok(epoch), move || {
+                spawn_owned_database(Ok(work.clone()), move |conn| {
                     apply_state_feed_page_with_resume(
-                        &mut open()?,
+                        conn,
                         user_id,
                         Vec::new(),
                         after,
                         Vec::new(),
-                        true,
                         Some(None),
                     )
                 })
@@ -156,21 +191,19 @@ pub(crate) async fn synchronize(
         let head = page.state_feed_end_id;
         let next_full = full_through.filter(|boundary| scanned < *boundary);
         let full_marker = full_through.map(|_| next_full);
-        lifetime::spawn_at(Ok(epoch), move || {
+        spawn_owned_database(Ok(work.clone()), move |conn| {
             apply_state_feed_page_with_resume(
-                &mut open()?,
+                conn,
                 user_id,
                 page.items,
                 scanned,
                 Vec::new(),
-                reset_projection,
                 full_marker,
             )
         })
         .await
         .map_err(|e| format!("join state-feed page commit: {e}"))??;
         after = scanned;
-        reset_projection = false;
         if full_through.is_some_and(|boundary| after >= boundary) {
             full_through = None;
         }
@@ -179,7 +212,7 @@ pub(crate) async fn synchronize(
             return Err("state-feed response ended before requested boundary".into());
         }
     }
-    drop(lifetime::CACHE_LIFETIME.admit(epoch)?);
+    work.assert_current().map_err(|e| e.to_string())?;
     Ok(after)
 }
 
@@ -211,27 +244,11 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE client_preferences(scope TEXT,key TEXT,value_json TEXT,updated_at INTEGER,PRIMARY KEY(scope,key));").unwrap();
         super::super::create_cache_schema(&conn).unwrap();
-        apply_state_feed_page_with_resume(
-            &mut conn,
-            1,
-            Vec::new(),
-            1,
-            Vec::new(),
-            true,
-            Some(Some(3)),
-        )
-        .unwrap();
+        apply_state_feed_page_with_resume(&mut conn, 1, Vec::new(), 1, Vec::new(), Some(Some(3)))
+            .unwrap();
         assert_eq!(cursor(&conn, 1).unwrap(), (1, Some(3)));
-        apply_state_feed_page_with_resume(
-            &mut conn,
-            1,
-            Vec::new(),
-            3,
-            Vec::new(),
-            false,
-            Some(None),
-        )
-        .unwrap();
+        apply_state_feed_page_with_resume(&mut conn, 1, Vec::new(), 3, Vec::new(), Some(None))
+            .unwrap();
         assert_eq!(cursor(&conn, 1).unwrap(), (3, None));
     }
 

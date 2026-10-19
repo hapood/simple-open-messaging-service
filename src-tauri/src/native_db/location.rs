@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, RwLock};
+use std::sync::OnceLock;
 
 const PREFERENCES_FILENAME: &str = "soms-local.sqlite3";
 /// Process-wide location shared by the background runtime and the application shell.
@@ -52,49 +52,6 @@ pub(super) fn directory() -> Result<PathBuf, String> {
         .parent()
         .ok_or("native database location has no parent directory")?
         .to_path_buf())
-}
-
-/// The active per-login cache file, resolved from the durable login journal on first use and
-/// switched only by fresh-login preparation. Cache commands never guess a filename: an unreadable
-/// or signed-out journal yields an error, not a default cache.
-static ACTIVE_CACHE: RwLock<Option<PathBuf>> = RwLock::new(None);
-
-pub(super) fn activate_cache(path: PathBuf) {
-    if let Ok(mut active) = ACTIVE_CACHE.write() {
-        *active = Some(path);
-    }
-}
-
-pub(super) fn active_cache_path() -> Result<PathBuf, String> {
-    if let Ok(active) = ACTIVE_CACHE.read() {
-        if let Some(path) = active.as_ref() {
-            return Ok(path.clone());
-        }
-    }
-    let resolved = resolve_active_cache_from_journal()?;
-    if let Ok(mut active) = ACTIVE_CACHE.write() {
-        active.get_or_insert_with(|| resolved.clone());
-    }
-    Ok(resolved)
-}
-
-#[cfg(test)]
-pub(super) fn reset_active_cache_for_tests() {
-    if let Ok(mut active) = ACTIVE_CACHE.write() {
-        *active = None;
-    }
-}
-
-fn resolve_active_cache_from_journal() -> Result<PathBuf, String> {
-    let preferences = super::preferences_connection()?;
-    preferences.with_database(|conn| {
-        let journal = crate::login_session_store::SessionStore::read(conn)?
-            .ok_or("native login journal is missing: no active login cache")?;
-        let id = journal
-            .active_session()
-            .ok_or("native login is signed out: no active login cache")?;
-        Ok(directory()?.join(id.sqlite_filename()))
-    })
 }
 
 #[cfg(test)]

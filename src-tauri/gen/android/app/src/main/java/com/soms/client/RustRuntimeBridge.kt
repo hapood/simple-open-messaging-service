@@ -43,17 +43,23 @@ object RustRuntimeBridge {
     }
 
     @Synchronized
-    fun setSessionToken(token: String?) {
-        val normalized = token?.takeIf { it.isNotEmpty() }
-        updateSessionToken(normalized)
+    fun setSessionToken(token: String?, sessionUuid: String) {
+        require(sessionUuid.isNotBlank()) { "sessionUuid must not be blank" }
+        val normalizedToken = token?.takeIf { it.isNotEmpty() }
+        updateSessionToken(normalizedToken, sessionUuid)
     }
 
     @Synchronized
-    fun withCurrentSession(expected: Long, action: () -> Unit) {
-        if (isAccountEpochCurrent(expected)) action()
+    fun discardResidualToken() {
+        clearResidualToken()
     }
 
-    external fun isAccountEpochCurrent(epoch: Long): Boolean
+    @Synchronized
+    fun withCurrentSession(expected: String, action: () -> Unit) {
+        if (isLoginSessionCurrent(expected)) action()
+    }
+
+    external fun isLoginSessionCurrent(sessionUuid: String): Boolean
 
     // Instance leases fence commands from destroyed Android adapters. Rust owns the connection,
     // cancellation, origin selection and all synchronization/projection work.
@@ -67,7 +73,8 @@ object RustRuntimeBridge {
     external fun realtimeReplayHello(): String?
     external fun realtimePickOrigin(): String?
 
-    private external fun updateSessionToken(token: String?)
+    private external fun updateSessionToken(token: String?, sessionUuid: String)
+    private external fun clearResidualToken()
 
     fun synchronizeNotifications(userId: Int, threadFeedEndId: Int): NativeNotificationBatch {
         check(Looper.myLooper() != Looper.getMainLooper()) { "Notification synchronization must run off the main thread" }

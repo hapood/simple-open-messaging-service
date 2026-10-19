@@ -7,9 +7,9 @@ use log::warn;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::{http_client_for, ServerSessionState, SSE_CONNECT_TIMEOUT};
+use crate::{ServerSessionState, SSE_CONNECT_TIMEOUT};
 
-// Shared Rust /events protocol. Desktop commands below are compatibility adapters;
+// Shared Rust /events protocol. Desktop commands below are transport control adapters;
 // Android's headless JNI adapter uses the same run_loop and typed publication sink.
 
 #[derive(Clone, Copy, serde::Serialize)]
@@ -255,19 +255,46 @@ mod receipt_tests {
 }
 
 pub(crate) async fn run_loop(app: Arc<crate::realtime::Run>, proxy: ServerSessionState) {
-    sse_supervisor_loop(
-        app.clone(),
-        proxy,
-        app.cancel.clone(),
-        Arc::new(Mutex::new(ConnectionState::Closed)),
-        app.wake.clone(),
-        app.offline.clone(),
-        app.hello.clone(),
-    )
-    .await;
+    if wait_for_identity(&app, &proxy).await {
+        if let Some(login_cancel) = app.login_cancellation() {
+            tokio::select! { biased;
+                _ = app.cancel.cancelled() => {},
+                _ = login_cancel.cancelled() => {},
+                _ = sse_supervisor_loop(
+                    app.clone(), proxy, app.cancel.clone(),
+                    Arc::new(Mutex::new(ConnectionState::Closed)),
+                    app.wake.clone(), app.offline.clone(), app.hello.clone(),
+                ) => {},
+            }
+        }
+    }
     // Cover early identity/bootstrap failures as well as normal terminal stream outcomes.
     app.set_state("closed");
     app.cancel.cancel();
+}
+
+async fn wait_for_identity(app: &Arc<crate::realtime::Run>, proxy: &ServerSessionState) -> bool {
+    // An unbound OS worker may await its first admitted login. Once bound it can never adopt another.
+    loop {
+        let notified = proxy.token_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if !app.active() {
+            return false;
+        }
+        if app.bind_identity() {
+            return true;
+        }
+        if !app.active() {
+            return false;
+        }
+        let login_cancel = app.login_cancellation().unwrap_or_default();
+        tokio::select! { biased;
+            _ = app.cancel.cancelled() => return false,
+            _ = login_cancel.cancelled() => return false,
+            _ = &mut notified => {},
+        }
+    }
 }
 
 async fn sse_supervisor_loop(
@@ -279,29 +306,6 @@ async fn sse_supervisor_loop(
     offline: Arc<AtomicBool>,
     cached_hello: Arc<Mutex<Option<serde_json::Value>>>,
 ) {
-    // ---- pre-login token wait ----
-    // `sse_start` is called eagerly at boot, before login. Block (no busy-loop, no 401-storm) until a
-    // token arrives via `set_session_token` (which fires `token_notify`) or stop cancels.
-    loop {
-        if cancel.is_cancelled() {
-            emit_state(&app, &state, ConnectionState::Closed);
-            return;
-        }
-        if proxy.token.lock().expect("token lock").is_some() {
-            if !app.bind_identity() {
-                return;
-            }
-            break;
-        }
-        tokio::select! {
-            _ = cancel.cancelled() => {
-                emit_state(&app, &state, ConnectionState::Closed);
-                return;
-            }
-            _ = proxy.token_notify.notified() => {}
-        }
-    }
-
     emit_state(&app, &state, ConnectionState::Connecting);
     app.pick_origin().await;
     if !app.authenticated() {
@@ -510,11 +514,12 @@ async fn open_one_stream(
     // A selection made before this attempt already applies to its URL. Consume that stored wake
     // before reading the endpoint, so our own bootstrap race does not immediately close the new stream.
     let _ = proxy.origin_notify.notified().now_or_never();
-    let origin = proxy.api_origin.lock().expect("origin lock").clone();
-    let token = match proxy.token.lock().expect("token lock").clone() {
-        Some(t) => t,
-        None => return StreamOutcome::Cancelled, // logout raced past the outer gate
+    let Some(endpoint) = app.endpoint() else {
+        return StreamOutcome::Cancelled;
     };
+    let origin = endpoint.origin;
+    let token = endpoint.credential;
+    let client = endpoint.client;
     let feed_cancel = cancel.child_token();
     let _feed_guard = feed_cancel.clone().drop_guard();
     let (feed_wakes, mut feed_receiver) = tokio::sync::watch::channel::<Option<(i64, i32)>>(None);
@@ -524,7 +529,7 @@ async fn open_one_stream(
         tokio::sync::watch::channel::<Option<(String, i32)>>(None);
     let receipt_url = format!("{}/api/v1/events/receipt", origin.trim_end_matches('/'));
     let receipt_token = token.clone();
-    let receipt_origin = origin.clone();
+    let receipt_client = client.clone();
     // This task is independent of the stream reader and the thread-feed projection. A fixed
     // window (not trailing debounce) coalesces continuous message wakes without delaying FCM.
     crate::realtime::spawn(app.clone(), async move {
@@ -552,7 +557,7 @@ async fn open_one_stream(
                 }
             }
             let send = |receipt: &(String, i32)| {
-                http_client_for(&receipt_origin)
+                receipt_client
                     .post(&receipt_url)
                     .bearer_auth(&receipt_token)
                     .json(&serde_json::json!({
@@ -585,7 +590,6 @@ async fn open_one_stream(
     let feed_state_target = state_target_for_feed.clone();
     let feed_app = app.clone();
     let feed_proxy = proxy.clone();
-    let feed_token = token.clone();
     // The stream owns one coalescing consumer. Never wait for HTTP/database work in the SSE reader.
     crate::realtime::spawn(app.clone(), async move {
         loop {
@@ -596,15 +600,29 @@ async fn open_one_stream(
             let Some((user_id, target)) = *feed_receiver.borrow_and_update() else {
                 continue;
             };
-            if feed_proxy.token.lock().expect("token lock").as_ref() != Some(&feed_token) {
+            if !feed_app.authenticated() {
                 break;
             }
             // Structural state-feed rows must exist before thread metadata and notification
             // projections use them. Both state wakes and this barrier share Rust's state lane.
+            let intent = match crate::native_db::attention::NativeThreadFeedIntent::capture(
+                feed_app.app(),
+                &feed_proxy,
+                user_id,
+                target,
+            ) {
+                Ok(intent) => intent,
+                Err(error) => {
+                    warn!("thread feed wake unavailable: {error}");
+                    continue;
+                }
+            };
+            #[cfg(target_os = "android")]
+            let feed_work = intent.database_work();
             let state_target = feed_state_target.load(Ordering::Acquire);
             let state_result = tokio::select! {
                 _ = feed_cancel.cancelled() => break,
-                result = crate::native_db::state_feed_sync::synchronize(&feed_proxy, user_id, state_target) => result,
+                result = intent.state_barrier(state_target) => result,
             };
             if let Err(error) = state_result {
                 warn!("state feed barrier before thread feed failed: {error}");
@@ -612,11 +630,8 @@ async fn open_one_stream(
             }
             let result = tokio::select! {
                 _ = feed_cancel.cancelled() => break,
-                result = crate::native_db::attention::sync_thread_feed(feed_app.app(), &feed_proxy, user_id, target) => result,
+                result = intent.synchronize() => result,
             };
-            if feed_proxy.token.lock().expect("token lock").as_ref() != Some(&feed_token) {
-                break;
-            }
             if !feed_app.authenticated() || feed_cancel.is_cancelled() {
                 break;
             }
@@ -624,9 +639,10 @@ async fn open_one_stream(
                 Ok(result) => {
                     #[cfg(target_os = "android")]
                     {
+                        // Assembly shares the exact cache view captured before the structural barrier.
                         let batch = tokio::select! { biased;
                             _ = feed_cancel.cancelled() => break,
-                            result = crate::native_db::notifications::from_result(user_id, &result) => result,
+                            result = crate::native_db::notifications::from_result(feed_work, user_id, &result) => result,
                         };
                         if let Ok(batch) = batch {
                             feed_app.publish(crate::realtime::Output::Notifications(batch));
@@ -642,8 +658,8 @@ async fn open_one_stream(
     });
     let (state_wakes, mut state_receiver) = tokio::sync::watch::channel::<Option<(i64, i64)>>(None);
     let state_app = app.clone();
+    let state_events = crate::realtime::NativeEvents::capture(app.app());
     let state_proxy = proxy.clone();
-    let state_token = token.clone();
     let state_cancel = cancel.child_token();
     let _state_guard = state_cancel.clone().drop_guard();
     crate::realtime::spawn(app.clone(), async move {
@@ -655,22 +671,19 @@ async fn open_one_stream(
             let Some((user_id, target)) = *state_receiver.borrow_and_update() else {
                 continue;
             };
-            if state_proxy.token.lock().expect("token lock").as_ref() != Some(&state_token) {
+            if !state_app.authenticated() {
                 break;
             }
             let result = tokio::select! {
                 _ = state_cancel.cancelled() => break,
                 result = crate::native_db::state_feed_sync::synchronize(&state_proxy, user_id, target) => result,
             };
-            if state_proxy.token.lock().expect("token lock").as_ref() != Some(&state_token) {
-                break;
-            }
             if !state_app.authenticated() || state_cancel.is_cancelled() {
                 break;
             }
             match result {
                 Ok(cursor) => {
-                    let _ = state_app.emit(
+                    let _ = state_events.emit(
                         "soms-sse-event",
                         SseEventPayload {
                             event: "LOCAL_STATE_FEED_COMMITTED".into(),
@@ -690,7 +703,7 @@ async fn open_one_stream(
     // Bound the connect/headers phase: a server that never responds must not hang startup.
     let request = tokio::time::timeout(
         SSE_CONNECT_TIMEOUT,
-        http_client_for(&origin)
+        client
             .get(&url)
             .header("accept", "text/event-stream")
             .header("authorization", format!("Bearer {}", token))
@@ -748,9 +761,8 @@ async fn open_one_stream(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return StreamOutcome::Cancelled,
-            // An API-side select_origin switched the active origin → drop this stream and reopen on the new
-            // active (the loop re-enters open_one_stream, which re-reads proxy.api_origin). API⇄SSE lockstep:
-            // they never sit on different origins. Race-free (Notify holds one stored permit).
+            // Global routing observations may prompt a new probe, but this run can select only its
+            // captured candidates. A changed configuration requires explicit lifecycle replacement.
             _ = proxy.origin_notify.notified() => return StreamOutcome::StreamClosed,
             _ = proxy.token_notify.notified() => {
                 if !app.authenticated() { return StreamOutcome::Cancelled; }
@@ -830,7 +842,6 @@ async fn open_one_stream(
                                             let result = tokio::select! { biased;
                                                 _ = profile_cancel.cancelled() => return,
                                                 result = crate::native_db::attention::materialize_profile_event(
-                                                profile_app.app(),
                                                 &profile_proxy,
                                                 user_id,
                                                 &profile_data,

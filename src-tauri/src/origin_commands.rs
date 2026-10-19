@@ -1,3 +1,4 @@
+#[cfg(desktop)]
 use log::warn;
 
 #[cfg(desktop)]
@@ -130,8 +131,15 @@ pub(crate) async fn set_session_token(
     session_uuid: Option<String>,
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<(), String> {
-    if let Some(uuid) = session_uuid.as_deref() {
-        let id = crate::login_session_store::LoginSessionId::try_from(uuid.to_string())?;
+    {
+        let uuid = session_uuid.ok_or("native login UUID is required")?;
+        let id = crate::login_session_store::LoginSessionId::try_from(uuid)?;
+        let owner = crate::native_db::login_connection(&id)?;
+        let activation = if owner.credential().ok().as_deref() == Some(token.as_str()) {
+            None
+        } else {
+            Some(owner.begin_activation().map_err(|e| e.to_string())?)
+        };
         let token_for_activation = token.clone();
         let id_for_state = id.clone();
         let preferences = crate::native_db::preferences_connection()?;
@@ -142,6 +150,12 @@ pub(crate) async fn set_session_token(
         })
         .await
         .map_err(|e| format!("join native login activation: {e}"))??;
+        if let Some(activation) = activation {
+            activation
+                .commit(token.clone())
+                .map_err(|e| e.to_string())?;
+        }
+        owner.assert_active().map_err(|e| e.to_string())?;
         *state.login_session.lock().expect("login session lock") = Some(id_for_state);
     }
     state.replace_session_token(Some(token));
@@ -164,26 +178,31 @@ pub(crate) async fn login_session_for_token(token: String) -> Result<Option<Stri
 
 #[tauri::command]
 pub(crate) async fn clear_session_token(
+    session_uuid: String,
     state: tauri::State<'_, ServerSessionState>,
 ) -> Result<(), String> {
-    // Forced local end (401 / FORCE_LOGOUT): persist the end marker and its cleanup ownership.
-    let ended = state
-        .login_session
-        .lock()
-        .expect("login session lock")
-        .clone();
-    if ended.is_some() {
+    let expected = crate::login_session_store::LoginSessionId::try_from(session_uuid)?;
+    let ended = {
+        let mut active = state.login_session.lock().expect("login session lock");
+        if *active != Some(expected.clone()) {
+            return Ok(());
+        }
+        active.take()
+    };
+    if let Some(id) = ended.as_ref() {
+        let owner = crate::native_db::end_login_connection(id)?;
         let preferences = crate::native_db::preferences_connection()?;
         tauri::async_runtime::spawn_blocking(move || {
-            preferences.with_database(|conn| {
+            let durable = preferences.with_database(|conn| {
                 crate::login_session_store::SessionStore::end(conn, ended.as_ref())?;
                 crate::login_session_store::SessionStore::finish_ending(conn, ended.as_ref())
-            })
+            });
+            let released = crate::native_db::release_login_connection(&owner);
+            durable.and(released)
         })
         .await
         .map_err(|e| format!("join native local end: {e}"))??;
     }
-    *state.login_session.lock().expect("login session lock") = None;
     state.replace_session_token(None);
     Ok(())
 }
@@ -218,13 +237,17 @@ pub(crate) async fn begin_logout(
         *active = None;
     }
     // The guard is dropped before awaiting: never hold the login lock across blocking I/O.
-    if expected.is_some() {
+    if let Some(id) = expected.as_ref() {
+        let owner = crate::native_db::end_login_connection(id)?;
         let preferences = crate::native_db::preferences_connection()?;
+        let id_for_store = id.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            preferences.with_database(|conn| {
-                crate::login_session_store::SessionStore::end(conn, expected.as_ref())?;
-                crate::login_session_store::SessionStore::finish_ending(conn, expected.as_ref())
-            })
+            let durable = preferences.with_database(|conn| {
+                crate::login_session_store::SessionStore::end(conn, Some(&id_for_store))?;
+                crate::login_session_store::SessionStore::finish_ending(conn, Some(&id_for_store))
+            });
+            let released = crate::native_db::release_login_connection(&owner);
+            durable.and(released)
         })
         .await
         .map_err(|e| format!("join native logout end: {e}"))??;
@@ -241,12 +264,15 @@ pub(crate) async fn begin_logout(
     });
 
     #[cfg(desktop)]
-    let local_clear_failed = match secure_storage::secure_clear_token() {
-        Ok(()) => false,
-        Err(error) => {
-            warn!("logout credential clear failed: {error}");
-            true
-        }
+    let local_clear_failed = match expected.as_ref() {
+        Some(id) => match secure_storage::secure_clear_token_internal(&id.to_string(), &state) {
+            Ok(()) => false,
+            Err(error) => {
+                warn!("logout credential clear failed: {error}");
+                true
+            }
+        },
+        None => false,
     };
     #[cfg(not(desktop))]
     let local_clear_failed = false;

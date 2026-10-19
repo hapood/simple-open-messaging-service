@@ -15,6 +15,7 @@ pub(crate) mod desktop_notifications;
 mod device_connection;
 mod lifetime;
 pub(crate) mod location;
+mod login_connections;
 pub(crate) mod messages;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod notifications;
@@ -33,26 +34,19 @@ use messages::{
 
 const CACHE_SCHEMA_VERSION: i64 = 1;
 
-pub(crate) fn invalidate_account_work() -> Result<(), String> {
-    drop(lifetime::CACHE_LIFETIME.invalidate()?);
-    Ok(())
-}
-
-pub(crate) fn capture_account_epoch() -> Result<u64, String> {
-    lifetime::CACHE_LIFETIME.capture()
-}
-
-pub(crate) fn is_account_epoch_current(epoch: u64) -> bool {
-    lifetime::CACHE_LIFETIME.is_current(epoch)
+/// Whether one immutable login owner is still the admitted cache owner. Identity admission for
+/// platform callbacks and notification batches; never opens or creates a connection.
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn is_login_session_current(id: &crate::login_session_store::LoginSessionId) -> bool {
+    login_connections::LOGIN_CONNECTIONS
+        .current()
+        .ok()
+        .flatten()
+        .is_some_and(|owner| owner.id() == id && owner.assert_active().is_ok())
 }
 
 fn db_path() -> Result<PathBuf, String> {
     Ok(location::path()?.to_path_buf())
-}
-
-/// The active per-login cache file. Resolved from the durable login journal; never a fixed name.
-fn cache_path() -> Result<PathBuf, String> {
-    location::active_cache_path()
 }
 
 fn configure(conn: &Connection) -> Result<(), String> {
@@ -72,47 +66,150 @@ pub(crate) fn preferences_connection() -> Result<&'static DeviceConnection, Stri
     device_connection::DEVICE_CONNECTION.capture()
 }
 
-/// Open an already-initialized account cache. Unlike `Connection::open`, this cannot create a missing
-/// database file and never repairs missing tables during a read/write command.
-fn open_cache() -> Result<Connection, String> {
-    let mut conn = Connection::open_with_flags(
-        cache_path()?,
+/// Explicit process initialization only. Repeated shell attachment keeps the original physical
+/// connection. Missing cache files are left for deliberate repair, never created by restoration.
+pub(crate) fn initialize_login_cache() -> Result<(), String> {
+    if login_connections::LOGIN_CONNECTIONS.current()?.is_some() {
+        return Ok(());
+    }
+    let _replacement = lifetime::CACHE_LIFETIME.invalidate()?;
+    if login_connections::LOGIN_CONNECTIONS.current()?.is_some() {
+        return Ok(());
+    }
+    let id = preferences_connection()?.with_database(|conn| {
+        Ok(crate::login_session_store::SessionStore::read(conn)?
+            .and_then(|journal| journal.active_session().cloned()))
+    })?;
+    let Some(id) = id else { return Ok(()) };
+    let path = location::directory()?.join(id.sqlite_filename());
+    if !path
+        .try_exists()
+        .map_err(|e| format!("inspect login cache: {e}"))?
+    {
+        return Ok(());
+    }
+    let conn = Connection::open_with_flags(
+        &path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .map_err(|e| format!("open existing native cache: {e}"))?;
+    .map_err(|e| format!("restore login cache connection: {e}"))?;
     configure(&conn)?;
-    validate_cache_schema(&conn)?;
-    // Message rows and coverage are rebuildable; drop the old contextual URLs once, then
-    // refetch canonical content without touching account metadata or device preferences.
-    let version: i64 = conn
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(|e| format!("read media content cache version: {e}"))?;
-    if version == 0 {
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|e| format!("begin media content cache cleanup: {e}"))?;
-        let current: i64 = tx
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .map_err(|e| format!("recheck media content cache version: {e}"))?;
-        if current == 0 {
-            tx.execute_batch(
-                "DELETE FROM messages;
-                 DELETE FROM message_ranges;
-                 DELETE FROM thread_sync_state;
-                 PRAGMA user_version = 1;",
-            )
-            .map_err(|e| format!("clean contextual media cache: {e}"))?;
-        }
-        tx.commit()
-            .map_err(|e| format!("commit media content cache cleanup: {e}"))?;
-    }
-    Ok(conn)
+    login_connections::LOGIN_CONNECTIONS.install(id, conn)?;
+    Ok(())
 }
 
-// Account-cache commands use the strict existing-schema path. Kept as a short local alias so every
-// command below cannot accidentally regain rusqlite's create-on-open behavior.
-fn open() -> Result<Connection, String> {
-    open_cache()
+/// Ordinary local commands capture this owner before scheduling; the closure receives only its
+/// physical connection. Maintenance exclusion is separate from irreversible login cancellation.
+fn spawn_login_database<T, F>(operation: F) -> tauri::async_runtime::JoinHandle<Result<T, String>>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
+{
+    spawn_owned_database(capture_database_work(), operation)
+}
+
+pub(crate) fn capture_database_work() -> Result<crate::login_connection::DatabaseWork, String> {
+    login_connections::LOGIN_CONNECTIONS
+        .capture()
+        .and_then(|owner| owner.capture_database_work().map_err(|e| e.to_string()))
+}
+
+/// Filesystem and platform work retains admission without acquiring a SQLite connection or lock.
+fn spawn_owned_work<T, F>(
+    work: crate::login_connection::DatabaseWork,
+    operation: F,
+) -> tauri::async_runtime::JoinHandle<Result<T, String>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        work.assert_current().map_err(|e| e.to_string())?;
+        let result = operation();
+        work.assert_current().map_err(|e| e.to_string())?;
+        result
+    })
+}
+
+/// Multi-await domain operations pass the owner captured at their original intent, never the slot.
+fn spawn_owned_database<T, F>(
+    work: Result<crate::login_connection::DatabaseWork, String>,
+    operation: F,
+) -> tauri::async_runtime::JoinHandle<Result<T, String>>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || {
+        let work = work?;
+        with_owned_database(&work, operation)
+    })
+}
+
+fn with_owned_database<T>(
+    work: &crate::login_connection::DatabaseWork,
+    operation: impl FnOnce(&mut Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    lifetime::CACHE_LIFETIME
+        .with_cache_access(|| work.with_database(operation).map_err(|e| e.to_string()))
+}
+
+/// Credential validation at explicit restoration, never at ordinary command admission.
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn restore_login_credential(token: &str) -> Result<Option<String>, String> {
+    let id = preferences_connection()?
+        .with_database(|conn| crate::login_session_store::SessionStore::restore(conn, token))?;
+    let Some(id) = id else { return Ok(None) };
+    if let Some(owner) = login_connections::LOGIN_CONNECTIONS.current()? {
+        if owner.id() != &id {
+            return Err("native login superseded".into());
+        }
+        if owner.credential().ok().as_deref() != Some(token) {
+            owner
+                .begin_activation()
+                .map_err(|e| e.to_string())?
+                .commit(token.to_string())
+                .map_err(|e| e.to_string())?;
+        }
+        owner.assert_active().map_err(|e| e.to_string())?;
+    }
+    Ok(Some(String::from(id)))
+}
+
+pub(crate) fn login_connection(
+    id: &crate::login_session_store::LoginSessionId,
+) -> Result<std::sync::Arc<crate::login_connection::LoginConnection>, String> {
+    let owner = login_connections::LOGIN_CONNECTIONS
+        .current()?
+        .ok_or("no native login connection initialized")?;
+    if owner.id() != id {
+        return Err("native login superseded".into());
+    }
+    Ok(owner)
+}
+
+/// End admission before scheduling SQL drain. The captured owner survives asynchronous cleanup;
+/// a late release cannot close or remove a successor's connection.
+pub(crate) fn end_login_connection(
+    id: &crate::login_session_store::LoginSessionId,
+) -> Result<std::sync::Arc<crate::login_connection::LoginConnection>, String> {
+    let owner = login_connection(id)?;
+    owner.end().map_err(|e| e.to_string())?;
+    Ok(owner)
+}
+
+pub(crate) fn release_login_connection(
+    owner: &std::sync::Arc<crate::login_connection::LoginConnection>,
+) -> Result<(), String> {
+    login_connections::LOGIN_CONNECTIONS.release(owner)
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_login_connection(
+    id: crate::login_session_store::LoginSessionId,
+    database: Connection,
+) -> Result<std::sync::Arc<crate::login_connection::LoginConnection>, String> {
+    login_connections::LOGIN_CONNECTIONS.install(id, database)
 }
 
 fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
@@ -374,13 +471,19 @@ pub(crate) async fn native_db_begin_login() -> Result<String, String> {
     let id = tauri::async_runtime::spawn_blocking(move || prepare_fresh_login(preferences))
         .await
         .map_err(|e| format!("join native fresh-login preparation: {e}"))??;
-    crate::realtime::runtime().refresh_account_epoch();
+    crate::realtime::runtime().refresh_login_work();
     Ok(id)
 }
 
 fn prepare_fresh_login(preferences: &DeviceConnection) -> Result<String, String> {
     // Hold the lifetime write guard until the new cache file is active and the journal is settled.
+    if let Some(owner) = login_connections::LOGIN_CONNECTIONS.current()? {
+        owner.end().map_err(|e| e.to_string())?;
+    }
     let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
+    if let Some(owner) = login_connections::LOGIN_CONNECTIONS.current()? {
+        login_connections::LOGIN_CONNECTIONS.release(&owner)?;
+    }
     preferences.with_database(|preferences| {
         // End any still-admitted login: its cache file becomes pending cleanup, deleted below.
         crate::login_session_store::SessionStore::end_current(preferences)?;
@@ -401,57 +504,102 @@ fn prepare_fresh_login(preferences: &DeviceConnection) -> Result<String, String>
         let conn = Connection::open(&cache).map_err(|e| format!("create login cache file: {e}"))?;
         configure(&conn)?;
         create_cache_schema(&conn)?;
-        location::activate_cache(cache);
         profile_avatars::clear()?;
+        login_connections::LOGIN_CONNECTIONS.install(id.clone(), conn)?;
         Ok(String::from(id))
     })
 }
 
-/// Repair the ACTIVE login's cache file (damaged/missing schema): same UUID, fresh tables.
+/// Repair the captured login's cache (damaged/missing schema), retaining its physical connection
+/// when it exists. Only this explicit lifecycle operation may create a missing file.
 #[tauri::command]
 pub(crate) async fn native_db_recreate_cache() -> Result<(), String> {
+    let owner = login_connections::LOGIN_CONNECTIONS.current()?;
+    let preferences = preferences_connection()?;
+    let id = preferences.with_database(|conn| {
+        crate::login_session_store::SessionStore::read(conn)?
+            .and_then(|journal| journal.active_session().cloned())
+            .ok_or_else(|| "no native login to repair".to_string())
+    })?;
     tauri::async_runtime::spawn_blocking(move || {
         let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
-        // Creating is intentional: a missing active file is repairable state for the SAME login.
-        let mut conn = Connection::open(cache_path()?)
-            .map_err(|e| format!("open login cache for repair: {e}"))?;
-        configure(&conn)?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Exclusive)
-            .map_err(|e| format!("begin native cache recreation: {e}"))?;
-        drop_cache_schema(&tx)?;
-        create_cache_schema(&tx)?;
-        tx.commit()
-            .map_err(|e| format!("commit native cache recreation: {e}"))?;
-        profile_avatars::clear()
+        preferences.with_database(|conn| {
+            let current = crate::login_session_store::SessionStore::read(conn)?
+                .and_then(|journal| journal.active_session().cloned());
+            if current.as_ref() != Some(&id) {
+                return Err("native login superseded".into());
+            }
+            Ok(())
+        })?;
+        let owner = match owner {
+            Some(owner) => {
+                if owner.id() != &id {
+                    return Err("native login superseded".into());
+                }
+                owner
+            }
+            None => {
+                let conn = Connection::open(location::directory()?.join(id.sqlite_filename()))
+                    .map_err(|e| format!("open login cache for repair: {e}"))?;
+                configure(&conn)?;
+                login_connections::LOGIN_CONNECTIONS.install(id, conn)?
+            }
+        };
+        owner
+            .invalidate_database_work()
+            .map_err(|e| e.to_string())?;
+        owner
+            .with_initialization_database(|conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Exclusive)
+                    .map_err(|e| format!("begin native cache recreation: {e}"))?;
+                drop_cache_schema(&tx)?;
+                create_cache_schema(&tx)?;
+                tx.commit()
+                    .map_err(|e| format!("commit native cache recreation: {e}"))?;
+                profile_avatars::clear()
+            })
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("join native cache initialization: {e}"))??;
-    // The database lifetime lock has been released. Same-token restoration needs a fresh worker
-    // generation; the OS service owner and its connectivity registration remain unchanged.
-    crate::realtime::runtime().refresh_account_epoch();
+    // The maintenance lock has been released. Repair needs a fresh cache view and worker;
+    // the OS service owner and its connectivity registration remain unchanged.
+    crate::realtime::runtime().refresh_login_work();
     Ok(())
 }
 
 #[tauri::command]
 pub(crate) async fn native_db_validate_cache() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || open_cache().map(drop))
-        .await
-        .map_err(|e| format!("join native cache validation: {e}"))?
+    let owner = login_connections::LOGIN_CONNECTIONS
+        .current()?
+        .ok_or("no native login connection initialized")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        owner
+            .with_initialization_database(|conn| validate_cache_schema(conn))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("join native cache validation: {e}"))?
 }
 
 /// Rebuild only chat messages and their derived coverage state. SQLite DDL runs in one exclusive
 /// transaction, so existing statements finish first and new database writers cannot interleave.
 #[tauri::command]
 pub(crate) async fn native_db_recreate_messages() -> Result<(), String> {
+    let owner = login_connections::LOGIN_CONNECTIONS.capture()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
-        let mut conn = open_cache()?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Exclusive)
-            .map_err(|e| format!("begin message cache recreation: {e}"))?;
-        tx.execute_batch(
-            "DROP TABLE messages;
+        owner
+            .invalidate_database_work()
+            .map_err(|e| e.to_string())?;
+        owner
+            .with_database(|conn| {
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Exclusive)
+                    .map_err(|e| format!("begin message cache recreation: {e}"))?;
+                tx.execute_batch(
+                    "DROP TABLE messages;
              DROP TABLE IF EXISTS message_ranges;
              DROP TABLE IF EXISTS thread_sync_state;
              CREATE TABLE messages (
@@ -463,6 +611,9 @@ pub(crate) async fn native_db_recreate_messages() -> Result<(), String> {
                PRIMARY KEY (user_id, thread_id, seq)
              );
              CREATE INDEX messages_user_thread_seq ON messages(user_id, thread_id, seq);
+             CREATE INDEX messages_by_origin ON messages(user_id, thread_id,
+               json_extract(payload_json, '$.publisherNamespaceId'),
+               json_extract(payload_json, '$.originSeq'));
              CREATE TABLE message_ranges (
                user_id INTEGER NOT NULL,
                thread_id INTEGER NOT NULL,
@@ -485,27 +636,28 @@ pub(crate) async fn native_db_recreate_messages() -> Result<(), String> {
                CHECK (message_head IS NULL OR message_head >= 0),
                CHECK (deleted_hwm IS NULL OR deleted_hwm >= 0)
              );",
-        )
-        .map_err(|e| format!("recreate message cache: {e}"))?;
-        tx.commit()
-            .map_err(|e| format!("commit message cache recreation: {e}"))
+                )
+                .map_err(|e| format!("recreate message cache: {e}"))?;
+                tx.commit()
+                    .map_err(|e| format!("commit message cache recreation: {e}"))
+            })
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("join message cache recreation: {e}"))??;
-    crate::realtime::runtime().refresh_account_epoch();
+    crate::realtime::runtime().refresh_login_work();
     Ok(())
 }
 
 #[tauri::command]
 pub(crate) async fn native_db_count_messages(user_id: i64) -> Result<i64, String> {
-    lifetime::spawn(move || {
-        open_cache()?
-            .query_row(
-                "SELECT COUNT(*) FROM messages WHERE user_id = ?1",
-                [user_id],
-                |row| row.get(0),
-            )
-            .map_err(|e| format!("count cached messages: {e}"))
+    spawn_login_database(move |conn| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE user_id = ?1",
+            [user_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("count cached messages: {e}"))
     })
     .await
     .map_err(|e| format!("join cached message count: {e}"))?
@@ -521,33 +673,40 @@ fn parse_json(value: String) -> Result<Value, String> {
 
 #[tauri::command]
 pub(crate) async fn native_db_clear_user(user_id: i64) -> Result<(), String> {
+    let owner = login_connections::LOGIN_CONNECTIONS.capture()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
-        let mut conn = open()?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| format!("begin user clear: {e}"))?;
-        for table in [
-            "thread_previews",
-            "threads",
-            "profile_tombs",
-            "profile_namespace_tombs",
-            "profile_namespaces",
-            "profiles",
-            "members",
-            "account_state",
-            "thread_sync_state",
-            "messages",
-            "message_ranges",
-        ] {
-            tx.execute(
-                &format!("DELETE FROM {table} WHERE user_id = ?1"),
-                [user_id],
-            )
-            .map_err(|e| format!("clear {table}: {e}"))?;
-        }
-        tx.commit().map_err(|e| format!("commit user clear: {e}"))?;
-        profile_avatars::clear_user(user_id)
+        owner
+            .invalidate_database_work()
+            .map_err(|e| e.to_string())?;
+        owner
+            .with_database(|conn| {
+                let tx = conn
+                    .transaction()
+                    .map_err(|e| format!("begin user clear: {e}"))?;
+                for table in [
+                    "thread_previews",
+                    "threads",
+                    "profile_tombs",
+                    "profile_namespace_tombs",
+                    "profile_namespaces",
+                    "profiles",
+                    "members",
+                    "account_state",
+                    "thread_sync_state",
+                    "messages",
+                    "message_ranges",
+                ] {
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE user_id = ?1"),
+                        [user_id],
+                    )
+                    .map_err(|e| format!("clear {table}: {e}"))?;
+                }
+                tx.commit().map_err(|e| format!("commit user clear: {e}"))?;
+                profile_avatars::clear_user(user_id)
+            })
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("join user clear: {e}"))?
@@ -555,13 +714,16 @@ pub(crate) async fn native_db_clear_user(user_id: i64) -> Result<(), String> {
 
 #[tauri::command]
 pub(crate) async fn native_db_clear_all() -> Result<(), String> {
+    let owner = login_connections::LOGIN_CONNECTIONS.capture()?;
     tauri::async_runtime::spawn_blocking(move || {
         let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
-        let path = cache_path()?;
-        if path.exists() {
-            let conn = open()?;
-            conn.execute_batch(
-                "DELETE FROM thread_previews;
+        owner
+            .invalidate_database_work()
+            .map_err(|e| e.to_string())?;
+        owner
+            .with_database(|conn| {
+                conn.execute_batch(
+                    "DELETE FROM thread_previews;
                  DELETE FROM threads;
                  DELETE FROM profiles;
                  DELETE FROM members;
@@ -570,21 +732,31 @@ pub(crate) async fn native_db_clear_all() -> Result<(), String> {
                  DELETE FROM messages;
                  DELETE FROM message_ranges;
                  VACUUM;",
-            )
-            .map_err(|e| format!("clear native db: {e}"))?;
-        }
-        profile_avatars::clear()
+                )
+                .map_err(|e| format!("clear native db: {e}"))?;
+                profile_avatars::clear()
+            })
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("join native db clear: {e}"))?
 }
 
 #[cfg(test)]
+#[path = "tests/native_login_command_tests.rs"]
+mod login_command_tests;
+#[cfg(test)]
+#[path = "tests/native_owned_work_tests.rs"]
+mod owned_work_tests;
+#[cfg(test)]
 #[path = "tests/native_db_tests.rs"]
 mod tests;
 
 /// The process-wide location static admits exactly one directory; every test that needs the real
 /// filesystem (per-login cache files, avatar store) shares this single instance.
+#[cfg(test)]
+pub(crate) static FILESYSTEM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 fn shared_test_location() -> &'static tempfile::TempDir {
     static DIRECTORY: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
@@ -598,14 +770,13 @@ fn shared_test_location() -> &'static tempfile::TempDir {
 /// so the whole cache-file lifecycle runs inside a single test function.
 #[cfg(test)]
 mod login_cache_tests {
-    use super::location;
     use super::*;
     use crate::login_session_store::{LoginSessionId, SessionStore};
 
     #[test]
     fn per_login_cache_files_follow_the_login_journal() {
+        let _filesystem = FILESYSTEM_TEST_LOCK.lock().unwrap();
         let temp = shared_test_location();
-        location::reset_active_cache_for_tests();
 
         // Startup creates only the device connection, even without a login journal. A TEMP trigger
         // proves that ordinary IPC preference commands use this same physical connection.
@@ -623,6 +794,11 @@ mod login_cache_tests {
             })
             .unwrap();
         initialize_preferences().unwrap(); // Shell attachment must not reconnect after headless init.
+        initialize_login_cache().unwrap();
+        assert!(login_connections::LOGIN_CONNECTIONS
+            .current()
+            .unwrap()
+            .is_none());
         tauri::async_runtime::block_on(async {
             preferences::native_db_put_preference(
                 "device".into(),
@@ -665,8 +841,52 @@ mod login_cache_tests {
         .unwrap();
         let first_file = temp.path().join(first.sqlite_filename());
         assert!(first_file.exists());
-        assert_eq!(location::active_cache_path().unwrap(), first_file);
-        open().unwrap(); // cache commands validate the active file's schema.
+        let first_owner = login_connection(&first).unwrap();
+        assert!(!is_login_session_current(&first));
+        first_owner.with_initialization_database(|conn| {
+            conn.execute_batch("CREATE TEMP TABLE owner_probe(value INTEGER); INSERT INTO owner_probe VALUES(17);").map_err(|e| e.to_string())
+        }).unwrap();
+        initialize_login_cache().unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &first_owner,
+            &login_connection(&first).unwrap()
+        ));
+        tauri::async_runtime::block_on(native_db_validate_cache()).unwrap();
+        tauri::async_runtime::block_on(native_db_recreate_cache()).unwrap();
+        first_owner
+            .with_initialization_database(|conn| {
+                let value: i64 = conn
+                    .query_row("SELECT value FROM owner_probe", [], |row| row.get(0))
+                    .map_err(|e| e.to_string())?;
+                assert_eq!(value, 17); // Repair changes schema, not the physical connection.
+                Ok(())
+            })
+            .unwrap();
+        first_owner
+            .begin_activation()
+            .unwrap()
+            .commit("secret-one".into())
+            .unwrap();
+        assert!(is_login_session_current(&first));
+        tauri::async_runtime::block_on(async {
+            account_state::native_db_initialize_account_state(42)
+                .await
+                .unwrap();
+            let proof = spawn_login_database(|conn| {
+                conn.query_row("SELECT value FROM owner_probe", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(proof, 17);
+            account_state::native_db_read_account_state(42)
+                .await
+                .unwrap();
+            login_command_tests::verify_owned_local_commands().await;
+        });
 
         // Preferences live in the shared file and survive every cache transition.
         let preferences = preferences_connection().unwrap();
@@ -679,16 +899,39 @@ mod login_cache_tests {
                 )
                 .unwrap();
                 SessionStore::activate(conn, &first, "secret-one").unwrap();
-
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            restore_login_credential("secret-one").unwrap(),
+            Some(String::from(first.clone()))
+        );
+        assert_eq!(restore_login_credential("residual-token").unwrap(), None);
+        assert!(std::sync::Arc::ptr_eq(
+            &first_owner,
+            &login_connection(&first).unwrap()
+        ));
+        preferences
+            .with_database(|conn| {
                 // Logout: the journal records cleanup ownership, the cache file stays on disk.
                 SessionStore::end(conn, Some(&first)).unwrap();
                 SessionStore::finish_ending(conn, Some(&first)).unwrap();
                 Ok(())
             })
             .unwrap();
+        login_command_tests::verify_queued_commands_end_before_sql();
+        assert!(!is_login_session_current(&first));
+        first_owner.end().unwrap();
+        release_login_connection(&first_owner).unwrap();
         assert!(first_file.exists());
-        location::reset_active_cache_for_tests();
-        assert!(location::active_cache_path().is_err()); // signed out: no active cache
+        assert!(first_owner
+            .with_initialization_database(|_| Ok(()))
+            .is_err());
+        initialize_login_cache().unwrap();
+        assert!(login_connections::LOGIN_CONNECTIONS
+            .current()
+            .unwrap()
+            .is_none());
 
         // Fresh login #2: deletes the retired file, mints a new UUID and file.
         let second = LoginSessionId::try_from(
@@ -698,13 +941,27 @@ mod login_cache_tests {
         assert_ne!(first, second);
         assert!(!first_file.exists());
         assert!(temp.path().join(second.sqlite_filename()).exists());
-        open().unwrap();
+        let second_owner = login_connection(&second).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&first_owner, &second_owner));
+        assert!(first_owner.credential().is_err());
+        release_login_connection(&first_owner).unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &second_owner,
+            &login_connection(&second).unwrap()
+        ));
 
-        // Simulated restart: the active file is re-resolved from the durable journal alone.
-        location::reset_active_cache_for_tests();
+        // Simulated process shutdown releases the connection without ending the durable login.
+        // The next explicit initialization restores the UUID from the journal, not a current path.
+        second_owner.end().unwrap();
+        release_login_connection(&second_owner).unwrap();
+        initialize_login_cache().unwrap();
         assert_eq!(
-            location::active_cache_path().unwrap(),
-            temp.path().join(second.sqlite_filename())
+            login_connections::LOGIN_CONNECTIONS
+                .current()
+                .unwrap()
+                .unwrap()
+                .id(),
+            &second
         );
 
         preferences
@@ -738,5 +995,11 @@ mod login_cache_tests {
                 Ok(())
             })
             .unwrap();
+        let restored_owner = login_connections::LOGIN_CONNECTIONS
+            .current()
+            .unwrap()
+            .unwrap();
+        restored_owner.end().unwrap();
+        release_login_connection(&restored_owner).unwrap();
     }
 }

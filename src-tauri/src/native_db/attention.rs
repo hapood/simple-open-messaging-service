@@ -7,8 +7,159 @@ use std::collections::BTreeMap;
 
 use super::client_state::{ClientGroupMetaApply, ClientGroupMetaPage};
 use super::messages::{count_unread_message_slots, MessageCountOwner};
-use super::{open, parse_json};
-use crate::{proxy::perform_api_request_with_events, ServerSessionState};
+use super::{parse_json, spawn_owned_database};
+use crate::login_connection::DatabaseWork;
+use crate::login_request::LoginRequest;
+use crate::ServerSessionState;
+
+/// One feed, drain or profile demand retains a single captured login: its cache view,
+/// request context and completion port. Constructed at the entry point before any
+/// scheduling or lane wait; later awaits never resolve the current login again.
+#[derive(Clone)]
+struct FeedIntent {
+    work: DatabaseWork,
+    request: LoginRequest,
+    user_id: i64,
+}
+
+impl FeedIntent {
+    fn from_parts(user_id: i64, work: DatabaseWork, request: LoginRequest) -> Result<Self, String> {
+        if user_id <= 0 {
+            return Err("invalid user id".into());
+        }
+        work.assert_current().map_err(|e| e.to_string())?;
+        request.assert_owner(work.owner())?;
+        Ok(Self {
+            work,
+            request,
+            user_id,
+        })
+    }
+
+    fn capture(proxy: &ServerSessionState, user_id: i64) -> Result<Self, String> {
+        let work = super::capture_database_work()?;
+        let request = LoginRequest::capture(proxy, work.owner().clone())?;
+        Self::from_parts(user_id, work, request)
+    }
+
+    /// A realtime worker prefers its run's captured binding, so an old stream never adopts a
+    /// successor installed between the loop's admission check and this capture.
+    fn capture_for_run(proxy: &ServerSessionState, user_id: i64) -> Result<Self, String> {
+        match crate::realtime::WORK_RUN.try_with(|run| run.login_request()) {
+            Ok(Ok((work, request))) => Self::from_parts(user_id, work, request),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Self::capture(proxy, user_id),
+        }
+    }
+
+    fn events(&self, app: Option<&tauri::AppHandle>) -> crate::realtime::NativeEvents {
+        crate::realtime::NativeEvents::for_database_work(app, self.work.clone())
+    }
+
+    async fn query(
+        &mut self,
+        post: bool,
+        path: String,
+        body: Option<Vec<u8>>,
+    ) -> Result<crate::proxy::ApiRequestResult, String> {
+        self.work.assert_current().map_err(|e| e.to_string())?;
+        let cancellation = self.work.cancellation();
+        let superseded = |work: &DatabaseWork| {
+            work.assert_current().map_err(|e| e.to_string())?;
+            Err::<crate::proxy::ApiRequestResult, String>("native cache work superseded".into())
+        };
+        let response = if let Some(body) = body.filter(|_| post) {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => superseded(&self.work)?,
+                response = self.request.post_query(path, body) => response?,
+            }
+        } else if post {
+            return Err("feed query has no body".into());
+        } else {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => superseded(&self.work)?,
+                response = self.request.get(path) => response?,
+            }
+        };
+        self.work.assert_current().map_err(|e| e.to_string())?;
+        Ok(response)
+    }
+
+    async fn get(&mut self, path: String) -> Result<crate::proxy::ApiRequestResult, String> {
+        self.query(false, path, None).await
+    }
+
+    async fn post_query(
+        &mut self,
+        path: String,
+        body: Vec<u8>,
+    ) -> Result<crate::proxy::ApiRequestResult, String> {
+        self.query(true, path, Some(body)).await
+    }
+
+    async fn commit_thread_page(
+        &self,
+        events: crate::realtime::NativeEvents,
+        items: Vec<ThreadFeedSnapshot>,
+        scanned: i32,
+    ) -> Result<Vec<LocalThreadAttention>, String> {
+        let work = self.work.clone();
+        let user_id = self.user_id;
+        super::spawn_owned_work(work.clone(), move || {
+            let merged = super::with_owned_database(&work, move |conn| {
+                merge_states(conn, user_id, items, Some(scanned))
+            })?;
+            work.assert_current().map_err(|e| e.to_string())?;
+            // SQL and maintenance locks are released before publication. This task owns the
+            // completion port, so dropping its awaiter cannot hide a committed page.
+            super::thread_feed_commits::THREAD_FEED_COMMITS.publish(
+                &super::thread_feed_commits::ThreadFeedCommit {
+                    user_id,
+                    login: work.owner().id(),
+                    states: &merged,
+                },
+            );
+            for snapshot in merged.iter().filter_map(|state| state.server.as_ref()) {
+                let _ = events.emit(
+                    "soms-sse-event",
+                    LocalEventPayload {
+                        event: "THREAD_ALIAS_APPLIED".into(),
+                        status: 0,
+                        message: "thread alias applied".into(),
+                        data: serde_json::json!({
+                            "userId": user_id, "threadId": snapshot.thread_id,
+                            "threadFeedId": snapshot.thread_feed_id, "alias": snapshot.alias,
+                        }),
+                    },
+                );
+            }
+            let _ = events.emit(
+                "soms-sse-event",
+                LocalEventPayload {
+                    event: "LOCAL_THREAD_FEED_COMMITTED".into(),
+                    status: 0,
+                    message: "local data committed".into(),
+                    data: serde_json::json!({ "userId": user_id, "states": &merged }),
+                },
+            );
+            Ok(merged)
+        })
+        .await
+        .map_err(|e| format!("join thread page commit: {e}"))?
+    }
+
+    async fn db<T, F>(&self, operation: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
+    {
+        spawn_owned_database(Ok(self.work.clone()), operation)
+            .await
+            .map_err(|e| format!("join feed database work: {e}"))?
+    }
+}
 
 // All native feed consumers share cursor ownership, including notification wakes.
 // This is not the cache lifetime lock: network waits must not block account cleanup.
@@ -58,24 +209,17 @@ pub(crate) async fn native_db_drain_thread_misc(
         return Ok(());
     }
     OPEN_THREAD_ID.store(thread_id, std::sync::atomic::Ordering::Release);
-    let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
+    let intent = FeedIntent::capture(&proxy, user_id)?;
     // Fire both drains concurrently; they share the `OPEN_THREAD_ID` guard.
-    let group_meta_app = app.clone();
-    let group_meta_events = crate::realtime::NativeEvents::capture(Some(&app));
-    let group_meta_proxy = proxy.inner().clone();
+    let group_meta_intent = intent.clone();
+    let group_meta_events = group_meta_intent.events(Some(&app));
     let group_meta_task = tokio::spawn(async move {
-        if let Some(_target) = group_meta_end_id {
+        if group_meta_end_id.is_some() {
             // The drain target lives in the threads table (group_meta_feed_end_id),
             // refreshed by the preceding thread-feed commit, so the caller's target
             // is redundant — `sync_group_meta_thread` reads it from `group_meta_plans`.
-            let (changed, patches, error) = sync_group_meta_thread(
-                Some(&group_meta_app),
-                &group_meta_proxy,
-                user_id,
-                thread_id,
-                epoch,
-            )
-            .await;
+            let (changed, patches, error) =
+                sync_group_meta_thread(group_meta_intent, thread_id).await;
             // Deliver committed pages even when a later page or profile
             // reference failed; the persisted cursor already advanced.
             if !changed.is_empty() {
@@ -98,21 +242,11 @@ pub(crate) async fn native_db_drain_thread_misc(
             }
         }
     });
-    let tombstone_app = app.clone();
-    let tombstone_events = crate::realtime::NativeEvents::capture(Some(&app));
-    let tombstone_proxy = proxy.inner().clone();
+    let mut tombstone_intent = intent.clone();
+    let tombstone_events = tombstone_intent.events(Some(&app));
     let tombstone_task = tokio::spawn(async move {
         if let Some(target) = tombstone_end_seq {
-            match sync_tombstone_thread(
-                Some(&tombstone_app),
-                &tombstone_proxy,
-                user_id,
-                thread_id,
-                target,
-                epoch,
-            )
-            .await
-            {
+            match sync_tombstone_thread(&mut tombstone_intent, thread_id, target).await {
                 Ok(committed) if !committed.is_empty() => {
                     let _ = tombstone_events.emit(
                         "soms-sse-event",
@@ -342,8 +476,7 @@ fn find_profile_for_key(
 }
 
 async fn handle_profile_error(
-    user_id: i64,
-    epoch: u64,
+    intent: &FeedIntent,
     key: &ProfileCacheKey,
     code: i32,
 ) -> Result<(), String> {
@@ -352,22 +485,23 @@ async fn handle_profile_error(
     }
     // Permanent loss is sparse: the tomb covers the identity across all revisions.
     if code == 50033 {
+        let intent_user_id = intent.user_id;
         let tomb = serde_json::from_value(serde_json::json!({
             "publisherNamespaceId": key.publisher_namespace_id,
             "profileNamespaceId": key.target.profile_namespace_id,
             "account": key.target.account,
         }))
         .map_err(|e| format!("invalid profile tomb key: {e}"))?;
-        super::lifetime::spawn_at(Ok(epoch), move || {
-            super::profile_namespaces::write_profile_tomb(
-                &open()?,
-                user_id,
-                &tomb,
-                super::client_state::chrono_millis(),
-            )
-        })
-        .await
-        .map_err(|e| format!("join profile tomb write: {e}"))??;
+        intent
+            .db(move |conn| {
+                super::profile_namespaces::write_profile_tomb(
+                    conn,
+                    intent_user_id,
+                    &tomb,
+                    super::client_state::chrono_millis(),
+                )
+            })
+            .await?;
         return Err("profile permanently lost (UNRECOVERABLE)".into());
     }
     Err("profile resolution failed".into())
@@ -375,50 +509,39 @@ async fn handle_profile_error(
 
 #[tauri::command]
 pub(crate) async fn native_profile_resolve(
-    app: tauri::AppHandle,
     proxy: tauri::State<'_, ServerSessionState>,
     user_id: i64,
     request: Value,
 ) -> Result<Value, String> {
-    resolve_profile(Some(&app), &proxy, user_id, request).await
+    resolve_profile(&proxy, user_id, request).await
 }
 
 async fn resolve_profile(
-    app: Option<&tauri::AppHandle>,
     proxy: &ServerSessionState,
     user_id: i64,
     request: Value,
 ) -> Result<Value, String> {
-    if user_id <= 0 {
-        return Err("invalid profile resolution request".into());
-    }
+    let mut intent = FeedIntent::capture_for_run(proxy, user_id)?;
     let (key, no_evidence) = parse_profile_request(&request)?;
-    let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
     let cached_key = key.clone();
-    if let Some(profile) = super::lifetime::spawn_at(Ok(epoch), move || {
-        find_profile_for_key(&open()?, user_id, &cached_key)
-    })
-    .await
-    .map_err(|e| format!("join cached profile lookup: {e}"))??
+    if let Some(profile) = intent
+        .db(move |conn| find_profile_for_key(conn, user_id, &cached_key))
+        .await?
     {
         return Ok(serde_json::json!({ "status": "READY", "profile": profile }));
     }
-    let response = perform_api_request_with_events(
-        app,
-        proxy,
-        "POST".into(),
-        "/api/v1/user/profile-resolution".into(),
-        std::collections::HashMap::from([("content-type".into(), "application/json".into())]),
-        Some(serde_json::to_vec(&request).map_err(|e| e.to_string())?),
-        true,
-    )
-    .await?;
+    let response = intent
+        .post_query(
+            "/api/v1/user/profile-resolution".into(),
+            serde_json::to_vec(&request).map_err(|e| e.to_string())?,
+        )
+        .await?;
     if !(200..300).contains(&response.status) {
         return Err(format!("profile-resolution HTTP {}", response.status));
     }
     let envelope: GroupMetaResponse = serde_json::from_str(&response.body)
         .map_err(|e| format!("decode profile-resolution response: {e}"))?;
-    handle_profile_error(user_id, epoch, &key, envelope.code).await?;
+    handle_profile_error(&intent, &key, envelope.code).await?;
     let data = envelope.data.ok_or("missing profile-resolution result")?;
     if data.get("status").and_then(Value::as_str) == Some("PENDING") {
         if no_evidence {
@@ -433,16 +556,14 @@ async fn resolve_profile(
         .get("profile")
         .cloned()
         .ok_or("missing resolved profile")?;
-    let committed = super::lifetime::spawn_at(Ok(epoch), move || {
-        commit_resolved_profile(&open()?, user_id, &profile)
-    })
-    .await
-    .map_err(|e| format!("join resolved profile commit: {e}"))??;
+    let user_id = intent.user_id;
+    let committed = intent
+        .db(move |conn| commit_resolved_profile(conn, user_id, &profile))
+        .await?;
     Ok(serde_json::json!({ "status": "READY", "profile": committed }))
 }
 
 pub(crate) async fn materialize_profile_event(
-    app: Option<&tauri::AppHandle>,
     proxy: &ServerSessionState,
     user_id: i64,
     key: &Value,
@@ -468,7 +589,6 @@ pub(crate) async fn materialize_profile_event(
         .filter(|value| *value > 0)
         .ok_or("profile event has no revision")?;
     let result = resolve_profile(
-        app,
         proxy,
         user_id,
         serde_json::json!({
@@ -598,12 +718,10 @@ fn commit_group_meta_profile(
 }
 
 async fn resolve_group_meta_profile(
-    app: Option<&tauri::AppHandle>,
-    proxy: &ServerSessionState,
-    user_id: i64,
-    epoch: u64,
+    intent: &mut FeedIntent,
     reference: GroupMetaProfileReference,
 ) -> Result<bool, String> {
+    let user_id = intent.user_id;
     let target = serde_json::json!({
         "profileNamespaceId": reference.namespace_id,
         "account": reference.account,
@@ -617,17 +735,16 @@ async fn resolve_group_meta_profile(
         })
     } else {
         let thread_id = reference.thread_id;
-        let (group_account, authority_namespace_id): (String, i64) =
-            super::lifetime::spawn_at(Ok(epoch), move || {
-                open()?.query_row(
+        let (group_account, authority_namespace_id): (String, i64) = intent
+            .db(move |conn| {
+                conn.query_row(
                     "SELECT subject_account, authority_namespace_id FROM threads WHERE user_id=?1 AND thread_id=?2 AND kind='GROUP'",
                     params![user_id, thread_id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(|e| format!("read group account for profile demand: {e}"))
             })
-            .await
-            .map_err(|e| format!("join group account lookup: {e}"))??;
+            .await?;
         // Member snapshots remain scoped to the group's publisher.
         serde_json::json!({
             "publisherNamespaceId": authority_namespace_id,
@@ -636,23 +753,19 @@ async fn resolve_group_meta_profile(
             "groupAccount": group_account,
         })
     };
-    let response = perform_api_request_with_events(
-        app,
-        proxy,
-        "POST".into(),
-        "/api/v1/user/profile-resolution".into(),
-        std::collections::HashMap::from([("content-type".into(), "application/json".into())]),
-        Some(serde_json::to_vec(&demand).map_err(|e| e.to_string())?),
-        true,
-    )
-    .await?;
+    let response = intent
+        .post_query(
+            "/api/v1/user/profile-resolution".into(),
+            serde_json::to_vec(&demand).map_err(|e| e.to_string())?,
+        )
+        .await?;
     if !(200..300).contains(&response.status) {
         return Err(format!("profile-resolution HTTP {}", response.status));
     }
     let envelope: GroupMetaResponse = serde_json::from_str(&response.body)
         .map_err(|e| format!("decode profile-resolution response: {e}"))?;
     let (key, _) = parse_profile_request(&demand)?;
-    handle_profile_error(user_id, epoch, &key, envelope.code).await?;
+    handle_profile_error(intent, &key, envelope.code).await?;
     let data = envelope.data.ok_or("missing profile-resolution result")?;
     match data.get("status").and_then(Value::as_str) {
         Some("READY") => {
@@ -660,11 +773,9 @@ async fn resolve_group_meta_profile(
                 .get("profile")
                 .cloned()
                 .ok_or("missing resolved profile")?;
-            super::lifetime::spawn_at(Ok(epoch), move || {
-                commit_group_meta_profile(&open()?, user_id, &reference, &profile)
-            })
-            .await
-            .map_err(|e| format!("join resolved profile commit: {e}"))??;
+            intent
+                .db(move |conn| commit_group_meta_profile(conn, user_id, &reference, &profile))
+                .await?;
             return Ok(true);
         }
         Some("PENDING") => {
@@ -803,11 +914,8 @@ fn group_meta_plans(conn: &Connection, user_id: i64) -> Result<Vec<GroupMetaPlan
 /// page commits. Returns the changed thread ids (just `thread_id` when any
 /// page committed).
 async fn sync_group_meta_thread(
-    app: Option<&tauri::AppHandle>,
-    proxy: &ServerSessionState,
-    user_id: i64,
+    mut intent: FeedIntent,
     thread_id: i64,
-    epoch: u64,
 ) -> (
     Vec<i64>,
     Vec<super::client_state::GroupMetaCommitPatch>,
@@ -815,16 +923,8 @@ async fn sync_group_meta_thread(
 ) {
     let mut changed = Vec::new();
     let mut patches = Vec::new();
-    let result = sync_group_meta_thread_unchecked(
-        app,
-        proxy,
-        user_id,
-        thread_id,
-        epoch,
-        &mut changed,
-        &mut patches,
-    )
-    .await;
+    let result =
+        sync_group_meta_thread_unchecked(&mut intent, thread_id, &mut changed, &mut patches).await;
     changed.sort_unstable();
     changed.dedup();
     (changed, patches, result.err())
@@ -835,13 +935,14 @@ async fn sync_group_meta_thread(
 fn subscribe_meta_flight(
     user_id: i64,
     thread_id: i64,
-    epoch: u64,
+    login: &crate::login_session_store::LoginSessionId,
 ) -> (std::sync::Arc<std::sync::atomic::AtomicBool>, impl Sized) {
     let token = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let cancelled = token.clone();
+    let login = login.clone();
     let subscription = super::thread_feed_commits::THREAD_FEED_COMMITS.subscribe(move |commit| {
         if commit.user_id == user_id
-            && commit.epoch == epoch
+            && *commit.login == login
             && commit.states.iter().any(|state| {
                 i64::from(state.thread_id) == thread_id
                     && state.server.as_ref().is_some_and(|snapshot| {
@@ -856,19 +957,18 @@ fn subscribe_meta_flight(
 }
 
 async fn sync_group_meta_thread_unchecked(
-    app: Option<&tauri::AppHandle>,
-    proxy: &ServerSessionState,
-    user_id: i64,
+    intent: &mut FeedIntent,
     thread_id: i64,
-    epoch: u64,
     changed: &mut Vec<i64>,
     patches: &mut Vec<super::client_state::GroupMetaCommitPatch>,
 ) -> Result<(), String> {
-    let (token, _subscription) = subscribe_meta_flight(user_id, thread_id, epoch);
+    let user_id = intent.user_id;
+    let (token, _subscription) =
+        subscribe_meta_flight(user_id, thread_id, intent.work.owner().id());
     let active = || token.load(std::sync::atomic::Ordering::Acquire);
-    let plans = super::lifetime::spawn_at(Ok(epoch), move || group_meta_plans(&open()?, user_id))
-        .await
-        .map_err(|e| format!("join group-meta plan read: {e}"))??;
+    let plans = intent
+        .db(move |conn| group_meta_plans(conn, user_id))
+        .await?;
     for plan in plans.into_iter().filter(|plan| plan.thread_id == thread_id) {
         if !active() || open_thread_id() != Some(thread_id) {
             return Ok(());
@@ -894,16 +994,16 @@ async fn sync_group_meta_thread_unchecked(
             .map_err(|e| e.to_string())?;
         if mode == "full" && recovery_through.is_none() {
             let boundary = through.to_string();
-            super::lifetime::spawn_at(Ok(epoch), move || {
-                super::client_state::begin_group_meta_recovery(
-                    &mut open()?,
-                    user_id,
-                    plan.thread_id,
-                    &boundary,
-                )
-            })
-            .await
-            .map_err(|e| format!("join group-meta recovery reset: {e}"))??;
+            intent
+                .db(move |conn| {
+                    super::client_state::begin_group_meta_recovery(
+                        conn,
+                        user_id,
+                        plan.thread_id,
+                        &boundary,
+                    )
+                })
+                .await?;
             changed.push(plan.thread_id);
             after = 0;
         }
@@ -912,21 +1012,12 @@ async fn sync_group_meta_thread_unchecked(
             if !active() || open_thread_id() != Some(thread_id) {
                 return Ok(());
             }
-            drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
+            intent.work.assert_current().map_err(|e| e.to_string())?;
             let path = format!(
                 "/api/v1/user/group-meta?threadId={}&mode={mode}&after={after}&take=100&through={through}",
                 plan.thread_id
             );
-            let response = perform_api_request_with_events(
-                app,
-                proxy,
-                "GET".into(),
-                path,
-                std::collections::HashMap::new(),
-                None,
-                true,
-            )
-            .await;
+            let response = intent.get(path).await;
             if !active() {
                 return Ok(());
             }
@@ -954,16 +1045,13 @@ async fn sync_group_meta_thread_unchecked(
                     .ok_or("invalid group-meta recovery boundary")?;
                 let boundary = through.to_string();
                 let thread_id = plan.thread_id;
-                super::lifetime::spawn_at(Ok(epoch), move || {
-                    super::client_state::begin_group_meta_recovery(
-                        &mut open()?,
-                        user_id,
-                        thread_id,
-                        &boundary,
-                    )
-                })
-                .await
-                .map_err(|e| format!("join group-meta recovery reopen: {e}"))??;
+                intent
+                    .db(move |conn| {
+                        super::client_state::begin_group_meta_recovery(
+                            conn, user_id, thread_id, &boundary,
+                        )
+                    })
+                    .await?;
                 changed.push(plan.thread_id);
                 after = 0;
                 mode = "full";
@@ -1000,11 +1088,9 @@ async fn sync_group_meta_thread_unchecked(
                 namespace_id: plan.namespace_id,
                 page,
             };
-            let patch = super::lifetime::spawn_at(Ok(epoch), move || {
-                super::client_state::apply_group_meta_page(&mut open()?, user_id, update)
-            })
-            .await
-            .map_err(|e| format!("join group-meta page commit: {e}"))??;
+            let patch = intent
+                .db(move |conn| super::client_state::apply_group_meta_page(conn, user_id, update))
+                .await?;
             if let Some(patch) = patch {
                 patches.push(patch);
                 changed.push(plan.thread_id);
@@ -1023,11 +1109,9 @@ async fn sync_group_meta_thread_unchecked(
     if !active() {
         return Ok(());
     }
-    let references = super::lifetime::spawn_at(Ok(epoch), move || {
-        unresolved_group_meta_profiles(&open()?, user_id)
-    })
-    .await
-    .map_err(|e| format!("join unresolved Group Meta profile read: {e}"))??;
+    let references = intent
+        .db(move |conn| unresolved_group_meta_profiles(conn, user_id))
+        .await?;
     for reference in references
         .into_iter()
         .filter(|reference| reference.thread_id == thread_id)
@@ -1038,7 +1122,7 @@ async fn sync_group_meta_thread_unchecked(
         let changed_thread_id = reference.thread_id;
         // Profile warming is optional: one failed reference must not discard
         // the already-committed Group Meta pages of this drain.
-        match resolve_group_meta_profile(app, proxy, user_id, epoch, reference).await {
+        match resolve_group_meta_profile(intent, reference).await {
             Ok(true) => changed.push(changed_thread_id),
             Ok(false) => {}
             Err(error) => warn!("group-meta profile reference failed; next wake retries: {error}"),
@@ -1066,28 +1150,25 @@ struct TombstoneResponse {
 /// away lets the current page commit, then stops. Returns the committed
 /// tombstones so the caller can emit a notification.
 async fn sync_tombstone_thread(
-    app: Option<&tauri::AppHandle>,
-    proxy: &ServerSessionState,
-    user_id: i64,
+    intent: &mut FeedIntent,
     thread_id: i64,
     target: i64,
-    epoch: u64,
 ) -> Result<Vec<Value>, String> {
+    let user_id = intent.user_id;
     let mut committed = Vec::new();
-    let mut hwm = super::lifetime::spawn_at(Ok(epoch), move || {
-        let conn = open()?;
-        let hwm: Option<i64> = conn
-            .query_row(
-                "SELECT deleted_hwm FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
-                rusqlite::params![user_id, thread_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| format!("get deleted hwm: {e}"))?;
-        Ok::<_, String>(hwm.unwrap_or(0))
-    })
-    .await
-    .map_err(|e| format!("join tombstone hwm read: {e}"))??;
+    let mut hwm = intent
+        .db(move |conn| {
+            let hwm: Option<i64> = conn
+                .query_row(
+                    "SELECT deleted_hwm FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
+                    rusqlite::params![user_id, thread_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| format!("get deleted hwm: {e}"))?;
+            Ok::<_, String>(hwm.unwrap_or(0))
+        })
+        .await?;
     loop {
         if open_thread_id() != Some(thread_id) {
             return Ok(committed);
@@ -1095,7 +1176,7 @@ async fn sync_tombstone_thread(
         if hwm >= target {
             return Ok(committed);
         }
-        drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
+        intent.work.assert_current().map_err(|e| e.to_string())?;
         let body = serde_json::to_vec(&serde_json::json!({
             "threadId": thread_id,
             "after": hwm,
@@ -1103,16 +1184,9 @@ async fn sync_tombstone_thread(
             "through": target,
         }))
         .map_err(|e| format!("encode tombstone request: {e}"))?;
-        let response = perform_api_request_with_events(
-            app,
-            proxy,
-            "POST".into(),
-            "/api/v1/deleted-messages/query".into(),
-            std::collections::HashMap::from([("content-type".into(), "application/json".into())]),
-            Some(body),
-            true,
-        )
-        .await?;
+        let response = intent
+            .post_query("/api/v1/deleted-messages/query".into(), body)
+            .await?;
         if !(200..300).contains(&response.status) {
             return Err(format!("tombstone HTTP {}", response.status));
         }
@@ -1129,8 +1203,14 @@ async fn sync_tombstone_thread(
         let has_more = page.has_more;
         let tombstones = page.tombstones;
         let page_committed = tombstones.clone();
-        super::messages::native_db_apply_deleted_messages(user_id, thread_id, tombstones, scanned)
-            .await?;
+        super::messages::apply_deleted_messages(
+            intent.work.clone(),
+            user_id,
+            thread_id,
+            tombstones,
+            scanned,
+        )
+        .await?;
         committed.extend(page_committed);
         hwm = scanned;
         if !has_more {
@@ -1220,89 +1300,91 @@ pub(crate) async fn native_thread_feed_changes(
     if user_id <= 0 || after < 0 {
         return Err("invalid thread feed changes request".into());
     }
-    super::lifetime::spawn(move || read_feed_changes(&mut open()?, user_id, after))
+    super::spawn_login_database(move |conn| read_feed_changes(conn, user_id, after))
         .await
         .map_err(|e| format!("join thread feed changes: {e}"))?
 }
 
-pub(crate) async fn sync_thread_feed(
-    app: Option<&tauri::AppHandle>,
-    proxy: &ServerSessionState,
-    user_id: i64,
+/// A wake's structural barrier, thread pages and notification assembly share this exact binding.
+pub(crate) struct NativeThreadFeedIntent {
+    feed: FeedIntent,
+    events: crate::realtime::NativeEvents,
+    target: i32,
+}
+
+impl NativeThreadFeedIntent {
+    pub(crate) fn capture(
+        app: Option<&tauri::AppHandle>,
+        proxy: &ServerSessionState,
+        user_id: i64,
+        target: i32,
+    ) -> Result<Self, String> {
+        if target < -1 {
+            return Err("invalid thread feed owner or target".into());
+        }
+        let feed = FeedIntent::capture_for_run(proxy, user_id)?;
+        let events = feed.events(app);
+        Ok(Self {
+            feed,
+            events,
+            target,
+        })
+    }
+
+    pub(crate) fn database_work(&self) -> DatabaseWork {
+        self.feed.work.clone()
+    }
+
+    pub(crate) fn state_barrier(
+        &self,
+        target: i64,
+    ) -> impl std::future::Future<Output = Result<i64, String>> + Send + 'static {
+        super::state_feed_sync::synchronize_owned(
+            self.database_work(),
+            self.feed.request.clone(),
+            self.feed.user_id,
+            target,
+        )
+    }
+
+    pub(crate) async fn synchronize(self) -> Result<ThreadFeedSyncResult, String> {
+        sync_thread_feed_intent(self.feed, self.events, self.target).await
+    }
+}
+
+async fn sync_thread_feed_intent(
+    mut intent: FeedIntent,
+    events: crate::realtime::NativeEvents,
     target: i32,
 ) -> Result<ThreadFeedSyncResult, String> {
-    if user_id <= 0 || target < -1 {
-        return Err("invalid thread feed owner or target".into());
-    }
-    let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
-    let _sync = THREAD_FEED_SYNC.lock().await;
-    let events = crate::realtime::NativeEvents::capture(app);
-    let _renderer = super::thread_feed_commits::THREAD_FEED_COMMITS.subscribe(move |commit| {
-        if commit.user_id != user_id || commit.epoch != epoch {
-            return;
+    let user_id = intent.user_id;
+    let cancellation = intent.work.cancellation();
+    let _sync = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => {
+            intent.work.assert_current().map_err(|e| e.to_string())?;
+            return Err("native cache work superseded".into());
         }
-        for snapshot in commit
-            .states
-            .iter()
-            .filter_map(|state| state.server.as_ref())
-        {
-            let _ = events.emit(
-                "soms-sse-event",
-                LocalEventPayload {
-                    event: "THREAD_ALIAS_APPLIED".into(),
-                    status: 0,
-                    message: "thread alias applied".into(),
-                    data: serde_json::json!({
-                        "userId": user_id, "threadId": snapshot.thread_id,
-                        "threadFeedId": snapshot.thread_feed_id, "alias": snapshot.alias,
-                    }),
-                },
-            );
-        }
-        let _ = events.emit(
-            "soms-sse-event",
-            LocalEventPayload {
-                event: "LOCAL_THREAD_FEED_COMMITTED".into(),
-                status: 0,
-                message: "local data committed".into(),
-                data: serde_json::json!({ "userId": user_id, "states": commit.states }),
-            },
-        );
-    });
-    drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
-    let mut cursor = super::lifetime::spawn_at(Ok(epoch), move || {
-        let conn = open()?;
-        read_cursor(&conn, user_id)
-    })
-    .await
-    .map_err(|e| format!("join thread feed cursor read: {e}"))??;
+        lane = THREAD_FEED_SYNC.lock() => lane,
+    };
+    intent.work.assert_current().map_err(|e| e.to_string())?;
+    let mut cursor = intent.db(move |conn| read_cursor(conn, user_id)).await?;
     let mut states: BTreeMap<i32, LocalThreadAttention> = BTreeMap::new();
     // Only scheduled polling lacks a wake head. Its first page discovers the server boundary.
     let mut target = (target >= 0).then_some(target);
     let outcome: Result<(), String> = async {
         while target.is_none_or(|target| cursor < target) {
-            drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
+            intent.work.assert_current().map_err(|e| e.to_string())?;
             let through = target;
-            let response = perform_api_request_with_events(
-                app,
-                proxy,
-                "POST".into(),
-                "/api/v1/thread-feed".into(),
-                std::collections::HashMap::from([(
-                    "content-type".into(),
-                    "application/json".into(),
-                )]),
-                Some(if let Some(through) = through {
-                    feed_request(cursor, through)?
-                } else {
-                    serde_json::to_vec(
-                        &serde_json::json!({"after":cursor,"take":100,"previewCount":3}),
-                    )
+            let body = if let Some(through) = through {
+                feed_request(cursor, through)?
+            } else {
+                serde_json::to_vec(&serde_json::json!({"after":cursor,"take":100,"previewCount":3}))
                     .map_err(|e| e.to_string())?
-                }),
-                true,
-            )
-            .await?;
+            };
+            let response = intent
+                .post_query("/api/v1/thread-feed".into(), body)
+                .await?;
             if !(200..300).contains(&response.status) {
                 return Err(format!("thread feed HTTP {}", response.status));
             }
@@ -1315,24 +1397,9 @@ pub(crate) async fn sync_thread_feed(
             validate_sync_page(&page, cursor, through)?;
             let scanned = page.scanned_through;
             let head = page.thread_feed_end_id;
-            let renderer = _renderer.clone();
-            let merged = super::lifetime::spawn_at_then(
-                Ok(epoch),
-                move || merge_states(&mut open()?, user_id, page.items, Some(scanned)),
-                move |merged| {
-                    // Keep the subscription alive through a detached blocking commit.
-                    let _renderer = renderer;
-                    super::thread_feed_commits::THREAD_FEED_COMMITS.publish(
-                        &super::thread_feed_commits::ThreadFeedCommit {
-                            user_id,
-                            epoch,
-                            states: merged,
-                        },
-                    );
-                },
-            )
-            .await
-            .map_err(|e| format!("join thread feed merge: {e}"))??;
+            let merged = intent
+                .commit_thread_page(events.clone(), page.items, scanned)
+                .await?;
             for mut state in merged {
                 state.notification_changed |= states
                     .get(&state.thread_id)
@@ -1349,7 +1416,7 @@ pub(crate) async fn sync_thread_feed(
         Ok(())
     }
     .await;
-    drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
+    intent.work.assert_current().map_err(|e| e.to_string())?;
     // A later network failure must not hide earlier committed pages from the live renderer.
     Ok(ThreadFeedSyncResult {
         states: states.into_values().collect(),
@@ -1957,7 +2024,7 @@ pub(crate) async fn native_db_project_thread_attention(
     thread_id: i32,
     owner: MessageCountOwner,
 ) -> Result<ThreadAttentionProjection, String> {
-    super::lifetime::spawn(move || project_attention(&mut open()?, user_id, thread_id, &owner))
+    super::spawn_login_database(move |conn| project_attention(conn, user_id, thread_id, &owner))
         .await
         .map_err(|e| format!("join attention projection: {e}"))?
 }
@@ -1966,12 +2033,9 @@ pub(crate) async fn native_db_project_thread_attention(
 pub(crate) async fn native_db_thread_states(
     user_id: i64,
 ) -> Result<Vec<LocalThreadAttention>, String> {
-    super::lifetime::spawn(move || {
-        let conn = open()?;
-        read_states(&conn, user_id)
-    })
-    .await
-    .map_err(|e| format!("join attention query: {e}"))?
+    super::spawn_login_database(move |conn| read_states(conn, user_id))
+        .await
+        .map_err(|e| format!("join attention query: {e}"))?
 }
 
 #[tauri::command]
@@ -1980,10 +2044,14 @@ pub(crate) async fn native_db_advance_thread_read(
     thread_id: i32,
     seq: i32,
 ) -> Result<LocalThreadAttention, String> {
-    super::lifetime::spawn(move || advance_read(&mut open()?, user_id, thread_id, seq))
+    super::spawn_login_database(move |conn| advance_read(conn, user_id, thread_id, seq))
         .await
         .map_err(|e| format!("join attention read: {e}"))?
 }
+
+#[cfg(test)]
+#[path = "../tests/native_thread_feed_owner_tests.rs"]
+mod owner_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2211,10 +2279,13 @@ mod tests {
     #[test]
     fn committed_departure_cancels_only_matching_meta_flights_and_rejoin_cannot_revive_them() {
         use super::super::thread_feed_commits::{ThreadFeedCommit, THREAD_FEED_COMMITS};
+        use crate::login_session_store::LoginSessionId;
         use std::sync::atomic::Ordering;
-        let (token, _subscription) = subscribe_meta_flight(98765, 9, 42);
-        let (other_user, _other) = subscribe_meta_flight(98766, 9, 42);
-        let (other_epoch, _epoch) = subscribe_meta_flight(98765, 9, 43);
+        let login = LoginSessionId::try_from(uuid::Uuid::new_v4().to_string()).unwrap();
+        let successor = LoginSessionId::try_from(uuid::Uuid::new_v4().to_string()).unwrap();
+        let (token, _subscription) = subscribe_meta_flight(98765, 9, &login);
+        let (other_user, _other) = subscribe_meta_flight(98766, 9, &login);
+        let (other_login, _login) = subscribe_meta_flight(98765, 9, &successor);
         let mut state = snapshot(2, 0);
         state.thread_id = 9;
         state.kind = "GROUP".into();
@@ -2227,20 +2298,20 @@ mod tests {
         }];
         THREAD_FEED_COMMITS.publish(&ThreadFeedCommit {
             user_id: 98765,
-            epoch: 42,
+            login: &login,
             states: &states,
         });
         assert!(!token.load(Ordering::Acquire));
         assert!(other_user.load(Ordering::Acquire));
-        assert!(other_epoch.load(Ordering::Acquire));
+        assert!(other_login.load(Ordering::Acquire));
         states[0].server.as_mut().unwrap().conversation_state = "ACTIVE".into();
         THREAD_FEED_COMMITS.publish(&ThreadFeedCommit {
             user_id: 98765,
-            epoch: 42,
+            login: &login,
             states: &states,
         });
         assert!(!token.load(Ordering::Acquire));
-        let (fresh, _fresh_subscription) = subscribe_meta_flight(98765, 9, 42);
+        let (fresh, _fresh_subscription) = subscribe_meta_flight(98765, 9, &login);
         assert!(fresh.load(Ordering::Acquire));
     }
 
@@ -2722,7 +2793,7 @@ mod tests {
 fn read_cursor(conn: &Connection, user_id: i64) -> Result<i32, String> {
     let cursor: Option<i64> = conn
         .query_row(
-            "SELECT thread_feed_cursor FROM account_state WHERE user_id=?1",
+            "SELECT COALESCE(thread_feed_cursor,0) FROM account_state WHERE user_id=?1",
             [user_id],
             |row| row.get(0),
         )

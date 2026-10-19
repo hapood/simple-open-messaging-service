@@ -112,11 +112,15 @@ class RealtimeService : Service(), RealtimeCallbacks {
         }
     }
 
-    override fun onEvent(generation: Long, type: String, dataJson: String) = dispatch(generation) {
-        // Routing to a platform media owner is adapter work; the transport frame remains opaque.
-        if (type == "CALL_SIGNAL" || type == "CALL_EVENT") CallController.onFrame(type, dataJson)
+    override fun onEvent(generation: Long, envelopeJson: String) = dispatch(generation) {
+        val envelope = JSONObject(envelopeJson)
+        if (!RustRuntimeBridge.isLoginSessionCurrent(envelope.getString("loginSessionId"))) return@dispatch
+        val type = envelope.getString("event")
+        // Platform media routing reads data, but WebView delivery preserves the full Rust envelope.
+        if (type == "CALL_SIGNAL" || type == "CALL_EVENT")
+            CallController.onFrame(type, envelope.getJSONObject("data").toString())
         if (SomsMessagingService.appInForeground)
-            SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__(${SomsBridge.jsonStr(type)}, $dataJson);")
+            SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__($envelopeJson);")
     }
 
     override fun onState(generation: Long, state: String) = dispatch(generation) {
@@ -127,10 +131,12 @@ class RealtimeService : Service(), RealtimeCallbacks {
         SomsBridge.eval("window.__SOMS_RECONNECT_IN__ && window.__SOMS_RECONNECT_IN__($ms);")
     }
 
-    override fun onForceLogout(generation: Long, reason: String?) = dispatch(generation) {
-        SomsSecureStore.setSessionToken(this, null)
-        val payload = JSONObject().put("message", reason ?: JSONObject.NULL)
-        SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('FORCE_LOGOUT', $payload);")
+    override fun onForceLogout(generation: Long, envelopeJson: String) = dispatch(generation) {
+        val envelope = JSONObject(envelopeJson)
+        val loginSessionId = envelope.getString("loginSessionId")
+        if (!RustRuntimeBridge.isLoginSessionCurrent(loginSessionId)) return@dispatch
+        SomsSecureStore.setSessionToken(this, null, loginSessionId)
+        SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__($envelopeJson);")
         adapter.destroy()
         stopSelf()
     }
@@ -146,7 +152,7 @@ class RealtimeService : Service(), RealtimeCallbacks {
 
     override fun onNotifications(generation: Long, batch: NativeNotificationBatch) = dispatch(generation) {
         SomsMessagingService.renderNativeBatch(this, batch) {
-            adapter.isAlive && RustRuntimeBridge.realtimeIsCurrent(generation) && RustRuntimeBridge.isAccountEpochCurrent(batch.accountEpoch)
+            adapter.isAlive && RustRuntimeBridge.realtimeIsCurrent(generation) && RustRuntimeBridge.isLoginSessionCurrent(batch.loginSessionId)
         }
     }
 

@@ -1,3 +1,5 @@
+#[cfg(not(desktop))]
+use crate::proxy::send_with_headers_deadline;
 use crate::*;
 
 /// Shell-wide streaming upload: POST a file straight from its on-disk `path` to `${origin}${endpoint}`

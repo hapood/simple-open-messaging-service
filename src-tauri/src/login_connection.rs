@@ -18,6 +18,7 @@ pub(crate) enum ConnectionError {
     ActivationInProgress,
     EmptyCredential,
     Closed,
+    CacheReset,
     Poisoned,
     Operation(String),
 }
@@ -30,6 +31,7 @@ impl std::fmt::Display for ConnectionError {
             Self::ActivationInProgress => f.write_str("native login activation already started"),
             Self::EmptyCredential => f.write_str("empty native login credential"),
             Self::Closed => f.write_str("native login connection is closed"),
+            Self::CacheReset => f.write_str("native cache work superseded"),
             Self::Poisoned => f.write_str("native login connection lock poisoned"),
             Self::Operation(error) => f.write_str(error),
         }
@@ -47,25 +49,21 @@ pub(crate) struct LoginConnection {
     id: LoginSessionId,
     phase: AtomicU8,
     cancellation: CancellationToken,
+    cache_work: Mutex<CancellationToken>,
     database: Mutex<Option<Connection>>,
     credential: Mutex<Option<String>>,
 }
 
-/// Captured once from the ended owner for a bounded remote revoke. It must never be used to look up
-/// another owner's credential or database. Keeping this value does not keep the database open.
-pub(crate) struct EndedConnection {
-    pub(crate) id: LoginSessionId,
-    pub(crate) credential: Option<String>,
-}
-
 impl LoginConnection {
-    /// Consumes the single physical connection initialized for this UUID. No create/open callback is
-    /// retained, so neither an operation nor an old Arc can reopen a closed database.
+    /// Consumes the single physical connection initialized for this UUID. No opener is retained,
+    /// so neither an operation nor an old Arc can reopen a closed database.
     pub(crate) fn preparing(id: LoginSessionId, database: Connection) -> Arc<Self> {
+        let cancellation = CancellationToken::new();
         Arc::new(Self {
             id,
             phase: AtomicU8::new(PREPARING),
-            cancellation: CancellationToken::new(),
+            cache_work: Mutex::new(cancellation.child_token()),
+            cancellation,
             database: Mutex::new(Some(database)),
             credential: Mutex::new(None),
         })
@@ -77,6 +75,33 @@ impl LoginConnection {
 
     pub(crate) fn cancellation(&self) -> CancellationToken {
         self.cancellation.clone()
+    }
+
+    /// Cache/schema maintenance has a separate cancellation domain. It never changes login UUID,
+    /// credential or physical connection, and is not advanced by token installation.
+    pub(crate) fn capture_database_work(self: &Arc<Self>) -> Result<DatabaseWork, ConnectionError> {
+        self.assert_active()?;
+        let cancellation = self
+            .cache_work
+            .lock()
+            .map_err(|_| ConnectionError::Poisoned)?
+            .clone();
+        let work = DatabaseWork {
+            owner: self.clone(),
+            cancellation,
+        };
+        work.assert_current()?;
+        Ok(work)
+    }
+
+    pub(crate) fn invalidate_database_work(&self) -> Result<(), ConnectionError> {
+        let mut work = self
+            .cache_work
+            .lock()
+            .map_err(|_| ConnectionError::Poisoned)?;
+        work.cancel();
+        *work = self.cancellation.child_token();
+        Ok(())
     }
 
     pub(crate) fn assert_active(&self) -> Result<(), ConnectionError> {
@@ -105,6 +130,30 @@ impl LoginConnection {
         })
     }
 
+    /// Explicit cache initialization/validation only. Preparing owners admit no business work, but
+    /// lifecycle restoration must validate their schema before credential activation.
+    pub(crate) fn with_initialization_database<T>(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, String>,
+    ) -> Result<T, ConnectionError> {
+        let check = || {
+            if self.phase.load(Ordering::Acquire) == ENDED {
+                Err(ConnectionError::Superseded)
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
+        let mut database = self
+            .database
+            .lock()
+            .map_err(|_| ConnectionError::Poisoned)?;
+        check()?;
+        let result = operation(database.as_mut().ok_or(ConnectionError::Closed)?);
+        check()?;
+        result.map_err(ConnectionError::Operation)
+    }
+
     /// Execute against the already-owned physical connection. The callback cannot retain a borrowed
     /// SQLite reference. Check again after obtaining the lock, since the operation may have queued
     /// behind another transaction while logout ended admission.
@@ -125,20 +174,6 @@ impl LoginConnection {
         result.map_err(ConnectionError::Operation)
     }
 
-    /// Capture the owner before scheduling. Neither this task nor its callback has an opener or a
-    /// mutable current-session lookup. Cache-maintenance fences remain the caller's responsibility.
-    pub(crate) fn spawn_database<T, F>(
-        self: &Arc<Self>,
-        operation: F,
-    ) -> tauri::async_runtime::JoinHandle<Result<T, ConnectionError>>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
-    {
-        let owner = self.clone();
-        tauri::async_runtime::spawn_blocking(move || owner.with_database(operation))
-    }
-
     pub(crate) fn credential(&self) -> Result<String, ConnectionError> {
         self.assert_active()?;
         let credential = self
@@ -149,20 +184,16 @@ impl LoginConnection {
         credential.clone().ok_or(ConnectionError::NotActive)
     }
 
-    /// Synchronous, irreversible cancellation. No SQLite or platform operation runs here. Repeated
-    /// end calls cannot obtain another copy of the remote-revoke credential.
-    pub(crate) fn end(&self) -> Result<EndedConnection, ConnectionError> {
+    /// Synchronous, irreversible cancellation. No SQLite or platform operation runs here.
+    /// Clears the owner-held credential; repeated end calls are idempotent.
+    pub(crate) fn end(&self) -> Result<(), ConnectionError> {
         self.phase.store(ENDED, Ordering::Release);
         self.cancellation.cancel();
-        let credential = self
-            .credential
+        self.credential
             .lock()
             .map_err(|_| ConnectionError::Poisoned)?
             .take();
-        Ok(EndedConnection {
-            id: self.id.clone(),
-            credential,
-        })
+        Ok(())
     }
 
     /// Resource release only: never deletes a file. Run off the UI/runtime executor, after end.
@@ -187,16 +218,51 @@ impl LoginConnection {
     }
 }
 
+/// A captured view of one login's cache. A deliberate repair cancels the old view while retaining
+/// the login owner; ending the login cancels all views through the parent token.
+#[derive(Clone)]
+pub(crate) struct DatabaseWork {
+    owner: Arc<LoginConnection>,
+    cancellation: CancellationToken,
+}
+
+impl DatabaseWork {
+    pub(crate) fn owner(&self) -> &Arc<LoginConnection> {
+        &self.owner
+    }
+
+    pub(crate) fn cancellation(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    pub(crate) fn assert_current(&self) -> Result<(), ConnectionError> {
+        self.owner.assert_active()?;
+        if self.cancellation.is_cancelled() {
+            return Err(ConnectionError::CacheReset);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn with_database<T>(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, String>,
+    ) -> Result<T, ConnectionError> {
+        self.assert_current()?;
+        let result = self.owner.with_database(|conn| {
+            self.assert_current().map_err(|e| e.to_string())?;
+            operation(conn)
+        });
+        self.assert_current()?;
+        result
+    }
+}
+
 pub(crate) struct ActivationPermit {
     owner: Arc<LoginConnection>,
     committed: bool,
 }
 
 impl ActivationPermit {
-    pub(crate) fn id(&self) -> &LoginSessionId {
-        self.owner.id()
-    }
-
     pub(crate) fn commit(mut self, token: String) -> Result<(), ConnectionError> {
         if token.is_empty() {
             return Err(ConnectionError::EmptyCredential);
@@ -273,6 +339,70 @@ mod tests {
     }
 
     #[test]
+    fn initialization_uses_the_same_connection_without_admitting_business_work() {
+        let conn = preparing();
+        conn.with_initialization_database(|db| {
+            db.execute_batch("CREATE TEMP TABLE proof(value INTEGER); INSERT INTO proof VALUES(9);")
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(
+            conn.with_database(|_| Ok(())).unwrap_err(),
+            ConnectionError::NotActive
+        );
+        conn.begin_activation()
+            .unwrap()
+            .commit("token".into())
+            .unwrap();
+        let value = conn
+            .with_database(|db| {
+                db.query_row("SELECT value FROM proof", [], |row| row.get::<_, i64>(0))
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        assert_eq!(value, 9);
+        conn.end().unwrap();
+        assert_eq!(
+            conn.with_initialization_database(|_| Ok(())).unwrap_err(),
+            ConnectionError::Superseded
+        );
+    }
+
+    #[test]
+    fn cache_reset_cancels_old_work_without_changing_login_or_connection() {
+        let owner = active("same-token");
+        owner
+            .with_database(|conn| {
+                conn.execute_batch("CREATE TEMP TABLE retained(value INTEGER);")
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        let old = owner.capture_database_work().unwrap();
+        owner.invalidate_database_work().unwrap();
+        assert!(old.cancellation().is_cancelled());
+        assert_eq!(
+            old.with_database(|_| Ok(())).unwrap_err(),
+            ConnectionError::CacheReset
+        );
+        assert_eq!(owner.credential().unwrap(), "same-token");
+        assert!(!owner.cancellation().is_cancelled());
+        let next = owner.capture_database_work().unwrap();
+        next.with_database(|conn| {
+            conn.execute("INSERT INTO retained VALUES(1)", [])
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        owner.end().unwrap();
+        assert!(next.cancellation().is_cancelled());
+        owner.invalidate_database_work().unwrap();
+        assert!(matches!(
+            owner.capture_database_work(),
+            Err(ConnectionError::Superseded)
+        ));
+    }
+
+    #[test]
     fn all_operations_use_the_same_physical_connection() {
         let conn = active("original");
         conn.with_database(|db| {
@@ -295,8 +425,7 @@ mod tests {
     fn late_activation_cannot_revive_an_ended_connection() {
         let conn = preparing();
         let permit = conn.begin_activation().unwrap();
-        assert_eq!(permit.id(), conn.id());
-        assert!(conn.end().unwrap().credential.is_none());
+        conn.end().unwrap();
         assert_eq!(
             permit.commit("late-token".into()).unwrap_err(),
             ConnectionError::Superseded
@@ -305,7 +434,7 @@ mod tests {
             conn.assert_active().unwrap_err(),
             ConnectionError::Superseded
         );
-        assert!(conn.end().unwrap().credential.is_none());
+        conn.end().unwrap();
         conn.close().unwrap();
     }
 
@@ -333,15 +462,15 @@ mod tests {
     }
 
     #[test]
-    fn end_captures_only_the_original_credential_once_and_never_touches_a_successor() {
+    fn end_takes_only_the_original_credential_once_and_never_touches_a_successor() {
         let old = active("old-token");
-        let old_id = old.id().clone();
-        let ended = old.end().unwrap();
+        assert_eq!(old.credential().unwrap(), "old-token");
+        old.end().unwrap();
         old.close().unwrap();
         let next = active("new-token");
-        assert_eq!(ended.id, old_id);
-        assert_eq!(ended.credential.as_deref(), Some("old-token"));
-        assert!(old.end().unwrap().credential.is_none());
+        // The slot is emptied by the first end; a repeated end cannot mint another copy.
+        assert!(old.credential().is_err());
+        old.end().unwrap();
         assert!(old.cancellation().is_cancelled());
         assert!(!next.cancellation().is_cancelled());
         assert_eq!(next.credential().unwrap(), "new-token");
@@ -371,7 +500,8 @@ mod tests {
         });
         ready.recv().unwrap();
         // The SQL callback is still blocked. End must not acquire its database lock.
-        assert_eq!(conn.end().unwrap().credential.as_deref(), Some("original"));
+        assert_eq!(conn.credential().unwrap(), "original");
+        conn.end().unwrap();
         assert!(conn.cancellation().is_cancelled());
         release.send(()).unwrap();
         assert_eq!(
@@ -386,11 +516,16 @@ mod tests {
         let original = active("old-token");
         // Hold only the SQL lock: the queued task cannot execute its callback yet.
         let database = original.database.lock().unwrap();
-        let queued = original.spawn_database(|db| {
-            db.execute("INSERT INTO entries VALUES('obsolete')", [])
-                .map_err(|e| e.to_string())?;
-            Ok(())
-        });
+        let queued = {
+            let original = original.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                original.with_database(|db| {
+                    db.execute("INSERT INTO entries VALUES('obsolete')", [])
+                        .map_err(|e| e.to_string())?;
+                    Ok(())
+                })
+            })
+        };
         original.end().unwrap();
         drop(database);
         original.close().unwrap();

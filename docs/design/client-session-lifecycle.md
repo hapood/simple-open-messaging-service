@@ -6,10 +6,23 @@ Status: accepted target design; implementation is not complete.
 
 Browser authentication, restoration, logout and push-worker admission use the
 UUID journal and session-owned IndexedDB names. Browser fresh-login preparation
-performs deferred deletion before sending authentication requests. The renderer's
+performs deferred deletion before sending authentication requests. Restoration
+requires a durable recoverable journal: a residual cookie without one records a
+signed-out state and releases resources without minting a UUID, adopting unknown
+caches or deleting files. Explicit authentication remains possible afterward.
+The renderer's
 lifecycle mirror now captures cancellable work scopes carrying the host-supplied
 UUID instead of generating numeric login epochs. Native admitted-work migration
 is not complete.
+
+Renderer authentication carries an immutable operation context instead of reading
+a mutable pending UUID when a response arrives. Delayed HTTP responses, native
+admission acknowledgments and restoration failures cannot publish renderer state
+or start a later persistence/repair step for a successor. Thread-list reads carry
+the original UUID work scope through asynchronous boundaries. Projection resets
+within a login use separate cancellation, not another login counter. The unused
+legacy resolution dispatcher has been removed. Native credential storage itself
+still needs Rust owner-scoped admission; renderer checks do not make it atomic.
 
 Native logout now releases the renderer's resources without deleting account
 storage. Rust captures the ended bearer and origin before acknowledging logout;
@@ -24,35 +37,160 @@ the credential), and pending cache cleanup. Fresh-login preparation runs before
 the authentication request: the renderer invokes `native_db_begin_login`, Rust drains
 cache work, deletes retired per-login cache files, mints the UUID, and creates
 the dedicated `soms-session-<uuid>.sqlite` cache file; cache schema metadata
-lives inside that file. Activation and logout transitions validate the UUID
-captured by the original operation, and a persisted credential whose login ended
-is discarded at restoration instead of reviving the session. Per-request native
-command admission still uses the existing numeric epochs.
+lives inside that file. The native journal validates supplied UUIDs for activation
+and logout, and a persisted credential whose login ended is discarded at
+restoration instead of reviving the session. Runtime credential transitions are
+not yet immutable-owner-scoped. Native cache command admission now captures the
+existing owner and its cancellable cache view instead of a numeric login epoch.
+Native QR polling and authentication retries still need a separate review to
+verify that they reuse one preparing owner rather than repeat fresh preparation.
 
 UUID-named SQLite cache files are implemented: the shared preferences file keeps
 only device/account preferences, and each login owns `soms-session-<uuid>.sqlite`
-(retained at logout, deleted by the next fresh login). Existing native login
-epochs remain in use for admitted work.
+(retained at logout, deleted by the next fresh login). Legacy numeric admission
+helpers and implicit cache-opening/current-path APIs have been removed. Schema
+maintenance retains a plain read/write exclusion lock, without an epoch counter.
 
-The Rust `LoginConnection` core now owns an immutable UUID, one physical SQLite
-connection, a credential and cancellation state. Activation permits survive
-asynchronous persistence without holding lifecycle locks and reject completion
-after end. Database tasks capture the owner before scheduling. End cancels
-admission without waiting for SQLite; close drains access and retains the cache
-file. This core has unit coverage in the main Cargo package, but it is not yet
-wired into application initialization or existing native command entry points.
-Those entry points still open caches through the current-path API and must be
-migrated; UUID-named files alone do not establish connection ownership.
+The Rust `LoginConnection` now owns an immutable UUID, one physical SQLite
+connection, a credential and cancellation state. Shell and headless Android
+initialization restore an existing cache connection; fresh-login preparation
+installs a new owner only after releasing the old one. Repeated initialization
+keeps the original connection. Validation and explicit schema repair capture the
+owner before scheduling; repair retains the physical connection when present.
+Missing files are created only by explicit repair or fresh preparation.
+
+Activation permits survive asynchronous journal persistence and reject completion
+after owner end. Token installation requires a UUID. Preparing connections admit
+only explicit lifecycle schema access, not business reads. Renderer restoration
+installs the recovered token before account-cache hydration, keeping its UI signed
+out until hydration completes. Android bootstrap validates its stored token against
+the journal. Logout ends and releases the captured connection without deleting it.
+
+Local account-state, contact/profile, thread-list and profile-namespace commands,
+plus pointwise message reads/writes and message counts, capture the active owner
+before SQL scheduling and borrow its connection. These commands no longer open a
+database or capture a numeric login epoch. Explicit cache/message repair and cache
+clearing also retain the captured connection. SQL callbacks share a schema-maintenance
+exclusion lock with explicit repair. Main-package tests use connection-local TEMP
+state to prove reuse across initialization, repair and ordinary command execution.
+A released old owner cannot remove a successor from the slot.
+
+State-feed synchronization captures its owner and request context synchronously
+before returning a future. Cursor reads, page commits and recovery commits retain
+that owner across lane waits and HTTP. Its GET transport snapshots the credential,
+clients and configured endpoint candidates; one reachability replay can select only
+those candidates and never publishes a global origin change. Ending the owner
+cancels the actual request, including a stalled response body. Socket tests verify
+credential/endpoint isolation, local failover and transport cancellation.
+
+Same-login schema repair has a separate cache-work cancellation domain, not a
+second login identity or counter. Repair cancels old cache views while retaining
+the UUID, credential and physical connection. Migrated local commands capture a
+view before scheduling; state-feed and message history carry it across network
+waits. A pre-repair page cannot commit into repaired tables. Ending a login cancels
+every cache view.
+
+Message-history intents capture their work, request and completion port together.
+Bootstrap, directional/around reads, cursor recovery and page transactions never
+reopen a database or reacquire the current login. Read-only POST query replay uses
+the captured JSON body, credential and endpoint candidates. Cached-message writes
+also retain their original work through commit and notification. Main-package
+socket tests cover bootstrap/paging, cached around reads, cursor recovery, real
+transport cancellation on end/repair, and invalid-page rollback. Queued history
+and page commits cannot switch to an installed successor.
+
+Native local completion ports now retain a captured cache view rather than a
+numeric login epoch or a mutable global-token comparison. Every local completion
+carries its original `loginSessionId`, including the state-feed SSE consumer.
+Renderer completion admission rejects missing or mismatched UUIDs at delivery, so
+an event already in the host queue cannot enter a same-account fresh login.
+Realtime runs now bind one immutable login instead of numeric epochs and
+global-token comparison. A run captures a cache view plus a request context
+(credential, clients, endpoint candidates) at identity binding; connection
+attempts, receipts, origin probing and publication all use that captured
+context. Origin selection on a bound run is private: probes race only the
+captured candidates and never publish global routing changes. Login end cancels
+the stream through the owner's cancellation token; explicit lifecycle admission
+(fresh login, restoration, deliberate repair) alone installs a new binding.
+
+Android notification batches carry their assembling login's UUID instead of an
+account epoch. Assembly runs through the captured cache view; batch delivery and
+the queued platform actions re-check that UUID against the admitted owner. The
+state-feed JNI envelope dropped its epoch echo; its worker already carries the
+owner. Both native event adapters now forward the complete Rust envelope rather
+than reconstructing a message from its type and data. Android live events,
+HELLO replay, reconnect and force-logout commands retain `loginSessionId` through
+JNI and WebView delivery. Background notification completion envelopes are also
+serialized in Rust, not synthesized by Kotlin. The Android renderer checks its
+captured UUID at delivery before publishing any event or acting on force logout;
+missing or mismatched UUIDs are rejected without adopting the current identity.
+Replay snapshots carry both the transport generation and a complete owned HELLO.
+Main-package Rust tests, Angular bridge/storage tests and Android Rust/Kotlin
+compilation cover these contracts; device instrumentation has not been run.
+
+Thread-feed wakes now capture a `NativeThreadFeedIntent` before returning a
+future. Its structural state-feed barrier, thread pages and Android notification
+assembly share the exact cache view and request owner; none reacquires the run's
+current binding after network waits. Cancellation releases a lane waiter even
+while another task still holds the lane. Each blocking page task owns both its
+transaction and publication port, so dropping its awaiter does not hide a page
+that commits. Publication occurs after SQL and maintenance locks are released.
+A state-feed-created account row with no thread cursor starts thread paging at
+zero rather than failing on its nullable cursor.
+
+Main-package regression tests cover delayed polling across end/repair, queued
+page rejection, detached commit publication, actual socket cancellation during
+a stalled response body, original endpoint/bearer retention across a structural
+barrier and two thread pages, connection-local TEMP trigger evidence, and
+preservation of an earlier committed cursor when a later page is invalid.
+
+Profile materialization, group-meta drains and tombstone drains also use captured
+cache views and request contexts rather than implicit cache opening. Their
+capture timing and partial-page publication semantics still need dedicated
+cross-network regression review; the thread-feed tests do not establish those
+separate boundaries.
+
+Filesystem avatar reads and desktop notification scheduling no longer borrow a
+dummy SQLite connection. They check their captured cache view before execution
+and before returning a result, without holding SQL or maintenance locks across
+platform operations. Tests cover admission rejection, result rejection after
+end/repair, and independence from SQL/maintenance locks. These checks do not
+cancel a platform side effect that has already started.
+
+Global credential publication and platform secure-store writes are now
+strictly owner-atomic:
+- `set_session_token`, `clear_session_token`, desktop `secure_set_token` and
+  `secure_clear_token` require the caller's login session UUID. Setting a
+  credential validates that the active `LoginConnection` exists and matches the
+  exact token; a mismatched token or obsolete UUID fails admission.
+- Clearing a credential checks the UUID of the session being ended: if a successor
+  login is already active, late clears from an earlier session are no-ops that
+  never wipe the successor's token or keyring entry.
+- Android's JNI `updateSessionToken` requires the session UUID and checks it
+  against the active owner's credential via `update_session_token_admitted`.
+  `SomsSecureStore` under its process monitor records `KEY_LOGIN_SESSION_ID`
+  alongside the encrypted token, preventing delayed logout commands from wiping
+  a successor login's Android credentials.
+- Unowned residual credentials that fail restoration on cold start are purged
+  only via dedicated `discardResidualToken` / `secure_clear_residual_token`
+  entry points, which fail closed if any login session is active.
+
+This is a partial integration, not complete native ownership. Profile
+materialization, group-meta drains and tombstone drains use captured cache
+views and request contexts, but their cross-network cancellation and partial-page
+semantics still need dedicated regression tests.
+Native voice/upload orchestration also remains outside the completed ownership
+migration and requires a separate review of its desktop/mobile split.
+These remaining areas must be resolved before connection isolation holds for all native work.
 
 Device preferences and durable session metadata now share one physical
 process-scoped `DeviceConnection`, explicitly initialized by the shell or
 headless Android bootstrap. Repeated shell attachment does not reconnect.
 Preference IPC commands and journal transitions capture this existing owner
 before scheduling, then borrow its SQLite connection only for local work.
-Uninitialized access fails rather than opening a database. Connection-local TEMP
-state tests verify physical reuse, including concurrent initialization and
-ordinary preference IPC. This device-database integration does not yet migrate
-the UUID-owned login cache commands or make runtime credential transitions atomic.
+Uninitialized access fails rather than opening a database. Connection-local
+TEMP state tests verify physical reuse, including concurrent initialization and
+ordinary preference IPC.
 
 ## Purpose and related designs
 

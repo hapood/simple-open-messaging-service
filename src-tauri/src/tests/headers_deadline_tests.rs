@@ -1,4 +1,5 @@
 use super::*;
+use crate::proxy::{send_with_headers_deadline, HeadersError};
 
 /// A peer that completes the TCP handshake then never sends a byte — reqwest is "connected" but
 /// waits for headers that never arrive, so the deadline fires.

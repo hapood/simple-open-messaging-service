@@ -197,15 +197,15 @@ class SomsMessagingService : FirebaseMessagingService() {
             val descriptors = batch.descriptors(ClientStateDb.getNotificationPreviewMode(),
                 ctx.getString(R.string.notif_private_body), ctx.getString(R.string.notif_message_retracted),
                 ctx.getString(R.string.notif_message_removed))
-            RustRuntimeBridge.withCurrentSession(batch.accountEpoch) {
+            RustRuntimeBridge.withCurrentSession(batch.loginSessionId) {
                 if (SomsSecureStore.getCurrentUserId(ctx) == userId &&
                     SomsSecureStore.getSessionToken(ctx) == token) {
                     renderDescriptors(ctx, if (appInForeground) descriptors.filter {
                         it.data.optInt("threadId", -1) != activeThreadId
                     } else descriptors, allowAlert)
                     if (appInForeground) {
-                        val committed = JSONObject(batch.metadata).getJSONObject("commit")
-                        SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('LOCAL_THREAD_FEED_COMMITTED', $committed);")
+                        val committed = JSONObject(batch.metadata).getJSONObject("commitEvent")
+                        SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__($committed);")
                     }
                 }
             }

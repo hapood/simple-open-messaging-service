@@ -286,6 +286,34 @@ pub(crate) async fn pick_origin_race(state: &ServerSessionState) -> Option<Strin
     .await
 }
 
+/// Probe captured endpoints without reading or publishing global routing state. Dropping the
+/// future cancels both probes; primary wins when both become healthy in the same poll.
+pub(crate) async fn race_origin_candidates(
+    primary: &str,
+    secondary: &str,
+) -> Option<(String, OriginMode)> {
+    let primary_probe = probe_client_compat(primary);
+    let secondary_probe = probe_client_compat(secondary);
+    tokio::pin!(primary_probe, secondary_probe);
+    tokio::select! {
+        biased;
+        primary_ok = &mut primary_probe => {
+            if primary_ok {
+                Some((primary.to_string(), OriginMode::Primary))
+            } else {
+                secondary_probe.await.then(|| (secondary.to_string(), OriginMode::Secondary))
+            }
+        }
+        secondary_ok = &mut secondary_probe => {
+            if secondary_ok {
+                Some((secondary.to_string(), OriginMode::Secondary))
+            } else {
+                primary_probe.await.then(|| (primary.to_string(), OriginMode::Primary))
+            }
+        }
+    }
+}
+
 /// Probe without holding a lifecycle lock; the caller admits the synchronous selection commit.
 pub(crate) async fn pick_origin_race_with_commit(
     state: &ServerSessionState,
@@ -313,43 +341,7 @@ pub(crate) async fn pick_origin_race_with_commit(
     // Single-flight the race. Do not serially "cheap-check" the current address first: when it is down,
     // every such check burns a full timeout before the reachable fallback is even considered.
     let _guard = state.select_lock.lock().await;
-    let chosen = {
-        let primary_probe = probe_client_compat(&primary);
-        let secondary_probe = probe_client_compat(&secondary);
-        tokio::pin!(primary_probe, secondary_probe);
-
-        // Resolve as soon as one endpoint is healthy. Leaving this scope immediately drops the losing
-        // reqwest future, cancelling its in-flight request and releasing its connection resources.
-        // If the first completed probe failed, wait only for the other already-running probe.
-        // `biased` preserves primary preference when both are ready together.
-        tokio::select! {
-            biased;
-            primary_ok = &mut primary_probe => {
-                #[cfg(debug_assertions)]
-                log::info!("origin race: primary={primary} healthy={primary_ok}");
-                if primary_ok {
-                    Some((primary.clone(), OriginMode::Primary))
-                } else {
-                    let secondary_ok = secondary_probe.await;
-                    #[cfg(debug_assertions)]
-                    log::info!("origin race: secondary={secondary} healthy={secondary_ok}");
-                    secondary_ok.then(|| (secondary.clone(), OriginMode::Secondary))
-                }
-            }
-            secondary_ok = &mut secondary_probe => {
-                #[cfg(debug_assertions)]
-                log::info!("origin race: secondary={secondary} healthy={secondary_ok}");
-                if secondary_ok {
-                    Some((secondary.clone(), OriginMode::Secondary))
-                } else {
-                    let primary_ok = primary_probe.await;
-                    #[cfg(debug_assertions)]
-                    log::info!("origin race: primary={primary} healthy={primary_ok}");
-                    primary_ok.then(|| (primary.clone(), OriginMode::Primary))
-                }
-            }
-        }
-    };
+    let chosen = race_origin_candidates(&primary, &secondary).await;
     let Some((origin, mode)) = chosen else {
         warn!("pick_origin_race: both origins unreachable; staying on {active}");
         return None;

@@ -1,14 +1,16 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
 use super::attention::{read_state, LocalThreadAttention};
 use super::messages::{count_unread_message_slots, MessageCountOwner};
+use crate::login_connection::DatabaseWork;
 
 /// Metadata and image bytes travel separately across JNI. Images are encoded files, not pixels.
+/// `login_session_id` is the immutable owner that assembled this batch.
 pub(crate) struct NotificationBatch {
-    pub(crate) account_epoch: u64,
+    pub(crate) login_session_id: String,
     pub(crate) metadata: String,
     pub(crate) avatars: Vec<Vec<u8>>,
 }
@@ -74,44 +76,47 @@ fn sender_profile(
     )
 }
 
-#[cfg(target_os = "android")]
-pub(crate) async fn synchronize(
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn synchronize(
     proxy: &crate::ServerSessionState,
     user_id: i64,
     target: i32,
-) -> Result<NotificationBatch, String> {
-    let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
-    let result = super::attention::sync_thread_feed(None, proxy, user_id, target).await?;
-    from_result_at(user_id, result.states, result.cursor, result.error, epoch).await
+) -> impl std::future::Future<Output = Result<NotificationBatch, String>> + Send + 'static {
+    let captured = super::attention::NativeThreadFeedIntent::capture(None, proxy, user_id, target);
+    async move {
+        let intent = captured?;
+        let work = intent.database_work();
+        let result = intent.synchronize().await?;
+        from_result_at(work, user_id, result.states, result.cursor, result.error).await
+    }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", test))]
 pub(crate) async fn from_result(
+    work: DatabaseWork,
     user_id: i64,
     result: &super::attention::ThreadFeedSyncResult,
 ) -> Result<NotificationBatch, String> {
-    let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
     from_result_at(
+        work,
         user_id,
         result.states.clone(),
         result.cursor,
         result.error.clone(),
-        epoch,
     )
     .await
 }
 
-#[cfg(target_os = "android")]
 async fn from_result_at(
+    work: DatabaseWork,
     user_id: i64,
     states: Vec<LocalThreadAttention>,
     cursor: i32,
     error: Option<String>,
-    epoch: u64,
 ) -> Result<NotificationBatch, String> {
-    super::lifetime::spawn_at(Ok(epoch), move || {
+    super::spawn_owned_database(Ok(work.clone()), move |conn| {
         let has_threads = !states.is_empty();
-        let mut batch = assemble(&mut super::open()?, user_id, states, error)?;
+        let mut batch = assemble(conn, user_id, states, error)?;
         let mut metadata: Value =
             serde_json::from_str(&batch.metadata).map_err(|e| e.to_string())?;
         let mut changes = Vec::new();
@@ -123,8 +128,14 @@ async fn from_result_at(
             "cursor": cursor,
             "changes": changes,
         });
+        metadata["commitEvent"] = crate::realtime::login_event_payload(
+            work.owner().id(),
+            "LOCAL_THREAD_FEED_COMMITTED",
+            "local data committed",
+            metadata["commit"].clone(),
+        );
         batch.metadata = serde_json::to_string(&metadata).map_err(|e| e.to_string())?;
-        batch.account_epoch = epoch;
+        batch.login_session_id = String::from(work.owner().id().clone());
         Ok(batch)
     })
     .await
@@ -136,9 +147,12 @@ mod tests {
     use super::super::attention::ThreadFeedSnapshot;
     use super::*;
     use base64::Engine;
+    use rusqlite::params;
 
-    fn avatar_store() {
+    fn avatar_store() -> std::sync::MutexGuard<'static, ()> {
+        let guard = super::super::FILESYSTEM_TEST_LOCK.lock().unwrap();
         super::super::shared_test_location();
+        guard
     }
 
     fn db() -> Connection {
@@ -268,7 +282,7 @@ mod tests {
         let delivered = state(2);
         save(&conn, &delivered);
         let bytes = vec![0_u8, 128, 255];
-        avatar_store();
+        let _filesystem = avatar_store();
         let digest = super::super::profile_avatars::save(
             1,
             Some(&base64::engine::general_purpose::STANDARD.encode(&bytes)),
@@ -306,7 +320,7 @@ mod tests {
         let mut delivered = state(2);
         delivered.server.as_mut().unwrap().previews = vec![preview(6, 2, "LIVE", Some("new"))];
         save(&conn, &delivered);
-        avatar_store();
+        let _filesystem = avatar_store();
         let bytes = vec![10_u8, 20, 30];
         let digest = super::super::profile_avatars::save(
             1,
@@ -420,10 +434,49 @@ mod tests {
         let mut conn = db();
         save(&conn, &state(2));
         let batch = assemble(&mut conn, 1, vec![], None).unwrap();
-        assert_eq!(batch.account_epoch, 0);
+        assert_eq!(batch.login_session_id, "");
         let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
         assert_eq!(metadata["threads"], serde_json::json!([]));
         assert!(batch.avatars.is_empty());
+    }
+
+    #[tokio::test]
+    async fn batch_assembly_carries_its_login_and_rejects_ended_work() {
+        use crate::login_connection::LoginConnection;
+        use crate::login_session_store::LoginSessionId;
+        let database = Connection::open_in_memory().unwrap();
+        crate::native_db::create_cache_schema(&database).unwrap();
+        let id = LoginSessionId::try_from(uuid::Uuid::new_v4().to_string()).unwrap();
+        let owner = LoginConnection::preparing(id.clone(), database);
+        owner
+            .begin_activation()
+            .unwrap()
+            .commit("notification-token".into())
+            .unwrap();
+        let work = owner.capture_database_work().unwrap();
+        let result = crate::native_db::attention::ThreadFeedSyncResult {
+            states: vec![],
+            cursor: 0,
+            error: None,
+        };
+        let batch = from_result(work, 1, &result).await.unwrap();
+        assert_eq!(batch.login_session_id, String::from(id.clone()));
+        let metadata: Value = serde_json::from_str(&batch.metadata).unwrap();
+        assert_eq!(
+            metadata["commitEvent"]["loginSessionId"],
+            batch.login_session_id
+        );
+        assert_eq!(
+            metadata["commitEvent"]["event"],
+            "LOCAL_THREAD_FEED_COMMITTED"
+        );
+        assert_eq!(metadata["commitEvent"]["data"], metadata["commit"]);
+        let stale = owner.capture_database_work().unwrap();
+        owner.end().unwrap();
+        match from_result(stale, 1, &result).await {
+            Err(error) => assert_eq!(error, "native login superseded"),
+            Ok(_) => panic!("an ended login assembled a notification batch"),
+        }
     }
 }
 
@@ -591,6 +644,6 @@ fn assemble(
     Ok(NotificationBatch {
         metadata,
         avatars,
-        account_epoch: 0,
+        login_session_id: String::new(),
     })
 }

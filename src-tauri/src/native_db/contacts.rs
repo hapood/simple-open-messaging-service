@@ -1,8 +1,10 @@
 use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
 
-use super::{open, parse_json};
+use super::parse_json;
 
+/// Test fixture only: production namespace bindings are written by profile-namespace commits.
+#[cfg(test)]
 pub(super) fn register_namespace(
     conn: &rusqlite::Connection,
     user_id: i64,
@@ -188,9 +190,9 @@ pub(crate) async fn native_db_get_profile(
     user_id: i64,
     demand: ProfileDemandWire,
 ) -> Result<Option<Value>, String> {
-    super::lifetime::spawn(move || {
+    super::spawn_login_database(move |conn| {
         read_profile(
-            &open()?,
+            conn,
             user_id,
             demand.publisher_namespace_id,
             demand.target.profile_namespace_id,
@@ -209,8 +211,8 @@ pub(crate) async fn native_db_get_group_member(
     account: String,
     namespace_id: i64,
 ) -> Result<Option<Value>, String> {
-    super::lifetime::spawn(move || {
-        let value = open()?
+    super::spawn_login_database(move |conn| {
+        let value = conn
             .query_row(
                 "SELECT json_object(
                'threadId',member.thread_id,'account',member.member_account,
@@ -260,8 +262,7 @@ pub(crate) async fn native_db_query_group_members(
     take: i64,
     search: String,
 ) -> Result<Vec<Value>, String> {
-    super::lifetime::spawn(move || {
-        let conn = open()?;
+    super::spawn_login_database(move |conn| {
         let cursor: Value = serde_json::from_str(&after_identity)
             .unwrap_or_else(|_| serde_json::json!([0, ""]));
         let after_namespace = cursor.get(0).and_then(Value::as_i64).unwrap_or(0);

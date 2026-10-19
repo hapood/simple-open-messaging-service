@@ -1618,9 +1618,10 @@ class MainActivity : TauriActivity() {
          *  (FCM / WorkManager) can authenticate while the WebView is suspended. Called from JS on login;
          *  pass null/empty on logout to clear. */
         @JavascriptInterface
-        fun setSessionToken(token: String?) {
+        fun setSessionToken(token: String?, sessionUuid: String) {
             val a = activityRef.get() ?: return
-            SomsSecureStore.setSessionToken(a, token)
+            require(sessionUuid.isNotBlank()) { "sessionUuid must not be blank" }
+            SomsSecureStore.setSessionToken(a, token, sessionUuid)
             // The realtime service lifecycle follows the session: a freshly-persisted token (login) opens
             // the /events stream the WebView consumes; clearing it (logout) tears the stream down.
             // A login may race the activity leaving the screen. Start/promote only while visible;
@@ -1635,6 +1636,14 @@ class MainActivity : TauriActivity() {
                     Log.w("SomsActivity", "realtime login start skipped: ${e.javaClass.simpleName}: ${e.message}")
                 }
             }
+        }
+
+        @JavascriptInterface
+        fun discardResidualToken() {
+            val a = activityRef.get() ?: return
+            SomsSecureStore.discardResidualToken(a)
+            SomsBridge.DeepLink.clear()
+            a.stopService(Intent(a, RealtimeService::class.java))
         }
 
         /** Synchronous read of the persisted session token from encrypted storage — the SAME store
@@ -1695,9 +1704,13 @@ class MainActivity : TauriActivity() {
             val snapshot = org.json.JSONObject(raw)
             val generation = snapshot.getLong("generation")
             val hello = snapshot.getJSONObject("hello")
+            val loginSessionId = hello.getString("loginSessionId")
             activity.runOnUiThread {
-                if (token != SomsSecureStore.getSessionToken(activity) || !RustRuntimeBridge.realtimeIsCurrent(generation)) return@runOnUiThread
-                SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('HELLO', $hello);")
+                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                if (token != SomsSecureStore.getSessionToken(activity) ||
+                    !RustRuntimeBridge.realtimeIsCurrent(generation) ||
+                    !RustRuntimeBridge.isLoginSessionCurrent(loginSessionId)) return@runOnUiThread
+                SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__($hello);")
             }
         }
 

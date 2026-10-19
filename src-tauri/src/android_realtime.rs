@@ -49,18 +49,13 @@ impl Sink for Callbacks {
         let _ = env.with_local_frame(32, |env| -> jni::errors::Result<()> {
             let callback = self.object.as_obj();
             match output {
-                Output::Event(kind, envelope) => {
-                    let kind = JObject::from(env.new_string(kind)?);
-                    let data = JObject::from(env.new_string(envelope["data"].to_string())?);
+                Output::Event(envelope) => {
+                    let envelope = JObject::from(env.new_string(envelope.to_string())?);
                     env.call_method(
                         callback,
                         "onEvent",
-                        "(JLjava/lang/String;Ljava/lang/String;)V",
-                        &[
-                            JValue::Long(lease as i64),
-                            JValue::Object(&kind),
-                            JValue::Object(&data),
-                        ],
+                        "(JLjava/lang/String;)V",
+                        &[JValue::Long(lease as i64), JValue::Object(&envelope)],
                     )?;
                 }
                 Output::State(state) => {
@@ -81,15 +76,19 @@ impl Sink for Callbacks {
                     )?;
                 }
                 Output::ForceLogout(reason) => {
-                    let reason = match reason {
-                        Some(v) => JObject::from(env.new_string(v)?),
-                        None => JObject::null(),
+                    let Some(envelope) = run.event_payload(
+                        "FORCE_LOGOUT",
+                        reason.as_deref().unwrap_or(""),
+                        serde_json::Value::Null,
+                    ) else {
+                        return Ok(());
                     };
+                    let envelope = JObject::from(env.new_string(envelope.to_string())?);
                     env.call_method(
                         callback,
                         "onForceLogout",
                         "(JLjava/lang/String;)V",
-                        &[JValue::Long(lease as i64), JValue::Object(&reason)],
+                        &[JValue::Long(lease as i64), JValue::Object(&envelope)],
                     )?;
                 }
                 Output::Origin(origin, mode) => {
@@ -119,7 +118,12 @@ impl Sink for Callbacks {
                     )?;
                 }
                 Output::Notifications(batch) => {
-                    if !crate::native_db::is_account_epoch_current(batch.account_epoch) {
+                    let login_current = crate::login_session_store::LoginSessionId::try_from(
+                        batch.login_session_id.clone(),
+                    )
+                    .map(|id| crate::native_db::is_login_session_current(&id))
+                    .unwrap_or(false);
+                    if !login_current {
                         return Ok(());
                     }
                     if let Ok(batch) = crate::android_runtime::notification_object(env, &batch) {
@@ -141,17 +145,17 @@ impl Sink for Callbacks {
                     )?;
                 }
                 Output::Reconnect => {
-                    let kind = JObject::from(env.new_string("RECONNECT")?);
-                    let data = JObject::from(env.new_string("null")?);
+                    let Some(envelope) =
+                        run.event_payload("RECONNECT", "reconnected", serde_json::Value::Null)
+                    else {
+                        return Ok(());
+                    };
+                    let envelope = JObject::from(env.new_string(envelope.to_string())?);
                     env.call_method(
                         callback,
                         "onEvent",
-                        "(JLjava/lang/String;Ljava/lang/String;)V",
-                        &[
-                            JValue::Long(lease as i64),
-                            JValue::Object(&kind),
-                            JValue::Object(&data),
-                        ],
+                        "(JLjava/lang/String;)V",
+                        &[JValue::Long(lease as i64), JValue::Object(&envelope)],
                     )?;
                 }
             }

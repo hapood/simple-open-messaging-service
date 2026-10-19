@@ -1,5 +1,9 @@
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+#[path = "../tests/native_history_owner_tests.rs"]
+mod owner_tests;
+
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,8 +19,44 @@ fn emit_message_commit(events: &crate::realtime::NativeEvents, user_id: i64, thr
     );
 }
 
-use super::{json_text, open, parse_json};
-use crate::{perform_api_request, ServerSessionState};
+use super::{json_text, parse_json};
+use crate::login_connection::DatabaseWork;
+use crate::login_request::LoginRequest;
+use crate::ServerSessionState;
+
+/// One renderer/native history demand owns all local reads, bootstrap, recovery and page requests.
+/// Construct before scheduling the returned history future; no later step resolves a current login.
+pub(super) struct NativeHistoryIntent {
+    work: DatabaseWork,
+    request: LoginRequest,
+    events: crate::realtime::NativeEvents,
+    user_id: i64,
+    thread_id: i64,
+}
+
+impl NativeHistoryIntent {
+    pub(super) fn capture(
+        app: Option<&tauri::AppHandle>,
+        proxy: &ServerSessionState,
+        user_id: i64,
+        thread_id: i64,
+    ) -> Result<Self, String> {
+        if user_id <= 0 || thread_id <= 0 {
+            return Err("native history demand has an invalid owner or thread".into());
+        }
+        let work = super::capture_database_work()?;
+        let request = LoginRequest::capture(proxy, work.owner().clone())?;
+        let events = crate::realtime::NativeEvents::for_database_work(app, work.clone());
+        work.assert_current().map_err(|e| e.to_string())?;
+        Ok(Self {
+            work,
+            request,
+            events,
+            user_id,
+            thread_id,
+        })
+    }
+}
 
 pub(super) fn normalize_message_creator(message: &mut Value) {
     if let Some(creator) = message.get_mut("creator").and_then(Value::as_object_mut) {
@@ -497,8 +537,8 @@ pub(crate) async fn native_db_count_unread_message_slots(
     through_seq: i32,
     owner: MessageCountOwner,
 ) -> Result<i64, String> {
-    super::lifetime::spawn(move || {
-        count_unread_message_slots(&open()?, user_id, thread_id, after_seq, through_seq, &owner)
+    super::spawn_login_database(move |conn| {
+        count_unread_message_slots(conn, user_id, thread_id, after_seq, through_seq, &owner)
     })
     .await
     .map_err(|e| format!("join unread message count: {e}"))?
@@ -512,8 +552,7 @@ pub(crate) async fn native_db_query_messages(
     order_by: String,
     take: i64,
 ) -> Result<Vec<Value>, String> {
-    super::lifetime::spawn(move || {
-        let conn = open()?;
+    super::spawn_login_database(move |conn| {
         let (sql, bound) = match (order_by.as_str(), anchor) {
             ("desc", Some(anchor)) => (
                 "SELECT payload_json FROM messages
@@ -918,26 +957,23 @@ pub(crate) fn reduce_message_ranges(
 }
 
 async fn query_message_backend(
-    app: &tauri::AppHandle,
-    proxy: &ServerSessionState,
+    work: &DatabaseWork,
+    request: &mut LoginRequest,
     body: Value,
 ) -> Result<MessageBackendResponse, String> {
-    let response = perform_api_request(
-        app,
-        proxy,
-        "POST".to_string(),
-        "/api/v1/query-messages".to_string(),
-        std::collections::HashMap::from([
-            ("content-type".to_string(), "application/json".to_string()),
-            ("accept".to_string(), "application/json".to_string()),
-        ]),
-        Some(
-            serde_json::to_vec(&body)
-                .map_err(|error| format!("serialize native message query: {error}"))?,
-        ),
-        true,
-    )
-    .await?;
+    work.assert_current().map_err(|e| e.to_string())?;
+    let body = serde_json::to_vec(&body)
+        .map_err(|error| format!("serialize native message query: {error}"))?;
+    let cancellation = work.cancellation();
+    let response = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => {
+            work.assert_current().map_err(|e| e.to_string())?;
+            return Err("native cache work superseded".into());
+        }
+        response = request.post_query("/api/v1/query-messages".into(), body) => response?,
+    };
+    work.assert_current().map_err(|e| e.to_string())?;
     if !(200..300).contains(&response.status) {
         return Err(format!(
             "message query returned HTTP status {}",
@@ -993,26 +1029,31 @@ struct DirectionalWalk {
 }
 
 async fn read_native_message_ranges(
+    work: &DatabaseWork,
     user_id: i64,
     thread_id: i64,
 ) -> Result<Vec<MessageRange>, String> {
-    super::lifetime::spawn(move || {
-        let conn = open()?;
-        load_message_ranges(&conn, user_id, thread_id)
+    super::spawn_owned_database(Ok(work.clone()), move |conn| {
+        load_message_ranges(conn, user_id, thread_id)
     })
     .await
     .map_err(|error| format!("join native message range read: {error}"))?
 }
 
-async fn read_native_message_head(user_id: i64, thread_id: i64) -> Result<Option<i64>, String> {
-    super::lifetime::spawn(move || {
-        let head: Option<i64> = open()?
+async fn read_native_message_head(
+    work: &DatabaseWork,
+    user_id: i64,
+    thread_id: i64,
+) -> Result<Option<i64>, String> {
+    super::spawn_owned_database(Ok(work.clone()), move |conn| {
+        let head: Option<i64> = conn
             .query_row(
                 "SELECT message_head FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
                 params![user_id, thread_id],
-                |row| row.get(0),
+                |row| row.get::<_, Option<i64>>(0),
             )
             .optional()
+            .map(|head| head.flatten())
             .map_err(|error| format!("read native message head: {error}"))?;
         Ok(head)
     })
@@ -1021,6 +1062,7 @@ async fn read_native_message_head(user_id: i64, thread_id: i64) -> Result<Option
 }
 
 async fn query_native_messages(
+    work: &DatabaseWork,
     user_id: i64,
     thread_id: i64,
     direction: HistoryDirection,
@@ -1028,8 +1070,7 @@ async fn query_native_messages(
     boundary: i64,
     take: usize,
 ) -> Result<Vec<Value>, String> {
-    super::lifetime::spawn(move || {
-        let conn = open()?;
+    super::spawn_owned_database(Ok(work.clone()), move |conn| {
         let (sql, params) = match direction {
             HistoryDirection::Older => (
                 "SELECT payload_json FROM messages
@@ -1153,11 +1194,12 @@ pub(crate) fn history_gap_is_owned(direction: HistoryDirection, seam: i64, gap_r
 }
 
 async fn bootstrap_message_bounds(
-    app: &tauri::AppHandle,
-    proxy: &ServerSessionState,
+    work: &DatabaseWork,
+    request: &mut LoginRequest,
     thread_id: i64,
 ) -> Result<(i64, i64), String> {
-    match query_message_backend(app, proxy, serde_json::json!({ "threadId": thread_id })).await? {
+    match query_message_backend(work, request, serde_json::json!({ "threadId": thread_id })).await?
+    {
         MessageBackendResponse::Cursor(cursor)
             if cursor.resume_after >= 0 && cursor.resume_before > cursor.resume_after =>
         {
@@ -1172,13 +1214,8 @@ async fn bootstrap_message_bounds(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn walk_native_history(
-    app: &tauri::AppHandle,
-    proxy: &ServerSessionState,
-    account_epoch: u64,
-    user_id: i64,
-    thread_id: i64,
+    intent: &mut NativeHistoryIntent,
     direction: HistoryDirection,
     mut cursor: i64,
     count: i64,
@@ -1189,7 +1226,10 @@ async fn walk_native_history(
     // A gap item belongs to the left-open/right-closed source page containing its inclusive right
     // endpoint. In particular, the older leg of an around read must skip a gap that crosses the anchor;
     // the newer leg owns that item and the renderer must never deduplicate source seams.
-    let commit_events = crate::realtime::NativeEvents::capture(Some(app));
+    let work = intent.work.clone();
+    let user_id = intent.user_id;
+    let thread_id = intent.thread_id;
+    work.assert_current().map_err(|e| e.to_string())?;
     let ownership_seam = cursor;
     if count <= 0 {
         return Ok(DirectionalWalk {
@@ -1200,12 +1240,12 @@ async fn walk_native_history(
             },
         });
     }
-    let mut ranges = read_native_message_ranges(user_id, thread_id).await?;
+    let mut ranges = read_native_message_ranges(&work, user_id, thread_id).await?;
     let mut items = Vec::new();
     let mut remaining = count as usize;
 
     for _ in 0..1024 {
-        drop(super::lifetime::CACHE_LIFETIME.admit(account_epoch)?);
+        work.assert_current().map_err(|e| e.to_string())?;
         let at_boundary = match direction {
             HistoryDirection::Older => cursor <= lower + 1,
             HistoryDirection::Newer => cursor >= upper,
@@ -1229,7 +1269,7 @@ async fn walk_native_history(
                         HistoryDirection::Newer => range.right,
                     };
                     let cached = query_native_messages(
-                        user_id, thread_id, direction, cursor, boundary, remaining,
+                        &work, user_id, thread_id, direction, cursor, boundary, remaining,
                     )
                     .await?;
                     for message in cached {
@@ -1276,6 +1316,7 @@ async fn walk_native_history(
             HistoryDirection::Newer => upper,
         };
         let optimistic = query_native_messages(
+            &work,
             user_id,
             thread_id,
             direction,
@@ -1327,7 +1368,7 @@ async fn walk_native_history(
                 "take": remaining.min(50),
             }),
         };
-        let page = match query_message_backend(app, proxy, body).await? {
+        let page = match query_message_backend(&work, &mut intent.request, body).await? {
             MessageBackendResponse::Cursor(recovery) => {
                 if recovery.resume_after < 0 || recovery.resume_before <= recovery.resume_after {
                     return Err("backend returned invalid cursor recovery bounds".to_string());
@@ -1346,7 +1387,7 @@ async fn walk_native_history(
         let scan = scan_for_page(direction, cursor, page.scanned_through)?;
         let gaps = wire_gaps_to_ranges(page.gaps)?;
         let committed = commit_native_message_page(
-            account_epoch,
+            work.clone(),
             user_id,
             thread_id,
             scan,
@@ -1355,8 +1396,8 @@ async fn walk_native_history(
             known_newest,
         )
         .await?;
-        drop(super::lifetime::CACHE_LIFETIME.admit(account_epoch)?);
-        emit_message_commit(&commit_events, user_id, thread_id);
+        work.assert_current().map_err(|e| e.to_string())?;
+        emit_message_commit(&intent.events, user_id, thread_id);
         ranges = committed.ranges;
         let Some(scan) = scan else {
             return Ok(DirectionalWalk {
@@ -1388,7 +1429,7 @@ async fn walk_native_history(
 }
 
 pub(crate) async fn commit_native_message_page(
-    account_epoch: u64,
+    work: DatabaseWork,
     user_id: i64,
     thread_id: i64,
     scan: Option<MessageInterval>,
@@ -1396,7 +1437,7 @@ pub(crate) async fn commit_native_message_page(
     gaps: Vec<ServerMessageRange>,
     known_newest_seq: Option<i64>,
 ) -> Result<CommittedMessagePage, String> {
-    super::lifetime::spawn_at(Ok(account_epoch), move || {
+    super::spawn_owned_database(Ok(work), move |conn| {
         if known_newest_seq.is_some_and(|seq| seq < 0) {
             return Err("known newest message sequence is invalid".to_string());
         }
@@ -1417,7 +1458,6 @@ pub(crate) async fn commit_native_message_page(
                 Ok(seq)
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let mut conn = open()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin message page commit: {e}"))?;
@@ -1486,173 +1526,167 @@ pub(crate) async fn native_message_history_get(
     thread_id: i64,
     demand: NativeHistoryDemand,
 ) -> Result<NativeHistoryResult, String> {
-    let account_epoch = super::lifetime::CACHE_LIFETIME.capture()?;
-    if user_id <= 0 || thread_id <= 0 {
-        return Err("native history demand has an invalid owner or thread".to_string());
-    }
-    let lower = 0;
-    let validate_count = |count: i64| -> Result<i64, String> {
-        if (0..=200).contains(&count) {
-            Ok(count)
-        } else {
-            Err("native history demand count is outside 0..200".to_string())
-        }
-    };
-    let result = match demand {
-        NativeHistoryDemand::Latest {
-            count,
-            known_newest_seq,
-        } => {
-            let count = validate_count(count)?;
-            let (server_lower, upper) = match known_newest_seq {
-                Some(seq) if seq >= 0 => (lower, seq),
-                Some(_) => {
-                    return Err("native latest demand has an invalid newest hint".to_string())
-                }
-                None => bootstrap_message_bounds(&app, &proxy, thread_id).await?,
-            };
-            let lower = lower.max(server_lower);
-            let mut page = walk_native_history(
-                &app,
-                &proxy,
-                account_epoch,
-                user_id,
-                thread_id,
-                HistoryDirection::Older,
-                upper + 1,
-                count,
-                lower,
-                upper,
-                Some(upper),
-            )
-            .await?;
-            page.items.reverse();
-            Ok(NativeHistoryResult {
-                items: page.items,
-                has_older: page.has_more,
-                has_newer: false,
-                failed: false,
-            })
-        }
-        NativeHistoryDemand::Around {
-            anchor,
-            older_count,
-            newer_count,
-            known_newest_seq,
-        } => {
-            if anchor <= 0 {
-                return Err("native around demand has an invalid anchor".to_string());
+    NativeHistoryIntent::capture(Some(&app), &proxy, user_id, thread_id)?
+        .get(demand)
+        .await
+}
+
+impl NativeHistoryIntent {
+    pub(super) async fn get(
+        mut self,
+        demand: NativeHistoryDemand,
+    ) -> Result<NativeHistoryResult, String> {
+        let work = self.work.clone();
+        work.assert_current().map_err(|e| e.to_string())?;
+        let user_id = self.user_id;
+        let thread_id = self.thread_id;
+        let lower = 0;
+        let validate_count = |count: i64| -> Result<i64, String> {
+            if (0..=200).contains(&count) {
+                Ok(count)
+            } else {
+                Err("native history demand count is outside 0..200".to_string())
             }
-            let older_count = validate_count(older_count)?;
-            let newer_count = validate_count(newer_count)?;
-            let (server_lower, upper) = match known_newest_seq {
-                Some(seq) if seq >= 0 => (lower, seq),
-                Some(_) => {
-                    return Err("native around demand has an invalid newest hint".to_string())
-                }
-                None => bootstrap_message_bounds(&app, &proxy, thread_id).await?,
-            };
-            let lower = lower.max(server_lower);
-            let mut older = walk_native_history(
-                &app,
-                &proxy,
-                account_epoch,
-                user_id,
-                thread_id,
-                HistoryDirection::Older,
-                anchor + 1,
-                older_count,
-                lower,
-                upper,
-                Some(upper),
-            )
-            .await?;
-            let newer = walk_native_history(
-                &app,
-                &proxy,
-                account_epoch,
-                user_id,
-                thread_id,
-                HistoryDirection::Newer,
+        };
+        let result = match demand {
+            NativeHistoryDemand::Latest {
+                count,
+                known_newest_seq,
+            } => {
+                let count = validate_count(count)?;
+                let (server_lower, upper) = match known_newest_seq {
+                    Some(seq) if seq >= 0 => (lower, seq),
+                    Some(_) => {
+                        return Err("native latest demand has an invalid newest hint".to_string())
+                    }
+                    None => bootstrap_message_bounds(&work, &mut self.request, thread_id).await?,
+                };
+                let lower = lower.max(server_lower);
+                let mut page = walk_native_history(
+                    &mut self,
+                    HistoryDirection::Older,
+                    upper + 1,
+                    count,
+                    lower,
+                    upper,
+                    Some(upper),
+                )
+                .await?;
+                page.items.reverse();
+                Ok(NativeHistoryResult {
+                    items: page.items,
+                    has_older: page.has_more,
+                    has_newer: false,
+                    failed: false,
+                })
+            }
+            NativeHistoryDemand::Around {
                 anchor,
+                older_count,
                 newer_count,
-                lower,
-                upper,
-                Some(upper),
-            )
-            .await?;
-            older.items.reverse();
-            older.items.extend(newer.items);
-            Ok(NativeHistoryResult {
-                items: older.items,
-                has_older: older.has_more,
-                has_newer: newer.has_more,
-                failed: false,
-            })
-        }
-        NativeHistoryDemand::Older { before, count } => {
-            if before <= 0 {
-                return Err("native older demand has an invalid cursor".to_string());
+                known_newest_seq,
+            } => {
+                if anchor <= 0 {
+                    return Err("native around demand has an invalid anchor".to_string());
+                }
+                let older_count = validate_count(older_count)?;
+                let newer_count = validate_count(newer_count)?;
+                let (server_lower, upper) = match known_newest_seq {
+                    Some(seq) if seq >= 0 => (lower, seq),
+                    Some(_) => {
+                        return Err("native around demand has an invalid newest hint".to_string())
+                    }
+                    None => bootstrap_message_bounds(&work, &mut self.request, thread_id).await?,
+                };
+                let lower = lower.max(server_lower);
+                let mut older = walk_native_history(
+                    &mut self,
+                    HistoryDirection::Older,
+                    anchor + 1,
+                    older_count,
+                    lower,
+                    upper,
+                    Some(upper),
+                )
+                .await?;
+                let newer = walk_native_history(
+                    &mut self,
+                    HistoryDirection::Newer,
+                    anchor,
+                    newer_count,
+                    lower,
+                    upper,
+                    Some(upper),
+                )
+                .await?;
+                older.items.reverse();
+                older.items.extend(newer.items);
+                Ok(NativeHistoryResult {
+                    items: older.items,
+                    has_older: older.has_more,
+                    has_newer: newer.has_more,
+                    failed: false,
+                })
             }
-            let count = validate_count(count)?;
-            let known_newest = read_native_message_head(user_id, thread_id).await?;
-            let upper = known_newest.unwrap_or(before - 1).max(lower);
-            let mut page = walk_native_history(
-                &app,
-                &proxy,
-                account_epoch,
-                user_id,
-                thread_id,
-                HistoryDirection::Older,
-                before,
-                count,
-                lower,
-                upper,
-                known_newest,
-            )
-            .await?;
-            page.items.reverse();
-            Ok(NativeHistoryResult {
-                items: page.items,
-                has_older: page.has_more,
-                has_newer: before <= upper,
-                failed: false,
-            })
-        }
-        NativeHistoryDemand::Newer { after, count } => {
-            if after < 0 {
-                return Err("native newer demand has an invalid cursor".to_string());
+            NativeHistoryDemand::Older { before, count } => {
+                if before <= 0 {
+                    return Err("native older demand has an invalid cursor".to_string());
+                }
+                let count = validate_count(count)?;
+                let known_newest = read_native_message_head(&work, user_id, thread_id).await?;
+                let upper = known_newest.unwrap_or(before - 1).max(lower);
+                let mut page = walk_native_history(
+                    &mut self,
+                    HistoryDirection::Older,
+                    before,
+                    count,
+                    lower,
+                    upper,
+                    known_newest,
+                )
+                .await?;
+                page.items.reverse();
+                Ok(NativeHistoryResult {
+                    items: page.items,
+                    has_older: page.has_more,
+                    has_newer: before <= upper,
+                    failed: false,
+                })
             }
-            let count = validate_count(count)?;
-            let (server_lower, upper) = match read_native_message_head(user_id, thread_id).await? {
-                Some(upper) => (lower, upper),
-                None => bootstrap_message_bounds(&app, &proxy, thread_id).await?,
-            };
-            let lower = lower.max(server_lower);
-            let page = walk_native_history(
-                &app,
-                &proxy,
-                account_epoch,
-                user_id,
-                thread_id,
-                HistoryDirection::Newer,
-                after,
-                count,
-                lower,
-                upper,
-                Some(upper),
-            )
-            .await?;
-            Ok(NativeHistoryResult {
-                items: page.items,
-                has_older: after > lower,
-                has_newer: page.has_more,
-                failed: false,
-            })
-        }
-    };
-    drop(super::lifetime::CACHE_LIFETIME.admit(account_epoch)?);
-    result
+            NativeHistoryDemand::Newer { after, count } => {
+                if after < 0 {
+                    return Err("native newer demand has an invalid cursor".to_string());
+                }
+                let count = validate_count(count)?;
+                let (server_lower, upper) =
+                    match read_native_message_head(&work, user_id, thread_id).await? {
+                        Some(upper) => (lower, upper),
+                        None => {
+                            bootstrap_message_bounds(&work, &mut self.request, thread_id).await?
+                        }
+                    };
+                let lower = lower.max(server_lower);
+                let page = walk_native_history(
+                    &mut self,
+                    HistoryDirection::Newer,
+                    after,
+                    count,
+                    lower,
+                    upper,
+                    Some(upper),
+                )
+                .await?;
+                Ok(NativeHistoryResult {
+                    items: page.items,
+                    has_older: after > lower,
+                    has_newer: page.has_more,
+                    failed: false,
+                })
+            }
+        };
+        work.assert_current().map_err(|e| e.to_string())?;
+        result
+    }
 }
 
 #[tauri::command]
@@ -1661,14 +1695,13 @@ pub(crate) async fn native_db_put_cached_messages(
     user_id: i64,
     messages: Vec<Value>,
 ) -> Result<(), String> {
-    let commit_events = crate::realtime::NativeEvents::capture(Some(&app));
-    let epoch = super::lifetime::CACHE_LIFETIME.capture()?;
+    let work = super::capture_database_work()?;
+    let commit_events = crate::realtime::NativeEvents::for_database_work(Some(&app), work.clone());
     let thread_ids: BTreeSet<i64> = messages
         .iter()
         .filter_map(|message| message.get("threadId").and_then(Value::as_i64))
         .collect();
-    super::lifetime::spawn_at(Ok(epoch), move || {
-        let mut conn = open()?;
+    super::spawn_owned_database(Ok(work.clone()), move |conn| {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("begin cached message write: {error}"))?;
@@ -1680,7 +1713,7 @@ pub(crate) async fn native_db_put_cached_messages(
     })
     .await
     .map_err(|error| format!("join cached message write: {error}"))??;
-    drop(super::lifetime::CACHE_LIFETIME.admit(epoch)?);
+    work.assert_current().map_err(|e| e.to_string())?;
     for thread_id in thread_ids {
         emit_message_commit(&commit_events, user_id, thread_id);
     }
@@ -1696,8 +1729,7 @@ pub(crate) async fn native_db_put_message_head(
     if user_id <= 0 || thread_id <= 0 || known_newest_seq < 0 {
         return Err("invalid native message head".to_string());
     }
-    super::lifetime::spawn(move || {
-        let mut conn = open()?;
+    super::spawn_login_database(move |conn| {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("begin message head write: {error}"))?;
@@ -1711,8 +1743,8 @@ pub(crate) async fn native_db_put_message_head(
 
 #[tauri::command]
 pub(crate) async fn native_db_get_deleted_hwm(user_id: i64, thread_id: i64) -> Result<i64, String> {
-    super::lifetime::spawn(move || {
-        let hwm: Option<i64> = open()?
+    super::spawn_login_database(move |conn| {
+        let hwm: Option<i64> = conn
             .query_row(
                 "SELECT deleted_hwm FROM thread_sync_state WHERE user_id=?1 AND thread_id=?2",
                 params![user_id, thread_id],
@@ -1733,11 +1765,23 @@ pub(crate) async fn native_db_apply_deleted_messages(
     items: Vec<Value>,
     hwm: i64,
 ) -> Result<(), String> {
-    super::lifetime::spawn(move || {
+    let work = super::capture_database_work()?;
+    apply_deleted_messages(work, user_id, thread_id, items, hwm).await
+}
+
+/// A tombstone drain applies pages through the login it captured at its start, never the
+/// slot's current owner at each page boundary.
+pub(super) async fn apply_deleted_messages(
+    work: crate::login_connection::DatabaseWork,
+    user_id: i64,
+    thread_id: i64,
+    items: Vec<Value>,
+    hwm: i64,
+) -> Result<(), String> {
+    super::spawn_owned_database(Ok(work), move |conn| {
         if hwm < 0 {
             return Err("deleted hwm must be a non-negative integer".to_string());
         }
-        let mut conn = open()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin deleted-message write: {e}"))?;
@@ -1848,9 +1892,11 @@ pub(crate) async fn native_db_get_deleted_message_seqs(
     thread_id: i64,
     seqs: Vec<i64>,
 ) -> Result<Vec<i64>, String> {
-    super::lifetime::spawn(move || load_deleted_message_seqs(&open()?, user_id, thread_id, seqs))
-        .await
-        .map_err(|e| format!("join tombstone read: {e}"))?
+    super::spawn_login_database(move |conn| {
+        load_deleted_message_seqs(conn, user_id, thread_id, seqs)
+    })
+    .await
+    .map_err(|e| format!("join tombstone read: {e}"))?
 }
 
 fn load_origin_message(
@@ -1890,8 +1936,8 @@ pub(crate) async fn native_db_get_message_by_origin(
     if user_id <= 0 || thread_id <= 0 || namespace_id < 0 || origin_seq <= 0 {
         return Err("invalid origin message coordinate".into());
     }
-    super::lifetime::spawn(move || {
-        load_origin_message(&open()?, user_id, thread_id, namespace_id, origin_seq)
+    super::spawn_login_database(move |conn| {
+        load_origin_message(conn, user_id, thread_id, namespace_id, origin_seq)
     })
     .await
     .map_err(|e| format!("join origin message read: {e}"))?
@@ -1903,8 +1949,8 @@ pub(crate) async fn native_db_get_message(
     thread_id: i64,
     seq: i64,
 ) -> Result<Option<Value>, String> {
-    super::lifetime::spawn(move || {
-        let value = open()?
+    super::spawn_login_database(move |conn| {
+        let value = conn
             .query_row(
                 "SELECT payload_json FROM messages
                  WHERE user_id = ?1 AND thread_id = ?2 AND seq = ?3
@@ -1925,8 +1971,7 @@ pub(crate) async fn native_db_newest_messages(
     user_id: i64,
     thread_ids: Vec<i64>,
 ) -> Result<Vec<Value>, String> {
-    super::lifetime::spawn(move || {
-        let conn = open()?;
+    super::spawn_login_database(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT payload_json FROM messages
@@ -1971,9 +2016,9 @@ pub(crate) async fn native_db_correct_system_message_profile(
     {
         return Err("invalid system profile correction".into());
     }
-    super::lifetime::spawn(move || {
+    super::spawn_login_database(move |conn| {
         correct_system_message_profile(
-            &mut open()?,
+            conn,
             user_id,
             thread_id,
             seq,
@@ -2046,8 +2091,7 @@ pub(crate) async fn native_db_delete_messages_by_thread(
     user_id: i64,
     thread_id: i64,
 ) -> Result<(), String> {
-    super::lifetime::spawn(move || {
-        let mut conn = open()?;
+    super::spawn_login_database(move |conn| {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| format!("begin delete thread messages: {e}"))?;

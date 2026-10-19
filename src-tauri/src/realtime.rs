@@ -14,7 +14,7 @@ pub(crate) fn runtime() -> &'static Supervisor {
 }
 
 pub(crate) enum Output {
-    Event(String, Value),
+    Event(Value),
     State(String),
     ReconnectIn(u64),
     ForceLogout(Option<String>),
@@ -34,6 +34,56 @@ pub(crate) trait Sink: Send + Sync {
     }
 }
 
+struct RunIdentity {
+    work: crate::login_connection::DatabaseWork,
+    request: crate::login_request::LoginRequest,
+    selected: Mutex<(crate::login_request::LoginEndpoint, crate::OriginMode)>,
+}
+
+impl RunIdentity {
+    fn capture(proxy: &ServerSessionState) -> Result<Self, String> {
+        let expected = proxy
+            .login_session
+            .lock()
+            .map_err(|_| "login session lock poisoned")?
+            .clone()
+            .ok_or("native login is not admitted")?;
+        let work = crate::native_db::capture_database_work()?;
+        if work.owner().id() != &expected {
+            return Err("native login superseded".into());
+        }
+        let request = crate::login_request::LoginRequest::capture(proxy, work.owner().clone())?;
+        Self::new(work, request)
+    }
+
+    fn new(
+        work: crate::login_connection::DatabaseWork,
+        request: crate::login_request::LoginRequest,
+    ) -> Result<Self, String> {
+        work.assert_current().map_err(|e| e.to_string())?;
+        let selected = Mutex::new((request.endpoint()?, request.endpoint_mode()));
+        Ok(Self {
+            work,
+            request,
+            selected,
+        })
+    }
+
+    fn retry(&self) -> Result<Self, String> {
+        // A transport retry may refresh a deliberately repaired cache view, never its login owner.
+        let work = self
+            .work
+            .owner()
+            .capture_database_work()
+            .map_err(|e| e.to_string())?;
+        let selected = self
+            .selected
+            .lock()
+            .map_err(|_| "selected route lock poisoned")?;
+        Self::new(work, self.request.at_endpoint(&selected.0))
+    }
+}
+
 pub(crate) struct Run {
     /// Private worker generation; callbacks carry this value through platform queues.
     pub lease: u64,
@@ -47,7 +97,7 @@ pub(crate) struct Run {
     pub force: AtomicBool,
     pub state: Mutex<String>,
     pub hello: Arc<Mutex<Option<Value>>>,
-    identity: std::sync::OnceLock<(u64, String)>,
+    identity: std::sync::OnceLock<RunIdentity>,
     proxy: ServerSessionState,
     sink: Arc<dyn Sink>,
 }
@@ -55,29 +105,64 @@ impl Run {
     pub fn owner(&self) -> u64 {
         self.owner_lease.load(Ordering::Acquire)
     }
-    pub fn active(&self) -> bool {
+    pub(crate) fn transport_active(&self) -> bool {
         !self.cancel.is_cancelled() && self.generation.load(Ordering::Acquire) == self.lease
     }
+    pub fn active(&self) -> bool {
+        self.transport_active()
+            && self
+                .identity
+                .get()
+                .is_none_or(|identity| identity.work.assert_current().is_ok())
+    }
     pub fn authenticated(&self) -> bool {
-        if !self.active() {
-            return false;
-        }
-        self.identity.get().is_some_and(|(epoch, token)| {
-            crate::native_db::is_account_epoch_current(*epoch)
-                && self.proxy.token.lock().unwrap().as_ref() == Some(token)
-                && self.active()
-                && crate::native_db::is_account_epoch_current(*epoch)
-        })
+        self.identity.get().is_some() && self.active()
     }
     pub fn bind_identity(&self) -> bool {
-        let Ok(epoch) = crate::native_db::capture_account_epoch() else {
-            return false;
-        };
-        let Some(token) = self.proxy.token.lock().unwrap().clone() else {
-            return false;
-        };
-        let _ = self.identity.set((epoch, token));
+        if self.identity.get().is_none() {
+            if let Ok(identity) = RunIdentity::capture(&self.proxy) {
+                let _ = self.identity.set(identity);
+            }
+        }
         self.authenticated()
+    }
+    pub(crate) fn login_request(
+        &self,
+    ) -> Result<
+        (
+            crate::login_connection::DatabaseWork,
+            crate::login_request::LoginRequest,
+        ),
+        String,
+    > {
+        if !self.authenticated() {
+            return Err("realtime work lease expired".into());
+        }
+        let identity = self.identity.get().ok_or("native login is not admitted")?;
+        let route = identity
+            .selected
+            .lock()
+            .map_err(|_| "selected route lock poisoned")?;
+        Ok((
+            identity.work.clone(),
+            identity.request.at_endpoint(&route.0),
+        ))
+    }
+    pub(crate) fn endpoint(&self) -> Option<crate::login_request::LoginEndpoint> {
+        if !self.authenticated() {
+            return None;
+        }
+        self.identity
+            .get()?
+            .selected
+            .lock()
+            .ok()
+            .map(|route| route.0.clone())
+    }
+    pub(crate) fn login_cancellation(&self) -> Option<CancellationToken> {
+        self.identity
+            .get()
+            .map(|identity| identity.work.cancellation())
     }
     pub fn publish(&self, output: Output) {
         if self.authenticated() {
@@ -88,30 +173,53 @@ impl Run {
         self.sink.app()
     }
     pub fn publish_origin(&self) {
-        self.publish(Output::Origin(
-            self.proxy.api_origin.lock().unwrap().clone(),
-            format!("{:?}", *self.proxy.origin_mode.lock().unwrap()).to_lowercase(),
-        ));
+        let Some(identity) = self.identity.get() else {
+            return;
+        };
+        let (origin, mode) = {
+            let route = identity.selected.lock().unwrap();
+            (
+                route.0.origin.clone(),
+                format!("{:?}", route.1).to_lowercase(),
+            )
+        };
+        self.publish(Output::Origin(origin, mode));
     }
     pub async fn pick_origin(&self) -> Option<String> {
-        tokio::select! { biased;
-            _ = self.cancel.cancelled() => None,
-            result = crate::proxy::pick_origin_race_with_commit(&self.proxy, |origin, mode| {
-                // Authentication can wait for a credential transition. Never hold the runtime
-                // admission lock across that wait; commit-time epoch and generation reads are atomic.
-                if !self.authenticated() { return false; }
-                let _admission = self.admission.lock().unwrap();
-                if !self.active() || !self.identity.get().is_some_and(|(epoch, _)| crate::native_db::is_account_epoch_current(*epoch)) { return false; }
-                crate::activate_origin(&self.proxy, origin, mode);
-                true
-            }) => result,
+        if !self.authenticated() {
+            return None;
         }
+        let identity = self.identity.get()?;
+        let cancellation = identity.work.cancellation();
+        let (endpoint, mode) = tokio::select! { biased;
+            _ = self.cancel.cancelled() => return None,
+            _ = cancellation.cancelled() => return None,
+            result = identity.request.select_endpoint() => result?,
+        };
+        let _admission = self.admission.lock().unwrap();
+        if !self.authenticated() {
+            return None;
+        }
+        let origin = endpoint.origin.clone();
+        *identity.selected.lock().unwrap() = (endpoint, mode);
+        Some(origin)
     }
-    // Legacy desktop envelopes stay intact; Android receives StandardMessage's inner data.
+    // Every native host receives the complete envelope, including its Rust-owned login UUID.
     pub fn emit<T: serde::Serialize>(&self, channel: &str, payload: T) -> Result<(), String> {
-        let v = serde_json::to_value(payload).map_err(|e| e.to_string())?;
+        let mut v = serde_json::to_value(payload).map_err(|e| e.to_string())?;
+        if channel == "soms-sse-event" {
+            let Some(identity) = self.identity.get() else {
+                return Ok(());
+            };
+            v.as_object_mut()
+                .ok_or("native event payload must be an object")?
+                .insert(
+                    "loginSessionId".into(),
+                    serde_json::json!(identity.work.owner().id()),
+                );
+        }
         let output = match channel {
-            "soms-sse-event" => Output::Event(v["event"].as_str().unwrap_or_default().into(), v),
+            "soms-sse-event" => Output::Event(v),
             "soms-sse-state" => Output::State(v.as_str().unwrap_or("closed").into()),
             "soms-sse-reconnect-in" => Output::ReconnectIn(v.as_u64().unwrap_or(0)),
             "soms-sse-force-logout" => Output::ForceLogout(v["reason"].as_str().map(str::to_owned)),
@@ -123,21 +231,36 @@ impl Run {
     }
     pub fn set_state(&self, state: &str) {
         let bound = self.identity.get().is_some();
-        if !self.active() || (state != "closed" && bound && !self.authenticated()) {
+        if !self.transport_active() || (state != "closed" && bound && !self.authenticated()) {
             return;
         }
         *self.state.lock().unwrap() = state.into();
         // Startup may precede login. Lifecycle state requires a lease, not authentication.
-        if self.active() {
+        if self.transport_active() {
             self.sink.publish(Output::State(state.into()));
         }
     }
-    pub fn replay_snapshot(&self) -> Option<Value> {
-        let hello = self.replay()?;
+    pub(crate) fn event_payload(&self, event: &str, message: &str, data: Value) -> Option<Value> {
         if !self.authenticated() {
             return None;
         }
-        Some(serde_json::json!({ "generation": self.lease, "hello": hello }))
+        Some(login_event_payload(
+            self.identity.get()?.work.owner().id(),
+            event,
+            message,
+            data,
+        ))
+    }
+
+    pub fn replay_snapshot(&self) -> Option<Value> {
+        let hello = self.event_payload("HELLO", "retained hello", self.replay()?)?;
+        if !self.authenticated() {
+            return None;
+        }
+        Some(
+            serde_json::json!({ "generation": self.lease, "hello": hello,
+            "loginSessionId": self.identity.get()?.work.owner().id() }),
+        )
     }
     pub fn replay(&self) -> Option<Value> {
         if !self.authenticated() {
@@ -162,10 +285,12 @@ impl Supervisor {
         }
     }
     pub fn start(&self, proxy: ServerSessionState, sink: Arc<dyn Sink>) -> u64 {
-        self.start_inner(proxy, sink, false, None, false)
+        let identity = RunIdentity::capture(&proxy).ok();
+        self.start_inner(proxy, sink, false, None, false, identity)
     }
     pub fn replace(&self, proxy: ServerSessionState, sink: Arc<dyn Sink>) -> u64 {
-        self.start_inner(proxy, sink, true, None, false)
+        let identity = RunIdentity::capture(&proxy).ok();
+        self.start_inner(proxy, sink, true, None, false, identity)
     }
     fn start_inner(
         &self,
@@ -174,6 +299,7 @@ impl Supervisor {
         replace: bool,
         expected: Option<u64>,
         offline: bool,
+        identity: Option<RunIdentity>,
     ) -> u64 {
         let mut slot = self.run.lock().unwrap();
         if expected.is_some_and(|lease| !slot.as_ref().is_some_and(|r| r.owner() == lease)) {
@@ -211,6 +337,9 @@ impl Supervisor {
             proxy: proxy.clone(),
             sink,
         });
+        if let Some(identity) = identity {
+            let _ = run.identity.set(identity);
+        }
         *slot = Some(run.clone());
         tauri::async_runtime::spawn(crate::sse::run_loop(run, proxy));
         owner
@@ -263,6 +392,13 @@ impl Supervisor {
             run.wake.notify_one();
             return lease;
         }
+        let identity = match run.identity.get() {
+            Some(identity) => match identity.retry() {
+                Ok(identity) => Some(identity),
+                Err(_) => return 0,
+            },
+            None => RunIdentity::capture(&run.proxy).ok(),
+        };
         let offline = run.offline.load(Ordering::Acquire);
         self.start_inner(
             run.proxy.clone(),
@@ -270,17 +406,35 @@ impl Supervisor {
             true,
             Some(lease),
             offline,
+            identity,
         )
     }
-    pub fn refresh_account_epoch(&self) {
+    /// Explicit lifecycle admission may install a new login or cache view. Ordinary retries cannot.
+    pub fn refresh_login_work(&self) {
         if let Some(run) = self.current() {
-            let bound = run.identity.get().is_some();
-            let has_token = run.proxy.token.lock().unwrap().is_some();
-            if has_token && (!run.active() || (bound && !run.authenticated())) {
-                self.retry(run.owner(), true);
-            }
+            let Ok(identity) = RunIdentity::capture(&run.proxy) else {
+                return;
+            };
+            self.refresh_binding(&run, identity);
         }
     }
+    fn refresh_binding(&self, run: &Arc<Run>, identity: RunIdentity) {
+        let same_login = run
+            .identity
+            .get()
+            .is_some_and(|old| old.work.owner().id() == identity.work.owner().id());
+        if !run.active() || !same_login {
+            self.start_inner(
+                run.proxy.clone(),
+                run.sink.fork(),
+                true,
+                Some(run.owner()),
+                run.offline.load(Ordering::Acquire),
+                Some(identity),
+            );
+        }
+    }
+
     pub fn is_current_generation(&self, generation: u64) -> bool {
         self.current().is_some_and(|r| {
             r.lease == generation && self.generation.load(Ordering::Acquire) == generation
@@ -294,55 +448,95 @@ impl Supervisor {
     }
 }
 
+#[cfg(test)]
+#[path = "tests/native_event_owner_tests.rs"]
+mod native_event_owner_tests;
+
+/// Serialize an event owned by an already captured login; adapters must preserve this envelope.
+pub(crate) fn login_event_payload(
+    login: &crate::login_session_store::LoginSessionId,
+    event: &str,
+    message: &str,
+    data: Value,
+) -> Value {
+    serde_json::json!({
+        "event": event,
+        "status": 0,
+        "message": message,
+        "data": data,
+        "loginSessionId": login,
+    })
+}
+
 /// Capture at scheduling, rather than looking up the successor at completion.
 #[derive(Clone)]
 pub(crate) struct NativeEvents {
     run: Option<Arc<Run>>,
     app: Option<tauri::AppHandle>,
-    epoch: Option<u64>,
-    session: Option<(ServerSessionState, Option<String>)>,
+    work: Option<crate::login_connection::DatabaseWork>,
 }
 impl NativeEvents {
     pub fn capture(app: Option<&tauri::AppHandle>) -> Self {
-        use tauri::Manager;
+        Self::new(app, crate::native_db::capture_database_work().ok())
+    }
+
+    pub(crate) fn for_database_work(
+        app: Option<&tauri::AppHandle>,
+        work: crate::login_connection::DatabaseWork,
+    ) -> Self {
+        Self::new(app, Some(work))
+    }
+
+    fn new(
+        app: Option<&tauri::AppHandle>,
+        work: Option<crate::login_connection::DatabaseWork>,
+    ) -> Self {
         let run = WORK_RUN.try_with(Clone::clone).ok();
         #[cfg(target_os = "android")]
         let run = run.or_else(crate::android_realtime::current_run);
-        let session = app
-            .and_then(|app| app.try_state::<ServerSessionState>())
-            .map(|state| {
-                let proxy = state.inner().clone();
-                let token = proxy.token.lock().unwrap().clone();
-                (proxy, token)
-            });
         Self {
             run,
             app: app.cloned(),
-            epoch: crate::native_db::capture_account_epoch().ok(),
-            session,
+            work,
         }
     }
+    fn prepare_payload<T: serde::Serialize>(
+        &self,
+        channel: &str,
+        payload: T,
+    ) -> Result<Option<Value>, String> {
+        let Some(work) = &self.work else {
+            return Ok(None);
+        };
+        if work.assert_current().is_err() {
+            return Ok(None);
+        }
+        let mut payload = serde_json::to_value(payload).map_err(|e| e.to_string())?;
+        if channel == "soms-sse-event" {
+            payload
+                .as_object_mut()
+                .ok_or("native completion payload must be an object")?
+                .insert(
+                    "loginSessionId".into(),
+                    serde_json::json!(work.owner().id()),
+                );
+        }
+        if work.assert_current().is_err() {
+            return Ok(None);
+        }
+        Ok(Some(payload))
+    }
+
     pub fn emit<T: serde::Serialize>(&self, channel: &str, payload: T) -> Result<(), String> {
-        if !self
-            .epoch
-            .is_some_and(crate::native_db::is_account_epoch_current)
-        {
+        let Some(payload) = self.prepare_payload(channel, payload)? else {
             return Ok(());
-        }
-        if self
-            .session
-            .as_ref()
-            .is_some_and(|(proxy, token)| *proxy.token.lock().unwrap() != *token)
-        {
-            return Ok(());
-        }
+        };
         if let Some(run) = &self.run {
             return run.emit(channel, payload);
         }
         #[cfg(desktop)]
         if let Some(app) = &self.app {
             use tauri::Emitter;
-            let payload = serde_json::to_value(payload).map_err(|e| e.to_string())?;
             app.emit(channel, payload).map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -380,7 +574,7 @@ impl Sink for DesktopSink {
         }
         use tauri::Emitter;
         match output {
-            Output::Event(_, v) => {
+            Output::Event(v) => {
                 let _ = self.0.emit("soms-sse-event", v);
             }
             Output::State(v) => {
@@ -425,6 +619,26 @@ mod tests {
         }
     }
 
+    fn identity(proxy: &ServerSessionState) -> RunIdentity {
+        let id =
+            crate::login_session_store::LoginSessionId::try_from(uuid::Uuid::new_v4().to_string())
+                .unwrap();
+        let owner = crate::login_connection::LoginConnection::preparing(
+            id,
+            rusqlite::Connection::open_in_memory().unwrap(),
+        );
+        owner
+            .begin_activation()
+            .unwrap()
+            .commit("fixture-credential".into())
+            .unwrap();
+        RunIdentity::new(
+            owner.capture_database_work().unwrap(),
+            crate::login_request::LoginRequest::capture(proxy, owner).unwrap(),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn desktop_reattach_transfers_control_without_reopening_the_worker() {
         let supervisor = Supervisor::new();
@@ -453,7 +667,9 @@ mod tests {
         );
         let run = supervisor.current().unwrap();
         run.set_state("open");
-        run.identity.set((u64::MAX, "fixture".into())).unwrap();
+        let identity = identity(&run.proxy);
+        identity.work.owner().end().unwrap();
+        assert!(run.identity.set(identity).is_ok());
         assert!(!run.authenticated());
         run.set_state("closed");
         assert_eq!(supervisor.state(), "closed");
@@ -471,16 +687,49 @@ mod tests {
         let owner = supervisor.start(proxy.clone(), Arc::new(Null));
         let run = supervisor.current().unwrap();
         run.offline.store(true, Ordering::Release);
-        *proxy.token.lock().unwrap() = Some("fixture-not-a-credential".into());
+        assert!(run.identity.set(identity(&proxy)).is_ok());
         assert!(run.bind_identity());
         let hello = serde_json::json!({"userId":41,"threadFeedEndId":7});
         *run.hello.lock().unwrap() = Some(hello.clone());
         let snapshot = run.replay_snapshot().unwrap();
         assert_eq!(snapshot["generation"], run.lease);
-        assert_eq!(snapshot["hello"], hello);
+        assert_eq!(snapshot["hello"]["data"], hello);
+        assert_eq!(snapshot["hello"]["event"], "HELLO");
+        assert_eq!(snapshot["hello"]["status"], 0);
+        assert_eq!(
+            snapshot["hello"]["loginSessionId"],
+            snapshot["loginSessionId"]
+        );
         run.cancel.cancel();
         assert!(run.replay_snapshot().is_none());
         supervisor.stop(owner);
+    }
+
+    #[test]
+    fn synthetic_event_payloads_keep_the_original_login_and_reject_ended_work() {
+        let supervisor = Supervisor::new();
+        let proxy = ServerSessionState::new();
+        let lease = supervisor.start(proxy.clone(), Arc::new(Null));
+        let run = supervisor.current().unwrap();
+        run.offline.store(true, Ordering::Release);
+        let binding = identity(&proxy);
+        let owner = binding.work.owner().clone();
+        assert!(run.identity.set(binding).is_ok());
+        for event in ["HELLO", "RECONNECT", "FORCE_LOGOUT"] {
+            let payload = run
+                .event_payload(event, "original message", Value::Null)
+                .unwrap();
+            assert_eq!(payload["event"], event);
+            assert_eq!(payload["loginSessionId"], serde_json::json!(owner.id()));
+            assert_eq!(payload["message"], "original message");
+        }
+        owner.end().unwrap();
+        assert!(run
+            .event_payload("FORCE_LOGOUT", "late", Value::Null)
+            .is_none());
+        assert!(run.replay_snapshot().is_none());
+        supervisor.stop(lease);
+        owner.close().unwrap();
     }
 
     #[test]
@@ -504,17 +753,16 @@ mod tests {
     }
 
     #[test]
-    fn cache_epoch_rebind_preserves_owner_and_invalidates_queued_worker_commands() {
+    fn cache_repair_rebind_preserves_owner_and_invalidates_queued_worker_commands() {
         let supervisor = Supervisor::new();
         let proxy = ServerSessionState::new();
         let owner = supervisor.start(proxy.clone(), Arc::new(Null));
         let old = supervisor.current().unwrap();
         old.offline.store(true, Ordering::Release);
-        let token = "fixture-not-a-credential".to_owned();
-        *proxy.token.lock().unwrap() = Some(token.clone());
-        // Model an expired cache epoch without mutating the process-global database lifetime.
-        old.identity.set((u64::MAX, token)).unwrap();
-        supervisor.refresh_account_epoch();
+        assert!(old.identity.set(identity(&proxy)).is_ok());
+        let binding = old.identity.get().unwrap();
+        binding.work.owner().invalidate_database_work().unwrap();
+        supervisor.refresh_binding(&old, binding.retry().unwrap());
         let current = supervisor.current().unwrap();
         assert_eq!(current.owner(), owner);
         assert_ne!(current.lease, old.lease);

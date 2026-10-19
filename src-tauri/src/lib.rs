@@ -21,6 +21,7 @@ mod android_runtime;
 mod client_compat;
 mod diagnostics;
 mod login_connection;
+mod login_request;
 mod login_session_store;
 mod media_cache;
 mod native_db;
@@ -35,10 +36,7 @@ mod secure_storage;
 mod sse;
 mod upload;
 
-pub(crate) use proxy::{
-    activate_origin, is_network_failure, perform_api_request, pick_origin_race, runtime_switch,
-    send_with_headers_deadline, HeadersError,
-};
+pub(crate) use proxy::{activate_origin, is_network_failure, pick_origin_race, runtime_switch};
 
 use std::borrow::Cow;
 use std::fs;
@@ -179,7 +177,6 @@ impl ServerSessionState {
     fn replace_session_token(&self, token: Option<String>) -> Option<String> {
         if let Ok(mut current) = self.token.lock() {
             if current.is_some() && *current != token {
-                native_db::invalidate_account_work().expect("invalidate previous session work");
                 #[cfg(not(desktop))]
                 {
                     for (cid, voice) in self
@@ -200,16 +197,64 @@ impl ServerSessionState {
                     }
                 }
             }
-            let changed = *current != token;
             let previous = std::mem::replace(&mut *current, token);
             drop(current);
             self.token_notify.notify_one();
-            if changed {
-                realtime::runtime().refresh_account_epoch();
-            }
+            realtime::runtime().refresh_login_work();
             return previous;
         }
         None
+    }
+
+    pub(crate) fn update_session_token_admitted(
+        &self,
+        token: Option<String>,
+        session_uuid: &str,
+    ) -> Result<(), String> {
+        let id = crate::login_session_store::LoginSessionId::try_from(session_uuid.to_string())?;
+        match token {
+            Some(token) => {
+                let active = self
+                    .login_session
+                    .lock()
+                    .map_err(|_| "login session lock poisoned")?;
+                if *active != Some(id.clone()) {
+                    return Err("native login superseded".into());
+                }
+                let owner = crate::native_db::login_connection(&id)?;
+                if owner.credential().map_err(|e| e.to_string())? != token {
+                    return Err("credential mismatch".into());
+                }
+                self.replace_session_token(Some(token));
+                Ok(())
+            }
+            None => {
+                let mut active = self
+                    .login_session
+                    .lock()
+                    .map_err(|_| "login session lock poisoned")?;
+                if active.as_ref() == Some(&id) {
+                    *active = None;
+                    drop(active);
+                    self.replace_session_token(None);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn clear_residual_token(&self) -> Result<(), String> {
+        let active = self
+            .login_session
+            .lock()
+            .map_err(|_| "login session lock poisoned")?;
+        if active.is_none() {
+            drop(active);
+            self.replace_session_token(None);
+            Ok(())
+        } else {
+            Err("cannot clear residual token while a login session is active".into())
+        }
     }
 
     fn new() -> Self {
@@ -511,6 +556,7 @@ pub fn run() {
                     secure_storage::secure_get_token,
                     secure_storage::secure_set_token,
                     secure_storage::secure_clear_token,
+                    secure_storage::secure_clear_residual_token,
                     client_compat::init_check_compat,
                     client_compat::init_validate_cert,
                     client_compat::init_compat_status,
@@ -696,6 +742,9 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             native_db::location::initialize(&data_dir)?;
             native_db::initialize_preferences()?;
+            if let Err(error) = native_db::initialize_login_cache() {
+                warn!("login cache initialization requires repair: {error}");
+            }
             fs::create_dir_all(&data_dir)?;
             // Android resources were restored by Application; do not overwrite live background state.
             #[cfg(not(target_os = "android"))]
