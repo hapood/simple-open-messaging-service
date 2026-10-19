@@ -1,6 +1,14 @@
 import '@angular/compiler';
 import 'fake-indexeddb/auto';
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { provideHttpClient, withXhr } from '@angular/common/http';
@@ -63,7 +71,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
     };
   };
 
-  /** Build an invoke spy that resolves the given commands per `opts` and resolves everything else. */
+  /** Model the registered IPC commands explicitly; unknown commands must not silently succeed. */
   function makeInvokeSpy(
     opts: {
       keyringToken?: string | null;
@@ -82,7 +90,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       .fn()
       .mockName('invoke')
       .mockImplementation((cmd: string) => {
-        if (cmd === 'begin_login')
+        if (cmd === 'native_db_begin_login')
           return Promise.resolve('11111111-2222-4d9e-af01-234567890abc');
         if (cmd === 'login_session_for_token')
           return Promise.resolve(
@@ -105,7 +113,23 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
           return secureClearOk
             ? Promise.resolve(undefined)
             : Promise.reject(new Error('keyring locked'));
-        return Promise.resolve(undefined); // set_session_token / clear_session_token
+        if (cmd === 'init_pick_origin')
+          return Promise.resolve('https://native.example.test');
+        if (
+          [
+            'set_session_token',
+            'clear_session_token',
+            'set_active_origin',
+            'native_db_validate_cache',
+            'native_db_recreate_cache',
+            'desktop_notifications_clear',
+            'wait_for_logout',
+          ].includes(cmd)
+        )
+          return Promise.resolve(undefined);
+        return Promise.reject(
+          new Error(`Unexpected native IPC command: ${cmd}`),
+        );
       });
   }
 
@@ -283,7 +307,8 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       });
       const commands = invokeSpy.mock.calls.map(([command]) => command);
       // Fresh-login cleanup moved BEFORE the authentication request; the post-auth recreation is gone.
-      expect(commands.indexOf('begin_login')).toBeLessThan(
+      expect(commands).toContain('native_db_begin_login');
+      expect(commands.indexOf('native_db_begin_login')).toBeLessThan(
         commands.indexOf('desktop_notifications_clear'),
       );
       expect(commands).not.toContain('native_db_recreate_cache');
@@ -292,6 +317,11 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       desktopGlobals({ secureSetOk: true });
       await passwordLogin('st-trusted');
       expect(svc.loggedIn()).toBe(true);
+      expect(
+        invokeSpy.mock.calls.filter(
+          ([command]) => command === 'set_session_token',
+        ),
+      ).toHaveLength(1);
       // Always under Tauri: set_session_token (ProxyState.token, so api_request injects the Bearer).
       expect(invokeSpy).toHaveBeenCalledWith('set_session_token', {
         token: 'st-trusted',

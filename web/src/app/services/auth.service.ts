@@ -174,7 +174,7 @@ export class AuthService {
    *  work, deletes retired login caches and mints the new UUID. Account-scoped preferences of the
    *  previous login are removed here too, so nothing of the old login survives into the new one. */
   private async prepareNativeLogin(): Promise<void> {
-    this.nativeLoginUuid = await tauriInvoke<string>('begin_login');
+    this.nativeLoginUuid = await tauriInvoke<string>('native_db_begin_login');
     await this.userService.clearSessionPreferences();
   }
 
@@ -320,13 +320,12 @@ export class AuthService {
       this.userService.prepareFreshCache();
     }
     if (isTauri()) {
-      // Fresh-login cache cleanup already ran in begin_login, before the authentication request.
+      // Fresh-login cache cleanup already ran in native_db_begin_login, before the authentication request.
       await this.setSessionToken(token);
     }
     await clearSessionNotifications().catch((error) =>
       console.warn('[notification] login cleanup failed', error),
     );
-    if (isTauri()) await this.setSessionToken(token);
     // Browser (pure httpOnly): the backend set the httpOnly session cookie + presence cookie; no token is
     // held in JS.
     this.sessionState.setAuthenticated(true);
