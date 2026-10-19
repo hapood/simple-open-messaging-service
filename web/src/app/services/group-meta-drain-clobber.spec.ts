@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { prepareTestSessionCache } from './session/session-cache.test-helper';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { threadFeedSnapshot } from './thread-feed.test-helper';
 import { createGroupConversation } from './model';
@@ -24,7 +25,7 @@ import {
 describe('group-meta drain vs renderer write-through (bug repro)', () => {
   let webdb: WebdbService;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -33,6 +34,9 @@ describe('group-meta drain vs renderer write-through (bug repro)', () => {
       ],
     });
     webdb = TestBed.inject(WebdbService);
+    const session = await prepareTestSessionCache();
+    TestBed.inject(SessionLifecycleService).bindSession(session.id);
+    webdb.bindSessionCache(session);
   });
 
   afterEach(async () => {

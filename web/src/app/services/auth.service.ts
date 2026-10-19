@@ -34,7 +34,15 @@ import { ThreadSendOutbox } from './thread-send-outbox.service';
 import { SessionStateService } from './session-state.service';
 import { BROWSER_SESSION } from './browser-session.service';
 import { sessionRequest } from './session/session-request';
-import { SessionSupersededError } from './session/session-identity';
+import {
+  SessionSupersededError,
+  parseLoginSessionId,
+  type LoginSessionId,
+} from './session/session-identity';
+import {
+  SessionLifecycleService,
+  type SessionWorkScope,
+} from './session-lifecycle.service';
 
 /** On-screen duration (ms) for important auth notices (forced-logout / persist-failure) — longer than the
  *  default toast so a user looking away still catches why they're back at the sign-in screen. */
@@ -48,6 +56,17 @@ type LoginRes = {
   data?: { session_token?: string; mustChangePassword?: boolean };
 };
 type LogoutRes = { code: number; message: string };
+type NativeAuthentication = Readonly<{
+  host: 'native';
+  id: LoginSessionId;
+  work: SessionWorkScope;
+}>;
+type Authentication =
+  | NativeAuthentication
+  | Readonly<{
+      host: 'browser';
+      signal: AbortSignal;
+    }>;
 
 /**
  * One opaque per-device session token authenticates every request — carried as an httpOnly cookie
@@ -98,7 +117,7 @@ export class AuthService {
    *  {@link restoreSession} flips it after re-establishing the session from secure storage. */
   private readonly sessionState = inject(SessionStateService);
   private readonly browserSession = inject(BROWSER_SESSION);
-  private browserAuthenticationSignal: AbortSignal | null = null;
+  private readonly lifecycle = inject(SessionLifecycleService);
   readonly loggedIn = this.sessionState.loggedIn;
 
   constructor(
@@ -135,26 +154,30 @@ export class AuthService {
    *  (the boot-time pick may be stale if the network changed before login). No-op outside Tauri. On
    *  Tauri this also performs native fresh-login preparation FIRST: the old cache is released and the
    *  new login UUID minted before any authentication request is issued. */
-  private pickThen<T>(req: Observable<T>): Observable<T> {
+  private pickThen<T>(
+    request: (context: Authentication) => Observable<T>,
+  ): Observable<T> {
     if (isTauri()) {
       return defer(() =>
         from(this.prepareNativeLogin()).pipe(
-          mergeMap(() => pickLoginOrigin()),
-          mergeMap(() => req),
+          mergeMap(async (context) => {
+            await pickLoginOrigin();
+            this.lifecycle.assertCurrent(context.work);
+            return context;
+          }),
+          mergeMap(request),
         ),
       );
     }
     const browser = this.requireBrowserSession();
     return defer(() =>
       browser.authenticate(async (signal) => {
-        this.browserAuthenticationSignal = signal;
-        try {
-          await pickLoginOrigin();
-          return await sessionRequest(req, signal, 30_000);
-        } finally {
-          if (this.browserAuthenticationSignal === signal)
-            this.browserAuthenticationSignal = null;
-        }
+        await pickLoginOrigin();
+        return sessionRequest(
+          request({ host: 'browser', signal }),
+          signal,
+          30_000,
+        );
       }),
     );
   }
@@ -166,16 +189,25 @@ export class AuthService {
     return this.browserSession;
   }
 
-  /** The active native login UUID (login-lifetime identity owned by Rust). Set by fresh-login
-   *  preparation or journal-validated restoration; null whenever no native login is admitted. */
-  private nativeLoginUuid: string | null = null;
+  /** Mirror for explicit termination of the latest Rust-prepared/admitted login. Authentication
+   *  completions use their immutable operation context, never this mutable reference. */
+  private nativeLoginUuid: LoginSessionId | null = null;
 
   /** Native fresh-login boundary, run before the authentication request: Rust releases admitted cache
    *  work, deletes retired login caches and mints the new UUID. Account-scoped preferences of the
    *  previous login are removed here too, so nothing of the old login survives into the new one. */
-  private async prepareNativeLogin(): Promise<void> {
-    this.nativeLoginUuid = await tauriInvoke<string>('native_db_begin_login');
+  private async prepareNativeLogin(): Promise<NativeAuthentication> {
+    this.userService.prepareFreshCache();
+    this.sessionState.setAuthenticated(false);
+    const work = this.lifecycle.capture();
+    const id = parseLoginSessionId(
+      await tauriInvoke<string>('native_db_begin_login'),
+    );
+    this.lifecycle.assertCurrent(work);
+    this.nativeLoginUuid = id;
     await this.userService.clearSessionPreferences();
+    this.lifecycle.assertCurrent(work);
+    return Object.freeze({ host: 'native', id, work });
   }
 
   login(params: { account: string; password: string }) {
@@ -184,7 +216,7 @@ export class AuthService {
     // storage); a desktop is trusted only on explicit opt-in (OS keyring); web can never be trusted.
     // `persistent` maps "keep me logged in" to the cookie lifetime on the pure-httpOnly browser path.
     const client = this.resolveClient();
-    return this.pickThen(
+    return this.pickThen((context) =>
       this.http
         .post<LoginRes>(
           `${apiPrefix()}/auth/login`,
@@ -201,7 +233,7 @@ export class AuthService {
               // Await activation so Rust's ProxyState.token is populated BEFORE this observable emits — the
               // caller's post-login navigation then issues its first authenticated request with the Bearer
               // already in place (closes the login race; no JS-side token needed on the wire).
-              await this.activateSession(res.data.session_token);
+              await this.activateSession(res.data.session_token, context);
             }
             return res;
           }),
@@ -214,7 +246,7 @@ export class AuthService {
    *  14-day sliding one. `client` is sent so the backend issues the matching session kind. */
   otpLogin(params: { account: string; code: string; device?: string }) {
     const client = sessionClient();
-    return this.pickThen(
+    return this.pickThen((context) =>
       this.http
         .post<LoginRes>(
           `${apiPrefix()}/auth/otp/login`,
@@ -229,7 +261,7 @@ export class AuthService {
         .pipe(
           mergeMap(async (res) => {
             if (res.code === 0 && res.data?.session_token) {
-              await this.activateSession(res.data.session_token);
+              await this.activateSession(res.data.session_token, context);
             }
             return res;
           }),
@@ -241,7 +273,7 @@ export class AuthService {
    *  ('app'/'web'/'desktop' — see {@link sessionClient}); `trusted` opts a desktop into a permanent session
    *  (its token kept in OS keyring), is implicit-true for 'app', and ignored for 'web' (never trusted). */
   qrCreate(client: 'app' | 'web' | 'desktop') {
-    return this.pickThen(
+    return this.pickThen(() =>
       this.http.post<{
         code: number;
         data?: { qrToken: string; expiresAt: number };
@@ -260,7 +292,7 @@ export class AuthService {
   /** QR-login: poll the sign-in token's status. On 'confirmed' the response carries the session token,
    *  which activates a permanent session (if `trusted` was chosen at create) or a 14-day sliding one. */
   qrPoll(qrToken: string, device?: string) {
-    return this.pickThen(
+    return this.pickThen((context) =>
       this.http
         .post<{
           code: number;
@@ -284,7 +316,7 @@ export class AuthService {
         .pipe(
           mergeMap(async (res) => {
             if (res.code === 0 && res.data?.session_token) {
-              await this.activateSession(res.data.session_token);
+              await this.activateSession(res.data.session_token, context);
             }
             return res;
           }),
@@ -311,23 +343,24 @@ export class AuthService {
    *  `ProxyState.token` (so `api_request` can inject the Bearer) — AWAITED so the token is live before this
    *  resolves — and fires the push + web-push login hooks. Extracted so the password, OTP, and QR login
    *  paths activate identically. The token is never stored in JS. */
-  private async activateSession(token: string): Promise<void> {
+  private async activateSession(
+    token: string,
+    context: Authentication,
+  ): Promise<void> {
+    let admitted: SessionWorkScope;
     if (!isTauri()) {
-      const signal = this.browserAuthenticationSignal;
-      if (!signal) throw new SessionSupersededError();
-      await this.requireBrowserSession().activate(signal);
+      if (context.host !== 'browser') throw new SessionSupersededError();
+      await this.requireBrowserSession().activate(context.signal);
+      admitted = this.lifecycle.capture();
     } else {
-      this.userService.prepareFreshCache();
-    }
-    if (isTauri()) {
-      // Fresh-login cache cleanup already ran in native_db_begin_login, before the authentication request.
-      await this.setSessionToken(token);
+      if (context.host !== 'native') throw new SessionSupersededError();
+      admitted = await this.setSessionToken(token, context);
     }
     await clearSessionNotifications().catch((error) =>
       console.warn('[notification] login cleanup failed', error),
     );
-    // Browser (pure httpOnly): the backend set the httpOnly session cookie + presence cookie; no token is
-    // held in JS.
+    this.lifecycle.assertCurrent(admitted);
+    // Browser credentials remain in the httpOnly cookie; this is only an admission mirror.
     this.sessionState.setAuthenticated(true);
     this.push.onLogin();
     void this.webPush.onLogin();
@@ -360,30 +393,35 @@ export class AuthService {
    *   - Desktop: `set_session_token` (Rust `ProxyState.token`, AWAITED so login completes with the token
    *     live — closes the race) + `secure_set_token` (OS keyring, when the session should survive restart).
    *  The token passes THROUGH JS only to reach Rust/Kotlin/the keyring; it is never retained. */
-  private async setSessionToken(token: string): Promise<void> {
+  private async setSessionToken(
+    token: string,
+    context: NativeAuthentication,
+  ): Promise<SessionWorkScope> {
+    if (!isTauri())
+      throw new Error('Native token installation requires the native host');
+    this.lifecycle.assertCurrent(context.work);
+    // The original operation supplies the UUID, never the mutable current-login mirror.
+    await tauriInvoke('set_session_token', {
+      token,
+      sessionUuid: context.id,
+    });
+    this.lifecycle.assertCurrent(context.work);
+    this.nativeLoginUuid = context.id;
+    this.lifecycle.bindSession(context.id);
+    const admitted = this.lifecycle.capture();
     if (isAndroidNative()) {
-      window.SomsFcm!.setSessionToken(token);
-    }
-    if (isTauri()) {
-      // Await so ProxyState.token is populated before this resolves — the login flow (which awaits
-      // activateSession → this) then issues its first authenticated request with the Bearer in place.
-      // Needed on BOTH desktop AND Android: both route /api/v1 through the `api_request` IPC transport,
-      // which reads ProxyState.token. (Awaiting also closes the pre-login/first-request race.)
-      await tauriInvoke('set_session_token', {
+      // Persist only after Rust admits this exact operation and the renderer lease is still current.
+      window.SomsFcm!.setSessionToken(token, context.id);
+    } else {
+      void tauriInvoke('secure_set_token', {
         token,
-        sessionUuid: this.nativeLoginUuid,
-      });
-      // Desktop persistence to the OS keyring (Android persists via SomsFcm above). Fire-and-forget: a
-      // failure revokes a TRUSTED (permanent) token server-side (no orphan) + bounces to login; a keep-only
-      // token gets a toast. set_session_token above already set ProxyState.token to THIS token, so
-      // revokeAndBounce's logout POST (Bearer-injected by Rust) revokes exactly it.
-      if (!isAndroidNative()) {
-        tauriInvoke('secure_set_token', { token }).catch(() => {
+        sessionUuid: context.id,
+      }).catch(() => {
+        if (this.lifecycle.isCurrent(admitted))
           this.toast.warn(this.t('auth.notice.keepPersistFailed'));
-        });
-      }
+      });
     }
-    // Browser (pure httpOnly): no JS token — the backend holds the credential in the cookie.
+    return admitted;
   }
 
   /** Re-establish the session on a cold start by reading the token back from OS secure storage (Android
@@ -394,6 +432,7 @@ export class AuthService {
    *  carries the session; there is no JS token to restore). The token passes through JS only to reach Rust;
    *  it is not retained. */
   async restoreSession(): Promise<void> {
+    const work = this.lifecycle.capture();
     // Pick the reachable origin before Angular releases APP_INITIALIZER and mounts the routed page.
     // The logged-out login page immediately loads public `/config`, so deferring this race until the user
     // submits the login form makes every cold-start request hit the persisted primary even when the LAN
@@ -408,6 +447,8 @@ export class AuthService {
         // leaving a blank webview. A login attempt retries because pickLoginOrigin clears its failed cache.
       }
     }
+
+    if (isTauri() && !this.lifecycle.isCurrent(work)) return;
 
     // Open the per-user IDB on the persisted lastUserId FIRST (awaited) so the threadlist can eager-paint
     // the cached list before the SSE/HELLO round-trip — the DB is open before the router resolves, so the
@@ -429,7 +470,7 @@ export class AuthService {
     if (isAndroidNative()) {
       try {
         const t = window.SomsFcm!.getSessionToken(); // synchronous JNI
-        if (t) await this.restoreNativeSession(t);
+        if (t) await this.restoreNativeSession(t, work);
       } catch {
         // SomsFcm bridge missing (shell wiring bug / renderer reclaimed before the @JavascriptInterface
         // registered). Stay logged out + canTrust false rather than reject the APP_INITIALIZER — a rejection
@@ -438,7 +479,7 @@ export class AuthService {
     } else if (isTauri()) {
       try {
         const t = await tauriInvoke<string | null>('secure_get_token');
-        if (t) await this.restoreNativeSession(t);
+        if (t) await this.restoreNativeSession(t, work);
       } catch {
         // Keyring unavailable (e.g. headless Linux without Secret Service): this desktop CANNOT be
         // trusted → the trust toggle stays hidden, so the user can't request a permanent token the client
@@ -448,44 +489,67 @@ export class AuthService {
     // Browser: _canTrust stays false (web can never be trusted).
   }
 
-  /** Apply a token restored from secure storage: push it to Rust/Kotlin (the same {@link setSessionToken}
-   *  path login uses) + flip the login flag. A restored token is by definition durable/trusted (it came
-   *  from the keyring / EncryptedSharedPreferences). */
-  private async applyRestoredToken(token: string): Promise<void> {
-    await this.setSessionToken(token);
-    this.sessionState.setAuthenticated(true);
-  }
-
   /** Cold-start native restore validates the credential against the durable login record FIRST: a
    *  residual credential whose login was ended locally is discarded, never restored. A missing, old, or
    *  damaged cache is rebuildable state, not an authentication failure: recreate the current schema and
    *  keep the restored token. */
-  private async restoreNativeSession(token: string): Promise<void> {
+  private async restoreNativeSession(
+    token: string,
+    work: SessionWorkScope,
+  ): Promise<void> {
+    this.lifecycle.assertCurrent(work);
     const uuid = await tauriInvoke<string | null>('login_session_for_token', {
       token,
     });
+    this.lifecycle.assertCurrent(work);
     if (!uuid) {
       await this.discardResidualNativeToken();
       return;
     }
-    this.nativeLoginUuid = uuid;
+    const id = parseLoginSessionId(uuid);
+    this.nativeLoginUuid = id;
     try {
       await tauriInvoke('native_db_validate_cache');
     } catch {
+      this.lifecycle.assertCurrent(work);
       await tauriInvoke('native_db_recreate_cache');
     }
+    this.lifecycle.assertCurrent(work);
+    // Rust must admit the recovered owner before account-cache reads. The renderer remains
+    // unauthenticated until those reads finish, and carries the admitted scope across them.
+    const admitted = await this.setSessionToken(token, {
+      host: 'native',
+      id,
+      work,
+    });
     await this.userService.restoreWebdb();
-    await this.applyRestoredToken(token);
+    this.lifecycle.assertCurrent(admitted);
+    this.sessionState.setAuthenticated(true);
   }
 
   /** Drop a credential that no longer belongs to any admitted login, from the store that still holds
    *  it. Local recovery to a clean signed-out state; the server-side token keeps its own expiry. */
-  private async discardResidualNativeToken(): Promise<void> {
+  private async discardResidualNativeToken(): Promise<boolean> {
+    let nativeOk = true;
     if (isAndroidNative()) {
-      window.SomsFcm!.setSessionToken(null);
+      try {
+        window.SomsFcm!.discardResidualToken();
+      } catch {
+        nativeOk = false;
+      }
     } else if (isTauri()) {
-      await tauriInvoke('secure_clear_token').catch(() => {});
+      try {
+        await tauriInvoke('secure_clear_residual_token');
+      } catch {
+        nativeOk = false;
+      }
+    } else {
+      this.clearPresenceCookie();
     }
+    await clearSessionNotifications().catch((error) =>
+      console.warn('[notification] logout cleanup failed', error),
+    );
+    return nativeOk;
   }
 
   /** Synchronous local-state clear: flip the login flag + drop the in-memory trust/keep flags. Does NOT
@@ -498,19 +562,19 @@ export class AuthService {
   /** Clear the native token (Rust `ProxyState.token` via `clear_session_token` + the OS secure store).
    *  Returns whether the PERSISTENT (keyring / EncryptedSharedPreferences) clear succeeded (false → the
    *  logout-failed toast). The Rust in-memory clear is best-effort. */
-  private async clearNativeToken(): Promise<boolean> {
+  private async clearNativeToken(sessionUuid: string): Promise<boolean> {
     let nativeOk = true;
     if (isAndroidNative()) {
       // Android: clear Kotlin's EncryptedSharedPreferences (SomsFcm) AND Rust's ProxyState.token. The Rust
       // clear is needed because login now pushes the token to BOTH stores (setSessionToken) — leaving
       // ProxyState.token set would keep `api_request` sending the revoked Bearer after logout.
       try {
-        window.SomsFcm!.setSessionToken(null);
+        window.SomsFcm!.setSessionToken(null, sessionUuid);
       } catch {
         nativeOk = false;
       }
       try {
-        await tauriInvoke('clear_session_token');
+        await tauriInvoke('clear_session_token', { sessionUuid });
       } catch {
         /* ProxyState.token in-memory copy */
       }
@@ -519,12 +583,12 @@ export class AuthService {
       // must not skip the proxy clear. nativeOk tracks the persistent keyring (the failure that leaves a
       // stale token). (secure_clear_token is a desktop-only command — not reachable on Android.)
       try {
-        await tauriInvoke('secure_clear_token');
+        await tauriInvoke('secure_clear_token', { sessionUuid });
       } catch {
         nativeOk = false;
       } // idempotent: NoEntry → Ok
       try {
-        await tauriInvoke('clear_session_token');
+        await tauriInvoke('clear_session_token', { sessionUuid });
       } catch {
         /* ProxyState.token in-memory copy */
       }
@@ -643,13 +707,15 @@ export class AuthService {
         nativeOk = !admitted.localClearFailed;
       } catch (error) {
         console.warn('[session] native logout admission failed', error);
-        nativeOk = await this.clearNativeToken();
-        platformCleared = true;
+        if (endedLogin) {
+          nativeOk = await this.clearNativeToken(endedLogin);
+          platformCleared = true;
+        }
       }
       // The acknowledgement proves Rust captured the ended token before Android clears both copies.
-      if (isAndroidNative() && !platformCleared) {
+      if (isAndroidNative() && !platformCleared && endedLogin) {
         try {
-          window.SomsFcm!.setSessionToken(null);
+          window.SomsFcm!.setSessionToken(null, endedLogin);
         } catch {
           nativeOk = false;
         }
@@ -666,8 +732,10 @@ export class AuthService {
             )
           : Promise.resolve(),
       ]);
+    } else if (endedLogin) {
+      nativeOk = await this.clearNativeToken(endedLogin);
     } else {
-      nativeOk = await this.clearNativeToken();
+      nativeOk = await this.discardResidualNativeToken();
     }
     const outcome = await released;
     if (outcome.failed) throw outcome.error;

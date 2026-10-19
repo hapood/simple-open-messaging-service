@@ -3,6 +3,8 @@ import { TestBed } from '@angular/core/testing';
 import { Subject, of } from 'rxjs';
 import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { WebdbService } from './webdb.service';
+import { SessionLifecycleService } from './session-lifecycle.service';
+import { prepareTestSessionCache } from './session/session-cache.test-helper';
 import { MessageRepository } from './message-repository.service';
 import { MsgService } from './message.service';
 import { WebsocketService } from './websocket.service';
@@ -87,6 +89,9 @@ describe('MessageRepository', () => {
     });
     repo = TestBed.inject(MessageRepository);
     webdb = TestBed.inject(WebdbService);
+    const session = await prepareTestSessionCache();
+    TestBed.inject(SessionLifecycleService).bindSession(session.id);
+    webdb.bindSessionCache(session);
     await webdb.openForUser('1');
   });
 

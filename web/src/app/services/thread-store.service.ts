@@ -31,7 +31,10 @@ import {
   User,
 } from './model';
 import { MemberProfileRepository } from './member-profile-store.service';
-import { SessionLifecycleService } from './session-lifecycle.service';
+import {
+  SessionLifecycleService,
+  type SessionWorkScope,
+} from './session-lifecycle.service';
 import { isAndroidNative } from './runtime';
 import type { ThreadNotificationUpdate } from './thread-notification';
 
@@ -44,6 +47,11 @@ import {
   type ThreadFeedSnapshot,
   type ThreadAliasApplied,
 } from '../../../../shared/thread-attention';
+
+type ThreadWorkScope = Readonly<{
+  session: SessionWorkScope;
+  projectionReset: AbortSignal;
+}>;
 
 type ThreadContentHead = Pick<
   ThreadFeedSnapshot,
@@ -84,11 +92,14 @@ export class ThreadRepository {
   private readonly ws = inject(WebsocketService);
   private readonly messageRepo = inject(MessageRepository);
   private readonly memberProfiles = inject(MemberProfileRepository);
+  private readonly lifecycle = inject(SessionLifecycleService);
 
   private readonly _items = signal<ConversationItem[]>([]);
   private readonly threadStates = new Map<number, LocalThreadAttention>();
   private readonly projectionTokens = new Map<number, object>();
-  private sessionEpoch = 0;
+  // Projection resets can occur before HELLO without ending a login. Cancel those local reads
+  // separately; account lifetime comes only from the authority's captured session scope.
+  private projectionWork = new AbortController();
   readonly items = computed(() =>
     this._items().filter(
       (item): item is ConversationItem & { threadFeedId: number } =>
@@ -192,12 +203,9 @@ export class ThreadRepository {
       });
     // Cached rows can be painted before HELLO, while sessionUserId is already null. Logout must
     // reset them explicitly rather than relying on an identity signal transition.
-    inject(SessionLifecycleService)
-      .ended$.pipe(takeUntilDestroyed())
+    this.lifecycle.ended$
+      .pipe(takeUntilDestroyed())
       .subscribe(() => this.reset());
-    inject(SessionLifecycleService)
-      .invalidated$.pipe(takeUntilDestroyed())
-      .subscribe(() => this.sessionEpoch++);
     this.webdb.workerFailed$.pipe(takeUntilDestroyed()).subscribe(() => {
       // A dead DB worker also destroys the direct port; a new HELLO binds a replacement.
       this.ws.disconnect();
@@ -245,9 +253,11 @@ export class ThreadRepository {
     // ── thread-list DATA SSE events (the DB layer is the sole consumer) ──
     this.sseSub = this.ws.eventSubject.subscribe((m) => {
       switch (m.event) {
-        case 'HELLO':
+        case 'HELLO': {
+          const session = this.lifecycle.capture();
           void this.onHello(m.data as HelloPayload | undefined).catch(
             async (error) => {
+              if (!this.lifecycle.isCurrent(session)) return;
               console.warn(
                 '[cache-recovery] session cache initialization failed',
                 error,
@@ -256,6 +266,7 @@ export class ThreadRepository {
             },
           );
           break;
+        }
         case 'STATE_FEED_UPDATED':
           // SSE workers hand the wake directly to the owning database/Rust executor.
           break;
@@ -325,7 +336,7 @@ export class ThreadRepository {
   private async resolveThreadProfile(item: ConversationItem): Promise<void> {
     const reference = threadProfileReference(item);
     if (reference.profileRev < 1) return;
-    const epoch = this.sessionEpoch;
+    const scope = this.captureWork();
     const demand = homeProfileDemand(
       reference.account,
       reference.namespaceId,
@@ -337,7 +348,7 @@ export class ThreadRepository {
         : unevidencedProfileDemand(demand);
     try {
       const profile = await firstValueFrom(this.profiles.resolve(request));
-      if (epoch !== this.sessionEpoch) return;
+      if (!this.isCurrentWork(scope)) return;
       this._items.update((items) =>
         items.map((current) => {
           if (
@@ -371,7 +382,7 @@ export class ThreadRepository {
         }),
       );
     } catch (error) {
-      if (epoch === this.sessionEpoch)
+      if (this.isCurrentWork(scope))
         console.warn('[profile] thread resolution failed', error);
     }
   }
@@ -388,8 +399,23 @@ export class ThreadRepository {
     this.ws.refreshHandshake();
   };
 
+  private captureWork(): ThreadWorkScope {
+    return Object.freeze({
+      session: this.lifecycle.capture(),
+      projectionReset: this.projectionWork.signal,
+    });
+  }
+
+  private isCurrentWork(scope: ThreadWorkScope): boolean {
+    return (
+      !scope.projectionReset.aborted && this.lifecycle.isCurrent(scope.session)
+    );
+  }
+
   private reset(): void {
-    this.sessionEpoch++;
+    const previous = this.projectionWork;
+    this.projectionWork = new AbortController();
+    previous.abort();
     this.threadStates.clear();
     this.confirmedAliases.clear();
     this.projectionTokens.clear();
@@ -432,12 +458,12 @@ export class ThreadRepository {
   /** Read the IDB `threads` store + apply it instantly (the eager pre-HELLO paint). Bails if the list is
    *  already populated so a late cache read cannot clobber a fresher HELLO delta that landed during it. */
   private async paintFromCache(): Promise<void> {
-    const epoch = this.sessionEpoch;
+    const scope = this.captureWork();
     try {
-      if (epoch !== this.sessionEpoch) return;
+      if (!this.isCurrentWork(scope)) return;
       if (this._items().length > 0) return; // already populated — don't clobber a fresher state
-      const cached = await this.readCachedThreads();
-      if (epoch !== this.sessionEpoch) return;
+      const cached = await this.readCachedThreads(scope);
+      if (!this.isCurrentWork(scope)) return;
       if (cached.length > 0 && this._items().length === 0) {
         for (const item of cached) {
           if (typeof item.lastReadSeq === 'number')
@@ -445,9 +471,9 @@ export class ThreadRepository {
         }
         this.applyItems(cached); // flips READY
         const states = await this.webdb.getThreadStates();
-        if (epoch !== this.sessionEpoch) return;
+        if (!this.isCurrentWork(scope)) return;
         await this.applyThreadStates(states, false);
-        if (epoch !== this.sessionEpoch) return;
+        if (!this.isCurrentWork(scope)) return;
         this._navigationReady.set(true);
       } else if (this._items().length === 0 && this._status() !== 'READY') {
         this._status.set('LOADING'); // cold start, no cache → await HELLO's delta
@@ -455,7 +481,7 @@ export class ThreadRepository {
     } catch (error) {
       // Cache paint is optional; HELLO owns initialization and authoritative recovery.
       console.warn('[cache-paint] cached thread read failed', error);
-      if (epoch === this.sessionEpoch)
+      if (this.isCurrentWork(scope))
         await this.userService.requestCacheRebuild();
     }
   }
@@ -726,11 +752,11 @@ export class ThreadRepository {
       threadId,
       advanceLocalAttentionRead(currentState, seq),
     );
-    const epoch = this.sessionEpoch;
+    const scope = this.captureWork();
     void this.webdb
       .advanceThreadRead(threadId, seq)
       .then((state) => {
-        if (epoch !== this.sessionEpoch) return;
+        if (!this.isCurrentWork(scope)) return;
         void this.applyThreadStates([state], false);
         void this.projectThreadAttention(threadId);
       })
@@ -877,8 +903,10 @@ export class ThreadRepository {
   private async onHello(d: HelloPayload | undefined): Promise<void> {
     if (
       !d ||
-      !Number.isSafeInteger(d.userId) || d.userId <= 0 ||
-      !Number.isSafeInteger(d.sessionId) || d.sessionId <= 0 ||
+      !Number.isSafeInteger(d.userId) ||
+      d.userId <= 0 ||
+      !Number.isSafeInteger(d.sessionId) ||
+      d.sessionId <= 0 ||
       !Number.isSafeInteger(d.stateFeedEndId) ||
       d.stateFeedEndId < 0 ||
       !Number.isSafeInteger(d.threadFeedEndId) ||
@@ -889,8 +917,18 @@ export class ThreadRepository {
     //    start: already opened by restoreSession's restoreWebdb, idempotent here). The profile fetch is
     //    gated async inside establishSession. The cache-paint is NOT repeated here — load() already eager-
     //    painted from the IDB cache (and on a cold start the cache is empty, so the delta below populates).
-    await this.userService.establishSession(d.userId, d.profileRev ?? 0, d.sessionId);
-    const epoch = this.sessionEpoch;
+    const session = this.lifecycle.capture();
+    await this.userService.establishSession(
+      d.userId,
+      d.profileRev ?? 0,
+      d.sessionId,
+    );
+    if (!this.lifecycle.isCurrent(session)) return;
+    // Initial identity hydration may reset an empty projection without ending this login.
+    const scope: ThreadWorkScope = Object.freeze({
+      session,
+      projectionReset: this.projectionWork.signal,
+    });
     // Profile-namespace change sync: the HELLO anchor skips the pull when the
     // persisted cursor already matches (fresh caches simply start at 0).
     if (
@@ -909,16 +947,16 @@ export class ThreadRepository {
     // HELLO can race the thread-list mount. It awaits the account-level thread-init barrier, but does
     // not provide or own the deletion HWM; reconnects reuse the persisted result.
     if (this.threadFeedCursor === undefined) {
-      const cursor = await this.webdb.getSyncState('threadFeedCursor');
-      if (epoch !== this.sessionEpoch) return;
+      const cursor = (await this.webdb.readAccountState()).threadFeedCursor;
+      if (!this.isCurrentWork(scope)) return;
       this.threadFeedCursor = typeof cursor === 'number' ? cursor : 0;
     }
     const states = await this.webdb.getThreadStates();
-    if (epoch !== this.sessionEpoch) return;
+    if (!this.isCurrentWork(scope)) return;
     await this.applyThreadStates(states, false);
-    if (epoch !== this.sessionEpoch) return;
+    if (!this.isCurrentWork(scope)) return;
     const port = await this.webdb.createThreadFeedPort();
-    if (epoch !== this.sessionEpoch) {
+    if (!this.isCurrentWork(scope)) {
       port?.close();
       return;
     }
@@ -926,11 +964,11 @@ export class ThreadRepository {
     // HELLO is a memory event. The worker/Rust executor commits the state feed,
     // then reports state-feed-committed; the UI only reads its projection.
     await this.refreshCommittedStateFeed();
-    if (epoch !== this.sessionEpoch) return;
+    if (!this.isCurrentWork(scope)) return;
     // The HELLO wake reaches the worker/Rust independently. A concurrent completion also
     // delivers thread-feed-committed after the cursor and Group Meta pages commit.
     await this.refreshCommittedThreadFeed();
-    if (epoch !== this.sessionEpoch) return;
+    if (!this.isCurrentWork(scope)) return;
     this._navigationReady.set(true);
     // Cold/warm boots with an already-caught-up Group Meta cursor produce no
     // committed pages, so boot also warms once over the active groups; the
@@ -946,11 +984,11 @@ export class ThreadRepository {
   }
 
   private async refreshCommittedStateFeed(): Promise<void> {
-    const epoch = this.sessionEpoch;
+    const scope = this.captureWork();
     const cursor = await this.userService.refreshCommittedStateFeed();
-    if (epoch !== this.sessionEpoch || cursor === undefined) return;
-    const items = await this.readCachedThreads();
-    if (epoch !== this.sessionEpoch) return;
+    if (!this.isCurrentWork(scope) || cursor === undefined) return;
+    const items = await this.readCachedThreads(scope);
+    if (!this.isCurrentWork(scope)) return;
     this.applyItems(items);
   }
 
@@ -962,22 +1000,23 @@ export class ThreadRepository {
   /** Completion wakes never initiate HTTP, including after a partially successful background drain. */
   private async refreshCommittedThreadFeed(): Promise<void> {
     if (this.threadFeedCursor === undefined) return;
-    const epoch = this.sessionEpoch;
+    const scope = this.captureWork();
     try {
       const changes = await this.webdb.readThreadFeedChanges(
         this.threadFeedCursor,
       );
-      if (epoch !== this.sessionEpoch) return;
-      this.applyItems(await this.webdb.getThreads());
-      if (epoch !== this.sessionEpoch) return;
+      if (!this.isCurrentWork(scope)) return;
+      const items = await this.webdb.getThreads();
+      if (!this.isCurrentWork(scope)) return;
+      this.applyItems(items);
       await this.applyThreadStates(changes.states, true);
-      if (epoch !== this.sessionEpoch) return;
+      if (!this.isCurrentWork(scope)) return;
       this.threadFeedCursor = Math.max(
         this.threadFeedCursor ?? 0,
         changes.cursor,
       );
     } catch (error) {
-      if (epoch === this.sessionEpoch)
+      if (this.isCurrentWork(scope))
         console.warn('[thread-feed] local completion refresh failed', error);
     }
   }
@@ -986,10 +1025,10 @@ export class ThreadRepository {
     states: LocalThreadAttention[],
     emitLive: boolean,
   ): Promise<void> {
-    const epoch = this.sessionEpoch;
+    const scope = this.captureWork();
     const notifications: ThreadNotificationUpdate[] = [];
     for (const stored of states) {
-      if (epoch !== this.sessionEpoch) return;
+      if (!this.isCurrentWork(scope)) return;
       const delivered = attentionSnapshot(stored);
       const notify =
         delivered &&
@@ -1011,6 +1050,7 @@ export class ThreadRepository {
         const cached = (await this.webdb.getThreads()).find(
           (item) => item.threadId === state.threadId,
         );
+        if (!this.isCurrentWork(scope)) return;
         if (cached) this.upsertThread(cached);
       }
       const snapshot = attentionSnapshot(state);
@@ -1051,6 +1091,7 @@ export class ThreadRepository {
             .catch(() => undefined);
       }
       const projection = await this.projectThreadAttention(state.threadId);
+      if (!this.isCurrentWork(scope)) return;
       const item =
         projection && snapshot
           ? this.applyThreadAttentionProjection(projection, snapshot)
@@ -1058,7 +1099,7 @@ export class ThreadRepository {
       if (notify && item && snapshot)
         notifications.push({ item, state: snapshot });
     }
-    if (emitLive && epoch === this.sessionEpoch && notifications.length)
+    if (emitLive && this.isCurrentWork(scope) && notifications.length)
       this.threadNotifications.next(notifications);
   }
 
@@ -1068,7 +1109,7 @@ export class ThreadRepository {
     const state = this.threadStates.get(threadId);
     const me = this.userService.sessionProfile();
     if (!state || !me) return;
-    const epoch = this.sessionEpoch;
+    const scope = this.captureWork();
     const token = {};
     this.projectionTokens.set(threadId, token);
     const projection = await this.webdb
@@ -1077,13 +1118,13 @@ export class ThreadRepository {
         namespaceId: me.namespaceId,
       })
       .catch((error) => {
-        if (epoch === this.sessionEpoch)
+        if (this.isCurrentWork(scope))
           console.warn('[thread-feed] attention projection failed', error);
         return null;
       });
     if (
       projection === null ||
-      epoch !== this.sessionEpoch ||
+      !this.isCurrentWork(scope) ||
       this.threadStates.get(threadId) !== state ||
       this.projectionTokens.get(threadId) !== token
     )
@@ -1097,12 +1138,12 @@ export class ThreadRepository {
    *  the group-info member reload react to the advanced cursor immediately. */
   /** Warming is optional and runs only after committed facts reach the UI. */
   private prefetchGroupProfiles(threadIds: number[]): void {
-    const epoch = this.sessionEpoch;
+    const scope = this.captureWork();
     const selected = new Set(threadIds);
     void this.webdb
       .getUnresolvedGroupMetaProfiles()
       .then((references) => {
-        if (epoch !== this.sessionEpoch) return;
+        if (!this.isCurrentWork(scope)) return;
         for (const reference of references) {
           if (!selected.has(reference.threadId)) continue;
           const thread = this._items().find(
@@ -1356,10 +1397,15 @@ export class ThreadRepository {
   // ── IDB persistence helpers (best-effort; IDB unavailable → graceful no-op) ────────────────
 
   /** Read cached threads and restore the authoritative account-scoped feed order. */
-  private async readCachedThreads(): Promise<ConversationItem[]> {
+  private async readCachedThreads(
+    scope: ThreadWorkScope,
+  ): Promise<ConversationItem[]> {
     const all = await this.webdb.getThreads();
+    if (!this.isCurrentWork(scope)) return [];
+    const storedStates = await this.webdb.getThreadStates();
+    if (!this.isCurrentWork(scope)) return [];
     const states = new Map(
-      (await this.webdb.getThreadStates())
+      storedStates
         .filter((state) => state.threadFeedId !== null)
         .map((state) => [state.threadId, state.threadFeedId!]),
     );

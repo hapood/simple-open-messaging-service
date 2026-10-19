@@ -7,6 +7,8 @@ import { TauriWebdbStorage } from './tauri-webdb-storage';
 import { SseLifecycleService } from './sse-lifecycle.service';
 import { WebsocketService } from './websocket.service';
 import { SessionStateService } from './session-state.service';
+import { SessionLifecycleService } from './session-lifecycle.service';
+import { parseLoginSessionId } from './session/session-identity';
 import { UserService } from './user.service';
 import { ThreadRepository } from './thread-store.service';
 
@@ -15,11 +17,6 @@ describe.each(['browser', 'desktop', 'android'] as const)(
   '%s session bootstrap provider graph',
   (platform) => {
     const originalAgent = navigator.userAgent;
-    const nativeWindow = window as unknown as {
-      SomsFcm?: unknown;
-      __TAURI_INTERNALS__?: unknown;
-      __TAURI__?: { core: { invoke: ReturnType<typeof vi.fn> } };
-    };
 
     beforeEach(() => {
       if (platform === 'browser') {
@@ -30,17 +27,32 @@ describe.each(['browser', 'desktop', 'android'] as const)(
         vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(
           `${originalAgent} Android`,
         );
-        nativeWindow.SomsFcm = {
+        vi.stubGlobal('SomsFcm', {
           getSessionToken: () => null,
           pickActiveOrigin: () => 'http://localhost:3101',
-        };
+        });
       }
-      nativeWindow.__TAURI_INTERNALS__ = {};
-      nativeWindow.__TAURI__ = {
+      vi.stubGlobal('__TAURI_INTERNALS__', {});
+      vi.stubGlobal('__TAURI__', {
         core: {
           invoke: vi.fn(async (command: string) => {
             if (command === 'get_api_origin') return 'http://localhost:3101';
             if (command === 'is_origin_configured') return false;
+            if (command === 'native_db_read_account_state') {
+              return {
+                schemaVersion: 1,
+                selfProfile: null,
+                selfIdentity: null,
+                composerDrafts: [],
+                threadFeedCursor: null,
+                stateFeedId: null,
+                stateFeedFullThrough: null,
+                profileNamespaceChangeEndId: null,
+                intentRequestEndId: null,
+                intentRequestReadId: null,
+                intentRequestOptimisticReadId: null,
+              };
+            }
             if (
               command === 'native_db_threads' ||
               command === 'native_db_thread_states'
@@ -49,15 +61,13 @@ describe.each(['browser', 'desktop', 'android'] as const)(
             return null;
           }),
         },
-      };
+      });
       TestBed.configureTestingModule({ providers: appConfig.providers });
     });
 
     afterEach(() => {
       TestBed.resetTestingModule();
-      delete nativeWindow.__TAURI_INTERNALS__;
-      delete nativeWindow.__TAURI__;
-      delete nativeWindow.SomsFcm;
+      vi.unstubAllGlobals();
       vi.restoreAllMocks();
     });
 
@@ -83,17 +93,27 @@ describe.each(['browser', 'desktop', 'android'] as const)(
           .mockImplementation(async () => {
             await storage.openExistingForUser('42');
           });
-        nativeWindow.SomsFcm = {
+        const loginSessionId = parseLoginSessionId(
+          'd91f007f-10c4-410f-a837-65ba4edff6b5',
+        );
+        TestBed.inject(SessionLifecycleService).bindSession(loginSessionId);
+        vi.stubGlobal('SomsFcm', {
           getSessionToken: () => null,
           getConnState: () => 'open',
           replayHello: () =>
-            window.__SOMS_EVENT__?.('HELLO', {
-              userId: 42,
-              sessionId: 1,
-              stateFeedEndId: 0,
-              threadFeedEndId: 0,
+            window.__SOMS_EVENT__?.({
+              event: 'HELLO',
+              status: 0,
+              message: 'retained hello',
+              loginSessionId,
+              data: {
+                userId: 42,
+                sessionId: 1,
+                stateFeedEndId: 0,
+                threadFeedEndId: 0,
+              },
             }),
-        };
+        });
         TestBed.inject(SessionStateService).setAuthenticated(true);
         TestBed.tick();
         expect(establish).toHaveBeenCalledWith(42, 0, 1);

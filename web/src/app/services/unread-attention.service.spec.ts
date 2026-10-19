@@ -8,6 +8,7 @@ import { NotificationPrefsService } from './notification-prefs.service';
 import { NavStateMachineService } from './nav-state.service';
 import { SOMS_NOTIF_MSG } from './sw-notif-protocol';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { parseLoginSessionId } from './session/session-identity';
 import { WebdbService } from './webdb.service';
 import { ProfileNamespaceRepository } from './profile-namespace-store.service';
 import { UserService } from './user.service';
@@ -155,6 +156,9 @@ describe('UnreadAttentionService browser worker bridge', () => {
         }),
       },
     };
+    const lifecycle = TestBed.inject(SessionLifecycleService);
+    lifecycle.bindSession(parseLoginSessionId('11111111-2222-4333-8444-555555555555'));
+    const scope = lifecycle.capture();
     TestBed.runInInjectionContext(() => new UnreadAttentionService());
     await vi.waitFor(() =>
       expect(offer).toHaveBeenCalledWith(
@@ -164,7 +168,7 @@ describe('UnreadAttentionService browser worker bridge', () => {
           threadId: 7,
           sessionId: 11,
         }),
-        expect.any(Number),
+        scope,
       ),
     );
     const intent = offer.mock.calls[0][0];

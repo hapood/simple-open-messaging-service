@@ -29,7 +29,14 @@ import { PreferenceStore } from './preference-store.service';
 import { isTauri, tauriInvoke } from './runtime';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { SessionSupersededError } from './session/session-identity';
-import type { FriendRequestProjection } from './friend-request-state';
+import {
+  parseIncomingRequestHead,
+  type IncomingRequestHead,
+  type PersonalRequestPage,
+  type RequestBucket,
+  type RequestDecisionResult,
+  type RequestKind,
+} from '../../../../shared/relationship-request';
 
 export type { User } from './model';
 
@@ -84,133 +91,10 @@ export class FederatedResolveError extends Error {
   }
 }
 
-interface ClientIntentUser {
-  id: number;
-  account: string;
-  avatar: string;
-  bio: string;
-  namespaceId: number;
-  profileRev?: number;
+export interface ClientStateFeedItem {
+  feedId: number;
+  body: IncomingRequestHead;
 }
-
-interface ClientFriendIntentBase {
-  snapshot: RequestSnapshot | null;
-  requestStatus?: RequestRevocationStatus;
-  requestDirection?: FriendIntentDirection;
-  established?: boolean;
-  key: string;
-  account: string;
-  namespaceId: number;
-  subjectAccount: string;
-  subjectNamespaceId: number;
-  note: string;
-  requestedAt: number | null;
-  expiresAt: number | null;
-  peer: ClientIntentUser;
-  requestedSort: number;
-}
-
-/** Device-facing friend intent. An authored local request always has its server-local conversation
- * shell; a peer-authored request may remain address-only until the backend accepts it. */
-export type ClientFriendIntent = ClientFriendIntentBase &
-  (
-    | {
-        direction: 'OUTGOING';
-        status: 'REQUESTED';
-        localThreadId: number;
-      }
-    | {
-        direction: 'INCOMING';
-        status: 'REQUESTED';
-        localThreadId: number | null;
-      }
-    | {
-        direction: FriendIntentDirection;
-        status: 'ACCEPTED';
-        localThreadId: number;
-      }
-    | {
-        direction: FriendIntentDirection;
-        status: 'REVOKED';
-        localThreadId: number | null;
-      }
-  );
-
-export interface ClientGroupInviteIntent {
-  snapshot: RequestSnapshot | null;
-  requestStatus?: RequestRevocationStatus;
-  requestDirection?: FriendIntentDirection;
-  established?: boolean;
-  key: string;
-  kind: 'GROUP_INVITE';
-  account: string;
-  namespaceId: number;
-  subjectAccount: string;
-  subjectNamespaceId: number;
-  status: 'REQUESTED' | 'ACCEPTED' | 'REVOKED';
-  note: string;
-  requestedAt: number | null;
-  expiresAt: number | null;
-  direction?: FriendIntentDirection;
-  threadId: number;
-  group: {
-    account: string;
-    namespaceId: number;
-    profileRev: number;
-  };
-}
-
-export type FriendIntentDirection = 'INCOMING' | 'OUTGOING';
-
-type ClientStateBody =
-  | Omit<
-      ClientFriendIntent,
-      | 'key'
-      | 'account'
-      | 'namespaceId'
-      | 'subjectAccount'
-      | 'subjectNamespaceId'
-      | 'requestedSort'
-    >
-  | Omit<
-      ClientGroupInviteIntent,
-      | 'key'
-      | 'account'
-      | 'namespaceId'
-      | 'subjectAccount'
-      | 'subjectNamespaceId'
-      | 'kind'
-    >;
-
-export interface FriendIntentPage {
-  items: FriendRequestProjection[];
-  scannedThrough: string | null;
-  hasMore: boolean;
-  total: number;
-  actionableTotal: number;
-}
-
-export type ClientStateFeedItem =
-  | {
-      feedId: number;
-      account: string;
-      namespaceId: number;
-      eventType: 'RELATIONSHIP_INTENT';
-      subjectAccount: string;
-      subjectNamespaceId: number;
-      body: ClientStateBody;
-    }
-  | {
-      feedId: number;
-      account: '';
-      namespaceId: 0;
-      eventType: 'INCOMING_INVITE_HEAD';
-      subjectAccount: '';
-      subjectNamespaceId: 0;
-      body: {
-        readThroughFeedId: number;
-      };
-    };
 
 /** The persisted last-logged-in userId (device-scoped preference) — the client's sole pre-HELLO source
  *  of its own userId (the session token is opaque, server-side-lookup only). Set on establishSession,
@@ -246,19 +130,25 @@ export class UserService {
   private readonly _stateFeedCursor = signal<number | undefined>(undefined);
   readonly stateFeedCursor = this._stateFeedCursor.asReadonly();
 
-  /** Latest incoming relationship-request revision discovered through the unified state delta. */
-  readonly relationshipRequestStateRevision = signal(0);
-  /** Latest relationship-intent revision applied in this renderer. Unlike the incoming-request revision, this
-   *  also advances for terminal and outgoing changes so an open request dialog can refresh without
-   *  turning those changes into an unread badge. */
-  readonly relationshipIntentStateRevision = signal(0);
-  /** Account-wide relationship-request read watermark, synchronized through the client state feed. */
-  readonly relationshipRequestReadThroughFeedId = signal(0);
-  readonly friendReqBadge = computed(
-    () =>
-      this.relationshipRequestStateRevision() >
-      this.relationshipRequestReadThroughFeedId(),
-  );
+  private readonly _relationshipRequestHead = signal<IncomingRequestHead | undefined>(undefined);
+  readonly relationshipRequestHead = this._relationshipRequestHead.asReadonly();
+  private readonly _intentOptimisticReadId = signal<string | null>(null);
+  /** Publish only a durable optimistic target, monotonically. A null durable
+   * value clears any stale in-memory target after a confirmed read. */
+  private publishIntentOptimisticRead(value: string | null): void {
+    const current = this._intentOptimisticReadId();
+    if (value === null || current === null || BigInt(value) > BigInt(current))
+      this._intentOptimisticReadId.set(value);
+  }
+  readonly friendReqBadge = computed(() => {
+    const head = this.relationshipRequestHead();
+    if (head === undefined) return false;
+    const optimistic = this._intentOptimisticReadId();
+    const read = BigInt(head.requestReadId);
+    const covered = optimistic !== null && BigInt(optimistic) > read
+      ? BigInt(optimistic) : read;
+    return BigInt(head.requestEndId) > covered;
+  });
   private readonly webdb = inject(WebdbService);
   private readonly profileRepo = inject(ProfileRepository);
   private readonly preferences = inject(PreferenceStore);
@@ -345,9 +235,8 @@ export class UserService {
     this.sessionUserId.set(null);
     this.sessionProfile.set(undefined);
     this._stateFeedCursor.set(undefined);
-    this.relationshipRequestStateRevision.set(0);
-    this.relationshipIntentStateRevision.set(0);
-    this.relationshipRequestReadThroughFeedId.set(0);
+    this._relationshipRequestHead.set(undefined);
+    this._intentOptimisticReadId.set(null);
     this.profileFetch = undefined;
     this.sessionLifecycle.endSession();
   }
@@ -361,9 +250,9 @@ export class UserService {
    *  per-account database and subsequently advanced by the unified state delta. */
   async establishSession(userId: number, profileRev: number, sessionId: number): Promise<void> {
     if (!Number.isSafeInteger(sessionId) || sessionId <= 0) throw new Error('invalid HELLO sessionId');
-    const epoch = this.sessionLifecycle.accountEpoch;
+    const scope = this.sessionLifecycle.capture();
     const checkSession = () => {
-      if (!this.sessionLifecycle.isCurrent(epoch))
+      if (!this.sessionLifecycle.isCurrent(scope))
         throw new Error('account session expired during HELLO');
     };
     if (this.freshCachePending) {
@@ -390,7 +279,7 @@ export class UserService {
       await this.webdb.openExistingForUser(String(userId)); // strict read on the normal path
     } catch (error) {
       checkSession();
-      // Every local-cache validation/open failure is rebuildable state. The Webdb epoch prevents this
+      // Every local-cache validation/open failure is rebuildable state. The Webdb maintenance fence prevents this
       // recreation from publishing handles if logout/account-switch wins while it is in flight.
       console.warn('[cache-recovery] session cache open failed', error);
       const scope = `account:${userId}` as const;
@@ -404,42 +293,27 @@ export class UserService {
       await this.webdb.recreateForUser(String(userId));
     }
     checkSession();
-    const [latest, requestReadHead] = await Promise.all([
-      this.webdb.getSyncState('relationshipRequestStateRevision'),
-      this.webdb.getSyncState('relationshipRequestReadHead'),
-    ]);
+    const state = await this.webdb.readAccountState();
     checkSession();
     this.sessionUserId.set(userId);
     this.sessionId.set(sessionId);
-    this.relationshipRequestStateRevision.set(
-      typeof latest === 'number' && latest >= 0 ? latest : 0,
-    );
-    const readThroughFeedId =
-      requestReadHead && typeof requestReadHead === 'object'
-        ? (requestReadHead as { readThroughFeedId?: unknown }).readThroughFeedId
-        : undefined;
-    this.relationshipRequestReadThroughFeedId.set(
-      typeof readThroughFeedId === 'number' && readThroughFeedId >= 0
-        ? readThroughFeedId
-        : 0,
-    );
-    const lastCleanup = await this.webdb.getSyncState(
-      'relationshipRequestCleanupAt',
-    );
-    checkSession();
+    if (state.intentRequestEndId !== null && state.intentRequestReadId !== null)
+      this.applyRelationshipRequestHead({ requestEndId: state.intentRequestEndId,
+        requestReadId: state.intentRequestReadId });
+    this._intentOptimisticReadId.set(state.intentRequestOptimisticReadId);
+    // Durable resubmission: a read target that was persisted but never
+    // confirmed (failed submission, restart in between) retries once the
+    // session owns the account again. Best-effort — the next page view retries
+    // again if this submission also fails.
+    const durableOptimistic = state.intentRequestOptimisticReadId;
     if (
-      typeof lastCleanup !== 'number' ||
-      Date.now() - lastCleanup >= 86_400_000
-    ) {
-      void this.webdb
-        .cleanupRelationshipRequests()
-        .then(() =>
-          this.webdb.putSyncState(
-            'relationshipRequestCleanupAt',
-            Date.now(),
-          ),
-        );
-    }
+      durableOptimistic !== null &&
+      state.intentRequestReadId !== null &&
+      BigInt(durableOptimistic) > BigInt(state.intentRequestReadId)
+    )
+      void this.markRelationshipRequestsRead(durableOptimistic).catch(
+        () => undefined,
+      );
     void this.gateSelfProfile(userId, profileRev).catch(async (error) => {
       console.warn('[cache-recovery] cached self profile read failed', error);
       if (this.webdbUserKey === String(userId))
@@ -453,10 +327,7 @@ export class UserService {
     userId: number,
     profileRev: number,
   ): Promise<void> {
-    const cached = (await this.webdb.getMeta('selfProfile')) as
-      | User
-      | null
-      | undefined;
+    const cached = (await this.webdb.readAccountState()).selfProfile;
     if (cached && cached.id === userId && cached.profileRev === profileRev) {
       this.sessionProfile.set(cached);
       return;
@@ -471,46 +342,34 @@ export class UserService {
     }
   }
 
-  /** Publish a relationship-request revision after the state delta and its cursor committed atomically. */
-  applyRelationshipRequestStateRevision(revision: number): void {
-    if (revision > this.relationshipRequestStateRevision())
-      this.relationshipRequestStateRevision.set(revision);
+  /** Publish only server-confirmed heads. HTTP responses never write durable sync state. */
+  applyRelationshipRequestHead(value: unknown): void {
+    const next = parseIncomingRequestHead(value);
+    const current = this.relationshipRequestHead();
+    const merged = current ? {
+      requestEndId: BigInt(next.requestEndId) > BigInt(current.requestEndId)
+        ? next.requestEndId : current.requestEndId,
+      requestReadId: BigInt(next.requestReadId) > BigInt(current.requestReadId)
+        ? next.requestReadId : current.requestReadId,
+    } : next;
+    this._relationshipRequestHead.set(merged);
+    // Mirror the storage rule: a confirmed read covering the optimistic target retires it.
+    const optimistic = this._intentOptimisticReadId();
+    if (optimistic !== null && BigInt(merged.requestReadId) >= BigInt(optimistic))
+      this._intentOptimisticReadId.set(null);
   }
 
-  /** Publish any relationship-intent change after its state delta has committed locally. */
-  applyRelationshipIntentStateRevision(revision: number): void {
-    if (revision > this.relationshipIntentStateRevision())
-      this.relationshipIntentStateRevision.set(revision);
-  }
-
-  /** Advance the account-wide read watermark to the state feed already applied by this client. */
-  markRelationshipRequestsRead(): void {
-    const readThroughFeedId = this.stateFeedCursor();
-    if (
-      readThroughFeedId === undefined ||
-      readThroughFeedId <= this.relationshipRequestReadThroughFeedId()
-    )
-      return;
-    this.http
-      .post<
-        StandardResponse<{ readThroughFeedId: number }>
-      >(`${apiPrefix()}/relationship/requests/read`, { readThroughFeedId })
-      .subscribe({
-        next: (res) => {
-          if (res.code === 0 && res.data)
-            this.applyRelationshipRequestReadHead(res.data.readThroughFeedId);
-        },
-        error: (error) =>
-          console.error(
-            '[relationship] failed to mark incoming requests read',
-            error,
-          ),
-      });
-  }
-
-  applyRelationshipRequestReadHead(readThroughFeedId: number): void {
-    if (readThroughFeedId > this.relationshipRequestReadThroughFeedId())
-      this.relationshipRequestReadThroughFeedId.set(readThroughFeedId);
+  /** The caller supplies the end ID observed in a successful RECEIVED page, not a feed cursor. */
+  async markRelationshipRequestsRead(requestReadId: string): Promise<void> {
+    const scope = this.sessionLifecycle.capture();
+    const sessionId = this.sessionId();
+    if (sessionId === null) throw new Error('request read requires an active session');
+    const res = await firstValueFrom(this.http.post<StandardResponse<IncomingRequestHead>>(
+      `${apiPrefix()}/relationship/requests/read`, { requestReadId },
+    ));
+    if (!this.sessionLifecycle.isCurrent(scope) || this.sessionId() !== sessionId) return;
+    if (res.code !== 0) throw new Error(res.message);
+    this.applyRelationshipRequestHead(res.data);
   }
 
   /** Boot-time webdb restore on the persisted {@link LAST_USER_ID_KEY} — opens the per-user IDB and restores
@@ -566,10 +425,7 @@ export class UserService {
   }
 
   private async restoreCachedSelfProfile(userId: number, signal?: AbortSignal): Promise<void> {
-    const cached = (await this.webdb.getMeta('selfProfile')) as
-      | User
-      | null
-      | undefined;
+    const cached = (await this.webdb.readAccountState()).selfProfile;
     if (signal?.aborted) throw new SessionSupersededError();
     if (cached?.id === userId) this.sessionProfile.set(cached);
   }
@@ -637,7 +493,7 @@ export class UserService {
 
   /** The self endpoint owns account metadata; only the runtime resolves profile bytes. */
   private publishSelfProfile(user: User): Observable<User> {
-    const epoch = this.sessionLifecycle.accountEpoch;
+    const scope = this.sessionLifecycle.capture();
     return this.profileRepo
       .resolve({
         publisherNamespaceId: 0,
@@ -656,12 +512,9 @@ export class UserService {
             bio: profile.bio,
             avatar: '',
           };
-          if (this.sessionLifecycle.isCurrent(epoch)) {
+          if (this.sessionLifecycle.isCurrent(scope)) {
             this.sessionProfile.set(resolved);
-            void this.webdb.putMeta('selfProfile', resolved);
-            void this.webdb.putMeta('selfIdentity', {
-              account: resolved.account,
-            });
+            void this.webdb.writeSelfProfile(resolved);
           }
           return resolved;
         }),
@@ -692,15 +545,11 @@ export class UserService {
   async refreshCommittedStateFeed(): Promise<number | undefined> {
     const userId = this.sessionUserId();
     if (userId === null) return undefined;
-    const [cursor, requestRevision, intentRevision, readHead] =
-      await Promise.all([
-        this.webdb.getSyncState('stateFeedId'),
-        this.webdb.getSyncState('relationshipRequestStateRevision'),
-        this.webdb.getSyncState('relationshipIntentStateRevision'),
-        this.webdb.getSyncState('relationshipRequestReadHead'),
-      ]);
-    if (this.sessionUserId() !== userId) return undefined;
-    const committed = cursor === undefined ? 0 : cursor;
+    const scope = this.sessionLifecycle.capture();
+    const state = await this.webdb.readAccountState();
+    const cursor = state.stateFeedId;
+    if (!this.sessionLifecycle.isCurrent(scope) || this.sessionUserId() !== userId) return undefined;
+    const committed = cursor ?? 0;
     if (
       typeof committed !== 'number' ||
       !Number.isSafeInteger(committed) ||
@@ -708,23 +557,10 @@ export class UserService {
     )
       return undefined;
     this.seedStateFeedCursor(committed);
-    this.relationshipRequestStateRevision.set(
-      typeof requestRevision === 'number' && requestRevision >= 0
-        ? requestRevision
-        : 0,
-    );
-    this.relationshipIntentStateRevision.set(
-      typeof intentRevision === 'number' && intentRevision >= 0
-        ? intentRevision
-        : 0,
-    );
-    const readThrough =
-      readHead && typeof readHead === 'object'
-        ? (readHead as { readThroughFeedId?: unknown }).readThroughFeedId
-        : undefined;
-    this.relationshipRequestReadThroughFeedId.set(
-      typeof readThrough === 'number' && readThrough >= 0 ? readThrough : 0,
-    );
+    if (state.intentRequestEndId !== null && state.intentRequestReadId !== null)
+      this.applyRelationshipRequestHead({ requestEndId: state.intentRequestEndId,
+        requestReadId: state.intentRequestReadId });
+    this._intentOptimisticReadId.set(state.intentRequestOptimisticReadId);
     return committed;
   }
 
@@ -896,6 +732,21 @@ export class UserService {
     );
   }
 
+  /** A RECEIVED page was seen: persist the durable read intent first, publish
+   * it only once persisted, then submit it. The durable target survives a
+   * failed submission for the next retry; a superseded session publishes
+   * nothing. */
+  async observeIncomingRequestPage(head: IncomingRequestHead): Promise<void> {
+    parseIncomingRequestHead(head);
+    const scope = this.sessionLifecycle.capture();
+    const sessionId = this.sessionId();
+    if (sessionId === null) throw new Error('request read requires an active session');
+    const state = await this.webdb.advanceIntentRequestRead(head.requestEndId);
+    if (!this.sessionLifecycle.isCurrent(scope) || this.sessionId() !== sessionId) return;
+    this.publishIntentOptimisticRead(state.intentRequestOptimisticReadId);
+    await this.markRelationshipRequestsRead(head.requestEndId);
+  }
+
   /** Author a relationship request toward one exact user or group identity. */
   requestRelationship(params: {
     account: string;
@@ -909,8 +760,7 @@ export class UserService {
     );
   }
 
-  /** Relationship state from synchronized local projections. An active P2P or group thread owns
-   * FRIEND (already established); P2P request intents supply pending directions. */
+  /** Threads own established relationships; pending rounds are queried online. */
   async localRelationship(
     user: Pick<User, 'id' | 'account' | 'namespaceId'>,
   ) {
@@ -930,96 +780,76 @@ export class UserService {
     );
     if (friendship) return 'FRIEND' as const;
     if (isGroup) return 'NONE' as const;
-    const matches = (item: FriendRequestProjection) =>
-      item.kind === 'FRIEND' &&
-      item.status === 'REQUESTED' &&
-      item.expiresAt > Date.now() &&
-      ((user.id > 0 && item.peer?.id === user.id) ||
-        (item.peer?.account === user.account &&
-          item.peer.namespaceId === user.namespaceId));
-    const hasPending = async (direction: FriendIntentDirection) => {
-      let cursor: string | null = null;
-      for (;;) {
-        const page = await this.listLocalFriendRequests(direction, cursor, 200);
-        if (page.items.some(matches)) return true;
-        if (!page.hasMore) return false;
-        cursor = page.scannedThrough;
-      }
-    };
-    if (await hasPending('OUTGOING')) return 'OUTGOING_PENDING' as const;
-    if (await hasPending('INCOMING')) return 'INCOMING_PENDING' as const;
+    if (await this.hasPendingRound('SENT', user)) return 'OUTGOING_PENDING' as const;
+    if (await this.hasPendingRound('RECEIVED', user)) return 'INCOMING_PENDING' as const;
     return 'NONE' as const;
   }
 
-  /** Reads the durable request projection produced by the local intent-pair state machine. */
-  async listLocalFriendRequests(
-    direction: FriendIntentDirection,
-    cursor: string | null = null,
-    take = 20,
-  ): Promise<FriendIntentPage> {
-    const me = this.sessionUserId();
-    if (me === null)
-      return {
-        items: [],
-        scannedThrough: null,
-        hasMore: false,
-        total: 0,
-        actionableTotal: 0,
-      };
-    await this.webdb.cleanupRelationshipRequests();
-    const localPage = await this.webdb.getRelationshipRequestPage(
-      direction === 'INCOMING' ? 'RECEIVED' : 'SENT',
-      cursor,
-      take + 1,
+  /** Page the online seven-day window until a live round for one target is found. */
+  private async hasPendingRound(
+    bucket: RequestBucket,
+    target: Pick<User, 'account' | 'namespaceId'>,
+    kind: RequestKind = 'FRIEND',
+  ): Promise<boolean> {
+    let before: string | undefined;
+    for (;;) {
+      const res = await firstValueFrom(
+        this.queryRelationshipRequests({ bucket, before, take: 50 }),
+      );
+      const page = res.data;
+      if (res.code !== 0 || !page) throw new Error(res.message);
+      if (page.items.some((item) => {
+        const peer = bucket === 'SENT' ? item.receiver : item.author;
+        return item.kind === kind && item.status === 'REQUESTED' &&
+          peer.account === target.account && peer.namespaceId === target.namespaceId;
+      })) return true;
+      if (!page.hasMore) return false;
+      if (page.before === null) throw new Error('request page has no continuation');
+      before = page.before;
+    }
+  }
+
+  /** Group cards disable their join action while one live application exists. */
+  async hasPendingGroupApplication(target: Pick<User, 'account' | 'namespaceId'>): Promise<boolean> {
+    return this.hasPendingRound('SENT', target, 'GROUP_APPLICATION');
+  }
+
+  queryRelationshipRequests(params: { bucket: RequestBucket; before?: string; take?: number }) {
+    return this.http.post<StandardResponse<PersonalRequestPage>>(
+      `${apiPrefix()}/relationship/requests`, params,
     );
-    const items = localPage.items.slice(0, take);
-    const hasMore = localPage.items.length > take;
-    const tail = items.at(-1);
-    return {
-      items,
-      scannedThrough: tail
-        ? JSON.stringify([tail.requestedSort, tail.key])
-        : cursor,
-      hasMore,
-      total: localPage.total,
-      actionableTotal: localPage.actionableTotal,
-    };
   }
 
-  /** Accept a stored user relationship request or group invitation. */
-  acceptRelationship(params: {
-    account: string;
-    namespaceId: number;
-  }) {
+  acceptRelationship(params: { requestId: string }) {
+    return this.http.post<StandardResponse<RequestDecisionResult>>(
+      `${apiPrefix()}/relationship/accept`, params,
+    );
+  }
+
+  rejectRelationshipRequest(params: { requestId: string }) {
+    return this.http.post<StandardResponse<RequestDecisionResult>>(
+      `${apiPrefix()}/relationship/requests/reject`, params,
+    );
+  }
+
+  withdrawRelationshipRequest(params: { requestId: string }) {
+    return this.http.post<StandardResponse<RequestDecisionResult>>(
+      `${apiPrefix()}/relationship/requests/withdraw`, params,
+    );
+  }
+
+  joinGroupRequest(params: { requestId: string }) {
+    return this.http.post<StandardResponse<RequestDecisionResult>>(
+      `${apiPrefix()}/group/join-request`, params,
+    );
+  }
+
+  /** End the established relationship by its P2P thread, symmetric to group
+   * leave; never decides a pending request round. */
+  revokeRelationship(params: { threadId: number }) {
     return this.http.post<
       StandardResponse<
-        | RelationshipIntentApplied
-        | RelationshipBusinessRejection
-        | MembershipIntentApplied
-      >
-    >(`${apiPrefix()}/relationship/accept`, params);
-  }
-
-  markRelationshipRequestAccepted(key: string): Promise<void> {
-    return this.webdb.markRelationshipRequestAccepted(key);
-  }
-
-  joinGroupRequest(params: { groupId: number }) {
-    return this.http.post<
-      StandardResponse<MembershipIntentApplied | RelationshipBusinessRejection>
-    >(`${apiPrefix()}/group/join-request`, params);
-  }
-
-  /** Revoke the current user relationship or pending request toward one exact Address. */
-  revokeRelationship(params: {
-    account: string;
-    namespaceId: number;
-  }) {
-    return this.http.post<
-      StandardResponse<
-        | RelationshipIntentApplied
-        | MembershipIntentApplied
-        | RelationshipBusinessRejection
+        RelationshipIntentApplied | RelationshipBusinessRejection
       >
     >(`${apiPrefix()}/relationship/revoke`, params);
   }

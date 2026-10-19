@@ -108,18 +108,12 @@ export class ContactIdentityDialogComponent {
       if (this.isGroup()) {
         if (identity.groupThreadId !== undefined) return;
         void this.userService
-          .listLocalFriendRequests('OUTGOING', null, 200)
-          .then((page) =>
-            this.groupJoinRequested.set(
-              page.items.some(
-                (item) =>
-                  item.kind === 'GROUP' &&
-                  item.status === 'REQUESTED' &&
-                  item.group?.account === identity.account &&
-                  item.group?.namespaceId === identity.namespaceId,
-              ),
-            ),
-          );
+          .hasPendingGroupApplication({
+            account: identity.account,
+            namespaceId: identity.namespaceId,
+          })
+          .then((pending) => this.groupJoinRequested.set(pending))
+          .catch(() => undefined);
         return;
       }
       if (

@@ -1,7 +1,7 @@
-import {
-  RequestProjectionStatus,
-  type RequestProjectionStatusValue,
-} from '../../../../../shared/request-projection-status';
+import { RequestProjectionStatus, type RequestProjectionStatusValue } from '../../../../../shared/request-projection-status';
+import type { RequestRecord } from '../../../../../shared/relationship-request';
+import { parseRequestSnapshot, type RequestSnapshot } from '../../../../../shared/request-snapshot';
+import type { RequestDecisionResult } from '../../../../../shared/relationship-request';
 import {
   Component,
   computed,
@@ -15,6 +15,7 @@ import {
 } from '@angular/core';
 import { AsyncPipe } from '@angular/common';
 import { Observable, Subject, Subscription, finalize } from 'rxjs';
+import { firstValueFrom } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -32,14 +33,12 @@ import {
   UserService,
   User,
 } from '../../services/user.service';
-import type { FriendRequestProjection } from '../../services/friend-request-state';
-import { UserRef } from '../../services/model';
+import { UserRef, type StandardResponse } from '../../services/model';
 import { DemandAvatarComponent } from '../user-avatar/demand-avatar.component';
 import { SnapshotAvatarComponent } from '../user-avatar/snapshot-avatar.component';
 import { UserAvatarType } from '../user-avatar/model';
 import { translateBizResult } from '../../services/biz-code';
 import dayjs from 'dayjs';
-import { parseRequestSnapshot, type RequestSnapshot } from '../../../../../shared/request-snapshot';
 import { FriendInviteDialogComponent } from '../friend-invite-dialog/friend-invite-dialog.component';
 import { VirtualInfiniteListComponent } from '../virtual-infinite-list/virtual-infinite-list.component';
 import { FriendRequestCardComponent } from '../friend-request-card/friend-request-card.component';
@@ -60,11 +59,11 @@ const FEDERATED_RESOLVE_STAGES: readonly FederatedResolveStage[] = [
   'WAITING_FOR_PEER',
   'FETCHING_USER',
 ];
-// A relationship-request row derived from the local state-feed projection. `projectionKey` identifies
-// the cached row; actions use a local intent id when available and otherwise the exact Address.
+// One server-owned request round as shown in this dialog. Actions always use the
+// exact requestId so an older card can never address a newer round.
 type PendingReq = {
   id: string;
-  projectionKey: string;
+  requestId: string;
   direction: 'INCOMING' | 'OUTGOING';
   /** Stable Address key used by the avatar and selection projections. */
   peerId?: string;
@@ -213,12 +212,9 @@ export class FriendRequestsComponent implements OnDestroy {
     this.runInviteAction(
       req,
       () =>
-        this.userService.revokeRelationship({
-          account: req.account,
-          namespaceId: req.namespaceId,
-        }),
+        this.userService.rejectRelationshipRequest({ requestId: req.requestId }),
       (res) => {
-        if (res.code === 0) {
+        if (res.code === 0 && res.data !== undefined && res.data.status === 'OK') {
           this.pendingReqList.update((items) =>
             items.map((item) =>
               item.id === req.id
@@ -244,7 +240,7 @@ export class FriendRequestsComponent implements OnDestroy {
           this.pendingReqList.update((items) =>
             items.map((item) =>
               item.id === req.id
-                ? { ...item, errText: translateBizResult(res, this.transloco) }
+                ? { ...item, errText: this.requestFailureText(res) }
                 : item,
             ),
           );
@@ -253,32 +249,27 @@ export class FriendRequestsComponent implements OnDestroy {
     );
   }
 
+  /** Transport failures keep the business message; round-level failures map
+   * to the decision status copy because the envelope code stays zero. */
+  private requestFailureText(
+    res: StandardResponse<RequestDecisionResult>,
+  ): string {
+    if (res.code !== 0) return translateBizResult(res, this.transloco);
+    return this.transloco.translate(
+      res.data?.status === 'EXPIRED'
+        ? 'errors.requestExpired'
+        : 'errors.requestStale',
+    );
+  }
+
   constructor(
     private routeService: RouteService,
     private userService: UserService,
     private transloco: TranslocoService,
     private snackBar: MatSnackBar,
-  ) {
-    effect(() => {
-      const revision = this.userService.relationshipIntentStateRevision();
-      if (
-        !this.inviteListsInitialized ||
-        this.observedRequestRevision === undefined ||
-        revision <= this.observedRequestRevision
-      ) {
-        return;
-      }
-      this.observedRequestRevision = revision;
-      // Preserve the snapshot the user is currently reading. A live revision only updates the tab
-      // counters; clicking a counter explicitly replaces that tab with a fresh first page.
-      untracked(() => {
-        void this.refreshInviteCounts();
-      });
-    });
-  }
+  ) {}
   setTab(tab: number) {
     this.activeTab.set(tab);
-    if (tab === 1) this.userService.markRelationshipRequestsRead();
   }
 
   async refreshIncomingTab(): Promise<void> {
@@ -294,16 +285,13 @@ export class FriendRequestsComponent implements OnDestroy {
   }
 
   private async refreshInviteCounts(): Promise<void> {
-    const generation = ++this.countRefreshGeneration;
-    const [incoming, outgoing] = await Promise.allSettled([
-      this.userService.listLocalFriendRequests('INCOMING', null, 1),
-      this.userService.listLocalFriendRequests('OUTGOING', null, 1),
-    ]);
-    if (generation !== this.countRefreshGeneration) return;
-    if (incoming.status === 'fulfilled')
-      this.pendingCount.set(incoming.value.actionableTotal);
-    if (outgoing.status === 'fulfilled')
-      this.sentCount.set(outgoing.value.total);
+    // Counts reflect the loaded seven-day pages; the server exposes no totals.
+    this.pendingCount.set(
+      this.pendingReqList().filter(
+        (item) => item.status === RequestProjectionStatus.REQUESTED,
+      ).length,
+    );
+    this.sentCount.set(this.sentReqList().length);
   }
 
   goBack() {
@@ -537,49 +525,31 @@ export class FriendRequestsComponent implements OnDestroy {
     if (!this.pendingReqList().some((item) => item.id === req.id)) return;
     this.runInviteAction(
       req,
-      () => this.userService.acceptRelationship(this.inviteAction(req)),
+      () => this.userService.acceptRelationship({ requestId: req.requestId }),
       (res) => {
-        if (res.code === 0) {
-          // Keep the action terminal while the durable projection and the peer's federated
-          // acknowledgement catch up. finalize() clears the in-flight flag synchronously after this
-          // callback; without this patch the still-REQUESTED row briefly re-enabled both buttons and
-          // then showed the reset loader before the IndexedDB refresh removed/replaced it.
+        const outcome = res.code === 0 ? res.data : undefined;
+        const settled = outcome?.status === 'OK';
+        if (settled) {
           this.pendingReqList.update((items) =>
             items.map((item) =>
               item.id === req.id
-                ? {
-                    ...item,
-                    status: RequestProjectionStatus.ACCEPTED,
-                    errText: '',
-                  }
-                : item,
-            ),
-          );
-          // Optimistic "added": patch the current row by identity. A state-feed refresh may have
-          // replaced or reordered the list while the request was in flight, so a captured index is
-          // not safe. If the authoritative refresh already removed the row, do not resurrect it.
-          // Persist the local half without forcing a list reload. The row above already represents the
-          // accepted state; the later state-feed delta authoritatively reconciles the retained history
-          // row after both federated halves converge. A forced reload here only exposed a spurious loading footer and
-          // cannot make peer acknowledgement arrive sooner.
-          void this.userService.markRelationshipRequestAccepted(
-            req.projectionKey,
-          );
-          if (this.selectedRequest()?.id === req.id) this.closeRequest();
-        } else {
-          this.pendingReqList.update((items) =>
-            items.map((item) =>
-              item.id === req.id
-                ? {
-                    ...item,
-                    status: RequestProjectionStatus.REQUESTED,
-                    errText: translateBizResult(res, this.transloco),
-                  }
+                ? { ...item, status: RequestProjectionStatus.ACCEPTED, errText: '' }
                 : item,
             ),
           );
           if (this.selectedRequest()?.id === req.id) this.closeRequest();
+          this.refreshInviteCounts();
+          return;
         }
+        // The round changed underneath this card: reload the authoritative page.
+        this.pendingReqList.update((items) =>
+          items.map((item) =>
+            item.id === req.id
+              ? { ...item, errText: this.requestFailureText(res) }
+              : item,
+          ),
+        );
+        void this.loadIncomingInvites(true);
       },
     );
   }
@@ -587,13 +557,9 @@ export class FriendRequestsComponent implements OnDestroy {
   cancelSent(req: PendingReq) {
     this.runInviteAction(
       req,
-      () =>
-        this.userService.revokeRelationship({
-          account: req.account,
-          namespaceId: req.namespaceId,
-        }),
+      () => this.userService.withdrawRelationshipRequest({ requestId: req.requestId }),
       (res) => {
-        if (res.code === 0) {
+        if (res.code === 0 && res.data !== undefined && res.data.status === 'OK') {
           // Keep the tombstone visible so the sent-request history reflects the final state.
           this.sentReqList.update((items) =>
             items.map((item) =>
@@ -626,7 +592,7 @@ export class FriendRequestsComponent implements OnDestroy {
           this.sentReqList.set(
             this.sentReqList().map((r) =>
               r.id === req.id
-                ? { ...r, errText: translateBizResult(res, this.transloco) }
+                ? { ...r, errText: this.requestFailureText(res) }
                 : r,
             ),
           );
@@ -673,13 +639,35 @@ export class FriendRequestsComponent implements OnDestroy {
     for (const entry of subscriptions) entry.subscription?.unsubscribe();
   }
 
-  private inviteAction(req: PendingReq): {
-    account: string;
-    namespaceId: number;
-  } {
-    if (!req.account || req.namespaceId === undefined)
-      throw new Error('relationship request projection has no identity');
-    return { account: req.account, namespaceId: req.namespaceId };
+  private inviteAction(req: PendingReq): { requestId: string } {
+    if (!req.requestId) throw new Error('request round has no ID');
+    return { requestId: req.requestId };
+  }
+
+  private projectionToPending(record: RequestRecord): PendingReq {
+    const endpoint = record.direction === 'OUTGOING' ? record.receiver : record.author;
+    const snapshot = record.direction === 'OUTGOING'
+      ? parseRequestSnapshot(record.snapshot)
+      : null;
+    const kind: 'FRIEND' | 'GROUP' = record.kind === 'FRIEND' ? 'FRIEND' : 'GROUP';
+    const authorProfile = record.direction === 'INCOMING' ? record.authorProfile : undefined;
+    return {
+      id: record.id,
+      requestId: record.id,
+      direction: record.direction,
+      peerId: this.identityKey(endpoint.account, endpoint.namespaceId),
+      account: endpoint.account,
+      namespaceId: endpoint.namespaceId,
+      reqMessage: record.note,
+      status: record.status,
+      date: Date.parse(record.requestedAt),
+      errText: '',
+      kind,
+      ...(authorProfile
+        ? { profileRev: authorProfile.profileRev }
+        : {}),
+      snapshot,
+    };
   }
 
   requestStatusLabel(status: RequestProjectionStatusValue): string {
@@ -695,50 +683,6 @@ export class FriendRequestsComponent implements OnDestroy {
       default:
         return 'group.invitationPending';
     }
-  }
-
-  private projectionToPending(projection: FriendRequestProjection): PendingReq {
-    const snapshot = projection.direction === 'OUTGOING'
-      ? parseRequestSnapshot(projection.snapshot)
-      : null;
-    if (projection.kind === 'FRIEND') {
-      const peer = projection.peer!;
-      return {
-        id: projection.key,
-        projectionKey: projection.key,
-        direction: projection.direction,
-        peerId: this.userIdentity(peer),
-        account: peer.account,
-        namespaceId: peer.namespaceId,
-        reqMessage: projection.note,
-        status: projection.status,
-        date: projection.requestedAt,
-        errText: '',
-        kind: 'FRIEND',
-        profileRev: peer.profileRev,
-        snapshot,
-      };
-    }
-    const group = projection.group!;
-    return {
-      id: projection.key,
-      projectionKey: projection.key,
-      direction: projection.direction,
-      peerId: JSON.stringify([
-        'pending-group',
-        group.namespaceId,
-        group.account,
-      ]),
-      account: group.account,
-      namespaceId: group.namespaceId,
-      reqMessage: projection.note,
-      status: projection.status,
-      date: projection.requestedAt,
-      errText: '',
-      kind: 'GROUP',
-      profileRev: group.profileRev,
-      snapshot,
-    };
   }
 
   userIdentity(peer: Pick<User, 'account' | 'namespaceId'>): string {
@@ -781,24 +725,35 @@ export class FriendRequestsComponent implements OnDestroy {
     }
     this.toPendingErrTxt.set('');
 
-    // The page is read entirely from the local relationship-request projection. The state feed embeds
-    // the pending profile snapshot, so rendering does not depend on a legacy server-side invite list.
+    // The online query is the only source; there is no durable local request list.
     try {
-      const page = await this.userService.listLocalFriendRequests(
-        'INCOMING',
-        this.pendingCursor,
-        20,
+      const res = await firstValueFrom(
+        this.userService.queryRelationshipRequests({
+          bucket: 'RECEIVED',
+          ...(this.pendingCursor
+            ? { before: this.pendingCursor }
+            : {}),
+          take: 20,
+        }),
       );
+      const page = res.data;
+      if (res.code !== 0 || !page) throw new Error(res.message);
       if (generation !== this.pendingLoadGeneration) return;
-      const nextItems = page.items.map((item) =>
-        this.projectionToPending(item),
-      );
+      const nextItems = page.items.map((item) => this.projectionToPending(item));
       this.pendingReqList.update((items) =>
         reset ? nextItems : [...items, ...nextItems],
       );
-      this.pendingCursor = page.scannedThrough;
+      this.pendingCursor = page.before;
       this.pendingHasMore.set(page.hasMore);
-      this.pendingCount.set(page.actionableTotal);
+      this.pendingCount.set(
+        this.pendingReqList().filter(
+          (item) => item.status === RequestProjectionStatus.REQUESTED,
+        ).length,
+      );
+      // Viewing the received page marks it read: persist the intent, then submit.
+      void this.userService
+        .observeIncomingRequestPage(page.incomingHead)
+        .catch(() => undefined);
     } catch {
       if (generation !== this.pendingLoadGeneration) return;
       this.toPendingErrTxt.set(
@@ -822,21 +777,23 @@ export class FriendRequestsComponent implements OnDestroy {
     this.sentErrTxt.set('');
 
     try {
-      const page = await this.userService.listLocalFriendRequests(
-        'OUTGOING',
-        this.sentCursor,
-        20,
+      const res = await firstValueFrom(
+        this.userService.queryRelationshipRequests({
+          bucket: 'SENT',
+          ...(this.sentCursor ? { before: this.sentCursor } : {}),
+          take: 20,
+        }),
       );
+      const page = res.data;
+      if (res.code !== 0 || !page) throw new Error(res.message);
       if (generation !== this.sentLoadGeneration) return;
-      const nextItems = page.items.map((item) =>
-        this.projectionToPending(item),
-      );
+      const nextItems = page.items.map((item) => this.projectionToPending(item));
       this.sentReqList.update((items) =>
         reset ? nextItems : [...items, ...nextItems],
       );
-      this.sentCursor = page.scannedThrough;
+      this.sentCursor = page.before;
       this.sentHasMore.set(page.hasMore);
-      this.sentCount.set(page.total);
+      this.sentCount.set(this.sentReqList().length);
     } catch {
       if (generation !== this.sentLoadGeneration) return;
       this.sentErrTxt.set(
@@ -887,13 +844,10 @@ export class FriendRequestsComponent implements OnDestroy {
     }
     const initialTab = this.initialTab() === 'pending' ? 1 : 0;
     this.activeTab.set(initialTab);
-    this.observedRequestRevision =
-      this.userService.relationshipIntentStateRevision();
     this.inviteListsInitialized = true;
     void Promise.all([
       this.loadIncomingInvites(true),
       this.loadOutgoingInvites(true),
     ]);
-    if (initialTab === 1) this.userService.markRelationshipRequestsRead();
   }
 }

@@ -49,9 +49,9 @@ export class ThreadNavigationIntentService {
       this.offer(this.nav.bootstrapNotificationIntent);
   }
 
-  /** Async adapters capture the epoch BEFORE reading their pending slot. */
-  offer(intent: ThreadNavigationIntent, epoch = this.lifecycle.accountEpoch): void {
-    if (!this.lifecycle.isCurrent(epoch)) return;
+  /** Async adapters capture the work scope BEFORE reading their pending slot. */
+  offer(intent: ThreadNavigationIntent, scope = this.lifecycle.capture()): void {
+    if (!this.lifecycle.isCurrent(scope)) return;
     const navigationRevision = this.nav.navigationRevision();
     const origin = apiOrigin();
     if (navigationRevision !== this.offeredNavigationRevision || origin !== this.offeredOrigin)

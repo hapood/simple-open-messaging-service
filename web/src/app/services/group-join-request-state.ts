@@ -1,5 +1,5 @@
 import { RequestProjectionStatus } from '../../../../shared/request-projection-status';
-import type { GroupJoinRequest } from './group.service';
+import type { RequestRecord } from '../../../../shared/relationship-request';
 
 export type GroupJoinRequestAction = 'ACCEPT' | 'REJECT';
 
@@ -18,12 +18,13 @@ export function hasUnreadGroupJoinRequests(
   return read >= 0 && read < end;
 }
 
-/** Apply a local manager decision without dropping list history. Server projections remain
- * authoritative; a later page refresh replaces this optimistic terminal state by feedId. */
+/** Apply a local manager decision without dropping round history. Server records
+ * remain authoritative; a later page refresh replaces this optimistic terminal
+ * state by exact request id. */
 export function applyGroupJoinRequestAction(
-  current: GroupJoinRequest,
+  current: RequestRecord,
   action: GroupJoinRequestAction,
-): GroupJoinRequest {
+): RequestRecord {
   if (current.status !== 'REQUESTED') return current;
   return {
     ...current,
@@ -34,20 +35,17 @@ export function applyGroupJoinRequestAction(
   };
 }
 
-/** Newer projection coordinates win; equal coordinates are idempotent. */
+/** Rounds are keyed by their permanent request id; one identity may own several
+ * historical rounds in the visible window. Equal ids are idempotent refreshes. */
 export function mergeGroupJoinRequestPage(
-  current: readonly GroupJoinRequest[],
-  incoming: readonly GroupJoinRequest[],
-): GroupJoinRequest[] {
-  const byApplicant = new Map<string, GroupJoinRequest>(
-    current.map(
-      (row) => [JSON.stringify([row.namespaceId, row.account]), row] as const,
-    ),
+  current: readonly RequestRecord[],
+  incoming: readonly RequestRecord[],
+): RequestRecord[] {
+  const byId = new Map<string, RequestRecord>(
+    current.map((row) => [row.id, row] as const),
   );
-  for (const row of incoming) {
-    const key = JSON.stringify([row.namespaceId, row.account]);
-    const previous = byApplicant.get(key);
-    if (!previous || row.feedId >= previous.feedId) byApplicant.set(key, row);
-  }
-  return [...byApplicant.values()].sort((a, b) => b.feedId - a.feedId);
+  for (const row of incoming) byId.set(row.id, row);
+  return [...byId.values()].sort((a, b) =>
+    BigInt(a.id) > BigInt(b.id) ? -1 : BigInt(a.id) < BigInt(b.id) ? 1 : 0,
+  );
 }

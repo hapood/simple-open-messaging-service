@@ -8,6 +8,7 @@ import { WebsocketService } from './websocket.service';
 import { MessageRepository } from './message-repository.service';
 import { MemberProfileRepository } from './member-profile-store.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
+import { parseLoginSessionId } from './session/session-identity';
 import { createGroupConversation } from './model';
 import { threadFeedSnapshot } from './thread-feed.test-helper';
 import { ProfileRepository } from './profile-store.service';
@@ -46,6 +47,7 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
           provide: UserService,
           useValue: {
             sessionUserId: signal<number | null>(null),
+            sessionProfile: signal(null),
             requestCacheRebuild: vi.fn(),
           },
         },
@@ -65,10 +67,7 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
           provide: MemberProfileRepository,
           useValue: { notifyChanged: vi.fn() },
         },
-        {
-          provide: SessionLifecycleService,
-          useValue: { ended$: new Subject(), invalidated$: new Subject() },
-        },
+        SessionLifecycleService,
       ],
     });
   });
@@ -91,13 +90,106 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     expect(drainThreadMisc).toHaveBeenCalledWith(7, '0', 0);
   });
 
+  it('does not read successor state or publish cached rows after the captured login ends', async () => {
+    const lifecycle = TestBed.inject(SessionLifecycleService);
+    lifecycle.bindSession(
+      parseLoginSessionId('11111111-2222-4333-8444-555555555555'),
+    );
+    const user = TestBed.inject(UserService);
+    user.sessionUserId.set(1);
+    const group = createGroupConversation(
+      9,
+      { id: 9, account: 'room', name: 'Room', namespaceId: 0 },
+      { role: 'MEMBER', threadFeedId: 1 },
+    );
+    let finish!: (rows: (typeof group)[]) => void;
+    const pending = new Promise<(typeof group)[]>((resolve) => {
+      finish = resolve;
+    });
+    const getThreadStates = vi.fn().mockResolvedValue([]);
+    Object.assign(TestBed.inject(WebdbService), {
+      getThreads: vi.fn().mockReturnValue(pending),
+      getThreadStates,
+    });
+    const repo = TestBed.inject(ThreadRepository);
+    TestBed.tick();
+    const loading = repo.load();
+    lifecycle.invalidateSession();
+    lifecycle.bindSession(
+      parseLoginSessionId('22222222-3333-4444-8555-666666666666'),
+    );
+    finish([group]);
+    await loading;
+    expect(getThreadStates).not.toHaveBeenCalled();
+    expect(repo.items()).toEqual([]);
+    expect(repo.navigationReady()).toBe(false);
+  });
+
+  it.each(['complete', 'fail'] as const)(
+    'does not continue or repair after old HELLO hydration finishes late: %s',
+    async (outcome) => {
+      const lifecycle = TestBed.inject(SessionLifecycleService);
+      lifecycle.bindSession(
+        parseLoginSessionId('11111111-2222-4333-8444-555555555555'),
+      );
+      let finish!: () => void;
+      let fail!: (error: Error) => void;
+      const pending = new Promise<void>((resolve, reject) => {
+        finish = resolve;
+        fail = reject;
+      });
+      const user = TestBed.inject(UserService);
+      const establishSession = vi.fn().mockReturnValue(pending);
+      Object.assign(user, { establishSession });
+      const getThreadStates = vi.fn();
+      Object.assign(TestBed.inject(WebdbService), { getThreadStates });
+      TestBed.inject(ThreadRepository);
+      TestBed.tick();
+      const ws = TestBed.inject(WebsocketService);
+      ws.eventSubject.next({
+        event: 'HELLO',
+        status: 0,
+        message: '',
+        data: {
+          userId: 1,
+          sessionId: 11,
+          stateFeedEndId: 0,
+          threadFeedEndId: 0,
+        },
+      });
+      expect(establishSession).toHaveBeenCalledOnce();
+      lifecycle.invalidateSession();
+      lifecycle.bindSession(
+        parseLoginSessionId('22222222-3333-4444-8555-666666666666'),
+      );
+      if (outcome === 'complete') {
+        finish();
+        await pending;
+        await Promise.resolve();
+      } else {
+        fail(new Error('old hydration failed'));
+        await expect(pending).rejects.toThrow('old hydration failed');
+        await Promise.resolve();
+      }
+      expect(getThreadStates).not.toHaveBeenCalled();
+      expect(user.requestCacheRebuild).not.toHaveBeenCalled();
+    },
+  );
+
   it('requires HELLO sessionId and passes its authoritative identity to UserService', async () => {
     const user = TestBed.inject(UserService);
     const stop = new Error('stop after session establishment');
     const establishSession = vi.fn().mockRejectedValue(stop);
     Object.assign(user, { establishSession });
-    const repo = TestBed.inject(ThreadRepository) as unknown as { onHello: (value: unknown) => Promise<void> };
-    const hello = { userId: 1, stateFeedEndId: 0, threadFeedEndId: 0, profileRev: 4 };
+    const repo = TestBed.inject(ThreadRepository) as unknown as {
+      onHello: (value: unknown) => Promise<void>;
+    };
+    const hello = {
+      userId: 1,
+      stateFeedEndId: 0,
+      threadFeedEndId: 0,
+      profileRev: 4,
+    };
     for (const sessionId of [undefined, null, 0, -1, '11', 1.5]) {
       await repo.onHello({ ...hello, sessionId });
     }
@@ -141,7 +233,7 @@ describe('ThreadRepository.setOpenThread teardown tolerance', () => {
     finish([]);
     await loaded;
     expect(repo.navigationReady()).toBe(true);
-    (TestBed.inject(SessionLifecycleService).ended$ as Subject<void>).next();
+    TestBed.inject(SessionLifecycleService).endSession();
     expect(repo.navigationReady()).toBe(false);
   });
 

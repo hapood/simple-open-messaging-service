@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { AccountState } from '../../../../shared/account-state';
 import { syncThreadFeed } from './thread-feed-sync';
 import type { ThreadFeedSnapshot } from '../../../../shared/thread-attention';
 import { threadStructure } from './thread-feed.test-helper';
-
 const snapshot = (feedId: number): ThreadFeedSnapshot => ({
   ...threadStructure(7, {
     profileAccount: 'peer',
@@ -25,10 +25,26 @@ const snapshot = (feedId: number): ThreadFeedSnapshot => ({
   lastMentionSeq: null,
 });
 
+function accountState(cursor: number): AccountState {
+  return {
+    schemaVersion: 1,
+    selfProfile: null,
+    selfIdentity: null,
+    composerDrafts: [],
+    threadFeedCursor: cursor,
+    stateFeedId: null,
+    stateFeedFullThrough: null,
+    profileNamespaceChangeEndId: null,
+    intentRequestEndId: null,
+    intentRequestReadId: null,
+    intentRequestOptimisticReadId: null,
+  };
+}
+
 function storage() {
   let cursor = 0;
   return {
-    getSyncState: vi.fn(async (_key: string) => cursor),
+    readAccountState: vi.fn(async () => accountState(cursor)),
     mergeThreadStates: vi.fn(
       async (states: ThreadFeedSnapshot[], next: number) => {
         cursor = next;
@@ -114,7 +130,7 @@ describe('thread feed executor', () => {
       cursor: 3,
       states: [{ ...snapshot(3), localReadSeq: 0 }],
     });
-    expect(await db.getSyncState('threadFeedCursor')).toBe(3);
+    expect((await db.readAccountState()).threadFeedCursor).toBe(3);
   });
 
   it('returns committed pages on failure and resumes from durable progress on the next wake', async () => {
@@ -145,7 +161,7 @@ describe('thread feed executor', () => {
     expect(
       await syncThreadFeed(db, 1, vi.fn().mockResolvedValue(page(1, 1))),
     ).toEqual({ cursor: 0, states: [], error: 'transaction failed' });
-    expect(await db.getSyncState('threadFeedCursor')).toBe(0);
+    expect((await db.readAccountState()).threadFeedCursor).toBe(0);
   });
 
   it('advances compacted empty pages and skips requests when already caught up', async () => {

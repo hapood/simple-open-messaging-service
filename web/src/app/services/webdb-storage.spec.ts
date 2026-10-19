@@ -6,13 +6,18 @@ import { SessionLifecycleService } from './session-lifecycle.service';
 import { createP2PConversation } from './model';
 import { syncThreadFeed } from './thread-feed-sync';
 import { threadFeedSnapshot, threadStructure } from './thread-feed.test-helper';
+import { prepareTestSessionCache as prepareSession } from './session/session-cache.test-helper';
+import type { SessionCacheDescriptor } from './session/session-identity';
 
 describe('shared background storage', () => {
   const userId = '9107';
   let storage: WebdbStorage;
+  let session: SessionCacheDescriptor;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     storage = new WebdbStorage(() => null, new SessionLifecycleService());
+    session = await prepareSession();
+    storage.bindSessionCache(session);
   });
   afterEach(async () => {
     await storage.closeAndDelete(userId);
@@ -46,9 +51,10 @@ describe('shared background storage', () => {
     ).toBe(2);
     await storage.close();
     const page = new WebdbStorage(() => null, new SessionLifecycleService());
+    page.bindSessionCache(session);
     try {
       await page.openExistingForUser(userId);
-      expect(await page.getSyncState('threadFeedCursor')).toBe(1);
+      expect((await page.readAccountState()).threadFeedCursor).toBe(1);
       expect((await page.getThreadStates())[0]).toEqual(result.states[0]);
     } finally {
       await page.close();
@@ -137,7 +143,7 @@ describe('shared background storage', () => {
       storage.mergeThreadStates([{ ...snapshot, previews: undefined }], 1),
     ).rejects.toThrow(TypeError);
     expect(await (await storage.db()).get('threads', 7)).toBeUndefined();
-    expect(await storage.getSyncState('threadFeedCursor')).toBeUndefined();
+    expect((await storage.readAccountState()).threadFeedCursor).toBeNull();
     await expect(
       storage.mergeThreadStates(
         [
@@ -278,7 +284,7 @@ describe('shared background storage', () => {
     ).rejects.toThrow('conversation identity');
     expect(await db.get('threads', 7)).toEqual(previous);
     expect(await db.get('threads', 8)).toBeUndefined();
-    expect(await storage.getSyncState('threadFeedCursor')).toBe(1);
+    expect((await storage.readAccountState()).threadFeedCursor).toBe(1);
   });
 
   it('deletes the unified state and its preview and roster together', async () => {
@@ -422,6 +428,7 @@ describe('shared background storage', () => {
       () => null,
       new SessionLifecycleService(),
     );
+    background.bindSessionCache(session);
     await background.openExistingForUser(userId);
     const previous = Object.getOwnPropertyDescriptor(navigator, 'locks');
     let tail: Promise<unknown> = Promise.resolve();
@@ -464,6 +471,7 @@ describe('shared background storage', () => {
   it('retains the existing session invalidation gate', async () => {
     const lifetime = new SessionLifecycleService();
     storage = new WebdbStorage(() => null, lifetime);
+    storage.bindSessionCache(session);
     await storage.openForUser(userId);
     lifetime.invalidateSession();
     await expect(storage.getThreadStates()).rejects.toThrow();
@@ -476,6 +484,7 @@ describe('shared background storage', () => {
       () => null,
       new SessionLifecycleService(),
     );
+    background.bindSessionCache(session);
     await background.openExistingForUser(userId);
     let respond!: (value: unknown) => void;
     let started!: () => void;
@@ -516,9 +525,12 @@ describe('shared background storage', () => {
 describe('profile-namespace change feed consumption', () => {
   const userId = '9107';
   let storage: WebdbStorage;
+  let session: SessionCacheDescriptor;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     storage = new WebdbStorage(() => null, new SessionLifecycleService());
+    session = await prepareSession();
+    storage.bindSessionCache(session);
   });
   afterEach(async () => {
     await storage.closeAndDelete(userId);
@@ -746,14 +758,12 @@ describe('profile-namespace change feed consumption', () => {
     storage.profileNamespaceWake$.subscribe(() => {
       cursorAtWake.push(
         storage
-          .db()
-          .then((db) => db.get('syncState', 'profileNamespaceChangeEndId')),
+          .readAccountState()
+          .then((state) => state.profileNamespaceChangeEndId),
       );
     });
     await storage.pullProfileNamespaceChanges();
-    expect(await Promise.all(cursorAtWake)).toEqual([
-      { key: 'profileNamespaceChangeEndId', value: 3 },
-    ]);
+    expect(await Promise.all(cursorAtWake)).toEqual([3]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // Optional resolver errors cannot prevent fact progress.
     expect(wakes).toEqual([
@@ -895,10 +905,8 @@ describe('profile-namespace change feed consumption', () => {
       await storage.pullProfileNamespaceChanges();
       expect(resolve).toHaveBeenCalledTimes(1);
       expect(
-        await (
-          await storage.db()
-        ).get('syncState', 'profileNamespaceChangeEndId'),
-      ).toMatchObject({ value: 3 });
+        (await storage.readAccountState()).profileNamespaceChangeEndId,
+      ).toBe(3);
     } finally {
       subscription.unsubscribe();
       resolve.mockRestore();
@@ -926,6 +934,8 @@ describe('profile-namespace change feed consumption', () => {
       try {
         const resolution = storage.resolveProfileNamespacePairs([pair], 3);
         await storage.closeAndDelete(userId);
+        // An account switch on one handle arrives with its own login-session cache.
+        storage.bindSessionCache(await prepareSession());
         await storage.openForUser(otherUser);
         release({
           ok: true,
@@ -950,6 +960,8 @@ describe('profile-namespace change feed consumption', () => {
         expect(await db.get('profileNamespaceTombs', [12, 0])).toBeUndefined();
       } finally {
         await storage.closeAndDelete(otherUser);
+        // Restore the describe-level binding so afterEach cleanup stays user-matched.
+        storage.bindSessionCache(session);
         warn.mockRestore();
         vi.unstubAllGlobals();
       }
@@ -1030,9 +1042,12 @@ describe('profile-namespace change feed consumption', () => {
 describe('profile-namespace pull single-flight', () => {
   const userId = '9107';
   let storage: WebdbStorage;
+  let session: SessionCacheDescriptor;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     storage = new WebdbStorage(() => null, new SessionLifecycleService());
+    session = await prepareSession();
+    storage.bindSessionCache(session);
   });
   afterEach(async () => {
     await storage.closeAndDelete(userId);

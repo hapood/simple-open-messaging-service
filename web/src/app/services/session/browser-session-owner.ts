@@ -17,8 +17,8 @@ export interface BrowserSessionResources {
 
 /**
  * Browser session authority. Remote revocation is best effort and is never a
- * prerequisite for fresh authentication. Lifecycle notifications temporarily
- * bridge consumers that have not yet migrated from numeric account epochs.
+ * prerequisite for fresh authentication. The admitted UUID is published to the
+ * renderer only after durable activation and resource restoration succeed.
  */
 export class BrowserSessionOwner {
   private active: SessionCacheDescriptor | null = null;
@@ -30,6 +30,7 @@ export class BrowserSessionOwner {
     private readonly journal: SessionJournal,
     private readonly resources: BrowserSessionResources,
     private readonly invalidate: () => void,
+    private readonly publish: (session: SessionCacheDescriptor) => void,
   ) {}
 
   get currentSession(): SessionCacheDescriptor | null {
@@ -52,7 +53,7 @@ export class BrowserSessionOwner {
         throw new SessionSupersededError();
       }
       const signal = this.beginTransition();
-      await this.serializeTransition(() => this.cleanup(true));
+      await this.serializeTransition(() => this.cleanup());
       this.check(signal);
       try {
         const result = await operation(signal);
@@ -79,31 +80,25 @@ export class BrowserSessionOwner {
       await this.journal.activate(descriptor.id);
       this.check(signal);
       this.active = descriptor;
+      this.publish(descriptor);
     });
   }
 
-  /** Presence cookies are evidence of credentials, never permission to ignore a logout record. */
+  /** Presence cookies cannot authorize restoration without a recoverable durable login record. */
   restore(hasCredential: boolean): Promise<boolean> {
     const signal = this.beginTransition();
     return this.serializeTransition(async () => {
       this.check(signal);
-      let saved = await this.journal.read();
+      const saved = await this.journal.read();
       this.check(signal);
       if (
         !hasCredential ||
-        saved?.phase === 'ending' ||
-        saved?.phase === 'signed-out'
+        !saved ||
+        saved.phase === 'ending' ||
+        saved.phase === 'signed-out'
       ) {
         await this.markEndedAndClose();
         return false;
-      }
-      if (!saved) {
-        // No recorded login (fresh install or cleared site data): a new journal and caches
-        // start now; the presence cookie alone is not a recoverable session.
-        await this.cleanup(false);
-        this.check(signal);
-        const descriptor = createSessionCacheDescriptor();
-        saved = await this.journal.prepare(descriptor);
       }
       const descriptor = saved.session;
       if (!descriptor)
@@ -119,6 +114,7 @@ export class BrowserSessionOwner {
       await this.resources.restore(descriptor, signal);
       this.check(signal);
       this.active = descriptor;
+      this.publish(descriptor);
       return true;
     });
   }
@@ -182,9 +178,9 @@ export class BrowserSessionOwner {
     }
   }
 
-  private async cleanup(explicitEnd: boolean): Promise<void> {
+  private async cleanup(): Promise<void> {
     let saved = await this.journal.read();
-    if (saved?.session || (!saved && explicitEnd)) {
+    if (saved?.session || !saved) {
       saved = await this.journal.end(saved?.session?.id ?? null);
     }
     await this.resources.close();

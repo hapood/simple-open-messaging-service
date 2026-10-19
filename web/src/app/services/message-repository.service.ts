@@ -149,7 +149,7 @@ export class MessageRepository {
     threadId: number,
     demand: NativeMessageHistoryDemand,
   ): Promise<NativeMessageHistoryResult> {
-    const epoch = this.sessionLifecycle.accountEpoch;
+    const scope = this.sessionLifecycle.capture();
     if (!isTauri())
       throw new Error('native message history requested outside Tauri');
     const userId = this.userService.sessionUserId();
@@ -163,7 +163,7 @@ export class MessageRepository {
         demand,
       },
     );
-    if (!this.sessionLifecycle.isCurrent(epoch))
+    if (!this.sessionLifecycle.isCurrent(scope))
       throw new Error('account session expired during native history query');
     if (this.userService.sessionUserId() === userId)
       this.slotsChanged.next(threadId);
@@ -703,7 +703,7 @@ export class MessageRepository {
     threadId: number,
     anchor: HistoryAnchor,
   ): Promise<number | null> {
-    const epoch = this.sessionLifecycle.accountEpoch;
+    const scope = this.sessionLifecycle.capture();
     const response = await firstValueFrom(
       this.msg.queryMessageHistoryPage({
         threadId,
@@ -713,7 +713,7 @@ export class MessageRepository {
     );
     if (response.code !== 0 || !response.data || !('messages' in response.data))
       throw new Error('history anchor resolution failed');
-    if (!this.sessionLifecycle.isCurrent(epoch))
+    if (!this.sessionLifecycle.isCurrent(scope))
       throw new Error('account session expired during anchor resolution');
     const page = response.data;
     const seq = page.resolvedAnchorSeq;
@@ -725,7 +725,7 @@ export class MessageRepository {
     // These slots are opportunistic cache entries, not a directional scan. In
     // particular, never pass them to reduceMessageRanges or advance messageHead.
     await this.webdb.putCachedMessages(page.messages);
-    if (!this.sessionLifecycle.isCurrent(epoch))
+    if (!this.sessionLifecycle.isCurrent(scope))
       throw new Error('account session expired during anchor commit');
     this.slotsChanged.next(threadId);
     return seq;

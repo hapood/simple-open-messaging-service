@@ -12,6 +12,7 @@ import {
   projectThreadAttention,
 } from '../../../../shared/thread-attention';
 import { threadFeedSnapshot, threadStructure } from './thread-feed.test-helper';
+import type { AccountState } from '../../../../shared/account-state';
 import {
   createGroupConversation,
   createP2PConversation,
@@ -19,7 +20,6 @@ import {
   type Message,
 } from './model';
 import type { ClientStateFeedItem } from './user.service';
-import { FRIEND_INTENT_RETENTION_MS } from './friend-request-state';
 import {
   CACHE_SCHEMA_VERSION,
   LocalCacheVersionMismatchError,
@@ -29,6 +29,7 @@ import {
   provideWebdbService,
 } from './webdb.service';
 import { WebdbStorage } from './webdb-storage';
+import { createSessionCacheDescriptor, type SessionCacheDescriptor } from './session/session-identity';
 
 const peerProfile = {
   account: 'peer',
@@ -74,6 +75,7 @@ async function seedThread(
 describe('WebdbService', () => {
   describe('IDB-backed storage (fake-indexeddb)', () => {
     let webdb: WebdbService;
+    let session: SessionCacheDescriptor;
 
     beforeEach(() => {
       TestBed.configureTestingModule({
@@ -84,6 +86,8 @@ describe('WebdbService', () => {
         ],
       });
       webdb = TestBed.inject(WebdbService);
+      session = createSessionCacheDescriptor();
+      webdb.bindSessionCache(session);
     });
 
     afterEach(async () => {
@@ -92,6 +96,12 @@ describe('WebdbService', () => {
       } catch {
         /* already closed */
       }
+    });
+
+    it('rejects cache opens without a login-session binding', async () => {
+      const unbound = new WebdbStorage();
+      await expect(unbound.openForUser('1')).rejects.toThrow('no login-session cache is bound');
+      await unbound.close();
     });
 
     it('binds a transferable port only after the database worker acknowledges the account', async () => {
@@ -106,6 +116,7 @@ describe('WebdbService', () => {
         () => worker,
         new SessionLifecycleService(),
       );
+      workerStorage.bindSessionCache(session);
       await workerStorage.openForUser('1');
       let port: MessagePort | null = null;
       let workerPort: MessagePort | undefined;
@@ -164,7 +175,7 @@ describe('WebdbService', () => {
       expect(await webdb.getThreads()).toEqual([
         expect.objectContaining({ threadId: 7, type: 'P2P', threadFeedId: 10 }),
       ]);
-      expect(await webdb.getSyncState('threadFeedCursor')).toBeUndefined();
+      expect((await webdb.readAccountState()).threadFeedCursor).toBeNull();
     });
 
     it('projects a counterpart-only thread revision and preserves it across stale list writes', async () => {
@@ -249,7 +260,7 @@ describe('WebdbService', () => {
         ...rolledBack,
         localReadSeq: 110,
       });
-      expect(await webdb.getSyncState('threadFeedCursor')).toBe(10);
+      expect((await webdb.readAccountState()).threadFeedCursor).toBe(10);
     });
 
     it('serializes concurrent local progress and snapshots without losing either', async () => {
@@ -310,7 +321,7 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       await webdb.mergeThreadStates([], 20);
       await webdb.mergeThreadStates([], 10);
-      expect(await webdb.getSyncState('threadFeedCursor')).toBe(20);
+      expect((await webdb.readAccountState()).threadFeedCursor).toBe(20);
     });
 
     it('rejects an invalid batch before writing any snapshot or cursor', async () => {
@@ -343,7 +354,7 @@ describe('WebdbService', () => {
         ),
       ).rejects.toThrow('unread count');
       expect(await webdb.getThreadStates()).toEqual([]);
-      expect(await webdb.getSyncState('threadFeedCursor')).toBeUndefined();
+      expect((await webdb.readAccountState()).threadFeedCursor).toBeNull();
     });
 
     it('normalizes local mirror members without changing the group source and keeps unresolved members', async () => {
@@ -414,7 +425,7 @@ describe('WebdbService', () => {
         publisherNamespaceId: 7,
       });
       expect(await db!.getAll('profiles')).toHaveLength(0);
-      expect(await webdb.getSyncState('stateFeedId')).toBeUndefined();
+      expect((await webdb.readAccountState()).stateFeedId).toBeNull();
     });
 
     it('rejects incomplete profile text without pinning a placeholder', async () => {
@@ -541,7 +552,7 @@ describe('WebdbService', () => {
         avatarBase64: null,
         bio: '',
       });
-      await webdb.putSyncState('stateFeedId', 98);
+      await webdb.applyStateFeedPage([], 98);
       await expect(
         webdb.applyGroupMetaPage({
           threadId: 90,
@@ -583,7 +594,7 @@ describe('WebdbService', () => {
         memberCount: 2,
       });
       expect(await db!.getAll('members')).toHaveLength(2);
-      expect(await webdb.getSyncState('stateFeedId')).toBe(98);
+      expect((await webdb.readAccountState()).stateFeedId).toBe(98);
       expect(
         await webdb.getProfile({
           publisherNamespaceId: 0,
@@ -960,22 +971,20 @@ describe('WebdbService', () => {
     it('opens separate per-user core and message DBs and signals ready', async () => {
       const db = await webdb.openForUser('1');
       expect(db, 'opened handle').toBeTruthy();
-      expect(db!.name, 'per-user partition key').toBe('soms-webdb-u1');
+      expect(db!.name, 'login-session partition key').toBe(session.indexedDbName);
       expect([...db!.objectStoreNames].sort()).toEqual([
+        'accountState',
         'members',
-        'meta',
         'profileAvatarBlobs',
         'profileNamespaceTombs',
         'profileNamespaces',
         'profileTombs',
         'profiles',
-        'relationshipRequests',
-        'syncState',
         'threadPreviews',
         'threads',
       ]);
       const messageDb = await webdb.messageDb();
-      expect(messageDb.name).toBe('soms-msgdb-u1');
+      expect(messageDb.name).toBe(session.messageIndexedDbName);
       expect([...messageDb.objectStoreNames].sort()).toEqual([
         'messageRanges',
         'messages',
@@ -985,23 +994,28 @@ describe('WebdbService', () => {
       expect((await messageDb.get('meta', 'schemaVersion'))?.value).toBe(
         MESSAGE_CACHE_SCHEMA_VERSION,
       );
-      expect(await webdb.getMeta('schemaVersion')).toBe(CACHE_SCHEMA_VERSION);
+      expect((await webdb.readAccountState()).schemaVersion).toBe(
+        CACHE_SCHEMA_VERSION,
+      );
       expect(webdb.ready()).toBe(true);
     });
 
-    it('rebuilds the old cache version instead of migrating dismissal metadata', async () => {
-      const db = await webdb.openForUser('1');
-      await webdb.putMeta('threadHwms', { 7: 9 });
-      await webdb.putMeta('stateFeedCursor', 42);
-      await db!.put('meta', {
-        key: 'schemaVersion',
-        value: CACHE_SCHEMA_VERSION - 1,
-      });
+    it('rebuilds an account record from another schema version instead of migrating it', async () => {
+      await webdb.openForUser('1');
+      const db = await webdb.db();
+      // Deliberately corrupt the stored schema version; the cast acknowledges
+      // that this is not a valid AccountState for the current layout.
+      const corrupted = {
+        ...(await db.get('accountState', 'account')),
+        schemaVersion: CACHE_SCHEMA_VERSION - 1,
+        intentRequestEndId: 'legacy',
+      } as unknown as AccountState;
+      await db.put('accountState', corrupted, 'account');
       await webdb.close();
       await webdb.openForUser('1');
-      expect(await webdb.getMeta('threadHwms')).toBeUndefined();
-      expect(await webdb.getMeta('stateFeedCursor')).toBeUndefined();
-      expect(await webdb.getMeta('schemaVersion')).toBe(CACHE_SCHEMA_VERSION);
+      const state = await webdb.readAccountState();
+      expect(state.schemaVersion).toBe(CACHE_SCHEMA_VERSION);
+      expect(state.intentRequestEndId).toBeNull();
     });
 
     it('strict startup open does not create missing databases', async () => {
@@ -1010,45 +1024,91 @@ describe('WebdbService', () => {
       const names = (await indexedDB.databases()).map(
         (database) => database.name,
       );
-      expect(names).not.toContain('soms-webdb-u1');
-      expect(names).not.toContain('soms-msgdb-u1');
+      expect(names).not.toContain(session.indexedDbName);
+      expect(names).not.toContain(session.messageIndexedDbName);
       expect(webdb.ready()).toBe(false);
     });
 
     it('strict startup open preserves an existing valid cache', async () => {
       await webdb.openForUser('1');
-      await webdb.putMeta('sentinel', 'kept');
+      await webdb.writeSelfProfile({
+        id: 1,
+        account: 'me',
+        name: 'Kept',
+        avatar: '',
+        bio: '',
+        isGroup: false,
+        namespaceId: 0,
+        profileRev: 1,
+        isDeleted: false,
+      });
       await webdb.close();
 
       await webdb.openExistingForUser('1');
 
-      expect(await webdb.getMeta('sentinel')).toBe('kept');
+      expect((await webdb.readAccountState()).selfProfile?.name).toBe('Kept');
     });
 
     it('strict startup open reports a version mismatch without deleting the cache', async () => {
       await webdb.openForUser('1');
-      await webdb.putMeta('schemaVersion', 99);
-      await webdb.putMeta('sentinel', 'still-present');
+      await webdb.writeSelfProfile({
+        id: 1,
+        account: 'me',
+        name: 'Still Present',
+        avatar: '',
+        bio: '',
+        isGroup: false,
+        namespaceId: 0,
+        profileRev: 1,
+        isDeleted: false,
+      });
+      const db = await webdb.db();
+      // Deliberately corrupt the stored schema version to simulate an old layout.
+      const corrupted = {
+        ...(await db.get('accountState', 'account')),
+        schemaVersion: 99,
+      } as unknown as AccountState;
+      await db.put('accountState', corrupted, 'account');
       await webdb.close();
 
       await expect(webdb.openExistingForUser('1')).rejects.toThrowError(
         LocalCacheVersionMismatchError,
       );
-      const raw = await openDB('soms-webdb-u1');
-      expect((await raw.get('meta', 'sentinel')).value).toBe('still-present');
+      const raw = await openDB(session.indexedDbName);
+      expect(
+        (await raw.get('accountState', 'account')).selfProfile?.name,
+      ).toBe('Still Present');
       raw.close();
     });
 
     it('drops and reinitializes a cache whose stable metadata version is not current', async () => {
       await webdb.openForUser('1');
-      await webdb.putMeta('schemaVersion', 99);
-      await webdb.putMeta('sentinel', 'old-cache');
+      await webdb.writeSelfProfile({
+        id: 1,
+        account: 'me',
+        name: 'Old Cache',
+        avatar: '',
+        bio: '',
+        isGroup: false,
+        namespaceId: 0,
+        profileRev: 1,
+        isDeleted: false,
+      });
+      const db = await webdb.db();
+      // Deliberately corrupt the stored schema version to simulate an old layout.
+      const corrupted = {
+        ...(await db.get('accountState', 'account')),
+        schemaVersion: 99,
+      } as unknown as AccountState;
+      await db.put('accountState', corrupted, 'account');
       await webdb.close();
 
       await webdb.openForUser('1');
 
-      expect(await webdb.getMeta('schemaVersion')).toBe(CACHE_SCHEMA_VERSION);
-      expect(await webdb.getMeta('sentinel')).toBeUndefined();
+      expect((await webdb.readAccountState()).schemaVersion).toBe(
+        CACHE_SCHEMA_VERSION,
+      );
+      expect((await webdb.readAccountState()).selfProfile).toBeNull();
     });
 
     it('counts only cached message rows', async () => {
@@ -1190,7 +1250,7 @@ describe('WebdbService', () => {
     // Regression guard for the stale-currentUserId bug: closeAndDelete must null currentUserId, so a
     // racing db() call (e.g. a repository read fired before the new user's effect re-opens a DB) cannot
     // transparently RE-OPEN this user's database via the lazy re-open path. Before the fix,
-    // currentUserId stayed '1' and db() would silently re-create soms-webdb-u1.
+    // currentUserId stayed '1' and db() would silently re-create the deleted login cache.
     it('closeAndDelete resets currentUserId so db() does not transparently re-open that user', async () => {
       await webdb.openForUser('1');
       expect(webdb.ready()).toBe(true);
@@ -1225,8 +1285,8 @@ describe('WebdbService', () => {
       const names = (await indexedDB.databases()).map(
         (database) => database.name,
       );
-      expect(names).not.toContain('soms-webdb-u1');
-      expect(names).not.toContain('soms-msgdb-u1');
+      expect(names).not.toContain(session.indexedDbName);
+      expect(names).not.toContain(session.messageIndexedDbName);
     });
 
     it('full recreation blocks new core operations and waits for an admitted core read', async () => {
@@ -1269,710 +1329,6 @@ describe('WebdbService', () => {
 
       expect(recreated).toBe(true);
       expect(await webdb.getThreads()).toEqual([]);
-    });
-
-    for (const kind of ['P2P', 'GROUP'] as const) {
-      it(`restores an established revoked ${kind} as read-only on an empty device`, async () => {
-        await webdb.openForUser('1');
-        const event = (
-          established: boolean,
-          feedId: number,
-        ): ClientStateFeedItem =>
-          ({
-            feedId,
-            namespaceId: 0,
-            eventType: 'RELATIONSHIP_INTENT',
-            account: kind === 'GROUP' ? '!history' : 'alice',
-            subjectAccount: 'bob',
-            subjectNamespaceId: 0,
-            body: {
-              status: 'REVOKED',
-              snapshot: null,
-              established,
-              note: '',
-              requestedAt: null,
-              expiresAt: null,
-              ...(kind === 'GROUP'
-                ? {
-                    threadId: 77,
-                    group: {
-                      account: '!history',
-                      namespaceId: 0,
-                      name: 'History',
-                      avatar: '',
-                      description: '',
-                      profileRev: 0,
-                    },
-                  }
-                : {
-                    localThreadId: 77,
-                    direction: 'INCOMING',
-                    peer: {
-                      account: 'alice',
-                      name: 'Alice',
-                      avatar: '',
-                      bio: '',
-                      profileRev: 0,
-                    },
-                  }),
-            },
-          }) as ClientStateFeedItem;
-        await webdb.applyStateFeedPage([event(false, 1)], 1);
-        expect(await webdb.getThreads()).toEqual([]);
-        await webdb.applyStateFeedPage([event(true, 2)], 2);
-        expect(await webdb.getThreads()).toEqual([]);
-        await webdb.mergeThreadStates(
-          [
-            threadFeedSnapshot(77, {
-              threadFeedId: 3,
-              type: kind,
-              conversationState: 'READ_ONLY',
-              profileAccount: kind === 'GROUP' ? '!history' : 'alice',
-              publisherNamespaceId: 0,
-              profileRev: 0,
-            }),
-          ],
-          3,
-        );
-        expect(await webdb.getThreads()).toEqual([
-          expect.objectContaining({
-            threadId: 77,
-            type: kind,
-            conversationState: 'READ_ONLY',
-          }),
-        ]);
-        // An older opposite-direction fact cannot erase established history.
-        await webdb.applyStateFeedPage([event(false, 4)], 4);
-        expect(await webdb.getThreads()).toEqual([
-          expect.objectContaining({
-            threadId: 77,
-            conversationState: 'READ_ONLY',
-          }),
-        ]);
-      });
-    }
-
-    it('atomically advances the state-feed cursor and derives P2P read-only state', async () => {
-      await webdb.openForUser('1');
-      const revoked: ClientStateFeedItem = {
-        feedId: 12,
-        namespaceId: 12,
-        account: 'alice',
-        eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: 'bob',
-        subjectNamespaceId: 12,
-        body: {
-          status: 'REQUESTED',
-          note: '',
-          requestedAt: null,
-          expiresAt: null,
-          direction: 'OUTGOING',
-          snapshot: { displayName: 'Bob', avatar: null },
-          localThreadId: 7,
-          peer: {
-            id: 2,
-            account: 'bob',
-            namespaceId: 12,
-            avatar: '',
-            bio: '',
-          },
-        },
-      };
-
-      await webdb.applyStateFeedPage([revoked], 12);
-      await webdb.mergeThreadStates(
-        [
-          threadFeedSnapshot(7, {
-            threadFeedId: 13,
-            conversationState: 'READ_ONLY',
-            blocked: true,
-            profileAccount: peerProfile.account,
-            publisherNamespaceId: peerProfile.namespaceId,
-            profileRev: peerProfile.profileRev,
-          }),
-        ],
-        13,
-      );
-
-      expect(await webdb.getSyncState('stateFeedId')).toBe(12);
-      expect(
-        (await webdb.getThreads()).find((item) => item.threadId === 7),
-      ).toMatchObject({
-        friendshipActive: false,
-        conversationState: 'READ_ONLY',
-      });
-    });
-
-    it('keeps bilateral intents out of the thread list until the complete thread snapshot arrives', async () => {
-      await webdb.openForUser('1');
-      const peer = {
-        namespaceId: 0,
-        id: 2,
-        account: 'bob',
-        name: 'Bob',
-        avatar: '',
-        bio: '',
-      };
-      const items: ClientStateFeedItem[] = [
-        {
-          feedId: 20,
-          namespaceId: 0,
-          account: 'alice',
-          eventType: 'RELATIONSHIP_INTENT',
-          subjectAccount: 'bob',
-          subjectNamespaceId: 0,
-          body: {
-            status: 'ACCEPTED',
-            note: '',
-            requestedAt: 1,
-            expiresAt: null,
-            direction: 'OUTGOING',
-            snapshot: { displayName: 'Bob', avatar: null },
-            localThreadId: 7,
-            peer,
-          },
-        },
-        {
-          feedId: 21,
-          namespaceId: 0,
-          account: 'bob',
-          eventType: 'RELATIONSHIP_INTENT',
-          subjectAccount: 'alice',
-          subjectNamespaceId: 0,
-          body: {
-            status: 'ACCEPTED',
-            note: '',
-            requestedAt: 1,
-            expiresAt: null,
-            direction: 'INCOMING',
-            snapshot: null,
-            localThreadId: 7,
-            peer,
-          },
-        },
-      ];
-
-      await webdb.applyStateFeedPage(items, 21);
-      expect(await webdb.getThreads()).toEqual([]);
-      await webdb.mergeThreadStates(
-        [
-          threadFeedSnapshot(7, {
-            threadFeedId: 22,
-            profileAccount: 'bob',
-            publisherNamespaceId: 0,
-            profileRev: 1,
-          }),
-        ],
-        22,
-      );
-
-      expect(await webdb.getThreads()).toEqual([
-        expect.objectContaining({
-          threadId: 7,
-          type: 'P2P',
-          friendshipActive: true,
-          conversationState: 'ACTIVE',
-          peerUser: expect.objectContaining({
-            account: 'bob',
-            namespaceId: 0,
-          }),
-        }),
-      ]);
-      expect(await webdb.getSyncState('stateFeedId')).toBe(21);
-    });
-
-    it.each(['WITHDRAWN', 'REJECTED'] as const)(
-      'retains a group request outcome %s after reopening storage and convergence replay',
-      async (requestStatus) => {
-        const db = await webdb.openForUser('1');
-        const now = Date.now();
-        const group = {
-          account: '!group',
-          namespaceId: 0,
-          name: 'Group',
-          avatar: '',
-          description: '',
-          profileRev: 1,
-        };
-        const request: ClientStateFeedItem = {
-          feedId: 1,
-          namespaceId: 0,
-          account: 'me',
-          subjectAccount: '!group',
-          subjectNamespaceId: 0,
-          eventType: 'RELATIONSHIP_INTENT',
-          body: {
-            status: 'REQUESTED',
-            direction: 'OUTGOING',
-            snapshot: { displayName: 'Group', avatar: null },
-            requestedAt: now,
-            expiresAt: now + 60_000,
-            note: '',
-            threadId: 7,
-            group,
-          },
-        };
-        await webdb.applyStateFeedPage([request], 1);
-        const outcome: ClientStateFeedItem = {
-          ...request,
-          feedId: 2,
-          account: '!group',
-          subjectAccount: 'me',
-          body: {
-            ...request.body,
-            snapshot: null,
-            status: 'REVOKED',
-            direction: 'INCOMING',
-            requestStatus,
-            requestDirection: 'OUTGOING',
-          },
-        };
-        await webdb.applyStateFeedPage([outcome], 2);
-        expect((await db!.getAll('relationshipRequests'))[0].status).toBe(
-          requestStatus,
-        );
-        await webdb.close();
-        await webdb.openForUser('1');
-        await webdb.applyStateFeedPage(
-          [
-            {
-              ...request,
-              feedId: 3,
-              body: { ...request.body, status: 'REVOKED' },
-            },
-          ],
-          3,
-        );
-        const page = await webdb.getRelationshipRequestPage('SENT', null, 20);
-        expect(page.items[0].status).toBe(requestStatus);
-        await webdb.applyStateFeedPage(
-          [
-            {
-              ...request,
-              feedId: 4,
-              body: { ...request.body, requestedAt: now + 1 },
-            },
-          ],
-          4,
-        );
-        expect(
-          (await webdb.getRelationshipRequestPage('SENT', null, 20)).items[0]
-            .status,
-        ).toBe('REQUESTED');
-      },
-    );
-
-    it('keeps accepted sent history and makes accepted received history non-actionable', async () => {
-      const db = await webdb.openForUser('1');
-      const requestedAt = Date.now();
-      const peer = {
-        namespaceId: 12,
-        id: 2,
-        account: 'admin',
-        name: 'admin',
-        avatar: '',
-        bio: '',
-        domain: 'bravo.test',
-      };
-      const event = (
-        feedId: number,
-        direction: 'INCOMING' | 'OUTGOING',
-        status: 'REQUESTED' | 'ACCEPTED',
-      ): ClientStateFeedItem => ({
-        feedId,
-        namespaceId: 12,
-        account: direction === 'OUTGOING' ? 'bravo' : 'admin',
-        eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: direction === 'OUTGOING' ? 'admin' : 'bravo',
-        subjectNamespaceId: direction === 'OUTGOING' ? 12 : 0,
-        body: {
-          status,
-          note: '',
-          requestedAt: status === 'REQUESTED' ? requestedAt : null,
-          expiresAt: status === 'REQUESTED' ? requestedAt + 60_000 : null,
-          direction,
-          snapshot: direction === 'OUTGOING' ? { displayName: 'admin', avatar: null } : null,
-          localThreadId: status === 'ACCEPTED' ? 7 : null,
-          peer,
-        },
-      });
-
-      await webdb.applyStateFeedPage([event(30, 'OUTGOING', 'REQUESTED')], 30);
-      await webdb.applyStateFeedPage(
-        [event(31, 'INCOMING', 'ACCEPTED'), event(32, 'OUTGOING', 'ACCEPTED')],
-        32,
-      );
-
-      expect(await db!.getAll('relationshipRequests')).toHaveLength(1);
-      expect(
-        await webdb.getRelationshipRequestPage('SENT', null, 20),
-      ).toMatchObject({
-        total: 1,
-        actionableTotal: 1,
-        items: [expect.objectContaining({ status: 'ACCEPTED' })],
-      });
-    });
-
-    it('settles both pending group request directions on a group-authored acceptance', async () => {
-      const db = await webdb.openForUser('1');
-      const requestedAt = Date.now();
-      const group = {
-        namespaceId: 0,
-        account: '!group',
-        name: 'Group',
-        avatar: '',
-        description: '',
-        profileRev: 1,
-      };
-      const event = (
-        feedId: number,
-        direction: 'INCOMING' | 'OUTGOING',
-        status: 'REQUESTED' | 'ACCEPTED',
-      ): ClientStateFeedItem => ({
-        feedId,
-        namespaceId: 0,
-        eventType: 'RELATIONSHIP_INTENT',
-        account: direction === 'INCOMING' ? '!group' : 'me',
-        subjectAccount: direction === 'INCOMING' ? 'me' : '!group',
-        subjectNamespaceId: 0,
-        body: {
-          status,
-          note: '',
-          requestedAt,
-          expiresAt: status === 'REQUESTED' ? requestedAt + 60_000 : null,
-          threadId: 8,
-          snapshot: direction === 'OUTGOING' ? { displayName: 'Group', avatar: null } : null,
-          group,
-        },
-      });
-
-      await webdb.applyStateFeedPage(
-        [
-          event(20, 'INCOMING', 'REQUESTED'),
-          event(21, 'OUTGOING', 'REQUESTED'),
-        ],
-        21,
-      );
-      await webdb.applyStateFeedPage([event(22, 'INCOMING', 'ACCEPTED')], 22);
-
-      expect(await db!.getAll('relationshipRequests')).toEqual([
-        expect.objectContaining({ direction: 'INCOMING', status: 'ACCEPTED' }),
-        expect.objectContaining({ direction: 'OUTGOING', status: 'ACCEPTED' }),
-      ]);
-      expect(
-        await webdb.getRelationshipRequestPage('RECEIVED', null, 20),
-      ).toMatchObject({ total: 1, actionableTotal: 0 });
-      await webdb.applyStateFeedPage([event(23, 'INCOMING', 'ACCEPTED')], 23);
-      expect(await db!.getAll('relationshipRequests')).toHaveLength(2);
-    });
-
-    it('persists a successful local accept on the existing received projection', async () => {
-      const db = await webdb.openForUser('1');
-      const requestedAt = Date.now();
-      await webdb.applyStateFeedPage(
-        [
-          {
-            feedId: 40,
-            namespaceId: 12,
-            account: 'alice',
-            eventType: 'RELATIONSHIP_INTENT',
-            subjectAccount: 'me',
-            subjectNamespaceId: 0,
-            body: {
-              status: 'REQUESTED',
-              note: '',
-              requestedAt,
-              expiresAt: requestedAt + 60_000,
-              direction: 'INCOMING',
-              snapshot: null,
-              localThreadId: null,
-              peer: {
-                id: 2,
-                account: 'alice',
-                namespaceId: 12,
-                avatar: '',
-                bio: '',
-              },
-            },
-          },
-        ],
-        40,
-      );
-      const [projection] = await db!.getAll('relationshipRequests');
-      await webdb.markRelationshipRequestAccepted(projection.key);
-      expect(
-        await db!.get('relationshipRequests', projection.key),
-      ).toMatchObject({
-        bucket: 'RECEIVED',
-        direction: 'INCOMING',
-        status: 'ACCEPTED',
-      });
-      expect(
-        await webdb.getRelationshipRequestPage('RECEIVED', null, 20),
-      ).toMatchObject({ total: 1, actionableTotal: 0 });
-    });
-
-    it('does not advance the unread badge revision when an incoming request is rejected', async () => {
-      const db = await webdb.openForUser('1');
-      const requestedAt = Date.now();
-      const expiresAt = Date.now() + 60_000;
-      const event = (
-        feedId: number,
-        direction: 'INCOMING' | 'OUTGOING',
-        status: 'REQUESTED' | 'REVOKED',
-      ): ClientStateFeedItem => ({
-        feedId,
-        namespaceId: 12,
-        account: direction === 'INCOMING' ? 'alice' : 'me',
-        eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: direction === 'INCOMING' ? 'me' : 'alice',
-        subjectNamespaceId: direction === 'INCOMING' ? 0 : 12,
-        body: {
-          status,
-          ...(status === 'REVOKED'
-            ? {
-                requestStatus: 'REJECTED' as const,
-                requestDirection: 'INCOMING' as const,
-              }
-            : {}),
-          note: 'hello',
-          requestedAt: status === 'REQUESTED' ? requestedAt : null,
-          expiresAt: status === 'REQUESTED' ? expiresAt : null,
-          direction,
-          snapshot: null,
-          localThreadId: 7,
-          peer: {
-            id: 2,
-            account: 'alice',
-            namespaceId: 12,
-            avatar: '',
-            bio: 'About Alice',
-          },
-        },
-      });
-
-      await webdb.applyStateFeedPage([event(10, 'INCOMING', 'REQUESTED')], 10);
-      expect(await webdb.getSyncState('relationshipRequestStateRevision')).toBe(
-        10,
-      );
-      expect(
-        await webdb.getRelationshipRequestPage('RECEIVED', null, 20),
-      ).toMatchObject({ total: 1, actionableTotal: 1 });
-
-      await webdb.applyStateFeedPage([event(11, 'OUTGOING', 'REVOKED')], 11);
-      expect(await webdb.getSyncState('relationshipRequestStateRevision')).toBe(
-        10,
-      );
-      expect(await db!.getAll('relationshipRequests')).toEqual([
-        expect.objectContaining({
-          bucket: 'RECEIVED',
-          status: 'REJECTED',
-          requestedSort: requestedAt,
-        }),
-      ]);
-      const rejectedPage = await webdb.getRelationshipRequestPage(
-        'RECEIVED',
-        null,
-        20,
-      );
-      expect(rejectedPage).toMatchObject({ total: 1, actionableTotal: 0 });
-      expect(rejectedPage.items).toEqual([
-        expect.objectContaining({ bucket: 'RECEIVED', status: 'REJECTED' }),
-      ]);
-    });
-
-    it('updates an existing incoming request when a newer request fact arrives', async () => {
-      const db = await webdb.openForUser('1');
-      const requestedAt = Date.now();
-      const expiresAt = requestedAt + 60_000;
-      const incoming = (
-        feedId: number,
-        peer: { avatar: string },
-      ): ClientStateFeedItem => ({
-        feedId,
-        namespaceId: 12,
-        account: 'alice',
-        eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: 'me',
-        subjectNamespaceId: 0,
-        body: {
-          status: 'REQUESTED',
-          note: 'hello',
-          requestedAt,
-          expiresAt,
-          direction: 'INCOMING',
-          snapshot: null,
-          localThreadId: null,
-          peer: {
-            id: 0,
-            account: 'alice',
-            namespaceId: 12,
-            avatar: peer.avatar,
-            bio: '',
-          },
-        },
-      });
-
-      await webdb.applyStateFeedPage([incoming(30, { avatar: '' })], 30);
-      expect(await db!.getAll('relationshipRequests')).toEqual([
-        expect.objectContaining({
-          status: 'REQUESTED',
-          peer: expect.objectContaining({ avatar: '' }),
-        }),
-      ]);
-
-      await webdb.applyStateFeedPage(
-        [incoming(31, { avatar: '/uploads/alice-512.webp' })],
-        31,
-      );
-
-      expect(await db!.getAll('relationshipRequests')).toEqual([
-        expect.objectContaining({
-          status: 'REQUESTED',
-          peer: expect.objectContaining({
-            id: 0,
-            avatar: '/uploads/alice-512.webp',
-          }),
-        }),
-      ]);
-      expect(await webdb.getSyncState('relationshipRequestStateRevision')).toBe(
-        30,
-      );
-      expect(await webdb.getSyncState('stateFeedId')).toBe(31);
-    });
-
-    it('garbage-collects an expired request projection without creating a User row', async () => {
-      const db = await webdb.openForUser('1');
-      const expiresAt = Date.now() + 1_000;
-      const request: ClientStateFeedItem = {
-        feedId: 20,
-        namespaceId: 12,
-        account: 'me',
-        eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: 'alice',
-        subjectNamespaceId: 12,
-        body: {
-          status: 'REQUESTED',
-          note: 'hello',
-          requestedAt: expiresAt - 1_000,
-          expiresAt,
-          direction: 'OUTGOING',
-          snapshot: { displayName: 'Alice', avatar: 'avatar.webp' },
-          localThreadId: 7,
-          peer: {
-            id: 2,
-            account: 'alice',
-            namespaceId: 12,
-            avatar: 'avatar.webp',
-            bio: 'About Alice',
-          },
-        },
-      };
-
-      await webdb.applyStateFeedPage([request], 20);
-      expect(await db!.getAll('relationshipRequests')).toHaveLength(1);
-      expect(await db!.getAll('profiles')).toEqual([]);
-
-      await webdb.cleanupRelationshipRequests(expiresAt);
-
-      expect(await db!.getAll('relationshipRequests')).toHaveLength(1);
-      expect(await db!.getAll('profiles')).toEqual([]);
-
-      await webdb.cleanupRelationshipRequests(
-        expiresAt + FRIEND_INTENT_RETENTION_MS,
-      );
-      expect(await db!.getAll('relationshipRequests')).toEqual([]);
-    });
-
-    it('garbage-collects an expired group invite without creating a Group row', async () => {
-      const db = await webdb.openForUser('1');
-      const requestedAt = Date.now();
-      const expiresAt = requestedAt + 1_000;
-      const invite: ClientStateFeedItem = {
-        feedId: 21,
-        namespaceId: 12,
-        account: '!group',
-        eventType: 'RELATIONSHIP_INTENT',
-        subjectAccount: 'me',
-        subjectNamespaceId: 12,
-        body: {
-          status: 'REQUESTED',
-          note: 'join us',
-          requestedAt,
-          expiresAt,
-          direction: 'INCOMING',
-          snapshot: null,
-          threadId: 8,
-          group: {
-            namespaceId: 12,
-            account: '!group',
-            profileRev: 2,
-          },
-        },
-      };
-
-      await webdb.applyStateFeedPage([invite], 21);
-      expect(await db!.getAll('relationshipRequests')).toEqual([
-        expect.objectContaining({
-          note: 'join us',
-          group: { account: '!group', namespaceId: 12, profileRev: 2 },
-        }),
-      ]);
-      expect(await webdb.getSyncState('stateFeedId')).toBe(21);
-      expect(await db!.getAll('profiles')).toEqual([]);
-
-      await webdb.cleanupRelationshipRequests(expiresAt);
-
-      expect(await db!.getAll('relationshipRequests')).toHaveLength(1);
-      expect(await db!.getAll('profiles')).toEqual([]);
-
-      await webdb.cleanupRelationshipRequests(
-        expiresAt + FRIEND_INTENT_RETENTION_MS,
-      );
-      expect(await db!.getAll('relationshipRequests')).toEqual([]);
-    });
-
-    it('uses explicit OUTGOING direction for a legacy group-first federated key', async () => {
-      const db = await webdb.openForUser('1');
-      const requestedAt = Date.now();
-      await webdb.applyStateFeedPage(
-        [
-          {
-            feedId: 22,
-            namespaceId: 12,
-            // Older federated writers used GROUP->MEMBER as the compaction key even for a
-            // member-authored request. The body direction is the authoritative authored side.
-            account: '!group',
-            eventType: 'RELATIONSHIP_INTENT',
-            subjectAccount: 'me',
-            subjectNamespaceId: 12,
-            body: {
-              status: 'REQUESTED',
-              note: 'let me in',
-              requestedAt,
-              expiresAt: requestedAt + 60_000,
-              direction: 'OUTGOING',
-              snapshot: { displayName: 'Group', avatar: null },
-              threadId: 8,
-              group: {
-                namespaceId: 12,
-                account: '!group',
-                profileRev: 1,
-              },
-            },
-          },
-        ],
-        22,
-      );
-
-      expect(await db!.getAll('relationshipRequests')).toEqual([
-        expect.objectContaining({
-          kind: 'GROUP',
-          bucket: 'SENT',
-          direction: 'OUTGOING',
-          status: 'REQUESTED',
-        }),
-      ]);
     });
 
     it('rebuilds state-feed projections without resetting the independent group roster', async () => {
@@ -2021,7 +1377,7 @@ describe('WebdbService', () => {
       await webdb.applyStateFeedPage([], 4);
 
       expect(await db!.getAll('members')).toHaveLength(2);
-      expect(await webdb.getSyncState('stateFeedId')).toBe(4);
+      expect((await webdb.readAccountState()).stateFeedId).toBe(4);
     });
 
     it('atomically creates the thread and attention from one complete feed snapshot', async () => {
@@ -2070,7 +1426,7 @@ describe('WebdbService', () => {
       expect(attentionSnapshot((await webdb.getThreadStates())[0])).toEqual(
         head,
       );
-      expect(await webdb.getSyncState('threadFeedCursor')).toBe(4);
+      expect((await webdb.readAccountState()).threadFeedCursor).toBe(4);
       const invalid = threadFeedSnapshot(10, {
         threadFeedId: 7,
         profileAccount: 'peer',
@@ -2092,7 +1448,7 @@ describe('WebdbService', () => {
         ),
       ).rejects.toThrow();
       expect(await db!.get('threads', 11)).toBeUndefined();
-      expect(await webdb.getSyncState('threadFeedCursor')).toBe(4);
+      expect((await webdb.readAccountState()).threadFeedCursor).toBe(4);
     });
 
     it('applies block and unblock deltas from the thread feed', async () => {
@@ -2109,7 +1465,7 @@ describe('WebdbService', () => {
       expect((await webdb.getThreads())[0]).toMatchObject({ blocked: true });
       await webdb.mergeThreadStates([event(6, false)], 6);
       expect((await webdb.getThreads())[0]).toMatchObject({ blocked: false });
-      expect(await webdb.getSyncState('threadFeedCursor')).toBe(6);
+      expect((await webdb.readAccountState()).threadFeedCursor).toBe(6);
     });
 
     it('commits compact member references and a group profile without treating the group profile as a member', async () => {
@@ -2181,7 +1537,7 @@ describe('WebdbService', () => {
         groupMemberCount: 2,
         groupMetaFeedId: '3',
       });
-      expect(await webdb.getSyncState('stateFeedId')).toBeUndefined();
+      expect((await webdb.readAccountState()).stateFeedId).toBeNull();
       const members = await webdb.queryGroupMembers({ threadId: 9, take: 20 });
       expect(members).toHaveLength(2);
       expect(members.find((member) => member.account === 'bob')).toMatchObject({
@@ -2428,7 +1784,17 @@ describe('WebdbService', () => {
         rev: 1,
       });
 
-      await webdb.putMeta('selfIdentity', { account: 'self', domain: 'local' });
+      await webdb.writeSelfProfile({
+        id: 1,
+        account: 'self',
+        name: 'Self',
+        avatar: '',
+        bio: '',
+        isGroup: false,
+        namespaceId: 0,
+        profileRev: 1,
+        isDeleted: false,
+      });
 
       await webdb.applyGroupMetaPage({
         threadId: 9,
@@ -2682,40 +2048,8 @@ describe('WebdbService', () => {
         description: '',
         profileRev: 1,
       };
-      const common = {
-        eventType: 'RELATIONSHIP_INTENT' as const,
-        body: {
-          status: 'ACCEPTED' as const,
-          snapshot: null,
-          note: '',
-          requestedAt: null,
-          expiresAt: null,
-          threadId: 12,
-          group,
-        },
-      };
-      const items: ClientStateFeedItem[] = [
-        {
-          ...common,
-          feedId: 1,
-          namespaceId: 0,
-          account: '!dev',
-          subjectAccount: 'alice',
-          subjectNamespaceId: 0,
-          body: { ...common.body, direction: 'INCOMING' },
-        },
-        {
-          ...common,
-          feedId: 2,
-          namespaceId: 0,
-          account: 'alice',
-          subjectAccount: '!dev',
-          subjectNamespaceId: 0,
-          body: { ...common.body, direction: 'OUTGOING' },
-        },
-      ];
+      void group;
 
-      await webdb.applyStateFeedPage(items, 2);
       await webdb.mergeThreadStates(
         [
           threadFeedSnapshot(12, {
@@ -2776,27 +2110,8 @@ describe('WebdbService', () => {
         }),
       ]);
 
-      await webdb.applyStateFeedPage(
-        [
-          {
-            feedId: 4,
-            namespaceId: 0,
-            eventType: 'RELATIONSHIP_INTENT',
-            account: 'alice',
-            subjectAccount: '!dev',
-            subjectNamespaceId: 0,
-            body: {
-              ...common.body,
-              status: 'REVOKED',
-              direction: 'OUTGOING',
-            },
-          },
-        ],
-        4,
-      );
-      expect((await webdb.getThreads())[0]).toEqual(
-        expect.objectContaining({ conversationState: 'ACTIVE' }),
-      );
+      // No client-side intent projection exists anymore: group lifecycle state
+      // arrives only through the authoritative thread snapshot.
       await webdb.mergeThreadStates(
         [
           threadFeedSnapshot(12, {
@@ -2863,7 +2178,7 @@ describe('WebdbService', () => {
       expect(await webdb.getThreads()).toEqual(retainedThreads);
     });
 
-    it('keeps a newly created local group visible with independent relationship and thread feeds', async () => {
+    it('keeps a newly created local group visible across the relationship and thread feeds', async () => {
       await webdb.openForUser('1');
       const group = {
         account: '!repro-group',
@@ -2873,27 +2188,7 @@ describe('WebdbService', () => {
         description: 'created from the Web UI',
         profileRev: 1,
       };
-      const relationship = {
-        feedId: 2,
-        namespaceId: 0,
-        eventType: 'RELATIONSHIP_INTENT' as const,
-        account: '!repro-group',
-        subjectAccount: 'alice',
-        subjectNamespaceId: 0,
-        body: {
-          status: 'ACCEPTED' as const,
-          direction: 'INCOMING' as const,
-          snapshot: null,
-          established: true,
-          note: '',
-          requestedAt: null,
-          expiresAt: null,
-          threadId: 95,
-          group,
-        },
-      } satisfies ClientStateFeedItem;
 
-      await webdb.applyStateFeedPage([relationship], 2);
       await webdb.mergeThreadStates(
         [
           threadFeedSnapshot(95, {
@@ -2945,7 +2240,17 @@ describe('WebdbService', () => {
 
     it('recreates only the message DB and preserves the core cache', async () => {
       await webdb.openForUser('1');
-      await webdb.putMeta('sentinel', 'core');
+      await webdb.writeSelfProfile({
+        id: 1,
+        account: 'me',
+        name: 'Core',
+        avatar: '',
+        bio: '',
+        isGroup: false,
+        namespaceId: 0,
+        profileRev: 1,
+        isDeleted: false,
+      });
       const profile = await webdb.commitResolvedProfile({
         account: 'alice',
         publisherNamespaceId: 0,
@@ -2965,7 +2270,7 @@ describe('WebdbService', () => {
 
       await webdb.recreateMessageCache();
 
-      expect(await webdb.getMeta('sentinel')).toBe('core');
+      expect((await webdb.readAccountState()).selfProfile?.name).toBe('Core');
       expect(
         await (await webdb.getProfileAvatarBlob(profile.avatarDigest!))?.text(),
       ).toBe('x');

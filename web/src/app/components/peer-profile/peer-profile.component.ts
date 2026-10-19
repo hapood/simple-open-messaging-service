@@ -598,23 +598,17 @@ export class PeerProfileComponent {
       },
       (result) => {
         if (!result) return;
-        void this.finishRemoveFriend(trd, {
-          account: peer.account,
-          namespaceId: peer.namespaceId,
-        });
+        void this.finishRemoveFriend(trd);
       },
     );
   }
 
-  private async finishRemoveFriend(
-    trd: ConversationItem,
-    identity: { account: string; namespaceId: number },
-  ) {
+  private async finishRemoveFriend(trd: ConversationItem) {
     if (this.unfriendPending()) return;
     this.unfriendPending.set(true);
     try {
       const res = await firstValueFrom(
-        this.userService.revokeRelationship(identity),
+        this.userService.revokeRelationship({ threadId: trd.threadId }),
       );
       if (res.code !== 0)
         return this.toast.warn(translateBizResult(res, this.transloco));

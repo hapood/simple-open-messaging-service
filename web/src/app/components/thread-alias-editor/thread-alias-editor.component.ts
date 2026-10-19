@@ -261,7 +261,7 @@ export class ThreadAliasEditorComponent {
     if (!this.editing() || this.saving()) return;
     const submitted = this.draft();
     const tid = this.threadId();
-    const epoch = this.lifecycle.accountEpoch;
+    const scope = this.lifecycle.capture();
     this.saving.set(true);
     this.failed.set(false);
     this.msgService
@@ -269,7 +269,7 @@ export class ThreadAliasEditorComponent {
       .subscribe({
         next: (response) => {
           this.saving.set(false);
-          if (!this.lifecycle.isCurrent(epoch)) return;
+          if (!this.lifecycle.isCurrent(scope)) return;
           if (response.code !== 0 || !response.data) {
             this.failed.set(true);
             return;
@@ -283,7 +283,7 @@ export class ThreadAliasEditorComponent {
         },
         error: () => {
           this.saving.set(false);
-          if (this.lifecycle.isCurrent(epoch)) this.failed.set(true);
+          if (this.lifecycle.isCurrent(scope)) this.failed.set(true);
         },
       });
   }

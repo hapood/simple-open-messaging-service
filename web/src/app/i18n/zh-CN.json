@@ -772,6 +772,8 @@
     "invited": "已邀请 {{n}} 位",
     "invitedPartial": "已邀请 {{n}} 位；{{skipped}} 位无法邀请",
     "noInvites": "未发送邀请",
+    "requestStale": "该请求已发生变化，正在展示最新状态",
+    "requestExpired": "该请求已过期",
     "networkError": "网络错误，请重试",
     "stateSyncFatal": "状态同步发生严重错误，已停止处理新的状态。",
     "serverError": "服务暂时不可用，请重试",

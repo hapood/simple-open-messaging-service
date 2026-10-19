@@ -48,6 +48,7 @@ export class BrowserSessionService extends BrowserSessionOwner {
         state.setAuthenticated(false);
         lifecycle.invalidateSession();
       },
+      (session) => lifecycle.bindSession(session.id),
     );
   }
 }

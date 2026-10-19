@@ -21,6 +21,7 @@ import {
 } from './webdb.service';
 import { PreferenceStore } from './preference-store.service';
 import { SESSION_JOURNAL_KEY } from './session/session-journal';
+import { prepareTestSessionCache } from './session/session-cache.test-helper';
 import { deleteDB } from 'idb';
 
 /**
@@ -119,6 +120,7 @@ describe('AuthService (session-token contract, browser path)', () => {
       if (name?.startsWith('soms-session-')) await deleteDB(name);
     }
     await TestBed.inject(PreferenceStore).remove('device', SESSION_JOURNAL_KEY);
+    await TestBed.inject(PreferenceStore).close();
     TestBed.resetTestingModule();
     vi.restoreAllMocks();
     // Clear any presence cookie a test set (document.cookie survives resetTestingModule).
@@ -226,6 +228,7 @@ describe('AuthService (session-token contract, browser path)', () => {
   });
 
   it('preserves the credential but blocks business admission when local-cache initialization fails', async () => {
+    await prepareTestSessionCache();
     document.cookie = 'logged_in=1; Path=/';
     const user = TestBed.inject(UserService) as unknown as {
       restoreWebdb: Mock;
@@ -254,6 +257,7 @@ describe('AuthService (session-token contract, browser path)', () => {
   });
 
   it('preserves notifications and pending taps when restoring an existing session', async () => {
+    await prepareTestSessionCache();
     document.cookie = 'logged_in=1; Path=/';
     await svc.restoreSession();
     expect(TestBed.inject(UserService).restoreWebdb).toHaveBeenCalledTimes(1);

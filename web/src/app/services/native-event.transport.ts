@@ -8,7 +8,7 @@ import { SSE_EVENT_FORCE_LOGOUT } from './sse-worker-protocol';
 
 /**
  * The Android realtime transport: consumes the `/events` frames Kotlin's RealtimeService forwards via
- * `window.__SOMS_EVENT__(type, data)`. The shared Rust runtime owns the SSE connection (the WebView does
+ * `window.__SOMS_EVENT__(envelope)`. The shared Rust runtime owns the SSE connection (the WebView does
  * NOT open its own worker on Android); this class is a passive listener that re-emits each frame onto the
  * {@link RealtimeSink} in the same `StandardMessage` shape the worker transport produces, so all downstream
  * consumers are identical across platforms.
@@ -31,28 +31,32 @@ export class NativeEventTransport extends RealtimeTransport {
    *  via its own DB-ready trigger). Reset on `stop` so a fresh start treats the next open as the first. */
   private openedOnce = false;
 
+  constructor(
+    sink: RealtimeSink,
+    private readonly loginSessionId: string | null,
+  ) {
+    super(sink);
+  }
+
   start(): void {
     if (this.installed) return;
     this.installed = true;
     // Kotlin → JS: one /events frame. FORCE_LOGOUT is intercepted (the facade re-logs in).
     // Everything else is re-emitted as a
     // StandardMessage in the exact shape the worker transport produces.
-    window.__SOMS_EVENT__ = (type: string, data: unknown) => {
-      if (type === SSE_EVENT_FORCE_LOGOUT) {
-        // The FORCE_LOGOUT frame's `message` carries the revoke reason — e.g. 'device_revoke' when the user
-        // signs this session out from the device list. Thread it to the facade so the kicked client can show
-        // a reason-aware notice instead of a generic "session ended".
-        const reason = (data as { message?: string } | null | undefined)
-          ?.message;
-        this.sink.onForceLogout(reason);
+    window.__SOMS_EVENT__ = (envelope: StandardMessage) => {
+      // This check runs at WebView delivery, after native and JavaScript queue waits. Never
+      // supply a missing UUID from current renderer state or accept an old login's envelope.
+      if (
+        this.loginSessionId === null ||
+        envelope.loginSessionId !== this.loginSessionId
+      )
+        return;
+      if (envelope.event === SSE_EVENT_FORCE_LOGOUT) {
+        this.sink.onForceLogout(envelope.message || undefined);
         return;
       }
-      this.sink.onEvent({
-        event: type,
-        status: 0,
-        message: 'new message',
-        data,
-      } as StandardMessage);
+      this.sink.onEvent(envelope);
     };
     // Kotlin → JS: connection-state transitions (mirrors the worker's `state` messages). Routed through
     // onConnState so an open-after-the-first also emits the reconnect backfill pulse.
@@ -118,11 +122,8 @@ export class NativeEventTransport extends RealtimeTransport {
     window.SomsFcm!.retryNow();
   }
 
-  /** Force-reconnect the native stream (the HELLO-timeout path). Unlike {@link retryNow} (which only
-   *  cancels pending backoff — a no-op against an already-open stream), this asks Kotlin to CANCEL the open
-   *  EventSource and reopen it, because JS cannot close the native socket. The reopen re-pushes HELLO on the
-   *  fresh connection. (Default `stop()+start()` is wrong here — it only detaches + re-attaches the JS hooks
-   *  and leaves the Kotlin stream untouched.) */
+  /** Ask the shared Rust runtime to reconnect (the HELLO-timeout path). Unlike retryNow, this also
+   *  replaces an open stream. stop/start would only reattach renderer hooks, not reconnect Rust's socket. */
   override forceReconnect(): void {
     window.SomsFcm!.forceReconnect();
   }

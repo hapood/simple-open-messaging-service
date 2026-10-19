@@ -75,27 +75,38 @@ describe('UserService.localRelationship', () => {
 
   it('matches transient federated users by exact Address across request pages', async () => {
     const service = Object.create(UserService.prototype) as UserService;
-    const listLocalFriendRequests = vi.fn(
-      async (direction: string, cursor: string | null) => {
-        const item = (account: string) => ({
-          kind: 'FRIEND',
-          status: 'REQUESTED',
-          expiresAt: Date.now() + 60_000,
-          peer: { id: 0, account, namespaceId: 7 },
+    const record = (account: string) => ({
+      id: `request:${account}`,
+      kind: 'FRIEND',
+      author: { account: 'me', namespaceId: 0 },
+      receiver: { id: 0, account, namespaceId: 7 },
+      direction: 'OUTGOING' as const,
+      snapshot: { displayName: account, avatar: null },
+      status: 'REQUESTED' as const,
+      note: '',
+      requestedAt: '2026-01-01T00:00:00Z',
+      expiresAt: '2026-01-08T00:00:00Z',
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    });
+    const queryRelationshipRequests = vi.fn(
+      (params: { bucket: 'SENT' | 'RECEIVED'; before?: string }) => {
+        const continuation =
+          params.bucket === 'SENT' && params.before === undefined;
+        return of({
+          code: 0,
+          message: 'ok',
+          data: {
+            items:
+              params.bucket === 'SENT'
+                ? continuation
+                  ? [record('someone-else')]
+                  : [record('bob')]
+                : [],
+            hasMore: continuation,
+            before: continuation ? 'next-page' : null,
+          },
         });
-        const items =
-          direction === 'OUTGOING'
-            ? cursor
-              ? [item('bob')]
-              : [item('someone-else')]
-            : [];
-        return {
-          items,
-          scannedThrough: cursor ?? 'next-page',
-          hasMore: direction === 'OUTGOING' && cursor === null,
-          total: 2,
-          actionableTotal: 2,
-        };
       },
     );
     Object.assign(service, {
@@ -112,7 +123,7 @@ describe('UserService.localRelationship', () => {
           },
         ],
       },
-      listLocalFriendRequests,
+      queryRelationshipRequests,
     });
 
     await expect(
@@ -122,7 +133,7 @@ describe('UserService.localRelationship', () => {
         namespaceId: 7,
       }),
     ).resolves.toBe('OUTGOING_PENDING');
-    expect(listLocalFriendRequests).toHaveBeenCalledTimes(2);
+    expect(queryRelationshipRequests).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -159,19 +170,21 @@ describe('UserService profile refresh', () => {
               .fn()
               .mockName('closeAndDelete')
               .mockResolvedValue(undefined),
-            getMeta: vi.fn().mockName('getMeta').mockResolvedValue(undefined),
-            putMeta: vi.fn().mockName('putMeta').mockResolvedValue(undefined),
-            getSyncState: vi
+            readAccountState: vi
               .fn()
-              .mockName('getSyncState')
+              .mockName('readAccountState')
               .mockResolvedValue(undefined),
-            putSyncState: vi
+            writeSelfProfile: vi
               .fn()
-              .mockName('putSyncState')
+              .mockName('writeSelfProfile')
               .mockResolvedValue(undefined),
-            cleanupRelationshipRequests: vi
+            writeComposerDrafts: vi
               .fn()
-              .mockName('cleanupRelationshipRequests')
+              .mockName('writeComposerDrafts')
+              .mockResolvedValue(undefined),
+            advanceIntentRequestRead: vi
+              .fn()
+              .mockName('advanceIntentRequestRead')
               .mockResolvedValue(undefined),
           },
         },
@@ -267,8 +280,7 @@ describe('UserService profile refresh', () => {
         rev: 2,
       },
     });
-    expect(TestBed.inject(WebdbService).putMeta).toHaveBeenCalledWith(
-      'selfProfile',
+    expect(TestBed.inject(WebdbService).writeSelfProfile).toHaveBeenCalledWith(
       expect.objectContaining({ avatar: '' }),
     );
   });
@@ -311,24 +323,93 @@ describe('UserService profile refresh', () => {
     await preferences.remove('device', 'theme');
   });
 
-  it('derives the friend-request badge from the synchronized read watermark', () => {
+  it('keeps the revoke route but sends only the P2P thread id', async () => {
+    const result = firstValueFrom(svc.revokeRelationship({ threadId: 12 }));
+    const request = httpMock.expectOne((req) =>
+      req.method === 'POST' && req.url.endsWith('/relationship/revoke'),
+    );
+    expect(request.request.body).toEqual({ threadId: 12 });
+    request.flush({ code: 0, message: 'ok', data: { status: 'OK' } });
+    expect(await result).toEqual({ code: 0, message: 'ok', data: { status: 'OK' } });
+  });
+
+  it('derives the friend-request badge from the synchronized read watermark', async () => {
     expect(svc.friendReqBadge()).toBe(false);
 
-    svc.applyRelationshipRequestStateRevision(20);
-    svc.seedStateFeedCursor(20);
+    svc.applyRelationshipRequestHead({ requestEndId: '20', requestReadId: '0' });
     expect(svc.friendReqBadge()).toBe(true);
 
-    svc.markRelationshipRequestsRead();
+    svc.sessionId.set(11);
+    const marked = svc.markRelationshipRequestsRead('20');
     httpMock
       .expectOne(
         (req) =>
           req.method === 'POST' &&
-          req.url.endsWith('/relationship/requests/read'),
+          req.url.endsWith('/relationship/requests/read') &&
+          (req.body as { requestReadId: string }).requestReadId === '20',
       )
-      .flush({ code: 0, data: { readThroughFeedId: 20 } });
+      .flush({ code: 0, data: { requestEndId: '20', requestReadId: '20' } });
+    await marked;
     expect(svc.friendReqBadge()).toBe(false);
 
-    svc.applyRelationshipRequestStateRevision(21);
+    svc.applyRelationshipRequestHead({ requestEndId: '21', requestReadId: '20' });
+    expect(svc.friendReqBadge()).toBe(true);
+  });
+
+  it('publishes the optimistic read only after it is durable and submits afterwards', async () => {
+    svc.applyRelationshipRequestHead({ requestEndId: '20', requestReadId: '0' });
+    svc.sessionId.set(11);
+    const webdbStub = TestBed.inject(WebdbService) as unknown as {
+      advanceIntentRequestRead: ReturnType<typeof vi.fn>;
+    };
+    let persist!: (state: unknown) => void;
+    webdbStub.advanceIntentRequestRead.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          persist = resolve;
+        }),
+    );
+    const observed = svc.observeIncomingRequestPage({
+      requestEndId: '20',
+      requestReadId: '0',
+    });
+    await Promise.resolve();
+    // Not durable yet: no optimistic publication and no server submission.
+    expect(svc.friendReqBadge()).toBe(true);
+    httpMock.expectNone((req) =>
+      req.url.endsWith('/relationship/requests/read'),
+    );
+    persist({ intentRequestOptimisticReadId: '20' });
+    await vi.waitFor(() => expect(svc.friendReqBadge()).toBe(false));
+    httpMock
+      .expectOne((req) => req.url.endsWith('/relationship/requests/read'))
+      .flush({ code: 0, data: { requestEndId: '20', requestReadId: '20' } });
+    await observed;
+    expect(webdbStub.advanceIntentRequestRead).toHaveBeenCalledWith('20');
+  });
+
+  it('retires the optimistic target once a confirmed read covers it', async () => {
+    svc.applyRelationshipRequestHead({ requestEndId: '20', requestReadId: '0' });
+    const webdbStub = TestBed.inject(WebdbService) as unknown as {
+      advanceIntentRequestRead: ReturnType<typeof vi.fn>;
+    };
+    webdbStub.advanceIntentRequestRead.mockResolvedValueOnce({
+      intentRequestOptimisticReadId: '20',
+    });
+    svc.sessionId.set(11);
+    const observed = svc.observeIncomingRequestPage({
+      requestEndId: '20',
+      requestReadId: '0',
+    });
+    await vi.waitFor(() => expect(svc.friendReqBadge()).toBe(false));
+    // A partial confirmation below the optimistic target keeps the badge suppressed.
+    httpMock
+      .expectOne((req) => req.url.endsWith('/relationship/requests/read'))
+      .flush({ code: 0, data: { requestEndId: '20', requestReadId: '19' } });
+    await observed;
+    expect(svc.friendReqBadge()).toBe(false);
+    // A confirmed read covering the target retires it: newer end shows again.
+    svc.applyRelationshipRequestHead({ requestEndId: '21', requestReadId: '20' });
     expect(svc.friendReqBadge()).toBe(true);
   });
 });
@@ -342,12 +423,27 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     openExistingForUser: Mock;
     recreateForUser: Mock;
     closeAndDelete: Mock;
-    getMeta: Mock;
-    putMeta: Mock;
-    getSyncState: Mock;
-    putSyncState: Mock;
-    cleanupRelationshipRequests: Mock;
+    readAccountState: Mock;
+    writeSelfProfile: Mock;
+    writeComposerDrafts: Mock;
+    advanceIntentRequestRead: Mock;
   };
+
+  function accountStateBase() {
+    return {
+      schemaVersion: 1,
+      selfProfile: null,
+      selfIdentity: null,
+      composerDrafts: [],
+      threadFeedCursor: null,
+      stateFeedId: null,
+      stateFeedFullThrough: null,
+      profileNamespaceChangeEndId: null,
+      intentRequestEndId: null,
+      intentRequestReadId: null,
+      intentRequestOptimisticReadId: null,
+    };
+  }
 
   beforeEach(async () => {
     TestBed.configureTestingModule({
@@ -375,26 +471,43 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
               .fn()
               .mockName('closeAndDelete')
               .mockResolvedValue(undefined),
-            getMeta: vi.fn().mockName('getMeta').mockResolvedValue({
-              id: 1,
-              profileRev: 0,
-              name: 'A',
-              avatar: '',
-              bio: '',
-              domain: 'local',
-            }),
-            putMeta: vi.fn().mockName('putMeta').mockResolvedValue(undefined),
-            getSyncState: vi
+            readAccountState: vi
               .fn()
-              .mockName('getSyncState')
+              .mockName('readAccountState')
+              .mockResolvedValue({
+                schemaVersion: 1,
+                selfProfile: {
+                  id: 1,
+                  profileRev: 0,
+                  name: 'A',
+                  avatar: '',
+                  bio: '',
+                  isGroup: false,
+                  account: 'me',
+                  namespaceId: 0,
+                  isDeleted: false,
+                },
+                selfIdentity: null,
+                composerDrafts: [],
+                threadFeedCursor: null,
+                stateFeedId: null,
+                stateFeedFullThrough: null,
+                profileNamespaceChangeEndId: null,
+                intentRequestEndId: null,
+                intentRequestReadId: null,
+                intentRequestOptimisticReadId: null,
+              }),
+            writeSelfProfile: vi
+              .fn()
+              .mockName('writeSelfProfile')
               .mockResolvedValue(undefined),
-            putSyncState: vi
+            writeComposerDrafts: vi
               .fn()
-              .mockName('putSyncState')
+              .mockName('writeComposerDrafts')
               .mockResolvedValue(undefined),
-            cleanupRelationshipRequests: vi
+            advanceIntentRequestRead: vi
               .fn()
-              .mockName('cleanupRelationshipRequests')
+              .mockName('advanceIntentRequestRead')
               .mockResolvedValue(undefined),
           },
         },
@@ -444,107 +557,94 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     ).toBe(1);
   });
 
-  it('runs request garbage collection on startup when no prior cleanup exists', async () => {
-    webdb.getSyncState.mockImplementation(async (key: string) =>
-      key === 'selfProfile'
-        ? {
-            id: 1,
-            profileRev: 0,
-            name: 'A',
-            avatar: '',
-            bio: '',
-            domain: 'local',
-          }
-        : undefined,
-    );
-
+  it('establishes a session without scheduling any local request garbage collection', async () => {
     await svc.establishSession(1, 0, 11);
-    // The cleanup is fire-and-forget inside establishSession; its completion is marked by the
-    // persisted timestamp (written only after the cleanup resolves) — wait on that, not on a sleep.
-    await vi.waitFor(() =>
-      expect(webdb.putSyncState).toHaveBeenCalledWith(
-        'relationshipRequestCleanupAt',
-        expect.any(Number),
-      ),
-    );
-
-    expect(webdb.cleanupRelationshipRequests).toHaveBeenCalledTimes(1);
-    expect(webdb.putSyncState).toHaveBeenCalledWith(
-      'relationshipRequestCleanupAt',
-      expect.any(Number),
-    );
+    expect(svc.sessionId()).toBe(11);
   });
 
-  it('skips startup request garbage collection within the 24-hour interval', async () => {
-    const recent = Date.now() - 1_000;
-    webdb.getSyncState.mockImplementation(async (key: string) => {
-      if (key === 'relationshipRequestCleanupAt') return recent;
-      if (key === 'selfProfile')
-        return {
-          id: 1,
-          profileRev: 0,
-          name: 'A',
-          avatar: '',
-          bio: '',
-          domain: 'local',
-        };
-      return undefined;
-    });
-
-    await svc.establishSession(1, 0, 11);
-    // No wait needed: the skip-vs-run branch is evaluated inside establishSession, so once the
-    // await above resolves the decision is already final.
-
-    expect(webdb.cleanupRelationshipRequests).not.toHaveBeenCalled();
-  });
-
-  it('runs startup request garbage collection when the 24-hour interval has elapsed', async () => {
-    const stale = Date.now() - 86_400_000 - 1_000;
-    webdb.getSyncState.mockImplementation(async (key: string) => {
-      if (key === 'relationshipRequestCleanupAt') return stale;
-      if (key === 'selfProfile')
-        return {
-          id: 1,
-          profileRev: 0,
-          name: 'A',
-          avatar: '',
-          bio: '',
-          domain: 'local',
-        };
-      return undefined;
-    });
-
-    await svc.establishSession(1, 0, 11);
-    await vi.waitFor(() =>
-      expect(webdb.putSyncState).toHaveBeenCalledWith(
-        'relationshipRequestCleanupAt',
-        expect.any(Number),
-      ),
-    );
-
-    expect(webdb.cleanupRelationshipRequests).toHaveBeenCalledTimes(1);
-  });
-
-  it('restores the local invitation revision and synchronized read head', async () => {
-    webdb.getSyncState.mockImplementation(async (key: string) => {
-      if (key === 'relationshipRequestStateRevision') return 12;
-      if (key === 'relationshipRequestReadHead')
-        return { readThroughFeedId: 9 };
-      return {
+  it('restores the synchronized request head from the account state', async () => {
+    webdb.readAccountState.mockImplementation(async () => ({
+      schemaVersion: 1,
+      selfProfile: {
         id: 1,
         profileRev: 0,
         name: 'A',
         avatar: '',
         bio: '',
-        domain: 'local',
-      };
+        isGroup: false,
+        account: 'me',
+        namespaceId: 0,
+        isDeleted: false,
+      },
+      selfIdentity: null,
+      composerDrafts: [],
+      threadFeedCursor: null,
+      stateFeedId: null,
+      stateFeedFullThrough: null,
+      profileNamespaceChangeEndId: null,
+      intentRequestEndId: '12',
+      intentRequestReadId: '9',
+      intentRequestOptimisticReadId: null,
+    }));
+
+    await svc.establishSession(1, 0, 11);
+
+    expect(svc.relationshipRequestHead()).toEqual({
+      requestEndId: '12',
+      requestReadId: '9',
+    });
+    expect(svc.friendReqBadge()).toBe(true);
+  });
+
+  it('seeds the optimistic read watermark from durable state on HELLO establish', async () => {
+    webdb.readAccountState.mockResolvedValueOnce({
+      ...accountStateBase(),
+      intentRequestEndId: '12',
+      intentRequestReadId: '9',
+      intentRequestOptimisticReadId: '12',
     });
 
     await svc.establishSession(1, 0, 11);
 
-    expect(svc.relationshipRequestStateRevision()).toBe(12);
-    expect(svc.relationshipRequestReadThroughFeedId()).toBe(9);
-    expect(svc.friendReqBadge()).toBe(true);
+    expect(svc.friendReqBadge()).toBe(false);
+    // Seeding a target beyond the confirmed read also resubmits it durably.
+    httpMock
+      .expectOne((req) => req.url.endsWith('/relationship/requests/read'))
+      .flush({ code: 0, data: { requestEndId: '12', requestReadId: '12' } });
+    await vi.waitFor(() => expect(svc.friendReqBadge()).toBe(false));
+  });
+
+  it('resubmits a durable unconfirmed read target once the session establishes', async () => {
+    webdb.readAccountState.mockResolvedValueOnce({
+      ...accountStateBase(),
+      intentRequestEndId: '12',
+      intentRequestReadId: '9',
+      intentRequestOptimisticReadId: '12',
+    });
+
+    await svc.establishSession(1, 0, 11);
+
+    const request = httpMock.expectOne(
+      (req) => req.url.endsWith('/relationship/requests/read'),
+    );
+    expect((request.request.body as { requestReadId: string }).requestReadId).toBe('12');
+    request.flush({ code: 0, data: { requestEndId: '12', requestReadId: '12' } });
+    await vi.waitFor(() => expect(svc.friendReqBadge()).toBe(false));
+  });
+
+  it('does not resubmit when the durable target is already confirmed', async () => {
+    webdb.readAccountState.mockResolvedValueOnce({
+      ...accountStateBase(),
+      intentRequestEndId: '12',
+      intentRequestReadId: '12',
+      intentRequestOptimisticReadId: null,
+    });
+
+    await svc.establishSession(1, 0, 11);
+
+    httpMock.expectNone((req) =>
+      req.url.endsWith('/relationship/requests/read'),
+    );
   });
 
   it('does not rebuild the database for an invalidated HELLO after an open failure', async () => {
@@ -633,7 +733,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('invalidates old work synchronously when a fresh login replaces credentials', () => {
     const lifecycle = TestBed.inject(SessionLifecycleService);
-    const previous = lifecycle.accountEpoch;
+    const previous = lifecycle.capture();
     const ended = vi.fn();
     const subscription = lifecycle.ended$.subscribe(ended);
 
@@ -660,8 +760,9 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
         }),
     );
 
+    const previous = TestBed.inject(SessionLifecycleService).capture();
     const clearing = svc.clearSession();
-    expect(TestBed.inject(SessionLifecycleService).accountEpoch).toBe(1);
+    expect(previous.signal.aborted).toBe(true);
     expect(ended).not.toHaveBeenCalled();
     finishDeletion();
     await clearing;
@@ -682,8 +783,9 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     ).ended$.subscribe(ended);
     webdb.closeAndDelete.mockRejectedValue(new Error('cache busy'));
 
+    const previous = TestBed.inject(SessionLifecycleService).capture();
     await expect(svc.clearSession()).rejects.toThrowError('cache busy');
-    expect(TestBed.inject(SessionLifecycleService).accountEpoch).toBe(1);
+    expect(previous.signal.aborted).toBe(true);
     expect(svc.sessionUserId()).toBe(1);
     expect(ended).not.toHaveBeenCalled();
     expect(
@@ -691,9 +793,10 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     ).toBe(1);
 
     webdb.closeAndDelete.mockResolvedValue(undefined);
+    const retryScope = TestBed.inject(SessionLifecycleService).capture();
     await svc.clearSession();
     expect(webdb.closeAndDelete).toHaveBeenCalledTimes(2);
-    expect(TestBed.inject(SessionLifecycleService).accountEpoch).toBe(2);
+    expect(retryScope.signal.aborted).toBe(true);
     expect(svc.sessionUserId()).toBeNull();
     expect(ended).toHaveBeenCalledTimes(1);
     subscription.unsubscribe();
@@ -706,10 +809,12 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
       name: 'Cached Alice',
       avatar: '/cached.webp',
     }).data;
-    webdb.getMeta.mockResolvedValue(cached);
+    webdb.readAccountState.mockResolvedValue({
+      ...accountStateBase(),
+      selfProfile: cached,
+    });
     await svc.restoreWebdb();
     expect(webdb.openExistingForUser).toHaveBeenCalledWith('7');
-    expect(webdb.getMeta).toHaveBeenCalledWith('selfProfile');
     expect(svc.sessionProfile()).toEqual(cached);
     // sessionUserId is NOT set by restoreWebdb — it stays HELLO-driven (establishSession owns it on HELLO).
     expect(svc.sessionUserId()).toBeNull();
@@ -720,7 +825,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
     webdb.openExistingForUser.mockRejectedValue(
       new LocalCacheVersionMismatchError('soms-webdb-u7'),
     );
-    webdb.getMeta.mockResolvedValue(undefined);
+    webdb.readAccountState.mockResolvedValue(accountStateBase());
 
     await svc.restoreWebdb();
 
@@ -733,7 +838,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   it('restoreWebdb also rebuilds a missing or unreadable cache', async () => {
     await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
     webdb.openExistingForUser.mockRejectedValue(new Error('unreadable cache'));
-    webdb.getMeta.mockResolvedValue(undefined);
+    webdb.readAccountState.mockResolvedValue(accountStateBase());
 
     await svc.restoreWebdb();
 
@@ -745,7 +850,10 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('restoreWebdb ignores a self profile belonging to a different IDB partition owner', async () => {
     await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
-    webdb.getMeta.mockResolvedValue(profile({ id: 8 }).data);
+    webdb.readAccountState.mockResolvedValue({
+      ...accountStateBase(),
+      selfProfile: profile({ id: 8 }).data,
+    });
     await svc.restoreWebdb();
     expect(svc.sessionProfile()).toBeUndefined();
   });
@@ -842,7 +950,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
 
   it('rebuilds after cached profile reading fails, not only after opening fails', async () => {
     await TestBed.inject(PreferenceStore).set('device', 'soms.lastUserId', 7);
-    webdb.getMeta.mockRejectedValueOnce(new Error('corrupt profile'));
+    webdb.readAccountState.mockRejectedValueOnce(new Error('corrupt profile'));
     await expect(svc.restoreWebdb()).resolves.toBeUndefined();
     expect(webdb.recreateForUser).toHaveBeenCalledOnce();
   });

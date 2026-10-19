@@ -27,6 +27,22 @@ describe('WebdbService native SQLite routing', () => {
   }>;
   let responses: Map<string, unknown>;
 
+  function accountState() {
+    return {
+      schemaVersion: 1,
+      selfProfile: null,
+      selfIdentity: null,
+      composerDrafts: [],
+      threadFeedCursor: null,
+      stateFeedId: null,
+      stateFeedFullThrough: null,
+      profileNamespaceChangeEndId: null,
+      intentRequestEndId: null,
+      intentRequestReadId: null,
+      intentRequestOptimisticReadId: null,
+    };
+  }
+
   beforeEach(async () => {
     calls = [];
     responses = new Map();
@@ -43,7 +59,7 @@ describe('WebdbService native SQLite routing', () => {
       providers: [provideZonelessChangeDetection(), provideWebdbService()],
     });
     service = TestBed.inject(WebdbService);
-    await service.openForUser('42');
+    await service.openExistingForUser('42');
   });
 
   afterEach(async () => {
@@ -56,14 +72,14 @@ describe('WebdbService native SQLite routing', () => {
     're-arms the account lifetime on %s after logout without a renderer reload',
     async (open) => {
       TestBed.inject(SessionLifecycleService).invalidateSession();
-      await service.closeAndDelete('42');
+      await service.close();
       responses.set('native_db_threads', []);
-      responses.set('native_db_get_meta', 7);
+      responses.set('native_db_read_account_state', accountState());
       await service[open]('43');
       await expect(service.getThreads()).resolves.toEqual([]);
       await expect(
-        service.getSyncState('relationshipRequestStateRevision'),
-      ).resolves.toBe(7);
+        service.readAccountState(),
+      ).resolves.toEqual(accountState());
       await expect(
         service.drainThreadMisc(9, null, null),
       ).resolves.toBeUndefined();
@@ -162,7 +178,7 @@ describe('WebdbService native SQLite routing', () => {
     );
   });
 
-  it('routes revisioned profiles and meta state without falling back to IndexedDB', async () => {
+  it('routes revisioned profile reads without falling back to IndexedDB', async () => {
     const profile: ProfileSnapshot = {
       name: 'Alice',
       account: 'alice',
@@ -173,7 +189,6 @@ describe('WebdbService native SQLite routing', () => {
       profileRev: 6,
     };
     responses.set('native_db_get_profile', profile);
-    responses.set('native_db_get_meta', 12);
 
     expect(
       await service.getProfile({
@@ -182,8 +197,19 @@ describe('WebdbService native SQLite routing', () => {
         target: { profileNamespaceId: 0, account: 'alice', rev: 6 },
       }),
     ).toEqual(profile);
-    await service.putSyncState('stateFeedId', 12);
-    expect(await service.getSyncState('stateFeedId')).toBe(12);
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        cmd: 'native_db_get_profile',
+        args: {
+          userId: 42,
+          demand: {
+            publisherNamespaceId: 0,
+            lookup: 'ACCOUNT_PROFILE',
+            target: { profileNamespaceId: 0, account: 'alice', rev: 6 },
+          },
+        },
+      }),
+    );
   });
 
   it('queries a paginated group roster through native SQLite', async () => {
@@ -331,12 +357,10 @@ describe('WebdbService native SQLite routing', () => {
     );
   });
 
-  it('deletes the native user partition on logout cleanup', async () => {
-    await service.closeAndDelete('42');
-    expect(calls.at(-1)).toEqual({
-      cmd: 'native_db_clear_user',
-      args: { userId: 42 },
-    });
+  it('releases native renderer state without deleting the cache on logout', async () => {
+    await service.close();
+    expect(service.ready()).toBe(false);
+    expect(calls.some(({ cmd }) => cmd === 'native_db_clear_user')).toBe(false);
   });
 
   it('counts cached messages in the active native user partition', async () => {

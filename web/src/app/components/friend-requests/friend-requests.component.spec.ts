@@ -6,9 +6,12 @@ import { TranslocoService } from '@jsverse/transloco';
 import { of, Subject } from 'rxjs';
 import { RouteService } from '../../services/route.service';
 import type { UserRef } from '../../services/model';
+import type {
+  PersonalRequestPage,
+} from '../../../../../shared/relationship-request';
+import type { StandardResponse } from '../../services/model';
 import {
   FederatedResolveError,
-  FriendIntentPage,
   UserService,
   User,
 } from '../../services/user.service';
@@ -54,21 +57,21 @@ describe('FriendRequestsComponent federated search progress', () => {
     );
   });
 
-  it('keeps only the newest incoming reset when state-feed refreshes overlap', async () => {
+  it('keeps only the newest incoming reset when overlapping online loads finish out of order', async () => {
     const pending: Array<{
-      resolve: (value: FriendIntentPage) => void;
+      resolve: (value: PersonalRequestPage) => void;
     }> = [];
     const userService = {
       sessionUserId: signal<number | null>(null),
-      relationshipRequestStateRevision: signal(0),
-      relationshipIntentStateRevision: signal(0),
       friendReqBadge: signal(false),
-      listLocalFriendRequests: vi.fn().mockImplementation(
-        () =>
-          new Promise<FriendIntentPage>((resolve) => {
-            pending.push({ resolve });
-          }),
-      ),
+      queryRelationshipRequests: vi.fn().mockImplementation(() => {
+        const subject = new Subject<StandardResponse<PersonalRequestPage>>();
+        pending.push({
+          resolve: (page) => subject.next({ code: 0, message: 'ok', data: page }),
+        });
+        return subject.asObservable();
+      }),
+      observeIncomingRequestPage: vi.fn().mockResolvedValue(undefined),
     };
     TestBed.configureTestingModule({
       imports: [FriendRequestsComponent],
@@ -89,36 +92,26 @@ describe('FriendRequestsComponent federated search progress', () => {
 
     const older = component.loadIncomingInvites(true);
     const newer = component.loadIncomingInvites(true);
-    const page = (id: string, name: string) => ({
+    const page = (id: string, name: string): PersonalRequestPage => ({
       items: [
         {
-          key: `friend:${id}`,
-          snapshot: null,
-          namespaceId: 0,
-          kind: 'FRIEND' as const,
-          bucket: 'RECEIVED' as const,
+          id: `friend:${id}`,
+          kind: 'FRIEND',
+          author: { account: name, namespaceId: 0 },
+          receiver: { account: 'me', namespaceId: 0 },
           direction: 'INCOMING' as const,
+          authorProfile: { account: name, namespaceId: 0, profileNamespaceId: 0, profileRev: 1 },
           status: 'REQUESTED' as const,
-          expiresAt: Date.now() + 60_000,
-          localThreadId: null,
           note: '',
-          requestedAt: 1,
-          requestedSort: 1,
-          updatedAt: 1,
-          sourceFeedId: Number(id),
-          peer: {
-            namespaceId: 0,
-            id: Number(id),
-            account: name,
-            avatar: '',
-            bio: '',
-          },
+          requestedAt: '2026-01-01T00:00:00Z',
+          expiresAt: '2026-01-08T00:00:00Z',
+          createdAt: '2026-01-01T00:00:00Z',
+          updatedAt: '2026-01-01T00:00:00Z',
         },
       ],
-      scannedThrough: null,
       hasMore: false,
-      total: 1,
-      actionableTotal: 1,
+      before: null,
+      incomingHead: { requestEndId: id, requestReadId: '0' },
     });
 
     pending[1].resolve(page('2', 'newer'));
@@ -129,57 +122,69 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(component.pendingReqList().map((request) => request.id)).toEqual([
       'friend:2',
     ]);
+    expect(userService.observeIncomingRequestPage).toHaveBeenCalledWith({
+      requestEndId: '2',
+      requestReadId: '0',
+    });
   });
 
-  it.each(['FRIEND', 'GROUP'] as const)(
-    'restores the persisted rejected %s request status',
+  it.each(['FRIEND', 'GROUP_APPLICATION'] as const)(
+    'renders the server round for a rejected %s request',
     async (kind) => {
-      const identity = {
-        namespaceId: 0,
-        id: 41,
-        account: 'peer',
-        domain: 'alpha.test',
-        name: 'Peer',
-        avatar: '',
-        bio: '',
-        description: '',
-      };
       const userService = {
         sessionUserId: signal<number | null>(null),
-        relationshipRequestStateRevision: signal(0),
-        relationshipIntentStateRevision: signal(0),
         friendReqBadge: signal(false),
-        listLocalFriendRequests: vi
-          .fn()
-          .mockImplementation((direction: 'INCOMING' | 'OUTGOING') =>
-            Promise.resolve({
-              items: [
-                {
-                  key: 'request:41',
-                  snapshot: direction === 'OUTGOING'
-                    ? { displayName: 'Sent Peer', avatar: null }
-                    : null,
-                  namespaceId: 0,
-                  kind,
-                  bucket: direction === 'OUTGOING' ? 'SENT' : 'RECEIVED',
-                  direction,
-                  status: RequestProjectionStatus.REJECTED,
-                  expiresAt: null,
-                  localThreadId: null,
-                  note: 'Please let me join',
-                  requestedAt: 1,
-                  requestedSort: 1,
-                  updatedAt: 2,
-                  peer: identity,
-                  group: { account: '!team', namespaceId: 0, profileRev: 3 },
-                },
-              ],
-              scannedThrough: null,
-              hasMore: false,
-              total: 1,
-              actionableTotal: 0,
+        queryRelationshipRequests: vi.fn().mockImplementation(
+          (params: { bucket: 'RECEIVED' | 'SENT' }) =>
+            of({
+              code: 0,
+              message: 'ok',
+              data: {
+                items: [
+                  params.bucket === 'SENT'
+                    ? {
+                        id: 'request:41',
+                        kind,
+                        author: { account: 'me', namespaceId: 0 },
+                        receiver: { account: 'peer', namespaceId: 0 },
+                        direction: 'OUTGOING' as const,
+                        snapshot: { displayName: 'Sent Peer', avatar: null },
+                        status: 'REJECTED' as const,
+                        note: 'Please let me join',
+                        requestedAt: '2026-01-01T00:00:00Z',
+                        expiresAt: '2026-01-08T00:00:00Z',
+                        createdAt: '2026-01-01T00:00:00Z',
+                        updatedAt: '2026-01-02T00:00:00Z',
+                      }
+                    : {
+                        id: 'request:41',
+                        kind,
+                        author: { account: 'peer', namespaceId: 0 },
+                        receiver: { account: 'me', namespaceId: 0 },
+                        direction: 'INCOMING' as const,
+                        authorProfile: {
+                          account: 'peer',
+                          namespaceId: 0,
+                          profileNamespaceId: 0,
+                          profileRev: 3,
+                        },
+                        status: 'REJECTED' as const,
+                        note: 'Please let me join',
+                        requestedAt: '2026-01-01T00:00:00Z',
+                        expiresAt: '2026-01-08T00:00:00Z',
+                        createdAt: '2026-01-01T00:00:00Z',
+                        updatedAt: '2026-01-02T00:00:00Z',
+                      },
+                ],
+                hasMore: false,
+                before: null,
+                ...(params.bucket === 'RECEIVED'
+                  ? { incomingHead: { requestEndId: '1', requestReadId: '1' } }
+                  : {}),
+              },
             }),
-          ),
+        ),
+        observeIncomingRequestPage: vi.fn().mockResolvedValue(undefined),
       };
       TestBed.configureTestingModule({
         imports: [FriendRequestsComponent],
@@ -252,24 +257,26 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(fixture.componentInstance.inviteUser()).toBe(local);
   });
 
-  it('refreshes only request counts on a live revision without replacing either list', async () => {
-    const revision = signal(4);
-    const emptyPage = {
-      items: [],
-      scannedThrough: null,
-      hasMore: false,
-      total: 0,
-    };
+  it('loads both online buckets once on open without extra refreshes', async () => {
     const userService = {
       sessionUserId: signal<number | null>(null),
-      relationshipRequestStateRevision: revision,
-      relationshipIntentStateRevision: revision,
       friendReqBadge: signal(false),
-      listLocalFriendRequests: vi.fn().mockResolvedValue({
-        ...emptyPage,
-        actionableTotal: 0,
-      }),
-      markRelationshipRequestsRead: vi.fn(),
+      queryRelationshipRequests: vi.fn().mockImplementation(
+        (params: { bucket: 'RECEIVED' | 'SENT' }) =>
+          of({
+            code: 0,
+            message: 'ok',
+            data: {
+              items: [],
+              hasMore: false,
+              before: null,
+              ...(params.bucket === 'RECEIVED'
+                ? { incomingHead: { requestEndId: '0', requestReadId: '0' } }
+                : {}),
+            },
+          }),
+      ),
+      observeIncomingRequestPage: vi.fn().mockResolvedValue(undefined),
     };
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
@@ -290,35 +297,23 @@ describe('FriendRequestsComponent federated search progress', () => {
     fixture.detectChanges();
     await fixture.whenStable();
 
-    expect(userService.listLocalFriendRequests).toHaveBeenCalledTimes(2);
-    expect(userService.markRelationshipRequestsRead).toHaveBeenCalledTimes(1);
-    const component = fixture.componentInstance;
-    const incomingReload = vi.spyOn(component, 'loadIncomingInvites');
-    const outgoingReload = vi.spyOn(component, 'loadOutgoingInvites');
+    expect(userService.queryRelationshipRequests).toHaveBeenCalledTimes(2);
+    expect(userService.queryRelationshipRequests).toHaveBeenNthCalledWith(1, {
+      bucket: 'RECEIVED',
+      take: 20,
+    });
+    expect(userService.queryRelationshipRequests).toHaveBeenNthCalledWith(2, {
+      bucket: 'SENT',
+      take: 20,
+    });
+    // Viewing the received page marks it read exactly once per load.
+    expect(userService.observeIncomingRequestPage).toHaveBeenCalledTimes(1);
 
-    revision.set(5);
+    const component = fixture.componentInstance;
+    component.setTab(1);
     fixture.detectChanges();
     await fixture.whenStable();
-
-    expect(userService.listLocalFriendRequests).toHaveBeenCalledTimes(4);
-    expect(incomingReload).not.toHaveBeenCalled();
-    expect(outgoingReload).not.toHaveBeenCalled();
-    expect(userService.listLocalFriendRequests).toHaveBeenNthCalledWith(
-      3,
-      'INCOMING',
-      null,
-      1,
-    );
-    expect(userService.listLocalFriendRequests).toHaveBeenNthCalledWith(
-      4,
-      'OUTGOING',
-      null,
-      1,
-    );
-    expect(userService.markRelationshipRequestsRead).toHaveBeenCalledTimes(1);
-
-    component.setTab(1);
-    expect(userService.markRelationshipRequestsRead).toHaveBeenCalledTimes(2);
+    expect(userService.queryRelationshipRequests).toHaveBeenCalledTimes(2);
   });
 
   it('uses exact resolution for a local account and exposes at most one result', async () => {
@@ -677,21 +672,64 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(component.errMsg()).toBe('friend.msg.friendNotFound');
   });
 
-  it('retains an in-flight action across a list reset and applies its optimistic result by id', async () => {
-    const acceptResult = new Subject<{ code: number }>();
-    let resolveRefresh!: (value: FriendIntentPage) => void;
+  it.each(['STALE_REQUEST', 'EXPIRED'] as const)(
+    'does not display a failed request decision (%s) as accepted, rejected or withdrawn',
+    (status) => {
+      const result = of({ code: 0, message: '', data: { status } });
+      const userService = {
+        friendReqBadge: signal(false),
+        acceptRelationship: vi.fn().mockReturnValue(result),
+        rejectRelationshipRequest: vi.fn().mockReturnValue(result),
+        withdrawRelationshipRequest: vi.fn().mockReturnValue(result),
+      };
+      TestBed.resetTestingModule();
+      TestBed.configureTestingModule({
+        imports: [FriendRequestsComponent],
+        providers: [
+          provideZonelessChangeDetection(),
+          { provide: UserService, useValue: userService },
+          { provide: RouteService, useValue: {} },
+          { provide: MatSnackBar, useValue: { open: vi.fn() } },
+          { provide: TranslocoService, useValue: { translate: (key: string) => key } },
+        ],
+      }).overrideComponent(FriendRequestsComponent, { set: { template: '' } });
+      const component = TestBed.createComponent(FriendRequestsComponent).componentInstance;
+      vi.spyOn(component, 'loadIncomingInvites').mockResolvedValue(undefined);
+      const incoming = {
+        id: '41', requestId: '41', snapshot: null, account: 'alice',
+        namespaceId: 0, direction: 'INCOMING' as const,
+        status: RequestProjectionStatus.REQUESTED, date: 1, errText: '',
+      };
+      const outgoing = { ...incoming, id: '42', requestId: '42', direction: 'OUTGOING' as const };
+      component.pendingReqList.set([incoming]);
+      component.sentReqList.set([outgoing]);
+      component.approve(incoming);
+      component.rejectIncoming(incoming);
+      component.cancelSent(outgoing);
+      expect(component.pendingReqList()[0].status).toBe(RequestProjectionStatus.REQUESTED);
+      expect(component.sentReqList()[0].status).toBe(RequestProjectionStatus.REQUESTED);
+      expect(userService.acceptRelationship).toHaveBeenCalledWith({ requestId: '41' });
+      expect(userService.rejectRelationshipRequest).toHaveBeenCalledWith({ requestId: '41' });
+      expect(userService.withdrawRelationshipRequest).toHaveBeenCalledWith({ requestId: '42' });
+    },
+  );
+
+  it('retains an in-flight action across a list reset and applies its result by id', async () => {
+    const acceptResult = new Subject<{ code: number; data: { status: 'OK' } }>();
+    let resolveRefresh!: (value: PersonalRequestPage) => void;
+    const refreshSubject = () => {
+      const subject = new Subject<StandardResponse<PersonalRequestPage>>();
+      resolveRefresh = (page) =>
+        subject.next({ code: 0, message: 'ok', data: page });
+      return subject.asObservable();
+    };
     const userService = {
-      relationshipRequestStateRevision: signal(0),
-      relationshipIntentStateRevision: signal(0),
       friendReqBadge: signal(false),
       acceptRelationship: vi.fn().mockReturnValue(acceptResult),
-      markRelationshipRequestAccepted: vi.fn().mockResolvedValue(undefined),
-      listLocalFriendRequests: vi.fn().mockImplementation(
-        () =>
-          new Promise<FriendIntentPage>((resolve) => {
-            resolveRefresh = resolve;
-          }),
-      ),
+      queryRelationshipRequests: vi
+        .fn()
+        .mockImplementation(refreshSubject),
+      observeIncomingRequestPage: vi.fn().mockResolvedValue(undefined),
     };
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
@@ -712,8 +750,8 @@ describe('FriendRequestsComponent federated search progress', () => {
     ).componentInstance;
     const request = {
       id: 'friend:41',
+      requestId: 'friend:41',
       snapshot: null,
-      projectionKey: 'friend:41',
       account: 'alice',
       namespaceId: 0,
       direction: 'INCOMING' as const,
@@ -727,6 +765,9 @@ describe('FriendRequestsComponent federated search progress', () => {
     component.approve(request);
 
     expect(userService.acceptRelationship).toHaveBeenCalledTimes(1);
+    expect(userService.acceptRelationship).toHaveBeenCalledWith({
+      requestId: 'friend:41',
+    });
     expect(component.isInviteActionPending(request.id)).toBe(true);
 
     const refresh = component.loadIncomingInvites(true);
@@ -740,33 +781,28 @@ describe('FriendRequestsComponent federated search progress', () => {
     resolveRefresh({
       items: [
         {
-          key: request.projectionKey,
-          snapshot: null,
-          namespaceId: 0,
+          id: request.requestId,
           kind: 'FRIEND',
-          bucket: 'RECEIVED',
-          direction: 'INCOMING',
-          note: '',
-          status: 'REQUESTED',
-          expiresAt: Date.now() + 60_000,
-          localThreadId: null,
-          requestedAt: 2,
-          requestedSort: 2,
-          updatedAt: 2,
-          sourceFeedId: 2,
-          peer: {
-            namespaceId: 0,
-            id: 41,
+          author: { account: 'alice', namespaceId: 0 },
+          receiver: { account: 'me', namespaceId: 0 },
+          direction: 'INCOMING' as const,
+          authorProfile: {
             account: 'alice',
-            avatar: '',
-            bio: '',
+            namespaceId: 0,
+            profileNamespaceId: 0,
+            profileRev: 1,
           },
+          status: 'REQUESTED' as const,
+          note: '',
+          requestedAt: '2026-01-02T00:00:00Z',
+          expiresAt: '2026-01-09T00:00:00Z',
+          createdAt: '2026-01-02T00:00:00Z',
+          updatedAt: '2026-01-02T00:00:00Z',
         },
       ],
-      scannedThrough: null,
       hasMore: false,
-      total: 1,
-      actionableTotal: 1,
+      before: null,
+      incomingHead: { requestEndId: '2', requestReadId: '1' },
     });
     await refresh;
 
@@ -774,7 +810,7 @@ describe('FriendRequestsComponent federated search progress', () => {
     expect(component.pendingReqList()[0]).not.toHaveProperty('name');
     expect(component.isInviteActionPending(request.id)).toBe(true);
 
-    acceptResult.next({ code: 0 });
+    acceptResult.next({ code: 0, data: { status: 'OK' } });
     acceptResult.complete();
     await Promise.resolve();
 
@@ -783,9 +819,6 @@ describe('FriendRequestsComponent federated search progress', () => {
         id: request.id,
         status: RequestProjectionStatus.ACCEPTED,
       }),
-    );
-    expect(userService.markRelationshipRequestAccepted).toHaveBeenCalledWith(
-      request.projectionKey,
     );
     expect(acceptResult.observed).toBe(false);
     expect(component.isInviteActionPending(request.id)).toBe(false);

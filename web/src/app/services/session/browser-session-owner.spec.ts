@@ -29,8 +29,14 @@ function setup(storage = new MemoryStorage()) {
   } satisfies BrowserSessionResources;
   const journal = new SessionJournal(storage);
   const invalidate = vi.fn();
-  const owner = new BrowserSessionOwner(journal, resources, invalidate);
-  return { owner, journal, resources, invalidate, storage };
+  const publish = vi.fn();
+  const owner = new BrowserSessionOwner(
+    journal,
+    resources,
+    invalidate,
+    publish,
+  );
+  return { owner, journal, resources, invalidate, publish, storage };
 }
 
 function deferred() {
@@ -108,6 +114,38 @@ describe('browser session owner', () => {
     await expect(ending).rejects.toThrow('Metadata unavailable');
     expect(resources.close).toHaveBeenCalledTimes(1);
     expect(resources.delete).not.toHaveBeenCalled();
+  });
+
+  it('rejects a residual credential without a journal and permits only explicit fresh login', async () => {
+    const { owner, journal, resources, publish, storage } = setup();
+    expect(await owner.restore(true)).toBe(false);
+    expect(owner.currentSession).toBeNull();
+    expect(publish).not.toHaveBeenCalled();
+    expect(resources.close).toHaveBeenCalledOnce();
+    expect(resources.initialize).not.toHaveBeenCalled();
+    expect(resources.restore).not.toHaveBeenCalled();
+    expect(resources.delete).not.toHaveBeenCalled();
+    expect(resources.prepareFreshCache).not.toHaveBeenCalled();
+    expect(await journal.read()).toMatchObject({
+      phase: 'signed-out',
+      session: null,
+      pendingCleanup: [],
+    });
+    const restarted = setup(storage);
+    expect(await restarted.owner.restore(true)).toBe(false);
+    const session = await login(restarted.owner);
+    expect(restarted.publish).toHaveBeenCalledExactlyOnceWith(session);
+  });
+
+  it('fails closed when recording an unowned residual credential fails', async () => {
+    const { owner, storage, resources, publish } = setup();
+    storage.failWrites = true;
+    await expect(owner.restore(true)).rejects.toThrow('Metadata unavailable');
+    expect(owner.currentSession).toBeNull();
+    expect(publish).not.toHaveBeenCalled();
+    expect(resources.close).toHaveBeenCalledOnce();
+    expect(resources.initialize).not.toHaveBeenCalled();
+    expect(resources.restore).not.toHaveBeenCalled();
   });
 
   it('restores the same UUID without initializing or deleting its cache', async () => {

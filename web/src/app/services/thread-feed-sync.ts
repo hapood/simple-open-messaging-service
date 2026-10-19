@@ -1,3 +1,4 @@
+import type { AccountState } from '../../../../shared/account-state';
 import { coalesceQueuedTargets } from '../../../../shared/trailing-single-flight';
 import type {
   LocalThreadAttention,
@@ -14,7 +15,7 @@ export interface ThreadFeedSyncResult {
 
 export interface ThreadFeedSyncStorage {
   withThreadFeedLock?<T>(run: () => Promise<T>): Promise<T>;
-  getSyncState(key: string): Promise<unknown>;
+  readAccountState(): Promise<AccountState>;
   mergeThreadStates(
     states: ThreadFeedSnapshot[],
     cursor: number,
@@ -44,7 +45,7 @@ async function syncThreadFeedUnlocked(
   target: number,
   request: Parameters<typeof syncThreadFeed>[2],
 ): Promise<ThreadFeedSyncResult> {
-  const initial = (await storage.getSyncState('threadFeedCursor')) ?? 0;
+  const initial = (await storage.readAccountState()).threadFeedCursor ?? 0;
   if (
     !Number.isInteger(initial) ||
     Number(initial) < 0 ||

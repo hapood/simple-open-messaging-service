@@ -17,22 +17,26 @@
         } @else if (invitations().length === 0) {
           <p class="state">{{ 'group.noSentInvitations' | transloco }}</p>
         } @else {
-          @for (request of invitations(); track candidateKey(request)) {
+          @for (request of invitations(); track requestKey(request)) {
             @let snapshot = invitationSnapshot(request);
-            @let resolvedDomain = request.namespaceId | namespaceDomain | async;
+            @let resolvedDomain =
+              request.receiver.namespaceId | namespaceDomain | async;
             <article class="request-row">
               <app-snapshot-avatar
                 class="avatar"
                 [type]="UserAvatarType.OTHER"
                 [name]="snapshot.displayName"
                 [src]="snapshot.avatar"
-                [account]="request.account"
-                [domainSource]="{ type: 'namespace', namespaceId: request.namespaceId }"
+                [account]="request.receiver.account"
+                [domainSource]="{
+                  type: 'namespace',
+                  namespaceId: request.receiver.namespaceId,
+                }"
               />
               <div class="request-copy">
                 <div class="request-name">{{ snapshot.displayName }}</div>
                 <div class="request-account">
-                  {{ request.account
+                  {{ request.receiver.account
                   }}{{ resolvedDomain ? '@' + resolvedDomain : '' }}
                 </div>
               </div>
@@ -40,11 +44,11 @@
                 <button
                   mat-button
                   type="button"
-                  [disabled]="acting().has(candidateKey(request))"
+                  [disabled]="acting().has(requestKey(request))"
                   (click)="revokeInvitation(request)"
                 >
                   {{
-                    (acting().has(candidateKey(request))
+                    (acting().has(requestKey(request))
                       ? 'group.revokingInvitation'
                       : 'group.revokeInvitation'
                     ) | transloco
@@ -83,21 +87,25 @@
         } @else if (applications().length === 0) {
           <p class="state">{{ 'group.noJoinRequests' | transloco }}</p>
         } @else {
-          @for (request of applications(); track candidateKey(request)) {
-            @let resolvedDomain = request.namespaceId | namespaceDomain | async;
+          @for (request of applications(); track requestKey(request)) {
+            @let resolvedDomain =
+              request.author.namespaceId | namespaceDomain | async;
             <article class="request-row">
               <app-demand-avatar
                 class="avatar"
                 [type]="UserAvatarType.OTHER"
-                [account]="request.account"
+                [account]="request.author.account"
                 [profile]="applicationProfile(request)"
-                [domainSource]="{ type: 'namespace', namespaceId: request.namespaceId }"
+                [domainSource]="{
+                  type: 'namespace',
+                  namespaceId: request.author.namespaceId,
+                }"
               />
               <div class="request-copy">
                 <app-user-identity-label class="request-name"
-                  [account]="request.account" [profileRef]="applicationProfile(request)" />
+                  [account]="request.author.account" [profileRef]="applicationProfile(request)" />
                 <div class="request-account">
-                  {{ request.account
+                  {{ request.author.account
                   }}{{ resolvedDomain ? '@' + resolvedDomain : '' }}
                 </div>
                 @if (request.note) {
@@ -109,7 +117,7 @@
                   <button
                     mat-button
                     type="button"
-                    [disabled]="acting().has(candidateKey(request))"
+                    [disabled]="acting().has(requestKey(request))"
                     (click)="handleApplication(request, false)"
                   >
                     {{ 'friend.decline' | transloco }}
@@ -118,7 +126,7 @@
                     mat-flat-button
                     color="primary"
                     type="button"
-                    [disabled]="acting().has(candidateKey(request))"
+                    [disabled]="acting().has(requestKey(request))"
                     (click)="handleApplication(request, true)"
                   >
                     {{ 'friend.approve' | transloco }}

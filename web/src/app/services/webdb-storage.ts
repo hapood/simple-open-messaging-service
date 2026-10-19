@@ -1,4 +1,3 @@
-import { RequestProjectionStatus } from '../../../../shared/request-projection-status';
 import { BusinessCode } from './biz-code';
 import { applyThreadStateSnapshot } from './thread-state-projection';
 import { preserveThreadProfile } from './thread-profile-projection';
@@ -41,24 +40,13 @@ import {
   type MessageDeletionMarker,
   type MessageTomb,
 } from '../../../../shared/message-tomb';
-import type {
-  ClientFriendIntent,
-  ClientGroupInviteIntent,
-  ClientStateFeedItem,
-} from './user.service';
+import type { AccountState, AccountSelfProfile, AccountComposerDraft } from '../../../../shared/account-state';
+import type { AccountStateStorage } from '../../../../shared/account-state-ipc';
+import { invokeAccountState } from './account-state-ipc';
+import { parseIncomingRequestHead } from '../../../../shared/relationship-request';
+import type { ClientStateFeedItem } from './user.service';
 import { isTauri, tauriInvoke } from './runtime';
 import { decodeProfileAvatar } from './profile-avatar-bytes';
-import {
-  applyFriendIntentToProjection,
-  applyGroupIntentToProjection,
-  friendRequestKey,
-  groupRequestKey,
-  markProjectionAccepted,
-  projectionDirectionForFact,
-  projectionIsExpired,
-  projectionRequestExpiresAt,
-  type FriendRequestProjection,
-} from './friend-request-state';
 import {
   reduceMessageRanges,
   type MessageInterval,
@@ -199,20 +187,7 @@ export interface ResolvedMemberRecord extends MemberRecord {
   user: ProfileSnapshot;
 }
 
-type ClientRelationshipIntentBody = Extract<
-  ClientStateFeedItem,
-  { eventType: 'RELATIONSHIP_INTENT' }
->['body'];
-type ClientRelationshipIntentItem = Extract<
-  ClientStateFeedItem,
-  { eventType: 'RELATIONSHIP_INTENT' }
->;
-
-/** A value persisted in a stable KV store (`meta` or `syncState`, keyPath `'key'`).
- *  `value` is opaque to the store (structured-cloneable); the caller owns its shape + narrowing.
- *  `meta` holds non-cursor account state (schemaVersion, selfProfile, selfIdentity, composerDrafts);
- *  `syncState` holds account-level sync cursors. The thread-list revision cursor stays in-memory in
- *  UserService (seeded from /user/my-profile each boot) — it does NOT live here. */
+/** Message-cache schema metadata, independent from the account-state record. */
 interface MetaRecord {
   key: string;
   value: unknown;
@@ -468,18 +443,8 @@ export interface WebdbSchema extends DBSchema {
   /** One record per conversation, keyed by `threadId` (the field is the keyPath). */
   threads: { key: number; value: StoredThread };
   threadPreviews: { key: number; value: StoredThreadPreview };
-  relationshipRequests: {
-    key: string;
-    value: FriendRequestProjection;
-    indexes: { bucketStatus: [string, string, number, string] };
-  };
-  /** Non-cursor account state (schemaVersion, selfProfile, selfIdentity, composerDrafts). */
-  meta: { key: string; value: MetaRecord };
-  /** Account-level sync cursors (threadFeedCursor, stateFeedId, stateFeedFullThrough,
-   *  profileNamespaceChangeEndId, relationshipRequestStateRevision,
-   *  relationshipIntentStateRevision, relationshipRequestReadHead,
-   *  relationshipRequestCleanupAt). */
-  syncState: { key: string; value: MetaRecord };
+  /** One fixed record for account metadata and synchronization coordinates. */
+  accountState: { key: 'account'; value: AccountState };
 }
 
 export interface MessageDbSchema extends DBSchema {
@@ -626,7 +591,7 @@ export interface ThreadAttentionProjection {
   lastMessageSenderNamespaceId: number | null;
 }
 
-export class WebdbStorage {
+export class WebdbStorage implements AccountStateStorage {
   protected readonly messageDbCommitted = new Subject<{
     userId: number;
     threadId: number;
@@ -1022,13 +987,13 @@ export class WebdbStorage {
       throw new LocalCacheUnavailableError(`missing local cache: ${name}`);
     const db = await openDB<WebdbSchema>(name);
     this.observeCacheDeletion(db);
-    if (!db.objectStoreNames.contains('meta')) {
+    if (!db.objectStoreNames.contains('accountState')) {
       db.close();
       throw new LocalCacheUnavailableError(`invalid local cache: ${name}`);
     }
     try {
       if (
-        (await db.get('meta', 'schemaVersion'))?.value !== CACHE_SCHEMA_VERSION
+        (await db.get('accountState', 'account'))?.schemaVersion !== CACHE_SCHEMA_VERSION
       ) {
         db.close();
         throw new LocalCacheVersionMismatchError(name);
@@ -1112,17 +1077,16 @@ export class WebdbStorage {
       'members',
       'threads',
       'threadPreviews',
-      'relationshipRequests',
-      'meta',
-      'syncState',
+      'accountState',
     ] as const;
     if (required.some((store) => !db.objectStoreNames.contains(store)))
       return false;
     if (db.objectStoreNames.length !== required.length) return false;
     try {
-      const version = await db.get('meta', 'schemaVersion');
+      const state = await db.get('accountState', 'account');
       return (
-        version?.value === CACHE_SCHEMA_VERSION &&
+        state?.schemaVersion === CACHE_SCHEMA_VERSION &&
+        db.transaction('accountState').store.keyPath === null &&
         db.transaction('members').store.indexNames.contains('thread') &&
         db.transaction('members').store.indexNames.contains('address')
       );
@@ -1163,24 +1127,20 @@ export class WebdbStorage {
         members.createIndex('address', ['threadId', 'account', 'namespaceId']);
         db.createObjectStore('threads', { keyPath: 'threadId' });
         db.createObjectStore('threadPreviews', { keyPath: 'threadId' });
-        const relationshipRequests = db.createObjectStore(
-          'relationshipRequests',
-          {
-            keyPath: 'key',
-          },
-        );
-        relationshipRequests.createIndex('bucketStatus', [
-          'bucket',
-          'status',
-          'requestedSort',
-          'key',
-        ]);
-        db.createObjectStore('meta', { keyPath: 'key' });
-        db.createObjectStore('syncState', { keyPath: 'key' });
-        transaction.objectStore('meta').put({
-          key: 'schemaVersion',
-          value: CACHE_SCHEMA_VERSION,
-        });
+        db.createObjectStore('accountState');
+        transaction.objectStore('accountState').put({
+          schemaVersion: CACHE_SCHEMA_VERSION,
+          selfProfile: null,
+          selfIdentity: null,
+          composerDrafts: [],
+          threadFeedCursor: null,
+          stateFeedId: null,
+          stateFeedFullThrough: null,
+          profileNamespaceChangeEndId: null,
+          intentRequestEndId: null,
+          intentRequestReadId: null,
+          intentRequestOptimisticReadId: null,
+        }, 'account');
       },
     });
   }
@@ -1571,16 +1531,17 @@ export class WebdbStorage {
           after,
         });
       const tx = (await this.db()).transaction(
-        ['threads', 'threadPreviews', 'syncState'],
+        ['threads', 'threadPreviews', 'accountState'],
         'readonly',
       );
       const [rows, previews, stored] = await Promise.all([
         tx.objectStore('threads').getAll(),
         tx.objectStore('threadPreviews').getAll(),
-        tx.objectStore('syncState').get('threadFeedCursor'),
+        tx.objectStore('accountState').get('account'),
       ]);
       await tx.done;
-      const cursor = Number(stored?.value ?? 0);
+      if (!stored) throw new Error('missing account sync state');
+      const cursor = stored.threadFeedCursor ?? 0;
       if (!Number.isInteger(cursor) || cursor < 0 || cursor > 2147483647)
         throw new Error('invalid local thread feed cursor');
       const byThread = new Map(previews.map((row) => [row.threadId, row]));
@@ -1660,7 +1621,7 @@ export class WebdbStorage {
           'native thread feed synchronization belongs to the Rust SSE executor',
         );
       const tx = (await this.db()).transaction(
-        ['threadPreviews', 'threads', 'syncState'],
+        ['threadPreviews', 'threads', 'accountState'],
         'readwrite',
       );
       const store = tx.objectStore('threads');
@@ -1699,12 +1660,13 @@ export class WebdbStorage {
           merged.set(next.threadId, next);
         }
         if (scannedThrough !== undefined) {
-          const syncState = tx.objectStore('syncState');
-          const cursor = await syncState.get('threadFeedCursor');
+          const syncState = tx.objectStore('accountState');
+          const state = await syncState.get('account');
+          if (!state) throw new Error('missing account sync state');
           await syncState.put({
-            key: 'threadFeedCursor',
-            value: Math.max(Number(cursor?.value ?? 0), scannedThrough),
-          });
+            ...state,
+            threadFeedCursor: Math.max(state.threadFeedCursor ?? 0, scannedThrough),
+          }, 'account');
         }
         await tx.done;
         return [...merged.values()];
@@ -1773,200 +1735,88 @@ export class WebdbStorage {
     });
   }
 
-  /** Read a value from the `meta` store, or `undefined` when absent / IDB unavailable. The value is
-   *  opaque to the store — the caller owns its shape + narrowing. */
-  async getMeta(key: string): Promise<unknown> {
-    return this.runAccountOperation(() => this.getMetaInternal(key));
-  }
-
-  private async getMetaInternal(key: string): Promise<unknown> {
-    return this.readStateStore('meta', key);
-  }
-
-  /** Read an account-level sync cursor from the `syncState` store. */
-  async getSyncState(key: string): Promise<unknown> {
-    return this.runAccountOperation(() => this.getSyncStateInternal(key));
-  }
-
-  private async getSyncStateInternal(key: string): Promise<unknown> {
-    return this.readStateStore('syncState', key);
-  }
-
-  /** Shared read for `meta` / `syncState`. On Tauri both map to the native `sync_state` KV (the native
-   *  runtime keeps cursors and self-profile in one table); the browser split is a local-storage
-   *  concern only. */
-  private async readStateStore(
-    store: 'meta' | 'syncState',
-    key: string,
-  ): Promise<unknown> {
-    if (isTauri() && this.currentUserId != null) {
-      try {
-        return (
-          (await tauriInvoke('native_db_get_meta', {
-            userId: Number(this.currentUserId),
-            key,
-          })) ?? undefined
-        );
-      } catch {
-        return undefined;
-      }
-    }
-    try {
-      const rec = await (await this.db()).get(store, key);
-      return rec?.value;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /** Write a value to the `meta` store (idempotent put by `key`). Best-effort: IDB unavailable / closed →
-   *  graceful no-op (the value is also held in memory by its writer; a missed persist just re-fetches one
-   *  idempotent page on the next catch-up). */
-  async putMeta(key: string, value: unknown): Promise<void> {
-    return this.runAccountOperation(() => this.putMetaInternal(key, value));
-  }
-
-  private async putMetaInternal(key: string, value: unknown): Promise<void> {
-    return this.writeStateStore('meta', key, value);
-  }
-
-  /** Write an account-level sync cursor to the `syncState` store. */
-  async putSyncState(key: string, value: unknown): Promise<void> {
-    return this.runAccountOperation(() =>
-      this.putSyncStateInternal(key, value),
-    );
-  }
-
-  private async putSyncStateInternal(
-    key: string,
-    value: unknown,
-  ): Promise<void> {
-    return this.writeStateStore('syncState', key, value);
-  }
-
-  private async writeStateStore(
-    store: 'meta' | 'syncState',
-    key: string,
-    value: unknown,
-  ): Promise<void> {
-    if (isTauri() && this.currentUserId != null) {
-      try {
-        await tauriInvoke('native_db_put_meta', {
+  /** Explicit native initialization; browser initialization belongs to schema creation. */
+  async initializeAccountState(): Promise<void> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId !== null) {
+        await invokeAccountState('native_db_initialize_account_state', {
           userId: Number(this.currentUserId),
-          key,
-          value,
         });
-      } catch {
-        /* best-effort */
+      } else if (!(await (await this.db()).get('accountState', 'account'))) {
+        throw new Error('missing account state');
       }
-      return;
-    }
-    try {
-      await (await this.db()).put(store, { key, value });
-    } catch {
-      /* best-effort */
-    }
+    });
+  }
+
+  /** Read the fixed account record, without generic key access. */
+  async readAccountState(): Promise<AccountState> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId !== null)
+        return invokeAccountState('native_db_read_account_state', {
+          userId: Number(this.currentUserId),
+        });
+      const state = await (await this.db()).get('accountState', 'account');
+      if (!state) throw new Error('missing account sync state');
+      return state;
+    });
+  }
+
+  /** Persist the received-page read target, without performing network work. */
+  async advanceIntentRequestRead(observedEndId: string): Promise<AccountState> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId !== null)
+        return invokeAccountState('native_db_advance_intent_request_read', {
+          userId: Number(this.currentUserId), observedEndId,
+        });
+      const tx = (await this.db()).transaction('accountState', 'readwrite');
+      const state = await tx.store.get('account');
+      if (!state) throw new Error('missing account state');
+      if (BigInt(observedEndId) > BigInt(state.intentRequestReadId ?? '0') &&
+          BigInt(observedEndId) > BigInt(state.intentRequestOptimisticReadId ?? '0'))
+        state.intentRequestOptimisticReadId = observedEndId;
+      await tx.store.put(state, 'account');
+      await tx.done;
+      return state;
+    });
+  }
+
+  /** Update only profile-owned fields; never overwrite synchronization progress. */
+  async writeSelfProfile(profile: AccountSelfProfile): Promise<void> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId !== null) {
+        await invokeAccountState('native_db_write_self_profile', {
+          userId: Number(this.currentUserId), profile,
+        });
+        return;
+      }
+      const tx = (await this.db()).transaction('accountState', 'readwrite');
+      const state = await tx.store.get('account');
+      if (!state) throw new Error('missing account state');
+      await tx.store.put({ ...state, selfProfile: profile,
+        selfIdentity: { account: profile.account } }, 'account');
+      await tx.done;
+    });
+  }
+
+  /** Draft writes share the record, not the synchronization field ownership. */
+  async writeComposerDrafts(drafts: AccountComposerDraft[]): Promise<void> {
+    return this.runAccountOperation(async () => {
+      if (isTauri() && this.currentUserId !== null) {
+        await invokeAccountState('native_db_write_composer_drafts', {
+          userId: Number(this.currentUserId), drafts,
+        });
+        return;
+      }
+      const tx = (await this.db()).transaction('accountState', 'readwrite');
+      const state = await tx.store.get('account');
+      if (!state) throw new Error('missing account state');
+      await tx.store.put({ ...state, composerDrafts: drafts }, 'account');
+      await tx.done;
+    });
   }
 
   async getThreads(): Promise<ConversationItem[]> {
     return this.runAccountOperation(() => this.getThreadsInternal());
-  }
-
-  async getRelationshipRequestPage(
-    bucket: 'RECEIVED' | 'SENT',
-    cursor: string | null,
-    take: number,
-  ): Promise<{
-    items: FriendRequestProjection[];
-    total: number;
-    actionableTotal: number;
-  }> {
-    return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null)
-        return tauriInvoke<{
-          items: FriendRequestProjection[];
-          total: number;
-          actionableTotal: number;
-        }>('native_db_page_relationship_requests', {
-          userId: Number(this.currentUserId),
-          bucket,
-          cursor,
-          take,
-        });
-      const db = await this.db();
-      const index = db
-        .transaction('relationshipRequests')
-        .store.index('bucketStatus');
-      const statuses = Object.values(RequestProjectionStatus);
-      const buckets = await Promise.all(
-        statuses.map((status) =>
-          index.getAll(
-            IDBKeyRange.bound(
-              [bucket, status, 0, ''],
-              [bucket, status, Number.MAX_SAFE_INTEGER, '\uffff'],
-            ),
-          ),
-        ),
-      );
-      const upper = cursor
-        ? (JSON.parse(cursor) as [number, string])
-        : ([Number.MAX_SAFE_INTEGER, '\uffff'] as const);
-      const all = buckets.flat();
-      const items = all
-        .sort(
-          (a, b) =>
-            b.requestedSort - a.requestedSort || b.key.localeCompare(a.key),
-        )
-        .filter(
-          (item) =>
-            !cursor ||
-            item.requestedSort < upper[0] ||
-            (item.requestedSort === upper[0] && item.key < upper[1]),
-        )
-        .slice(0, take);
-      return {
-        items,
-        total: all.length,
-        actionableTotal: bucket === 'RECEIVED' ? buckets[0].length : all.length,
-      };
-    });
-  }
-
-  async markRelationshipRequestAccepted(key: string): Promise<void> {
-    return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null) {
-        await tauriInvoke('native_db_mark_relationship_request_accepted', {
-          userId: Number(this.currentUserId),
-          key,
-        });
-        return;
-      }
-      const db = await this.db();
-      const current = await db.get('relationshipRequests', key);
-      if (current)
-        await db.put('relationshipRequests', markProjectionAccepted(current));
-    });
-  }
-
-  async cleanupRelationshipRequests(now = Date.now()): Promise<void> {
-    return this.runAccountOperation(async () => {
-      if (isTauri() && this.currentUserId != null) {
-        await tauriInvoke('native_db_cleanup_relationship_requests', {
-          userId: Number(this.currentUserId),
-          now,
-        });
-        return;
-      }
-      const db = await this.db();
-      const tx = db.transaction('relationshipRequests', 'readwrite');
-      for (const item of await tx
-        .objectStore('relationshipRequests')
-        .getAll()) {
-        if (!projectionIsExpired(item, now)) continue;
-        await tx.objectStore('relationshipRequests').delete(item.key);
-      }
-      await tx.done;
-    });
   }
 
   private async getThreadsInternal(): Promise<ConversationItem[]> {
@@ -2533,137 +2383,11 @@ export class WebdbStorage {
       );
     const db = await this.db();
     const tx = db.transaction(
-      [
-        'threads',
-        'profileNamespaces',
-        'profiles',
-        'members',
-        'relationshipRequests',
-        'syncState',
-      ],
+      ['threads', 'profileNamespaces', 'profiles', 'members', 'accountState'],
       'readwrite',
     );
     const patches: GroupMetaCommitPatch[] = [];
     try {
-      if (resetProjection) {
-        await tx.objectStore('relationshipRequests').clear();
-        await tx
-          .objectStore('syncState')
-          .delete('relationshipIntentStateRevision');
-      }
-      const applyRequestProjectionEffect = async (
-        op: ClientRelationshipIntentItem,
-      ) => {
-        const store = tx.objectStore('relationshipRequests');
-        if (op.account.startsWith('!') || op.subjectAccount.startsWith('!')) {
-          const body = op.body as Omit<
-            ClientGroupInviteIntent,
-            | 'key'
-            | 'account'
-            | 'namespaceId'
-            | 'subjectAccount'
-            | 'subjectNamespaceId'
-            | 'kind'
-          >;
-          const groupAuthored = op.account.startsWith('!');
-          const groupAccount = groupAuthored ? op.account : op.subjectAccount;
-          const direction =
-            body.direction ?? (groupAuthored ? 'INCOMING' : 'OUTGOING');
-          const group = body.group;
-          if (groupAuthored && body.status === 'ACCEPTED') {
-            // The group may have accepted a member's outgoing application or
-            // completed its own incoming invitation. Both projections belong to
-            // this group address; settle any existing pending row, but do not
-            // manufacture request history from a compacted terminal fact.
-            for (const side of ['INCOMING', 'OUTGOING'] as const) {
-              const key = groupRequestKey(op.namespaceId, groupAccount, side);
-              const current = await store.get(key);
-              if (
-                current?.status === 'REQUESTED' &&
-                op.feedId > current.sourceFeedId
-              )
-                await store.put(
-                  markProjectionAccepted(current, Date.now(), op.feedId),
-                );
-            }
-            return;
-          }
-          const targetDirection =
-            body.requestDirection ??
-            projectionDirectionForFact({
-              status: body.status,
-              direction,
-            });
-          if (targetDirection === null) return;
-          const key = groupRequestKey(
-            op.namespaceId,
-            groupAccount,
-            targetDirection,
-          );
-          const transition = applyGroupIntentToProjection(
-            await store.get(key),
-            {
-              namespaceId: op.namespaceId,
-              feedId: op.feedId,
-              ...body,
-              group,
-              direction,
-            },
-            Date.now(),
-          );
-          if (transition.record) await store.put(transition.record);
-          if (transition.becameActionable)
-            await tx.objectStore('syncState').put({
-              key: 'relationshipRequestStateRevision',
-              value: op.feedId,
-            });
-          return;
-        }
-        const body = op.body as Omit<
-          ClientFriendIntent,
-          | 'key'
-          | 'account'
-          | 'namespaceId'
-          | 'subjectAccount'
-          | 'subjectNamespaceId'
-          | 'requestedSort'
-        >;
-        const targetDirection =
-          body.requestDirection ?? projectionDirectionForFact(body);
-        if (targetDirection === null) return;
-        const projectionKey = friendRequestKey(
-          { ...op, direction: body.direction },
-          targetDirection,
-        );
-        const transition = applyFriendIntentToProjection(
-          await store.get(projectionKey),
-          {
-            namespaceId: op.namespaceId,
-            feedId: op.feedId,
-            account: op.account,
-            subjectAccount: op.subjectAccount,
-            subjectNamespaceId: op.subjectNamespaceId,
-            ...body,
-            peer: {
-              ...body.peer,
-              namespaceId: op.namespaceId,
-            },
-          },
-          Date.now(),
-        );
-        if (transition.record) await store.put(transition.record);
-        if (transition.becameActionable)
-          await tx.objectStore('syncState').put({
-            key: 'relationshipRequestStateRevision',
-            value: op.feedId,
-          });
-      };
-      // Request projections never create or revoke conversations.
-      for (const op of items) {
-        if (op.eventType === 'RELATIONSHIP_INTENT')
-          await applyRequestProjectionEffect(op);
-      }
-
       for (const update of groupMeta) {
         const members = tx.objectStore('members');
         const currentThread = await tx
@@ -2767,44 +2491,24 @@ export class WebdbStorage {
           });
         }
       }
+      const syncState = tx.objectStore('accountState');
+      const state = await syncState.get('account');
+      if (!state) throw new Error('missing account sync state');
       for (const op of items) {
-        if (op.eventType === 'RELATIONSHIP_INTENT') continue;
-        if (op.eventType === 'INCOMING_INVITE_HEAD') {
-          await tx.objectStore('syncState').put({
-            key: 'relationshipRequestReadHead',
-            value: op.body,
-          });
-        }
-      }
-      const intentRevision = items
-        .filter((item) => item.eventType === 'RELATIONSHIP_INTENT')
-        .reduce((highest, item) => Math.max(highest, item.feedId), 0);
-      if (intentRevision > 0) {
-        const syncState = tx.objectStore('syncState');
-        const previous = await syncState.get('relationshipIntentStateRevision');
-        await syncState.put({
-          key: 'relationshipIntentStateRevision',
-          value: Math.max(
-            intentRevision,
-            typeof previous?.value === 'number' ? previous.value : 0,
-          ),
-        });
+        const head = parseIncomingRequestHead(op.body);
+        state.intentRequestEndId = head.requestEndId;
+        state.intentRequestReadId = head.requestReadId;
+        if (state.intentRequestOptimisticReadId !== null &&
+            BigInt(head.requestReadId) >= BigInt(state.intentRequestOptimisticReadId))
+          state.intentRequestOptimisticReadId = null;
       }
       if (fullThrough !== undefined) {
-        const syncState = tx.objectStore('syncState');
-        if (fullThrough === null)
-          await syncState.delete('stateFeedFullThrough');
-        else if (feedId !== null && fullThrough > feedId)
-          await syncState.put({
-            key: 'stateFeedFullThrough',
-            value: fullThrough,
-          });
-        else throw new Error('invalid state-feed full boundary');
+        if (fullThrough !== null && (feedId === null || fullThrough <= feedId))
+          throw new Error('invalid state-feed full boundary');
+        state.stateFeedFullThrough = fullThrough;
       }
-      if (feedId !== null)
-        await tx
-          .objectStore('syncState')
-          .put({ key: 'stateFeedId', value: feedId });
+      if (feedId !== null) state.stateFeedId = feedId;
+      await syncState.put(state, 'account');
       await tx.done;
       return patches;
     } catch (error) {
@@ -2966,7 +2670,7 @@ export class WebdbStorage {
       }
       const db = await this.db();
       const tx = db.transaction(
-        ['profileNamespaces', 'syncState'],
+        ['profileNamespaces', 'accountState'],
         'readwrite',
       );
       const store = tx.objectStore('profileNamespaces');
@@ -2998,10 +2702,10 @@ export class WebdbStorage {
         touched.push(key);
       }
       if (checkpoint !== undefined) {
-        await tx.objectStore('syncState').put({
-          key: 'profileNamespaceChangeEndId',
-          value: checkpoint,
-        });
+        const syncState = tx.objectStore('accountState');
+        const state = await syncState.get('account');
+        if (!state) throw new Error('missing account sync state');
+        await syncState.put({ ...state, profileNamespaceChangeEndId: checkpoint }, 'account');
       }
       await tx.done;
       return touched;
@@ -3020,19 +2724,13 @@ export class WebdbStorage {
   private async pullProfileNamespaceChangesInternal(
     anchor: number | undefined,
   ): Promise<void> {
+    // Rust owns native SSE-driven sync. Do not open a renderer IndexedDB handle for it.
+    if (isTauri()) return;
     const db = await this.db();
-    if (isTauri()) {
-      // The native runtime owns its own SSE-driven sync; this pull is the
-      // browser path. Native wiring lands with the Tauri executor.
-      return;
-    }
-    const syncState = db.transaction('syncState');
-    const cursorRow = await syncState.store.get('profileNamespaceChangeEndId');
-    const cursor =
-      typeof cursorRow?.value === 'number' &&
-      Number.isSafeInteger(cursorRow.value)
-        ? cursorRow.value
-        : 0;
+    const syncState = db.transaction('accountState');
+    const cursorRow = await syncState.store.get('account');
+    if (!cursorRow) throw new Error('missing account sync state');
+    const cursor = cursorRow.profileNamespaceChangeEndId ?? 0;
     await syncState.done.catch(() => undefined);
     if (anchor !== undefined && anchor === cursor) return;
     let after = cursor;

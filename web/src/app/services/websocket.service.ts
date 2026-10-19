@@ -31,7 +31,7 @@ export type { StandardMessage, ConnectionState } from './realtime-transport';
 /**
  * Realtime downlink facade — the single public surface every consumer already depends on
  * (`eventSubject`, `reconnect$`, `state`, `connect()`, `disconnect()`, `retryNow()`). The actual
- * transport is a pluggable {@link RealtimeTransport} selected by platform for each account epoch:
+ * transport is a pluggable {@link RealtimeTransport} selected by platform for each login work scope:
  *  - Android (Tauri shell): {@link NativeEventTransport} — consumes Kotlin's `/events` bridge
  *    (`window.__SOMS_EVENT__`); the native RealtimeService owns the connection.
  *  - Tauri desktop (pc/mac/linux): {@link RustChannelSseTransport} — consumes the Rust-side `sse_*`
@@ -71,9 +71,9 @@ export class WebsocketService implements OnDestroy {
   private readonly nativeCommits = inject(NativeCommitEventsService);
   private readonly forcedLogout = new Subject<string | undefined>();
   readonly forcedLogout$ = this.forcedLogout.asObservable();
-  private transportEpoch = this.lifecycle.accountEpoch;
+  private transportScope = this.lifecycle.capture();
   private readonly createTransport: () => RealtimeTransport;
-  /** Wall-clock deadline (ms epoch) of the current backoff sleep; 0 when none scheduled. */
+  /** Wall-clock deadline (Unix milliseconds) of the current backoff sleep; 0 when none scheduled. */
   private reconnectDeadline = 0;
   /** The 250ms countdown ticker; undefined when not ticking. */
   private reconnectTicker?: ReturnType<typeof setInterval>;
@@ -161,7 +161,7 @@ export class WebsocketService implements OnDestroy {
       onForceLogout: (reason?: string) => this.onForceLogout(reason),
       onReconnectIn: (ms) => this.onReconnectIn(ms),
     };
-    // Bind callbacks to their originating account epoch, never to the epoch at delivery time:
+    // Bind callbacks to their originating login scope, never the scope at delivery time:
     //  - Android (Tauri shell): NativeEventTransport — consumes Kotlin's /events bridge; the native
     //    RealtimeService owns the connection.
     //  - Tauri desktop (pc/mac/linux): RustChannelSseTransport — consumes the Rust-side `sse_*`
@@ -170,11 +170,11 @@ export class WebsocketService implements OnDestroy {
     //    "resource id is invalid" churn).
     //  - browser: WorkerSseTransport — spawns sse.worker.ts (same-origin, no plugin-http).
     this.createTransport = () => {
-      const epoch = this.lifecycle.accountEpoch;
+      const scope = this.lifecycle.capture();
       const guard =
         <A extends unknown[]>(callback: (...args: A) => void) =>
         (...args: A) => {
-          if (this.lifecycle.isCurrent(epoch)) callback(...args);
+          if (this.lifecycle.isCurrent(scope)) callback(...args);
         };
       const guarded: RealtimeSink = {
         onEvent: guard(sink.onEvent),
@@ -184,7 +184,7 @@ export class WebsocketService implements OnDestroy {
         onReconnectIn: guard(sink.onReconnectIn),
       };
       return isAndroidNative()
-        ? new NativeEventTransport(guarded)
+        ? new NativeEventTransport(guarded, scope.sessionId)
         : isTauri()
           ? new RustChannelSseTransport(guarded)
           : new WorkerSseTransport(guarded);
@@ -213,9 +213,9 @@ export class WebsocketService implements OnDestroy {
    *  `NativeEventTransport` is driven by Kotlin after login.) */
   public connect() {
     if (!this.sessionState.isLoggedIn()) return;
-    if (this.transportEpoch !== this.lifecycle.accountEpoch) {
+    if (!this.lifecycle.isCurrent(this.transportScope)) {
       this.transport.stop();
-      this.transportEpoch = this.lifecycle.accountEpoch;
+      this.transportScope = this.lifecycle.capture();
       this.transport = this.createTransport();
     }
     this.transport.start();

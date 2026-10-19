@@ -37,7 +37,6 @@ describe('Push Service Worker entry', () => {
     await journal.activate(cache.id);
     storage.bindSessionCache(cache);
     await storage.openForUser(String(userId));
-    await storage.putMeta('selfProfile', { id: userId, account: 'me' });
     await preferences.set('device', 'soms.lastUserId', userId);
     await preferences.set('device', 'push-registration:/api/v1', {
       sessionId,
@@ -224,7 +223,7 @@ describe('Push Service Worker entry', () => {
         data: { threadId: 7, seq: 1, sessionId },
       }),
     );
-    expect(await storage.getSyncState('threadFeedCursor')).toBe(1);
+    expect((await storage.readAccountState()).threadFeedCursor).toBe(1);
     expect(post).toHaveBeenCalledWith({
       type: SOMS_NOTIF_MSG.COMMITTED,
       userId,
@@ -429,7 +428,7 @@ describe('Push Service Worker entry', () => {
     expect(await readNotificationSince()).toBe(1);
   });
   it('does not suppress a page notification when the page already consumed the target', async () => {
-    await storage.putSyncState('threadFeedCursor', 1);
+    await storage.mergeThreadStates([], 1);
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
     });
@@ -648,11 +647,10 @@ describe('Push Service Worker entry', () => {
   });
 
   it('can present a server count without a self profile when no optimistic correction is needed', async () => {
-    await storage.putMeta('selfProfile', null);
     await dispatch('push', {
       data: { json: () => ({ type: 'NEW_MESSAGE', threadFeedEndId: '1' }) },
     });
     expect(show).toHaveBeenCalled();
-    expect(await storage.getSyncState('threadFeedCursor')).toBe(1);
+    expect((await storage.readAccountState()).threadFeedCursor).toBe(1);
   });
 });

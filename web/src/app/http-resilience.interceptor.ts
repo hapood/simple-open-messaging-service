@@ -97,7 +97,7 @@ export const httpResilienceInterceptor: HttpInterceptorFn = (req, next) => {
   const toast = inject(ToastService);
   const transloco = inject(TranslocoService);
   const lifecycle = inject(SessionLifecycleService);
-  const owner = lifecycle.accountEpoch;
+  const owner = lifecycle.capture();
   return defer(() => {
     // Recheck on every retry, including after a backoff timer has elapsed.
     lifecycle.assertCurrent(owner);

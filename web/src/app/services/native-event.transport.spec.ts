@@ -6,19 +6,9 @@ import type {
 } from './realtime-transport';
 import { SSE_EVENT_FORCE_LOGOUT } from './sse-worker-protocol';
 
-/**
- * NativeEventTransport unit tests — the Android event-routing seam.
- *
- * This transport is the ONLY web-side code that turns Kotlin's forwarded /events frames into the
- * StandardMessage shape every downstream consumer reads, and it owns the FORCE_LOGOUT interception + the
- * `SomsFcm.getConnState()` seeding that keeps the connection banner correct on a freshly-booted WebView
- * (Kotlin only pushes state on transitions). It is pure logic with no HttpClient / Web Worker / SSE
- * dependency — drive `window.__SOMS_EVENT__` / `window.__SOMS_CONN_STATE__` and assert what the sink
- * received. No Angular surface (mirrors runtime.spec.ts). The Kotlin half (the service that feeds these
- * hooks) has no instrumented harness — it is verified via the manual `make apk-dev` flow.
- */
+const LOGIN = 'd91f007f-10c4-410f-a837-65ba4edff6b5';
+const NEXT_LOGIN = '1c19d615-4296-495a-94d7-f2cf9670991e';
 
-/** A recording sink: captures every call so each test asserts exactly what the transport emitted. */
 function recordingSink() {
   const events: StandardMessage[] = [];
   const states: ConnectionState[] = [];
@@ -37,198 +27,242 @@ function recordingSink() {
     events,
     states,
     reconnects: () => reconnects,
-    forceLogouts: () => forceLogouts,
-    reconnectIns: () => reconnectIns,
+    forceLogouts,
+    reconnectIns,
   };
 }
 
-/** Install a minimal `window.SomsFcm` exposing what the transport reads on start plus the retry channel.
- *  `replayHello` is called whenever Kotlin reports an already-open retained stream: the fresh WebView
- *  missed that stream's one-shot HELLO and asks native to replay its cached copy. */
-function installFakeFcm(connState: string): {
-  retryNows: () => number;
-  helloReplays: () => number;
-} {
+function envelope(
+  event: string,
+  data?: unknown,
+  loginSessionId = LOGIN,
+): StandardMessage {
+  return { event, status: 0, message: 'native event', data, loginSessionId };
+}
+
+function installFakeFcm(connState: string, replay?: () => void) {
   let retryNows = 0;
   let helloReplays = 0;
-  (
-    window as unknown as {
-      SomsFcm: {
-        getConnState: () => string;
-        retryNow: () => void;
-        replayHello: () => void;
-      };
-    }
-  ).SomsFcm = {
+  let forceReconnects = 0;
+  vi.stubGlobal('SomsFcm', {
     getConnState: () => connState,
-    retryNow: () => {
-      retryNows++;
-    },
+    retryNow: () => retryNows++,
+    forceReconnect: () => forceReconnects++,
     replayHello: () => {
       helloReplays++;
+      replay?.();
     },
+  });
+  return {
+    retryNows: () => retryNows,
+    helloReplays: () => helloReplays,
+    forceReconnects: () => forceReconnects,
   };
-  return { retryNows: () => retryNows, helloReplays: () => helloReplays };
 }
 
-/** Invoke the currently-installed (or not) Kotlin push hook the way RealtimeService.forwardToJs does. */
-function fireEvent(type: string, data: unknown): void {
-  window.__SOMS_EVENT__?.(type, data);
+function fireEvent(message: StandardMessage): void {
+  window.__SOMS_EVENT__?.(message);
 }
 
-/** Invoke the conn-state push hook the way RealtimeService.pushConnState does. */
-function fireConnState(state: string): void {
-  window.__SOMS_CONN_STATE__?.(state as ConnectionState);
+function fireConnState(state: ConnectionState): void {
+  window.__SOMS_CONN_STATE__?.(state);
 }
 
-/** Invoke the reconnect-in push hook the way RealtimeService.scheduleReopen does. */
 function fireReconnectIn(ms: number): void {
   window.__SOMS_RECONNECT_IN__?.(ms);
 }
 
+/** Simulate the actual WebView delivery boundary, including native events queued before a new login. */
 describe('NativeEventTransport', () => {
-  // The transport installs global hooks; restore both globals after each test so a leftover hook from one
-  // case never bleeds into the next, and a test's fake SomsFcm never leaks to specs that expect it absent.
   afterEach(() => {
     window.__SOMS_EVENT__ = undefined;
     window.__SOMS_CONN_STATE__ = undefined;
     window.__SOMS_RECONNECT_IN__ = undefined;
-    (
-      window as unknown as {
-        SomsFcm?: unknown;
-      }
-    ).SomsFcm = undefined;
+    vi.unstubAllGlobals();
   });
 
-  it('seeds the connection banner from SomsFcm.getConnState() on start (Kotlin only pushes on transitions)', () => {
+  it('seeds an already-open connection and asks Rust to replay HELLO', () => {
     const fcm = installFakeFcm('open');
     const rec = recordingSink();
-    new NativeEventTransport(rec.sink).start();
+    new NativeEventTransport(rec.sink, LOGIN).start();
     expect(rec.states).toEqual(['open']);
     expect(fcm.helloReplays()).toBe(1);
   });
 
-  it('seeds "closed" too (a truthy state) — a fresh process with no connection still pins the banner', () => {
+  it('seeds closed too, without replaying HELLO', () => {
+    const fcm = installFakeFcm('closed');
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink, LOGIN).start();
+    expect(rec.states).toEqual(['closed']);
+    expect(fcm.helloReplays()).toBe(0);
+  });
+
+  it.each([
+    'STATE_FEED_UPDATED',
+    'LOCAL_THREAD_FEED_COMMITTED',
+    'LOCAL_GROUP_META_COMMITTED',
+    'LOCAL_TOMBSTONE_COMMITTED',
+  ])(
+    'preserves the complete %s envelope rather than reconstructing it',
+    (event) => {
+      installFakeFcm('open');
+      const rec = recordingSink();
+      new NativeEventTransport(rec.sink, LOGIN).start();
+      const message = {
+        ...envelope(event, { userId: 42, feedId: 5 }),
+        status: 7,
+        message: 'original message',
+      };
+      fireEvent(message);
+      expect(rec.events).toEqual([message]);
+      expect(rec.events[0]).toBe(message);
+    },
+  );
+
+  it('preserves the login UUID on synchronously replayed HELLO', () => {
+    const hello = envelope('HELLO', { userId: 42, sessionId: 1 });
+    installFakeFcm('open', () => fireEvent(hello));
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink, LOGIN).start();
+    expect(rec.events).toEqual([hello]);
+  });
+
+  it('rejects events without an owner instead of adopting the renderer login', () => {
+    installFakeFcm('open');
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink, LOGIN).start();
+    const missing = envelope('LOCAL_THREAD_FEED_COMMITTED', { userId: 42 });
+    delete missing.loginSessionId;
+    fireEvent(missing);
+    expect(missing.loginSessionId).toBeUndefined();
+    expect(rec.events).toEqual([]);
+  });
+
+  it.each(['HELLO', 'STATE_FEED_UPDATED', 'LOCAL_THREAD_FEED_COMMITTED'])(
+    'rejects an old %s delivered after a same-account fresh login',
+    (event) => {
+      installFakeFcm('closed');
+      const old = recordingSink();
+      const original = new NativeEventTransport(old.sink, LOGIN);
+      original.start();
+      const queued = envelope(event, { userId: 42 });
+      original.stop();
+      const successor = recordingSink();
+      new NativeEventTransport(successor.sink, NEXT_LOGIN).start();
+      fireEvent(queued);
+      fireEvent(envelope(event, { userId: 42 }, NEXT_LOGIN));
+      expect(old.events).toEqual([]);
+      expect(successor.events).toHaveLength(1);
+      expect(successor.events[0].loginSessionId).toBe(NEXT_LOGIN);
+    },
+  );
+
+  it('rejects events while signed out', () => {
     installFakeFcm('closed');
     const rec = recordingSink();
-    new NativeEventTransport(rec.sink).start();
-    expect(rec.states).toEqual(['closed']);
+    new NativeEventTransport(rec.sink, null).start();
+    fireEvent(envelope('HELLO', { userId: 42 }));
+    expect(rec.events).toEqual([]);
   });
 
-  it('forwards a STATE_FEED_UPDATED frame verbatim into a StandardMessage', () => {
+  it('intercepts the original FORCE_LOGOUT reason without emitting a data event', () => {
     installFakeFcm('open');
     const rec = recordingSink();
-    new NativeEventTransport(rec.sink).start();
-    fireEvent('STATE_FEED_UPDATED', { feedId: 5 });
-    expect(rec.events).toEqual([
-      {
-        event: 'STATE_FEED_UPDATED',
-        status: 0,
-        message: 'new message',
-        data: { feedId: 5 },
-      },
-    ]);
+    new NativeEventTransport(rec.sink, LOGIN).start();
+    fireEvent({
+      ...envelope(SSE_EVENT_FORCE_LOGOUT, null),
+      message: 'device_revoke',
+    });
+    expect(rec.forceLogouts).toEqual(['device_revoke']);
+    expect(rec.events).toEqual([]);
   });
 
-  it('intercepts FORCE_LOGOUT (the facade re-logs in) and does NOT re-emit it as a data event', () => {
+  it('uses an unspecified reason for an empty FORCE_LOGOUT message', () => {
     installFakeFcm('open');
     const rec = recordingSink();
-    new NativeEventTransport(rec.sink).start();
-    fireEvent(SSE_EVENT_FORCE_LOGOUT, {});
-    expect(rec.forceLogouts().length).toBe(1);
-    expect(rec.events.length).toBe(0);
+    new NativeEventTransport(rec.sink, LOGIN).start();
+    fireEvent({ ...envelope(SSE_EVENT_FORCE_LOGOUT, null), message: '' });
+    expect(rec.forceLogouts).toEqual([undefined]);
   });
 
-  it('threads the FORCE_LOGOUT reason (e.g. device_revoke) to the sink for a tailored notice', () => {
+  it('does not let a queued FORCE_LOGOUT end a successor login', () => {
     installFakeFcm('open');
     const rec = recordingSink();
-    new NativeEventTransport(rec.sink).start();
-    fireEvent(SSE_EVENT_FORCE_LOGOUT, { message: 'device_revoke' });
-    expect(rec.forceLogouts()).toEqual(['device_revoke']);
+    new NativeEventTransport(rec.sink, NEXT_LOGIN).start();
+    fireEvent(envelope(SSE_EVENT_FORCE_LOGOUT, null));
+    expect(rec.forceLogouts).toEqual([]);
   });
 
-  it('mirrors __SOMS_CONN_STATE__ transitions onto the sink so the banner tracks the native socket', () => {
+  it('forwards connection state and reconnect countdowns', () => {
     installFakeFcm('connecting');
     const rec = recordingSink();
-    new NativeEventTransport(rec.sink).start();
+    new NativeEventTransport(rec.sink, LOGIN).start();
     fireConnState('open');
     fireConnState('reconnecting');
-    expect(rec.states).toEqual(['connecting', 'open', 'reconnecting']);
-  });
-
-  it('forwards __SOMS_RECONNECT_IN__ (scheduleReopen backoff) so the chip can render a countdown', () => {
-    installFakeFcm('reconnecting');
-    const rec = recordingSink();
-    new NativeEventTransport(rec.sink).start();
     fireReconnectIn(4000);
     fireReconnectIn(2000);
-    expect(rec.reconnectIns()).toEqual([4000, 2000]);
+    expect(rec.states).toEqual(['connecting', 'open', 'reconnecting']);
+    expect(rec.reconnectIns).toEqual([4000, 2000]);
   });
 
-  it('retryNow() clears the countdown and invokes SomsFcm.retryNow() (cancel Kotlin backoff + reconnect)', () => {
+  it('retryNow clears the countdown and forwards the retry command to Rust', () => {
     const fcm = installFakeFcm('reconnecting');
     const rec = recordingSink();
-    const t = new NativeEventTransport(rec.sink);
-    t.start();
-    t.retryNow();
-    // The manual retry voids the scheduled backoff → countdown cleared (parity with the worker/Rust).
-    expect(rec.reconnectIns()).toContain(null);
-    // ...and the JS→native retry channel fires (the real one posts the ACTION_RETRY Intent).
+    const transport = new NativeEventTransport(rec.sink, LOGIN);
+    transport.start();
+    transport.retryNow();
+    expect(rec.reconnectIns).toContain(null);
     expect(fcm.retryNows()).toBe(1);
   });
 
-  it('does NOT emit a reconnect pulse on the FIRST open (downstream boots its own catch-up)', () => {
-    installFakeFcm('connecting');
+  it('forceReconnect forwards the command without replacing the event hook', () => {
+    const fcm = installFakeFcm('open');
     const rec = recordingSink();
-    new NativeEventTransport(rec.sink).start();
-    fireConnState('open'); // first open
-    expect(rec.reconnects()).toBe(0);
+    const transport = new NativeEventTransport(rec.sink, LOGIN);
+    transport.start();
+    const hook = window.__SOMS_EVENT__;
+    transport.forceReconnect();
+    expect(fcm.forceReconnects()).toBe(1);
+    expect(window.__SOMS_EVENT__).toBe(hook);
   });
 
-  it('emits a reconnect pulse on every open AFTER the first (native reconnect → downstream backfill)', () => {
+  it('emits reconnect only on open transitions after the first open', () => {
     installFakeFcm('closed');
     const rec = recordingSink();
-    new NativeEventTransport(rec.sink).start();
-    fireConnState('open'); // first open — no pulse
-    fireConnState('reconnecting'); // stream dropped (Android backgrounded / transient failure)
-    fireConnState('open'); // reconnect pulse drives the ClientStateFeed drain
+    new NativeEventTransport(rec.sink, LOGIN).start();
+    fireConnState('open');
+    expect(rec.reconnects()).toBe(0);
     fireConnState('reconnecting');
-    fireConnState('open'); // another reconnect — pulse again
+    fireConnState('open');
+    fireConnState('reconnecting');
+    fireConnState('open');
     expect(rec.reconnects()).toBe(2);
   });
 
-  it('start() is idempotent — a second start does not re-seed or re-install (no banner flicker)', () => {
+  it('start is idempotent', () => {
     installFakeFcm('open');
     const rec = recordingSink();
-    const t = new NativeEventTransport(rec.sink);
-    t.start();
-    t.start();
-    expect(rec.states).toEqual(['open']); // exactly one seed
+    const transport = new NativeEventTransport(rec.sink, LOGIN);
+    transport.start();
+    transport.start();
+    expect(rec.states).toEqual(['open']);
   });
 
-  it('stop() detaches the hooks (further Kotlin pushes become no-ops via the && guard) and emits closed', () => {
-    installFakeFcm('open');
+  it('stop detaches every hook, emits closed, and resets first-open tracking', () => {
+    installFakeFcm('closed');
     const rec = recordingSink();
-    const t = new NativeEventTransport(rec.sink);
-    t.start();
-    t.stop();
-    // The transport reports its own stream as closed; Kotlin's service is unaffected (independent lifecycle).
-    expect(rec.states[rec.states.length - 1]).toBe('closed');
-    // Hooks detached → a forwarded frame no longer reaches the sink.
-    fireEvent('STATE_FEED_UPDATED', { feedId: 9 });
-    expect(rec.events.length).toBe(0);
+    const transport = new NativeEventTransport(rec.sink, LOGIN);
+    transport.start();
+    fireConnState('open');
+    transport.stop();
+    fireEvent(envelope('STATE_FEED_UPDATED', { feedId: 9 }));
+    expect(rec.events).toEqual([]);
     expect(window.__SOMS_EVENT__).toBeUndefined();
     expect(window.__SOMS_CONN_STATE__).toBeUndefined();
     expect(window.__SOMS_RECONNECT_IN__).toBeUndefined();
-  });
-
-  it('stop() is idempotent — calling it twice emits closed exactly once', () => {
-    installFakeFcm('open');
-    const rec = recordingSink();
-    const t = new NativeEventTransport(rec.sink);
-    t.start();
-    t.stop();
-    t.stop();
-    expect(rec.states.filter((s) => s === 'closed')).toEqual(['closed']);
+    expect(rec.states.at(-1)).toBe('closed');
+    transport.start();
+    fireConnState('open');
+    expect(rec.reconnects()).toBe(0);
   });
 });

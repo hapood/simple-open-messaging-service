@@ -1,5 +1,7 @@
 import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
+import { prepareTestSessionCache } from './session/session-cache.test-helper';
+import type { SessionCacheDescriptor } from './session/session-identity';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { syncThreadFeed } from './thread-feed-sync';
 import { syncPushThreads } from './push-thread-sync';
@@ -12,6 +14,7 @@ import { threadStructure } from './thread-feed.test-helper';
 
 describe('Push thread-feed synchronization', () => {
   let storage: WebdbStorage;
+  let session: SessionCacheDescriptor;
   const userId = 9307;
   const copy = {
     lang: 'en',
@@ -71,12 +74,19 @@ describe('Push thread-feed synchronization', () => {
   });
   beforeEach(async () => {
     storage = new WebdbStorage(() => null, new SessionLifecycleService());
+    session = await prepareTestSessionCache();
+    storage.bindSessionCache(session);
     await storage.openForUser(String(userId));
-    await storage.putMeta('selfProfile', {
+    await storage.writeSelfProfile({
       id: userId,
       account: 'me',
-      domain: 'chat.example.test',
+      name: 'Me',
+      avatar: '',
+      bio: '',
+      isGroup: false,
       namespaceId: 0,
+      profileRev: 1,
+      isDeleted: false,
     });
   });
   afterEach(async () => {
@@ -120,6 +130,7 @@ describe('Push thread-feed synchronization', () => {
     await syncPushThreads(storage, userId, 1, async () => page(), preferences, copy);
     await storage.close();
     storage = new WebdbStorage(() => null, new SessionLifecycleService());
+    storage.bindSessionCache(session);
     await storage.openExistingForUser(String(userId));
     const next = {
       ...snapshot(2),

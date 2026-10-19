@@ -1,5 +1,9 @@
 import type { RequestSnapshot } from '../../../../shared/request-snapshot';
 import type { RequestProjectionStatusValue } from '../../../../shared/request-projection-status';
+import type {
+  GroupRequestPage,
+  RequestDecisionResult,
+} from '../../../../shared/relationship-request';
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
@@ -8,18 +12,6 @@ import { StandardResponse } from './model';
 export interface GrpCreateInfo {
   threadId: number;
   groupId: number;
-}
-
-export interface GroupJoinRequest {
-  feedId: number;
-  status: RequestProjectionStatusValue;
-  namespaceId: number;
-  profileRev: number;
-  account: string;
-  snapshot: RequestSnapshot | null;
-  note: string;
-  requestedAt: number | null;
-  expiresAt: number | null;
 }
 
 export interface GroupInviteCandidate {
@@ -169,30 +161,24 @@ export class GroupService {
 
   queryJoinRequests(params: {
     groupId: number;
-    before?: number;
+    before?: string;
     take?: number;
   }) {
-    return this.http.post<
-      StandardResponse<{
-        data: GroupJoinRequest[];
-        hasMore: boolean;
-        before: number | null;
-      }>
-    >(`${apiPrefix()}/group/join-requests`, params);
+    return this.http.post<StandardResponse<GroupRequestPage>>(
+      `${apiPrefix()}/group/join-requests`,
+      params,
+    );
   }
 
   queryInvitations(params: {
     groupId: number;
-    before?: number;
+    before?: string;
     take?: number;
   }) {
-    return this.http.post<
-      StandardResponse<{
-        data: GroupJoinRequest[];
-        hasMore: boolean;
-        before: number | null;
-      }>
-    >(`${apiPrefix()}/group/invitations`, params);
+    return this.http.post<StandardResponse<GroupRequestPage>>(
+      `${apiPrefix()}/group/invitations`,
+      params,
+    );
   }
 
   markJoinRequestsRead(params: {
@@ -205,34 +191,22 @@ export class GroupService {
     );
   }
 
-  acceptJoinRequest(params: {
-    groupId: number;
-    account: string;
-    namespaceId: number;
-  }) {
-    return this.http.post<StandardResponse<MembershipIntentResult>>(
+  acceptJoinRequest(params: { groupId: number; requestId: string }) {
+    return this.http.post<StandardResponse<RequestDecisionResult>>(
       `${apiPrefix()}/group/join-request/accept`,
       params,
     );
   }
 
-  rejectJoinRequest(params: {
-    groupId: number;
-    account: string;
-    namespaceId: number;
-  }) {
-    return this.http.post<StandardResponse<MembershipIntentResult>>(
+  rejectJoinRequest(params: { groupId: number; requestId: string }) {
+    return this.http.post<StandardResponse<RequestDecisionResult>>(
       `${apiPrefix()}/group/join-request/reject`,
       params,
     );
   }
 
-  revokeInvitation(params: {
-    groupId: number;
-    account: string;
-    namespaceId: number;
-  }) {
-    return this.http.post<StandardResponse<MembershipIntentResult>>(
+  revokeInvitation(params: { groupId: number; requestId: string }) {
+    return this.http.post<StandardResponse<RequestDecisionResult>>(
       `${apiPrefix()}/group/invitation/revoke`,
       params,
     );

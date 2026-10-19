@@ -5,15 +5,14 @@
  * {@link RealtimeSink}, so the public `eventSubject`/`state`/`reconnect$` are platform-agnostic and every
  * downstream consumer (HttpItemSource, HomeComponent, ConnectionBanner, HomeShell) is
  * unchanged regardless of whether events arrive from:
- *  - a Web Worker SSE loop (browser + all Tauri desktop: pc/mac/linux) — {@link WorkerSseTransport}; or
- *  - the Android native /events bridge (Kotlin's RealtimeService → `window.__SOMS_EVENT__`) —
- *    {@link NativeEventTransport}.
+ *  - a browser Web Worker SSE loop — {@link WorkerSseTransport};
+ *  - the desktop Rust event channel — {@link RustChannelSseTransport}; or
+ *  - the Android JNI/WebView bridge — {@link NativeEventTransport}.
  *
- * The two implementations are structurally asymmetric (the worker *owns* its connection + token handshake
- * + backoff; the native transport owns *nothing* of the connection — Kotlin does), which is exactly why a
- * Strategy seam beats an `if (isAndroid())` branch in the facade (one class would carry both lifecycles,
- * half of it dead on every platform). The token *type* (access JWT now, session token in Phase 3) stays
- * orthogonal to the transport, so Phase 3's migration does not touch this seam.
+ * Both native adapters consume the shared Rust runtime's connection policy and login-owned events;
+ * Kotlin forwards OS observations and commands rather than owning a second transport state machine.
+ * Browser connection policy remains in its worker. This interface separates host delivery mechanisms,
+ * not the native business rules.
  */
 
 /** A single inbound SSE business event, in the shape every downstream consumer already reads from
@@ -24,6 +23,8 @@ export interface StandardMessage<T = any> {
   status: number;
   message: string;
   data?: T;
+  /** Native events carry the Rust login owner across live, replay and local-completion delivery. */
+  loginSessionId?: string;
 }
 
 /** Connection state — the single source of truth the UI reads (via the ConnectionBanner) to surface

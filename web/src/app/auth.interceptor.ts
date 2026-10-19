@@ -30,7 +30,7 @@ export class AuthInterceptor implements HttpInterceptor {
     next: HttpHandler,
   ): Observable<HttpEvent<Object>> {
     return defer(() => {
-      const owner = this.lifecycle.accountEpoch;
+      const owner = this.lifecycle.capture();
       return next.handle(req).pipe(
         tap(() => this.lifecycle.assertCurrent(owner)),
         catchError((error) => {

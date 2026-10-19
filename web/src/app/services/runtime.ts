@@ -20,6 +20,7 @@
  */
 
 import { signal } from '@angular/core';
+import type { StandardMessage } from './realtime-transport';
 
 /**
  * The persistence surface for state that must survive WebView/renderer death and be readable with no
@@ -109,7 +110,8 @@ declare global {
        *  native RealtimeService can authenticate /events and the background fetchers (FCM/WorkManager) can
        *  authenticate native thread-feed synchronization while the WebView is suspended. Pass null/empty on logout to
        *  clear (and stop the native stream). Android-only. */
-      setSessionToken: (token: string | null) => void;
+      setSessionToken: (token: string | null, sessionUuid: string) => void;
+      discardResidualToken: () => void;
       /** Mirror the per-user integer message-feed cursor into native notification storage. */
       /** Synchronous read of the persisted session token from EncryptedSharedPreferences (the same store
        *  setSessionToken writes + the native RealtimeService reads). AuthService.restoreSession uses it to
@@ -385,7 +387,7 @@ declare global {
      *  NativeEventTransport; absent on browser/desktop (where the WebsocketService spawns sse.worker.ts).
      *  Kotlin guards the call (`window.__SOMS_EVENT__ && …`), so frames arriving before the transport
      *  installs the hook are silently dropped and recovered by the app-open HWM catch-up. */
-    __SOMS_EVENT__?: (type: string, data: any) => void;
+    __SOMS_EVENT__?: (envelope: StandardMessage) => void;
     /** Android adapter→JS push: a connection-state transition
      *  ('connecting'|'open'|'reconnecting'|'closed') of the native /events stream, so the ConnectionBanner
      *  reflects the Rust-owned connection through the Android adapter. Installed by the NativeEventTransport; the current value is

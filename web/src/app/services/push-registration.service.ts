@@ -115,13 +115,13 @@ export class PushRegistrationService {
     try {
       while (this.dirty) {
         this.dirty = false;
-        const epoch = this.lifecycle.accountEpoch;
+        const scope = this.lifecycle.capture();
         const sessionId = this.sessionId;
         const rev = this.requestedRev;
         const prefix = apiPrefix();
         const origin = apiOrigin();
         const current = () =>
-          this.lifecycle.isCurrent(epoch) &&
+          this.lifecycle.isCurrent(scope) &&
           this.sessionId === sessionId &&
           this.requestedRev === rev &&
           apiOrigin() === origin;

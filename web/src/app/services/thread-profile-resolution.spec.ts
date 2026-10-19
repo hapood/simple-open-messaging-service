@@ -1,5 +1,6 @@
 import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
+import { prepareTestSessionCache } from './session/session-cache.test-helper';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import {
   createGroupConversation,
@@ -13,6 +14,7 @@ describe('resolved thread profile identity', () => {
   let storage: WebdbStorage;
   beforeEach(async () => {
     storage = new WebdbStorage(() => null, new SessionLifecycleService());
+    storage.bindSessionCache(await prepareTestSessionCache());
     await storage.openForUser(userId);
   });
   afterEach(async () => storage.closeAndDelete(userId));

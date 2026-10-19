@@ -2,18 +2,9 @@ import { computed, effect, inject, Injectable, signal } from '@angular/core';
 import { WebdbService } from './webdb.service';
 import { isAndroidNative, isTauri } from './runtime';
 
-export interface ComposerDraft {
-  threadId: number;
-  html: string;
-  plainText: string;
-  linkUrl?: string;
-  generationId?: string;
-  generationExpiresAt?: number;
-  generationTriggered?: boolean;
-  updatedAt: number;
-}
+import type { AccountComposerDraft } from '../../../../shared/account-state';
 
-const META_KEY = 'composerDrafts';
+export type ComposerDraft = AccountComposerDraft;
 
 @Injectable({ providedIn: 'root' })
 export class ComposerDraftService {
@@ -69,7 +60,7 @@ export class ComposerDraftService {
 
   private async restore(): Promise<void> {
     const revision = this.writeRevision;
-    const value = await this.webdb.getMeta(META_KEY);
+    const value = (await this.webdb.readAccountState()).composerDrafts;
     if (
       !this.hydrated ||
       revision !== this.writeRevision ||
@@ -90,7 +81,7 @@ export class ComposerDraftService {
     // earlier snapshot cannot overwrite a later edit or a successful send.
     this.persistTail = this.persistTail
       .catch(() => undefined)
-      .then(() => this.webdb.putMeta(META_KEY, value));
+      .then(() => this.webdb.writeComposerDrafts(value));
     return this.persistTail;
   }
 }

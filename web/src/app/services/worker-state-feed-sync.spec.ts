@@ -3,18 +3,36 @@ import 'fake-indexeddb/auto';
 import { WebdbStorage } from './webdb-storage';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { synchronizeStateFeed } from './worker-state-feed-sync';
+import { prepareTestSessionCache } from './session/session-cache.test-helper';
+import type { AccountState } from '../../../../shared/account-state';
 import type { ClientStateFeedItem } from './user.service';
+
+function accountState(overrides: Partial<AccountState>): AccountState {
+  return {
+    schemaVersion: 1,
+    selfProfile: null,
+    selfIdentity: null,
+    composerDrafts: [],
+    threadFeedCursor: null,
+    stateFeedId: null,
+    stateFeedFullThrough: null,
+    profileNamespaceChangeEndId: null,
+    intentRequestEndId: null,
+    intentRequestReadId: null,
+    intentRequestOptimisticReadId: null,
+    ...overrides,
+  };
+}
 
 function storage(start = 0) {
   let cursor = start;
   let boundary: number | undefined;
   return {
-    getSyncState: vi.fn(async (key: string) =>
-      key === 'stateFeedId'
-        ? cursor
-        : key === 'stateFeedFullThrough'
-          ? boundary
-          : undefined,
+    readAccountState: vi.fn(async () =>
+      accountState({
+        stateFeedId: cursor === 0 ? null : cursor,
+        stateFeedFullThrough: boundary ?? null,
+      }),
     ),
     applyStateFeedPage: vi.fn(
       async (
@@ -46,18 +64,20 @@ function page(mode: 'full' | 'delta', scannedThrough: number, through: number) {
 describe('database-worker state-feed executor', () => {
   it('commits the full boundary and cursor atomically in IndexedDB', async () => {
     const db = new WebdbStorage(() => null, new SessionLifecycleService());
+    const cache = await prepareTestSessionCache();
+    db.bindSessionCache(cache);
     await db.openForUser('94082');
     try {
       await db.applyStateFeedPage([], 1, true, 3);
-      expect(await db.getSyncState('stateFeedFullThrough')).toBe(3);
-      expect(await db.getSyncState('stateFeedId')).toBe(1);
+      expect((await db.readAccountState()).stateFeedFullThrough).toBe(3);
+      expect((await db.readAccountState()).stateFeedId).toBe(1);
       await expect(db.applyStateFeedPage([], 2, false, 1)).rejects.toThrow(
         'invalid state-feed full boundary',
       );
-      expect(await db.getSyncState('stateFeedId')).toBe(1);
+      expect((await db.readAccountState()).stateFeedId).toBe(1);
       await db.applyStateFeedPage([], 3, false, null);
-      expect(await db.getSyncState('stateFeedFullThrough')).toBeUndefined();
-      expect(await db.getSyncState('stateFeedId')).toBe(3);
+      expect((await db.readAccountState()).stateFeedFullThrough).toBeNull();
+      expect((await db.readAccountState()).stateFeedId).toBe(3);
     } finally {
       await db.closeAndDelete('94082');
     }
@@ -96,7 +116,7 @@ describe('database-worker state-feed executor', () => {
     await expect(synchronizeStateFeed(db, 3, failed)).rejects.toThrow(
       'offline',
     );
-    expect(await db.getSyncState('stateFeedFullThrough')).toBe(3);
+    expect((await db.readAccountState()).stateFeedFullThrough).toBe(3);
     const retry = vi.fn().mockResolvedValue(page('full', 3, 3));
     expect(await synchronizeStateFeed(db, 3, retry)).toBe(3);
     expect(retry).toHaveBeenCalledWith({
@@ -118,7 +138,7 @@ describe('database-worker state-feed executor', () => {
       .mockResolvedValueOnce(page('full', 2, 2));
     expect(await synchronizeStateFeed(db, 9, request)).toBe(2);
     expect(db.applyStateFeedPage).toHaveBeenCalledWith([], 2, true, null);
-    expect(await db.getSyncState('stateFeedId')).toBe(2);
+    expect((await db.readAccountState()).stateFeedId).toBe(2);
   });
 
   it('rejects a stalled page without advancing the local cursor', async () => {

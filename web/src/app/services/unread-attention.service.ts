@@ -25,7 +25,10 @@ import { BrowserNotificationAdapter } from './browser-notification.adapter';
 import { TauriNotificationAdapter } from './tauri-notification.adapter';
 import { NavStateMachineService } from './nav-state.service';
 import { SOMS_NOTIF_MSG, parseSwNotifMessage } from './sw-notif-protocol';
-import { SessionLifecycleService } from './session-lifecycle.service';
+import {
+  SessionLifecycleService,
+  type SessionWorkScope,
+} from './session-lifecycle.service';
 import {
   threadNotificationDescriptor,
   type ThreadNotificationUpdate,
@@ -120,11 +123,11 @@ export class UnreadAttentionService {
       this.webdb.browserNotifications$
         .pipe(takeUntilDestroyed())
         .subscribe(({ userId, entries }) => {
-          const epoch = this.lifecycle.accountEpoch;
+          const scope = this.lifecycle.capture();
           void this.webPush
             .worker()
             .then((registration) => {
-              if (this.lifecycle.isCurrent(epoch))
+              if (this.lifecycle.isCurrent(scope))
                 registration?.active?.postMessage({
                   type: SOMS_NOTIF_MSG.PRESENT,
                   userId,
@@ -139,14 +142,14 @@ export class UnreadAttentionService {
       this.convList.threadNotifications$
         .pipe(takeUntilDestroyed())
         .subscribe((updates) => {
-          const epoch = this.lifecycle.accountEpoch;
+          const scope = this.lifecycle.capture();
           const generation = this.generation;
           const activeChat =
             this.focused() && this.nav.topSection() === 'chats'
               ? this.nav.chatThreadId()
               : undefined;
           this.queue = this.queue
-            .then(() => this.present(updates, epoch, generation, activeChat))
+            .then(() => this.present(updates, scope, generation, activeChat))
             .catch(() => {});
         });
     }
@@ -160,10 +163,10 @@ export class UnreadAttentionService {
       unlisten?.();
     });
     const consume = () => {
-      const epoch = this.lifecycle.accountEpoch;
+      const scope = this.lifecycle.capture();
       this.navigationQueue = this.navigationQueue
         .then(async () => {
-          if (destroyed || !this.lifecycle.isCurrent(epoch)) return;
+          if (destroyed || !this.lifecycle.isCurrent(scope)) return;
           const tap = await tauriInvoke<{
             id: string;
             threadId: number;
@@ -173,7 +176,7 @@ export class UnreadAttentionService {
           if (
             !tap ||
             destroyed ||
-            !this.lifecycle.isCurrent(epoch) ||
+            !this.lifecycle.isCurrent(scope) ||
             typeof tap.id !== 'string' ||
             !tap.id.trim() ||
             !Number.isSafeInteger(tap.threadId) ||
@@ -193,7 +196,7 @@ export class UnreadAttentionService {
               acknowledge: () =>
                 tauriInvoke<void>('desktop_notification_acknowledge', tap),
             },
-            epoch,
+            scope,
           );
         })
         .catch((error) =>
@@ -262,21 +265,21 @@ export class UnreadAttentionService {
 
   private async present(
     batch: ThreadNotificationUpdate[],
-    epoch: number,
+    scope: SessionWorkScope,
     generation: number,
     activeChat: number | undefined,
   ): Promise<void> {
     const run = async () => {
-      if (!this.lifecycle.isCurrent(epoch)) return;
+      if (!this.lifecycle.isCurrent(scope)) return;
       const after = this.desktopSince;
-      if (!this.lifecycle.isCurrent(epoch)) return;
+      if (!this.lifecycle.isCurrent(scope)) return;
       const fresh = batch.filter((update) => update.state.threadFeedId > after);
       const end = Math.max(
         after,
         ...fresh.map((update) => update.state.threadFeedId),
       );
       for (const update of fresh) {
-        if (!this.lifecycle.isCurrent(epoch)) return;
+        if (!this.lifecycle.isCurrent(scope)) return;
         if (generation !== this.generation || !this.prefs.enabled()) break;
         if (
           update.item.threadId === activeChat &&
@@ -295,7 +298,7 @@ export class UnreadAttentionService {
             profileNamespaceId: subject.namespaceId,
           }),
         );
-        if (generation !== this.generation || !this.lifecycle.isCurrent(epoch))
+        if (generation !== this.generation || !this.lifecycle.isCurrent(scope))
           break;
         const descriptor = threadNotificationDescriptor(
           update,
@@ -310,13 +313,13 @@ export class UnreadAttentionService {
           namespaceDisplayDomain(binding),
         );
         descriptor.silent = !!descriptor.silent || !this.prefs.sound();
-        if (generation !== this.generation || !this.lifecycle.isCurrent(epoch))
+        if (generation !== this.generation || !this.lifecycle.isCurrent(scope))
           break;
         await this.nativeAdapter!.showDescriptor(descriptor);
-        if (generation !== this.generation || !this.lifecycle.isCurrent(epoch))
+        if (generation !== this.generation || !this.lifecycle.isCurrent(scope))
           await this.adapter.clear();
       }
-      if (this.lifecycle.isCurrent(epoch)) this.desktopSince = end;
+      if (this.lifecycle.isCurrent(scope)) this.desktopSince = end;
     };
     await run();
   }

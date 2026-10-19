@@ -6,6 +6,7 @@ import { SessionStateService } from './session-state.service';
 import { NativeCommitEventsService } from './native-commit-events.service';
 import { SessionLifecycleService } from './session-lifecycle.service';
 import { PushRegistrationService } from './push-registration.service';
+import { parseLoginSessionId } from './session/session-identity';
 
 /**
  * WebsocketService unit tests — the countdown-clock + state plumbing of the realtime facade.
@@ -109,24 +110,39 @@ describe('WebsocketService (reconnect countdown clock)', () => {
     expect(revoked).toHaveBeenCalledOnce();
   });
 
-  it('publishes native completions only from the current account epoch', () => {
+  it('publishes native completions only from the current login owner and transport', () => {
+    const lifecycle = TestBed.inject(SessionLifecycleService);
+    const originalId = parseLoginSessionId(
+      '11111111-1111-4111-8111-111111111111',
+    );
+    const successorId = parseLoginSessionId(
+      '22222222-2222-4222-8222-222222222222',
+    );
+    lifecycle.bindSession(originalId);
+    ws.connect();
     const completed = vi.fn();
     TestBed.inject(NativeCommitEventsService).committed$.subscribe(completed);
     const old = liveWorker!;
     const message = {
       event: 'LOCAL_STATE_FEED_COMMITTED',
+      loginSessionId: originalId,
       status: 0,
       message: '',
       data: { userId: 42 },
     };
     old.emit({ type: 'event', payload: message });
     expect(completed).toHaveBeenCalledWith(message);
-    TestBed.inject(SessionLifecycleService).invalidateSession();
+    lifecycle.bindSession(successorId);
     ws.connect();
     completed.mockClear();
     old.emit({ type: 'event', payload: message });
     expect(completed).not.toHaveBeenCalled();
     liveWorker!.emit({ type: 'event', payload: message });
+    expect(completed).not.toHaveBeenCalled();
+    liveWorker!.emit({
+      type: 'event',
+      payload: { ...message, loginSessionId: successorId },
+    });
     expect(completed).toHaveBeenCalledOnce();
     liveWorker!.emit({
       type: 'event',

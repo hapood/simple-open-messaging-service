@@ -14,6 +14,7 @@ import { PreferenceStore } from '../preference-store.service';
 import { SessionLifecycleService } from '../session-lifecycle.service';
 import { SessionStateService } from '../session-state.service';
 import { WebdbStorage } from '../webdb-storage';
+import { parseLoginSessionId } from './session-identity';
 
 type Request = {
   url: string;
@@ -25,7 +26,10 @@ type Request = {
 const databases: WebdbStorage[] = [];
 const preferenceStores: PreferenceStore[] = [];
 
-function client(preferences = new PreferenceStore(), provideBrowserSession = true) {
+function client(
+  preferences = new PreferenceStore(),
+  provideBrowserSession = true,
+) {
   const database = new WebdbStorage();
   databases.push(database);
   preferenceStores.push(preferences);
@@ -92,6 +96,7 @@ function client(preferences = new PreferenceStore(), provideBrowserSession = tru
   const injector = Injector.create({
     providers: [
       { provide: SessionStateService, useValue: state },
+      { provide: SessionLifecycleService, useValue: lifecycle },
       {
         provide: BROWSER_SESSION,
         useValue: provideBrowserSession ? owner : null,
@@ -112,7 +117,17 @@ function client(preferences = new PreferenceStore(), provideBrowserSession = tru
         { clear: vi.fn() } as never,
       ),
   );
-  return { auth, owner, preferences, requests, user, database, state, toast };
+  return {
+    auth,
+    owner,
+    preferences,
+    requests,
+    user,
+    database,
+    state,
+    toast,
+    lifecycle,
+  };
 }
 
 async function signIn(app: ReturnType<typeof client>) {
@@ -126,6 +141,8 @@ async function signIn(app: ReturnType<typeof client>) {
   document.cookie = 'logged_in=1; Path=/';
   request.flush({ code: 0, data: { session_token: 'never-persisted-in-js' } });
   await done;
+  expect(app.lifecycle.capture().sessionId).toBe(app.owner.currentSession?.id);
+  expect(app.lifecycle.capture().signal.aborted).toBe(false);
   return app.owner.currentSession!;
 }
 
@@ -250,6 +267,26 @@ describe('browser AuthService with real session owner and IndexedDB caches', () 
     expect(app.requests).toHaveLength(2);
   });
 
+  it('does not adopt a residual cookie without a journal or create login caches at boot', async () => {
+    const app = client();
+    document.cookie = 'logged_in=1; Path=/';
+    const before = (await indexedDB.databases()).map(({ name }) => name).sort();
+    await app.auth.restoreSession();
+    expect(app.auth.isLoggedIn()).toBe(false);
+    expect(app.auth.loggedIn()).toBe(false);
+    expect(app.owner.currentSession).toBeNull();
+    expect(app.lifecycle.capture().sessionId).toBeNull();
+    expect(app.user.restoreWebdb).not.toHaveBeenCalled();
+    expect(app.requests).toHaveLength(0);
+    const caches = (names: (string | undefined)[]) =>
+      names.filter((name) => name?.startsWith('soms-session-')).sort();
+    expect(
+      caches((await indexedDB.databases()).map(({ name }) => name)),
+    ).toEqual(caches(before));
+    await signIn(app);
+    expect(app.auth.isLoggedIn()).toBe(true);
+  });
+
   it('restores the same UUID and databases after renderer recreation', async () => {
     const original = client();
     const session = await signIn(original);
@@ -333,6 +370,12 @@ describe('native logout adapter integration', () => {
         });
       }
       const app = client(undefined, false);
+      const loginId = parseLoginSessionId(
+        '11111111-2222-4d9e-af01-234567890abc',
+      );
+      (
+        app.auth as unknown as { nativeLoginUuid: typeof loginId }
+      ).nativeLoginUuid = loginId;
       app.state.setAuthenticated(true);
       app.user.releaseSession.mockResolvedValue(undefined);
       let finished = false;
@@ -354,7 +397,11 @@ describe('native logout adapter integration', () => {
             ticket: 'ended-operation',
           }),
         );
-        if (android) expect(setToken).toHaveBeenCalledExactlyOnceWith(null);
+        if (android)
+          expect(setToken).toHaveBeenCalledExactlyOnceWith(
+            null,
+            '11111111-2222-4d9e-af01-234567890abc',
+          );
         expect(finished).toBe(false);
         remote.resolve();
         await done;

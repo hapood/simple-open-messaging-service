@@ -27,7 +27,7 @@ import {
 import { apiPrefix } from './constants';
 import { isTauri, listenEvent, tauriInvoke } from './runtime';
 import type { ThreadAliasApplied } from '../../../../shared/thread-attention';
-import { SessionLifecycleService } from './session-lifecycle.service';
+import { SessionLifecycleService, type SessionWorkScope } from './session-lifecycle.service';
 import { REPLAY_SAFE } from '../request-context';
 import type { ForwardWireBundle } from '../components/forward-detail/forward-bundle.model';
 
@@ -99,9 +99,9 @@ export class MsgService {
   >();
   private streamProgressListener?: Promise<void>;
 
-  private readonly aliasWrites = new Map<
-    string,
-    Promise<StandardResponse<ThreadAliasApplied>>
+  private readonly aliasWrites = new WeakMap<
+    SessionWorkScope,
+    Map<number, Promise<StandardResponse<ThreadAliasApplied>>>
   >();
 
   constructor(
@@ -563,15 +563,20 @@ export class MsgService {
    *  An empty string clears it. */
   setAlias(params: { threadId: number; alias?: string }) {
     return defer(() => {
-      const epoch = this.lifecycle.accountEpoch;
+      const scope = this.lifecycle.capture();
       const body = { ...params };
-      const key = `${epoch}:${body.threadId}`;
-      // Serialize edits even when separate mounted editors share one conversation.
-      const previous = this.aliasWrites.get(key) ?? Promise.resolve();
+      let writes = this.aliasWrites.get(scope);
+      if (!writes) {
+        writes = new Map();
+        this.aliasWrites.set(scope, writes);
+      }
+      const queue = writes;
+      // Serialize edits only within the captured login scope, even across mounted editors.
+      const previous = queue.get(body.threadId) ?? Promise.resolve();
       const pending = previous
         .catch(() => undefined)
         .then(() => {
-          if (!this.lifecycle.isCurrent(epoch))
+          if (!this.lifecycle.isCurrent(scope))
             throw new Error('alias edit belongs to an expired session');
           return firstValueFrom(
             this.http.post<StandardResponse<ThreadAliasApplied>>(
@@ -580,9 +585,10 @@ export class MsgService {
             ),
           );
         });
-      this.aliasWrites.set(key, pending);
+      queue.set(body.threadId, pending);
       const release = () => {
-        if (this.aliasWrites.get(key) === pending) this.aliasWrites.delete(key);
+        if (queue.get(body.threadId) === pending) queue.delete(body.threadId);
+        if (queue.size === 0) this.aliasWrites.delete(scope);
       };
       void pending.then(release, release);
       return pending;

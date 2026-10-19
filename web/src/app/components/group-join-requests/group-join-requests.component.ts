@@ -2,6 +2,7 @@ import { HttpClient } from '@angular/common/http';
 import { avatarBlobDataUrl } from '../../services/profile-avatar-bytes';
 import { assetUrl } from '../../services/runtime';
 import { parseRequestSnapshot } from '../../../../../shared/request-snapshot';
+import type { RequestRecord } from '../../../../../shared/relationship-request';
 import type { AvatarProfileRef } from '../../services/avatar-profile-ref';
 import { RequestProjectionStatus } from '../../../../../shared/request-projection-status';
 import {
@@ -21,7 +22,6 @@ import { MatTabsModule } from '@angular/material/tabs';
 import {
   GroupService,
   type GroupInviteCandidate,
-  type GroupJoinRequest,
 } from '../../services/group.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
@@ -76,8 +76,8 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   private readonly transloco = inject(TranslocoService);
 
   readonly activeTab = signal(0);
-  readonly invitations = signal<GroupJoinRequest[]>([]);
-  readonly applications = signal<GroupJoinRequest[]>([]);
+  readonly invitations = signal<RequestRecord[]>([]);
+  readonly applications = signal<RequestRecord[]>([]);
   readonly candidates = signal<GroupInviteCandidate[]>([]);
   readonly loadingInvitations = signal(false);
   readonly loadingApplications = signal(false);
@@ -97,8 +97,8 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   readonly resolvingFederated = signal(false);
   readonly federationStage = signal<FederatedResolveStage>('DISCOVERING');
 
-  private invitationBefore?: number;
-  private applicationBefore?: number;
+  private invitationBefore?: string;
+  private applicationBefore?: string;
   private candidateAfterThreadId?: number;
   private resolveSub?: Subscription;
 
@@ -116,18 +116,27 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     }
   }
 
-  invitationSnapshot(request: GroupJoinRequest) {
-    return parseRequestSnapshot(request.snapshot);
+  invitationSnapshot(request: RequestRecord) {
+    return parseRequestSnapshot(
+      request.direction === 'OUTGOING' ? request.snapshot : null,
+    );
   }
 
-  applicationProfile(request: GroupJoinRequest): AvatarProfileRef {
+  applicationProfile(request: RequestRecord): AvatarProfileRef {
+    const authorProfile =
+      request.direction === 'INCOMING' ? request.authorProfile : null;
     return {
-      account: request.account,
-      publisherNamespaceId: request.namespaceId,
-      profileNamespaceId: 0,
-      rev: request.profileRev,
+      account: request.author.account,
+      publisherNamespaceId: request.author.namespaceId,
+      profileNamespaceId: authorProfile?.profileNamespaceId ?? 0,
+      rev: authorProfile?.profileRev ?? 0,
       linked: request.status === 'REQUESTED' || request.status === 'ACCEPTED',
     };
+  }
+
+  /** Requests act by permanent request id; invite candidates have none yet. */
+  requestKey(request: RequestRecord): string {
+    return request.id;
   }
 
   close(): void {
@@ -159,11 +168,11 @@ export class GroupJoinRequestsComponent implements OnDestroy {
   }
 
   async handleApplication(
-    application: GroupJoinRequest,
+    application: RequestRecord,
     accept: boolean,
   ): Promise<void> {
     const groupId = this.conversations.openThreadId();
-    const key = this.candidateKey(application);
+    const key = this.requestKey(application);
     if (groupId === undefined || this.acting().has(key)) return;
     this.addActing(key);
     try {
@@ -171,19 +180,28 @@ export class GroupJoinRequestsComponent implements OnDestroy {
         accept
           ? this.groups.acceptJoinRequest({
               groupId,
-              account: application.account,
-              namespaceId: application.namespaceId,
+              requestId: application.id,
             })
           : this.groups.rejectJoinRequest({
               groupId,
-              account: application.account,
-              namespaceId: application.namespaceId,
+              requestId: application.id,
             }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
+      if (res.data?.status !== 'OK') {
+        this.toast.warn(
+          this.transloco.translate(
+            res.data?.status === 'EXPIRED'
+              ? 'errors.requestExpired'
+              : 'errors.requestStale',
+          ),
+        );
+        void this.loadRequests('APPLICATION', false);
+        return;
+      }
       this.applications.update((rows) =>
         rows.map((row) =>
-          this.candidateKey(row) === key
+          row.id === application.id
             ? applyGroupJoinRequestAction(row, accept ? 'ACCEPT' : 'REJECT')
             : row,
         ),
@@ -195,30 +213,42 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     }
   }
 
-  async revokeInvitation(invitation: GroupJoinRequest): Promise<void> {
+  async revokeInvitation(invitation: RequestRecord): Promise<void> {
     const groupId = this.conversations.openThreadId();
-    const key = this.candidateKey(invitation);
+    const key = this.requestKey(invitation);
     if (groupId === undefined || this.acting().has(key)) return;
     this.addActing(key);
     try {
       const res = await firstValueFrom(
         this.groups.revokeInvitation({
           groupId,
-          account: invitation.account,
-          namespaceId: invitation.namespaceId,
+          requestId: invitation.id,
         }),
       );
       if (res.code !== 0) return this.showBusinessError(res);
+      if (res.data?.status !== 'OK') {
+        this.toast.warn(
+          this.transloco.translate(
+            res.data?.status === 'EXPIRED'
+              ? 'errors.requestExpired'
+              : 'errors.requestStale',
+          ),
+        );
+        void this.loadRequests('INVITATION', false);
+        return;
+      }
       this.invitations.update((rows) =>
         rows.map((row) =>
-          this.candidateKey(row) === key
+          row.id === invitation.id
             ? { ...row, status: RequestProjectionStatus.WITHDRAWN }
             : row,
         ),
       );
       this.candidates.update((rows) =>
         rows.map((row) =>
-          this.candidateKey(row) === key ? { ...row, state: 'AVAILABLE' } : row,
+          this.candidateKey(row) === this.candidateKey(invitation.receiver)
+            ? { ...row, state: 'AVAILABLE' }
+            : row,
         ),
       );
     } catch {
@@ -332,7 +362,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       });
   }
 
-  applicationStatusKey(status: GroupJoinRequest['status']): string {
+  applicationStatusKey(status: RequestRecord['status']): string {
     switch (status) {
       case RequestProjectionStatus.ACCEPTED:
         return 'group.joinRequestAccepted';
@@ -347,7 +377,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
     }
   }
 
-  requestStatusKey(status: GroupJoinRequest['status']): string {
+  requestStatusKey(status: RequestRecord['status']): string {
     return this.applicationStatusKey(status);
   }
 
@@ -395,7 +425,7 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       const target =
         kind === 'INVITATION' ? this.invitations : this.applications;
       target.update((rows) =>
-        mergeGroupJoinRequestPage(append ? rows : [], res.data!.data),
+        mergeGroupJoinRequestPage(append ? rows : [], res.data!.items),
       );
       if (kind === 'INVITATION') {
         this.invitationBefore = res.data.before ?? undefined;
@@ -403,14 +433,8 @@ export class GroupJoinRequestsComponent implements OnDestroy {
       } else {
         this.applicationBefore = res.data.before ?? undefined;
         this.applicationsHasMore.set(res.data.hasMore);
-        if (!append) {
-          const latestReceivedFeedId = res.data.data.reduce(
-            (latest, request) => Math.max(latest, request.feedId),
-            0,
-          );
-          if (latestReceivedFeedId > 0)
-            this.markApplicationsRead(latestReceivedFeedId);
-        }
+        if (!append && res.data.joinRequestEndFeedId > 0)
+          this.markApplicationsRead(res.data.joinRequestEndFeedId);
       }
     } catch {
       this.showNetworkError();

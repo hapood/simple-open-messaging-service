@@ -772,6 +772,8 @@
     "invited": "Invited {{n}}",
     "invitedPartial": "Invited {{n}}; {{skipped}} couldn't be invited",
     "noInvites": "No invites sent",
+    "requestStale": "This request has already changed; showing the latest state",
+    "requestExpired": "This request has expired",
     "networkError": "Network error, please retry",
     "stateSyncFatal": "A serious synchronization error occurred. New state processing has been stopped.",
     "serverError": "Server is having trouble — please retry",

@@ -48,12 +48,12 @@ export async function syncPushThreads(
   const [rows, states, self, enabled, sound, mode] = await Promise.all([
     storage.getThreads(),
     storage.getThreadStates(),
-    storage.getMeta('selfProfile'),
+    storage.readAccountState().then((state) => state.selfProfile),
     preferences.get<boolean>('device', 'notificationEnabled'),
     preferences.get<boolean>('device', 'notificationSound'),
     preferences.get<string>('device', 'notificationPreviewMode'),
   ]);
-  const owner = self as User | undefined;
+  const owner = self;
   const current = new Map(states.map((state) => [state.threadId, state]));
   for (const delivered of result.states) {
     const state = current.get(delivered.threadId);

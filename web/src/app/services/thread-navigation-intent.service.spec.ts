@@ -51,9 +51,9 @@ describe('ThreadNavigationIntentService session readiness and fencing', () => {
     expect(acknowledge).not.toHaveBeenCalled();
   });
   it('rejects async reads crossing invalidation', () => {
-    const epoch = lifecycle.accountEpoch; lifecycle.invalidateSession();
+    const scope = lifecycle.capture(); lifecycle.invalidateSession();
     sessionId.set(11); navigationReady.set(true);
-    service.offer({ source: 'desktop', id: 'late', threadId: 7, sessionId: 11, acknowledge }, epoch);
+    service.offer({ source: 'desktop', id: 'late', threadId: 7, sessionId: 11, acknowledge }, scope);
     TestBed.tick(); expect(openExternalChat).not.toHaveBeenCalled();
   });
   it('does not replay pre-HELLO taps after logout', () => {
