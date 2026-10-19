@@ -15,22 +15,6 @@ import { SessionLifecycleService } from '../session-lifecycle.service';
 import { SessionStateService } from '../session-state.service';
 import { WebdbStorage } from '../webdb-storage';
 
-class Preferences {
-  values = new Map<string, unknown>();
-  async getStrict<T>(scope: string, key: string): Promise<T | undefined> {
-    return structuredClone(this.values.get(`${scope}:${key}`)) as T | undefined;
-  }
-  get<T>(scope: string, key: string): Promise<T | undefined> {
-    return this.getStrict(scope, key);
-  }
-  async set<T>(scope: string, key: string, value: T): Promise<void> {
-    this.values.set(`${scope}:${key}`, structuredClone(value));
-  }
-  async remove(scope: string, key: string): Promise<void> {
-    this.values.delete(`${scope}:${key}`);
-  }
-}
-
 type Request = {
   url: string;
   body: unknown;
@@ -39,10 +23,12 @@ type Request = {
   fail(): void;
 };
 const databases: WebdbStorage[] = [];
+const preferenceStores: PreferenceStore[] = [];
 
-function client(preferences = new Preferences(), provideBrowserSession = true) {
+function client(preferences = new PreferenceStore(), provideBrowserSession = true) {
   const database = new WebdbStorage();
   databases.push(database);
+  preferenceStores.push(preferences);
   const lifecycle = new SessionLifecycleService();
   const state = new SessionStateService();
   const user = {
@@ -70,7 +56,7 @@ function client(preferences = new Preferences(), provideBrowserSession = true) {
     }),
   };
   const owner = new BrowserSessionService(
-    preferences as PreferenceStore,
+    preferences,
     database,
     user as never,
     lifecycle,
@@ -146,8 +132,16 @@ async function signIn(app: ReturnType<typeof client>) {
 afterEach(async () => {
   vi.useRealTimers();
   for (const database of databases.splice(0)) await database.close();
+  // Real preference stores hold open connections; close them before deleting the database,
+  // otherwise deleteDatabase blocks forever on the open handle.
+  for (const store of preferenceStores.splice(0)) await store.close();
+  // Both database kinds are created by the code under test during a spec: the per-login UUID
+  // caches, and the preferences store that now (real PreferenceStore) persists the session
+  // journal. Deleting both keeps every spec isolated from the previous one's login state.
+  const created = (name: string) =>
+    name.startsWith('soms-session-') || name === 'soms-client-preferences';
   for (const { name } of await indexedDB.databases()) {
-    if (name?.startsWith('soms-session-')) {
+    if (name && created(name)) {
       await new Promise<void>((resolve, reject) => {
         const request = indexedDB.deleteDatabase(name);
         request.onsuccess = () => resolve();

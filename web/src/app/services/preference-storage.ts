@@ -92,4 +92,13 @@ export class PreferenceStorage {
     });
     return this.dbPromise;
   }
+
+  /** Close the lazily opened connection. Pending operations must settle first; new
+   *  operations reopen the database. The name is a delete-blocking handoff for tests
+   *  and for storage lifecycle owners. */
+  async close(): Promise<void> {
+    const pending = this.dbPromise;
+    this.dbPromise = null;
+    if (pending) (await pending).close();
+  }
 }

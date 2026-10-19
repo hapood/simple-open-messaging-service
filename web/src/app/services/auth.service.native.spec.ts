@@ -1,4 +1,6 @@
-import type { Mock } from 'vitest';
+import '@angular/compiler';
+import 'fake-indexeddb/auto';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { provideHttpClient, withXhr } from '@angular/common/http';
@@ -14,6 +16,7 @@ import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
 import { ToastService } from './toast.service';
+import { BROWSER_SESSION } from './browser-session.service';
 
 /**
  * AuthService NATIVE trusted-device storage — bridge-mock tests.
@@ -217,6 +220,10 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         },
         // restoreSession() now awaits userService.restoreWebdb() (opens the per-user IDB before the router
         // resolves) — stub it as an async no-op. The IDB restore itself is covered by webdb/thread-store specs.
+        {
+          provide: BROWSER_SESSION,
+          useValue: null,
+        },
         {
           provide: UserService,
           useValue: {
