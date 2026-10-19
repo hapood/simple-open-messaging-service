@@ -71,9 +71,11 @@ infer either namespace from `domain` for remote identities.
 
 ### Likely Web files
 
+The unused `ResolutionDispatcher` and its tests have been removed. Profile
+resolution uses the platform runtime rather than that request/SSE helper.
+
 - `web/src/app/services/profile-store.service.ts`
 - `web/src/app/services/member-profile-store.service.ts`
-- `web/src/app/services/resolution-dispatcher.ts`
 - `web/src/app/services/thread-profile-projection.ts`
 - `web/src/app/services/group-meta-model.ts`
 - `web/src/app/services/group-meta-sync.ts`
