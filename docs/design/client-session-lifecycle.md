@@ -6,8 +6,10 @@ Status: accepted target design; implementation is not complete.
 
 Browser authentication, restoration, logout and push-worker admission use the
 UUID journal and session-owned IndexedDB names. Browser fresh-login preparation
-performs deferred deletion before sending authentication requests. Numeric
-login-epoch consumers have not all been removed.
+performs deferred deletion before sending authentication requests. The renderer's
+lifecycle mirror now captures cancellable work scopes carrying the host-supplied
+UUID instead of generating numeric login epochs. Native admitted-work migration
+is not complete.
 
 Native logout now releases the renderer's resources without deleting account
 storage. Rust captures the ended bearer and origin before acknowledging logout;
@@ -31,6 +33,16 @@ UUID-named SQLite cache files are implemented: the shared preferences file keeps
 only device/account preferences, and each login owns `soms-session-<uuid>.sqlite`
 (retained at logout, deleted by the next fresh login). Existing native login
 epochs remain in use for admitted work.
+
+The Rust `LoginConnection` core now owns an immutable UUID, one physical SQLite
+connection, a credential and cancellation state. Activation permits survive
+asynchronous persistence without holding lifecycle locks and reject completion
+after end. Database tasks capture the owner before scheduling. End cancels
+admission without waiting for SQLite; close drains access and retains the cache
+file. This core has unit coverage in the main Cargo package, but it is not yet
+wired into application initialization or existing native command entry points.
+Those entry points still open caches through the current-path API and must be
+migrated; UUID-named files alone do not establish connection ownership.
 
 ## Purpose and related designs
 
@@ -90,6 +102,30 @@ states include restoring, preparing, ending, cleanup-failed and signed-out. A
 non-active state admits no authenticated business work. Consumers cannot mutate
 the descriptor or publish authentication independently.
 
+## Connection ownership
+
+At application initialization, restore one physical cache connection for the
+recoverable UUID, if any. A signed-out startup does not create a login cache.
+Fresh-login preparation is the other initialization boundary: close the ended
+connection, finish deferred cleanup, persist a new UUID, and initialize that
+UUID's single connection. Authentication retries and QR polling reuse the
+preparing connection rather than opening another one. Device preferences have
+a separate process-scoped connection.
+
+Capture the existing session `conn` when an operation's intent is created,
+before scheduling or network I/O. Carry that same owner through requests,
+transactions, retries and result publication. Ordinary operations cannot open
+connections, resolve a current cache path, or obtain successor credentials.
+Holding the owner across network I/O must not hold its database lock.
+
+End is irreversible for that owner. Invalidate admission and capture its old
+credential without waiting for database I/O. Drain and close the physical
+connection before fresh-login cleanup; retained old references cannot reopen
+it. A new login receives a new owner, never a rebound old object. Initialization
+and publication of the process-wide current owner must themselves be serialized;
+an abandoned initializer cannot replace a successor owner. The durable journal
+remains necessary for restart recovery, independent of in-process cancellation.
+
 ## Durable recovery metadata
 
 Keep device-level lifecycle metadata outside the deletable session database:
@@ -109,10 +145,11 @@ been removed. Operations are idempotent and retryable after partial success.
 If metadata cannot be persisted, invalidate the running session anyway, surface
 the failure and block fresh activation. Do not claim durable logout succeeded.
 
-A valid credential without recoverable local metadata may establish a new local
-UUID after the recorded pending cleanup is complete. This repairs local state
-without inventing a new server login. An explicit logout marker always takes
-precedence and prevents that repair from silently restoring an ended login.
+Credential presence without recoverable local metadata does not authorize
+restoration or creation of a replacement UUID. Do not infer a cache identity or
+adopt an old layout. A fresh explicit authentication can create a new UUID only
+after its required cleanup succeeds. An explicit logout marker always prevents
+residual credentials from silently restoring the ended login.
 
 ## Transition ordering
 

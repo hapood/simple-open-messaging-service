@@ -20,6 +20,7 @@ mod android_realtime;
 mod android_runtime;
 mod client_compat;
 mod diagnostics;
+mod login_connection;
 mod login_session_store;
 mod media_cache;
 mod native_db;
