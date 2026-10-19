@@ -1782,11 +1782,12 @@ fn merge_states(
     }
     if let Some(cursor) = cursor {
         tx.execute(
-            "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'threadFeedCursor',?2)
-             ON CONFLICT(user_id,key) DO UPDATE SET value_json=
-               CAST(MAX(CAST(sync_state.value_json AS INTEGER),CAST(excluded.value_json AS INTEGER)) AS TEXT)",
-            params![user_id, cursor.to_string()],
-        ).map_err(|e| format!("write attention cursor: {e}"))?;
+            "INSERT INTO account_state(user_id,thread_feed_cursor) VALUES(?1,?2)
+             ON CONFLICT(user_id) DO UPDATE SET thread_feed_cursor=
+               MAX(COALESCE(account_state.thread_feed_cursor,0),excluded.thread_feed_cursor)",
+            params![user_id, cursor],
+        )
+        .map_err(|e| format!("write attention cursor: {e}"))?;
     }
     tx.commit()
         .map_err(|e| format!("commit attention merge: {e}"))?;
@@ -2073,14 +2074,14 @@ mod tests {
             1
         );
         assert!(read_state(&conn, 1, 8).unwrap().server.is_none());
-        let cursor: String = conn
+        let cursor: Option<i64> = conn
             .query_row(
-                "SELECT value_json FROM sync_state WHERE user_id=1 AND key='threadFeedCursor'",
+                "SELECT thread_feed_cursor FROM account_state WHERE user_id=1",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(cursor, "1");
+        assert_eq!(cursor, Some(1));
     }
 
     #[test]
@@ -2686,46 +2687,52 @@ mod tests {
     fn partial_snapshots_do_not_advance_cursor_and_empty_pages_can() {
         let mut conn = db();
         merge_states(&mut conn, 1, vec![snapshot(50, 100)], None).unwrap();
-        let count: i32 = conn
-            .query_row("SELECT count(*) FROM sync_state", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 0);
+        let cursor: Option<i64> = conn
+            .query_row(
+                "SELECT thread_feed_cursor FROM account_state WHERE user_id=1",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap()
+            .flatten();
+        assert_eq!(cursor, None);
         for cursor in [20, 10, 30] {
             merge_states(&mut conn, 1, vec![], Some(cursor)).unwrap();
         }
-        let cursor: String = conn
-            .query_row("SELECT value_json FROM sync_state", [], |r| r.get(0))
+        let final_cursor: i64 = conn
+            .query_row(
+                "SELECT thread_feed_cursor FROM account_state WHERE user_id=1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(cursor, "30");
+        assert_eq!(final_cursor, 30);
         assert_eq!(read_state(&conn, 1, 7).unwrap().local_read_seq, Some(100));
     }
     #[test]
     fn failed_cursor_write_rolls_back_rows() {
         let mut conn = db();
-        conn.execute_batch("CREATE TRIGGER fail_cursor BEFORE INSERT ON sync_state BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_cursor BEFORE INSERT ON account_state BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
         assert!(merge_states(&mut conn, 1, vec![snapshot(1, 100)], Some(1)).is_err());
         assert_eq!(read_state(&conn, 1, 7).unwrap().server, None);
     }
 }
 
 fn read_cursor(conn: &Connection, user_id: i64) -> Result<i32, String> {
-    let raw: Option<String> = conn
+    let cursor: Option<i64> = conn
         .query_row(
-            "SELECT value_json FROM sync_state WHERE user_id=?1 AND key='threadFeedCursor'",
+            "SELECT thread_feed_cursor FROM account_state WHERE user_id=?1",
             [user_id],
             |row| row.get(0),
         )
         .optional()
         .map_err(|e| format!("read thread feed cursor: {e}"))?;
-    let cursor = match raw {
-        Some(value) => serde_json::from_str::<i32>(&value)
-            .map_err(|e| format!("decode thread feed cursor: {e}"))?,
-        None => 0,
-    };
-    if cursor < 0 {
+    let cursor = cursor.unwrap_or(0);
+    if !(0..=i32::MAX as i64).contains(&cursor) {
         return Err("invalid local thread feed cursor".into());
     }
-    Ok(cursor)
+    Ok(cursor as i32)
 }
 
 fn read_states(conn: &Connection, user_id: i64) -> Result<Vec<LocalThreadAttention>, String> {

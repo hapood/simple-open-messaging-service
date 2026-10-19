@@ -136,12 +136,9 @@ mod tests {
     use super::super::attention::ThreadFeedSnapshot;
     use super::*;
     use base64::Engine;
-    use std::sync::OnceLock;
 
     fn avatar_store() {
-        static DIRECTORY: OnceLock<tempfile::TempDir> = OnceLock::new();
-        let directory = DIRECTORY.get_or_init(|| tempfile::tempdir().unwrap());
-        super::super::location::initialize(directory.path()).unwrap();
+        super::super::shared_test_location();
     }
 
     fn db() -> Connection {
@@ -149,7 +146,7 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys = ON; CREATE TABLE client_preferences(scope TEXT,key TEXT,value_json TEXT,updated_at INTEGER,PRIMARY KEY(scope,key));").unwrap();
         super::super::create_cache_schema(&conn).unwrap();
         conn.execute(
-            "INSERT INTO sync_state VALUES(1,'selfProfile',?1)",
+            "INSERT INTO account_state(user_id,self_profile_json) VALUES(1,?1)",
             [r#"{"account":"me"}"#],
         )
         .unwrap();
@@ -442,12 +439,13 @@ fn assemble(
         .map_err(|e| e.to_string())?;
     let profile_json: Option<String> = tx
         .query_row(
-            "SELECT value_json FROM sync_state WHERE user_id=?1 AND key='selfProfile'",
+            "SELECT self_profile_json FROM account_state WHERE user_id=?1",
             [user_id],
             |row| row.get(0),
         )
         .optional()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .flatten();
     let profile: Option<Value> = profile_json
         .map(|json| serde_json::from_str(&json))
         .transpose()

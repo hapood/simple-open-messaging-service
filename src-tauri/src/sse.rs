@@ -635,7 +635,6 @@ async fn open_one_stream(
                     if let Some(error) = &result.error {
                         warn!("thread feed wake failed; next wake retries: {error}");
                     }
-
                 }
                 Err(error) => warn!("thread feed wake unavailable; next wake retries: {error}"),
             }

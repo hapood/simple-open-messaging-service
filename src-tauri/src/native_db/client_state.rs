@@ -30,20 +30,19 @@ fn preserve_thread_profile(incoming: &mut Value, current: &Value) {
 }
 
 use super::open;
-use super::relationship_projection::{
-    apply_group_request_effect, apply_relationship_request_effect, update_live_request_projection,
-};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ClientStateFeedItem {
     pub(super) feed_id: Option<i64>,
-    account: Option<String>,
-    namespace_id: i64,
-    event_type: Option<String>,
-    subject_account: Option<String>,
-    subject_namespace_id: i64,
-    body: Option<Value>,
+    body: IncomingRequestHead,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IncomingRequestHead {
+    request_end_id: String,
+    request_read_id: String,
 }
 
 #[derive(Deserialize)]
@@ -153,183 +152,6 @@ pub(crate) async fn native_db_threads(user_id: i64) -> Result<Vec<Value>, String
     super::lifetime::spawn(move || read_threads(&open()?, user_id))
         .await
         .map_err(|e| format!("join thread read: {e}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_list_relationship_requests(
-    user_id: i64,
-) -> Result<Vec<Value>, String> {
-    super::lifetime::spawn(move || {
-        let mut conn = open()?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| format!("begin request read: {e}"))?;
-        let mut stmt = tx
-            .prepare("SELECT stable_key FROM relationship_requests WHERE user_id = ?1")
-            .map_err(|e| format!("prepare friend-request read: {e}"))?;
-        let keys = stmt
-            .query_map([user_id], |row| row.get::<_, String>(0))
-            .map_err(|e| format!("query friend intents: {e}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("read friend intent keys: {e}"))?;
-        drop(stmt);
-        let items = keys
-            .into_iter()
-            .map(|key| {
-                super::request_store::read(&tx, user_id, &key)?
-                    .ok_or_else(|| format!("request projection disappeared: {key}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        tx.commit()
-            .map_err(|e| format!("finish request read: {e}"))?;
-        Ok(items)
-    })
-    .await
-    .map_err(|e| format!("join friend-intent read: {e}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_page_relationship_requests(
-    user_id: i64,
-    bucket: String,
-    cursor: Option<String>,
-    take: i64,
-) -> Result<Value, String> {
-    super::lifetime::spawn(move || {
-        page_relationship_requests(&mut open()?, user_id, &bucket, cursor.as_deref(), take)
-    })
-    .await
-    .map_err(|e| format!("join paged friend-intent read: {e}"))?
-}
-
-pub(super) fn page_relationship_requests(
-    conn: &mut Connection,
-    user_id: i64,
-    bucket: &str,
-    cursor: Option<&str>,
-    take: i64,
-) -> Result<Value, String> {
-    let parsed_cursor = cursor
-        .map(serde_json::from_str::<Value>)
-        .transpose()
-        .map_err(|e| format!("parse friend-intent cursor: {e}"))?;
-    let cursor_time = parsed_cursor
-        .as_ref()
-        .and_then(|value| value.get(0))
-        .and_then(Value::as_i64)
-        .unwrap_or(i64::MAX);
-    let cursor_key = parsed_cursor
-        .as_ref()
-        .and_then(|value| value.get(1))
-        .and_then(Value::as_str)
-        .unwrap_or("\u{10ffff}");
-    let tx = conn
-        .transaction()
-        .map_err(|e| format!("begin request page: {e}"))?;
-    let mut stmt = tx
-        .prepare(
-            "SELECT stable_key FROM relationship_requests
-                 WHERE user_id = ?1
-                   AND bucket = ?2
-                   AND status IN ('REQUESTED','ACCEPTED','WITHDRAWN','REJECTED','EXPIRED')
-                   AND (?3 = 0 OR requested_sort < ?4
-                     OR (requested_sort = ?4 AND stable_key < ?5))
-                 ORDER BY requested_sort DESC, stable_key DESC LIMIT ?6",
-        )
-        .map_err(|e| format!("prepare paged friend-intent read: {e}"))?;
-    let rows = stmt
-        .query_map(
-            params![
-                user_id,
-                bucket,
-                if parsed_cursor.is_some() { 1 } else { 0 },
-                cursor_time,
-                cursor_key,
-                take.clamp(1, 100)
-            ],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(|e| format!("query paged friend intents: {e}"))?;
-    let keys = rows
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("read paged friend intent keys: {e}"))?;
-    drop(stmt);
-    let items = keys
-        .into_iter()
-        .map(|key| {
-            super::request_store::read(&tx, user_id, &key)?
-                .ok_or_else(|| format!("request projection disappeared: {key}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let total = tx
-        .query_row(
-            "SELECT COUNT(*) FROM relationship_requests
-                 WHERE user_id = ?1
-                   AND bucket = ?2
-                   AND status IN ('REQUESTED','ACCEPTED','WITHDRAWN','REJECTED','EXPIRED')",
-            params![user_id, bucket],
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|e| format!("count friend intents: {e}"))?;
-    let actionable_total = tx
-        .query_row(
-            "SELECT COUNT(*) FROM relationship_requests
-                 WHERE user_id = ?1
-                   AND bucket = ?2
-                   AND status = 'REQUESTED'",
-            params![user_id, bucket],
-            |row| row.get::<_, i64>(0),
-        )
-        .map_err(|e| format!("count actionable friend requests: {e}"))?;
-    tx.commit()
-        .map_err(|e| format!("finish request page: {e}"))?;
-    Ok(serde_json::json!({ "items": items, "total": total, "actionableTotal": actionable_total }))
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_mark_relationship_request_accepted(
-    user_id: i64,
-    key: String,
-) -> Result<(), String> {
-    super::lifetime::spawn(move || {
-        let mut conn = open()?;
-        let tx = conn
-            .transaction()
-            .map_err(|e| format!("begin friend-request projection update: {e}"))?;
-        update_live_request_projection(&tx, user_id, &key, "ACCEPTED", chrono_millis())?;
-        tx.commit()
-            .map_err(|e| format!("commit friend-request projection update: {e}"))
-    })
-    .await
-    .map_err(|e| format!("join friend-request projection update: {e}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_cleanup_relationship_requests(
-    user_id: i64,
-    now: i64,
-) -> Result<(), String> {
-    super::lifetime::spawn(move || {
-        let conn = open()?;
-        cleanup_relationship_requests(&conn, user_id, now)
-    })
-    .await
-    .map_err(|e| format!("join friend-request cleanup: {e}"))?
-}
-
-pub(super) fn cleanup_relationship_requests(
-    conn: &Connection,
-    user_id: i64,
-    now: i64,
-) -> Result<(), String> {
-    conn.execute(
-        "DELETE FROM relationship_requests
-             WHERE user_id=?1
-               AND updated_at <= ?2 - 604800000",
-        params![user_id, now],
-    )
-    .map_err(|e| format!("cleanup expired friend requests: {e}"))?;
-    Ok(())
 }
 
 #[tauri::command]
@@ -635,54 +457,6 @@ pub(super) fn apply_state_feed_page_with_resume(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| format!("begin state-feed page: {e}"))?;
-    if reset_projection {
-        tx.execute(
-            "DELETE FROM relationship_requests WHERE user_id=?1",
-            [user_id],
-        )
-        .map_err(|e| format!("clear state-feed friend requests: {e}"))?;
-    }
-    for op in &items {
-        if op.event_type.as_deref() != Some("RELATIONSHIP_INTENT") {
-            continue;
-        }
-        let account = op.account.as_deref().unwrap_or("");
-        let subject_account = op.subject_account.as_deref().unwrap_or("");
-        let body = op
-            .body
-            .as_ref()
-            .ok_or_else(|| "relationship intent has no body".to_string())?;
-        if account.starts_with('!') || subject_account.starts_with('!') {
-            let group_authored = account.starts_with('!');
-            let (group_account, direction) = if group_authored {
-                (account, "INCOMING")
-            } else {
-                (subject_account, "OUTGOING")
-            };
-            apply_group_request_effect(
-                &tx,
-                user_id,
-                op.feed_id
-                    .ok_or_else(|| "state-feed item has no feedId".to_string())?,
-                op.namespace_id,
-                group_account,
-                direction,
-                body,
-            )?;
-        } else {
-            apply_relationship_request_effect(
-                &tx,
-                user_id,
-                op.feed_id
-                    .ok_or_else(|| "state-feed item has no feedId".to_string())?,
-                op.namespace_id,
-                account,
-                subject_account,
-                op.subject_namespace_id,
-                body,
-            )?;
-        }
-    }
     let mut patches: Vec<GroupMetaCommitPatch> = Vec::new();
     for update in group_meta {
         if update.namespace_id < 0 {
@@ -859,63 +633,34 @@ pub(super) fn apply_state_feed_page_with_resume(
         }
     }
     for op in &items {
-        match op.event_type.as_deref().unwrap_or("") {
-            "RELATIONSHIP_INTENT" => {}
-            "INCOMING_INVITE_HEAD" => {
-                let body = op
-                    .body
-                    .as_ref()
-                    .ok_or_else(|| "INCOMING_INVITE_HEAD has no body".to_string())?;
-                let read_through = body
-                    .get("readThroughFeedId")
-                    .and_then(Value::as_i64)
-                    .filter(|value| *value >= 0)
-                    .ok_or_else(|| {
-                        "INCOMING_INVITE_HEAD has no valid readThroughFeedId".to_string()
-                    })?;
-                tx.execute(
-                        "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'relationshipRequestReadHead',?2)
-                         ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
-                        params![user_id, serde_json::json!({
-                            "readThroughFeedId": read_through
-                        }).to_string()],
-                    )
-                    .map_err(|e| format!("save incoming-invitation read watermark: {e}"))?;
-            }
-            other => return Err(format!("unknown state-feed event type: {other}")),
+        let end = super::account_state::request_id_to_sqlite(&op.body.request_end_id)?;
+        let read = super::account_state::request_id_to_sqlite(&op.body.request_read_id)?;
+        if read > end {
+            return Err("request read ID exceeds end ID".into());
         }
-    }
-    if reset_projection {
         tx.execute(
-            "DELETE FROM sync_state WHERE user_id=?1 AND key='relationshipIntentStateRevision'",
-            [user_id],
-        )
-        .map_err(|e| format!("reset relationship intent revision: {e}"))?;
-    }
-    if let Some(revision) = items
-        .iter()
-        .filter(|item| item.event_type.as_deref() == Some("RELATIONSHIP_INTENT"))
-        .filter_map(|item| item.feed_id)
-        .max()
-    {
-        tx.execute(
-            "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'relationshipIntentStateRevision',?2)
-             ON CONFLICT(user_id,key) DO UPDATE SET value_json=CAST(MAX(CAST(sync_state.value_json AS INTEGER),CAST(excluded.value_json AS INTEGER)) AS TEXT)",
-            params![user_id, revision.to_string()],
-        ).map_err(|e| format!("save relationship intent revision: {e}"))?;
+            "INSERT INTO account_state(user_id,intent_request_end_id,intent_request_read_id)
+             VALUES(?1,?2,?3) ON CONFLICT(user_id) DO UPDATE SET
+             intent_request_end_id=excluded.intent_request_end_id,
+             intent_request_read_id=excluded.intent_request_read_id,
+             intent_request_optimistic_read_id=CASE
+               WHEN account_state.intent_request_optimistic_read_id <= excluded.intent_request_read_id
+               THEN NULL ELSE account_state.intent_request_optimistic_read_id END",
+            params![user_id, end, read],
+        ).map_err(|e| format!("save incoming request head: {e}"))?;
     }
     match full_through {
         Some(Some(boundary)) if boundary > feed_id => {
             tx.execute(
-                "INSERT INTO sync_state(user_id,key,value_json) VALUES(?1,'stateFeedFullThrough',?2)
-                 ON CONFLICT(user_id,key) DO UPDATE SET value_json=excluded.value_json",
-                params![user_id, boundary.to_string()],
+                "INSERT INTO account_state(user_id,state_feed_full_through) VALUES(?1,?2)
+                 ON CONFLICT(user_id) DO UPDATE SET state_feed_full_through=excluded.state_feed_full_through",
+                params![user_id, boundary],
             ).map_err(|e| format!("save state-feed full boundary: {e}"))?;
         }
         Some(Some(_)) => return Err("invalid state-feed full boundary".into()),
         Some(None) => {
             tx.execute(
-                "DELETE FROM sync_state WHERE user_id=?1 AND key='stateFeedFullThrough'",
+                "UPDATE account_state SET state_feed_full_through=NULL WHERE user_id=?1",
                 [user_id],
             )
             .map_err(|e| format!("finish state-feed full snapshot: {e}"))?;
@@ -923,9 +668,9 @@ pub(super) fn apply_state_feed_page_with_resume(
         None => {}
     }
     tx.execute(
-        "INSERT INTO sync_state(user_id, key, value_json) VALUES(?1, 'stateFeedId', ?2)
-             ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json",
-        params![user_id, feed_id.to_string()],
+        "INSERT INTO account_state(user_id,state_feed_id) VALUES(?1,?2)
+             ON CONFLICT(user_id) DO UPDATE SET state_feed_id=excluded.state_feed_id",
+        params![user_id, feed_id],
     )
     .map_err(|e| format!("save thread revision: {e}"))?;
     tx.commit()
@@ -940,7 +685,7 @@ pub(super) fn apply_group_meta_page(
 ) -> Result<Option<GroupMetaCommitPatch>, String> {
     let feed_id = conn
         .query_row(
-            "SELECT CAST(value_json AS INTEGER) FROM sync_state WHERE user_id=?1 AND key='stateFeedId'",
+            "SELECT COALESCE(state_feed_id,0) FROM account_state WHERE user_id=?1",
             [user_id],
             |row| row.get::<_, i64>(0),
         )

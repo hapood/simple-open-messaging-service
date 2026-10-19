@@ -20,16 +20,17 @@ Native persistent login metadata now exists in Rust: a device-scoped journal in
 the preferences database records the login UUID, a credential fingerprint (never
 the credential), and pending cache cleanup. Fresh-login preparation runs before
 the authentication request: the renderer invokes `begin_login`, Rust drains
-cache work, resets the shared cache schema, deletes retired login caches, and
-mints the UUID; activation and logout transitions validate the UUID captured by
-the original operation, and a persisted credential whose login ended is discarded
-at restoration instead of reviving the session. Login-UUID admission is now
-enforced at these transitions; per-request native command admission still uses
-the existing numeric epochs.
+cache work, deletes retired per-login cache files, mints the UUID, and creates
+the dedicated `soms-session-<uuid>.sqlite` cache file; cache schema metadata
+lives inside that file. Activation and logout transitions validate the UUID
+captured by the original operation, and a persisted credential whose login ended
+is discarded at restoration instead of reviving the session. Per-request native
+command admission still uses the existing numeric epochs.
 
-UUID-named SQLite cache files are not implemented: the native cache remains one
-shared schema file, reset at fresh login and retained at logout. Existing native
-login epochs remain in use for admitted work.
+UUID-named SQLite cache files are implemented: the shared preferences file keeps
+only device/account preferences, and each login owns `soms-session-<uuid>.sqlite`
+(retained at logout, deleted by the next fresh login). Existing native login
+epochs remain in use for admitted work.
 
 ## Purpose and related designs
 
@@ -109,9 +110,9 @@ If metadata cannot be persisted, invalidate the running session anyway, surface
 the failure and block fresh activation. Do not claim durable logout succeeded.
 
 A valid credential without recoverable local metadata may establish a new local
-UUID only after legacy/orphan cache cleanup. This repairs local state without
-inventing a new server login. An explicit logout marker always takes precedence
-and prevents that repair from silently restoring an ended login.
+UUID after the recorded pending cleanup is complete. This repairs local state
+without inventing a new server login. An explicit logout marker always takes
+precedence and prevents that repair from silently restoring an ended login.
 
 ## Transition ordering
 
@@ -238,9 +239,11 @@ different resource; document exclusivity does not replace them.
 5. Remove compatibility paths and update existing ownership documents to describe
    implemented behavior. Do not declare completion with two independent authorities.
 
-Legacy caches without UUID names require explicit discovery and deletion at the
-migration boundary before new activation. Preserve device metadata and unrelated
-origin storage. Do not delete caches merely because a valid session restarts.
+There is no compatibility path from pre-UUID cache layouts: this design shipped
+in the alpha series, and alpha installs are not migrated. A pre-UUID install's
+old cache files are left untouched (never read, never deleted by this client);
+reinstalling or clearing application data removes them. Do not delete caches
+merely because a valid session restarts.
 
 ## Verification gates
 

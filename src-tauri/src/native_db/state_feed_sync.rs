@@ -33,31 +33,16 @@ struct Envelope {
 }
 
 fn cursor(conn: &Connection, user_id: i64) -> Result<(i64, Option<i64>), String> {
-    let raw: Option<String> = conn
+    let (cursor, full_through) = conn
         .query_row(
-            "SELECT value_json FROM sync_state WHERE user_id=?1 AND key='stateFeedId'",
+            "SELECT COALESCE(state_feed_id,0),state_feed_full_through
+         FROM account_state WHERE user_id=?1",
             [user_id],
-            |row| row.get(0),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
         )
         .optional()
-        .map_err(|e| format!("read state-feed cursor: {e}"))?;
-    let cursor = raw
-        .map(|value| value.parse::<i64>())
-        .transpose()
-        .map_err(|e| format!("decode state-feed cursor: {e}"))?
-        .unwrap_or(0);
-    let pending: Option<String> = conn
-        .query_row(
-            "SELECT value_json FROM sync_state WHERE user_id=?1 AND key='stateFeedFullThrough'",
-            [user_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("read state-feed full boundary: {e}"))?;
-    let full_through = pending
-        .map(|value| value.parse::<i64>())
-        .transpose()
-        .map_err(|e| format!("decode state-feed full boundary: {e}"))?;
+        .map_err(|e| format!("read state-feed coordinates: {e}"))?
+        .unwrap_or((0, None));
     if cursor < 0 || full_through.is_some_and(|boundary| boundary <= cursor) {
         return Err("invalid state-feed cursor or full boundary".into());
     }
@@ -212,7 +197,8 @@ mod tests {
                 .iter()
                 .map(|id| {
                     serde_json::from_value(serde_json::json!({
-                        "feedId": id, "namespaceId": 0, "subjectNamespaceId": 0,
+                        "feedId": id,
+                        "body": { "requestEndId": id.to_string(), "requestReadId": "0" },
                     }))
                     .unwrap()
                 })

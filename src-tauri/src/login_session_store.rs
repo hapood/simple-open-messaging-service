@@ -74,7 +74,6 @@ pub(crate) struct Journal {
     session: Option<LoginSessionId>,
     credential_fingerprint: Option<String>,
     pending_cleanup: Vec<LoginSessionId>,
-    legacy_cleanup_pending: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -85,7 +84,6 @@ struct JournalWire {
     session: Option<LoginSessionId>,
     credential_fingerprint: Option<String>,
     pending_cleanup: Vec<LoginSessionId>,
-    legacy_cleanup_pending: bool,
 }
 
 impl TryFrom<JournalWire> for Journal {
@@ -112,13 +110,9 @@ impl TryFrom<JournalWire> for Journal {
                 value.session.is_some()
                     && value.credential_fingerprint.is_none()
                     && value.pending_cleanup.is_empty()
-                    && !value.legacy_cleanup_pending
             }
             Phase::Active => {
-                value.session.is_some()
-                    && fingerprint_valid
-                    && value.pending_cleanup.is_empty()
-                    && !value.legacy_cleanup_pending
+                value.session.is_some() && fingerprint_valid && value.pending_cleanup.is_empty()
             }
             Phase::Ending | Phase::SignedOut => {
                 value.session.is_none() && value.credential_fingerprint.is_none()
@@ -132,7 +126,6 @@ impl TryFrom<JournalWire> for Journal {
             session: value.session,
             credential_fingerprint: value.credential_fingerprint,
             pending_cleanup: value.pending_cleanup,
-            legacy_cleanup_pending: value.legacy_cleanup_pending,
         })
     }
 }
@@ -145,7 +138,6 @@ impl From<Journal> for JournalWire {
             session: value.session,
             credential_fingerprint: value.credential_fingerprint,
             pending_cleanup: value.pending_cleanup,
-            legacy_cleanup_pending: value.legacy_cleanup_pending,
         }
     }
 }
@@ -157,7 +149,6 @@ impl Journal {
             session: None,
             credential_fingerprint: None,
             pending_cleanup: Vec::new(),
-            legacy_cleanup_pending: true,
         }
     }
 
@@ -165,12 +156,18 @@ impl Journal {
         self.phase
     }
 
-    pub(crate) fn pending_cleanup(&self) -> &[LoginSessionId] {
-        &self.pending_cleanup
+    /// The login UUID a cache command may target: only a prepared or active login owns a cache file.
+    /// A login in Ending/SignedOut owns none; its file is pending deletion instead.
+    pub(crate) fn active_session(&self) -> Option<&LoginSessionId> {
+        if matches!(self.phase, Phase::Preparing | Phase::Active) {
+            self.session.as_ref()
+        } else {
+            None
+        }
     }
 
-    pub(crate) fn legacy_cleanup_pending(&self) -> bool {
-        self.legacy_cleanup_pending
+    pub(crate) fn pending_cleanup(&self) -> &[LoginSessionId] {
+        &self.pending_cleanup
     }
 }
 
@@ -231,7 +228,8 @@ impl SessionStore {
 
     /// Persist the end marker and cleanup ownership without removing a single cache file.
     /// The expected UUID must be captured by the original operation, not looked up at completion.
-    /// None is reserved for a legacy/unbound login; it cannot end a UUID-bound login.
+    /// None means no UUID-bound login is being ended (never-activated preparation); it cannot
+    /// end a UUID-bound login.
     pub(crate) fn end(
         conn: &mut Connection,
         expected: Option<&LoginSessionId>,
@@ -270,17 +268,6 @@ impl SessionStore {
                 return Err("native login superseded".into());
             }
             journal.phase = Phase::SignedOut;
-            Ok(())
-        })
-    }
-
-    /// Called only after the legacy cache tables/media have been removed while preserving preferences.
-    pub(crate) fn acknowledge_legacy_cleanup(conn: &mut Connection) -> Result<(), String> {
-        Self::mutate(conn, |journal| {
-            if !matches!(journal.phase, Phase::Ending | Phase::SignedOut) {
-                return Err("native login superseded".into());
-            }
-            journal.legacy_cleanup_pending = false;
             Ok(())
         })
     }
@@ -330,7 +317,6 @@ impl SessionStore {
             }
             if !matches!(journal.phase, Phase::Ending | Phase::SignedOut)
                 || !journal.pending_cleanup.is_empty()
-                || journal.legacy_cleanup_pending
             {
                 return Err("native login requires fresh-login cleanup".into());
             }
@@ -370,8 +356,7 @@ impl SessionStore {
     }
 
     /// A residual secure-store credential cannot revive an ended or incompletely prepared login.
-    /// Callers use read() to distinguish legacy metadata from a signed-out record; absence alone
-    /// never authorizes restoration of an existing credential.
+    /// Journal absence (fresh install) never authorizes restoration of an existing credential.
     pub(crate) fn restore(
         conn: &Connection,
         token: &str,
@@ -405,8 +390,6 @@ mod tests {
     }
 
     fn prepare(conn: &mut Connection) -> LoginSessionId {
-        SessionStore::end(conn, None).unwrap();
-        SessionStore::acknowledge_legacy_cleanup(conn).unwrap();
         SessionStore::prepare(conn).unwrap()
     }
 
@@ -560,7 +543,6 @@ mod tests {
         SessionStore::activate(&mut conn, &id, "secret").unwrap();
         let journal = SessionStore::read(&conn).unwrap().unwrap();
         assert_eq!(journal.phase(), Phase::Active);
-        assert!(!journal.legacy_cleanup_pending());
         let mut raw = serde_json::to_value(journal).unwrap();
         raw["pendingCleanup"] = serde_json::json!([id]);
         conn.execute(

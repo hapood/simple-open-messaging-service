@@ -1,7 +1,8 @@
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+pub(crate) mod account_state;
 pub(crate) mod attention;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod call_peer;
@@ -17,8 +18,6 @@ pub(crate) mod notifications;
 pub(crate) mod preferences;
 pub(crate) mod profile_avatars;
 pub(crate) mod profile_namespaces;
-mod relationship_projection;
-mod request_store;
 pub(crate) mod state_feed_sync;
 mod thread_feed_commits;
 mod thread_store;
@@ -48,6 +47,11 @@ fn db_path() -> Result<PathBuf, String> {
     Ok(location::path()?.to_path_buf())
 }
 
+/// The active per-login cache file. Resolved from the durable login journal; never a fixed name.
+fn cache_path() -> Result<PathBuf, String> {
+    location::active_cache_path()
+}
+
 fn configure(conn: &Connection) -> Result<(), String> {
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(|e| format!("configure native db: {e}"))?;
@@ -73,8 +77,6 @@ fn open_preferences() -> Result<Connection, String> {
     Ok(conn)
 }
 
-/// Open an already-initialized account cache. Unlike `Connection::open`, this cannot create a missing
-/// database file and never repairs missing tables during a read/write command.
 /// Login-authority open path: the preferences file exists by the time any login transition runs
 /// (first fresh login creates it here). Never opens or repairs the account cache schema.
 pub(crate) fn open_preferences_for_authority() -> Result<Connection, String> {
@@ -85,7 +87,7 @@ pub(crate) fn open_preferences_for_authority() -> Result<Connection, String> {
 /// database file and never repairs missing tables during a read/write command.
 fn open_cache() -> Result<Connection, String> {
     let mut conn = Connection::open_with_flags(
-        db_path()?,
+        cache_path()?,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|e| format!("open existing native cache: {e}"))?;
@@ -127,8 +129,7 @@ fn open() -> Result<Connection, String> {
 fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
     let version: i64 = conn
         .query_row(
-            "SELECT CAST(value_json AS INTEGER) FROM client_preferences
-             WHERE scope='cache' AND key='schemaVersion'",
+            "SELECT CAST(value_json AS INTEGER) FROM cache_meta WHERE key='schemaVersion'",
             [],
             |row| row.get(0),
         )
@@ -146,8 +147,7 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
         "thread_previews",
         "profiles",
         "members",
-        "relationship_requests",
-        "sync_state",
+        "account_state",
         "thread_sync_state",
         "notification_global_state",
         "messages",
@@ -164,8 +164,31 @@ fn validate_cache_schema(conn: &Connection) -> Result<(), String> {
             return Err(format!("native cache schema missing table: {object}"));
         }
     }
+    let columns = conn
+        .prepare("SELECT name FROM pragma_table_info('account_state')")
+        .map_err(|e| format!("inspect account state layout: {e}"))?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("read account state layout: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("decode account state layout: {e}"))?;
+    let expected = [
+        "user_id",
+        "schema_version",
+        "self_profile_json",
+        "self_identity_json",
+        "composer_drafts_json",
+        "thread_feed_cursor",
+        "state_feed_id",
+        "state_feed_full_through",
+        "profile_namespace_change_end_id",
+        "intent_request_end_id",
+        "intent_request_read_id",
+        "intent_request_optimistic_read_id",
+    ];
+    if columns.iter().map(String::as_str).collect::<Vec<_>>() != expected {
+        return Err("incompatible account state layout".into());
+    }
     for index in [
-        "relationship_requests_direction_status",
         "profiles_address_revision",
         "members_thread",
         "members_search",
@@ -245,39 +268,24 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
           ON members(user_id, thread_id, left_state, namespace_id, member_account);
         CREATE INDEX IF NOT EXISTS members_search
           ON members(user_id, thread_id, member_account, namespace_id);
-        CREATE TABLE IF NOT EXISTS relationship_requests (
-          user_id INTEGER NOT NULL,
-          stable_key TEXT NOT NULL,
-          namespace_id INTEGER NOT NULL,
-          kind TEXT NOT NULL CHECK(kind IN ('FRIEND', 'GROUP')),
-          bucket TEXT NOT NULL CHECK(bucket IN ('RECEIVED', 'SENT')),
-          direction TEXT NOT NULL CHECK(direction IN ('INCOMING', 'OUTGOING')),
-          status TEXT NOT NULL CHECK(status IN ('REQUESTED', 'ACCEPTED', 'WITHDRAWN', 'REJECTED', 'EXPIRED')),
-          expires_at INTEGER NOT NULL,
-          local_thread_id INTEGER,
-          note TEXT NOT NULL,
-          requested_at INTEGER NOT NULL,
-          requested_sort INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL,
-          source_label TEXT,
-          subject_id INTEGER,
-          subject_account TEXT,
-          subject_namespace_id INTEGER,
-          subject_avatar TEXT,
-          subject_bio TEXT,
-          subject_profile_rev INTEGER,
-          snapshot_json TEXT CHECK(snapshot_json IS NULL OR json_valid(snapshot_json)),
-          PRIMARY KEY (user_id, stable_key)
-        );
-        CREATE INDEX IF NOT EXISTS relationship_requests_direction_status
-          ON relationship_requests(
-            user_id, direction, status, requested_sort DESC, stable_key DESC
-          );
-        CREATE TABLE IF NOT EXISTS sync_state (
-          user_id INTEGER NOT NULL,
-          key TEXT NOT NULL,
-          value_json TEXT NOT NULL,
-          PRIMARY KEY (user_id, key)
+        CREATE TABLE IF NOT EXISTS account_state (
+          user_id INTEGER PRIMARY KEY,
+          schema_version INTEGER NOT NULL DEFAULT 1 CHECK(schema_version = 1),
+          self_profile_json TEXT CHECK(self_profile_json IS NULL OR
+            (json_valid(self_profile_json) AND json_type(self_profile_json) = 'object')),
+          self_identity_json TEXT CHECK(self_identity_json IS NULL OR
+            (json_valid(self_identity_json) AND json_type(self_identity_json) = 'object')),
+          composer_drafts_json TEXT NOT NULL DEFAULT '[]'
+            CHECK(json_valid(composer_drafts_json) AND json_type(composer_drafts_json) = 'array'),
+          thread_feed_cursor INTEGER CHECK(thread_feed_cursor >= 0),
+          state_feed_id INTEGER CHECK(state_feed_id >= 0),
+          state_feed_full_through INTEGER CHECK(state_feed_full_through >= 0),
+          profile_namespace_change_end_id INTEGER CHECK(profile_namespace_change_end_id >= 0),
+          intent_request_end_id INTEGER CHECK(intent_request_end_id >= 0),
+          intent_request_read_id INTEGER CHECK(intent_request_read_id >= 0),
+          intent_request_optimistic_read_id INTEGER CHECK(intent_request_optimistic_read_id >= 0),
+          CHECK ((intent_request_end_id IS NULL) = (intent_request_read_id IS NULL)),
+          CHECK (intent_request_read_id <= intent_request_end_id)
         );
         CREATE TABLE IF NOT EXISTS thread_sync_state (
           user_id INTEGER NOT NULL,
@@ -328,96 +336,95 @@ fn create_cache_schema(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("initialize typed thread cache: {e}"))?;
     conn.execute_batch(thread_store::PREVIEW_SCHEMA)
         .map_err(|e| format!("initialize typed thread previews: {e}"))?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cache_meta (
+           key TEXT NOT NULL PRIMARY KEY,
+           value_json TEXT NOT NULL
+         );",
+    )
+    .map_err(|e| format!("initialize cache metadata: {e}"))?;
     conn.execute(
-        "INSERT INTO client_preferences(scope,key,value_json,updated_at)
-         VALUES('cache','schemaVersion',?1,?2)
-         ON CONFLICT(scope,key) DO UPDATE SET
-           value_json=excluded.value_json, updated_at=excluded.updated_at",
-        params![CACHE_SCHEMA_VERSION.to_string(), chrono_millis()],
+        "INSERT INTO cache_meta(key,value_json) VALUES('schemaVersion',?1)
+         ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
+        params![CACHE_SCHEMA_VERSION.to_string()],
     )
     .map_err(|e| format!("set native cache schema version: {e}"))?;
     Ok(())
 }
 
 fn drop_cache_schema(conn: &Connection) -> Result<(), String> {
+    // Exactly the tables the current schema creates (root schema + thread store + attention's
+    // lazily created thread_states). No obsolete-generation table names: a per-login cache file
+    // is always created by this schema generation.
     conn.execute_batch(
         "DROP TABLE IF EXISTS thread_previews;
          DROP TABLE IF EXISTS thread_states;
-         DROP TABLE IF EXISTS attention_states;
          DROP TABLE IF EXISTS threads;
          DROP TABLE IF EXISTS profiles;
          DROP TABLE IF EXISTS profile_tombs;
          DROP TABLE IF EXISTS profile_namespace_tombs;
          DROP TABLE IF EXISTS profile_namespaces;
-         DROP TABLE IF EXISTS thread_participants;
-         DROP TABLE IF EXISTS users;
-         DROP TABLE IF EXISTS groups;
          DROP TABLE IF EXISTS members;
-         DROP TABLE IF EXISTS friend_intents;
-         DROP TABLE IF EXISTS friend_requests;
-         DROP TABLE IF EXISTS relationship_requests;
-         DROP TABLE IF EXISTS relationship_intents;
-         DROP TABLE IF EXISTS sync_state;
+         DROP TABLE IF EXISTS account_state;
          DROP TABLE IF EXISTS thread_sync_state;
          DROP TABLE IF EXISTS notification_global_state;
-         DROP TABLE IF EXISTS notification_feed_state;
-         DROP TABLE IF EXISTS notification_thread_state;
-         DROP TABLE IF EXISTS avatars;
          DROP TABLE IF EXISTS messages;
          DROP TABLE IF EXISTS message_ranges;
-         DELETE FROM client_preferences WHERE scope='cache' AND key='schemaVersion';",
+         DROP TABLE IF EXISTS cache_meta;",
     )
     .map_err(|e| format!("drop native cache: {e}"))
 }
 
-/// Explicit fresh-login initialization. Device preferences survive; all rebuildable account cache tables
-/// are dropped and recreated as one schema operation.
 /// Fresh-login preparation, run BEFORE the authentication request. Releases admitted cache work,
-/// resets the shared cache schema, performs the deferred deletion of retired login caches recorded by
-/// previous logouts, and mints the new login UUID. Credentials are not involved; `prepare` still
+/// deletes the retired per-login cache files recorded by previous logouts, mints the new login
+/// UUID, and creates its dedicated cache file. Credentials are not involved; `prepare` still
 /// refuses while any retired cache remains undeletable, so a failed cleanup blocks authentication.
 #[tauri::command]
 pub(crate) async fn native_db_begin_login() -> Result<String, String> {
-    let id = tauri::async_runtime::spawn_blocking(move || {
-        // Hold the lifetime write guard until the schema reset and journal transitions finish.
-        let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
-        let mut conn = open_preferences()?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Exclusive)
-            .map_err(|e| format!("begin native fresh-login preparation: {e}"))?;
-        drop_cache_schema(&tx)?;
-        create_cache_schema(&tx)?;
-        tx.commit()
-            .map_err(|e| format!("commit native fresh-login preparation: {e}"))?;
-        crate::login_session_store::SessionStore::end_current(&mut conn)?;
-        let retired: Vec<_> = crate::login_session_store::SessionStore::read(&conn)?
-            .map(|journal| journal.pending_cleanup().to_vec())
-            .unwrap_or_default();
-        if let Some(directory) = db_path()?.parent().map(Path::to_path_buf) {
-            for id in retired {
-                crate::login_session_store::SessionStore::delete_retired_cache(
-                    &mut conn,
-                    &directory,
-                    &id,
-                )?;
-            }
-        }
-        crate::login_session_store::SessionStore::finish_ending(&mut conn, None)?;
-        crate::login_session_store::SessionStore::acknowledge_legacy_cleanup(&mut conn)?;
-        profile_avatars::clear()?;
-        crate::login_session_store::SessionStore::prepare(&mut conn).map(String::from)
-    })
-    .await
-    .map_err(|e| format!("join native fresh-login preparation: {e}"))??;
+    let id = tauri::async_runtime::spawn_blocking(prepare_fresh_login)
+        .await
+        .map_err(|e| format!("join native fresh-login preparation: {e}"))??;
     crate::realtime::runtime().refresh_account_epoch();
     Ok(id)
 }
 
+fn prepare_fresh_login() -> Result<String, String> {
+    // Hold the lifetime write guard until the new cache file is active and the journal is settled.
+    let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
+    let mut preferences = open_preferences()?;
+    // End any still-admitted login: its cache file becomes pending cleanup, deleted below.
+    crate::login_session_store::SessionStore::end_current(&mut preferences)?;
+    let retired: Vec<_> = crate::login_session_store::SessionStore::read(&preferences)?
+        .map(|journal| journal.pending_cleanup().to_vec())
+        .unwrap_or_default();
+    let directory = location::directory()?;
+    for id in &retired {
+        crate::login_session_store::SessionStore::delete_retired_cache(
+            &mut preferences,
+            &directory,
+            id,
+        )?;
+    }
+    crate::login_session_store::SessionStore::finish_ending(&mut preferences, None)?;
+    let id = crate::login_session_store::SessionStore::prepare(&mut preferences)?;
+    let cache = directory.join(id.sqlite_filename());
+    let conn = Connection::open(&cache).map_err(|e| format!("create login cache file: {e}"))?;
+    configure(&conn)?;
+    create_cache_schema(&conn)?;
+    location::activate_cache(cache);
+    profile_avatars::clear()?;
+    Ok(String::from(id))
+}
+
+/// Repair the ACTIVE login's cache file (damaged/missing schema): same UUID, fresh tables.
 #[tauri::command]
 pub(crate) async fn native_db_recreate_cache() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
-        let mut conn = open_preferences()?;
+        // Creating is intentional: a missing active file is repairable state for the SAME login.
+        let mut conn = Connection::open(cache_path()?)
+            .map_err(|e| format!("open login cache for repair: {e}"))?;
+        configure(&conn)?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Exclusive)
             .map_err(|e| format!("begin native cache recreation: {e}"))?;
@@ -522,43 +529,6 @@ fn parse_json(value: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub(crate) async fn native_db_get_meta(user_id: i64, key: String) -> Result<Option<Value>, String> {
-    lifetime::spawn(move || {
-        let value = open()?
-            .query_row(
-                "SELECT value_json FROM sync_state WHERE user_id = ?1 AND key = ?2",
-                params![user_id, key],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|e| format!("get sync state: {e}"))?;
-        value.map(parse_json).transpose()
-    })
-    .await
-    .map_err(|e| format!("join sync-state read: {e}"))?
-}
-
-#[tauri::command]
-pub(crate) async fn native_db_put_meta(
-    user_id: i64,
-    key: String,
-    value: Value,
-) -> Result<(), String> {
-    lifetime::spawn(move || {
-        open()?
-            .execute(
-                "INSERT INTO sync_state(user_id, key, value_json) VALUES(?1, ?2, ?3)
-                 ON CONFLICT(user_id, key) DO UPDATE SET value_json = excluded.value_json",
-                params![user_id, key, json_text(&value)?],
-            )
-            .map_err(|e| format!("put sync state: {e}"))?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| format!("join sync-state write: {e}"))?
-}
-
-#[tauri::command]
 pub(crate) async fn native_db_clear_user(user_id: i64) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
@@ -574,8 +544,7 @@ pub(crate) async fn native_db_clear_user(user_id: i64) -> Result<(), String> {
             "profile_namespaces",
             "profiles",
             "members",
-            "relationship_requests",
-            "sync_state",
+            "account_state",
             "thread_sync_state",
             "messages",
             "message_ranges",
@@ -597,7 +566,7 @@ pub(crate) async fn native_db_clear_user(user_id: i64) -> Result<(), String> {
 pub(crate) async fn native_db_clear_all() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _lifetime = lifetime::CACHE_LIFETIME.invalidate()?;
-        let path = db_path()?;
+        let path = cache_path()?;
         if path.exists() {
             let conn = open()?;
             conn.execute_batch(
@@ -605,8 +574,7 @@ pub(crate) async fn native_db_clear_all() -> Result<(), String> {
                  DELETE FROM threads;
                  DELETE FROM profiles;
                  DELETE FROM members;
-                 DELETE FROM relationship_requests;
-                 DELETE FROM sync_state;
+                 DELETE FROM account_state;
                  DELETE FROM thread_sync_state;
                  DELETE FROM messages;
                  DELETE FROM message_ranges;
@@ -623,3 +591,95 @@ pub(crate) async fn native_db_clear_all() -> Result<(), String> {
 #[cfg(test)]
 #[path = "tests/native_db_tests.rs"]
 mod tests;
+
+/// The process-wide location static admits exactly one directory; every test that needs the real
+/// filesystem (per-login cache files, avatar store) shares this single instance.
+#[cfg(test)]
+fn shared_test_location() -> &'static tempfile::TempDir {
+    static DIRECTORY: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let directory = DIRECTORY.get_or_init(|| tempfile::tempdir().unwrap());
+    location::initialize(directory.path()).unwrap();
+    directory
+}
+
+/// One sequential test owns the process-wide location statics: initialize() is OnceLock-guarded,
+/// so the whole cache-file lifecycle runs inside a single test function.
+#[cfg(test)]
+mod login_cache_tests {
+    use super::location;
+    use super::*;
+    use crate::login_session_store::{LoginSessionId, SessionStore};
+
+    #[test]
+    fn per_login_cache_files_follow_the_login_journal() {
+        let temp = shared_test_location();
+        location::reset_active_cache_for_tests();
+
+        // Fresh login #1: a UUID-named cache file is created and activated.
+        let first = LoginSessionId::try_from(prepare_fresh_login().unwrap()).unwrap();
+        let first_file = temp.path().join(first.sqlite_filename());
+        assert!(first_file.exists());
+        assert_eq!(location::active_cache_path().unwrap(), first_file);
+        open().unwrap(); // cache commands validate the active file's schema.
+
+        // Preferences live in the shared file and survive every cache transition.
+        let mut conn = open_preferences().unwrap();
+        conn.execute(
+            "INSERT INTO client_preferences(scope,key,value_json,updated_at)
+             VALUES('device','theme','\"dark\"',0)",
+            [],
+        )
+        .unwrap();
+        SessionStore::activate(&mut conn, &first, "secret-one").unwrap();
+
+        // Logout: the journal records cleanup ownership, the cache file stays on disk.
+        SessionStore::end(&mut conn, Some(&first)).unwrap();
+        SessionStore::finish_ending(&mut conn, Some(&first)).unwrap();
+        drop(conn);
+        assert!(first_file.exists());
+        location::reset_active_cache_for_tests();
+        assert!(location::active_cache_path().is_err()); // signed out: no active cache
+
+        // Fresh login #2: deletes the retired file, mints a new UUID and file.
+        let second = LoginSessionId::try_from(prepare_fresh_login().unwrap()).unwrap();
+        assert_ne!(first, second);
+        assert!(!first_file.exists());
+        assert!(temp.path().join(second.sqlite_filename()).exists());
+        open().unwrap();
+
+        // Simulated restart: the active file is re-resolved from the durable journal alone.
+        location::reset_active_cache_for_tests();
+        assert_eq!(
+            location::active_cache_path().unwrap(),
+            temp.path().join(second.sqlite_filename())
+        );
+
+        let conn = open_preferences().unwrap();
+        let theme: String = conn
+            .query_row(
+                "SELECT value_json FROM client_preferences WHERE scope='device' AND key='theme'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(theme, "\"dark\"");
+        let raw: String = conn
+            .query_row(
+                "SELECT value_json FROM client_preferences
+                 WHERE scope='device' AND key='soms.native-login-session.v1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!raw.contains("secret-one"));
+        // The cache schema lives in the login's own file, not the shared preferences file.
+        let cache_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cache_tables, 0);
+    }
+}
