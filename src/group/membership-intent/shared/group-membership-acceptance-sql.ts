@@ -1,6 +1,9 @@
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../../../federation/federation-history-access-setting.js';
 import { sql, type SQL } from 'drizzle-orm';
-import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
+import {
+  authoredIntentWriteSql,
+  relationshipIntentPromotionSql,
+} from '../../../common/sql/authored-relationship-intent-sql.js';
 import { threadFanoutAdmissionSql } from '../../../common/sql/thread-content-fanout-admission-sql.js';
 import { groupMemberProfileAddressSql } from '../../meta/group-member-profile-address.js';
 
@@ -67,26 +70,17 @@ export function groupMembershipAcceptanceIntentWrites(
     return [sideA, sideB];
   }
   if (input.profileNamespaceId === 0)
-    return [sideA, localApplicantPromotionSql(input)];
+    return [
+      sideA,
+      relationshipIntentPromotionSql({
+        author: {
+          account: input.memberAccount,
+          namespaceId: input.profileNamespaceId,
+        },
+        receiver: { account: input.groupAccount, namespaceId: 0 },
+      }),
+    ];
   return [sideA];
-}
-
-/** The manager-ACK promotion of a local application direction, mirroring the
- * P2P reverse upgrade: a still-live REQUESTED application collapses to
- * ACCEPTED without touching its note, requestedAt or profile coordinates, so
- * the applicant's own record stays its author's history. */
-function localApplicantPromotionSql(
-  input: GroupMembershipAcceptanceInput,
-): SQL {
-  return sql`
-      UPDATE "RelationshipIntent" SET
-        status = 'ACCEPTED'::"RelationshipIntentStatus",
-        "expiresAt" = NULL,
-        "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "authorAccount" = ${input.memberAccount} AND "authorNamespaceId" = 0
-        AND "receiverAccount" = ${input.groupAccount} AND "receiverNamespaceId" = 0
-        AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
-    `;
 }
 
 /** Shared CTE contract: join_source, accepted_intent, pair_change, roster_plan,

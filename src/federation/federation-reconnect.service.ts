@@ -4,7 +4,6 @@ import { Interval } from '@nestjs/schedule';
 import { FederationPeerLifecycle } from './federation-peer-lifecycle.js';
 import { FederationStateFeedPushService } from './federation-state-feed-push.service.js';
 import { FederationStatePullService } from './federation-state-pull.service.js';
-import { RelationshipIntentExpiryService } from '../relationship/relationship-intent-expiry.service.js';
 import { FederationProfileNamespacePullService } from './federation-profile-namespace-pull.service.js';
 import { KeypairService } from './keypair.service.js';
 import {
@@ -16,7 +15,6 @@ import {
 const SWEEP_MS = 60_000;
 /** Max stagger across domains within one tick (avoids a thundering herd on a fleet-wide outage). */
 const JITTER_MS = 5000;
-const REQUEST_EXPIRY_SWEEP_MS = 60 * 60_000;
 
 /**
  * The 60s reconnect sweep retries peers still establishing acceptance. Periodic reachability
@@ -40,7 +38,6 @@ export class FederationReconnectService implements OnApplicationBootstrap {
     private readonly peerLifecycle: FederationPeerLifecycle,
     private readonly stateFeedPush: FederationStateFeedPushService,
     private readonly statePull: FederationStatePullService,
-    private readonly intentExpiry: RelationshipIntentExpiryService,
     private readonly profileNamespacePull: FederationProfileNamespacePullService,
     private readonly events: EventEmitter2,
     private readonly keypair: KeypairService,
@@ -74,17 +71,6 @@ export class FederationReconnectService implements OnApplicationBootstrap {
         this.logger.debug(`reconcile ${domain}: ${(error as Error).message}`),
       )
       .finally(() => this.inFlight.delete(domain));
-  }
-
-  @Interval(REQUEST_EXPIRY_SWEEP_MS)
-  expireRequests(): void {
-    void this.intentExpiry
-      .revokeExpiredLocalRequests()
-      .catch((error) =>
-        this.logger.warn(
-          `relationship expiry sweep failed: ${(error as Error).message}`,
-        ),
-      );
   }
 
   private async reconcileTrustedPeers(): Promise<void> {

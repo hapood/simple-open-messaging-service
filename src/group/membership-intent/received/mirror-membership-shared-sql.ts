@@ -1,4 +1,4 @@
-import { sql, type SQL } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import type { RelationshipIntentStatus } from '../../../common/relationship-intent-state.js';
 
 /** Wire-carried intent coordinates applied verbatim on a mirror. The authored
@@ -74,27 +74,6 @@ export function mirrorIntentWriteSql(params: {
       RETURNING status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt",
         "messageEndSeq", "tombstoneEndSeq"
   `;
-}
-
-/** Persisted-intent read-back: the statement's own write when it fired, else the
- * pre-statement row. Sibling CTEs cannot see one another's base-table writes. */
-export function mirrorIntentReadBackSql(params: {
-  writeName: string;
-  readBackName: string;
-  author: IntentEndpointCoordinates;
-  receiver: IntentEndpointCoordinates;
-}): SQL {
-  return sql`
-    ${sql.raw(params.readBackName)} AS MATERIALIZED (
-      SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
-        FROM ${sql.raw(params.writeName)}
-      UNION ALL
-      SELECT status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
-      FROM "RelationshipIntent"
-      WHERE "authorAccount" = ${params.author.account} AND "authorNamespaceId" = ${params.author.namespaceId}
-        AND "receiverAccount" = ${params.receiver.account} AND "receiverNamespaceId" = ${params.receiver.namespaceId}
-        AND NOT EXISTS (SELECT 1 FROM ${sql.raw(params.writeName)})
-    )`;
 }
 
 export interface MirrorGroupPresentationInput {

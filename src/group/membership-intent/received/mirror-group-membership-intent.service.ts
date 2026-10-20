@@ -1,4 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm';
+import { relationshipIntentPromotionSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import * as tables from '../../../database/schema.js';
 import { Logger } from '@nestjs/common';
 import type {
@@ -33,9 +34,15 @@ import {
   mirrorMembershipStateSql,
   type MirrorMembershipStateRow,
 } from './mirror-membership-state-sql.js';
-import { mirrorMembershipRequestSql } from './mirror-membership-request-sql.js';
-import { mirrorMembershipActivationSql } from './mirror-membership-acceptance-sql.js';
-import { mirrorMembershipRevocationSql } from './mirror-membership-revocation-sql.js';
+import { mirrorMembershipRequestIntentWrite } from './mirror-membership-request-sql.js';
+import {
+  mirrorMembershipActivationIntentWrite,
+  mirrorMembershipActivationSql,
+} from './mirror-membership-acceptance-sql.js';
+import {
+  mirrorMembershipRevocationIntentWrite,
+  mirrorMembershipRevocationSql,
+} from './mirror-membership-revocation-sql.js';
 import { writeMirrorLocalGroupLeftInTx } from '../shared/mirror-local-group-left.js';
 import {
   InvalidReceivedIntentError,
@@ -306,7 +313,7 @@ export class MirrorGroupMembershipIntentService {
       if (lockedPairId === null)
         await this.mintPair(tx, threadId, group, memberAccount);
       await tx.execute(
-        mirrorMembershipRequestSql({
+        mirrorMembershipRequestIntentWrite({
           threadId,
           presentation,
           memberAccount,
@@ -434,8 +441,21 @@ export class MirrorGroupMembershipIntentService {
       !effective(fresh.memberIntentStatus, fresh.memberIntentExpiresAt)
     )
       return { routed: 'noop:already-revoked' };
+    const wireWrite = await tx.execute<{ status: string }>(
+      mirrorMembershipRevocationIntentWrite({
+        threadId,
+        pairId: lockedPairId,
+        presentation,
+        memberAccount,
+        localMemberId: memberId,
+        requestStatus,
+        requestDirection,
+      }),
+    );
+    // The guarded RETURNING reports whether this delivery moved the mirrored
+    // group direction; a replayed item leaves it untouched.
+    const intentChanged = wireWrite.rows.length > 0;
     const result = await tx.execute<{
-      intentChanged: boolean;
       pairChanged: boolean;
       epochChanged: boolean;
     }>(
@@ -445,8 +465,6 @@ export class MirrorGroupMembershipIntentService {
         presentation,
         memberAccount,
         localMemberId: memberId,
-        requestStatus,
-        requestDirection,
       }),
     );
     if (requestStatus && requestDirection) {
@@ -482,7 +500,7 @@ export class MirrorGroupMembershipIntentService {
     if (
       !fresh.pairActive &&
       effective(fresh.memberIntentStatus, fresh.memberIntentExpiresAt) &&
-      (row.intentChanged || fresh.groupIntentStatus === 'REVOKED')
+      (intentChanged || fresh.groupIntentStatus === 'REVOKED')
     ) {
       // A group revoke concludes the member's pending request or dangling
       // acceptance. The reverse task authors side B REVOKED; an inactive pair
@@ -517,9 +535,31 @@ export class MirrorGroupMembershipIntentService {
   ): Promise<{ routed: MirrorMembershipRouting; threadId?: number }> {
     const { command, presentation, memberId } = context;
     const group = command.group;
+    const sideAWrite = await tx.execute<{ status: string }>(
+      mirrorMembershipActivationIntentWrite({
+        threadId: context.threadId,
+        pairId: context.pairId,
+        presentation,
+        memberAccount: command.memberAccount,
+        localMemberId: memberId,
+        intent: context.intent,
+        persistStatus: context.persistStatus,
+      }),
+    );
+    // The guarded RETURNING reports whether this delivery moved the mirrored
+    // group direction; a replayed item leaves it untouched.
+    const intentChanged = sideAWrite.rows.length > 0;
+    if (context.promote)
+      await tx.execute(
+        relationshipIntentPromotionSql({
+          author: { account: command.memberAccount, namespaceId: 0 },
+          receiver: {
+            account: group.account,
+            namespaceId: group.namespaceId,
+          },
+        }),
+      );
     const activation = await tx.execute<{
-      intentChanged: boolean;
-      promoted: boolean;
       pairChanged: boolean;
       activated: boolean;
     }>(
@@ -531,12 +571,11 @@ export class MirrorGroupMembershipIntentService {
         localMemberId: memberId,
         intent: context.intent,
         persistStatus: context.persistStatus,
-        promote: context.promote,
       }),
     );
     const row = activation.rows[0]!;
     if (!row.activated) {
-      if (row.intentChanged) {
+      if (intentChanged) {
         // Mismatch: the received ACK cannot be honored. Record it, repair with
         // the system REVOKED write-back, never throw — the stream must advance.
         await this.concludeMemberDirectionInTx(

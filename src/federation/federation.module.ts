@@ -99,7 +99,6 @@ import { DatabaseService } from '../database/database.service.js';
 import { ClientStateFeedService } from '../client-state-feed/client-state-feed.service.js';
 import { FederationStateFeedPushService } from './federation-state-feed-push.service.js';
 import { FederationInboundMessageEffectsService } from './federation-inbound-message-effects.service.js';
-import { RelationshipIntentExpiryService } from '../relationship/relationship-intent-expiry.service.js';
 
 /**
  * Federation (S2S). Consumers import this module explicitly when they need its exported services.
@@ -263,7 +262,6 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
     FederationThreadAccessService,
     FederationStateFeedPushService,
     FederationInboundMessageEffectsService,
-    RelationshipIntentExpiryService,
     FederationTrustedPeerClient,
     FederationThreadResourceClient,
     FederationProfileService,
@@ -333,7 +331,6 @@ import { RelationshipIntentExpiryService } from '../relationship/relationship-in
     FederationMediaLocalizationService,
     FederationStateFeedPushService,
     FederationInboundMessageEffectsService,
-    RelationshipIntentExpiryService,
     KeypairService,
     SignatureService,
     DiscoveryService,

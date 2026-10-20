@@ -1,6 +1,27 @@
 import type { RequestSnapshot } from '../../../shared/request-snapshot.js';
-import { sql } from 'drizzle-orm';
-import type { RelationshipIntentStatus } from '../relationship-intent-state.js';
+import { sql, type SQL } from 'drizzle-orm';
+
+/** In-place promotion of a still-live REQUESTED direction to ACCEPTED, the
+ * one write a completed round makes on the opposite endpoint's own direction:
+ * only the status and its deadline change — the author's note, requestedAt and
+ * profile reference survive as their history. The P2P reverse upgrade, the
+ * group manager's local-application fold, and the mirror wire-ACK fold share
+ * this shape. Callers append their own gating (remote switch, promote flag, or
+ * a statement-local EXISTS) and RETURNING lists when they embed it as a CTE. */
+export function relationshipIntentPromotionSql(params: {
+  author: { account: string; namespaceId: number };
+  receiver: { account: string; namespaceId: number };
+}): SQL {
+  return sql`
+      UPDATE "RelationshipIntent" SET
+        status = 'ACCEPTED'::"RelationshipIntentStatus",
+        "expiresAt" = NULL,
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "authorAccount" = ${params.author.account} AND "authorNamespaceId" = ${params.author.namespaceId}
+        AND "receiverAccount" = ${params.receiver.account} AND "receiverNamespaceId" = ${params.receiver.namespaceId}
+        AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
+    `;
+}
 
 /** Parameterized authored-intent write shared by P2P and group membership relationships.
  * The caller owns the pair lock and validates the transition. The row is

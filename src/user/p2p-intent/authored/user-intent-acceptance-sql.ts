@@ -1,6 +1,9 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { FEDERATION_HISTORY_ACCESS_SETTING_KEY } from '../../../federation/federation-history-access-setting.js';
-import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
+import {
+  authoredIntentWriteSql,
+  relationshipIntentPromotionSql,
+} from '../../../common/sql/authored-relationship-intent-sql.js';
 import {
   userIntentPeerWriteSql,
   type UserIntentFeedInput,
@@ -59,11 +62,16 @@ export function userIntentAcceptanceSql(input: UserIntentAcceptanceInput): SQL {
         AND "receiverAccount" = ${input.targetAccount} AND "receiverNamespaceId" = ${input.targetNamespaceId}
         AND NOT EXISTS (SELECT 1 FROM authored)
     ), reverse_upgrade AS (
-      UPDATE "RelationshipIntent" SET status = 'ACCEPTED', "expiresAt" = NULL,
-        "updatedAt" = CURRENT_TIMESTAMP
-      WHERE "authorAccount" = ${input.targetAccount} AND "authorNamespaceId" = ${input.targetNamespaceId}
-        AND "receiverAccount" = ${input.actorAccount} AND "receiverNamespaceId" = ${input.actorNamespaceId}
-        AND status = 'REQUESTED' AND "expiresAt" > CURRENT_TIMESTAMP
+      ${relationshipIntentPromotionSql({
+        author: {
+          account: input.targetAccount,
+          namespaceId: input.targetNamespaceId,
+        },
+        receiver: {
+          account: input.actorAccount,
+          namespaceId: input.actorNamespaceId,
+        },
+      })}
         AND ${remote ? sql`false` : sql`true`} AND EXISTS (SELECT 1 FROM authored)
       RETURNING "authorAccount", "authorNamespaceId", status, "profileNamespaceId", "profileRev", note, "requestedAt", "expiresAt"
     ), pair_change AS (

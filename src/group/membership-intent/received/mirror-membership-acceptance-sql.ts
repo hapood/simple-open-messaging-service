@@ -1,7 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
   mirrorGroupDirection,
-  mirrorIntentReadBackSql,
   mirrorIntentWriteSql,
   type MirrorGroupPresentationInput,
 } from './mirror-membership-shared-sql.js';
@@ -26,18 +25,43 @@ export interface MirrorMembershipActivationInput {
    * a confirmed membership (pending application or dangling acceptance)
    * persists REQUESTED — both sides effective either way. */
   persistStatus: 'REQUESTED' | 'ACCEPTED';
-  /** The system-authored side B promotion (REQUESTED → ACCEPTED) fires only
-   * when side B still holds a live application; the completion path (side B
-   * already ACCEPTED) authors nothing. */
-  promote: boolean;
 }
 
-/** Statement A of the activation: persist side A, derive side B, and — when the
- * conjunction crosses both-effective — activate the pair, enable federation
- * rounds, and seat the member's AccountThreadState at the tail. No sync-state
- * write here: the applier calls the existing relationship-thread-state
- * initializer after this statement, on the now-active pair. A mirror writes no
- * meta facts, no system message, no projections, and no audience rows. */
+/** The received side A write for the activation family, run before the domain
+ * statement in the owning transaction: a received ACK persists ACCEPTED; a
+ * received REQUESTED that collapses into a confirmed membership (pending
+ * application or dangling acceptance) persists REQUESTED. Its guarded
+ * RETURNING reports whether this delivery moved the mirrored group direction. */
+export function mirrorMembershipActivationIntentWrite(
+  input: MirrorMembershipActivationInput,
+): SQL {
+  const { author, receiver } = mirrorGroupDirection(
+    input.presentation,
+    input.memberAccount,
+  );
+  return mirrorIntentWriteSql({
+    author,
+    receiver,
+    status: input.persistStatus,
+    note: input.intent.note,
+    requestedAt: input.intent.requestedAt,
+    expiresAt: input.intent.expiresAt,
+    profileNamespaceId: input.intent.profileNamespaceId,
+    profileRev: input.intent.profileRev,
+    messageEndSeq: input.intent.messageEndSeq,
+    tombstoneEndSeq: input.intent.tombstoneEndSeq,
+  });
+}
+
+/** Statement A of the activation, on the already-written side A row: derive
+ * side B, and — when the conjunction crosses both-effective — activate the
+ * pair, enable federation rounds, and seat the member's AccountThreadState at
+ * the tail. The caller folds a still-live side B application beforehand through
+ * the shared promotion writer; this statement only reads the result. No
+ * sync-state write here: the applier calls the existing
+ * relationship-thread-state initializer after this statement, on the
+ * now-active pair. A mirror writes no meta facts, no system message, no
+ * projections, and no audience rows. */
 export function mirrorMembershipActivationSql(
   input: MirrorMembershipActivationInput,
 ): SQL {
@@ -55,40 +79,17 @@ export function mirrorMembershipActivationSql(
           AND b."receiverAccount" = ${input.presentation.groupAccount}
           AND b."receiverNamespaceId" = ${input.presentation.groupNamespaceId}
       WHERE p.id = ${input.pairId} AND t.id = ${input.threadId}
-    ), authored AS (
-      ${mirrorIntentWriteSql({
-        author,
-        receiver,
-        status: input.persistStatus,
-        note: input.intent.note,
-        requestedAt: input.intent.requestedAt,
-        expiresAt: input.intent.expiresAt,
-        profileNamespaceId: input.intent.profileNamespaceId,
-        profileRev: input.intent.profileRev,
-        messageEndSeq: input.intent.messageEndSeq,
-        tombstoneEndSeq: input.intent.tombstoneEndSeq,
-      })}
-    ), ${mirrorIntentReadBackSql({
-      writeName: 'authored',
-      readBackName: 'persisted_intent',
-      author,
-      receiver,
-    })}, side_a_effective AS MATERIALIZED (
+    ), persisted_intent AS MATERIALIZED (
+      SELECT status, "profileRev", note, "requestedAt", "expiresAt"
+      FROM "RelationshipIntent"
+      WHERE "authorAccount" = ${author.account} AND "authorNamespaceId" = ${author.namespaceId}
+        AND "receiverAccount" = ${receiver.account} AND "receiverNamespaceId" = ${receiver.namespaceId}
+    ), side_a_effective AS MATERIALIZED (
       SELECT (status = 'ACCEPTED' OR (status = 'REQUESTED'
           AND "expiresAt" > CURRENT_TIMESTAMP)) AS effective
       FROM persisted_intent
-    ), promotion AS (
-      UPDATE "RelationshipIntent" b
-        SET status = 'ACCEPTED', "expiresAt" = NULL, "updatedAt" = CURRENT_TIMESTAMP
-      WHERE b."authorAccount" = ${input.memberAccount} AND b."authorNamespaceId" = 0
-        AND b."receiverAccount" = ${input.presentation.groupAccount}
-        AND b."receiverNamespaceId" = ${input.presentation.groupNamespaceId}
-        AND b.status = 'REQUESTED' AND b."expiresAt" > CURRENT_TIMESTAMP
-        AND ${input.promote ? sql`true` : sql`false`}
-      RETURNING 1
     ), side_b_effective AS MATERIALIZED (
-      SELECT (EXISTS (SELECT 1 FROM promotion)
-          OR join_source."memberStatus" = 'ACCEPTED'
+      SELECT (join_source."memberStatus" = 'ACCEPTED'
           OR (join_source."memberStatus" = 'REQUESTED'
             AND join_source."memberExpiresAt" > CURRENT_TIMESTAMP)) AS effective
       FROM join_source
@@ -142,8 +143,7 @@ export function mirrorMembershipActivationSql(
           THEN NULL ELSE "AccountThreadState"."lastMentionSeq" END
       RETURNING "accountId"
     )
-    SELECT EXISTS (SELECT 1 FROM authored) AS "intentChanged",
-      EXISTS (SELECT 1 FROM promotion) AS "promoted",
+    SELECT
       EXISTS (SELECT 1 FROM pair_change) AS "pairChanged",
       EXISTS (SELECT 1 FROM member_state) AS "activated"
     FROM persisted_intent v
