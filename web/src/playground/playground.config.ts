@@ -1,11 +1,14 @@
 import {
   ApplicationConfig,
   CSP_NONCE,
-  computed,
   provideZonelessChangeDetection,
-  signal,
 } from '@angular/core';
-import { provideHttpClient, withFetch } from '@angular/common/http';
+import {
+  provideHttpClient,
+  withFetch,
+  withInterceptors,
+} from '@angular/common/http';
+import { playgroundHttp } from './playground-http.mock';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { provideRouter } from '@angular/router';
 import { MAT_SNACK_BAR_DEFAULT_OPTIONS } from '@angular/material/snack-bar';
@@ -31,7 +34,14 @@ import {
 import { ConversationListService } from '../app/services/conversation-list.service';
 import { PlaygroundConversationList } from './playground-conversation-list.mock';
 import { GroupService } from '../app/services/group.service';
-import { of, Subject } from 'rxjs';
+import { of } from 'rxjs';
+import { ProfileRepository } from '../app/services/profile-store.service';
+import { PlaygroundGroupService } from './playground-group.mock';
+import { PlaygroundUserService } from './playground-user.mock';
+import {
+  PlaygroundMemberProfiles,
+  PlaygroundProfiles,
+} from './playground-profile.mock';
 import { MemberProfileRepository } from '../app/services/member-profile-store.service';
 import { ProfileNamespaceRepository } from '../app/services/profile-namespace-store.service';
 import { UserService } from '../app/services/user.service';
@@ -47,47 +57,11 @@ const playgroundMediaThreshold = {
   markLoaded: () => undefined,
 };
 
-const playgroundGroupService = {
-  leaveGroup: () => of({ code: 0, message: 'ok' }),
-  dissolveGroup: () => of({ code: 0, message: 'ok' }),
-  updateGroup: () => of({ code: 0, message: 'ok' }),
-  setRole: () => of({ code: 0, message: 'ok' }),
-  kickMember: () => of({ code: 0, message: 'ok' }),
-  transferOwnership: () => of({ code: 0, message: 'ok' }),
-  inviteUsers: () =>
-    of({ code: 0, message: 'ok', data: { invited: [], skipped: [] } }),
-};
-
-const playgroundMemberNames = new Map([
-  [1, 'Me'],
-  [2, 'Alice'],
-  [3, 'Maya'],
-  [4, 'Noah'],
-  [5, 'Olivia'],
-]);
-const playgroundMemberProfiles = {
-  changed$: new Subject<readonly number[]>(),
-  resolve: async (
-    _threadId: number,
-    member: { userId: number; account: string },
-  ) => ({
-    ...member,
-    name: playgroundMemberNames.get(member.userId) ?? member.account,
-    avatar: '',
-  }),
-  resolveAll: async (
-    threadId: number,
-    members: Array<{ userId: number; account: string }>,
-  ) =>
-    Promise.all(
-      members.map((member) =>
-        playgroundMemberProfiles.resolve(threadId, member),
-      ),
-    ),
-};
-
 const playgroundNamespaceRepository = {
-  resolve: (pair: { publisherNamespaceId: number; profileNamespaceId: number }) =>
+  resolve: (pair: {
+    publisherNamespaceId: number;
+    profileNamespaceId: number;
+  }) =>
     of({
       ...pair,
       domain: 'chat.example.test',
@@ -98,47 +72,6 @@ const playgroundNamespaceRepository = {
       status: 'ACTIVE' as const,
       refreshedAt: Date.now(),
     }),
-};
-
-const playgroundRelationshipRequestRevision = signal(0);
-const playgroundRelationshipIntentRevision = signal(0);
-const playgroundRelationshipReadThrough = signal(0);
-
-const playgroundUserService = {
-  sessionUserId: signal<number | null>(1),
-  sessionProfile: signal({
-    id: 1,
-    account: 'me',
-    name: 'Me',
-    avatar: '',
-    domain: 'chat.example.test',
-    namespaceId: 0,
-  }),
-  /** Relationship request state is empty in the playground, but keeps the production signal contract intact. */
-  relationshipRequestStateRevision: playgroundRelationshipRequestRevision,
-  relationshipIntentStateRevision: playgroundRelationshipIntentRevision,
-  relationshipRequestReadThroughFeedId: playgroundRelationshipReadThrough,
-  friendReqBadge: computed(
-    () =>
-      playgroundRelationshipRequestRevision() >
-      playgroundRelationshipReadThrough(),
-  ),
-  listLocalFriendRequests: async () => ({
-    items: [],
-    scannedThrough: null,
-    hasMore: false,
-    total: 0,
-    actionableTotal: 0,
-  }),
-  markRelationshipRequestsRead: () => {
-    playgroundRelationshipReadThrough.set(
-      playgroundRelationshipRequestRevision(),
-    );
-  },
-  requestRelationship: () =>
-    of({ code: 0, message: 'ok', data: { taskId: 'playground-task' } }),
-  revokeRelationship: () =>
-    of({ code: 0, message: 'ok', data: { taskId: 'playground-task' } }),
 };
 
 function readCspNonce(): string | null {
@@ -155,7 +88,7 @@ export const playgroundConfig: ApplicationConfig = {
   providers: [
     { provide: CSP_NONCE, useValue: readCspNonce() },
     provideZonelessChangeDetection(),
-    provideHttpClient(withFetch()),
+    provideHttpClient(withFetch(), withInterceptors([playgroundHttp])),
     {
       provide: WebdbService,
       useFactory: (lifecycle: SessionLifecycleService) =>
@@ -196,12 +129,13 @@ export const playgroundConfig: ApplicationConfig = {
       provide: ProfileNamespaceRepository,
       useValue: playgroundNamespaceRepository,
     },
-    { provide: GroupService, useValue: playgroundGroupService },
+    { provide: GroupService, useExisting: PlaygroundGroupService },
     {
       provide: MemberProfileRepository,
-      useValue: playgroundMemberProfiles,
+      useExisting: PlaygroundMemberProfiles,
     },
-    { provide: UserService, useValue: playgroundUserService },
+    { provide: ProfileRepository, useExisting: PlaygroundProfiles },
+    { provide: UserService, useExisting: PlaygroundUserService },
     provideTransloco({
       config: {
         availableLangs: [

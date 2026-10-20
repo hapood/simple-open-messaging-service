@@ -2,29 +2,48 @@ import { computed, Injectable, signal } from '@angular/core';
 import { Subject } from 'rxjs';
 import type {
   ConversationItem,
+  GroupConversationItem,
   P2PConversationItem,
   ThreadPeerUser,
   User,
 } from '../app/services/model';
+import type { ConversationListService } from '../app/services/conversation-list.service';
+import type { ThreadNotificationUpdate } from '../app/services/thread-notification';
 import { ConversationLoadStatus } from '../app/services/thread-store.service';
 
 type ConversationMetaPatch = Partial<
-  Omit<P2PConversationItem, 'type' | 'peerUser' | 'group'>
+  Omit<P2PConversationItem, 'type' | 'peerUser' | 'group'> &
+    Omit<GroupConversationItem, 'type' | 'peerUser' | 'group'>
 >;
 
 /** In-memory implementation of the production conversation-list facade. */
 @Injectable({ providedIn: 'root' })
-export class PlaygroundConversationList {
+export class PlaygroundConversationList
+  implements Pick<ConversationListService, keyof ConversationListService>
+{
   private readonly conversations = signal<readonly ConversationItem[]>([]);
-  readonly items = computed(() => this.conversations());
+  readonly items = computed(() =>
+    this.conversations()
+      .map((item) => ({
+        ...item,
+        threadFeedId: item.threadFeedId ?? item.threadId,
+      }))
+      .sort(
+        (a, b) =>
+          Number(b.pinned) - Number(a.pinned) ||
+          (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0) ||
+          b.threadId - a.threadId,
+      ),
+  );
+  readonly navigationReady = signal(true);
   readonly status = signal(ConversationLoadStatus.READY);
-  readonly error = signal<string | null>(null);
+  readonly error = signal('');
   readonly openThreadId = signal<number | undefined>(undefined);
   readonly current = computed(() =>
     this.conversations().find((item) => item.threadId === this.openThreadId()),
   );
-  readonly threadSeq$ = new Subject<unknown>();
-  readonly threadNotifications$ = new Subject<unknown>();
+  readonly threadSeq$ = new Subject<{ threadId: number; seq: number }>();
+  readonly threadNotifications$ = new Subject<ThreadNotificationUpdate[]>();
 
   setConversation(item: ConversationItem): void {
     this.upsert(item);
@@ -96,10 +115,42 @@ export class PlaygroundConversationList {
     return undefined;
   }
 
+  previewUnreadEntryBoundary(): undefined {
+    return undefined;
+  }
+  captureUnreadEntryBoundary(): undefined {
+    return undefined;
+  }
+  resetUnreadEntryBoundary(): void {}
+
   markReadStable(): void {}
   flushRead(): void {}
-  markJoinRequestsReadLocally(): void {}
-  confirmThreadAlias(): void {}
+  markJoinRequestsReadLocally(threadId: number, feedId: number): void {
+    const thread = this.items().find((item) => item.threadId === threadId);
+    if (thread?.type !== 'GROUP' || thread.joinRequestReadFeedId === -1) return;
+    this.patch(threadId, {
+      joinRequestReadFeedId: Math.max(
+        thread.joinRequestReadFeedId ?? 0,
+        Math.min(feedId, thread.joinRequestEndFeedId ?? 0),
+      ),
+    });
+  }
+
+  markAnnouncementReadLocally(threadId: number, feedId: number): void {
+    const thread = this.items().find((item) => item.threadId === threadId);
+    if (thread?.type !== 'GROUP') return;
+    this.patch(threadId, {
+      announcementReadFeedId: Math.max(
+        thread.announcementReadFeedId ?? 0,
+        Math.min(feedId, Number(thread.group.announcement?.feedId ?? 0)),
+      ),
+    });
+  }
+  confirmThreadAlias(
+    result: Parameters<ConversationListService['confirmThreadAlias']>[0],
+  ): void {
+    this.patch(result.threadId, { alias: result.alias });
+  }
 
   async removeThread(threadId: number): Promise<void> {
     this.conversations.update((items) =>

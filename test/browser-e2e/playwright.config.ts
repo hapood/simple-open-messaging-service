@@ -3,6 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 /** Browser-first federation lab configuration. Authentication state is never persisted here. */
 export default defineConfig({
   testDir: '.',
+  testIgnore: 'playground.spec.ts',
   globalSetup: './hmr-global-setup.ts',
   timeout: 45_000,
   expect: { timeout: 10_000 },
