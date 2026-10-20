@@ -518,6 +518,33 @@ describe('federated Address friend requests', () => {
         ),
       });
 
+    const waitForTerminalDirections = async () => {
+      for (const app of [appA, appB]) {
+        await vi.waitFor(
+          async () => {
+            const intents =
+              await app.database.query.relationshipIntent.findMany({
+                where: or(
+                  and(
+                    eq(relationshipIntent.authorAccount, alice.account),
+                    eq(relationshipIntent.receiverAccount, bob.account),
+                  ),
+                  and(
+                    eq(relationshipIntent.authorAccount, bob.account),
+                    eq(relationshipIntent.receiverAccount, alice.account),
+                  ),
+                ),
+              });
+            expect(intents).toHaveLength(2);
+            expect(intents.every((intent) => intent.status === 'REVOKED')).toBe(
+              true,
+            );
+          },
+          { timeout: 15_000, interval: 100 },
+        );
+      }
+    };
+
     await send('first request');
     const firstRound = await vi.waitFor(
       async () => {
@@ -562,6 +589,7 @@ describe('federated Address friend requests', () => {
       },
       { timeout: 15_000, interval: 100 },
     );
+    await waitForTerminalDirections();
     const firstPeerRevoke = (await peerRevoke())!;
 
     await send('second request');
@@ -603,6 +631,43 @@ describe('federated Address friend requests', () => {
       },
       { timeout: 15_000, interval: 100 },
     );
+    await waitForTerminalDirections();
+
+    // The original rejector must see the requester's terminal fact before
+    // starting another flow, rather than auto-accepting a stale REQUESTED.
+    const reverse = await request(appB.baseUrl)
+      .post('/api/v1/relationship/request')
+      .set('Authorization', `Bearer ${bob.token}`)
+      .send({
+        ...reverseTarget,
+        snapshot: { displayName: 'Reject Alice', avatar: null },
+      });
+    expect(reverse.body.code, JSON.stringify(reverse.body)).toBe(
+      BusinessCode.OK,
+    );
+    await vi.waitFor(
+      async () => {
+        const incoming = await appA.database.query.relationshipIntent.findFirst(
+          {
+            where: and(
+              eq(relationshipIntent.authorAccount, bob.account),
+              eq(relationshipIntent.authorNamespaceId, target.namespaceId),
+              eq(relationshipIntent.receiverAccount, alice.account),
+              eq(relationshipIntent.receiverNamespaceId, 0),
+            ),
+          },
+        );
+        expect(incoming?.status).toBe('REQUESTED');
+      },
+      { timeout: 15_000, interval: 100 },
+    );
+    expect(
+      (await findP2PRelationship(appA.database, alice.id, target)).pair?.active,
+    ).toBe(false);
+    expect(
+      (await findP2PRelationship(appB.database, bob.id, reverseTarget)).pair
+        ?.active,
+    ).toBe(false);
   });
 
   it('converges a federated kick through a system-operated local member revoke', async () => {

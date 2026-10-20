@@ -35,8 +35,9 @@ REV = RelationshipIntent.REVOKED
 
 `ACK` is a persisted directed state, not a network acknowledgement message. An incoming
 `REQUESTED` with `expiresAt <= now` is a no-op: it is neither `REQ` nor `REV` and cannot update a
-relationship or projection. The local expiry sweep converts a currently stored expired request by
-performing the explicit `REQUESTED -> REVOKED` transition.
+relationship or projection. Stored requests likewise lose authorization at their absolute expiry;
+no expiry sweep or persisted status change is required. If the author explicitly materializes an
+expired request as `REVOKED`, it publishes that new directional fact atomically.
 
 ## Authoritative directed state machine
 

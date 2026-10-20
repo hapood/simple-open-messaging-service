@@ -14,7 +14,6 @@ import type { PeerStateFeedService } from '../../../federation/peer-state-feed.s
 import { openFederatedAudienceInTx } from '../../../federation/federation-audience.js';
 import { initializeRelationshipThreadStateInTx } from '../../../federation/federation-relationship-thread-state.js';
 import { captureThreadStateUpdatesInTx } from '../../../client-state-feed/capture-thread-state-updates.js';
-import { authoredIntentWriteSql } from '../../../common/sql/authored-relationship-intent-sql.js';
 import { normalizeAccount } from '../../../common/account.js';
 import { localIdentityDomain } from '../../../common/local-identity.js';
 import { lockBusinessAccountsInTx } from '../../../common/locks/account-business-lock.js';
@@ -330,6 +329,8 @@ export class ReceivedUserIntentService {
         activate: false,
         boundarySeq: pairRow.threadCurSeq,
       });
+      // The original durable REVOKED feed item remains the convergence
+      // source. A late ACK must not reindex or republish that unchanged fact.
       return { routed: 'noop:dropped-ack' };
     }
     return this.applyRevocationInTx(tx, {
@@ -541,9 +542,7 @@ export class ReceivedUserIntentService {
   ): Promise<ReceivedUserIntentResult> {
     const { intent, wireIntent, pairId, threadId } = context;
     const namespaceId = context.peer.namespaceId;
-    const result = await tx.execute<{
-      intentChanged: boolean;
-    }>(
+    await tx.execute(
       receivedUserIntentRequestSql({
         pairId,
         threadId,
@@ -741,28 +740,23 @@ export class ReceivedUserIntentService {
       return { routed: 'conclusion' };
     }
     if (context.localIntent?.status === 'REQUESTED') {
-      // BUG-1 convergence: the peer's REVOKED ends our pending direction in
-      // this same transaction — a left-live REQUESTED would swallow a later
-      // re-request as a same-round refresh and never reach the peer. The
-      // round itself already concluded REJECTED above; no echo is authored
-      // because the peer already holds the rejection fact.
+      // Conclude and publish our own direction as well. The peer knows its
+      // rejection, but still holds our REQUESTED snapshot until our home
+      // publishes this new terminal fact. A terminal redelivery does not echo.
       await tx.execute(
-        authoredIntentWriteSql({
-          author: {
-            account: context.localUser.account,
-            namespaceId: 0,
-          },
-          receiver: {
-            account: context.peer.account,
-            namespaceId: context.peer.namespaceId,
-          },
+        userIntentRevocationSql({
+          pairId,
           threadId,
-          status: 'REVOKED',
-          note: '',
-          requestedAt: null,
-          expiresAt: null,
+          namespaceId,
+          actorAccount: context.localUser.account,
+          actorNamespaceId: 0,
+          targetAccount: context.peer.account,
+          targetNamespaceId: namespaceId,
+          localActorId: context.localUserId,
+          localTargetId: null,
         }),
       );
+      context.peers.add(namespaceId);
       return { routed: 'rejection' };
     }
     return { routed: 'noop:already-revoked' };
