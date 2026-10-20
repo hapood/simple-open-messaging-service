@@ -633,7 +633,19 @@ export class RemoteMemberMembershipIntentService {
     if (row.pairChanged || (intentChanged && groupDirectionEffective)) {
       // The member's revoke concludes a still-positive group direction even
       // when the pair was only pending; departure effects require pairChanged.
-      await this.concludeGroupDirectionInTx(tx, context);
+      // A declined live invitation closes the invitation round as REJECTED;
+      // a departure's completed round is already closed and stays untouched.
+      await this.concludeGroupDirectionInTx(tx, context, !row.pairChanged);
+    } else if (intentChanged) {
+      // The remote member withdrew their pending application: close the
+      // mirrored APPLICATION round of their own authorship.
+      await this.relationshipMutations.writeGroupRequestEffectsInTx(
+        tx,
+        threadId,
+        context.member,
+        'WITHDRAWN',
+        'APPLICATION',
+      );
     }
     return {
       routed: row.pairChanged ? 'departure' : 'rejection',
@@ -652,6 +664,7 @@ export class RemoteMemberMembershipIntentService {
       clientUpdates: PendingClientStateFeedUpdate[];
       peers: Set<number>;
     },
+    invitationDeclined = false,
   ): Promise<void> {
     const allocated =
       await this.relationshipMutations.writeGroupRelationshipIntentInTx(
@@ -661,6 +674,8 @@ export class RemoteMemberMembershipIntentService {
         '',
         'REVOKED',
         context.clientUpdates,
+        'INVITATION',
+        invitationDeclined ? { clientRequestStatus: 'REJECTED' as const } : {},
       );
     for (const peerDomain of allocated.keys()) context.peers.add(peerDomain);
   }

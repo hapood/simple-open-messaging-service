@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
+import { decideMemberGroupRound } from './member-group-round-decision.js';
 import { GroupRole } from '../database/enums.js';
 import { ThrottleGuard, Throttle } from '../rate-limit/throttle.guard.js';
 import {
@@ -380,33 +381,12 @@ export class GroupController {
     requestId: string,
     decision: 'ACCEPT' | 'REJECT' | 'WITHDRAW',
   ) {
-    const resolution = await this.requests.resolveMemberGroupRound(
+    return decideMemberGroupRound(
+      { requests: this.requests, memberIntents: this.memberIntents },
       userId,
       requestId,
       decision,
     );
-    if (resolution.status === 'STALE_REQUEST') return resolution;
-    const outcome = await this.memberIntents.execute(
-      {
-        threadId: resolution.threadId,
-        memberUserId: userId,
-        decision: decision === 'ACCEPT' ? 'ACCEPTED' : 'REVOKED',
-      },
-      {
-        requestDecision: {
-          requestId: BigInt(requestId),
-          decision,
-        },
-      },
-    );
-    if (outcome.status === 'STALE_REQUEST' || outcome.status === 'EXPIRED')
-      return outcome;
-    if (isBusinessRejection(outcome))
-      return businessEnvelope(outcome.code, outcome.message, {
-        status: outcome.status,
-        reason: outcome.reason,
-      });
-    return { status: 'OK', threadId: resolution.threadId };
   }
 
   /** Shared manager-side round decision: the round resolves the addressed

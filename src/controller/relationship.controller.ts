@@ -10,6 +10,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { RelationshipRequestService } from '../relationship/request/relationship-request.service.js';
+import { decideMemberGroupRound } from './member-group-round-decision.js';
 import {
   QueryRelationshipRequestsDto,
   RequestDecisionDto,
@@ -207,6 +208,18 @@ export class RelationshipController {
     requestId: string,
     decision: 'ACCEPT' | 'REJECT' | 'WITHDRAW',
   ) {
+    // The personal routes decide any round the caller's SENT/RECEIVED pages
+    // surface: FRIEND rounds settle through the P2P intent command, group
+    // rounds through the member-authored membership state machine.
+    const kind = await this.requests.roundKind(requestId);
+    if (kind === null) return { status: 'STALE_REQUEST' };
+    if (kind !== 'FRIEND')
+      return decideMemberGroupRound(
+        { requests: this.requests, memberIntents: this.memberIntents },
+        userId,
+        requestId,
+        decision,
+      );
     return this.userIntents.decidePersonalRequest(userId, requestId, decision);
   }
 

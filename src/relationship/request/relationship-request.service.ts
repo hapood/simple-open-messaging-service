@@ -29,6 +29,11 @@ export abstract class RelationshipRequestService {
   ): Promise<
     { status: 'RESOLVED'; threadId: number } | { status: 'STALE_REQUEST' }
   >;
+  /** The stored kind of one round by its exact id, or null when absent. The
+   * personal decision routes use it to route a round to its owning domain. */
+  abstract roundKind(
+    requestId: string,
+  ): Promise<'FRIEND' | 'GROUP_APPLICATION' | 'GROUP_INVITATION' | null>;
   /** Resolve a manager-side group round for a known group thread. Returns the
    * addressed member endpoint when the round's direction matches the group
    * identity; manager-role authorization stays with the calling guards and

@@ -49,7 +49,10 @@ describe('RelationshipController request-round boundary', () => {
     'routes %s by exact request ID, not address',
     async (method, decision) => {
       const outcome = { status: 'OK', threadId: 21 };
-      const requests = { decidePersonal: vi.fn() };
+      const requests = {
+        decidePersonal: vi.fn(),
+        roundKind: vi.fn().mockResolvedValue('FRIEND'),
+      };
       const userIntents = {
         execute: vi.fn(),
         decidePersonalRequest: vi.fn().mockResolvedValue(outcome),
@@ -74,7 +77,8 @@ describe('RelationshipController request-round boundary', () => {
 
   it('preserves stale and completed round outcomes', async () => {
     const userIntents = { decidePersonalRequest: vi.fn() };
-    const controller = build({ userIntents });
+    const requests = { roundKind: vi.fn().mockResolvedValue('FRIEND') };
+    const controller = build({ requests, userIntents });
     for (const status of ['STALE_REQUEST', 'EXPIRED']) {
       userIntents.decidePersonalRequest.mockResolvedValueOnce({ status });
       await expect(

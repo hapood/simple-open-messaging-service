@@ -110,6 +110,19 @@ export class RelationshipRequestServiceImpl extends RelationshipRequestService {
   /** Resolve a member-side group round: the calling member must be the
    * invitation's receiver. Locates the owning group thread for the intent
    * state machine; admission is revalidated under that machine's locks. */
+  async roundKind(
+    requestId: string,
+  ): Promise<'FRIEND' | 'GROUP_APPLICATION' | 'GROUP_INVITATION' | null> {
+    const [round] = await this.database.db
+      .select({ kind: relationshipRequest.kind })
+      .from(relationshipRequest)
+      .where(eq(relationshipRequest.id, BigInt(requestId)));
+    return (
+      (round?.kind as 'FRIEND' | 'GROUP_APPLICATION' | 'GROUP_INVITATION') ??
+      null
+    );
+  }
+
   async resolveMemberGroupRound(
     userId: number,
     requestId: string,
